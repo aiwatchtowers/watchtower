@@ -60,7 +60,7 @@ final class CodeIndexCenter {
     func markShown(workbenchID: Int64, folder: URL) {
         if let stale = sessions[workbenchID], stale.folder != folder {
             // The workbench moved to another folder: nothing of the old index holds.
-            release(workbenchID)
+            releaseIndex(workbenchID)
         }
         let session = sessions[workbenchID] ?? CodeIndexSession(folder: folder, index: index(for: workbenchID))
         sessions[workbenchID] = session
@@ -70,7 +70,7 @@ final class CodeIndexCenter {
         case .idle, .failed:
             guard session.run == nil else { return }
             session.fullPending = true
-            pump(session)
+            startNextRun(session)
         case .indexing, .ready:
             break
         }
@@ -84,11 +84,11 @@ final class CodeIndexCenter {
 
     /// What FSEvents saw in the workbench's folder (from `CodeFilesCenter`).
     /// Ignored for a workbench with no index.
-    func handle(_ batch: FolderWatcher.Batch, workbenchID: Int64) {
+    func applyWatcherBatch(_ batch: FolderWatcher.Batch, workbenchID: Int64) {
         guard let session = sessions[workbenchID] else { return }
         if batch.mustRescan {
             session.fullPending = true
-            pump(session)
+            startNextRun(session)
         }
         let paths = batch.paths.filter { !$0.isEmpty }
         guard !paths.isEmpty else { return }
@@ -100,27 +100,27 @@ final class CodeIndexCenter {
             guard !Task.isCancelled, let self, let session else { return }
             session.queued.formUnion(session.debouncing)
             session.debouncing = []
-            pump(session)
+            startNextRun(session)
         }
     }
 
     /// Releases the indexes no view has shown for `idleTTL` (the app's
     /// minute timer, like `EmbeddedChatCenter.sweep`).
-    func sweep(now: Date? = nil) {
+    func releaseIdleIndexes(now: Date? = nil) {
         let now = now ?? clock()
         for (id, session) in sessions where session.shownCount == 0 {
             guard let since = session.hiddenSince, now.timeIntervalSince(since) >= idleTTL else { continue }
-            release(id)
+            releaseIndex(id)
         }
     }
 
     /// App quit: every child is killed.
     func stopAll() {
-        for id in Array(sessions.keys) { release(id) }
+        for id in Array(sessions.keys) { releaseIndex(id) }
     }
 
-    private func release(_ workbenchID: Int64) {
-        sessions.removeValue(forKey: workbenchID)?.stop()
+    private func releaseIndex(_ workbenchID: Int64) {
+        sessions.removeValue(forKey: workbenchID)?.stopChildren()
         indexes[workbenchID] = nil
     }
 
@@ -128,7 +128,7 @@ final class CodeIndexCenter {
 
     /// Starts the next run if none is in flight: a pending full run first
     /// (it covers every queued path), else one update for the queued paths.
-    private func pump(_ session: CodeIndexSession) {
+    private func startNextRun(_ session: CodeIndexSession) {
         guard session.run == nil, sessions.values.contains(where: { $0 === session }) else { return }
         if session.fullPending {
             session.fullPending = false
@@ -163,7 +163,7 @@ final class CodeIndexCenter {
         index.state = .indexing(done: 0, total: total)
         process.streamDecodedLines(as: CodeIndexLine.self) { [weak session] lines in
             guard let session, session.isCurrent(runID) else { return }
-            index.apply(lines, from: .fullRun)
+            index.applyIndexLines(lines, from: .fullRun)
             session.fullRunLines += lines.count
             if lines.contains(where: \.isDone) {
                 session.fullRunFinished = true
@@ -181,7 +181,7 @@ final class CodeIndexCenter {
                 index.state = .failed(message)
                 NSLog("CodeIndexCenter: full index of %@ failed: %@", session.folder.path, message)
             }
-            pump(session)
+            startNextRun(session)
         }
     }
 
@@ -195,7 +195,7 @@ final class CodeIndexCenter {
             return
         }
         _ = session.beginRun(.update(paths))
-        serve.send(paths.joined(separator: "\t"))
+        serve.sendLine(paths.joined(separator: "\t"))
     }
 
     private func startServe(_ session: CodeIndexSession) throws -> CodeCLIProcess {
@@ -204,11 +204,11 @@ final class CodeIndexCenter {
         let index = session.index
         process.streamDecodedLines(as: CodeIndexLine.self) { [weak self, weak session] lines in
             guard let self, let session, session.serve === process, case .update = session.run else { return }
-            index.apply(lines, from: .update)
+            index.applyIndexLines(lines, from: .update)
             guard lines.contains(where: \.isDone) else { return }
             session.run = nil
             if case .failed = index.state, session.fullRunFinished { index.state = .ready }
-            pump(session)
+            startNextRun(session)
         } onExit: { [weak session] exit, _ in
             guard let session, session.serve === process else { return }
             session.serve = nil
@@ -277,12 +277,12 @@ private final class CodeIndexSession {
     }
 
     /// Kills every child; late lines and exits of the old runs are ignored.
-    func stop() {
+    func stopChildren() {
         runID += 1
         debounceTask?.cancel()
-        if case let .full(process) = run { process.terminate() }
+        if case let .full(process) = run { process.terminateGroup() }
         run = nil
-        serve?.terminate()
+        serve?.terminateGroup()
         serve = nil
     }
 }

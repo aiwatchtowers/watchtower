@@ -23,7 +23,7 @@ package enum FuzzyMatch {
     /// with score 0.
     package static func score(query: String, candidate: String) -> (score: Int, matched: [Int])? {
         var corpus = FuzzyCorpus()
-        let slot = corpus.append(candidate, tag: 1)
+        let slot = corpus.appendCandidate(candidate, tag: 1)
         return FuzzyMatcher(query: query).fuzzyMatch(corpus, slot: slot)
     }
 
@@ -83,8 +83,8 @@ package enum FuzzyMatch {
 
 /// Many candidates in flat buffers — an index keeps one, so a keystroke
 /// scans contiguous memory instead of thousands of small arrays. A slot is
-/// appended once and killed when its text is gone (the space comes back on
-/// `compacted`). `tag` is the caller's kind of slot, filtered on in `scan`.
+/// appended once and killed when its text is gone (the space comes back when the owner
+/// rebuilds it). `tag` is the caller's kind of slot, filtered on in `scanCorpus`.
 package struct FuzzyCorpus {
     struct Slot {
         let start: Int
@@ -104,7 +104,7 @@ package struct FuzzyCorpus {
 
     package var slotCount: Int { slots.count }
 
-    package mutating func append(_ text: String, tag: UInt8) -> Int {
+    package mutating func appendCandidate(_ text: String, tag: UInt8) -> Int {
         let textUnits = Array(text.utf16)
         let textFolded = textUnits.map(FuzzyMatch.foldASCII)
         let mask = textFolded.reduce(UInt64(0)) { $0 | FuzzyMatch.maskBit($1) }
@@ -115,14 +115,14 @@ package struct FuzzyCorpus {
         return slots.count - 1
     }
 
-    package mutating func kill(_ slot: Int) {
+    package mutating func killSlot(_ slot: Int) {
         guard slots[slot].alive else { return }
         slots[slot].alive = false
         deadCount += 1
     }
 }
 
-/// One live slot `scan` matched.
+/// One live slot `scanCorpus` matched.
 package struct FuzzyHit: Equatable, Sendable {
     package let slot: Int
     package let score: Int
@@ -148,7 +148,7 @@ package struct FuzzyMatcher {
 
     /// Every live slot whose tag is in `tags` that the query matches, with
     /// its score, in slot order. An empty query matches nothing here.
-    package func scan(_ corpus: FuzzyCorpus, tags: UInt8) -> [FuzzyHit] {
+    package func scanCorpus(_ corpus: FuzzyCorpus, tags: UInt8) -> [FuzzyHit] {
         let m = needle.count
         guard m > 0 else { return [] }
         var hits: [FuzzyHit] = []

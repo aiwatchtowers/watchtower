@@ -163,7 +163,7 @@ final class CodeFilesCenter {
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, projectID: Int64) {
         guard folders[projectID] != nil else { return }
-        codeIndex?.handle(batch, workbenchID: projectID)
+        codeIndex?.applyWatcherBatch(batch, workbenchID: projectID)
         let tree = trees[projectID]
         if batch.mustRescan {
             tree?.reloadAll()

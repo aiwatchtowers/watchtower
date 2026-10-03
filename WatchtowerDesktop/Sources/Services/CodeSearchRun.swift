@@ -21,7 +21,7 @@ final class CodeSearchRun {
 
     deinit {
         // Dropped without `cancel()`: the child still goes.
-        process?.terminate()
+        process?.terminateGroup()
     }
 
     static func start(
@@ -53,7 +53,7 @@ final class CodeSearchRun {
 
     func cancel() {
         isCancelled = true
-        process?.terminate()
+        process?.terminateGroup()
         process = nil
     }
 

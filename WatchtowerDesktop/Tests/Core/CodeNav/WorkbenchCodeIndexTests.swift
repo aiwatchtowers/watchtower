@@ -16,7 +16,7 @@ final class WorkbenchCodeIndexTests: XCTestCase {
 
     func testAppliedFilesAndSymbols() {
         let index = WorkbenchCodeIndex()
-        index.apply([
+        index.applyIndexLines([
             file("a.swift", [symbol("Buffer", .class, "a.swift", line: 1), symbol("save", .method, "a.swift", line: 9)]),
             file("b.swift", [symbol("save", .function, "b.swift", line: 3)]),
             file("notes.txt", lang: "")
@@ -29,24 +29,24 @@ final class WorkbenchCodeIndexTests: XCTestCase {
 
     func testDeletedRemovesTheFileAndItsSubtree() {
         let index = WorkbenchCodeIndex()
-        index.apply([
+        index.applyIndexLines([
             file("lib/a.swift", [symbol("A", .struct, "lib/a.swift")]),
             file("lib/sub/b.swift", [symbol("B", .struct, "lib/sub/b.swift")]),
             file("library.swift", [symbol("L", .struct, "library.swift")])
         ], from: .fullRun)
-        index.apply([.deleted("lib")], from: .update)
+        index.applyIndexLines([.deleted("lib")], from: .update)
         XCTAssertEqual(index.files, ["library.swift"])
         XCTAssertEqual(index.symbols(named: "A"), [])
         XCTAssertEqual(index.symbols(in: "lib/sub/b.swift"), [])
-        index.apply([.deleted("library.swift")], from: .update)
+        index.applyIndexLines([.deleted("library.swift")], from: .update)
         XCTAssertEqual(index.files, [])
         XCTAssertEqual(index.symbols(named: "L"), [])
     }
 
     func testAnUpdateReplacesSymbolsAndSkipsNewUnindexablePaths() {
         let index = WorkbenchCodeIndex()
-        index.apply([file("a.swift", [symbol("Old", .class, "a.swift")]), file("README", lang: "")], from: .fullRun)
-        index.apply([
+        index.applyIndexLines([file("a.swift", [symbol("Old", .class, "a.swift")]), file("README", lang: "")], from: .fullRun)
+        index.applyIndexLines([
             file("a.swift", [symbol("New", .class, "a.swift")]),
             file("bin/tool", lang: ""),
             file("README", lang: "")
@@ -58,9 +58,9 @@ final class WorkbenchCodeIndexTests: XCTestCase {
 
     func testAFullRunPrunesWhatItNoLongerLists() {
         let index = WorkbenchCodeIndex()
-        index.apply([file("a.swift"), file("b.swift", [symbol("B", .class, "b.swift")])], from: .fullRun)
+        index.applyIndexLines([file("a.swift"), file("b.swift", [symbol("B", .class, "b.swift")])], from: .fullRun)
         index.beginFullRun()
-        index.apply([file("a.swift")], from: .fullRun)
+        index.applyIndexLines([file("a.swift")], from: .fullRun)
         XCTAssertEqual(index.files, ["a.swift", "b.swift"], "queries answer from the current index during the run")
         index.finishFullRun()
         XCTAssertEqual(index.files, ["a.swift"])
@@ -69,7 +69,7 @@ final class WorkbenchCodeIndexTests: XCTestCase {
 
     func testQueryRanksFilesAndSymbols() throws {
         let index = WorkbenchCodeIndex()
-        index.apply([
+        index.applyIndexLines([
             file("ViewModels/CodeFileBuffer.swift", [symbol("CodeFileBuffer", .class, "ViewModels/CodeFileBuffer.swift")]),
             file("Models/ConfigBuffer.swift", [symbol("ConfigBuffer", .class, "Models/ConfigBuffer.swift")]),
             file("README.md", lang: "markdown", [symbol("CodeFileBuffer notes", .module, "README.md", outline: true)])
@@ -89,7 +89,7 @@ final class WorkbenchCodeIndexTests: XCTestCase {
 
     func testEmptyQueryListsFilesInBoostOrder() {
         let index = WorkbenchCodeIndex()
-        index.apply(["a.go", "b.go", "c.go", "d.go"].map { file($0, lang: "go") }, from: .fullRun)
+        index.applyIndexLines(["a.go", "b.go", "c.go", "d.go"].map { file($0, lang: "go") }, from: .fullRun)
         let boosts = CodeRankingBoosts(openTabs: ["c.go"], recent: ["d.go"], gitModified: ["b.go"])
         XCTAssertEqual(index.query("", scope: .all, boosts: boosts).map(\.title), ["c.go", "d.go", "b.go", "a.go"])
         XCTAssertEqual(index.query("  ", scope: .symbols, boosts: boosts), [])
@@ -99,7 +99,7 @@ final class WorkbenchCodeIndexTests: XCTestCase {
     /// 30 000-symbol index (a debug build, so the release app has headroom).
     func testQueryLatencyOnASyntheticRepository() {
         let index = WorkbenchCodeIndex()
-        index.apply(Self.syntheticRepository(files: 3000, symbolsPerFile: 10), from: .fullRun)
+        index.applyIndexLines(Self.syntheticRepository(files: 3000, symbolsPerFile: 10), from: .fullRun)
         XCTAssertEqual(index.files.count, 3000)
         let queries = [
             "c", "cf", "cfb", "cfbuf", "save", "saveNow", "vm/cfb", "src/mod", "Handler", "hndlr",

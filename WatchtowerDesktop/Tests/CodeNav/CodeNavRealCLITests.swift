@@ -88,7 +88,7 @@ final class CodeNavRealCLITests: XCTestCase {
 
         try "package pkg\n\nfunc Added() {}\n".write(to: folder.appendingPathComponent("pkg/added.go"), atomically: true, encoding: .utf8)
         try FileManager.default.removeItem(at: folder.appendingPathComponent("greet.py"))
-        center.handle(FolderWatcher.Batch(paths: ["pkg/added.go", "greet.py"]), workbenchID: 1)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["pkg/added.go", "greet.py"]), workbenchID: 1)
         let updated = await eventually { !index.symbols(named: "Added").isEmpty && !index.files.contains("greet.py") }
         XCTAssertTrue(updated, "files now: \(index.files)")
         XCTAssertEqual(index.state, .ready)

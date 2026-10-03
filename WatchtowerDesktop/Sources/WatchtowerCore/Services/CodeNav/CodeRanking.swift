@@ -98,7 +98,7 @@ package enum CodeRanking {
             let total = candidate.score + tiers.tier(of: candidate.path) * tierBonus + (candidate.kind?.rankGroup ?? 0) * kindBonus
             ranked.offer(total: total, entry: i, symbol: -1)
         }
-        return ranked.best().map(\.entry)
+        return ranked.rankedHits().map(\.entry)
     }
 
     /// An empty query: open tabs in tab order, then recent files by recency,

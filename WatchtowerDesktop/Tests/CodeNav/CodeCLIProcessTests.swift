@@ -25,7 +25,7 @@ final class CodeCLIProcessTests: XCTestCase {
 
     func testStdinStdoutStderrAndExitStatus() async throws {
         let process = try shell("read -r line; echo \"got $line\"; echo oops >&2; exit 3")
-        process.send("hello")
+        process.sendLine("hello")
         var out = Data()
         for await chunk in process.output { out += chunk }
         let exit = await process.exitStatus
@@ -43,12 +43,12 @@ final class CodeCLIProcessTests: XCTestCase {
         let child = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
         XCTAssertEqual(getpgid(child), process.pid, "the child shares the CLI's own group")
         XCTAssertNotEqual(process.pid, getpgrp(), "never Watchtower's group")
-        process.terminate()
+        process.terminateGroup()
         let exit = await process.exitStatus
         XCTAssertTrue(exit.signaled)
         let childGone = await eventually { kill(child, 0) == -1 }
         XCTAssertTrue(childGone, "the grandchild went with the group")
-        process.terminate() // idempotent after the reap: signals nobody
+        process.terminateGroup() // idempotent after the reap: signals nobody
     }
 
     func testRunsAtUtilityQoS() async throws {

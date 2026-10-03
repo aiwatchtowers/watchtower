@@ -61,7 +61,7 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertEqual(index.files, ["one.swift", "two.swift"])
 
         clock.now += 299
-        center.sweep()
+        center.releaseIdleIndexes()
         center.markShown(workbenchID: 7, folder: folder) // back within 5 minutes
         XCTAssertTrue(center.index(for: 7) === index)
         XCTAssertEqual(index.state, .ready)
@@ -69,10 +69,10 @@ final class CodeIndexCenterTests: XCTestCase {
 
         center.markHidden(workbenchID: 7)
         clock.now += 299
-        center.sweep()
+        center.releaseIdleIndexes()
         XCTAssertTrue(center.index(for: 7) === index)
         clock.now += 1
-        center.sweep()
+        center.releaseIdleIndexes()
         let fresh = center.index(for: 7)
         XCTAssertFalse(fresh === index, "released after 5 idle minutes")
         XCTAssertEqual(fresh.state, .idle)
@@ -85,7 +85,7 @@ final class CodeIndexCenterTests: XCTestCase {
         let started = await eventually { self.stub.fullRuns == 1 }
         XCTAssertTrue(started)
         center.markHidden(workbenchID: 7)
-        center.sweep(now: clock.now + 300)
+        center.releaseIdleIndexes(now: clock.now + 300)
         await stub.assertAllGroupsReaped()
     }
 
@@ -98,9 +98,9 @@ final class CodeIndexCenterTests: XCTestCase {
         let ready = await eventually { index.state == .ready }
         XCTAssertTrue(ready)
 
-        center.handle(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
         try await Task.sleep(for: .milliseconds(100))
-        center.handle(FolderWatcher.Batch(paths: ["b.swift", ""]), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["b.swift", ""]), workbenchID: 7)
         try await Task.sleep(for: .milliseconds(150))
         XCTAssertEqual(stub.requests, [], "nothing is sent inside the 300 ms window")
         let first = await eventually { !self.stub.requests.isEmpty }
@@ -108,8 +108,8 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertEqual(stub.requests, [["a.swift", "b.swift"]])
 
         // Request 1 is still running (0.6 s): these wait for it, merged.
-        center.handle(FolderWatcher.Batch(paths: ["b.swift"]), workbenchID: 7)
-        center.handle(FolderWatcher.Batch(paths: ["c.swift"]), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["b.swift"]), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["c.swift"]), workbenchID: 7)
         let second = await eventually { self.stub.requests.count == 2 }
         XCTAssertTrue(second)
         XCTAssertEqual(stub.requests, [["a.swift", "b.swift"], ["b.swift", "c.swift"]])
@@ -126,7 +126,7 @@ final class CodeIndexCenterTests: XCTestCase {
     func testABatchDuringTheFullRunWaitsForIt() async {
         let center = makeCenter(["STUB_FULL_DELAY": "0.8"])
         center.markShown(workbenchID: 7, folder: folder)
-        center.handle(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
         let sent = await eventually { !self.stub.requests.isEmpty }
         XCTAssertTrue(sent)
         XCTAssertEqual(stub.events, ["full", "request"], "one run per workbench: the update follows the full run")
@@ -140,7 +140,7 @@ final class CodeIndexCenterTests: XCTestCase {
         let index = center.index(for: 7)
         let ready = await eventually { index.state == .ready }
         XCTAssertTrue(ready)
-        center.handle(FolderWatcher.Batch(mustRescan: true), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(mustRescan: true), workbenchID: 7)
         let again = await eventually { self.stub.fullRuns == 2 && index.state == .ready }
         XCTAssertTrue(again)
         XCTAssertEqual(stub.requests, [])
@@ -184,7 +184,7 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertTrue(sent)
         XCTAssertEqual(stub.requests, [["lib/a.swift", "lib/sub/b.swift"]], "a folder is asked for by its files, hidden names skipped")
         files.stopShowing(project)
-        center.sweep(now: clock.now + 300)
+        center.releaseIdleIndexes(now: clock.now + 300)
         XCTAssertFalse(center.index(for: 7) === index)
     }
 

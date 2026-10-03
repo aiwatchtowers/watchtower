@@ -576,7 +576,7 @@ final class AppState {
             idleReleaseSweep = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.embeddedChatCenter.sweep()
-                    self?.codeIndexCenter.sweep()
+                    self?.codeIndexCenter.releaseIdleIndexes()
                 }
             }
         }

@@ -81,7 +81,7 @@ final class CodeCLIProcess: @unchecked Sendable {
 
     deinit {
         // Never leave a running group behind (the owner dropped us without a kill).
-        terminate()
+        terminateGroup()
     }
 
     /// Spawns `executable arguments` with stdin, stdout and stderr on pipes.
@@ -120,7 +120,7 @@ final class CodeCLIProcess: @unchecked Sendable {
     /// Writes `line` and a newline to the child's stdin, off the caller's
     /// thread (a child busy on a run does not read; the write must not block
     /// the main actor). A failed write is logged; the child's exit tells.
-    func send(_ line: String) {
+    func sendLine(_ line: String) {
         let data = Data((line + "\n").utf8)
         let handle = stdin
         Thread.detachNewThread {
@@ -149,7 +149,7 @@ final class CodeCLIProcess: @unchecked Sendable {
     /// The late SIGKILL may come after the leader is reaped: a group id is
     /// not reused while the group has members, and pids do not wrap within
     /// a second, so it reaches the stragglers or no one.
-    func terminate(grace: Duration = .seconds(1)) {
+    func terminateGroup(grace: Duration = .seconds(1)) {
         let first = lock.withLock {
             defer { terminated = true }
             return !terminated

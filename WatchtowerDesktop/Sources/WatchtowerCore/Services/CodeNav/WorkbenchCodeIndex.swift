@@ -80,7 +80,7 @@ package final class WorkbenchCodeIndex {
 
     // MARK: Applying runs
 
-    package func apply(_ lines: [CodeIndexLine], from kind: CodeIndexRunKind) {
+    package func applyIndexLines(_ lines: [CodeIndexLine], from kind: CodeIndexRunKind) {
         var gone = Set<String>()
         for line in lines {
             switch line {
@@ -95,7 +95,7 @@ package final class WorkbenchCodeIndex {
                 continue
             }
         }
-        remove(gone)
+        removeFiles(gone)
     }
 
     /// A full run starts: files it does not list are dropped when it finishes.
@@ -107,7 +107,7 @@ package final class WorkbenchCodeIndex {
     package func finishFullRun() {
         guard let seen = seenInFullRun else { return }
         seenInFullRun = nil
-        remove(Set(files.filter { !seen.contains($0) }))
+        removeFiles(Set(files.filter { !seen.contains($0) }))
     }
 
     /// A full run that did not finish keeps everything it had.
@@ -121,7 +121,7 @@ package final class WorkbenchCodeIndex {
             .map(\.element)
         if let id = position[result.file], var entry = entries[id] {
             unlinkDefinitions(entry.symbols, path: result.file)
-            entry.symbolSlots.filter { $0 >= 0 }.forEach { corpus.kill($0) }
+            entry.symbolSlots.filter { $0 >= 0 }.forEach { corpus.killSlot($0) }
             entry.symbols = symbols
             entry.symbolSlots = symbolSlots(symbols, entry: id)
             entries[id] = entry
@@ -149,7 +149,7 @@ package final class WorkbenchCodeIndex {
 
     private func addSlot(_ text: String, tag: UInt8, _ owner: SlotOwner) -> Int {
         owners.append(owner)
-        return corpus.append(text, tag: tag)
+        return corpus.appendCandidate(text, tag: tag)
     }
 
     /// `path` and, for a deleted folder, every file under it.
@@ -158,13 +158,13 @@ package final class WorkbenchCodeIndex {
         return files.filter { $0 == path || $0.hasPrefix(prefix) }
     }
 
-    private func remove(_ paths: Set<String>) {
+    private func removeFiles(_ paths: Set<String>) {
         let doomed = paths.filter { position[$0] != nil }
         guard !doomed.isEmpty else { return }
         for path in doomed {
             guard let id = position.removeValue(forKey: path), let entry = entries.removeValue(forKey: id) else { continue }
             unlinkDefinitions(entry.symbols, path: path)
-            ([entry.nameSlot, entry.pathSlot] + entry.symbolSlots.filter { $0 >= 0 }).forEach { corpus.kill($0) }
+            ([entry.nameSlot, entry.pathSlot] + entry.symbolSlots.filter { $0 >= 0 }).forEach { corpus.killSlot($0) }
         }
         files.removeAll { doomed.contains($0) }
         if corpus.deadCount > max(4096, corpus.slotCount / 2) { rebuildCorpus() }
@@ -214,7 +214,7 @@ package final class WorkbenchCodeIndex {
         let boostByEntry = entryBoosts(boosts)
         var top = CodeTopRanked(limit: limit)
         var nameHit: (entry: Int, score: Int)?
-        let hits = matcher.scan(corpus, tags: tags)
+        let hits = matcher.scanCorpus(corpus, tags: tags)
         var index = 0
         while index < hits.count {
             let hit = hits[index]
@@ -236,7 +236,7 @@ package final class WorkbenchCodeIndex {
             let score = nameHit?.entry == owner.entry ? (nameHit?.score ?? 0) + Self.nameMatchBonus : hit.score
             top.offer(total: score + boost, entry: owner.entry, symbol: -1)
         }
-        return top.best().compactMap { result($0, matcher, acrossFolders: acrossFolders) }
+        return top.rankedHits().compactMap { result($0, matcher, acrossFolders: acrossFolders) }
     }
 
     private static let nameMatchBonus = 16
@@ -305,7 +305,7 @@ struct CodeTopRanked {
         }
     }
 
-    func best() -> [Hit] {
+    func rankedHits() -> [Hit] {
         heap.sorted { $1.isWorse(than: $0) }
     }
 
