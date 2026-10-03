@@ -30,7 +30,7 @@ final class CodeRulesFileWatcher {
             modified = info.st_mtimespec
         }
 
-        static func of(_ path: String) -> Self? {
+        static func ofRulesFile(at path: String) -> Self? {
             var info = stat()
             return stat(path, &info) == 0 ? Self(info) : nil
         }
@@ -56,11 +56,11 @@ final class CodeRulesFileWatcher {
         guard descriptor >= 0 else { return nil }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .write, queue: .main)
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.check() }
+            MainActor.assumeIsolated { self?.recheckRulesFile() }
         }
         source.setCancelHandler { close(descriptor) }
         folderSource = source
-        fingerprint = Fingerprint.of(path)
+        fingerprint = Fingerprint.ofRulesFile(at: path)
         armFileSource()
         source.resume()
     }
@@ -71,7 +71,7 @@ final class CodeRulesFileWatcher {
         fileSource?.cancel()
     }
 
-    func stop() {
+    func stopWatchingRulesFile() {
         folderSource?.cancel()
         folderSource = nil
         fileSource?.cancel()
@@ -79,9 +79,9 @@ final class CodeRulesFileWatcher {
     }
 
     /// Something happened in the folder or to the file.
-    private func check() {
+    private func recheckRulesFile() {
         guard folderSource != nil else { return }
-        let now = Fingerprint.of(path)
+        let now = Fingerprint.ofRulesFile(at: path)
         // Created, replaced or removed: the file source follows the path.
         if now?.device != watchedFile?.device || now?.inode != watchedFile?.inode { armFileSource() }
         guard now != fingerprint else { return }
@@ -105,7 +105,7 @@ final class CodeRulesFileWatcher {
             fileDescriptor: descriptor, eventMask: [.write, .extend, .delete, .rename, .attrib], queue: .main
         )
         source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.check() }
+            MainActor.assumeIsolated { self?.recheckRulesFile() }
         }
         source.setCancelHandler { close(descriptor) }
         fileSource = source

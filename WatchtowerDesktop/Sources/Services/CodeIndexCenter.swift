@@ -159,7 +159,7 @@ final class CodeIndexCenter {
     func stopAll() {
         rulesDebounceTask?.cancel()
         rulesDebounceTask = nil
-        rulesWatcher?.stop()
+        rulesWatcher?.stopWatchingRulesFile()
         rulesWatcher = nil
         for id in Array(sessions.keys) { releaseIndex(id) }
     }

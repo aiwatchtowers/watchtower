@@ -20,7 +20,7 @@ final class CodeRulesFileWatcherTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        watcher?.stop()
+        watcher?.stopWatchingRulesFile()
         watcher = nil
         try? FileManager.default.removeItem(at: folder)
     }
@@ -80,7 +80,7 @@ final class CodeRulesFileWatcherTests: XCTestCase {
 
     func testStoppedReportsNothing() async throws {
         try startWatching()
-        watcher?.stop()
+        watcher?.stopWatchingRulesFile()
         try "tcl: {}\n".write(to: file, atomically: true, encoding: .utf8)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(changes, 0)
