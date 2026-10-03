@@ -377,6 +377,11 @@ struct WatchtowerApp: App {
                     ActivationPolicyDecision.becomeRegularAndActivate()
                     appState.openVoicesWindow?()
                 }
+                appState.updateService.presentUpdateWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openWindow(id: UpdateAvailableView.sceneID)
+                    return true
+                }
             }
             .onOpenURL { url in
                 // Handle watchtower-auth:// callback — just bring app to front
@@ -494,6 +499,12 @@ struct WatchtowerApp: App {
         }
         .defaultSize(width: 640, height: 720)
 
+        Window("Software Update", id: UpdateAvailableView.sceneID) {
+            UpdateAvailableView()
+                .environment(appState)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             SettingsView()
                 .environment(appState)
@@ -523,6 +534,11 @@ struct WatchtowerApp: App {
                     appState.voiceRegistryCenter.openWindow = {
                         ActivationPolicyDecision.becomeRegularAndActivate()
                         appState.openVoicesWindow?()
+                    }
+                    appState.updateService.presentUpdateWindow = {
+                        ActivationPolicyDecision.becomeRegularAndActivate()
+                        openWindow(id: UpdateAvailableView.sceneID)
+                        return true
                     }
                 }
         }

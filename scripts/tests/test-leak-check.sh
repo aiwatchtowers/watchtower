@@ -42,6 +42,7 @@
 #                                                   only, never again on the merge
 #                                                   (clean merge and conflict
 #                                                   resolution that keeps it)
+#   - a line that is not valid UTF-8              → scanned, never aborts awk
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -351,6 +352,20 @@ GIT_AUTHOR_EMAIL="$DENIED" git -C "$R" commit -q -m again
 run "$R" HEAD~1..HEAD
 expect_rc 1 "denylisted identity on origin/main"
 expect_out "<author>:1: denylisted identifier" "denylisted identity on origin/main"
+
+# A line that is not valid UTF-8 (a stray Latin-1 byte) neither aborts the
+# scan nor hides a token on the same line.
+R="$(new_repo badutf8)"
+printf 'caf\351 id := "%s"\n' "$SLACK_ID" > "$R/latin1.txt"
+git -C "$R" add latin1.txt
+git -C "$R" commit -q -m "latin-1 line"
+run "$R" HEAD~1..HEAD
+expect_rc 1 "invalid UTF-8 line"
+expect_out "latin1.txt:1: Slack id-shaped token" "invalid UTF-8 line"
+printf 'caf\351 clean\n' > "$R/latin1.txt"
+git -C "$R" commit -q -am "clean latin-1 line"
+run "$R" HEAD~1..HEAD
+expect_rc 0 "clean invalid UTF-8 line"
 
 if [ "$FAILURES" -gt 0 ]; then
     echo "test-leak-check: $FAILURES failure(s)"

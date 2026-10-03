@@ -86,7 +86,7 @@ func SourceFromContext(ctx context.Context) (string, bool) {
 // use for the call. Any harness implementing digest.Generator MUST honor the
 // tier sources below by mapping them to an appropriate model in its backend:
 //
-//	SourceLight → lightweight/fast model (e.g. Haiku, gpt-5.4-mini, ...)
+//	SourceLight → lightweight/fast model (e.g. Haiku, gpt-6-luna, ...)
 //
 // Per-pipeline source names (e.g. "digest.channel", "digest.period") remain
 // valid and are classified by the shared TierForSource table. An unknown or
