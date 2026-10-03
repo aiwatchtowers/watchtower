@@ -361,14 +361,17 @@ func TestProject_CreateRefusesWatchtowerOwnDirs(t *testing.T) {
 	}
 }
 
-// PROJ-08: the daemon's knowledge phase never reads a folder under
-// ~/Documents and the like, so the owner's own attach paths — create's
-// import, import-docs and attach-doc (the Desktop's "Add Document") — index
-// the project's documents themselves, and the documents are searchable from
-// the project's session at once. A dry run and knowledge search off index
-// nothing.
-func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
+// TestProj08_ResyncAndCreateIndexTheFolderAtOnce (was
+// OwnerAttachPathsIndexTheDocumentsAtOnce; PROJ-08 amended 2026-10-03): the
+// daemon's knowledge phase never reads a folder under ~/Documents and the
+// like, so the owner's own paths — `workbench create` and `workbench
+// resync` (the Desktop's Re-run Setup) — index the folder's text files
+// themselves, none of them attached, and they are searchable from the
+// workbench's session at once. Nothing is indexed before a trigger, and
+// knowledge search off indexes nothing.
+func TestProj08_ResyncAndCreateIndexTheFolderAtOnce(t *testing.T) {
 	database := writeActionsConfig(t)
+	useFakeWorkbenchClaude(t)
 	folder := filepath.Join(os.Getenv("HOME"), "Documents", "acme")
 	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "plans"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "README.md"), []byte("# acme\nzebrafinch\n"), 0o644))
@@ -387,24 +390,19 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	pid := created.ID
 	id := strconv.FormatInt(pid, 10)
 	assert.True(t, created.IndexOK, created.IndexError)
-	assert.Equal(t, 1, search(pid, "zebrafinch"), "create: the imported README is searchable at once")
-	assert.Zero(t, search(0, "zebrafinch"), "and only from the project's own session")
+	assert.Equal(t, 1, search(pid, "zebrafinch"), "create: the README is searchable at once")
+	assert.Zero(t, search(0, "zebrafinch"), "and only from the workbench's own session")
 
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "plans", "p.md"), []byte("# plan\nquokka\n"), 0o644))
-	_, _, err = runWorkbench(t, "import-docs", id, "--dry-run")
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "note.txt"), []byte("narwhal\n"), 0o644))
+	assert.Zero(t, search(pid, "quokka"), "no trigger yet: nothing new is indexed")
+	out, _, err = runWorkbench(t, "resync", id, "--json")
 	require.NoError(t, err)
-	assert.Zero(t, search(pid, "quokka"), "a dry run indexes nothing")
-	_, _, err = runWorkbench(t, "import-docs", id)
-	require.NoError(t, err)
-	assert.Equal(t, 1, search(pid, "quokka"), "import-docs: the new plan is searchable at once")
-
-	require.NoError(t, os.WriteFile(filepath.Join(folder, "note.md"), []byte("# note\nnarwhal\n"), 0o644))
-	out, _, err = runWorkbench(t, "attach-doc", id, "note.md", "--json")
-	require.NoError(t, err)
-	var attached workbenchAttachDocJSON
-	require.NoError(t, json.Unmarshal([]byte(out), &attached))
-	assert.True(t, attached.IndexOK, attached.IndexError)
-	assert.Equal(t, 1, search(pid, "narwhal"), "attach-doc: the owner's document is searchable at once")
+	var resynced workbenchResyncJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &resynced))
+	assert.True(t, resynced.IndexOK, resynced.IndexError)
+	assert.Equal(t, 1, search(pid, "quokka"), "resync: the new plan is searchable at once")
+	assert.Equal(t, 1, search(pid, "narwhal"), "resync: the new note is searchable at once")
 
 	// Knowledge search off: the same paths write no index entry (FEAT-01).
 	require.NoError(t, os.WriteFile(flagConfig, []byte("active_workspace: test\nknowledge:\n  enabled: false\n"), 0o600))
@@ -416,11 +414,13 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	assert.True(t, created.IndexSkipped)
-	_, _, err = runWorkbench(t, "attach-doc", strconv.FormatInt(created.ID, 10), "n.md")
+	out, _, err = runWorkbench(t, "resync", strconv.FormatInt(created.ID, 10), "--json")
 	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), &resynced))
+	assert.True(t, resynced.IndexSkipped)
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE source = ?`, kb.WorkbenchDocSource).Scan(&n))
-	assert.Equal(t, 3, n, "only the first project's three documents are indexed")
+	assert.Equal(t, 3, n, "only the first workbench's three files are indexed — not the skill the install wrote")
 }
 
 // PROJ-08: an index failure never fails the attach: it is a stderr warning

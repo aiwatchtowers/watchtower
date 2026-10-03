@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/gitbin"
 	"watchtower/internal/kb"
 )
 
@@ -32,13 +34,20 @@ func decodeResync(t *testing.T, out string) workbenchResyncJSON {
 	return res
 }
 
-// resyncFolder is a git-shaped project folder holding a README and a spec;
-// the watchtower path recorded in hooks is stubbed (looksLikeOurHook keys
-// on the basename).
+// resyncFolder is a git repository holding a README and a spec (a bare
+// .git/info when no git is installed: the document listing then walks the
+// folder); the watchtower path recorded in hooks is stubbed
+// (looksLikeOurHook keys on the basename).
 func resyncFolder(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755))
+	if bin, ok := gitbin.Locate(); ok {
+		c := exec.Command(bin, "init", "-q")
+		c.Dir = dir
+		out, err := c.CombinedOutput()
+		require.NoError(t, err, "git init: %s", out)
+	}
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "specs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# acme\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "docs", "specs", "a.md"), []byte("# spec a\n"), 0o600))

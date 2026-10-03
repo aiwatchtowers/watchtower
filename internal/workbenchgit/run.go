@@ -1,11 +1,11 @@
 // Package workbenchgit reads a workbench folder's git state — the current
-// branch, its changes, the local branches — and switches or creates a
-// branch for the Desktop's workbench header. git is located through
-// internal/gitbin, never the macOS /usr/bin/git shim, and no git process
-// runs outside a repository. A switch never forces, discards, resets or
-// cleans, and never swaps the owner's uncommitted work or a running agent's
-// files without the caller's explicit confirmation (PROJ-10,
-// docs/inventory/workbench.md).
+// branch, its changes, the local branches, the files git does not ignore —
+// and switches or creates a branch for the Desktop's workbench header. git
+// is located through internal/gitbin, never the macOS /usr/bin/git shim, and
+// no git process runs outside a repository. A switch never forces,
+// discards, resets or cleans, and never swaps the owner's uncommitted work
+// or a running agent's files without the caller's explicit confirmation
+// (PROJ-10, docs/inventory/workbench.md).
 package workbenchgit
 
 import (

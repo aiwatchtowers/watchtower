@@ -170,10 +170,12 @@ func TestSearchKnowledge_ProjectScopeErrors(t *testing.T) {
 	assert.Contains(t, res.ScopeNote, "slack_channel #no-such-channel")
 }
 
-// PROJ-08 at the tool layer: search_knowledge and get_knowledge_document
-// show a project's attached documents only in that project's session — the
-// main and Discuss chats (no ProjectID) and another project see nothing.
-func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
+// PROJ-08 at the tool layer (was ...ShowProjectDocsOnlyToTheirProject;
+// amended 2026-10-03): search_knowledge and get_knowledge_document show a
+// workbench folder's files — none attached — only in that workbench's
+// session; the main and Discuss chats (no WorkbenchID) and another
+// workbench see nothing.
+func TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench(t *testing.T) {
 	d := openDB(t)
 	folder := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
@@ -181,8 +183,6 @@ func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
 	_, err := d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, folder, p)
 	require.NoError(t, err)
 	other := seedWorkbench(t, d, "beta")
-	_, _, err = d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: p, RelPath: "plan.md", Kind: "plan", Title: "Plan"})
-	require.NoError(t, err)
 	_, err = kb.Run(context.Background(), d, kb.Options{})
 	require.NoError(t, err)
 	reg := knowledgeRegistry(t, d)

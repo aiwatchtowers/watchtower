@@ -59,7 +59,7 @@ func dumpKB(t *testing.T, d *db.DB) string {
 var kbSourceTables = []string{
 	"messages", "gmail_messages", "imap_messages", "jira_issues", "jira_comments", "calendar_events",
 	"meeting_transcripts", "meeting_recaps", "digests", "digest_topics", "stream_digests", "ideas", "idea_mentions",
-	"ext_documents", "ext_comments", "ext_users", "projects", "project_documents",
+	"ext_documents", "ext_comments", "ext_users", "projects",
 }
 
 func dumpSourceTables(t *testing.T, d *db.DB) string {
