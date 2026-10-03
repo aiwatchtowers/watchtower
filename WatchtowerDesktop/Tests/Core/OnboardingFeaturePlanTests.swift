@@ -58,9 +58,29 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     /// behind their back.
     func testRerunKeepsAttentionDetectionTurnedOffInSettings() {
         let enabled = Plan.enabledFeatureIDs(for: [.workCommunication]).subtracting(["secretary-inbox"])
-        let selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.workCommunication])
+        var selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.workCommunication])
+        XCTAssertFalse(selection.isCustomized, "an always-on feature kept off is no manual pick")
+        XCTAssertEqual(selection.goals, [.workCommunication])
         XCTAssertFalse(selection.isEnabled("secretary-inbox"))
         XCTAssertEqual(selection.enabledFeatureIDs, enabled)
+
+        selection.goals.insert(.tasksAndJira)
+        XCTAssertTrue(selection.isEnabled("next-step"), "the goals still decide")
+        XCTAssertFalse(selection.isEnabled("secretary-inbox"))
+        selection.resetToGoals()
+        XCTAssertFalse(selection.isEnabled("secretary-inbox"), "Reset keeps it off")
+    }
+
+    /// Both always-on features off in Settings, on a hand-toggled set: the
+    /// re-run is customized for the hand toggle, and both stay off through
+    /// Reset.
+    func testRerunKeepsEveryAlwaysOnFeatureOffThroughReset() {
+        let enabled = Plan.enabledFeatureIDs(for: [.meetings]).subtracting(alwaysOn).union(["memory"])
+        var selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.meetings])
+        XCTAssertTrue(selection.isCustomized)
+        XCTAssertEqual(selection.enabledFeatureIDs, enabled)
+        selection.resetToGoals()
+        XCTAssertEqual(selection.enabledFeatureIDs, Plan.enabledFeatureIDs(for: [.meetings]).subtracting(alwaysOn))
     }
 
     func testNoGoalsIsTheSameAsOnlyDevelopment() {

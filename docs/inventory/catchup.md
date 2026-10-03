@@ -58,7 +58,7 @@ The two **summary** surfaces (`digests`, `stream_digests`) use the OVERLAP predi
 
 **Status:** Enforced
 
-**Observable:** The `catchup.compose` system prompt always carries `prompts.Directive(cfg.Digest.Language)` (`fmt.Sprintf(p.getPrompt(prompts.CatchupCompose), prompts.Directive(...))`), regardless of the language of the underlying Slack/Jira/meeting material — the operator's configured `digest.language` (default English) is never silently dropped in favor of English.
+**Observable:** The `catchup.compose` system prompt always carries `prompts.Directive(cfg.Digest.Language)` (`fmt.Sprintf(p.getPrompt(prompts.CatchupCompose), prompts.Directive(...))`), regardless of the language of the underlying Slack/Jira/meeting material — the operator's configured `digest.language` (default English) is never silently replaced by the source material's language.
 
 **Why locked:** The operator picked a response language once; a surface that randomly answers in English breaks the product's "reads in my language" promise, and is jarring exactly when the source material is mixed-language. The predecessor prompts regressed on this once already (titles in one language, narratives in another) because a prompt constant shipped without the directive.
 
@@ -95,7 +95,7 @@ The two **summary** surfaces (`digests`, `stream_digests`) use the OVERLAP predi
 
 ## Changelog
 
-- 2026-10-03 (owner decision, board #281): **CATCHUP-02 wording only** — "(default Russian)" corrected to "(default English)", the actual `config.DefaultDigestLang`/`prompts.DefaultLanguage`. The contract (the `catchup.compose` system prompt always carries the strict `prompts.Directive(digest.language)`) and its guard are untouched; the interactive `ask`/REPL moving to `prompts.ChatDirective` in the same change does not reach Catch-Up.
+- 2026-10-03 (owner decision, board #281): **CATCHUP-02 wording only** — "(default Russian)" corrected to "(default English)" and "dropped in favor of English" to "replaced by the source material's language", the actual `config.DefaultDigestLang`/`prompts.DefaultLanguage`. The contract (the `catchup.compose` system prompt always carries the strict `prompts.Directive(digest.language)`) and its guard are untouched; the interactive `ask`/REPL moving to `prompts.ChatDirective` in the same change does not reach Catch-Up.
 - 2026-10-01 (stranded PR #11): **the Desktop shows an abandoned `building` recap as failed without waiting for the next run.** `CatchUpRecap.init(row:now:)` projects a row older than 30 min to `failed` with the Go reaper's error text, and `CatchUpViewModel` schedules one re-read for when the oldest `building` row crosses the threshold. Read-time only — no write, no migration. CATCHUP-01 is upheld on the Swift path too: `CatchUpQueries.acknowledge` checks the projected `isReady`, so a projected-failed row is refused just as Go refuses it. New guards: `CatchUpModelsTests` (threshold edges, error text, unparseable stamps, `staleAt`) and `CatchUpViewModelTests.testBuildingRowFlipsToFailedOnceItGoesStaleWithoutAWrite`.
 - 2026-09-28 (backlog fix): the **auto** window clamps an acknowledged `period_to` older than 31 days to `now − 31d` instead of failing every run with "longer than 31 days"; the recap records `coverage_json.window_truncated`. Custom windows are still rejected over the cap. No contract changed. Guards: `internal/catchup/window_test.go::TestResolveWindow_AutoClampsAncientAck`, `internal/catchup/pipeline_test.go::TestRun_AutoWindowClampsAncientAckAndRecordsIt`.
 

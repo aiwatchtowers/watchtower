@@ -393,22 +393,22 @@ func reusableSlackWorkspace(cfg *config.Config, teamID string, explicit bool) (s
 			return cfg.ActiveWorkspace, nil
 		}
 		if !explicit && a.Status != "removed" {
-			return "", secondSlackTeamError(cfg.ActiveWorkspace, a)
+			return "", secondSlackTeamError(a)
 		}
 	}
 	return "", nil
 }
 
 // secondSlackTeamError refuses an `auth login` into a team other than
-// account #1's, naming the command that adds a second team side by side.
-func secondSlackTeamError(workspace string, first db.SlackAccount) error {
+// account #1's, actionable part first and short: the Desktop's Reconnect
+// shows only the first 200 characters of stderr.
+func secondSlackTeamError(first db.SlackAccount) error {
 	name := first.TeamName
 	if name == "" {
 		name = first.TeamID
 	}
-	return fmt.Errorf("workspace %q is already connected to Slack team %q; "+
-		"to connect a second Slack team, run 'watchtower slack add' "+
-		"(or pass --workspace <name> to log in under a separate workspace)", workspace, name)
+	return fmt.Errorf("slack team %q is already connected here; add another team with "+
+		"`watchtower slack add` (Settings → Add Slack Workspace), or log in with --workspace <new-name>", name)
 }
 
 var sanitizeRe = regexp.MustCompile(`[^a-z0-9_-]+`)

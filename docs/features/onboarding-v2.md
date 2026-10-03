@@ -21,7 +21,8 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   it). Onboarding never disables an always-on feature: the Customize
   screen lists them in its "Always on" row, and one the owner turned off
   in Settings shows under "Off (as in Settings)" on a re-run and stays
-  off. Settings → Features keeps them as normal toggles, and the
+  off, Reset to goals included; on its own it does not make the re-run
+  "Features customized". Settings → Features keeps them as normal toggles, and the
   related-features offer after a connect never proposes them. Always
   off: `memory`. Left alone:
   `knowledge-connectors` (Confluence in search) and the core entries.
@@ -37,13 +38,13 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
 needs a calendar; Boards, Workload, Blockers, Project Map and Releases need
 Jira; Statistics needs Slack or mail; Inbox and Catch-Up need any source
-(Slack, mail, Jira or a calendar). Inbox has no feature rule; Catch-Up
-needs `secretary-inbox`, `slack-digests` or `stream-digests` on (owner
-decision 2026-10-03, #284). A Jira- or calendar-only install that lands
-on a hidden tab therefore falls back to Inbox. The quiet "+ Connect Slack, Mail, Jira…" row at the
-bottom of the menu names the kinds still missing (Mail = any Google, IMAP
-or CalDAV/ICS source), opens Settings → Connections, and hides for good
-with its × (`sidebar_connect_row_dismissed`).
+(Slack, mail, Jira or a calendar). Inbox has no feature rule; Catch-Up needs
+`secretary-inbox`, `slack-digests` or `stream-digests` on (owner decision
+2026-10-03, #284). A Jira- or calendar-only install that lands on a hidden
+tab therefore falls back to Inbox. The quiet "+ Connect Slack, Mail, Jira…"
+row at the bottom of the menu names the kinds still missing (Mail = any
+Google, IMAP or CalDAV/ICS source), opens Settings → Connections, and hides
+for good with its × (`sidebar_connect_row_dismissed`).
 
 **Profile writes are OWNER-01's** (`OnboardingProfileWriter`,
 docs/inventory/owner-identity.md). About you's Done writes role, manager,
@@ -65,14 +66,15 @@ restart once), so Continue never waits on a slow restart. No one-shot
 it; launch just ensures a daemon runs. A daemon that fails to come up
 shows a banner over the tab setup landed on.
 
-**Workspace without Slack.** Goals' Continue runs `watchtower workspace
-init --json` (at most once per app session, only while no Slack account exists): directory,
-migrated database and `active_workspace`, idempotent. A later Slack login
-reuses that workspace; `auth login` into a second team while account #1
-is live is refused with a pointer to `slack add` (#279). `AppState.openDatabaseForOnboarding` then wires only
-what the steps need (owner, connected sources, account view models); the
-rest of the app's DB wiring, including the notification-permission request,
-runs once at completion.
+**Workspace without Slack.** Goals' Continue runs `watchtower workspace init
+--json` (at most once per app session, only while no Slack account exists):
+directory, migrated database and `active_workspace`, idempotent. A later
+Slack login reuses that workspace; `auth login` into a second team while
+account #1 is live is refused with a pointer to `slack add` (#279).
+`AppState.openDatabaseForOnboarding` then wires only what the steps need
+(owner, connected sources, account view models); the rest of the app's DB
+wiring, including the notification-permission request, runs once at
+completion.
 
 **People load.** A newly connected Slack account (or one already there on a
 relaunch mid-onboarding) starts `watchtower sync --users-only --progress-json
@@ -87,17 +89,16 @@ complete, anything else → Goals) and the legacy keys are dropped. The DB's
 `onboarding_done` wins over a local step at launch; an unreadable profile
 skips onboarding for that launch only.
 
-**Assistant language.** One setting, `digest.language`, an English
-language name. A fresh install starts from the first macOS preferred
-language (Traditional Chinese and Latin Serbian are kept apart). The chat,
+**Assistant language.** One setting, `digest.language`, an English language
+name. A fresh install starts from the first macOS preferred language
+(Traditional Chinese and Latin Serbian are kept apart). The chat,
 `watchtower ask` and the REPL answer in the language the owner writes in
 (`prompts.ChatDirective`, #281); background pipelines keep the strict
-`prompts.Directive`. Settings → General holds the
-picker. `transcription.langset` is seeded once from the Mac's languages
-(mapped to Whisper codes, English always included) while the key is absent
-on a launch that lands in onboarding. Goals' Continue writes
-`sync.initial_history_days = 3` (the old onboarding's default) when the
-config had none.
+`prompts.Directive`. Settings → General holds the picker.
+`transcription.langset` is seeded once from the Mac's languages (mapped to
+Whisper codes, English always included) while the key is absent on a launch
+that lands in onboarding. Goals' Continue writes `sync.initial_history_days
+= 3` (the old onboarding's default) when the config had none.
 
 **Run setup again.** Seeded from what is in effect: goals mapped back from
 the enabled features (`OnboardingFeatureSelection.current`, closest to the

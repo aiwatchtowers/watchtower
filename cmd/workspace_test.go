@@ -250,6 +250,8 @@ func TestSaveAuthResult_DifferentTeamIsRefusedWithSlackAddHint(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "watchtower slack add")
 	assert.Contains(t, err.Error(), "Acme Corp")
+	assert.Contains(t, err.Error(), "--workspace <new-name>")
+	assert.Less(t, len(err.Error()), 200, "the Desktop's Reconnect shows only stderr's first 200 characters")
 	assert.Equal(t, []string{"default"}, workspaceDirs(t), "no team-named workspace is forked")
 
 	after, err := os.ReadFile(configPath)

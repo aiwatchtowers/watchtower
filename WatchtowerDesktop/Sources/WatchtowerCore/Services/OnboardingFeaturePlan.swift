@@ -24,8 +24,8 @@ package enum OnboardingFeaturePlan {
     package static let alwaysOffFeatureIDs: Set<String> = ["memory"]
 
     /// Development maps to nothing: Workbench, the chat, Knowledge search,
-    /// Attention detection and Targets are always on. Meetings' calendar connection is the Connect
-    /// step's business, not a feature switch.
+    /// Attention detection and Targets are always on. Meetings' calendar
+    /// connection is the Connect step's business, not a feature switch.
     package static func featureIDs(for goal: OnboardingGoal) -> Set<String> {
         switch goal {
         case .workCommunication:
@@ -75,6 +75,9 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
     package var goals: Set<OnboardingGoal>
     /// The owner's hand-picked set; nil while the goals decide.
     private var customEnabledIDs: Set<String>?
+    /// Always-on features the owner turned off in Settings: a re-run keeps
+    /// them off whatever the goals or a Reset say ("Off (as in Settings)").
+    private var keptOffIDs: Set<String> = []
 
     package init(goals: Set<OnboardingGoal> = []) {
         self.goals = goals
@@ -87,17 +90,25 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
     /// their own beyond Work communication's), the one closest to
     /// `savedGoals`. When no combination matches — features toggled by hand
     /// in Settings — the last goals with the current set as a manual pick
-    /// ("Features customized").
+    /// ("Features customized"). An always-on feature turned off in Settings
+    /// is matched as if on and kept off on top, so it alone never makes the
+    /// re-run "customized".
     package static func current(
         enabledIDs: Set<String>,
         savedGoals: Set<OnboardingGoal>
     ) -> Self {
-        let enabled = enabledIDs.intersection(OnboardingFeaturePlan.managedFeatureIDs)
+        let managed = enabledIDs.intersection(OnboardingFeaturePlan.managedFeatureIDs)
+        let keptOff = OnboardingFeaturePlan.alwaysOnFeatureIDs.subtracting(managed)
+        let enabled = managed.union(OnboardingFeaturePlan.alwaysOnFeatureIDs)
         let matching = allGoalCombinations.filter { OnboardingFeaturePlan.enabledFeatureIDs(for: $0) == enabled }
         let closest = matching.max { lhs, rhs in
             closeness(lhs, to: savedGoals) < closeness(rhs, to: savedGoals)
         }
-        if let closest { return Self(goals: closest) }
+        if let closest {
+            var selection = Self(goals: closest)
+            selection.keptOffIDs = keptOff
+            return selection
+        }
         // The goals whose features overlap the set most (fewest extras,
         // then closest to the saved goals), with the set as a manual pick.
         let nearest = allGoalCombinations.max { lhs, rhs in
@@ -105,6 +116,7 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
         } ?? savedGoals
         var selection = Self(goals: nearest)
         selection.customEnabledIDs = enabled
+        selection.keptOffIDs = keptOff
         return selection
     }
 
@@ -134,7 +146,7 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
     /// The managed features to enable; every other id in
     /// `OnboardingFeaturePlan.managedFeatureIDs` is to be disabled.
     package var enabledFeatureIDs: Set<String> {
-        customEnabledIDs ?? OnboardingFeaturePlan.enabledFeatureIDs(for: goals)
+        (customEnabledIDs ?? OnboardingFeaturePlan.enabledFeatureIDs(for: goals)).subtracting(keptOffIDs)
     }
 
     package func isEnabled(_ id: String) -> Bool {
@@ -154,7 +166,8 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
         customEnabledIDs = ids
     }
 
-    /// Drops the manual picks; the goals decide again.
+    /// Drops the manual picks; the goals decide again. Always-on features
+    /// kept off stay off.
     package mutating func resetToGoals() {
         customEnabledIDs = nil
     }
