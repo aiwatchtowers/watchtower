@@ -31,6 +31,23 @@ func TestWorkbenchSessionStateHookCommand(t *testing.T) {
 	}
 }
 
+// assertOneAsyncStateEntry: event holds exactly our group — no matcher (every
+// notification type), one async command entry with timeout 5.
+func assertOneAsyncStateEntry(t *testing.T, event string, groups []any, cmd string) {
+	t.Helper()
+	if len(groups) != 1 || countCommand(groups, cmd) != 1 {
+		t.Fatalf("expected one %s group running %q, got %#v", event, cmd, groups)
+	}
+	g := groups[0].(map[string]any)
+	if _, ok := g["matcher"]; ok {
+		t.Fatalf("%s: our group has no matcher (every notification type): %#v", event, g)
+	}
+	h := g["hooks"].([]any)[0].(map[string]any)
+	if h["async"] != true || h["timeout"] != float64(5) || h["type"] != "command" {
+		t.Fatalf("%s: entry %#v, want an async command with timeout 5", event, h)
+	}
+}
+
 func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	folder := fakeRepo(t)
 	o := workbenchOpts(folder, newFakeClaude())
@@ -42,18 +59,7 @@ func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	cmd := WorkbenchSessionStateHookCommand(o.Bin, 7)
 	m := decodeSettings(t, folder)
 	for _, event := range stateEvents {
-		groups := eventGroups(t, m, event)
-		if len(groups) != 1 || countCommand(groups, cmd) != 1 {
-			t.Fatalf("expected one %s group running %q, got %#v", event, cmd, groups)
-		}
-		g := groups[0].(map[string]any)
-		if _, ok := g["matcher"]; ok {
-			t.Fatalf("%s: our group has no matcher (every notification type): %#v", event, g)
-		}
-		h := g["hooks"].([]any)[0].(map[string]any)
-		if h["async"] != true || h["timeout"] != float64(5) || h["type"] != "command" {
-			t.Fatalf("%s: entry %#v, want an async command with timeout 5", event, h)
-		}
+		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
 	}
 	// Stop keeps its one synchronous entry; the state is written by it.
 	stop := eventGroups(t, m, "Stop")[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
