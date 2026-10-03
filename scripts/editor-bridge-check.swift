@@ -178,6 +178,10 @@ window.__h = {
   lang: function (id) { var m = __h.model(id); return m ? m.getLanguageId() : null; },
   eol: function (id) { var m = __h.model(id); return m ? m.getEOL() : null; },
   count: function () { return monaco.editor.getModels().length; },
+  cursor: function () {
+    var p = monaco.editor.getEditors()[0].getPosition();
+    return p ? p.lineNumber + ":" + p.column : "";
+  },
   onScreen: function () {
     var m = monaco.editor.getEditors()[0].getModel();
     return m ? m.uri.path.split("/")[1] : "";
@@ -397,6 +401,20 @@ func protocolChecks(_ page: Page) async {
     await page.call("wt.show", ["id": "c", "path": "tricky.txt", "text": tricky, "rev": 1])
     check("show: arbitrary text round-trips through the JSON-encoded call",
           await page.evalString("__h.value('c')") == tricky)
+
+    // reveal (Open Quickly): the cursor on line:col of the file on screen;
+    // a file off screen takes it when it is shown
+    await page.call("wt.reveal", ["id": "c", "line": 1, "col": 7])
+    check("reveal: puts the cursor on line:col", await page.evalString("__h.cursor()") == "1:7")
+    await page.call("wt.reveal", ["id": "c", "line": 99, "col": 99])
+    check("reveal: a line past the end lands on the last line", await page.evalString("__h.cursor()") == "2:1")
+    await page.call("wt.reveal", ["id": "a", "line": 2, "col": 3])
+    check("reveal: a file off screen stays off screen", await page.evalString("__h.onScreen()") == "c")
+    await page.call("wt.show", ["id": "a", "path": "build/Makefile", "text": "ignored\n", "rev": 6])
+    check("reveal: taken when the file is shown", await page.evalString("__h.cursor()") == "2:3")
+    await page.call("wt.reveal", ["id": "never-opened", "line": 1, "col": 1])
+    check("reveal: an unknown id is harmless", page.errors.isEmpty, "\(page.errors)")
+    await page.call("wt.show", ["id": "c", "path": "tricky.txt", "text": tricky, "rev": 1])
 
     // close
     _ = await page.eval("__h.type('b', 'e'); true")

@@ -238,6 +238,26 @@ extension WorkbenchesViewModel {
         showFilesPane(projectID: project.id)
     }
 
+    /// Open Quickly's ↩ and ⌥↩ (spec §8.1): the file in a preview tab, the
+    /// cursor on the target's line (if any) and the keyboard in the editor
+    /// once it shows. ↩ puts the Files pane on
+    /// screen like a FILES click; ⌥↩ (`beside`) puts it beside the pane on
+    /// screen, splitting a single pane (`WorkspaceLayout.openBeside`) — the
+    /// Files pane alone stays alone (a workbench has one Files pane).
+    func openFile(at target: OpenQuicklyTarget, project: Workbench, beside: Bool) async {
+        await codeFiles.pullPending(project)
+        codeFiles.open(target.path, project: project, preview: true)
+        codeFiles.requestReveal(target.path, line: target.line, col: target.col, project: project)
+        guard beside else {
+            showFilesPane(projectID: project.id)
+            return
+        }
+        var updated = layout(projectID: project.id)
+        let kept = updated.visiblePanes.first { $0 != .files } ?? updated.primary
+        updated.openBeside(.files, keeping: kept)
+        setLayout(updated, projectID: project.id)
+    }
+
     /// The Files pane on screen, the way the header's Files button puts it.
     func showFilesPane(projectID: Int64) {
         var updated = layout(projectID: projectID)

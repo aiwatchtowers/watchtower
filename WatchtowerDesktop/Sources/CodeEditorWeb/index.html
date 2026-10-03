@@ -18,6 +18,12 @@
     rename({id, path})                         the file moved: new language
     close(id)                                  the tab closed
     takePending() → [{id, text, base}]         the unsent edits, handed over
+    reveal({id, line, col})                    put the cursor on line:col
+                                               (1-based, col in UTF-16) and
+                                               scroll it to the centre; a
+                                               file not on screen takes it
+                                               when it is shown
+    focus()                                    the keyboard into the editor
   page → Swift (webkit.messageHandlers.wt):
     ready
     text   {id, text, base, now, explicit}     300 ms after typing stops; at
@@ -92,6 +98,7 @@
     var viewStates = {};  // buffer id -> saved cursor/scroll
     var pending = {};     // buffer id -> debounce timer of an unsent edit
     var current = null;   // buffer id on screen
+    var reveals = {};     // buffer id -> {line, col} waiting for its show
 
     function send(id, now, explicit) {
       clearTimeout(pending[id]);
@@ -122,6 +129,15 @@
       return model;
     }
 
+    function revealNow(args) {
+      var model = editor.getModel();
+      if (!model) { return; }
+      var line = Math.min(Math.max(1, args.line | 0), model.getLineCount());
+      var col = Math.min(Math.max(1, args.col | 0), model.getLineMaxColumn(line));
+      editor.setPosition({ lineNumber: line, column: col });
+      editor.revealPositionInCenter({ lineNumber: line, column: col });
+    }
+
     function replaceText(model, text) {
       if (model.getValue() === text) { return; }
       model.__replacing = true;
@@ -148,6 +164,13 @@
         editor.setModel(modelFor(args));
         if (viewStates[args.id]) { editor.restoreViewState(viewStates[args.id]); }
         current = args.id;
+        if (reveals[args.id]) { revealNow(reveals[args.id]); delete reveals[args.id]; }
+        editor.focus();
+      },
+      reveal: function (args) {
+        if (!models[args.id]) { return; }
+        if (current !== args.id) { reveals[args.id] = args; return; }
+        revealNow(args);
         editor.focus();
       },
       reload: function (args) {
@@ -185,6 +208,7 @@
         }
         delete bases[id];
         delete viewStates[id];
+        delete reveals[id];
       },
       takePending: function () {
         return Object.keys(pending).map(function (id) {

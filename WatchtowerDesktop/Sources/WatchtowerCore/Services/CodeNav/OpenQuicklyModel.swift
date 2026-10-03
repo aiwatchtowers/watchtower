@@ -212,7 +212,7 @@ package struct OpenQuicklyModel: Equatable, Sendable {
             OpenQuicklySection(kind: .symbols, rows: rest(symbols)),
             OpenQuicklySection(kind: .files, rows: rest(files)),
             OpenQuicklySection(kind: .text, rows: text),
-            OpenQuicklySection(kind: .askAI, rows: [.askAI(query: trimmedQuery)]),
+            OpenQuicklySection(kind: .askAI, rows: [.askAI(query: trimmedQuery)])
         ]
     }
 

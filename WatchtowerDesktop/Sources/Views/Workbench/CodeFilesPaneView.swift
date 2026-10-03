@@ -358,7 +358,7 @@ struct MonacoEditorView: NSViewRepresentable {
         })
         let active = tabs.active.flatMap { files.existingBuffer(project, $0) }
         let shown = active?.state == .loaded ? active?.id : nil
-        context.coordinator.sync(buffers: state, active: shown)
+        context.coordinator.sync(buffers: state, active: shown, reveal: files.reveals[project.id])
     }
 
     /// The pane goes away: what the page has not sent yet is pulled and
@@ -383,6 +383,10 @@ struct MonacoEditorView: NSViewRepresentable {
         private var told: [String: BufferState] = [:]
         private var wanted: [String: BufferState] = [:]
         private var wantedActive: String?
+        private var wantedReveal: CodeRevealRequest?
+        /// The last reveal sent: the center clears it a turn later, and an
+        /// update in between must not send it again.
+        private var sentRevealSerial: Int?
 
         init(files: CodeFilesCenter, project: Workbench) {
             self.files = files
@@ -415,9 +419,10 @@ struct MonacoEditorView: NSViewRepresentable {
             }
         }
 
-        func sync(buffers: [String: BufferState], active: String?) {
+        func sync(buffers: [String: BufferState], active: String?, reveal: CodeRevealRequest?) {
             wanted = buffers
             wantedActive = active
+            wantedReveal = reveal
             if ready { push() }
         }
 
@@ -438,14 +443,34 @@ struct MonacoEditorView: NSViewRepresentable {
                 }
                 told[id] = state
             }
-            guard wantedActive != shown else { return }
-            shown = wantedActive
-            guard let id = wantedActive, let buffer = files.buffer(id: id), let state = wanted[id] else {
-                call("wt.show", NSNull())
-                return
+            if wantedActive != shown {
+                shown = wantedActive
+                if let id = wantedActive, let buffer = files.buffer(id: id), let state = wanted[id] {
+                    call("wt.show", ["id": id, "path": buffer.relPath, "text": buffer.text, "rev": buffer.externalRevision])
+                    told[id] = state
+                } else {
+                    call("wt.show", NSNull())
+                }
             }
-            call("wt.show", ["id": id, "path": buffer.relPath, "text": buffer.text, "rev": buffer.externalRevision])
-            told[id] = state
+            pushReveal()
+        }
+
+        /// A reveal waits until its file is the one on screen, then puts the
+        /// cursor there and the keyboard in the editor.
+        private func pushReveal() {
+            guard let request = wantedReveal, request.serial != sentRevealSerial, let id = shown,
+                  files.existingBuffer(project, request.path)?.id == id else { return }
+            sentRevealSerial = request.serial
+            if let line = request.line {
+                call("wt.reveal", ["id": id, "line": line, "col": request.col])
+            } else {
+                call("wt.focus", NSNull())
+            }
+            if let webView { webView.window?.makeFirstResponder(webView) }
+            // Not during the view update that carried it.
+            let files = files
+            let workbenchID = project.id
+            Task { @MainActor in files.revealSent(request, workbenchID: workbenchID) }
         }
 
         // MARK: CodeEditorBridge

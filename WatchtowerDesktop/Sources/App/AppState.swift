@@ -159,6 +159,8 @@ final class AppState {
     /// The Workbench code viewer's symbol index, per workbench: survives
     /// navigation, released 5 minutes after its last view (spec §7).
     let codeIndexCenter = CodeIndexCenter()
+    /// Open Quickly (⇧⇧, ⇧⌘O, ⇧⌘F) for the workbench page on screen.
+    @ObservationIgnored private(set) lazy var openQuicklyCenter = OpenQuicklyCenter(codeIndex: codeIndexCenter)
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -1003,6 +1005,7 @@ final class AppState {
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter
         )
         vm.codeFiles.codeIndex = codeIndexCenter
+        openQuicklyCenter.workbenches = vm
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)

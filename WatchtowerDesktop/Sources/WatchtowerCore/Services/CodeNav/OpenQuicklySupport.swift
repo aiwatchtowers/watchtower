@@ -179,11 +179,11 @@ package enum CodePreviewHighlighter {
         "internal", "is", "lambda", "let", "mut", "new", "nil", "None", "null", "override", "package",
         "private", "protocol", "pub", "public", "raise", "return", "self", "Self", "static", "struct",
         "switch", "this", "throw", "throws", "trait", "true", "True", "False", "try", "type", "typealias",
-        "use", "var", "where", "while", "with", "yield",
+        "use", "var", "where", "while", "with", "yield"
     ]
 
     private static let hashCommentExtensions: Set<String> = [
-        "py", "rb", "sh", "bash", "zsh", "yaml", "yml", "toml", "pl", "r", "mk", "cmake", "dockerfile",
+        "py", "rb", "sh", "bash", "zsh", "yaml", "yml", "toml", "pl", "r", "mk", "cmake", "dockerfile"
     ]
 
     /// Whether `#` starts a comment in this file's language.

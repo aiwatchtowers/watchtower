@@ -186,7 +186,7 @@ final class OpenQuicklyModelTests: XCTestCase {
         let function = CodeSymbol(name: "install", kind: .function, path: "a.go", line: 2, col: 6, endLine: 4)
         index.applyIndexLines([
             .file(CodeIndexFileResult(file: "README.md", lang: "markdown", symbols: [heading], skipped: false)),
-            .file(CodeIndexFileResult(file: "a.go", lang: "go", symbols: [function], skipped: false)),
+            .file(CodeIndexFileResult(file: "a.go", lang: "go", symbols: [function], skipped: false))
         ], from: .update)
         let symbols = index.query("install", scope: .symbols, boosts: .none)
         XCTAssertEqual(symbols.map(\.item), [.symbol(function)])

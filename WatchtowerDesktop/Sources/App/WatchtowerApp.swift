@@ -424,6 +424,15 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("q", modifiers: .command)
             }
+            // Only while a workbench page is on screen (spec §10).
+            CommandMenu("Navigate") {
+                Button("Open Quickly…") { appState.openQuicklyCenter.present(scope: .all) }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .disabled(!appState.openQuicklyCenter.canPresent)
+                Button("Find in Workbench…") { appState.openQuicklyCenter.present(scope: .text) }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(!appState.openQuicklyCenter.canPresent)
+            }
         }
 
         Window("Pipeline Progress", id: "progress-detail") {
