@@ -1,6 +1,7 @@
 # Workbench owner asks — plan (2026-10-03)
 
 **Spec:** `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md` (Parts referenced as §N).
+**Board:** feature target #314; the §9 inventory amendments were approved by the owner on 2026-10-03.
 **Branch:** one plan branch, `feature/workbench-owner-asks`. Go tasks may run in parallel lanes
 where `Depends on` allows. Swift tasks run one at a time, in one worktree.
 **Before starting:** the owner approves the inventory amendments of §9. Until then, Tasks 2–4
