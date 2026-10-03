@@ -88,8 +88,10 @@ skips onboarding for that launch only.
 
 **Assistant language.** One setting, `digest.language`, an English
 language name. A fresh install starts from the first macOS preferred
-language (Traditional Chinese and Latin Serbian are kept apart). The chat
-answers in the language the owner writes in. Settings → General holds the
+language (Traditional Chinese and Latin Serbian are kept apart). The chat,
+`watchtower ask` and the REPL answer in the language the owner writes in
+(`prompts.ChatDirective`, #281); background pipelines keep the strict
+`prompts.Directive`. Settings → General holds the
 picker. `transcription.langset` is seeded once from the Mac's languages
 (mapped to Whisper codes, English always included) while the key is absent
 on a launch that lands in onboarding. Goals' Continue writes

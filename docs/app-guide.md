@@ -450,7 +450,7 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 
 Six tabs, in order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Profile** — General is the first tab, but Settings opens on Connections. Every tab that edits configuration shares the same bottom Save bar.
 
-**General** — **Assistant language**: the language Catch-Up, briefings, tracks and digests are written in (in chat, the assistant replies in the language you write in). **Change…** opens a picker with your Mac's languages as quick choices and a search over every language by its own or its English name ("Polski" or "Polish"); the choice is saved with Save. A new install starts from your Mac's first preferred language; without a setting, English is used.
+**General** — **Assistant language**: the language Catch-Up, briefings, tracks and digests are written in (in chat, and in `watchtower ask` and its interactive prompt in the terminal, the assistant replies in the language you write in). **Change…** opens a picker with your Mac's languages as quick choices and a search over every language by its own or its English name ("Polski" or "Polish"); the choice is saved with Save. A new install starts from your Mac's first preferred language; without a setting, English is used.
 
 **Connections** — master-detail: a left-hand list of external services (Slack, Google, Email, Calendar, Jira), each row showing a status dot (green connected, orange needs attention/error, red revoked) and an account count. Selecting a service shows its accounts and settings on the right.
 

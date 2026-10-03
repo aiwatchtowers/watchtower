@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 func TestBuildSystemPrompt_ContainsWorkspaceInfo(t *testing.T) {
@@ -120,21 +121,20 @@ func TestBuildSystemPrompt_EmptyInputsGetDefaults(t *testing.T) {
 	assert.Contains(t, prompt, "unknown")
 }
 
-func TestBuildSystemPrompt_DefaultLanguage(t *testing.T) {
-	// Empty language must fall back to the shared default (currently "English").
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
-	assert.Contains(t, prompt, "Respond ONLY in English")
-}
-
-func TestBuildSystemPrompt_EnglishLanguage(t *testing.T) {
-	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "English")
-	assert.Contains(t, prompt, "Respond ONLY in English")
-}
-
-func TestBuildSystemPrompt_NonEnglishLanguage(t *testing.T) {
+// ask/REPL are interactive: they carry the chat directive (reply in the
+// owner's language, the configured one as the fallback), never the strict
+// background-pipeline directive (#281).
+func TestBuildSystemPrompt_UsesChatDirective(t *testing.T) {
 	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "Russian")
-	assert.Contains(t, prompt, "Respond ONLY in Russian")
-	assert.Contains(t, prompt, "MUST be in Russian")
+	assert.True(t, prompts.HasChatDirective(prompt))
+	assert.False(t, prompts.HasDirective(prompt), "the strict directive would override the owner's language")
+	assert.Contains(t, prompt, prompts.ChatDirective("Russian"))
+}
+
+func TestBuildSystemPrompt_DefaultLanguage(t *testing.T) {
+	// Empty language falls back to the shared default (currently "English").
+	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
+	assert.Contains(t, prompt, "reply in English.")
 }
 
 func TestAssembleUserMessage_QuestionOnly(t *testing.T) {
