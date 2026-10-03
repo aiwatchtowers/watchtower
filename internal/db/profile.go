@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // GetUserProfile returns the profile for the given Slack user ID, or nil if not found.
@@ -284,4 +285,22 @@ func (db *DB) RemoveStarredPerson(slackUserID, personUserID string) error {
 
 	profile.StarredPeople = string(data)
 	return db.UpsertUserProfile(*profile)
+}
+
+// Identity is the profile's free-text identity for AI prompts: the legacy
+// CustomPromptContext when set, else its "Role: …" and "Team: …" lines.
+// Every value goes through sanitize — each pipeline has its own prompt
+// sanitizer, so the caller passes it.
+func (p *UserProfile) Identity(sanitize func(string) string) string {
+	if p.CustomPromptContext != "" {
+		return sanitize(p.CustomPromptContext)
+	}
+	var lines []string
+	if p.Role != "" {
+		lines = append(lines, "Role: "+sanitize(p.Role))
+	}
+	if p.Team != "" {
+		lines = append(lines, "Team: "+sanitize(p.Team))
+	}
+	return strings.Join(lines, "\n")
 }

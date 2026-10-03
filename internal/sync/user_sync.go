@@ -29,7 +29,7 @@ func (o *Orchestrator) syncUserProfiles(ctx context.Context) error {
 	o.progress.SetUserProfiles(len(unknownIDs), 0)
 
 	if len(unknownIDs) > usersBulkThreshold {
-		return o.fetchAllUserProfiles(ctx)
+		return o.fetchRoster(ctx)
 	}
 
 	return o.fetchUserProfilesIndividually(ctx, unknownIDs)
@@ -81,9 +81,11 @@ func (o *Orchestrator) fetchUserProfilesIndividually(ctx context.Context, userID
 	return nil
 }
 
-// fetchAllUserProfiles falls back to users.list when too many unknown users.
+// fetchAllUserProfiles fetches the full workspace roster (users.list) — the
+// fallback when too many users are unknown, and the roster refresh itself.
+// Callers go through fetchRoster, which stamps the roster marker.
 func (o *Orchestrator) fetchAllUserProfiles(ctx context.Context) error {
-	o.logger.Println("user profiles: too many unknown users, falling back to users.list")
+	o.logger.Println("user profiles: fetching the full roster via users.list")
 
 	users, err := o.slackClient.GetUsers(ctx, func(fetched int) {
 		o.progress.SetUserProfiles(fetched, 0)

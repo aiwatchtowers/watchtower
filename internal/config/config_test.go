@@ -79,6 +79,15 @@ func TestLoad_DefaultValues(t *testing.T) {
 	assert.Equal(t, DefaultTranscriptAudioRetentionDays, cfg.Transcripts.AudioRetentionDays)
 }
 
+// An install that never picked a language gets English, not a hardcoded
+// non-English default.
+func TestLoad_DefaultLanguageIsEnglish(t *testing.T) {
+	path := writeTestConfig(t, "")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "English", cfg.Digest.Language)
+}
+
 func TestLoad_MissingFile(t *testing.T) {
 	cfg, err := Load("/nonexistent/path/config.yaml")
 	require.NoError(t, err)

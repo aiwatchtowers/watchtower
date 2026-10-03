@@ -30,7 +30,7 @@ struct NavigationRoot: View {
                 appState.reinitializeAfterOnboarding()
             }
         case .onboarding:
-            OnboardingView {
+            OnboardingV2View {
                 appState.reinitializeAfterOnboarding()
             }
         case .main:
@@ -131,6 +131,20 @@ struct MainNavigationView: View {
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .detailBackground()
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if let failure = appState.daemonStartFailure {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                Text(failure).font(.callout).lineLimit(2)
+                                Spacer()
+                                Button("Dismiss") { appState.dismissDaemonStartFailure() }
+                                    .buttonStyle(.borderless)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.12))
+                        }
+                    }
             }
 
             StatusBarView()
@@ -158,17 +172,23 @@ struct MainNavigationView: View {
         }
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
+        .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
+        // Direct writes (deep links, Day Plan, the action strip, Catch-Up
+        // cards) must not land on a hidden tab either.
+        .onChange(of: appState.selectedDestination) { _, _ in applyFeatureFallback() }
     }
 
     /// Redirects away from the current tab when it becomes hidden — a
     /// feature was just disabled, or a persisted selection from a previous
     /// launch points at a tab that's now gated off. Runs once at appear
-    /// (stale persisted selection) and again on every live feature-list
-    /// change, sharing the same pure `fallbackDestination` rule.
+    /// (stale persisted selection), on every live feature-list or
+    /// connected-source change, and on every selection change, sharing the
+    /// same pure `fallbackDestination` rule.
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
-            disabled: appState.featureVisibility.disabledFeatureIDs
+            disabled: appState.featureVisibility.disabledFeatureIDs,
+            connected: appState.featureVisibility.connectedSources
         ) {
             appState.selectedDestination = fallback
         }
@@ -196,6 +216,19 @@ struct MainNavigationView: View {
         }
     }
 
+    /// Catch-Up's first-sync line; the history depth is read from the
+    /// config only while that sync runs.
+    private var catchUpFirstSync: (title: String, detail: String)? {
+        let daemon = appState.daemonManager
+        guard daemon.lastSyncTime == nil, daemon.syncProgress?.isSyncing() == true else { return nil }
+        return OnboardingFinishPlan.firstSyncText(
+            progress: daemon.syncProgress,
+            lastSyncTime: daemon.lastSyncTime,
+            historyDays: ConfigService().initialHistoryDays ?? AppState.defaultInitialHistoryDays,
+            connected: appState.featureVisibility.connectedSources
+        )
+    }
+
     @ViewBuilder
     private var detailView: some View {
         switch appState.selectedDestination {
@@ -203,7 +236,7 @@ struct MainNavigationView: View {
             ChatView()
         case .catchUp:
             if let vm = appState.catchUpViewModel {
-                CatchUpView(vm: vm)
+                CatchUpView(vm: vm, firstSync: catchUpFirstSync)
             } else {
                 Text("Catch Up unavailable")
                     .foregroundStyle(.secondary)

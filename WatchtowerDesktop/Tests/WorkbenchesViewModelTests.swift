@@ -391,7 +391,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
     func testCreateSurvivesNavigatingAwayAndSelectsTheProjectOnReturn() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let held = HeldCLIRunner(stdout: createdJSON(id))
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: held, notifier: RecordingWorkbenchNotifier(),
@@ -426,7 +426,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
             .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
         ])
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
@@ -515,7 +515,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
             .success(Data()),
             .success(Data(#"{"skill":"installed","hook":true,"mcp":true}"#.utf8))
         ])
-        let appState = AppState()
+        let appState = AppState.isolated()
         let process = FakeTerminalSession(pid: 0)
         appState.terminalCenter.makeProcess = { process }
         appState.terminalCenter.shell = { "/bin/zsh" }
@@ -542,7 +542,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
     }
 
     func testNavigateToProjectSetsThePendingRouteAndTheTab() {
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.navigateToWorkbench(WorkbenchRoute(projectID: 2, pane: .board))
         XCTAssertEqual(appState.selectedDestination, .workbench)
         XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 2, pane: .board))

@@ -426,14 +426,6 @@ struct WatchtowerApp: App {
             }
         }
 
-        Window("Pipeline Progress", id: "progress-detail") {
-            ProgressDetailView()
-                .environment(appState)
-                .environment(\.openURL, AllowedURLSchemes.openURLAction)
-                .environment(\.dictationCenter, appState.dictationCenter)
-        }
-        .defaultSize(width: 600, height: 500)
-
         Window("Logs", id: "logs") {
             LogsSettings()
                 .environment(appState)

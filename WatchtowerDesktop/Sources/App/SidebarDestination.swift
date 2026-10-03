@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case chat
@@ -104,13 +105,14 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
 extension SidebarDestination {
     /// Feature ids that keep this tab visible; visible iff ANY is enabled.
-    /// nil = always visible (core tabs, and tabs with no single owning
+    /// nil = no feature gate (core tabs, and tabs with no single owning
     /// feature — e.g. `.inbox`, which stays reachable even with the
     /// secretary-inbox feature off so its banner and existing situations
-    /// remain visible).
+    /// remain visible). Catch-Up is fed by Attention detection, not by Slack
+    /// Digests.
     var requiredFeatures: [String]? {
         switch self {
-        case .catchUp: ["slack-digests"]
+        case .catchUp: ["secretary-inbox"]
         case .digests: ["slack-digests", "stream-digests", "ideas"]
         case .ideas: ["ideas"]
         case .memory: ["memory"]
@@ -122,22 +124,43 @@ extension SidebarDestination {
         }
     }
 
-    /// Whether this tab should render given the current set of disabled
-    /// feature ids. A tab with no `requiredFeatures` is always visible; one
-    /// that declares features is visible as long as at least one of them is
-    /// still enabled.
-    func isVisible(disabledFeatures: Set<String>) -> Bool {
-        guard let required = requiredFeatures else { return true }
-        return required.contains { !disabledFeatures.contains($0) }
+    /// Sources this tab needs to have anything to show; visible iff ANY is
+    /// connected. nil = no source gate.
+    var requiredSources: [SidebarSource]? {
+        switch self {
+        case .calendar: [.calendar]
+        case .boards, .workload, .blockers, .projectMap, .releases: [.jira]
+        case .inbox, .catchUp, .statistics: [.messages]
+        default: nil
+        }
+    }
+
+    /// Whether this tab should render: its feature rule (`requiredFeatures`
+    /// against the disabled ids) AND its source rule (`requiredSources`
+    /// against what is connected) both hold.
+    func isVisible(disabledFeatures: Set<String>, connected: ConnectedSources) -> Bool {
+        SidebarVisibility.isVisible(
+            requiredFeatures: requiredFeatures,
+            requiredSources: requiredSources,
+            disabledFeatures: disabledFeatures,
+            connected: connected
+        )
     }
 
     /// The destination navigation should fall back to when `current` is no
-    /// longer visible under `disabled` (its feature was just turned off, or
-    /// a persisted selection from a previous launch points at a now-hidden
+    /// longer visible (its feature was just turned off, its source is gone,
+    /// or a persisted selection from a previous launch points at a now-hidden
     /// tab), or nil when `current` is still visible and no fallback is
-    /// needed. Pure — no AppState dependency — so the selection owner can
-    /// call it both on a live feature-list change and once at appear.
-    static func fallbackDestination(current: SidebarDestination, disabled: Set<String>) -> SidebarDestination? {
-        current.isVisible(disabledFeatures: disabled) ? nil : .inbox
+    /// needed: Inbox when it shows, else Workbench, which has no gate at all
+    /// (an install with no message source hides Inbox). Pure — no AppState
+    /// dependency — so the selection owner can call it both on a live change
+    /// and once at appear.
+    static func fallbackDestination(
+        current: SidebarDestination,
+        disabled: Set<String>,
+        connected: ConnectedSources
+    ) -> SidebarDestination? {
+        guard !current.isVisible(disabledFeatures: disabled, connected: connected) else { return nil }
+        return Self.inbox.isVisible(disabledFeatures: disabled, connected: connected) ? .inbox : .workbench
     }
 }

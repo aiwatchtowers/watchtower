@@ -1070,27 +1070,39 @@ func (p *Pipeline) loadCaches() {
 	}
 }
 
+// formatProfileContext renders whenever the profile carries an identity line
+// or a people list; CustomPromptContext, when a legacy profile has one, stands
+// in for the role and team lines.
 func (p *Pipeline) formatProfileContext() string {
-	if p.profile == nil || p.profile.CustomPromptContext == "" {
+	if p.profile == nil {
+		return ""
+	}
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced; the scalar manager id likewise
+	// (RawID).
+	var people strings.Builder
+	if p.profile.Reports != "" && p.profile.Reports != "[]" {
+		people.WriteString(fmt.Sprintf("\nVIEWER'S REPORTS: %s — coaching for managing these people\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Reports))))
+	}
+	if p.profile.Peers != "" && p.profile.Peers != "[]" {
+		people.WriteString(fmt.Sprintf("\nVIEWER'S PEERS: %s — coaching for peer collaboration\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Peers))))
+	}
+	if p.profile.Manager != "" {
+		people.WriteString(fmt.Sprintf("\nVIEWER'S MANAGER: %s — coaching for managing up\n", sanitize(watchtowerslack.RawID(p.profile.Manager))))
+	}
+	identity := p.profile.Identity(sanitize)
+	if identity == "" && people.Len() == 0 {
 		return ""
 	}
 	var sb strings.Builder
 	sb.WriteString("=== VIEWER PROFILE CONTEXT ===\n")
-	sb.WriteString(sanitize(p.profile.CustomPromptContext))
-	sb.WriteString("\n\nCOACHING PERSONALIZATION:\n")
+	if identity != "" {
+		sb.WriteString(identity + "\n\n")
+	}
+	sb.WriteString("COACHING PERSONALIZATION:\n")
 	sb.WriteString("- Tailor communication advice to the viewer's role and responsibilities\n")
-	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
-	// these ids against message text, which carries raw Slack ids regardless of
-	// how the id blob itself is namespaced.
-	if p.profile.Reports != "" && p.profile.Reports != "[]" {
-		sb.WriteString(fmt.Sprintf("\nVIEWER'S REPORTS: %s — coaching for managing these people\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Reports))))
-	}
-	if p.profile.Peers != "" && p.profile.Peers != "[]" {
-		sb.WriteString(fmt.Sprintf("\nVIEWER'S PEERS: %s — coaching for peer collaboration\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Peers))))
-	}
-	if p.profile.Manager != "" {
-		sb.WriteString(fmt.Sprintf("\nVIEWER'S MANAGER: %s — coaching for managing up\n", sanitize(p.profile.Manager)))
-	}
+	sb.WriteString(people.String())
 	return sb.String()
 }
 

@@ -589,3 +589,12 @@ func TestPipelineRunForDate_NilUsageDoesNotPanic(t *testing.T) {
 	assert.Equal(t, 0, b.InputTokens)
 	assert.Empty(t, b.Model, "no usage block means no model name, like the digest and day-plan siblings")
 }
+
+// The briefing profile block never depended on CustomPromptContext: a
+// profile filled by the team form still renders its role and reports.
+func TestFormatUserProfile_NoCustomContext_RendersRoleAndReports(t *testing.T) {
+	got := formatUserProfile(&db.UserProfile{Role: "middle_management", Reports: `["1:U20"]`})
+	assert.Contains(t, got, "Role: middle_management\n")
+	assert.Contains(t, got, `Reports: ["U20"]`)
+	assert.Equal(t, "", formatUserProfile(&db.UserProfile{}))
+}

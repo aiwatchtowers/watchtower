@@ -25,6 +25,10 @@ final class CalendarAccountsViewModel {
 
     // MARK: - Refresh
 
+    /// Called after every successful reload. Injected by AppState, which
+    /// re-reads the connected sources the sidebar gates on.
+    var onAccountsChanged: (() async -> Void)?
+
     /// Cross-process writes (the CLI subprocess, or the daemon's CalDAV/ICS
     /// syncers) don't fire GRDB's ValueObservation, so callers reload on
     /// appear / after a CLI call completes rather than observing live.
@@ -39,6 +43,7 @@ final class CalendarAccountsViewModel {
         do {
             let rows = try await dbPool.read { db in try CalendarAccountQueries.fetchAll(db) }
             self.accounts = rows
+            await onAccountsChanged?()
         } catch {
             self.error = "Failed to load accounts: \(error.localizedDescription)"
         }

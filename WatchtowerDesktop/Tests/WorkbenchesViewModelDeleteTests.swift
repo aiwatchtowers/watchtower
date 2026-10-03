@@ -193,7 +193,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         let b = try await session(id)
         let kept = try await session(other)
 
-        let appState = AppState()
+        let appState = AppState.isolated()
         // pid 0: close() never signals a real process group.
         var processes: [FakeTerminalSession] = []
         appState.terminalCenter.makeProcess = {

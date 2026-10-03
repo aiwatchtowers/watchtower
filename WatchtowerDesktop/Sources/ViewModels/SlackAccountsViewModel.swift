@@ -17,11 +17,24 @@ final class SlackAccountsViewModel {
     var isConnecting = false
     var error: String?
 
+    /// The restart the last successful account change kicked off under
+    /// `.restart` (nil under `.deferred`) — held so tests can await it.
+    @ObservationIgnored private(set) var daemonRestartTask: Task<Void, Never>?
+
     private let dbPool: DatabasePool
+    private let daemon: any DaemonRestarting
+    /// Resolves the CLI binary; injectable so tests can run a stand-in.
+    private let cliPath: () -> String?
     private var authProcess: Process?
 
-    init(dbPool: DatabasePool) {
+    init(
+        dbPool: DatabasePool,
+        daemon: any DaemonRestarting = LiveDaemonRestarter(),
+        cliPath: @escaping () -> String? = Constants.findCLIPath
+    ) {
         self.dbPool = dbPool
+        self.daemon = daemon
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -69,8 +82,8 @@ final class SlackAccountsViewModel {
     /// Connects a new Slack workspace via `watchtower slack add --app-return`.
     /// The OAuth consent happens in the loopback browser; the detached Process
     /// is held in `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(label: String) async {
-        await runAuthFlow(args: Self.addArgs(label: label), failurePrefix: "Connect failed")
+    func addAccount(label: String, daemonPolicy: DaemonRestartPolicy = .restart) async {
+        await runAuthFlow(args: Self.addArgs(label: label), failurePrefix: "Connect failed", daemonPolicy: daemonPolicy)
     }
 
     // MARK: - Re-login
@@ -86,7 +99,7 @@ final class SlackAccountsViewModel {
     /// used when an account's status is "error"/"revoked" and needs a fresh
     /// grant.
     func relogin(_ account: SlackAccount) async {
-        await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed")
+        await runAuthFlow(args: Self.loginArgs(for: account), failurePrefix: "Re-login failed", daemonPolicy: .restart)
     }
 
     func cancelConnect() {
@@ -110,7 +123,8 @@ final class SlackAccountsViewModel {
     func setEnabled(_ account: SlackAccount, enabled: Bool) async {
         await runManagementCommand(
             args: Self.setEnabledArgs(for: account, enabled: enabled),
-            failurePrefix: enabled ? "Enable failed" : "Disable failed"
+            failurePrefix: enabled ? "Enable failed" : "Disable failed",
+            daemonPolicy: .restart
         )
     }
 
@@ -126,20 +140,24 @@ final class SlackAccountsViewModel {
     /// Removes `account` via `watchtower slack remove <id>`. Non-destructive:
     /// the CLI deletes the token file and marks the row removed/disabled but
     /// keeps already-synced messages, digests, and situations.
-    func remove(_ account: SlackAccount) async {
-        await runManagementCommand(args: Self.removeArgs(for: account), failurePrefix: "Remove failed")
+    func remove(_ account: SlackAccount, daemonPolicy: DaemonRestartPolicy = .restart) async {
+        await runManagementCommand(
+            args: Self.removeArgs(for: account),
+            failurePrefix: "Remove failed",
+            daemonPolicy: daemonPolicy
+        )
     }
 
     // MARK: - Flow helpers
 
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
-    private func runAuthFlow(args: [String], failurePrefix: String) async {
+    private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
@@ -157,17 +175,21 @@ final class SlackAccountsViewModel {
         let result = await Self.runProcess(process)
         authProcess = nil
         isConnecting = false
-        applyResult(result, failurePrefix: failurePrefix)
+        applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 
     /// Non-browser management command (`enable`/`disable`/`remove`) — a plain
     /// awaited CLI invocation, no `authProcess` to cancel.
-    private func runManagementCommand(args: [String], failurePrefix: String) async {
+    private func runManagementCommand(
+        args: [String],
+        failurePrefix: String,
+        daemonPolicy: DaemonRestartPolicy
+    ) async {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
@@ -177,18 +199,20 @@ final class SlackAccountsViewModel {
 
         let result = await Self.runCLI(path: cliPath, arguments: args)
         isConnecting = false
-        applyResult(result, failurePrefix: failurePrefix)
+        applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 
     private func applyResult(
         _ result: (exitCode: Int32, stdout: String, stderr: String),
-        failurePrefix: String
+        failurePrefix: String,
+        daemonPolicy: DaemonRestartPolicy
     ) {
         if result.exitCode == 0 {
             error = nil
             refresh()
-            // Re-wire the daemon so the account set change takes effect now.
-            Task { await DaemonManager.restartLogging() }
+            // Re-wire the daemon so the account set change takes effect now
+            // (unless onboarding defers it — `DaemonRestartPolicy`).
+            daemonRestartTask = daemonPolicy.apply(using: daemon)
         } else if result.exitCode == 15 || result.exitCode == 9 {
             // SIGTERM/SIGKILL — user cancelled
             error = nil
