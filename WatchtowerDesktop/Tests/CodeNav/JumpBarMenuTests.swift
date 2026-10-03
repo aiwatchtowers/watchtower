@@ -94,9 +94,32 @@ final class JumpBarMenuTests: XCTestCase {
         field.stringValue = "loa"
         menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
         XCTAssertEqual(symbolTitles(menu, visibleOnly: true), ["load"])
+        menu.commitFilter(.openFirstMatch)
+        XCTAssertEqual(read(), [.symbol(load)])
+    }
+
+    /// The field's action also comes from its × (and Esc): only Return or
+    /// Enter opens the first match.
+    func testOnlyReturnOpensTheFirstMatch() {
+        XCTAssertEqual(JumpBarFilterCommit.decide(isKeyDown: true, keyCode: 36), .openFirstMatch, "Return")
+        XCTAssertEqual(JumpBarFilterCommit.decide(isKeyDown: true, keyCode: 76), .openFirstMatch, "keypad Enter")
+        XCTAssertEqual(JumpBarFilterCommit.decide(isKeyDown: false, keyCode: nil), .refilter, "the × button (a click)")
+        XCTAssertEqual(JumpBarFilterCommit.decide(isKeyDown: true, keyCode: 53), .refilter, "Esc")
+        XCTAssertEqual(JumpBarFilterCommit.decide(isKeyDown: false, keyCode: 36), .refilter, "a key-up is not a Return")
+    }
+
+    func testClearingTheFilterWithItsCancelButtonOpensNothing() throws {
+        let (record, read) = picks()
+        let menu = fileSymbolsMenu(onPick: record)
+        let field = try XCTUnwrap(menu.filterField)
+        field.stringValue = "loa"
+        menu.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: field))
+        // The × clears the field and sends the action, with no Return event.
+        field.stringValue = ""
         let action = try XCTUnwrap(field.action)
         _ = menu.perform(action, with: field)
-        XCTAssertEqual(read(), [.symbol(load)])
+        XCTAssertEqual(read(), [], "nothing opens, nothing goes on Back")
+        XCTAssertEqual(symbolTitles(menu, visibleOnly: true).count, 4, "the cleared filter shows every symbol again")
     }
 
     func testAMembersMenuPicksTheSymbol() {

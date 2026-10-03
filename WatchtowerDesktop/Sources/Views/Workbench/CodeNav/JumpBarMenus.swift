@@ -14,6 +14,22 @@ enum JumpBarPick: Equatable {
 /// opened) and files, the symbols beside a type or method, or the file's
 /// symbol list under a filter field (the last segment, ⌃6). The current
 /// file or symbol is checked.
+/// What the ⌃6 filter field's action asks for: the field sends it on
+/// Return, and also when its × (or Esc) clears it — only a Return (or the
+/// keypad's Enter) opens the first match; anything else just re-filters.
+enum JumpBarFilterCommit: Equatable {
+    case openFirstMatch
+    case refilter
+
+    private static let returnKeyCodes: Set<UInt16> = [36, 76]
+
+    /// `keyCode` only for a key event (reading it off a mouse event raises).
+    static func decide(isKeyDown: Bool, keyCode: UInt16?) -> Self {
+        guard isKeyDown, let keyCode, returnKeyCodes.contains(keyCode) else { return .refilter }
+        return .openFirstMatch
+    }
+}
+
 @MainActor
 final class JumpBarMenu: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
     let menu = NSMenu()
@@ -104,13 +120,26 @@ final class JumpBarMenu: NSObject, NSMenuDelegate, NSSearchFieldDelegate {
         applyFilter(filterField?.stringValue ?? "")
     }
 
+    /// The field's action comes on Return, and also when its × (or Esc)
+    /// clears it: only Return opens a symbol.
     @objc private func filterCommitted(_ sender: NSSearchField) {
-        guard let item = firstVisibleSymbolItem else {
-            NSSound.beep()
-            return
+        let event = NSApplication.shared.currentEvent
+        let isKey = event?.type == .keyDown
+        commitFilter(JumpBarFilterCommit.decide(isKeyDown: isKey, keyCode: isKey ? event?.keyCode : nil))
+    }
+
+    func commitFilter(_ commit: JumpBarFilterCommit) {
+        switch commit {
+        case .refilter:
+            applyFilter(filterField?.stringValue ?? "")
+        case .openFirstMatch:
+            guard let item = firstVisibleSymbolItem else {
+                NSSound.beep()
+                return
+            }
+            menu.cancelTracking()
+            pick(item)
         }
-        menu.cancelTracking()
-        pick(item)
     }
 
     // MARK: NSMenuDelegate
