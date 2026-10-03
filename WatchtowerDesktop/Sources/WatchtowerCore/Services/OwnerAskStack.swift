@@ -1,6 +1,6 @@
 import Foundation
 
-/// The "Ждёт тебя" stack of a workbench (spec 2026-10-03 Part 8): its open
+/// The "Waiting for you" stack of a workbench (spec 2026-10-03 Part 8): its open
 /// asks oldest first, how many each session has, and the asks filed from
 /// outside the app (no session) as one group. Pure.
 package struct OwnerAskStack: Equatable, Sendable {
@@ -13,7 +13,7 @@ package struct OwnerAskStack: Equatable, Sendable {
         package var isOutsideTheApp: Bool { sessionID == nil }
     }
 
-    package static let outsideTheAppTitle = "Вне приложения"
+    package static let outsideTheAppTitle = "Outside the app"
 
     /// Open asks by `created_at`, then id.
     package let asks: [OwnerAsk]

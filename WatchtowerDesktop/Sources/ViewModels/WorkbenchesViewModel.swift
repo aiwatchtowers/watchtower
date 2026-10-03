@@ -16,6 +16,8 @@ final class WorkbenchesViewModel {
     /// The code viewer's file trees and open buffers (POC), here so unsaved
     /// edits survive switching panes and tabs.
     let codeFiles: CodeFilesCenter
+    /// The owner asks: open lists, drafts and answers (spec 2026-10-03 Part 8).
+    let asks: OwnerAsksViewModel
 
     private(set) var summaries: [WorkbenchSummary] = []
     /// The workbench switcher's rows (board #250), read when its popover opens.
@@ -240,11 +242,17 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
+        asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
         }
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
+        asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
+        asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
+        asks.onDelivered = { [weak self] projectID, sessionID in
+            self?.showAnsweredSession(sessionID, projectID: projectID)
+        }
     }
 
     var selectedWorkbench: Workbench? {
@@ -348,6 +356,18 @@ final class WorkbenchesViewModel {
             let sessionID = route.subjectID
             Task { await revealTerminal(projectID: projectID, sessionID: sessionID) }
         }
+    }
+
+    /// An answer's line was typed or copied into `sessionID` (spec 2026-10-03
+    /// Part 5): that terminal goes on its workbench's page and the keyboard
+    /// into it, so the owner reads the line (or pastes it) and presses
+    /// Return. Keyed by the ask's own workbench, never the selection.
+    func showAnsweredSession(_ sessionID: Int64, projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.show(.session(sessionID))
+        setLayout(updated, projectID: projectID)
+        terminalCenter?.focus(sessionID)
+        terminalCenter?.requestKeyboardFocus(sessionID)
     }
 
     /// `sessionID` (a session notice's click, board #312) puts that session

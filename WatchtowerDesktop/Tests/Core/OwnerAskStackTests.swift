@@ -47,7 +47,7 @@ final class OwnerAskStackTests: XCTestCase {
         XCTAssertEqual(groups.map(\.sessionID), [8, 7, nil], "sessions by their oldest ask; outside the app last")
         XCTAssertEqual(groups.map { $0.asks.map(\.id) }, [[2, 5], [3], [1, 4]])
         XCTAssertEqual(groups.map(\.isOutsideTheApp), [false, false, true])
-        XCTAssertEqual(OwnerAskStack.outsideTheAppTitle, "Вне приложения")
+        XCTAssertEqual(OwnerAskStack.outsideTheAppTitle, "Outside the app")
     }
 
     func testNoAsksIsAnEmptyStack() {

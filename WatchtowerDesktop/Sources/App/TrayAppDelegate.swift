@@ -213,11 +213,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let recording = AppState.shared.meetingRecorderCenter.isBusy
+        let prompt = Self.quitPrompt(
+            recording: AppState.shared.meetingRecorderCenter.isBusy,
+            askDrafts: AppState.shared.workbenchesViewModel?.asks.drafts.count ?? 0
+        )
         return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
-            hasBlockingWork: recording,
-            confirmQuit: { Self.confirmQuitDuringRecording() },
+            hasBlockingWork: prompt != nil,
+            confirmQuit: { prompt.map(Self.confirmQuit) ?? true },
             closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
             closeTerminals: { await AppState.shared.terminalCenter.closeAll() },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
@@ -278,12 +281,40 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func confirmQuitDuringRecording() -> Bool {
+    /// What a quit asks before it drops work: a recording in progress, or
+    /// unsent ask answers (in memory only, spec 2026-10-03 Part 8). nil =
+    /// nothing to lose, quit without asking.
+    struct QuitPrompt: Equatable {
+        let message: String
+        let informative: String
+        let quitTitle: String
+    }
+
+    static func quitPrompt(recording: Bool, askDrafts: Int) -> QuitPrompt? {
+        let drafts = askDrafts == 1 ? "1 unsent ask answer" : "\(askDrafts) unsent ask answers"
+        if recording {
+            return QuitPrompt(
+                message: "A recording or transcription is in progress",
+                informative: "Quitting stops the capture and drops any transcription still running. "
+                    + "The audio recorded so far is kept and offered again on next launch."
+                    + (askDrafts > 0 ? " Your \(drafts) will be lost." : ""),
+                quitTitle: "Stop & Quit"
+            )
+        }
+        guard askDrafts > 0 else { return nil }
+        return QuitPrompt(
+            message: "You have \(drafts)",
+            informative: "Drafts are kept only while Watchtower runs. Answer them from the workbench first, "
+                + "or quit and lose them.",
+            quitTitle: "Quit"
+        )
+    }
+
+    private static func confirmQuit(_ prompt: QuitPrompt) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "A recording or transcription is in progress"
-        alert.informativeText = "Quitting stops the capture and drops any transcription still running. "
-            + "The audio recorded so far is kept and offered again on next launch."
-        alert.addButton(withTitle: "Stop & Quit")
+        alert.messageText = prompt.message
+        alert.informativeText = prompt.informative
+        alert.addButton(withTitle: prompt.quitTitle)
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
