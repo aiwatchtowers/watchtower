@@ -43,6 +43,7 @@ func TestMigration00096_ChatProjectsPinConfluenceSpaces(t *testing.T) {
 // TestMigration00096_DownDropsOnlyConfluencePins: the Down restores the old
 // CHECK, keeping every other pin with its id.
 func TestMigration00096_DownDropsOnlyConfluencePins(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "chat-sources-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()

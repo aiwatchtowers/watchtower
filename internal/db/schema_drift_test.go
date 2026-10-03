@@ -59,6 +59,7 @@ func tableDDL(t *testing.T, d *DB, table string) string {
 // *SchemaDriftError. A replay that leaves an older shape — a later migration
 // added a column or an index — fails here.
 func TestSchemaDrift_EveryDeclaredTableIsRepairedExactlyOrReported(t *testing.T) {
+	t.Parallel()
 	fresh := openTestDB(t)
 	repaired := 0
 	for _, table := range declaredTables {
@@ -93,6 +94,7 @@ func missingNames(e *SchemaDriftError) []string {
 // EXISTS) is missing while goose records v64 as applied. CheckSchemaDrift
 // repairs it, and so does the next Open.
 func TestSchemaDrift_BurnedVersionDetectedAndRepaired(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "burned.db")
 	d, err := Open(path)
 	require.NoError(t, err)
@@ -121,6 +123,7 @@ func TestSchemaDrift_BurnedVersionDetectedAndRepaired(t *testing.T) {
 // watermarks; 00034 is all CREATE IF NOT EXISTS, but 00038 later adds
 // memory_provenance.sender_id, so a replay would build the old shape.
 func TestSchemaDrift_UnsafeReplaysReported(t *testing.T) {
+	t.Parallel()
 	for table, file := range map[string]string{
 		"google_accounts":   "00043_google_accounts.sql",
 		"memory_provenance": "00034_memory_digest_compare.sql",

@@ -17,7 +17,8 @@ import (
 // foreign keys enforced. Without it, hundreds of tests could drift onto a
 // schema the product never runs and keep passing.
 func TestInitTestTemplate_CloneMatchesFreshMigration(t *testing.T) {
-	fresh, err := Open(filepath.Join(t.TempDir(), "fresh.db")) // file path: bypasses the hook
+	t.Parallel()
+	fresh, err := openMigratingFresh(t, filepath.Join(t.TempDir(), "fresh.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = fresh.Close() })
 	clone := openTestDB(t)

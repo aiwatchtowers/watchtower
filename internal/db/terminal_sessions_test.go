@@ -102,6 +102,7 @@ func newAgentStateRow(t *testing.T, d *DB, pid any, kind string, uuid any) int64
 const agentStateUUID = "0b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
 
 func TestMigration00098_AgentStateCheckAndDownUp(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "agent-state-cycle.db"))
 	if err != nil {
 		t.Fatal(err)

@@ -17,6 +17,7 @@ import (
 // with nothing left to rewrite, not just re-serialize it to an equal
 // value).
 func TestMigration00054_TracksChannelIDs(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES
@@ -60,6 +61,7 @@ func TestMigration00054_TracksChannelIDs(t *testing.T) {
 // mode json_group_array(json_set(...)) could produce if this modernc build
 // did not preserve the JSON subtype through the aggregate.
 func TestMigration00054_TracksParticipants(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	const seed = `[{"name":"@A","user_id":"U0FAKE05","stance":"инициатор"},{"name":"@B","user_id":"1:U0FAKE06","stance":"x"}]`
@@ -124,6 +126,7 @@ func TestMigration00054_TracksParticipants(t *testing.T) {
 //     dequoted string throws "malformed JSON" — see
 //     TestMigration00054_EdgeCasesUntouched's doc comment for why).
 func TestMigration00054_ParticipantsDangerousShapes(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, participants) VALUES
@@ -180,6 +183,7 @@ func TestMigration00054_ParticipantsDangerousShapes(t *testing.T) {
 // element alongside a real id string must have the string rewritten and
 // the object left alone — not crashed on, not stringified.
 func TestMigration00054_FlatArrayNonTextElement(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES (1, 'non-text element', '["C1",{"a":1}]')`); err != nil {
@@ -207,6 +211,7 @@ func TestMigration00054_FlatArrayNonTextElement(t *testing.T) {
 // user_profile columns in one row, since they share the exact same shape
 // and rewrite logic as tracks.channel_ids.
 func TestMigration00054_UserProfileListColumns(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO user_profile (id, slack_user_id, reports, peers, starred_channels, starred_people) VALUES
@@ -251,6 +256,7 @@ func TestMigration00054_UserProfileListColumns(t *testing.T) {
 // own, standalone, for the same reason. je.type (the column json_each
 // already provides) reports the decoded type directly, with no re-parse.
 func TestMigration00054_EdgeCasesUntouched(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids) VALUES
@@ -298,6 +304,7 @@ func TestMigration00054_EdgeCasesUntouched(t *testing.T) {
 // ships) against the already-migrated data, and asserts nothing changes —
 // the WHERE...EXISTS guard on each statement must make re-application safe.
 func TestMigration00054_ReRunIsNoOp(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids, participants) VALUES
@@ -332,6 +339,7 @@ func TestMigration00054_ReRunIsNoOp(t *testing.T) {
 // re-applies Up and asserts they're namespaced again — the
 // TestMigration00049DownUpCycle shape.
 func TestMigration00054DownUpCycle(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 53)
 
 	if _, err := raw.Exec(`INSERT INTO tracks (id, text, channel_ids, participants) VALUES

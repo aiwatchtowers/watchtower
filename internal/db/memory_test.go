@@ -1500,6 +1500,7 @@ func TestListOwnerChatTurnsAbsentTables(t *testing.T) {
 // a down; up cycle is clean — Up's ADD COLUMN would otherwise fail on the
 // leftovers.
 func TestMemoryMigrationDownUpCycle(t *testing.T) {
+	t.Parallel()
 	d := openAfterMigrationCycle(t, 17)
 
 	// The re-added columns are usable (exactly once — a duplicate would have

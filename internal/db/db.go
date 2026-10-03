@@ -26,6 +26,14 @@ type DB struct {
 // pre-migrated clone and avoid running goose on every test call.
 var openMemoryHook func() (*DB, error)
 
+// seedNewFileHook, when non-nil, is called by Open with a file path that does
+// not exist yet, before the database is opened. This package's tests set it
+// to write the pre-migrated template there, so a file-backed Open finds every
+// migration applied instead of running goose from scratch (~15 s under -race)
+// while still taking the real open path: DSN, pragmas, WAL, goose check,
+// drift check, file modes. Never set outside tests.
+var seedNewFileHook func(dbPath string) error
+
 // immediateTxDSN makes every Begin/BeginTx that is not ReadOnly issue BEGIN
 // IMMEDIATE, so a write transaction waits for the write lock under
 // busy_timeout up front. A DEFERRED read-then-write transaction instead fails
@@ -67,6 +75,13 @@ func Open(dbPath string) (*DB, error) {
 		dir := filepath.Dir(dbPath)
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("creating database directory: %w", err)
+		}
+		if seedNewFileHook != nil {
+			if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
+				if err := seedNewFileHook(dbPath); err != nil {
+					return nil, fmt.Errorf("seeding test database: %w", err)
+				}
+			}
 		}
 	}
 

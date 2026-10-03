@@ -20,6 +20,7 @@ import (
 // post-upgrade poll would treat every reaction placed since its last poll as
 // history and record it `skipped` — silent loss of owner commands on upgrade.
 func TestMigration00073_StampsAccountsThatAlreadyUseTheFeature(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)

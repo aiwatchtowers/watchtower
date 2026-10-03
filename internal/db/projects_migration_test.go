@@ -13,6 +13,7 @@ import (
 // shape: four project tables with their columns, and targets.project_id with
 // its index. Read at 00081: 00100 drops project_documents and the anchors.
 func TestMigration00081_CreatesProjectTablesAndTargetsColumn(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 81)
 
 	want := map[string][]string{
@@ -43,6 +44,7 @@ func TestMigration00081_CreatesProjectTablesAndTargetsColumn(t *testing.T) {
 // from a project to its targets and their comments. Run at 00081: 00100 drops
 // project_documents.
 func TestMigration00081_ConstraintsHold(t *testing.T) {
+	t.Parallel()
 	d := rawDBAt(t, 81)
 	res, err := d.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')`)
 	require.NoError(t, err)
@@ -83,6 +85,7 @@ func TestMigration00081_ConstraintsHold(t *testing.T) {
 // and it must take the project targets with it, or a rollback would turn every
 // board item into a personal target.
 func TestMigration00081_DownDropsProjectsAndTheirTargets(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "projects-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()

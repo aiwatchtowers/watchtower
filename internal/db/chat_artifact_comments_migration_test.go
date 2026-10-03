@@ -58,6 +58,7 @@ func TestMigration00082_ConstraintsHold(t *testing.T) {
 // TestMigration00082_DownDropsTheTable: other tests roll back through 00082,
 // so its Down must be real.
 func TestMigration00082_DownDropsTheTable(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "artifact-comments-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()

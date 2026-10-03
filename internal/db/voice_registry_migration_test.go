@@ -43,6 +43,7 @@ func applyNextMigration(t *testing.T, raw *sql.DB) {
 // and its embedding becomes an owner-anchored active voice_samples row tagged
 // with the model version literal.
 func TestVoiceRegistryMigration_MovesPrintsIntoAnchoredSamples(t *testing.T) {
+	t.Parallel()
 	raw := openRawDBAtVersion(t, 79)
 
 	emb := make([]byte, 256*4)
@@ -76,6 +77,7 @@ func TestVoiceRegistryMigration_MovesPrintsIntoAnchoredSamples(t *testing.T) {
 // the retired meeting.speaker_guess prompt row and a live one before 00080 and
 // asserts the migration's DELETE removes only the retired id.
 func TestVoiceRegistryMigration_DeregistersRetiredSpeakerGuessPrompt(t *testing.T) {
+	t.Parallel()
 	raw := openRawDBAtVersion(t, 79)
 
 	for _, id := range []string{"meeting.speaker_guess", "meeting.recap"} {

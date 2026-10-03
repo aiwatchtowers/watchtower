@@ -32,11 +32,16 @@ func InitTestTemplate() error {
 	if err != nil {
 		return err
 	}
+	templateSnapshot = snapshot
 	openMemoryHook = func() (*DB, error) {
 		return cloneFromSnapshot(snapshot)
 	}
 	return nil
 }
+
+// templateSnapshot is the image InitTestTemplate installed, nil before it
+// runs; this package's TestMain also seeds new database files from it.
+var templateSnapshot []byte
 
 // serializer / deserializer are the modernc.org/sqlite driver connection's
 // snapshot methods, reached through sql.Conn.Raw.
