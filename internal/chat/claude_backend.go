@@ -28,6 +28,10 @@ type ClaudeOptions struct {
 	ResumeSessionID string // --resume on the first spawn; "" = fresh session
 	SystemPrompt    string // written to a 0600 file, passed as --system-prompt-file
 	MCPConfig       string // mcp-config JSON, written to a 0600 file; "" = none
+	// Tools is the --tools allowlist over Claude Code's built-in tools; it is
+	// always passed, so "" hides every built-in (MCP tools are unaffected) —
+	// a built-in a later CLI release adds is never visible by default.
+	Tools           string
 	AllowedTools    string // --allowedTools
 	DisallowedTools string // --disallowedTools
 	// WorkDir is the child's working directory; "" = NeutralWorkDir(). It
@@ -210,6 +214,7 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 	if mcpFile != "" {
 		args = append(args, "--mcp-config", mcpFile)
 	}
+	args = append(args, "--tools", o.Tools)
 	if o.AllowedTools != "" {
 		args = append(args, "--allowedTools", o.AllowedTools)
 	}

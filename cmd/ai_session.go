@@ -261,6 +261,7 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 		ResumeSessionID: aiSessionFlagResume,
 		SystemPrompt:    w.prompt,
 		MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
+		Tools:           ai.SessionBuiltinTools,
 		AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,
 		DisallowedTools: ai.WithExternalDisallowed(ai.SessionDisallowedTools, ext),
 		// Claude only: codex/ollama would reject an image/PDF as
