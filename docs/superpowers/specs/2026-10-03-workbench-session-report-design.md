@@ -1,8 +1,13 @@
 # Workbench session report — design (2026-10-03)
 
-**Board:** feature target "Отчёт сессии: что сделано, PR, что на тебе; синяя точка у законченной сессии" (id in the plan header).
-**Builds on:** owner asks (`docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, PR #147, branch
-`feature/workbench-owner-asks`, not merged yet) and the session agent state (board #312, PR #142, PROJ-11).
+**Board:** feature target #343 "Отчёт сессии: что сделано, PR, что на тебе; состояния сессии".
+**Builds on:** owner asks (`docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, PR #147, in main) and
+the session agent state (board #312, PR #142, PROJ-11).
+**Revision 2 (2026-10-03, owner comment #206 + the states brainstorm):** one blue "finished" dot became a full set of
+session states (Part 4). Owner picks: "waiting for you" means a real request only (1a); a turn that ends with no request
+and no `finish_session` is its own grey **Stopped** state (2a); colour says whose move it is, the panel adds a glyph and a
+caption (3a); approval, request, error, "working with a request open" and "finished with requests open" are all told
+apart (4: all).
 **Plan:** `docs/superpowers/plans/2026-10-03-workbench-session-report.md`.
 **Design mock:** the brainstorm screen "session-report" of 2026-10-03, built on the live data of sessions #314 (finished)
 and #257 (working).
@@ -20,7 +25,7 @@ did, how far it got, which PRs were merged, or what is left on you. With many se
 
 **What you will see.**
 - **A Session view next to the terminal**, where the Documents pane used to be. It shows the selected session's report:
-  - **State and size.** A state badge (Working / Waiting / Needs approval / **Finished**), the session's ticket, how long
+  - **State and size.** A state badge (one of the Part 4 states, with its glyph and caption), the session's ticket, how long
     it ran and its branches. A large **X / Y tasks** with a progress bar.
   - **«На тебе» ("On you")** comes first: this session's open asks, each with **Open**. When nothing is waiting:
     "Nothing — the agent is not waiting for you."
@@ -33,17 +38,35 @@ did, how far it got, which PRs were merged, or what is left on you. With many se
     reading the terminal.
 - **Session rows in the panel** get a second line: ticket, a mini progress bar, X/Y and the PR state ("PR #147 open",
   "2 PRs merged").
-- **A blue dot means finished.** Green = working, orange = waiting for you or needs approval, **blue = finished**, hollow =
-  not running. A finished session stays blue after it is closed. It turns green again as soon as you send it a new
-  prompt.
+- **Session states you can tell apart at a glance.** The colour says whose move it is; the panel row, the header switcher
+  and the report add a glyph and a caption:
+
+  | State | Colour | Glyph | Caption (shipped) | Notice |
+  |---|---|---|---|---|
+  | Working | green | — | Working | — |
+  | Working, a request is open | green | ? + count | Working · 2 asks open | (the ask's own notice) |
+  | Waiting for your answer | orange | ? | Waiting for you · ask #12 | (the ask's own notice) |
+  | Needs approval in the terminal | orange | hand | Needs approval | yes |
+  | Finished, requests still open | orange | ✓ | Finished · 1 ask open | "finished" |
+  | Stopped (turn over, nothing asked, not finished) | grey | pause | Stopped | "stopped" |
+  | Finished | blue | ✓ | Finished | "finished" + summary line |
+  | Error (rate limit, API error) | red | ! | Error: rate limit | yes |
+  | Running (just started, nothing reported yet) | green | — | Running | — |
+  | Not started | hollow grey | — | Not running | — |
+
+  A filled dot means the process runs, a ring in the same colour means it does not: a finished session closed later
+  shows a blue ring, a closed session with an open ask an orange ring. A new prompt turns any of them green again.
+  **"Waiting for you" now means a real request** — an open ask or a permission dialog — not every end of a turn.
 - **The agent says when it is done.** It calls a new tool with a short summary. If it stops with its work done and does
   not call the tool, the end-of-turn check reminds it.
 
 **Decisions for you (recommendations marked).**
 1. **The header toolbar** (Terminal ▾ / Board / Session / Files / split / ⋯): see toolbar decision, filled after the owner
    picks. Plan Task 11 waits for this pick. Every other task can go ahead without it.
-2. **Amend PROJ-11** (session state hooks): add the Finished state, shown blue, and let the `UserPromptSubmit` write clear
-   it. *Recommended: yes.*
+2. **Amend PROJ-11** (session state hooks) to the Part 4 state set: the stored `waiting` now means "turn over" (shown
+   Stopped, grey), "waiting for you" comes only from open asks and approval, StopFailure records an error, Finished comes
+   from `finish_session`, and every `working` write clears both. PROJ-11's run-scoping holds for the hook states.
+   *Decided by the owner in the brainstorm (1a, 2a, 3a, 4 all); this is the inventory change that records it.*
 3. **Amend PROJ-13** (the ask guard never traps a turn): the same Stop prompt also reminds the agent to call
    `finish_session`. All of PROJ-13's pass rules hold unchanged. *Recommended: yes.*
 4. **Add PROJ-14** "a session report shows only that session's own work, and Finished comes only from the session's own
@@ -57,7 +80,10 @@ Editing the agent's summary. Marking a session finished by hand.
 - On the two real sessions the progress, phases and PRs match the mock: #314 shows 14/15 tasks (leaves; the mock's 16/17 counted parents), its phases and PR #147
   open, and #257 shows #273/#269 under "Now" and PRs #140/#146 merged.
 - Their "On you" lists only asks filed after this ships, because the old requests were comments.
-- A session that calls `finish_session` turns blue with its summary.
+- A session that calls `finish_session` turns blue with its summary; with an open ask it stays orange with ✓.
+- A turn that ends with no ask and no `finish_session` shows grey Stopped, not orange.
+- An open ask turns the session orange (?) once the agent stops, green with "? N" while it keeps working.
+- A rate-limit or API failure at the end of a turn shows red with the error.
 - An agent that finishes calls `finish_session`, or is reminded once to call it.
 - A new prompt turns a blue session green.
 - Rows show X/Y and the PR state without opening the session.
@@ -66,14 +92,15 @@ Editing the agent's summary. Marking a session finished by hand.
 
 ## Part 2 — Data (migration `00101_workbench_session_report.sql`)
 
-The number follows `00100_owner_asks` on `feature/workbench-owner-asks`. If main takes `00101` first, the migration is
-renumbered at merge (see the `project_goose_crossed_migration_line` note: check the tables exist, not the goose
-version).
+The number follows `00100_owner_asks` (in main). If main takes `00101` first, the migration is renumbered at merge
+(check the tables exist, not the goose version).
 
 ```sql
 -- +goose Up
 ALTER TABLE terminal_sessions ADD COLUMN finished_at    TEXT;              -- UTC ISO-8601 with ms (agent_state_at format); NULL = not finished
 ALTER TABLE terminal_sessions ADD COLUMN finish_summary TEXT NOT NULL DEFAULT '';  -- the last summary, kept after finished_at is cleared
+ALTER TABLE terminal_sessions ADD COLUMN agent_failed_at TEXT;             -- = agent_state_at of the StopFailure write that set it; NULL = no error
+ALTER TABLE terminal_sessions ADD COLUMN agent_error    TEXT NOT NULL DEFAULT '';  -- the StopFailure error type, clipped to 60 runes; '' = unknown
 
 CREATE TABLE terminal_session_targets (            -- which targets a session's agent wrote to
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
@@ -96,12 +123,15 @@ CREATE TABLE workbench_pr_states (                  -- Go-only cache of PR/branc
     checked_at  TEXT NOT NULL,
     PRIMARY KEY (project_id, ref)
 );
--- +goose Down: drop both tables and both columns.
+-- +goose Down: drop both tables and the four columns.
 ```
 
 - Mirror the changes into `internal/db/schema.sql`, add both tables to `TestAllTablesExist`, and regenerate the golden and
   `TestDatabase+Schema.swift`.
-- **Writers.** Go is the only writer of all four new things. The Desktop only reads them.
+- **Why two error columns and not a new `agent_state` value.** `agent_state` carries a column-level
+  `CHECK (agent_state IN ('working','waiting','approval'))` (migration `00098`); widening it means rebuilding
+  `terminal_sessions`. An error is a turn that ended (`waiting`) plus a flag, like `finished_at`, so it needs no rebuild.
+- **Writers.** Go is the only writer of every new column and table. The Desktop only reads them.
 - **PROJ-02.** Deleting a workbench removes its sessions, and with them their link rows, plus its PR cache, through the
   cascades. `DeleteWorkbench`'s leftover test adds both tables.
 
@@ -152,19 +182,76 @@ CREATE TABLE workbench_pr_states (                  -- Go-only cache of PR/branc
 (`UserPromptSubmit`, or `PostToolUse` out of `approval`). `finish_summary` is kept, and the report shows it as "Previous
 summary" while the session works again. No other write clears `finished_at`.
 
-**Desktop dot state.** `SessionSwitcherPresentation.State` gains `finished`. The effective state (pure, Core) is decided in
-this order:
-1. A live row in `approval` → `needsApproval` (orange).
-2. A live row in `working`, with `agent_state_at` later than `finished_at` (or `finished_at` NULL) → `working` (green).
-3. `finished_at` set → `finished` (**blue**), live or not. Finished never needs a process run, so PROJ-11's run-scoping
-   does not apply to it.
-4. Otherwise, today's rules: `waitingForOwner` orange, `running` green, `notStarted` hollow.
+**Errors (StopFailure).** `agentStateFor` keeps mapping `StopFailure` to `waiting`, and the hook now passes a failure:
+`agent_failed_at = <the event time>` and `agent_error = <the payload's error type>`. Every other state write sets
+`agent_failed_at = NULL, agent_error = ''` in the same statement. The guard "a different state" becomes "a different
+state, or a different failure flag", so a StopFailure after a `waiting` still lands; the "event time later than the stored
+one" guard is unchanged. The payload field is pinned by a fixture captured from a real StopFailure in the implementing
+task (Claude Code's hook reference names the error type; a missing or non-string field stores `''`, and the caption then
+reads "Stopped on an error"). The value is clipped to 60 runes and passed through `asks.OneLine`.
 
-The blue dot shows at every dot site (`SessionLiveDot`: panel row, switcher button and popover, Go to… palette).
+### Part 4b — The session state model
 
-**Notifications.** A transition into `finished` posts one notice, under the same conditions as PROJ-11's notices (app
-inactive, workbench notifications on, quiet hours off): "<session> finished". The body is the first line of the summary,
-and the identifier is the existing `workbench-session-<id>`, so a later state replaces it.
+**Inputs**, all per `claude` session row:
+- `live`: the process runs (`TerminalCenter`).
+- `hook`: PROJ-11's trusted state — `working`, `waiting`, `approval`, or none — trusted only while live and
+  `agent_state_at ≥ startedAt` (unchanged run-scoping). `failed` = trusted `waiting` with
+  `agent_failed_at = agent_state_at`.
+- `finished`: `finished_at` is set (not run-scoped; any `working` write clears it).
+- `openAsks`: the count of this session's `owner_asks` with `status = 'open'` (session-bound asks only).
+
+**Kinds** (`SessionSwitcherPresentation.State` becomes a struct `{kind, live, openAsks, error}`; `kind` is one of
+`notStarted`, `running`, `working`, `needsApproval`, `failed`, `waitingOnAsk`, `stopped`, `finished`), decided in this
+order — the first match wins:
+
+1. live ∧ `hook = approval` → `needsApproval`.
+2. live ∧ `failed` → `failed`.
+3. live ∧ `hook = working` → `working`.
+4. `finished` → `finished`, live or not.
+5. `openAsks > 0` → `waitingOnAsk`, live or not (the answer reaches a closed session through the brief, so it is still
+   the owner's move).
+6. live ∧ `hook = waiting` → `stopped`.
+7. live → `running` (no state reported in this run yet).
+8. otherwise → `notStarted`.
+
+**Colour and glyph** (pure, `SessionStatePresentation` in Core):
+
+| Kind | Colour | Glyph (SF Symbol) | Caption |
+|---|---|---|---|
+| `working`, `openAsks = 0` | green | — | Working |
+| `working`, `openAsks > 0` | green | `questionmark` + count | Working · N ask(s) open |
+| `waitingOnAsk` | orange | `questionmark` | Waiting for you · ask #<oldest open id> (· N asks when more than one) |
+| `needsApproval` | orange | `hand.raised.fill` | Needs approval |
+| `finished`, `openAsks > 0` | orange | `checkmark` | Finished · N ask(s) open |
+| `stopped` | grey (`.secondary`) | `pause.fill` | Stopped |
+| `finished`, `openAsks = 0` | blue (system blue) | `checkmark` | Finished |
+| `failed` | red | `exclamationmark` | Error: <agent_error> / Stopped on an error |
+| `running` | green | — | Running |
+| `notStarted` | grey ring | — | Not running |
+
+- **Fill vs ring.** `live` fills the dot; a not-live session draws a ring in its kind's colour (blue ring = finished and
+  closed, orange ring = closed with an open ask, grey ring = not running).
+- **Sites.** `SessionLiveDot` takes the struct everywhere. The glyph and caption show where there is room: the panel row
+  (the caption slot under the title, before the report's X/Y line), the header switcher button and its popover rows,
+  and the report badge. The Go to… palette shows the dot only. Every site sets the caption as the accessibility label.
+- **Not a session state.** The sidebar rail's dot (`railDotColor`, a blue count badge) is unchanged and unrelated: it
+  counts open asks plus unread comments, not a session's state.
+
+**Data path.** `TerminalSessionQueries.fetchAgentStates` also reads `finished_at`, `agent_failed_at`, `agent_error` and
+`(SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = ts.id AND a.status = 'open')` for the workbench's `claude` rows,
+live or not. `SessionAgentStateCenter` keeps its 1 s poll while a live `claude` session exists, and also refreshes on app
+activation, when the Workbench tab appears, and right after `OwnerAsksViewModel` answers an ask (the count drops) — a
+not-live row changes in no other way. It publishes only on change, as today.
+
+**Notifications** (`SessionAgentNoticePolicy`, same conditions as PROJ-11: app inactive, workbench notifications on,
+quiet hours off; identifier `workbench-session-<id>`, so a newer state replaces it):
+- into `needsApproval`: "<session> needs approval" (unchanged);
+- into `failed`: "<session> hit an error", body the caption;
+- into `stopped`: "<session> stopped" (replaces today's "is waiting for you" on a turn end);
+- into `finished`: "<session> finished", body the summary's first line, or "N asks waiting for you" when asks are open;
+- into `waitingOnAsk` or `working` with asks: no state notice — `WorkbenchNotificationPolicy.askOpened` already
+  announced the ask;
+- back to `working`, or not live: the notice is withdrawn (unchanged).
 
 ## Part 5 — The Stop reminder (ask guard prompt v2)
 
@@ -253,8 +340,9 @@ empty.
   - `SessionReport` and `SessionReportSummary`: Codable mirrors of Part 6. Older or extra keys decode with defaults.
   - `SessionReportPresentation`, pure: the hero line, the "Done" phase lines with time spans, the row caption
     "#314 · 14/15 · PR #147 open", "Previous summary" vs "Agent's last word", and the empty texts.
-  - `SessionAgentStatus.effective` gains the Part 4 order. `SessionSwitcherPresentation.State.finished` and
-    `SessionLiveDot` get the blue color, a system blue that works in light and dark.
+  - `SessionAgentStatus.effective` becomes the Part 4b order over the four inputs; `SessionSwitcherPresentation.State`
+    becomes the Part 4b struct and `SessionStatePresentation` maps it to colour, glyph, fill/ring and caption (system
+    colours, light and dark).
 - **`SessionReportCenter`** (Services, AppState-owned, so it survives navigation):
   - **Summary:** runs `workbench session-report --summary --json` once per workbench on screen, every 15 s while the
     Workbench tab is visible, and on app activation. Rows keep their last good value. A failure shows as a stale caption,
@@ -271,17 +359,24 @@ empty.
   - **Actions:** **Open** on an ask opens the asks drawer for that ask (the #314 drawer). A PR row opens its GitHub URL
     in the browser (`NSWorkspace`), or does nothing when the URL is unknown. A target id opens it on the Board.
   - **Following the selection:** the view tracks the selected session. With no session it shows "Pick a session".
-- **Panel rows:** the second line under the title, using the existing caption slot. The finished dot is blue. A
-  standalone terminal gets no second line.
+- **Panel rows:** the state caption with its glyph (Part 4b) in the existing caption slot, then the report line
+  ("#314 · 14/15 · PR #147 open"). A standalone terminal gets neither.
 - **Toolbar and split:** Task 11, waiting for the owner's pick (Part 1, decision 1).
 
 ## Part 8 — Inventory
 
-- **PROJ-11 (amended).**
-  - *Observable* gains: "`finish_session` stores `finished_at`/`finish_summary`. Any `working` write clears `finished_at`
-    in the same statement. The Desktop shows Finished (blue) from `finished_at` whether or not the session runs, below
-    `needsApproval` and a `working` newer than `finished_at`."
-  - New guards: `TestProj11_WorkingClearsFinished`, `testProj11_FinishedOutranksWaitingButNotApprovalOrNewerWork`.
+- **PROJ-11 (amended, owner-approved in the 2026-10-03 brainstorm).**
+  - *Observable* becomes: "The stored `waiting` means the turn is over and shows **Stopped** (grey), never 'waiting for
+    you'. 'Waiting for you' (orange) comes only from an open ask of the session or a permission dialog. A StopFailure
+    stores `agent_failed_at`/`agent_error` with `waiting` and shows **Error** (red). `finish_session` stores
+    `finished_at`/`finish_summary` and shows **Finished** (blue, orange while the session has open asks) whether or not
+    the session runs. Any `working` write clears `finished_at` and the error in the same statement; every non-StopFailure
+    write clears the error. The order is Part 4b's; the hook states stay run-scoped."
+  - Existing guards that assert `waiting` → `waitingForOwner` (orange) are rewritten to `stopped` (grey) — the intended
+    change, not a relaxation; the "a dead run's state never shows" assertions stay as they are.
+  - New guards: `TestProj11_WorkingClearsFinishedAndError`, `TestProj11_StopFailureRecordsErrorOtherWritesClearIt`,
+    `testProj11_StateOrder` (a table over the eight kinds: approval > error > working > finished > open ask > stopped >
+    running > not started), `testProj11_TurnEndWithoutAskIsStoppedNotWaiting`.
 - **PROJ-13 (amended).**
   - The ask guard prompt is the Part 5 v2 text. Pass on `stop_hook_active`, pass when unsure, one block per stop: all
     unchanged.
@@ -304,6 +399,10 @@ empty.
   session already linked still show their new status.
 - **PR state.** It needs gh for numbers, titles and sizes. Without gh only branch merge state is known, and PRs read
   `unknown`. The cache can lag by up to 60 s.
-- **Other agents.** codex sessions get `finish_session` but no Stop reminder. External terminals cannot finish (refused).
+- **Other agents.** codex sessions get `finish_session` but no Stop reminder and no state hooks (their dot shows only
+  Finished, open asks, Running or Not running). External terminals cannot finish (refused).
+- **States not seen.** An Esc/Ctrl+C interrupt fires no hook, so the session reads Working until the next prompt
+  (unchanged from PROJ-11). A freshly started session reads Running (green) until its first prompt, though the agent is
+  idle. A StopFailure from a Claude Code that sends no error type reads "Stopped on an error".
 - **Not in v1:** a cross-session overview, hand-marking finished, editing the summary, and reports for standalone
   terminals.
