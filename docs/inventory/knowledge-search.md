@@ -26,8 +26,8 @@ posts/attachments with their comments — see
 `kb_sources`) are an index, never a source of truth — nothing reads them to
 make a decision other than search, and the indexer never writes a source
 table (`internal/kb`'s adapters read only through the `Queryer` they are
-given — except `project_doc`, which also reads the attached files, read-only
-and inside the workbench folder; for it the rebuild equivalence holds over an
+given — except `project_doc`, which also lists and reads the workbench
+folder's text files, read-only and inside the folder; for it the rebuild equivalence holds over an
 unchanged folder). A from-scratch `kb reindex` produces byte-identical
 `kb_documents`/`kb_chunks` content to incremental indexing over the same
 data, across writes, in-place Slack edits/deletes inside the 48h tail rescan,
@@ -133,6 +133,7 @@ DEV-01.
 
 ## Changelog
 
+- 2026-10-03 (workbench owner asks, PROJ-08 amended in `workbench.md`): `project_doc` indexes every `.md`/`.markdown`/`.txt` file of a workbench folder that git does not ignore (≤ 2000, key `wbdoc:<project_id>:<rel_path>`, the shared `internal/kb/fileset.go` mechanism) instead of attached documents; migration `00097` deletes the old `project_doc:<document id>` entries. KB-01's wording follows ("lists and reads the folder's text files"); its rebuild-equivalence rule and every KB guard are unchanged.
 - 2026-10-02 (board target #209): a chat project's chat scopes `search_knowledge` too — `ai session --project-id N` passes `--chat-project N` to the chat MCP server (`tools.Binding.ChatProjectID`), and the project's `slack_channel`/`jira_project`/`confluence_space` pins (`chat_project_sources`, `confluence_space` added by migration 00096) resolve through the same rules as a workbench's sources (`tools.chatProjectKnowledgeScope`, shared `knowledgeScope`) into the same `kb.Request.Scope`/`ScopeOnly`. Outside a workbench session or a project chat nothing changes; `project_doc` stays workbench-only (PROJ-08). KB-01..03 unchanged.
 
 - 2026-10-01 (board target #89): a twelfth source, `project_doc` (attached project documents read from the project folder, `internal/kb/source_project.go`), visible only to its own project's session — `Request.ProjectID`/`DocOptions.ProjectID`, contract PROJ-08 in `projects.md`. The guards only grow: KB-01's `kbSourceTables` gains `projects`/`project_documents` and its incremental pass revises a project document on disk (an mtime-only change); KB-03's fixture covers the new source, searched and opened as the fixture project's session (`ProjectID` changes nothing for the other sources). KB-01's Observable now names the one exception to "adapters read only through the Queryer": this source also reads the attached files (read-only, inside the folder; the daemon skips folders macOS guards — `kb.IndexProjectDocs` is the explicit per-project trigger). `projects`'s delete also removes the project's entries (PROJ-02).

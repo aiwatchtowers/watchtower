@@ -8,6 +8,22 @@
 Part 1 is the one-page owner spec. Parts 2–10 are the technical spec: decisions and
 contracts for the implementing sessions.
 
+**Rulings made during implementation (2026-10-03), reflected below:**
+- The contracts this spec calls PROJ-11 and PROJ-12 are numbered **PROJ-12** and
+  **PROJ-13** in `docs/inventory/workbench.md`: PROJ-11 was taken on main by the session
+  state hooks (board #312).
+- Claude Code's Stop hook input has no `tool_calls`, so the Stop prompt's "an `ask_owner`
+  call in the turn" pass clause became "`last_assistant_message` says it filed an ask, for
+  example by naming `ask #<number>`"; the skill tells the agent to name every ask it filed.
+- Every UI string is English (the owner's standing rule), so the Russian labels in Parts 1
+  and 8 ship as: «Ждёт тебя (N)» → "Waiting for you (N)", «Есть правки» → "Request
+  changes", «Вне приложения» → "Outside the app", "▸ N закрыто" → "▸ N closed", "k из N ›"
+  → "k of N ›", «Показать дифф» → "Show diff", «агент отозвал» → "withdrawn by the agent",
+  «заменено #N» → "replaced by #N", «Агент просит: <title>» → "Agent asks: <title>".
+- Part 2's Down keeps target comments (only the document columns and rows go).
+- After a stop the ask guard blocks, the session state (PROJ-11) reads "waiting" for the
+  nudged turn — an accepted v1 limit (Part 10).
+
 ---
 
 ## Part 1 — For the owner (one page)
@@ -23,7 +39,7 @@ waiting for you.
 
 **What you will see.**
 - **No Documents tab.** The header keeps Terminal · Board · Files.
-- **A stack «Ждёт тебя (N)»** above the session list holds everything the agent asked you,
+- **A stack «Ждёт тебя (N)»** ("Waiting for you (N)" in the app) above the session list holds everything the agent asked you,
   from every session of the workbench, oldest first. Each session shows how many of its asks
   are open, and "▸ N closed" opens its past asks.
 - **Three kinds of ask:**
@@ -55,7 +71,8 @@ waiting for you.
    rule stays, but its scope changes from "attached documents" to "every text file of the
    folder that git does not ignore". *Recommended: yes.*
 3. **Add PROJ-11 "an ask reaches its session exactly as typed text, never submitted"** and
-   **PROJ-12 "the agent's turn is never trapped by the ask guard"**.
+   **PROJ-12 "the agent's turn is never trapped by the ask guard"** (shipped as PROJ-12 and
+   PROJ-13; see the rulings above).
    *Recommended: yes* (exact wording in Part 9).
 4. **Drop the existing attached documents and document comments**, with no migration into
    asks. The files themselves stay. *Already agreed 2026-10-03.*
@@ -92,8 +109,9 @@ The number is taken at the time of writing. If a branch merged first holds `0009
    keeps `kb_fts` in step. The key format changes (Part 7), and the next knowledge pass or a
    `workbench resync` rebuilds the entries from the folders.
 
-**Down:** recreate `project_documents` and the old `project_comments` shape, empty, and drop
-`owner_asks`. The data is not restored. Say so in a comment in the file.
+**Down:** recreate `project_documents` (empty) and the old `project_comments` shape, keeping
+the target comments, and drop `owner_asks`. The removed data is not restored. Say so in a
+comment in the file.
 
 ```
 owner_asks(
@@ -243,7 +261,8 @@ missing either is offered Repair, like the PROJ-07 Stop hook.
    - "Documents for review" and "Revising an attached document" are replaced by
      **"Asking the owner"**: anything that waits for an owner answer, decision, manual check or
      document review is an `ask_owner` call — never text in the terminal and never a target
-     comment. The text may mention `ask #id`.
+     comment. The final text names every ask filed in the turn as `ask #<id>` (the Stop
+   prompt's pass clause relies on it).
    - When to ask: specs, plans and designs before building on them; decisions with no
      sensible default; manual checks the agent cannot run.
    - What not to ask: progress, reports, anything with a sensible default (state it and go on).
@@ -267,7 +286,7 @@ missing either is offered Repair, like the PROJ-07 Stop hook.
    Input (JSON): $ARGUMENTS
    Return {"ok": true} when ANY of these holds:
    - stop_hook_active is true;
-   - tool_calls contains a call whose name ends with "ask_owner";
+   - last_assistant_message says it filed an ask, for example by naming "ask #<number>";
    - last_assistant_message does not ask the owner to do, decide, check, review or answer anything.
    Return {"ok": false, "reason": "You asked the owner in plain text. File it with ask_owner (kind question, check or review), mention 'ask #<id>' in your text if useful, then stop."}
    only when last_assistant_message clearly waits on the owner: a question to them, a decision
@@ -387,17 +406,22 @@ Names follow the existing `Workbench*` pattern. Core pieces are pure and tested 
   are renamed in place where the subject changed; their assertions are not weakened.
   `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` becomes
   `TestProj08_ResyncAndCreateIndexTheFolderAtOnce`.
-- **PROJ-11 (new) — an ask reaches its session as typed text, never submitted.** The answer
+- **PROJ-12 (new; drafted as PROJ-11) — an ask reaches its session as typed text, never submitted.** The answer
   is stored before anything is typed. The typed line is the fixed `OwnerAskPrompt` line
   (control characters stripped), never followed by Enter. A session that is not running gets
   it from the brief. `delivered` is set only by `get_ask`. Guards: Go `asks` line fixture,
   Swift `OwnerAskPromptTests`, `TerminalCenter` paste tests, a brief test.
-- **PROJ-12 (new) — the ask guard never traps a turn.** The Stop prompt hook returns ok when
-  `stop_hook_active` is set, or when `ask_owner` was called in the turn (pinned prompt golden).
+- **PROJ-13 (new; drafted as PROJ-12) — the ask guard never traps a turn.** The Stop prompt
+  hook returns ok when `stop_hook_active` is set, or when `last_assistant_message` says it
+  filed an ask, e.g. names `ask #<number>` (pinned prompt golden; Claude Code's Stop input has
+  no `tool_calls`).
   The PreToolUse command hook exits 0 and prints nothing on any failure or for a deleted
   workbench.
 - **PROJ-02:** unchanged wording, plus "asks" in the cascaded list and both new hooks in the
   removal list.
+- **PROJ-04 (reworded during implementation):** "exactly one entry of ours per event" no
+  longer holds — `Stop` holds the drift command and the ask guard prompt, and `PreToolUse`
+  (matcher `AskUserQuestion`) is a newly owned event.
 
 ## Part 10 — Non-goals and v1 limits
 
@@ -409,3 +433,6 @@ Names follow the existing `Workbench*` pattern. Core pieces are pure and tested 
 - No owner hand-edit from the ask view, no ask templates, no ask search beyond the session's
   closed list.
 - Codex-run sessions get the tools but no hooks; codex has no equivalent hooks.
+- After a stop the ask guard blocks, the session state (PROJ-11) reads "waiting" for the whole
+  nudged turn: the drift Stop hook records `waiting` in parallel, and `PostToolUse` only clears
+  "approval".

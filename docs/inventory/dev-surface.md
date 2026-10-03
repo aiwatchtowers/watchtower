@@ -265,19 +265,22 @@ does not exist or together with `--chat`, keeps the connection writable, and
 mounts the registry (`buildToolRegistry`) on the `project` surface (the
 stored surface value keeps its pre-rename spelling) with
 `tools.Binding{Surface: "project", WorkbenchID: N, DirectApply: true}`: the
-eleven workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
-`workbench_docs.go`) plus every surface-less read tool and `get_action`; no
-other write tool is visible there. The legacy spelling `--project N` (a
+fourteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
+`workbench_docs.go`, and since 2026-10-03 the owner-ask tools `ask_owner`,
+`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`) plus every
+surface-less read tool and `get_action`; no other write tool is visible
+there. The legacy spelling `--project N` (a
 folder registered as `watchtower-project` before the 2026-10-02 rename and
 not yet resynced) is the same mode with `Binding.LegacyNames` set: the same
-eleven tools, the five renamed ones listed under their old names
+fourteen tools (the four ask tools under the same names in both), the five renamed ones listed under their old names
 (`project_info`, `project_board`, `update_project`, `add_project_source`,
 `remove_project_source`; `tools.LegacyWorkbenchToolNames`), the audit row
 recording the canonical new name, and `Registry.Get` resolving both
 spellings. Three rules keep it narrow:
 
 1. **Only workbench N's rows.** Every workbench write resolves what it touches —
-   target, parent, source, document, comment — and its `Tool.Scope` refuses
+   target, parent, source, comment, ask (its target, its `previous_ask_id`) —
+   and its `Tool.Scope` refuses
    anything outside `Binding.WorkbenchID` ("… is not in this workbench") before
    any row, data or audit, is written; new rows take `project_id` from the
    binding only (a `project_id` argument is an unknown field and refused).
@@ -286,6 +289,15 @@ spellings. Three rules keep it narrow:
    targets and `remove_image_ids` detaches only the target's own images
    (`scopeImageIDs`); the source file is read, never modified, and its copy
    lands only in workbench N's own `<workspace>/project_files/N/`.
+   A review ask's `doc_path` resolves only to a regular `.md`/`.markdown`/`.txt`
+   file inside workbench N's folder (`tools.ResolveWorkbenchDocumentPath`:
+   relative, no `..` out of the folder, symlinks only inside it, then read
+   through `os.OpenRoot` on the folder; ≤ 2 MiB, valid UTF-8) and is only
+   read, never written (PROJ-03). An ask's session is bound only when
+   `WATCHTOWER_TERMINAL_SESSION_ID` names a `terminal_sessions` row of
+   workbench N, else it is filed session-less. `get_ask`/`list_asks`/
+   `withdraw_ask` see only workbench N's asks (another workbench's reads
+   `no ask with id N`).
    `list_targets`/`get_target` see only
    workbench N's targets; `get_action` shows only workbench N's rows
    (`actionVisible`).
@@ -295,7 +307,11 @@ spellings. Three rules keep it narrow:
    then applies it inline through the ordinary `Apply` claim (AGENT-05) — for
    that call only: `tool_trust` is neither read nor written. `Apply` rebuilds
    the binding from the row (`bindingOf`) and re-runs `Scope`, so a retried
-   row (`watchtower actions apply`) is re-scoped too.
+   row (`watchtower actions apply`) is re-scoped too. One deliberate
+   exception (2026-10-03): `get_ask`, a read tool, moves an `answered` ask to
+   `delivered` (`delivered_at`, guarded `WHERE status='answered'`) without an
+   audit row — the read is the delivery receipt; it is workbench-surface
+   only, so it is outside `readOnlyGuardCalls` (DEV-01, AGENT-06).
 3. **Never External inline.** `DirectApply` refuses an `External` tool
    outright (a ValidationError, no row) and any tool whose `Surfaces` does not
    name `project` explicitly — a surface-less tool cannot inherit direct apply
@@ -328,13 +344,15 @@ unreviewed write path into the owner's whole app — or off the machine.
 - `internal/tools/workbenches_test.go::TestDev06_WriteOutsideTheBoundProjectIsRefused` (every write aimed at another workbench's target/source/comment, a non-workbench target, or smuggling a `project_id` is refused; the other workbench's rows are byte-identical; no audit row)
 - `internal/tools/registry_workbench_test.go::TestDev06_ExternalToolRefusedUnderDirectApply`
 - `internal/tools/registry_approve_test.go::TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply` (one pending row bound to the workbench, never executed on propose even with a stale execute trust row; runs once after Approve), `TestDirectApply_ProposeOnlyToolStillNeedsTheSurface`; `internal/tools/slack_send_test.go::TestSendSlackMessage_ProjectSessionOnlyProposes`
-- `internal/tools/workbench_docs_test.go::TestDev06_DocumentPathStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself)
+- `internal/tools/workbench_docs_test.go::TestDev06_DocumentPathStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself — the check `ask_owner`'s `doc_path` goes through); supporting: `TestAskOwner_ReviewRefusesAnyFileItMustNotRead`, `TestReadInsideFolder_RefusesASymlinkOutOfTheFolder`, `TestAskOwner_SessionBinding` (`internal/tools`)
 - `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the boundary with DEV-01)
-- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the legacy vocabulary: `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` (`internal/mcp`), `TestLegacyName_WriteRecordsTheCanonicalName`, `TestRegistryGet_ResolvesBothSpellings` (`internal/tools`).
+- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the legacy vocabulary: `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames`, `TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` (`internal/mcp`), `TestLegacyName_WriteRecordsTheCanonicalName`, `TestRegistryGet_ResolvesBothSpellings` (`internal/tools`).
 
 **Locked since:** 2026-09-29
 
 ## Changelog
+
+- 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, approved by the owner): DEV-06's workbench tool set changes from eleven to **fourteen** — `attach_document` is removed (documents were replaced by asks; `list_comments`' `document_id` is refused with "documents were replaced by asks — use ask_owner (kind review)") and `ask_owner`, `get_ask`, `list_asks`, `withdraw_ask` are added under the same names in both vocabularies (no legacy spelling). Rule 1 now names asks instead of documents and restates the document-path rule for `ask_owner`'s `doc_path` (the check `TestDev06_AttachDocumentStaysInsideTheFolder` pinned for `attach_document`, now pinned on `ResolveWorkbenchDocumentPath` itself as `TestDev06_DocumentPathStaysInsideTheFolder`, which also accepts `.markdown`; the old guard's "a refused attach writes no audit row" assertion went with the tool, and `TestAskOwner_RefusesBadInputWithoutWriting` pins the same for asks). Rule 2 records `get_ask`'s unaudited `delivered` write. `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames` was renamed in place to `…FourteenTools…` (count only). No guard relaxed beyond the removed tool.
 
 - 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`): Projects is renamed **Workbench**. DEV-06 is reworded with the same meaning — `watchtower mcp --workbench N`, registered as `watchtower-workbench`, still exactly eleven tools on the `project` surface under `DirectApply`, scoped to one workbench; the hidden legacy `--project N` serves the same tools with the five renamed ones under their old names and records the canonical name in the audit row (new tests `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`). DEV-01's scope sentence names `--workbench` and `--project`. DEV-04 now names the workbench skill's embed (`workbenchskill/*/SKILL.md`) and the resync's removal of the legacy skill through the same marker/digest rule. DEV-05's amendment names the renamed hook commands and also lists the `Stop` hook installed since PROJ-07 (2026-10-01), which it had not named; a resync replacing our own legacy hook entry is still the explicit CLI/Desktop opt-in. Guard file paths updated; no guard test renamed or relaxed.
 - 2026-10-02 (board #166, Slack send): DEV-06 rule 3 amended by owner decision — an External tool that opts into `ProposeUnderDirectApply` (only `send_slack_message`) is recorded pending in a workbench session and sent after the owner's Approve in the Desktop; it is still never applied inline. `TestDev06_ExternalToolRefusedUnderDirectApply` is unchanged and green; the registry pin's "nothing External on the project surface" assertion now names the one propose-only exception and requires the flag on it. New guards listed above. The project surface also gains the read tool `get_writing_style` (not in `ReadTools()`, so plain `watchtower mcp` is unchanged, DEV-01).

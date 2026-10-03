@@ -158,7 +158,7 @@ is `docs/review/review-rules.md`; the implementer self-reviews against it before
   - The brief with env = session S lists S's answered asks and the NULL or gone-session ones,
     plus the count line for others.
   - Delivered asks are not listed.
-  - With a full board at the 4000 cap the section still shows at least one row (PROJ-11 part).
+  - With a full board at the 4000 cap the section still shows at least one row (PROJ-12 part; spec "PROJ-11", renumbered).
   - With no answered asks the section is absent.
 
 ### Task 7 — Ask guard: skill v2, Stop prompt hook, PreToolUse command hook
@@ -181,7 +181,8 @@ is `docs/review/review-rules.md`; the implementer self-reviews against it before
     - An owner-edited prompt whose marker is intact is replaced, while the owner's own
       unrelated Stop hooks and keys are byte-kept (PROJ-04).
     - A malformed settings file is left byte-identical and reported.
-  - **PROJ-12:** the golden contains the `stop_hook_active` and `ask_owner` pass clauses.
+  - **PROJ-13** (spec "PROJ-12", renumbered): the golden contains the `stop_hook_active` and
+    filed-ask (`last_assistant_message` names `ask #<number>`) pass clauses.
   - **PreToolUse command:**
     - It prints exactly the §6.3 JSON for a live workbench.
     - For a deleted workbench, a bad id or a panic it prints nothing and exits 0.
@@ -288,8 +289,13 @@ is `docs/review/review-rules.md`; the implementer self-reviews against it before
   - `docs/features/workbench.md`: the documents bullets are replaced by an **Owner asks**
     bullet; Rename and Code viewer references to Documents are updated.
   - `docs/app-guide.md`: Workbench section.
-  - `docs/inventory/workbench.md`: PROJ-02/03/08 amended, PROJ-11/12 added, exactly as §9
-    approved, with guard test names.
+  - `docs/inventory/workbench.md`: PROJ-02/03/04/08 amended, PROJ-12/13 added (the spec's
+    PROJ-11/12, renumbered), as §9 approved plus the implementation rulings, with guard test
+    names.
+  - `docs/inventory/dev-surface.md` (DEV-06: fourteen tools, asks in rule 1, the `doc_path`
+    rule, `get_ask`'s unaudited `delivered`), `docs/inventory/agent-actions.md` (AGENT-06
+    scope note), `docs/inventory/knowledge-search.md` and `docs/features/knowledge-search.md`
+    (`project_doc` wording).
   - The CLAUDE.md feature line.
 - **Depends on:** Tasks 1–12 and the owner's approval of §9.
 - **Tests:** none; `make lint` covers the markdown links.
