@@ -264,6 +264,9 @@ final class OpenQuicklyCenter {
 
     private(set) var host: Host?
     private(set) var session: OpenQuicklySession?
+    /// The host's window is the key window (its key notifications).
+    private(set) var hostWindowIsKey = false
+    @ObservationIgnored private var keyObservers: [NSObjectProtocol] = []
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
     /// ⌘↩ and the Ask AI row (spec §9.3; the answer is Task 12's), hidden
     /// while `askAIEnabled` is off (ruling R35).
@@ -290,9 +293,13 @@ final class OpenQuicklyCenter {
         self.askAIEnabled = askAIEnabled
     }
 
-    /// A workbench is on screen: the menu commands and double Shift work.
-    var canPresent: Bool {
-        host != nil
+    /// The workbench the Navigate menu acts on: the one on screen while its
+    /// window is key, or while its Open Quickly panel (a key window of its
+    /// own) is up; nil disables the commands, so their chords stay with
+    /// other windows (spec §10, ruling R36).
+    var keyWorkbench: Workbench? {
+        guard let host, hostWindowIsKey || session != nil else { return nil }
+        return host.project
     }
 
     /// The workbench page is in `window` (again, or another workbench now).
@@ -300,6 +307,7 @@ final class OpenQuicklyCenter {
         if let session, session.project.id != project.id || session.project.folderURL != project.folderURL {
             dismiss(restoringFocus: false)
         }
+        if host == nil || host?.window !== window { watchKeyState(of: window) }
         host = Host(project: project, window: window)
     }
 
@@ -307,7 +315,24 @@ final class OpenQuicklyCenter {
     func pageDisappeared(workbenchID: Int64) {
         guard host?.project.id == workbenchID else { return }
         host = nil
+        watchKeyState(of: nil)
         dismiss(restoringFocus: false)
+    }
+
+    private func watchKeyState(of window: NSWindow?) {
+        keyObservers.forEach(NotificationCenter.default.removeObserver)
+        keyObservers = []
+        hostWindowIsKey = window?.isKeyWindow ?? false
+        guard let window else { return }
+        let observe = { [weak self] (name: Notification.Name, isKey: Bool) -> NSObjectProtocol in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { _ in
+                MainActor.assumeIsolated { self?.hostWindowIsKey = isKey }
+            }
+        }
+        keyObservers = [
+            observe(NSWindow.didBecomeKeyNotification, true),
+            observe(NSWindow.didResignKeyNotification, false)
+        ]
     }
 
     /// ⇧⌘O / double Shift (`.all`), ⇧⌘F (`.text`). Already open: the panel

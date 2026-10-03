@@ -540,7 +540,13 @@ harness:
 
 All are active only while a workbench is the key window's content; inside
 Monaco, the page forwards them (Monaco's own bindings for these chords are
-removed so they do not double-fire).
+removed so they do not double-fire). The Navigate menu enables its commands
+only while the workbench window — or its Open Quickly panel — is key (R36), so
+another window (Settings, say) keeps these chords.
+
+Limit (R36): the workbench window includes its embedded terminal, so the menu
+takes these chords there too — ⌃6 is swallowed in the workbench terminal (vim's
+Ctrl-^ never reaches it).
 
 ---
 

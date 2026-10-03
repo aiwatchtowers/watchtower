@@ -424,19 +424,20 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("q", modifiers: .command)
             }
-            // Only while a workbench page is on screen (spec §10).
+            // Only while a workbench window is key (spec §10, ruling R36):
+            // `keyWorkbench` is the workbench on screen while its window (or
+            // its Open Quickly panel) is key. Inside Monaco these chords reach
+            // the menu because the page drops its own.
             CommandMenu("Navigate") {
+                let navigation = appState.codeNavigationCenter
+                let shown = appState.openQuicklyCenter.keyWorkbench
                 Button("Open Quickly…") { appState.openQuicklyCenter.present(scope: .all) }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
-                    .disabled(!appState.openQuicklyCenter.canPresent)
+                    .disabled(shown == nil)
                 Button("Find in Workbench…") { appState.openQuicklyCenter.present(scope: .text) }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
-                    .disabled(!appState.openQuicklyCenter.canPresent)
+                    .disabled(shown == nil)
                 Divider()
-                // The workbench on screen (Open Quickly's host); inside Monaco
-                // these chords reach the menu because the page drops its own.
-                let navigation = appState.codeNavigationCenter
-                let shown = appState.openQuicklyCenter.host?.project
                 Button("Go to Definition") {
                     if let shown { Task { await navigation.goToDefinitionAtCursor(project: shown) } }
                 }

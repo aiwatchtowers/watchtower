@@ -66,17 +66,46 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     func testNothingOpensWithoutAWorkbenchOnScreen() {
         let (center, _) = makeCenter()
-        XCTAssertFalse(center.canPresent, "the menu commands are disabled")
+        XCTAssertNil(center.keyWorkbench, "the menu commands are disabled")
         center.present(scope: .all)
         XCTAssertNil(center.session)
         XCTAssertEqual(presenter.presented, 0)
 
         center.pageAppeared(project, window: nil)
-        XCTAssertTrue(center.canPresent)
         center.pageDisappeared(workbenchID: project.id)
-        XCTAssertFalse(center.canPresent)
+        XCTAssertNil(center.keyWorkbench)
         center.present(scope: .text)
         XCTAssertEqual(presenter.presented, 0)
+    }
+
+    /// Ruling R36 (spec §10): the Navigate commands work only while the
+    /// workbench window is key — or its Open Quickly panel, a key window of
+    /// its own, is up; a key Settings window keeps its chords.
+    func testNavigateCommandsFollowTheWorkbenchWindowsKeyState() {
+        let (center, _) = makeCenter()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        center.pageAppeared(project, window: window)
+        XCTAssertNil(center.keyWorkbench, "on screen, but another window is key")
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertEqual(center.keyWorkbench?.id, project.id)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: NSWindow())
+        XCTAssertEqual(center.keyWorkbench?.id, project.id, "another window's notice changes nothing")
+
+        center.present(scope: .all)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        XCTAssertEqual(center.keyWorkbench?.id, project.id, "the panel took the key: ⇧⌘F still reaches it")
+        center.dismiss(restoringFocus: false)
+        XCTAssertNil(center.keyWorkbench, "the Settings window (say) is key")
+
+        center.pageAppeared(project, window: window)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertNotNil(center.keyWorkbench, "the same window re-announced keeps its observers")
+        center.pageDisappeared(workbenchID: project.id)
+        XCTAssertNil(center.keyWorkbench)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertNil(center.keyWorkbench, "the page left: its window no longer counts")
     }
 
     func testShiftCommandFOpensOnTextAndSwitchesAnOpenPanelToIt() {
