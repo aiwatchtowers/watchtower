@@ -123,6 +123,17 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertEqual(stub.fullRuns, 1)
     }
 
+    func testABatchDuringTheFullRunWaitsForIt() async {
+        let center = makeCenter(["STUB_FULL_DELAY": "0.8"])
+        center.markShown(workbenchID: 7, folder: folder)
+        center.handle(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
+        let sent = await eventually { !self.stub.requests.isEmpty }
+        XCTAssertTrue(sent)
+        XCTAssertEqual(stub.events, ["full", "request"], "one run per workbench: the update follows the full run")
+        let applied = await eventually { center.index(for: 7).symbols(in: "a.swift").map(\.name) == ["r1"] }
+        XCTAssertTrue(applied)
+    }
+
     func testRescanRunsAFullIndex() async {
         let center = makeCenter()
         center.markShown(workbenchID: 7, folder: folder)

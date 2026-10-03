@@ -37,6 +37,15 @@ struct CodeCLIStub {
         lines.filter { $0.hasPrefix("start ") && $0.hasSuffix("--json") }.count
     }
 
+    /// The log's events in order: "full" for a finished full run,
+    /// "request" for a `--serve` request.
+    var events: [String] {
+        lines.compactMap { line in
+            if line == "full done" { return "full" }
+            return line.hasPrefix("request ") ? "request" : nil
+        }
+    }
+
     /// Each `--serve` request's paths, in order.
     var requests: [[String]] {
         lines.filter { $0.hasPrefix("request ") }.map { line in
@@ -97,5 +106,6 @@ struct CodeCLIStub {
         printf '{"file":"%s","lang":"swift","symbols":[{"name":"full","kind":"class","path":"%s",%s}]}\n' "$f" "$f" "$rest"
     done
     echo '{"done":true,"files":2,"symbols":2,"ms":1}'
+    echo "full done" >> "$STUB_LOG"
     """#
 }
