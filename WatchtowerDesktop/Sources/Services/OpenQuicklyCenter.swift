@@ -347,6 +347,12 @@ final class OpenQuicklyCenter {
         presenter.dismissPanel(restoringFocus: restoringFocus)
     }
 
+    /// App quit (ruling R34): the Text scope's search is killed with its
+    /// process group and none starts again.
+    func stopOpenQuicklySearch() {
+        session?.stop()
+    }
+
     /// What a Return asked for.
     func perform(_ command: OpenQuicklyCommand) {
         guard let session else { return }

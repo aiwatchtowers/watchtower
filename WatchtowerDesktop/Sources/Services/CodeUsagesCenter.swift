@@ -76,6 +76,18 @@ final class CodeUsagesCenter {
         results[workbenchID]?.stop()
     }
 
+    /// App quit (ruling R34): every Usages search is killed with its
+    /// process group; the lists keep what they found.
+    func stopUsagesSearches() {
+        let running = runs
+        runs.removeAll()
+        for (workbenchID, run) in running {
+            generations[workbenchID] = nil
+            run.cancel()
+            results[workbenchID]?.stop()
+        }
+    }
+
     // MARK: Usages
 
     func usages(for workbenchID: Int64) -> UsagesModel? {

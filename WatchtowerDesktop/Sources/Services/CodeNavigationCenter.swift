@@ -107,6 +107,15 @@ final class CodeNavigationCenter {
         generations[workbenchID] = nil
     }
 
+    /// App quit (ruling R34): every heuristic text search is killed with its
+    /// process group; the requests waiting on them end without an answer.
+    func stopDefinitionSearches() {
+        let running = Array(searches.values)
+        searches.removeAll()
+        generations.removeAll()
+        running.forEach { $0.cancel() }
+    }
+
     // MARK: Go to definition
 
     /// ⌃⌘J: the page posts `definition` for the word at its cursor; a beep

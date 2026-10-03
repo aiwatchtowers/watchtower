@@ -574,7 +574,7 @@ final class AppState {
                     self?.embeddedChatCenter.finishAllAsPartial()
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
-                    self?.codeIndexCenter.stopAll()
+                    self?.stopCodeNavigationChildren()
                 }
                 self?.backgroundTaskManager.terminateProcessesSync()
             }
@@ -587,6 +587,24 @@ final class AppState {
                 }
             }
         }
+    }
+
+    /// App quit: no `watchtower code …` child outlives the app — the index
+    /// children, and the searches of Open Quickly, go to definition and
+    /// Usages (ruling R34; each runs in a process group of its own).
+    private func stopCodeNavigationChildren() {
+        Self.stopCodeNavigationChildren(
+            index: codeIndexCenter, openQuickly: openQuicklyCenter, navigation: codeNavigationCenter, usages: codeUsagesCenter
+        )
+    }
+
+    static func stopCodeNavigationChildren(
+        index: CodeIndexCenter, openQuickly: OpenQuicklyCenter, navigation: CodeNavigationCenter, usages: CodeUsagesCenter
+    ) {
+        index.stopAll()
+        openQuickly.stopOpenQuicklySearch()
+        navigation.stopDefinitionSearches()
+        usages.stopUsagesSearches()
     }
 
     func initialize() {
