@@ -52,8 +52,10 @@ var (
 )
 
 // languageInstruction returns the response language directive for the
-// system prompt. Delegates to prompts.Directive for a single source of truth.
-func languageInstruction(lang string) string { return prompts.Directive(lang) }
+// system prompt. `ask` and the REPL are interactive, so they follow the
+// language the owner writes in, like the main AI Chat (prompts.ChatDirective);
+// lang is only the fallback.
+func languageInstruction(lang string) string { return prompts.ChatDirective(lang) }
 
 // BuildSystemPrompt generates the system prompt for `ask`/`repl`. The tool
 // list, data-access rules, workflow and linking rules are the shared blocks

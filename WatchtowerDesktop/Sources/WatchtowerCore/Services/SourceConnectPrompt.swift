@@ -47,8 +47,9 @@ package enum SourceConnectPrompt {
     }
 
     /// The features those goals turn on (`OnboardingFeaturePlan`) that are
-    /// off now, in `registryOrder`. Nothing is enabled here: the owner
-    /// confirms the list first.
+    /// off now, in `registryOrder`. The always-on features are not goal
+    /// features, so one the owner turned off in Settings is not offered
+    /// again. Nothing is enabled here: the owner confirms the list first.
     package static func suggestedFeatureIDs(
         for goals: [OnboardingGoal],
         disabled: Set<String>,

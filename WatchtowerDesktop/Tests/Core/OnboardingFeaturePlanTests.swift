@@ -8,15 +8,16 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     private typealias Plan = OnboardingFeaturePlan
 
     private let workCommunication: Set<String> = [
-        "secretary-inbox", "slack-digests", "tracks", "people-cards",
+        "slack-digests", "tracks", "people-cards",
         "briefing", "day-plan", "ideas", "reaction-commands"
     ]
+    private let alwaysOn: Set<String> = ["knowledge-search", "secretary-inbox"]
 
     // MARK: - Mapping
 
     func testWorkCommunication() {
         XCTAssertEqual(Plan.enabledFeatureIDs(for: [.workCommunication]),
-                       workCommunication.union(["knowledge-search"]))
+                       workCommunication.union(alwaysOn))
     }
 
     func testWorkCommunicationAlwaysCarriesSlackDigests() {
@@ -26,15 +27,60 @@ final class OnboardingFeaturePlanTests: XCTestCase {
 
     func testTasksAndJira() {
         XCTAssertEqual(Plan.enabledFeatureIDs(for: [.tasksAndJira]),
-                       ["stream-digests", "next-step", "knowledge-search"])
+                       alwaysOn.union(["stream-digests", "next-step"]))
     }
 
     func testMeetings() {
-        XCTAssertEqual(Plan.enabledFeatureIDs(for: [.meetings]), ["briefing", "knowledge-search"])
+        XCTAssertEqual(Plan.enabledFeatureIDs(for: [.meetings]), alwaysOn.union(["briefing"]))
     }
 
     func testOnlyDevelopmentEnablesOnlyTheAlwaysOnSet() {
-        XCTAssertEqual(Plan.enabledFeatureIDs(for: [.development]), ["knowledge-search"])
+        XCTAssertEqual(Plan.enabledFeatureIDs(for: [.development]), alwaysOn)
+    }
+
+    /// Attention detection is on for every goal combination and is no goal's
+    /// feature, so no Customize switch can turn it off (#283).
+    func testAttentionDetectionIsAlwaysOn() {
+        XCTAssertTrue(Plan.alwaysOnFeatureIDs.contains("secretary-inbox"))
+        for goal in OnboardingGoal.allCases {
+            XCTAssertFalse(Plan.featureIDs(for: goal).contains("secretary-inbox"), "\(goal)")
+        }
+        XCTAssertTrue(Plan.enabledFeatureIDs(for: []).contains("secretary-inbox"))
+        XCTAssertFalse(Plan.customizableFeatureIDs.contains("secretary-inbox"))
+        var selection = OnboardingFeatureSelection(goals: [.workCommunication])
+        selection.setFeature("secretary-inbox", enabled: false)
+        XCTAssertTrue(selection.isEnabled("secretary-inbox"))
+        XCTAssertFalse(selection.isCustomized)
+    }
+
+    /// A re-run where the owner turned Attention detection off in Settings
+    /// keeps it off ("Off (as in Settings)"): onboarding never flips it back
+    /// behind their back.
+    func testRerunKeepsAttentionDetectionTurnedOffInSettings() {
+        let enabled = Plan.enabledFeatureIDs(for: [.workCommunication]).subtracting(["secretary-inbox"])
+        var selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.workCommunication])
+        XCTAssertFalse(selection.isCustomized, "an always-on feature kept off is no manual pick")
+        XCTAssertEqual(selection.goals, [.workCommunication])
+        XCTAssertFalse(selection.isEnabled("secretary-inbox"))
+        XCTAssertEqual(selection.enabledFeatureIDs, enabled)
+
+        selection.goals.insert(.tasksAndJira)
+        XCTAssertTrue(selection.isEnabled("next-step"), "the goals still decide")
+        XCTAssertFalse(selection.isEnabled("secretary-inbox"))
+        selection.resetToGoals()
+        XCTAssertFalse(selection.isEnabled("secretary-inbox"), "Reset keeps it off")
+    }
+
+    /// Both always-on features off in Settings, on a hand-toggled set: the
+    /// re-run is customized for the hand toggle, and both stay off through
+    /// Reset.
+    func testRerunKeepsEveryAlwaysOnFeatureOffThroughReset() {
+        let enabled = Plan.enabledFeatureIDs(for: [.meetings]).subtracting(alwaysOn).union(["memory"])
+        var selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.meetings])
+        XCTAssertTrue(selection.isCustomized)
+        XCTAssertEqual(selection.enabledFeatureIDs, enabled)
+        selection.resetToGoals()
+        XCTAssertEqual(selection.enabledFeatureIDs, Plan.enabledFeatureIDs(for: [.meetings]).subtracting(alwaysOn))
     }
 
     func testNoGoalsIsTheSameAsOnlyDevelopment() {
@@ -43,7 +89,7 @@ final class OnboardingFeaturePlanTests: XCTestCase {
 
     func testGoalsUnion() {
         XCTAssertEqual(Plan.enabledFeatureIDs(for: [.workCommunication, .tasksAndJira, .meetings]),
-                       workCommunication.union(["stream-digests", "next-step", "knowledge-search"]))
+                       workCommunication.union(alwaysOn).union(["stream-digests", "next-step"]))
     }
 
     func testMemoryIsOffForEveryGoalCombination() {
@@ -60,7 +106,7 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     }
 
     func testCustomizableSetIsManagedMinusAlwaysOn() {
-        XCTAssertEqual(Plan.customizableFeatureIDs, Plan.managedFeatureIDs.subtracting(["knowledge-search"]))
+        XCTAssertEqual(Plan.customizableFeatureIDs, Plan.managedFeatureIDs.subtracting(alwaysOn))
         XCTAssertTrue(Plan.customizableFeatureIDs.contains("memory"))
     }
 
@@ -112,7 +158,7 @@ final class OnboardingFeaturePlanTests: XCTestCase {
         var selection = OnboardingFeatureSelection(goals: [.workCommunication])
         selection.setFeature("tracks", enabled: false)
         selection.setFeature("memory", enabled: true)
-        let picked = workCommunication.subtracting(["tracks"]).union(["memory", "knowledge-search"])
+        let picked = workCommunication.subtracting(["tracks"]).union(alwaysOn).union(["memory"])
         XCTAssertTrue(selection.isCustomized)
         XCTAssertEqual(selection.enabledFeatureIDs, picked)
 
@@ -154,6 +200,6 @@ final class OnboardingFeaturePlanTests: XCTestCase {
         selection.setFeature("knowledge-search", enabled: false)
         selection.setFeature("targets", enabled: false)
         XCTAssertFalse(selection.isCustomized)
-        XCTAssertEqual(selection.enabledFeatureIDs, ["knowledge-search"])
+        XCTAssertEqual(selection.enabledFeatureIDs, alwaysOn)
     }
 }

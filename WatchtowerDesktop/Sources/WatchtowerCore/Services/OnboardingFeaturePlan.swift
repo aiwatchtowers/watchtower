@@ -12,25 +12,27 @@ package enum OnboardingGoal: String, CaseIterable, Sendable {
 /// table. Feature ids are the `internal/features/registry.go` ids verbatim.
 package enum OnboardingFeaturePlan {
     /// Toggleable features onboarding switches on whatever the goals are:
-    /// Knowledge search is mechanical (no AI) and the chat leans on it. The
-    /// registry's core entries (targets, chat) need no entry here — they have
-    /// no switch at all.
-    package static let alwaysOnFeatureIDs: Set<String> = ["knowledge-search"]
+    /// Knowledge search and Attention detection are mechanical (no AI);
+    /// the chat leans on the first, Inbox and Catch-Up on the second
+    /// (owner decision 2026-10-03, #283). Settings → Features still toggles
+    /// both. The registry's core entries (targets, chat) need no entry
+    /// here — they have no switch at all.
+    package static let alwaysOnFeatureIDs: Set<String> = ["knowledge-search", "secretary-inbox"]
 
     /// Off whatever the goals are: Memory is still an experiment, opted into
     /// only by hand.
     package static let alwaysOffFeatureIDs: Set<String> = ["memory"]
 
-    /// Development maps to nothing: Workbench, the chat, Knowledge search and
-    /// Targets are always on. Meetings' calendar connection is the Connect
-    /// step's business, not a feature switch.
+    /// Development maps to nothing: Workbench, the chat, Knowledge search,
+    /// Attention detection and Targets are always on. Meetings' calendar
+    /// connection is the Connect step's business, not a feature switch.
     package static func featureIDs(for goal: OnboardingGoal) -> Set<String> {
         switch goal {
         case .workCommunication:
             // Slack Digests is load-bearing: Tracks and People Cards mine its
             // output and have no material without it.
             return [
-                "secretary-inbox", "slack-digests", "tracks", "people-cards",
+                "slack-digests", "tracks", "people-cards",
                 "briefing", "day-plan", "ideas", "reaction-commands"
             ]
         case .tasksAndJira:
@@ -73,6 +75,9 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
     package var goals: Set<OnboardingGoal>
     /// The owner's hand-picked set; nil while the goals decide.
     private var customEnabledIDs: Set<String>?
+    /// Always-on features the owner turned off in Settings: a re-run keeps
+    /// them off whatever the goals or a Reset say ("Off (as in Settings)").
+    private var keptOffIDs: Set<String> = []
 
     package init(goals: Set<OnboardingGoal> = []) {
         self.goals = goals
@@ -85,17 +90,25 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
     /// their own beyond Work communication's), the one closest to
     /// `savedGoals`. When no combination matches — features toggled by hand
     /// in Settings — the last goals with the current set as a manual pick
-    /// ("Features customized").
+    /// ("Features customized"). An always-on feature turned off in Settings
+    /// is matched as if on and kept off on top, so it alone never makes the
+    /// re-run "customized".
     package static func current(
         enabledIDs: Set<String>,
         savedGoals: Set<OnboardingGoal>
     ) -> Self {
-        let enabled = enabledIDs.intersection(OnboardingFeaturePlan.managedFeatureIDs)
+        let managed = enabledIDs.intersection(OnboardingFeaturePlan.managedFeatureIDs)
+        let keptOff = OnboardingFeaturePlan.alwaysOnFeatureIDs.subtracting(managed)
+        let enabled = managed.union(OnboardingFeaturePlan.alwaysOnFeatureIDs)
         let matching = allGoalCombinations.filter { OnboardingFeaturePlan.enabledFeatureIDs(for: $0) == enabled }
         let closest = matching.max { lhs, rhs in
             closeness(lhs, to: savedGoals) < closeness(rhs, to: savedGoals)
         }
-        if let closest { return Self(goals: closest) }
+        if let closest {
+            var selection = Self(goals: closest)
+            selection.keptOffIDs = keptOff
+            return selection
+        }
         // The goals whose features overlap the set most (fewest extras,
         // then closest to the saved goals), with the set as a manual pick.
         let nearest = allGoalCombinations.max { lhs, rhs in
@@ -103,6 +116,7 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
         } ?? savedGoals
         var selection = Self(goals: nearest)
         selection.customEnabledIDs = enabled
+        selection.keptOffIDs = keptOff
         return selection
     }
 
@@ -132,7 +146,7 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
     /// The managed features to enable; every other id in
     /// `OnboardingFeaturePlan.managedFeatureIDs` is to be disabled.
     package var enabledFeatureIDs: Set<String> {
-        customEnabledIDs ?? OnboardingFeaturePlan.enabledFeatureIDs(for: goals)
+        (customEnabledIDs ?? OnboardingFeaturePlan.enabledFeatureIDs(for: goals)).subtracting(keptOffIDs)
     }
 
     package func isEnabled(_ id: String) -> Bool {
@@ -152,7 +166,8 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
         customEnabledIDs = ids
     }
 
-    /// Drops the manual picks; the goals decide again.
+    /// Drops the manual picks; the goals decide again. Always-on features
+    /// kept off stay off.
     package mutating func resetToGoals() {
         customEnabledIDs = nil
     }

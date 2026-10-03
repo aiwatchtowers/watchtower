@@ -23,8 +23,8 @@ package enum OnboardingFinishPlan {
         case catchUp, workbench, chat
     }
 
-    /// Work communication while the Catch-Up tab shows (its feature on and
-    /// a Slack or mail source) → Catch-Up; else Development → Workbench;
+    /// Work communication while the Catch-Up tab shows (Attention detection
+    /// or a digest feature on, and any source) → Catch-Up; else Development → Workbench;
     /// else AI Chat.
     package static func landing(goals: Set<OnboardingGoal>, catchUpVisible: Bool) -> Landing {
         if goals.contains(.workCommunication), catchUpVisible { return .catchUp }

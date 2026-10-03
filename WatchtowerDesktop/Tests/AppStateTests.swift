@@ -712,12 +712,16 @@ final class AppStateTests: XCTestCase {
     /// Landing: Catch-Up for work communication with Slack, else Workbench
     /// for development, else AI Chat.
     func testFinishLandsOnTheGoalsTab() async throws {
+        let catchUpFeatures: Set<String> = ["secretary-inbox", "slack-digests", "stream-digests"]
         let cases: [(Set<OnboardingGoal>, Bool, Set<String>, SidebarDestination)] = [
             ([.workCommunication, .development], true, [], .catchUp),
             ([.workCommunication, .development], false, [], .workbench),
-            // Attention detection off: no Catch-Up tab to land on.
-            ([.workCommunication, .development], true, ["secretary-inbox"], .workbench),
-            ([.workCommunication], true, ["secretary-inbox"], .chat),
+            // Attention detection and both digest features off: no Catch-Up
+            // tab to land on.
+            ([.workCommunication, .development], true, catchUpFeatures, .workbench),
+            ([.workCommunication], true, catchUpFeatures, .chat),
+            // Attention detection off alone still leaves Slack Digests' recap.
+            ([.workCommunication], true, ["secretary-inbox"], .catchUp),
             ([.development], true, [], .workbench),
             ([.tasksAndJira], false, [], .chat)
         ]

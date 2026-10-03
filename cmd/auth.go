@@ -330,12 +330,15 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 // re-consents) is already this team, so connecting Slack later never forks a
 // second database. Account #1 with no team id yet (a legacy row seeded while
 // offline) counts as this team: it is this install's own Slack connection.
-// A login into a different team from a Slack-connected workspace, or onto a
-// legacy config token not migrated yet, keeps the team-named workspace:
-// re-consenting account #1 with another team's token would mix two teams'
-// data under one namespace. Only "no workspace yet" and "no database yet"
-// (without --workspace) fall back to the team name; any other failure (several workspaces and none
-// selected, an unreadable database) fails the login rather than guessing.
+// A login into a different team while account #1 is live is refused with a
+// pointer to `slack add` (owner decision 2026-10-03): re-consenting account #1
+// with another team's token would mix two teams' data under one namespace,
+// and silently forking a team-named workspace hid everything already synced.
+// With --workspace, or onto a removed account #1 or a legacy config token not
+// migrated yet, it keeps the team-named workspace. Only "no workspace yet"
+// and "no database yet" (without --workspace) fall back to the team name; any
+// other failure (several workspaces and none selected, an unreadable
+// database) fails the login rather than guessing.
 func slackLoginWorkspace(configPath, teamID string) (string, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
@@ -359,13 +362,14 @@ func slackLoginWorkspace(configPath, teamID string) (string, error) {
 		}
 		return "", fmt.Errorf("checking database: %w", err)
 	}
-	return reusableSlackWorkspace(cfg, teamID)
+	return reusableSlackWorkspace(cfg, teamID, flagWorkspace != "")
 }
 
 // reusableSlackWorkspace is slackLoginWorkspace's decision for a workspace
 // whose database exists: cfg.ActiveWorkspace when the login into teamID may
-// reuse it, "" to fall back to the team-named workspace.
-func reusableSlackWorkspace(cfg *config.Config, teamID string) (string, error) {
+// reuse it, "" to fall back to the team-named workspace, or an error when the
+// login targets a second team and was not pinned with --workspace (explicit).
+func reusableSlackWorkspace(cfg *config.Config, teamID string, explicit bool) (string, error) {
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return "", fmt.Errorf("opening database: %w", err)
@@ -382,11 +386,29 @@ func reusableSlackWorkspace(cfg *config.Config, teamID string) (string, error) {
 		return "", nil
 	}
 	for _, a := range accounts {
-		if a.ID == 1 && (a.TeamID == "" || a.TeamID == teamID) {
+		if a.ID != 1 {
+			continue
+		}
+		if a.TeamID == "" || a.TeamID == teamID {
 			return cfg.ActiveWorkspace, nil
+		}
+		if !explicit && a.Status != "removed" {
+			return "", secondSlackTeamError(a)
 		}
 	}
 	return "", nil
+}
+
+// secondSlackTeamError refuses an `auth login` into a team other than
+// account #1's, actionable part first and short: the Desktop's Reconnect
+// shows only the first 200 characters of stderr.
+func secondSlackTeamError(first db.SlackAccount) error {
+	name := first.TeamName
+	if name == "" {
+		name = first.TeamID
+	}
+	return fmt.Errorf("slack team %q is already connected here; add another team with "+
+		"`watchtower slack add` (Settings → Add Slack Workspace), or log in with --workspace <new-name>", name)
 }
 
 var sanitizeRe = regexp.MustCompile(`[^a-z0-9_-]+`)

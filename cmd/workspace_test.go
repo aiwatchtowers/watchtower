@@ -219,25 +219,87 @@ func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 	assert.Equal(t, []string{"default"}, workspaceDirs(t))
 }
 
-// A login into a different team from a workspace whose account #1 is already
-// another team keeps the team-named workspace: reusing it would re-consent
-// account #1 with the other team's token and mix the two teams' data.
-func TestSaveAuthResult_DifferentTeamKeepsTeamNamedWorkspace(t *testing.T) {
-	_, configPath := workspaceInitHome(t)
+// connectAcme logs into team T123 from a fresh `workspace init` workspace,
+// so account #1 of "default" is Acme.
+func connectAcme(t *testing.T, configPath string) {
+	t.Helper()
 	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
-
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, err = saveAuthResult(newSaveAuthResultCmd(),
 		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
 	require.NoError(t, err)
+}
+
+func betaLogin() *auth.OAuthResult {
+	return &auth.OAuthResult{AccessToken: "xoxp-beta", TeamID: "T999", TeamName: "Beta Inc", UserID: "U789"}
+}
+
+// A login into a different team while account #1 is live is refused with a
+// pointer to `slack add` (owner decision 2026-10-03): reusing the workspace
+// would re-consent account #1 with the other team's token, and forking a
+// team-named workspace silently switched the install away from its data.
+func TestSaveAuthResult_DifferentTeamIsRefusedWithSlackAddHint(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	connectAcme(t, configPath)
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
 
 	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
-	info, err := saveAuthResult(newSaveAuthResultCmd(),
-		&auth.OAuthResult{AccessToken: "xoxp-beta", TeamID: "T999", TeamName: "Beta Inc", UserID: "U789"})
+	_, err = saveAuthResult(newSaveAuthResultCmd(), betaLogin())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "watchtower slack add")
+	assert.Contains(t, err.Error(), "Acme Corp")
+	assert.Contains(t, err.Error(), "--workspace <new-name>")
+	assert.Less(t, len(err.Error()), 200, "the Desktop's Reconnect shows only stderr's first 200 characters")
+	assert.Equal(t, []string{"default"}, workspaceDirs(t), "no team-named workspace is forked")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "active_workspace is unchanged")
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	accounts, err := database.ListSlackAccounts()
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "T123", accounts[0].TeamID, "account #1 is not re-consented with the other team")
+}
+
+// --workspace pins the login: a different team keeps the old behaviour and
+// lands in the team-named workspace.
+func TestSaveAuthResult_DifferentTeamWithWorkspaceFlagKeepsOldBehaviour(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	connectAcme(t, configPath)
+	old := flagWorkspace
+	flagWorkspace = "default"
+	t.Cleanup(func() { flagWorkspace = old })
+
+	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
+	info, err := saveAuthResult(newSaveAuthResultCmd(), betaLogin())
 	require.NoError(t, err)
 	assert.Equal(t, "beta-inc", info.Workspace)
 	assert.ElementsMatch(t, []string{"default", "beta-inc"}, workspaceDirs(t))
+}
+
+// A removed account #1 is no live connection to protect: the login keeps the
+// old team-named workspace rather than re-consenting it with another team.
+func TestSaveAuthResult_DifferentTeamOverRemovedAccountKeepsTeamNamedWorkspace(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	connectAcme(t, configPath)
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	require.NoError(t, database.SetSlackAccountRemoved(1))
+	require.NoError(t, database.Close())
+
+	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
+	info, err := saveAuthResult(newSaveAuthResultCmd(), betaLogin())
+	require.NoError(t, err)
+	assert.Equal(t, "beta-inc", info.Workspace)
 }
 
 // seedWorkspaceDB creates a migrated watchtower.db for workspace name under
