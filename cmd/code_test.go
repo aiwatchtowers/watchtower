@@ -105,6 +105,15 @@ func TestCodeIndex_FilesDeletedAndUnsupported(t *testing.T) {
 	}
 }
 
+// emptyRules is an empty rules file for --rules, so a developer's real
+// default code-languages.yaml cannot change a test that is not about rules.
+func emptyRules(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeCodeFile(t, dir, "code-languages.yaml", "")
+	return filepath.Join(dir, "code-languages.yaml")
+}
+
 // cliProcess is the test binary running `watchtower args…` in its own
 // process group, which t.Cleanup kills and reaps whatever the test did.
 type cliProcess struct {
@@ -203,7 +212,7 @@ func TestCodeIndex_ServeOneRunPerLineAndEOFExitsZero(t *testing.T) {
 	root := t.TempDir()
 	writeCodeFile(t, root, "a.go", "package a\n\nfunc A() {}\n")
 	writeCodeFile(t, root, "b.md", "# B\n")
-	p := startCLI(t, "code", "index", "--folder", root, "--serve")
+	p := startCLI(t, "code", "index", "--folder", root, "--serve", "--rules", emptyRules(t))
 
 	if _, err := io.WriteString(p.stdin, "a.go\n\n"); err != nil {
 		t.Fatal(err)
@@ -236,7 +245,7 @@ func TestCodeIndex_SIGTERMDuringARunExitsAtOnceWithNoDone(t *testing.T) {
 		writeCodeFile(t, root, rel, fmt.Sprintf("package p\n\n// F%d is one.\nfunc F%d() int { return %d }\n", i, i, i))
 		paths = append(paths, rel)
 	}
-	p := startCLI(t, "code", "index", "--folder", root, "--serve")
+	p := startCLI(t, "code", "index", "--folder", root, "--serve", "--rules", emptyRules(t))
 	if _, err := io.WriteString(p.stdin, strings.Join(paths, "\t")+"\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +305,7 @@ func TestCodeIndex_UsageErrorsExitTwo(t *testing.T) {
 func TestCodeIndex_SIGTERMWhileIdleExitsAtOnce(t *testing.T) {
 	root := t.TempDir()
 	writeCodeFile(t, root, "a.md", "# A\n")
-	p := startCLI(t, "code", "index", "--folder", root, "--serve")
+	p := startCLI(t, "code", "index", "--folder", root, "--serve", "--rules", emptyRules(t))
 	if _, err := io.WriteString(p.stdin, "a.md\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -496,5 +505,31 @@ func TestCodeRules_InvalidFileIsIgnoredAndReportedOnEveryDone(t *testing.T) {
 	}
 	if n := strings.Count(p.stderr.String(), "rules file ignored"); n != 1 {
 		t.Errorf("stderr reports the rules error %d times, want once: %q", n, p.stderr.String())
+	}
+}
+
+func TestCodeRules_MissingExplicitFileExitsTwo(t *testing.T) {
+	root := t.TempDir()
+	absent := filepath.Join(t.TempDir(), "absent.yaml")
+	p := startCLI(t, "code", "index", "--folder", root, "--json", "--rules", absent)
+	_ = p.stdin.Close()
+	if code := exitCode(p.wait()); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(p.stderr.String(), "--rules "+absent+": no such file") {
+		t.Errorf("stderr = %q, want the missing --rules file named", p.stderr.String())
+	}
+}
+
+func TestCodeRules_UsageErrorComesBeforeTheRulesNote(t *testing.T) {
+	rules := filepath.Join(t.TempDir(), "code-languages.yaml")
+	writeCodeFile(t, filepath.Dir(rules), filepath.Base(rules), "tcl: [unclosed\n")
+	p := startCLI(t, "code", "index", "--folder", filepath.Join(t.TempDir(), "missing"), "--json", "--rules", rules)
+	_ = p.stdin.Close()
+	if code := exitCode(p.wait()); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if strings.Contains(p.stderr.String(), "rules file ignored") {
+		t.Errorf("a usage error was preceded by the rules note: %q", p.stderr.String())
 	}
 }

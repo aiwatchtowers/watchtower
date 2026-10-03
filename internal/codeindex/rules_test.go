@@ -102,10 +102,11 @@ func TestRules_MatchByExtensionOrFileNameOnly(t *testing.T) {
 }
 
 func TestRules_NeverOverrideABuiltInLanguage(t *testing.T) {
+	// The load rejects a built-in extension or name (InvalidFileIsIgnoredWhole);
+	// a shebang naming a built-in language still beats a rule's extension.
 	rules, err := loadRulesText(t, `
 mine:
-  extensions: [.go, .md, .txt]
-  filenames: [Dockerfile]
+  extensions: [.tool, .txt]
   definitions:
     - kind: function
       pattern: '(\w+)'
@@ -114,18 +115,11 @@ mine:
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	write(t, root, "a.go", []byte("package a\n\nfunc A() {}\n"))
-	write(t, root, "README.md", []byte("# Title\n"))
-	write(t, root, "Dockerfile", []byte("FROM scratch\n"))
+	write(t, root, "run.tool", []byte("#!/usr/bin/env python3\ndef main():\n    pass\n"))
 	write(t, root, "plain.txt", []byte("word\n"))
 	got := collectRules(t, root, rules)
-	for _, f := range []string{"a.go", "README.md", "Dockerfile"} {
-		if got[f].Lang == "mine" {
-			t.Errorf("%s indexed by the rules: %+v", f, got[f])
-		}
-	}
-	if md := got["README.md"]; md.Lang != "markdown" || len(md.Symbols) != 1 || md.Symbols[0].Name != "Title" {
-		t.Errorf("README.md = %+v, want the Markdown scan", md)
+	if r := got["run.tool"]; r.Lang == "mine" {
+		t.Errorf("run.tool (python shebang) indexed by the rules: %+v", r)
 	}
 	if got["plain.txt"].Lang != "mine" {
 		t.Errorf("plain.txt = %+v, want the rule language (no built-in claims .txt)", got["plain.txt"])
@@ -147,6 +141,11 @@ func TestRules_InvalidFileIsIgnoredWhole(t *testing.T) {
 		{"no definitions", "tcl:\n  extensions: [.tcl]\n", "no definitions"},
 		{"extension claimed twice", validTcl + "tk:\n  extensions: [.TCL]\n  definitions:\n    - {kind: function, pattern: 'proc (\\w+)'}\n", "extension .tcl is also"},
 		{"not a map", "- tcl\n", "invalid YAML"},
+		{"built-in extension", "mine:\n  extensions: [GO]\n  definitions:\n    - {kind: function, pattern: '(\\w+)'}\n", "extension .go is the built-in go language's"},
+		{"built-in filename", "mine:\n  filenames: [dockerfile]\n  definitions:\n    - {kind: function, pattern: '(\\w+)'}\n", "filename dockerfile is the built-in"},
+		{"multi-dot extension", "mine:\n  extensions: [.tar.gz]\n  definitions:\n    - {kind: function, pattern: '(\\w+)'}\n", "only the last dot counts"},
+		{"filename with a slash", "mine:\n  filenames: [conf/Taskfile]\n  definitions:\n    - {kind: function, pattern: '(\\w+)'}\n", "has no slash"},
+		{"built-in language id", "python:\n  extensions: [.pyx2]\n  definitions:\n    - {kind: function, pattern: '(\\w+)'}\n", "python: a built-in language of that name exists"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -221,5 +220,33 @@ func TestStream_DoneLineCarriesTheRulesError(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "rules_error") {
 		t.Errorf("rules_error without a rules error: %s", out.String())
+	}
+}
+
+func TestRules_FirstErrorIsStable(t *testing.T) {
+	text := "zeta:\n  extensions: [.zz]\n  definitions:\n    - {kind: procedure, pattern: '(\\w+)'}\n" +
+		"alpha:\n  extensions: [.aa]\n  definitions:\n    - {kind: function, pattern: '(x'}\n"
+	for range 20 { // map order is random: every load must name alpha
+		if _, err := loadRulesText(t, text); err == nil || !strings.Contains(err.Error(), ": alpha: definitions[0]: pattern") {
+			t.Fatalf("error = %v, want alpha's (languages are checked in sorted order)", err)
+		}
+	}
+}
+
+func TestRules_NameIsTrimmedClippedAndNeverEmpty(t *testing.T) {
+	rules, err := loadRulesText(t, "tcl:\n  extensions: [.tcl]\n  definitions:\n    - {kind: function, pattern: '^proc(.*)$'}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := "proc   \n" + "proc  foo  \n" + "proc " + strings.Repeat("n", 300) + "\n"
+	syms := rules.langFor("x.tcl").symbols([]byte(src))
+	if len(syms) != 2 {
+		t.Fatalf("symbols = %+v, want 2 (an empty name is no symbol)", syms)
+	}
+	if syms[0].Name != "foo" || syms[0].Line != 2 || syms[0].Col != 7 {
+		t.Errorf("symbol 0 = %+v, want foo at 2:7 (spaces trimmed)", syms[0])
+	}
+	if n := []rune(syms[1].Name); len(n) > textLimit+1 || !strings.HasSuffix(syms[1].Name, "…") {
+		t.Errorf("long name has %d characters, want ≤ %d with …", len(n), textLimit+1)
 	}
 }

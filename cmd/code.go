@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -50,8 +51,8 @@ exactly as given.
 answered with that run's lines and a done line; EOF exits 0.
 
 --rules names the owner's regex language rules (default
-~/Library/Application Support/Watchtower/code-languages.yaml; a missing file is
-no rules). A file that cannot be used is ignored as a whole: its error is
+~/Library/Application Support/Watchtower/code-languages.yaml; a missing default
+file is no rules, a missing --rules file exit 2). A file that cannot be used is ignored as a whole: its error is
 printed once on stderr and carried by every done line as "rules_error".
 
 SIGTERM/SIGINT stop a run at once: exit 0, no done line. Exit 2 for a usage
@@ -92,34 +93,65 @@ type codeIndexOptions struct {
 }
 
 func runCodeIndex(cmd *cobra.Command, args []string) error {
-	o := codeIndexOptions{folder: flagCodeFolder, serve: flagCodeServe}
-	switch {
-	case o.folder == "":
-		return usageError("--folder is required")
-	case o.serve && (flagCodeFiles || len(args) > 0):
-		return usageError("--serve reads its paths from stdin; it takes no --files")
-	case !o.serve && !flagCodeJSON:
-		return usageError("JSON lines are the only output: pass --json (or --serve)")
-	case flagCodeFiles && len(args) == 0:
-		return usageError("--files needs at least one path")
-	case !flagCodeFiles && len(args) > 0:
-		return usageError("unexpected arguments %q (paths need --files)", args)
-	case flagCodeFiles:
-		o.paths = args
+	o, err := codeIndexArgs(args)
+	if err != nil {
+		return err
 	}
-	o.rules, o.rulesErr = loadCodeRules(codeRulesPath(flagCodeRules), cmd.ErrOrStderr())
+	// The folder first: a usage error is not preceded by a rules note.
+	if err := checkFolder(o.folder); err != nil {
+		return err
+	}
+	if o.rules, o.rulesErr, err = loadCodeRules(flagCodeRules, cmd.ErrOrStderr()); err != nil {
+		return err
+	}
 	ctx, cancel := notifyShutdownContext(cmd.Context(), silentShutdownLogf)
 	defer cancel()
 	return codeIndex(ctx, o, cmd.InOrStdin(), cmd.OutOrStdout())
 }
 
-// codeRulesPath is the rules file to load: flag when given, else the
-// Desktop's Application Support copy; "" (no rules) without a home
-// directory to find it in.
-func codeRulesPath(flag string) string {
-	if flag != "" {
-		return flag
+// codeIndexArgs checks the flags and arguments of `code index`.
+func codeIndexArgs(args []string) (codeIndexOptions, error) {
+	o := codeIndexOptions{folder: flagCodeFolder, serve: flagCodeServe}
+	switch {
+	case o.folder == "":
+		return o, usageError("--folder is required")
+	case o.serve && (flagCodeFiles || len(args) > 0):
+		return o, usageError("--serve reads its paths from stdin; it takes no --files")
+	case !o.serve && !flagCodeJSON:
+		return o, usageError("JSON lines are the only output: pass --json (or --serve)")
+	case flagCodeFiles && len(args) == 0:
+		return o, usageError("--files needs at least one path")
+	case !flagCodeFiles && len(args) > 0:
+		return o, usageError("unexpected arguments %q (paths need --files)", args)
+	case flagCodeFiles:
+		o.paths = args
 	}
+	return o, nil
+}
+
+// loadCodeRules loads the rules file: the --rules flag's when given (one
+// that does not exist is a usage error), else the Desktop's Application
+// Support copy (missing, or no home directory: no rules). rulesErr is why
+// a file was ignored, noted once on stderr.
+func loadCodeRules(flag string, stderr io.Writer) (rules *codeindex.Rules, rulesErr, err error) {
+	path := flag
+	if path == "" {
+		if path = defaultRulesPath(); path == "" {
+			return nil, nil, nil
+		}
+	} else if _, serr := os.Stat(path); errors.Is(serr, fs.ErrNotExist) {
+		return nil, nil, usageError("--rules %s: no such file", path)
+	}
+	rules, rulesErr = codeindex.LoadRules(path)
+	if rulesErr != nil {
+		fmt.Fprintf(stderr, "code index: rules file ignored: %v\n", rulesErr)
+	}
+	return rules, rulesErr, nil
+}
+
+// defaultRulesPath is the Desktop's Application Support copy of the rules
+// file; "" (no rules) without a home directory to find it in.
+func defaultRulesPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
@@ -127,26 +159,10 @@ func codeRulesPath(flag string) string {
 	return filepath.Join(home, "Library", "Application Support", "Watchtower", "code-languages.yaml")
 }
 
-// loadCodeRules loads the rules file at path ("" = none); an error,
-// which ignores the file, is noted once on stderr.
-func loadCodeRules(path string, stderr io.Writer) (*codeindex.Rules, error) {
-	if path == "" {
-		return nil, nil
-	}
-	rules, err := codeindex.LoadRules(path)
-	if err != nil {
-		fmt.Fprintf(stderr, "code index: rules file ignored: %v\n", err)
-	}
-	return rules, err
-}
-
-// codeIndex runs the index. A signal (ctx cancelled) returns nil at once —
+// codeIndex runs the index over a folder checkFolder accepted. A signal (ctx cancelled) returns nil at once —
 // exit 0 with no done line — without waiting for the run in progress or a
 // blocked stdin read: the process is about to exit.
 func codeIndex(ctx context.Context, o codeIndexOptions, stdin io.Reader, stdout io.Writer) error {
-	if err := checkFolder(o.folder); err != nil {
-		return err
-	}
 	opts := codeindex.Options{Workers: codeindex.DefaultWorkers(), Rules: o.rules, RulesErr: o.rulesErr}
 	errc := make(chan error, 1)
 	go func() {

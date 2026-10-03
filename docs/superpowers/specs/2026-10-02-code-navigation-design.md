@@ -331,20 +331,25 @@ Decisions from these numbers:
   "Rules file: <error>", never a crash or a silent partial load.
 - As built (Go, `internal/codeindex/rules.go`): the file is
   `~/Library/Application Support/Watchtower/code-languages.yaml`, or the one
-  `code index --rules PATH` names; a missing file is no rules. It is loaded
+  `code index --rules PATH` names; a missing default file is no rules, a
+  missing `--rules` file is exit 2 (checked after the folder). It is loaded
   once per process (a `--serve` child picks up an edited file when the
   Desktop restarts it). `kind` must be one of §6.1's; extensions match
   case-insensitively (a missing leading dot is added), filenames exactly.
   The whole file is rejected — invalid YAML, an unknown key, a kind outside
   the set, a pattern that is not RE2 or has no group, a language with no
   extensions/filenames or no definitions, an extension or filename claimed
-  by two languages. The error (naming the file) is printed once on stderr
+  by two languages, and anything that could never match: a language id, an
+  extension or a file name the built-in table already has, a multi-dot
+  extension (`.tar.gz`), a file name with a slash. Languages are checked in
+  sorted order, so the reported error is stable. The error (naming the file) is printed once on stderr
   and carried by every `done` line as `"rules_error"`; the Desktop prefixes
   "Rules file: ". A rule language applies only to a file the language table
-  does not know (it never overrides a grammar or scanned language, even in
-  a build without that grammar). Each line is matched against each pattern
-  (first match per pattern per line): name = group 1, `line`/`end_line` =
-  that line, `col` = UTF-16 column of group 1, `signature` = the line
+  does not know — never a grammar or scanned language, even in a build
+  without that grammar, nor a file a shebang assigns to one. Each line is matched against each pattern
+  (first match per pattern per line): name = group 1, spaces trimmed and
+  clipped like a signature (≤ 200; an empty name is no symbol), `line`/`end_line` =
+  that line, `col` = UTF-16 column of the name, `signature` = the line
   (whitespace collapsed, ≤ 200), no container, no doc. Such files carry
   their rule language's id as `lang` and no `defs` (they hold definitions).
 - Heuristic for unsupported files (⌘-click only): lines matching
