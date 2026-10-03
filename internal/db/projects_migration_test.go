@@ -11,7 +11,7 @@ import (
 
 // TestMigration00081_CreatesProjectTablesAndTargetsColumn pins the spec §3
 // shape: four project tables with their columns, and targets.project_id with
-// its index. Read at 00081: 00097 drops project_documents and the anchors.
+// its index. Read at 00081: 00100 drops project_documents and the anchors.
 func TestMigration00081_CreatesProjectTablesAndTargetsColumn(t *testing.T) {
 	raw := rawDBAt(t, 81)
 
@@ -40,7 +40,7 @@ func TestMigration00081_CreatesProjectTablesAndTargetsColumn(t *testing.T) {
 
 // TestMigration00081_ConstraintsHold: the UNIQUE folder, the kind/author/
 // status CHECKs, the "a comment hangs off something" CHECK, and the cascade
-// from a project to its targets and their comments. Run at 00081: 00097 drops
+// from a project to its targets and their comments. Run at 00081: 00100 drops
 // project_documents.
 func TestMigration00081_ConstraintsHold(t *testing.T) {
 	d := rawDBAt(t, 81)

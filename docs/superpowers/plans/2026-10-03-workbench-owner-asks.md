@@ -91,7 +91,7 @@ is `docs/review/review-rules.md`; the implementer self-reviews against it before
   - `workbench brief` golden without documents.
   - `TestProjectResync_IsAdditive` still passes (no new targets, sources untouched).
 
-### Task 4 — Migration `00097_owner_asks` + `internal/db/owner_asks.go`
+### Task 4 — Migration `00100_owner_asks` (written as `00097`, renumbered after main's `00099` on the 2026-10-03 merge) + `internal/db/owner_asks.go`
 - **Files:** the migration, `internal/db/schema.sql`, the goldens, `TestAllTablesExist`,
   `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (generated),
   `internal/db/owner_asks.go`.

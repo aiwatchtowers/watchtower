@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration00097_DropsDocumentsAndTheirComments: target comments and their
+// TestMigration00100_DropsDocumentsAndTheirComments: target comments and their
 // replies survive the project_comments rebuild; document comments, every reply
 // under them, project_documents and the documents' index entries (FTS included)
 // are gone; a deleted comment's id is never handed out again.
-func TestMigration00097_DropsDocumentsAndTheirComments(t *testing.T) {
-	raw := rawDBAt(t, 96)
+func TestMigration00100_DropsDocumentsAndTheirComments(t *testing.T) {
+	raw := rawDBAt(t, 99)
 	_, err := raw.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`)
 	require.NoError(t, err)
 	_, err = raw.Exec(`INSERT INTO targets (id, text, period_start, period_end, project_id)
@@ -105,10 +105,10 @@ func TestMigration00097_DropsDocumentsAndTheirComments(t *testing.T) {
 	assert.Zero(t, count(`SELECT COUNT(*) FROM project_comments WHERE id = 101`), "the parent cascade survives the rebuild")
 }
 
-// TestMigration00097_DownUpIsClean: the Down brings back the empty
+// TestMigration00100_DownUpIsClean: the Down brings back the empty
 // project_documents and the old project_comments shape (target comments keep
 // their rows) and drops owner_asks; Up again applies cleanly.
-func TestMigration00097_DownUpIsClean(t *testing.T) {
+func TestMigration00100_DownUpIsClean(t *testing.T) {
 	d, err := Open(filepath.Join(t.TempDir(), "owner-asks-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()
@@ -119,8 +119,8 @@ func TestMigration00097_DownUpIsClean(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'question', 'Which?')`, pid)
 	require.NoError(t, err)
 
-	// DownTo(96), not a bare Down: a later migration can move the tip past 00097.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 96))
+	// DownTo(99), not a bare Down: a later migration can move the tip past 00100.
+	require.NoError(t, goose.DownTo(d.DB, "migrations", 99))
 	cols := columnNames(t, d.DB, "project_comments")
 	for _, c := range []string{"document_id", "anchor_quote", "anchor_prefix", "anchor_suffix", "anchor_heading"} {
 		assert.True(t, cols[c], "project_comments.%s is back", c)
@@ -141,9 +141,9 @@ func TestMigration00097_DownUpIsClean(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestMigration00097_OwnerAskChecks: the shape CHECKs refuse what no writer
+// TestMigration00100_OwnerAskChecks: the shape CHECKs refuse what no writer
 // may store.
-func TestMigration00097_OwnerAskChecks(t *testing.T) {
+func TestMigration00100_OwnerAskChecks(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	for name, q := range map[string]string{

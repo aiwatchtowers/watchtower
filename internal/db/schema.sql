@@ -2149,7 +2149,7 @@ END;
 -- project worked on by Claude Code through `watchtower mcp --project N`. Its
 -- targets carry targets.project_id and appear only on its board. Comments hang
 -- off a target or a thread root (parent_id; replies are flat, parent_id = the
--- root); attached documents and their comments were replaced by owner_asks (00097).
+-- root); attached documents and their comments were replaced by owner_asks (00100).
 -- author 'agent' comments are unread for the owner while read_at = ''.
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2224,7 +2224,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
 
--- Asks the workbench agent puts to the owner (00097): a document review, a
+-- Asks the workbench agent puts to the owner (00100): a document review, a
 -- check or questions. Go writes open/withdrawn/delivered; the Desktop writes
 -- only open -> answered (answer + answered_at, guarded on status = 'open').
 -- delivered = get_ask has read the answer. At most 30 open per workbench.

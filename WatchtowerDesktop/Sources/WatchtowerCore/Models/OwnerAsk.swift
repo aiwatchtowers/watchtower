@@ -105,7 +105,7 @@ package struct OwnerAskPayload: Equatable, Sendable {
     private struct Ignored: Decodable {}
 }
 
-/// An `owner_asks` row (migration 00097): something the workbench agent
+/// An `owner_asks` row (migration 00100): something the workbench agent
 /// asked the owner — a review of a document snapshot, a manual check or a
 /// question. Go's `ask_owner` writes it; the Desktop only answers it.
 package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {

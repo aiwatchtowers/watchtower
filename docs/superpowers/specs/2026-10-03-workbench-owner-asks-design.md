@@ -92,10 +92,10 @@ chose. A request written as plain text is caught. The Documents tab and its tabl
 
 ---
 
-## Part 2 — Data (migration `00097_owner_asks.sql`)
+## Part 2 — Data (migration `00100_owner_asks.sql`)
 
-The number is taken at the time of writing. If a branch merged first holds `00097`, the
-`add-migration` skill renumbers.
+Written as `00097`; renumbered to `00100` on 2026-10-03 when main had taken `00098` and
+`00099` (the `add-migration` skill's rule: a migration never sorts before an applied one).
 
 **Up:**
 1. `CREATE TABLE owner_asks` — see the schema below.
