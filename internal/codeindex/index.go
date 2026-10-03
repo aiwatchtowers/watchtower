@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -44,7 +45,9 @@ func DefaultWorkers() int {
 // lists (skipping those over codewalk.MaxIndexBytes); otherwise exactly
 // those paths (relative to root): a path that is gone yields a Deleted
 // result, one the walk would skip (.gitignore'd included) or this build
-// cannot parse an empty result with lang "". An emit error stops the run
+// cannot parse an empty result with lang "". A file whose parse fails or
+// panics, or whose language's query does not compile, yields lang "" too,
+// with a note on stderr; the run goes on. An emit error stops the run
 // and is returned. A
 // cancelled ctx stops it between files with ctx's error.
 func Run(ctx context.Context, root string, paths []string, workers int, emit func(FileResult) error) (Summary, error) {
@@ -61,8 +64,13 @@ type job struct {
 
 type outcome struct {
 	res FileResult
-	err error
+	// warn is a one-line note for stderr: a file indexed without symbols
+	// because its parse failed.
+	warn string
 }
+
+// warnings receives the run's notes; the command's stderr.
+var warnings io.Writer = os.Stderr
 
 func run(ctx context.Context, root string, paths []string, workers int, mkParser func() parser, emit func(FileResult) error) (Summary, error) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -79,18 +87,7 @@ func run(ctx context.Context, root string, paths []string, workers int, mkParser
 
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Go(func() {
-			p := mkParser()
-			defer p.close()
-			for j := range jobs {
-				res, err := indexFile(p, root, j)
-				select {
-				case results <- outcome{res, err}:
-				case <-ctx.Done():
-					return
-				}
-			}
-		})
+		wg.Go(func() { work(ctx, root, mkParser, jobs, results) })
 	}
 	go func() {
 		wg.Wait()
@@ -99,18 +96,20 @@ func run(ctx context.Context, root string, paths []string, workers int, mkParser
 
 	var sum Summary
 	var firstErr error
+	warned := map[string]bool{}
 	for o := range results {
 		if firstErr != nil {
 			continue // drain until the workers stop
 		}
-		if o.err == nil && o.res.File == "" {
+		if o.warn != "" && !warned[o.warn] {
+			warned[o.warn] = true // a language's query error once per run
+			fmt.Fprintln(warnings, o.warn)
+		}
+		if o.res.File == "" {
 			continue // a walked file that vanished or is skipped
 		}
-		if o.err == nil {
-			o.err = emit(o.res)
-		}
-		if o.err != nil {
-			firstErr = o.err
+		if err := emit(o.res); err != nil {
+			firstErr = err
 			cancel()
 			continue
 		}
@@ -124,6 +123,25 @@ func run(ctx context.Context, root string, paths []string, workers int, mkParser
 		return sum, err
 	}
 	return sum, ctx.Err()
+}
+
+// work is one worker: it indexes jobs with a parser of its own until jobs
+// closes or ctx is cancelled.
+func work(ctx context.Context, root string, mkParser func() parser, jobs <-chan job, results chan<- outcome) {
+	p := mkParser()
+	defer func() { p.close() }()
+	for j := range jobs {
+		o, panicked := indexFile(p, root, j)
+		if panicked { // its state is unknown: start afresh
+			p.close()
+			p = mkParser()
+		}
+		select {
+		case results <- o:
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // feed sends the run's files to the workers.
@@ -165,7 +183,39 @@ func feed(ctx context.Context, root string, paths []string, jobs chan<- job) err
 // indexFile indexes one file. A walked file that cannot be read any more
 // (gone or changed into something the walk skips) yields a zero result,
 // which the run drops; a path asked for by name always yields a result.
-func indexFile(p parser, root string, j job) (FileResult, error) {
+// A parse that fails or panics stays local (spec §6.3): the file yields
+// lang "" and a note, and panicked tells the worker to replace p.
+func indexFile(p parser, root string, j job) (o outcome, panicked bool) {
+	res, err := indexSource(p, root, j)
+	var qe *queryError
+	var pe *parsePanic
+	switch {
+	case errors.As(err, &qe):
+		return outcome{res: res, warn: fmt.Sprintf("code index: %s files are indexed without symbols: %v", qe.lang, qe.err)}, false
+	case err != nil:
+		return outcome{res: res, warn: fmt.Sprintf("code index: %s: %v; indexed without symbols", res.File, err)}, errors.As(err, &pe)
+	}
+	return outcome{res: res}, false
+}
+
+// queryError is a language's query that does not compile against its
+// grammar: every file of the language fails alike.
+type queryError struct {
+	lang string
+	err  error
+}
+
+func (e *queryError) Error() string { return e.err.Error() }
+func (e *queryError) Unwrap() error { return e.err }
+
+// parsePanic is a panic recovered from one file's parse.
+type parsePanic struct{ v any }
+
+func (e *parsePanic) Error() string { return fmt.Sprintf("panic: %v", e.v) }
+
+// indexSource reads and parses one file; on a parse error the result is
+// the file with lang "" and no symbols.
+func indexSource(p parser, root string, j job) (FileResult, error) {
 	res := FileResult{File: j.rel}
 	if j.explicit {
 		f, deleted, ok := lookupNamed(root, j.rel)
@@ -189,7 +239,7 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	}
 	syms, supported, err := symbolsOf(p, l, src)
 	if err != nil {
-		return FileResult{}, fmt.Errorf("indexing %s: %w", res.File, err)
+		return res, err
 	}
 	if !supported {
 		return res, nil
@@ -211,6 +261,11 @@ var utf8BOM = []byte("\xef\xbb\xbf")
 // past a leading BOM, as the editor shows it: names stay clean and line-1
 // columns match.
 func symbolsOf(p parser, l *langSpec, src []byte) (syms []Symbol, supported bool, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			syms, supported, err = nil, false, &parsePanic{v}
+		}
+	}()
 	switch {
 	case l.scan != nil:
 		return l.scan(bytes.TrimPrefix(src, utf8BOM)), true, nil

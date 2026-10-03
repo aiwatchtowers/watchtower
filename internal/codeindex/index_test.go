@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"watchtower/internal/codewalk"
@@ -54,13 +55,81 @@ func collect(t *testing.T, root string, paths []string, mk func() parser) map[st
 	return out
 }
 
-// panicParser fails the test if any file reaches a grammar.
-type panicParser struct{}
-
-func (panicParser) parse(l *langSpec, _ []byte) ([]Symbol, bool, error) {
-	panic("parsed a " + l.id + " file with a grammar")
+// noGrammar makes parsers that fail the test if any file reaches a
+// grammar (a panic would be recovered by the run, so it reports instead).
+func noGrammar(t *testing.T) func() parser {
+	return func() parser { return guardParser{t} }
 }
-func (panicParser) close() {}
+
+type guardParser struct{ t *testing.T }
+
+func (g guardParser) parse(l *langSpec, _ []byte) ([]Symbol, bool, error) {
+	g.t.Errorf("parsed a %s file with a grammar", l.id)
+	return nil, false, nil
+}
+func (guardParser) close() {}
+
+// boomParser panics on a source holding "boom" and otherwise finds one
+// function; closed counts its closes.
+type boomParser struct{ closed *atomic.Int32 }
+
+func (boomParser) parse(_ *langSpec, src []byte) ([]Symbol, bool, error) {
+	if i := bytes.Index(src, []byte("boom")); i >= 0 {
+		_ = src[i+len(src)] // out of range, like a refiner's bug
+	}
+	return []Symbol{{Name: "f", Kind: KindFunction, Line: 1, Col: 1, EndLine: 1}}, true, nil
+}
+func (b boomParser) close() { b.closed.Add(1) }
+
+// captureWarnings points the run's notes at a buffer for the test.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := warnings
+	warnings = &buf
+	t.Cleanup(func() { warnings = prev })
+	return &buf
+}
+
+// A parse that panics stays local (ruling R17): that file yields lang ""
+// with one note, its worker gets a fresh parser, and the run goes on to
+// index the rest — a full run and a named batch alike.
+func TestRun_ParsePanicStaysLocal(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.go", []byte("package a // boom\n"))
+	write(t, root, "b.go", []byte("package b\n"))
+	write(t, root, "c.go", []byte("package c\n"))
+	for _, paths := range [][]string{nil, {"a.go", "b.go", "c.go"}} {
+		warned := captureWarnings(t)
+		var made, closed atomic.Int32
+		mk := func() parser { made.Add(1); return boomParser{&closed} }
+		out := map[string]FileResult{}
+		sum, err := run(context.Background(), root, paths, 1, mk, func(r FileResult) error {
+			out[r.File] = r
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("run(%v): %v, want the run to go on", paths, err)
+		}
+		if r := out["a.go"]; r.Lang != "" || len(r.Symbols) != 0 {
+			t.Errorf("panicking a.go = %+v, want lang \"\" with no symbols", r)
+		}
+		for _, f := range []string{"b.go", "c.go"} {
+			if r := out[f]; r.Lang != "go" || len(r.Symbols) != 1 {
+				t.Errorf("%s = %+v, want its symbol", f, r)
+			}
+		}
+		if sum.Files != 3 {
+			t.Errorf("summary %+v, want 3 files", sum)
+		}
+		if w := warned.String(); strings.Count(w, "\n") != 1 || !strings.Contains(w, "a.go") || !strings.Contains(w, "panic") {
+			t.Errorf("warnings = %q, want one line naming a.go's panic", w)
+		}
+		if made.Load() != 2 || closed.Load() != 2 {
+			t.Errorf("parsers made %d, closed %d; want the panicked one replaced and both closed", made.Load(), closed.Load())
+		}
+	}
+}
 
 func TestLanguageFor(t *testing.T) {
 	cases := []struct {
@@ -133,7 +202,7 @@ func TestRun_FilesDeletedAndUnsupported(t *testing.T) {
 	write(t, root, "notes.txt", []byte("plain text\n"))
 	write(t, root, "dir/keep.txt", []byte("x\n"))
 	write(t, root, "big.md", append([]byte("# Big\n"), bytes.Repeat([]byte("a"), codewalk.MaxIndexBytes)...))
-	got := collect(t, root, []string{"gone.go", "notes.txt", "dir", "big.md", "../outside.md"}, func() parser { return panicParser{} })
+	got := collect(t, root, []string{"gone.go", "notes.txt", "dir", "big.md", "../outside.md"}, noGrammar(t))
 
 	if r := got["gone.go"]; !r.Deleted {
 		t.Errorf("gone.go = %+v, want deleted", r)
@@ -152,7 +221,7 @@ func TestRun_FullSkipsOversizeFiles(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "small.md", []byte("# Small\n"))
 	write(t, root, "big.md", append([]byte("# Big\n"), bytes.Repeat([]byte("a"), codewalk.MaxIndexBytes)...))
-	got := collect(t, root, nil, func() parser { return panicParser{} })
+	got := collect(t, root, nil, noGrammar(t))
 	if _, ok := got["big.md"]; ok {
 		t.Error("a file over MaxIndexBytes was indexed")
 	}
@@ -162,7 +231,7 @@ func TestRun_FullSkipsOversizeFiles(t *testing.T) {
 }
 
 func TestRun_MarkdownHeadingsWithoutAGrammar(t *testing.T) {
-	got := collect(t, "testdata/markdown", nil, func() parser { return panicParser{} })
+	got := collect(t, "testdata/markdown", nil, noGrammar(t))
 	r := got["guide.md"]
 	if r.Lang != "markdown" {
 		t.Fatalf("guide.md = %+v", r)
@@ -253,7 +322,7 @@ func TestRun_ScannedLanguagesNeedNoGrammar(t *testing.T) {
 	for rel, f := range files {
 		write(t, root, rel, []byte(f[1]))
 	}
-	got := collect(t, root, nil, func() parser { return panicParser{} })
+	got := collect(t, root, nil, noGrammar(t))
 	for rel, f := range files {
 		wantScanned(t, got[rel], rel, f[0])
 	}
@@ -291,7 +360,7 @@ func TestRun_ScanSkipsALeadingBOM(t *testing.T) {
 	for rel, body := range files {
 		write(t, root, rel, append([]byte("\xef\xbb\xbf"), body...))
 	}
-	got := collect(t, root, nil, func() parser { return panicParser{} })
+	got := collect(t, root, nil, noGrammar(t))
 	for rel := range files {
 		syms := got[rel].Symbols
 		if len(syms) != 1 || syms[0].Name != "first" || syms[0].Line != 1 || syms[0].Col != wantCol[rel] {
@@ -327,7 +396,7 @@ func TestRun_NamedPathsHonourGitignore(t *testing.T) {
 	git("add", "-f", "dist/tracked.md")
 
 	paths := []string{"dist/x.md", "dist/tracked.md", "docs/a.md"}
-	got := collect(t, root, paths, func() parser { return panicParser{} })
+	got := collect(t, root, paths, noGrammar(t))
 	if r := got["dist/x.md"]; r.Lang != "" || len(r.Symbols) != 0 || r.Deleted {
 		t.Errorf("ignored dist/x.md = %+v, want lang \"\" with no symbols", r)
 	}
@@ -337,7 +406,7 @@ func TestRun_NamedPathsHonourGitignore(t *testing.T) {
 		}
 	}
 	// The full run agrees.
-	full := collect(t, root, nil, func() parser { return panicParser{} })
+	full := collect(t, root, nil, noGrammar(t))
 	if _, ok := full["dist/x.md"]; ok {
 		t.Error("the full run listed an ignored file")
 	}

@@ -69,7 +69,7 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 	}
 	g, err := grammarFor(l.id)
 	if err != nil {
-		return nil, false, err
+		return nil, false, &queryError{l.id, err}
 	}
 	var spans []span
 	seen := map[uint]bool{}
