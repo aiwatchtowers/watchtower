@@ -68,7 +68,8 @@ shows a banner over the tab setup landed on.
 **Workspace without Slack.** Goals' Continue runs `watchtower workspace
 init --json` (at most once per app session, only while no Slack account exists): directory,
 migrated database and `active_workspace`, idempotent. A later Slack login
-reuses that workspace. `AppState.openDatabaseForOnboarding` then wires only
+reuses that workspace; `auth login` into a second team while account #1
+is live is refused with a pointer to `slack add` (#279). `AppState.openDatabaseForOnboarding` then wires only
 what the steps need (owner, connected sources, account view models); the
 rest of the app's DB wiring, including the notification-permission request,
 runs once at completion.
