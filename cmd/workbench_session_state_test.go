@@ -203,6 +203,29 @@ func TestSessionState_SubagentToolResultClearsOnlyApproval(t *testing.T) {
 	}
 }
 
+// The subagent rule covers only PostToolUse: a subagent's permission prompt
+// (agent_id set) still records "needs approval", whether the main turn is
+// working or stopped and waiting.
+func TestSessionState_SubagentPermissionPromptRecordsApproval(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	prompt := `{"session_id":"` + briefLaunchID + `","hook_event_name":"Notification","notification_type":"permission_prompt","agent_id":"a1b2c3","agent_type":"general-purpose"}`
+
+	for _, step := range []struct {
+		payload, want string
+	}{
+		{statePayload("UserPromptSubmit", briefLaunchID, ""), "working"},
+		{prompt, "approval"},
+		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
+		{prompt, "approval"},
+	} {
+		_, _, err := runSessionState(t, pid, strings.NewReader(step.payload))
+		require.NoError(t, err)
+		assert.Equal(t, step.want, storedAgentState(t, database, row), "after %s", step.payload)
+	}
+}
+
 // An external terminal has no row: the hook neither reads stdin nor opens
 // the database (a broken config would print a line if it did).
 func TestSessionState_NoEnvReadsNothing(t *testing.T) {
