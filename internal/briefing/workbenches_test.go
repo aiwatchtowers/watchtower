@@ -80,6 +80,40 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	assert.True(t, pipe.shown.workbenches[busy])
 }
 
+// An agent's question now waits as an open ask, not an agent comment; the
+// briefing still shows that the agent is waiting, by title and capped.
+func TestGatherProjects_ListsOpenOwnerAsks(t *testing.T) {
+	d := testDB(t)
+	pid := seedWorkbench(t, d, "acme")
+	other := seedWorkbench(t, d, "other")
+	for i := 0; i < maxWorkbenchItems+1; i++ {
+		_, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'question', ?)`,
+			pid, "Which currency list "+strings.Repeat("x", i+1)+"?\nsecond line")
+		require.NoError(t, err)
+	}
+	_, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title, status, answer) VALUES (?, 'check', 'Answered already', 'answered', '{}')`, pid)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO owner_asks (project_id, kind, title, status, withdrawn_reason) VALUES (?, 'check', 'Withdrawn one', 'withdrawn', 'agent')`, other)
+	require.NoError(t, err)
+
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+	pipe.shown = newShownIDs()
+	ctx, has := pipe.gatherWorkbenches(time.Now().Add(-24 * time.Hour))
+
+	require.True(t, has, "open asks alone are activity")
+	assert.Contains(t, ctx, "Open asks waiting for the owner (6): Which currency list ")
+	assert.Contains(t, ctx, "(+1 more)")
+	assert.NotContains(t, ctx, "second line", "one line per title")
+	assert.NotContains(t, ctx, "Answered already", "only open asks wait on the owner")
+	assert.NotContains(t, ctx, "other", "a withdrawn ask is no activity")
+	assert.True(t, pipe.shown.workbenches[pid])
+}
+
+func TestBriefingDailyV11_NamesOpenAsks(t *testing.T) {
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 11, "the reworded rule must auto-upgrade stored v10 rows")
+	assert.Contains(t, prompts.Defaults[prompts.BriefingDaily], "open asks waiting for the owner")
+}
+
 func TestGatherProjects_ListsTargetsInReview(t *testing.T) {
 	d := testDB(t)
 	pid := seedWorkbench(t, d, "acme")

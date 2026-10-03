@@ -26,17 +26,19 @@ const (
 // workbenchActivity is one project's slice of the briefing. Mechanical, no AI.
 type workbenchActivity struct {
 	inProgress, inReview, blocked, doneSince []string
-	unreadAgent                              int
+	// openAsks are the titles of the agent's asks still waiting on the owner.
+	openAsks    []string
+	unreadAgent int
 }
 
 func (a workbenchActivity) empty() bool {
 	return len(a.inProgress) == 0 && len(a.inReview) == 0 && len(a.blocked) == 0 && len(a.doneSince) == 0 &&
-		a.unreadAgent == 0
+		len(a.openAsks) == 0 && a.unreadAgent == 0
 }
 
 // gatherWorkbenches renders the WORKBENCHES block: per project with activity — in
-// progress, blocked, done since `since` (the previous briefing) and unread
-// agent comments. A project that fails to load is logged and skipped; the rest still render.
+// progress, blocked, done since `since` (the previous briefing), open owner
+// asks and unread agent comments. A project that fails to load is logged and skipped; the rest still render.
 func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
 	projects, err := p.db.ListWorkbenches()
 	if err != nil {
@@ -78,8 +80,15 @@ func (p *Pipeline) workbenchActivity(projectID int64, sinceTS string) (workbench
 	if err != nil {
 		return a, fmt.Errorf("comments: %w", err)
 	}
+	open, err := p.db.ListOwnerAsks(projectID, db.OwnerAskFilter{Statuses: []string{"open"}})
+	if err != nil {
+		return a, fmt.Errorf("asks: %w", err)
+	}
 	a.addTargets(board, sinceTS)
 	a.addComments(comments)
+	for _, ask := range open {
+		a.openAsks = append(a.openAsks, firstLine(ask.Title))
+	}
 	return a, nil
 }
 
@@ -115,6 +124,7 @@ func renderWorkbenchActivity(pr db.Workbench, a workbenchActivity) string {
 	writeWorkbenchLine(&sb, "In review", a.inReview)
 	writeWorkbenchLine(&sb, "Blocked", a.blocked)
 	writeWorkbenchLine(&sb, "Done since the last briefing", a.doneSince)
+	writeWorkbenchLine(&sb, "Open asks waiting for the owner", a.openAsks)
 	if a.unreadAgent > 0 {
 		fmt.Fprintf(&sb, "Unread agent comments: %d\n", a.unreadAgent)
 	}

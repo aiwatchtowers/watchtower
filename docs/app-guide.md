@@ -39,7 +39,7 @@ A briefing contains five sections:
 
 **Coaching Corner** — Communication and process recommendations based on your interactions. Categories include communication, delegation, conflict, and process tips.
 
-**Workbenches** — when a workbench had activity since the previous briefing (a blocked target, unread agent comments), the briefing can bring it into Needs Attention, labeled *Workbench*. Workbench activity alone is enough for a briefing to be generated.
+**Workbenches** — when a workbench had activity since the previous briefing (a blocked target, open asks waiting for your answer, unread agent comments), the briefing can bring it into Needs Attention, labeled *Workbench*. Workbench activity alone is enough for a briefing to be generated.
 
 The list panel shows briefings by date with unread indicator (blue dot), attention count, and task count. Selecting a briefing marks it as read. Briefings are generated once per day after the configured hour (default: 8:00 AM, configurable in Settings via `briefing.hour`).
 
