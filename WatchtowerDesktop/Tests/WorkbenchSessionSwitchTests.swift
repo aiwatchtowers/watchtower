@@ -216,6 +216,38 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         XCTAssertNil(appState.terminalCenter.states[stopped.id], "a stale notice never starts a session")
     }
 
+    /// The Terminal button clicked twice while its first open is still
+    /// reading: the repeat is a no-op (`openMostRecentSession`'s in-flight
+    /// guard) and must not supersede the open it waits for.
+    func testARepeatedTerminalClickKeepsItsOpen() async throws {
+        let a = try await insertSession("a")
+        let vm = try await page(running: [])
+        let project = try XCTUnwrap(vm.selectedWorkbench)
+        XCTAssertEqual(onScreen(vm), .board)
+
+        let first = Task { await vm.showView(.terminal, project: project) }
+        let second = Task { await vm.showView(.terminal, project: project) }
+        _ = await (first.value, second.value)
+
+        XCTAssertEqual(onScreen(vm), .session(a.id))
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id)
+    }
+
+    /// Work on it for a target that is not on a board, superseded by a
+    /// click: its error is logged, not shown beside the session clicked.
+    func testASupersededWorkOnsFailureShowsNoBanner() async throws {
+        let a = try await insertSession("a")
+        let b = try await insertSession("b")
+        let vm = try await page(running: [a])
+
+        let workOn = Task { await vm.workOn(targetID: 999_999, targetText: "Gone", projectID: self.projectID) }
+        let click = Task { await vm.showSession(id: b.id) }
+        _ = await (workOn.value, click.value)
+
+        XCTAssertEqual(onScreen(vm), .session(b.id))
+        XCTAssertNil(vm.sessionErrors[projectID])
+    }
+
     /// Work on it reads the target first; a panel click made during that
     /// read is the later one and wins. The work-on session is still created
     /// and started — it shows in the panel, not on screen.
