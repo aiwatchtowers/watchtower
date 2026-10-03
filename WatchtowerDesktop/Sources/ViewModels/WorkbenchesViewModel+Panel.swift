@@ -129,10 +129,11 @@ extension WorkbenchesViewModel {
             return
         }
         drill(into: id)
+        let ticket = beginSwitch(projectID: id)
         guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
         let rows = terminalSessions[id] ?? []
         let active = activeSessionID(projectID: id)
-        if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row) }
+        if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row, ticket: ticket) }
     }
 
     /// The switcher's "All Workbenches": back to level 1, the panel
@@ -147,13 +148,14 @@ extension WorkbenchesViewModel {
     /// page: nothing happens.
     func openSession(atShortcut n: Int) async {
         guard (1...SessionSwitcherPresentation.maxShortcut).contains(n), let projectID = selectedWorkbenchID else { return }
+        let ticket = beginSwitch(projectID: projectID)
         // With the panel hidden nothing may have read the list yet.
         if terminalSessions[projectID] == nil {
             guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
         }
         let rows = orderedSessions(projectID: projectID)
         guard n <= rows.count else { return }
-        await showSession(id: rows[n - 1].id)
+        await showSession(id: rows[n - 1].id, ticket: ticket)
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
@@ -165,8 +167,9 @@ extension WorkbenchesViewModel {
     /// A level-2 click on a session — or a pick in the collapsed header's
     /// switcher, or ⌘N — in the workbench on screen: it is opened (one not
     /// running starts) and put on screen like any panel click.
-    func showSession(id: Int64) async {
+    func showSession(id: Int64, ticket: Int? = nil) async {
         guard let projectID = selectedWorkbenchID else { return }
+        let ticket = ticket ?? beginSwitch(projectID: projectID)
         // The list may not be loaded yet (the panel loads it on appear).
         // A failed load already reports itself; the row is not "gone".
         if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
@@ -174,10 +177,10 @@ extension WorkbenchesViewModel {
             guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
         }
         guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
-            sessionActionErrors[projectID] = "That session no longer exists."
+            reportSwitchError("That session no longer exists.", projectID: projectID, ticket: ticket)
             return
         }
-        await open(session)
+        await open(session, ticket: ticket)
     }
 
     /// Level 2's "New session" (and ⌘T): a fresh `claude` session of the
@@ -193,6 +196,7 @@ extension WorkbenchesViewModel {
     /// owner sees it land: beside the document in a split (already visible →
     /// nothing moves), in its place in a single pane.
     func showTerminal(sessionID: Int64, projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.reveal(.session(sessionID), keeping: .documents)
         setLayout(updated, projectID: projectID)
@@ -204,6 +208,7 @@ extension WorkbenchesViewModel {
     /// first is a session, else the active live session, else whichever of
     /// Board and Documents is not already shown. Nothing starts.
     func toggleSplit(projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         if updated.isSplit {
             updated.unsplit()
@@ -234,12 +239,16 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.files)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
+            // `openMostRecentSession` takes its own ticket — past its
+            // in-flight guard, so a repeated click never supersedes the
+            // open it is waiting for.
             guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
                 await openMostRecentSession(project: project, placement: .keeping(kept))
                 return
             }
             updated.reveal(.session(id), keeping: kept)
         }
+        beginSwitch(projectID: project.id)
         setLayout(updated, projectID: project.id)
     }
 
@@ -291,6 +300,7 @@ extension WorkbenchesViewModel {
 
     /// The Files pane on screen, the way the header's Files button puts it.
     func showFilesPane(projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.showWorkbenchView(.files)
         setLayout(updated, projectID: projectID)
@@ -298,6 +308,7 @@ extension WorkbenchesViewModel {
 
     /// A header view button turned off: closes that pane of a split.
     func hideView(_ view: WorkspaceView, projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.hide(view)
         setLayout(updated, projectID: projectID)
@@ -306,6 +317,7 @@ extension WorkbenchesViewModel {
     /// A pane's own picker: `slot` shows `item` instead. A session is opened
     /// there (resumed if not running).
     func showInPane(_ slot: WorkspacePane, item: WorkspacePane, projectID: Int64) async {
+        let ticket = beginSwitch(projectID: projectID)
         guard case let .session(id) = item else {
             var updated = layout(projectID: projectID)
             updated.replace(slot, with: item)
@@ -316,10 +328,10 @@ extension WorkbenchesViewModel {
             guard await loadSessions(projectID: projectID) else { return }
         }
         guard let row = session(id, projectID: projectID) else {
-            sessionActionErrors[projectID] = "That session no longer exists."
+            reportSwitchError("That session no longer exists.", projectID: projectID, ticket: ticket)
             return
         }
-        await open(row, placement: .replacing(slot))
+        await open(row, placement: .replacing(slot), ticket: ticket)
     }
 
     /// A pane picker's "New session": starts one in that pane.
@@ -328,12 +340,14 @@ extension WorkbenchesViewModel {
     }
 
     func toggleExpand(_ pane: WorkspacePane, projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.toggleExpand(pane)
         setLayout(updated, projectID: projectID)
     }
 
     func closePane(_ pane: WorkspacePane, projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.remove(pane)
         setLayout(updated, projectID: projectID)

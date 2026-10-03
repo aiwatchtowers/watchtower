@@ -45,7 +45,9 @@ extension WorkbenchesViewModel {
     var layout: WorkspaceLayout {
         get { selectedWorkbenchID.map { layout(projectID: $0) } ?? .default }
         set {
-            if let selectedWorkbenchID { setLayout(newValue, projectID: selectedWorkbenchID) }
+            guard let selectedWorkbenchID else { return }
+            beginSwitch(projectID: selectedWorkbenchID)
+            setLayout(newValue, projectID: selectedWorkbenchID)
         }
     }
 
@@ -140,8 +142,11 @@ extension WorkbenchesViewModel {
     // MARK: - Creating
 
     func newSession(projectID: Int64, placement: Placement = .show) async {
+        let ticket = beginSwitch(projectID: projectID)
         guard let project = await project(id: projectID) else { return }
-        await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement)
+        await startNewSession(
+            project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+        )
     }
 
     /// A terminal outside any project, in `folder`, put on screen (a
@@ -155,19 +160,23 @@ extension WorkbenchesViewModel {
         let row = await createAndStart(
             .init(projectID: nil, kind: kind, title: title, folderPath: folder.path,
                   claudeSessionID: kind == .claude ? Self.newClaudeSessionID() : nil),
-            prompt: nil
+            prompt: nil,
+            ticket: beginSwitch(projectID: nil)
         )
         if let row { showStandalone(row.id) }
     }
 
     /// Creates a `claude` session row with a new Claude session id and starts
     /// it fresh (`--session-id`).
-    func startNewSession(project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show) async {
+    func startNewSession(
+        project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show, ticket: Int? = nil
+    ) async {
         await createAndStart(
             .init(projectID: project.id, kind: .claude, title: title, folderPath: project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
             prompt: prompt,
-            placement: placement
+            placement: placement,
+            ticket: ticket ?? beginSwitch(projectID: project.id)
         )
     }
 
@@ -182,24 +191,24 @@ extension WorkbenchesViewModel {
     ) async {
         guard workingOnTarget.insert(targetID).inserted else { return }
         defer { workingOnTarget.remove(targetID) }
-        let found: (project: Workbench, rows: [TerminalSession])?
+        // The target's own workbench is known only after the read; the page's
+        // is the one it almost always is.
+        let askedIn = projectID ?? selectedWorkbenchID
+        var ticket = beginSwitch(projectID: askedIn)
+        let found: TargetSessions?
         do {
-            found = try await dbPool.read { db in
-                guard let projectID = try TargetQueries.fetchByID(db, id: Int(targetID))?.workbenchID,
-                      let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
-                let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
-                return (project, rows.filter { $0.projectID == projectID })
-            }
+            found = try await readTargetSessions(targetID)
         } catch {
-            setSessionError("Could not read the target: \(error.localizedDescription)", projectID: projectID ?? selectedWorkbenchID)
+            reportSwitchError("Could not read the target: \(error.localizedDescription)", projectID: askedIn, ticket: ticket)
             return
         }
         guard let found else {
-            setSessionError("Target #\(targetID) is not on a workbench board.", projectID: projectID ?? selectedWorkbenchID)
+            reportSwitchError("Target #\(targetID) is not on a workbench board.", projectID: askedIn, ticket: ticket)
             return
         }
+        if found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }
         if let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
-            await open(existing, placement: placement)
+            await open(existing, placement: placement, ticket: ticket)
             return
         }
         let text = targetText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -208,8 +217,22 @@ extension WorkbenchesViewModel {
                   targetID: targetID, folderPath: found.project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
             prompt: TerminalLaunch.workOnTargetPrompt(targetID: targetID, vocabulary: vocabulary(projectID: found.project.id)),
-            placement: placement
+            placement: placement,
+            ticket: ticket
         )
+    }
+
+    /// A target's own workbench and the sessions of that workbench working on it.
+    typealias TargetSessions = (project: Workbench, rows: [TerminalSession])
+
+    /// nil when the target is not on a workbench board.
+    private func readTargetSessions(_ targetID: Int64) async throws -> TargetSessions? {
+        try await dbPool.read { db in
+            guard let projectID = try TargetQueries.fetchByID(db, id: Int(targetID))?.workbenchID,
+                  let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
+            let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
+            return (project, rows.filter { $0.projectID == projectID })
+        }
     }
 
     /// "Open terminal": resumes the project's most recently active session,
@@ -217,13 +240,16 @@ extension WorkbenchesViewModel {
     func openMostRecentSession(project: Workbench, placement: Placement = .show) async {
         guard openingSession.insert(project.id).inserted else { return }
         defer { openingSession.remove(project.id) }
+        let ticket = beginSwitch(projectID: project.id)
         // A failed load says nothing about the project's sessions: starting a
         // new one would duplicate the session the owner meant to resume.
         guard await loadSessions(projectID: project.id) else { return }
         if let row = terminalSessions[project.id]?.first {
-            await open(row, placement: placement)
+            await open(row, placement: placement, ticket: ticket)
         } else {
-            await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement)
+            await startNewSession(
+                project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+            )
         }
     }
 
@@ -231,8 +257,11 @@ extension WorkbenchesViewModel {
 
     /// Selects a session: marks it active, starts it
     /// (a `claude` row resumes) unless it is running, focuses it and shows it.
-    func open(_ session: TerminalSession, placement: Placement = .show) async {
-        setSessionError(nil, projectID: session.projectID)
+    /// `ticket` is the switch's `beginSwitch` when the caller took it before
+    /// an await of its own; otherwise it is taken here.
+    func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
+        let ticket = ticket ?? beginSwitch(projectID: session.projectID)
+        clearSwitchError(projectID: session.projectID, ticket: ticket)
         let row: TerminalSession
         do {
             row = try await dbPool.write { db in
@@ -243,21 +272,22 @@ extension WorkbenchesViewModel {
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
         } catch {
-            await failed(session, "Could not open the session", error)
+            await failed(session, "Could not open the session", error, ticket: ticket)
             return
         }
         resumeFailed.remove(row.id)
-        await activate(row, fresh: false, prompt: nil, placement: placement)
+        await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
     }
 
     /// "Start fresh" after a failed resume: a new Claude session id under the
     /// same row and title. A shell has no Claude session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
+        let ticket = beginSwitch(projectID: session.projectID)
         guard session.kind == .claude else {
-            await open(session, placement: placement)
+            await open(session, placement: placement, ticket: ticket)
             return
         }
-        setSessionError(nil, projectID: session.projectID)
+        clearSwitchError(projectID: session.projectID, ticket: ticket)
         // A running process would keep its old id: `start` skips a running row.
         await terminalCenter?.close(sessionID: session.id)
         let uuid = Self.newClaudeSessionID()
@@ -272,11 +302,11 @@ extension WorkbenchesViewModel {
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
         } catch {
-            await failed(session, "Could not start the session fresh", error)
+            await failed(session, "Could not start the session fresh", error, ticket: ticket)
             return
         }
         resumeFailed.remove(row.id)
-        await activate(row, fresh: true, prompt: nil, placement: placement)
+        await activate(row, fresh: true, prompt: nil, placement: placement, ticket: ticket)
     }
 
     /// Closes the process first, then deletes the row and drops it from the
@@ -408,24 +438,28 @@ extension WorkbenchesViewModel {
     /// The created row, or nil when it could not be written.
     @discardableResult
     private func createAndStart(
-        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show
+        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show, ticket: Int
     ) async -> TerminalSession? {
-        setSessionError(nil, projectID: new.projectID)
+        clearSwitchError(projectID: new.projectID, ticket: ticket)
         let row: TerminalSession
         do {
             row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
-            setSessionError("Could not create a terminal session: \(error.localizedDescription)", projectID: new.projectID)
+            reportSwitchError("Could not create a terminal session: \(error.localizedDescription)",
+                              projectID: new.projectID, ticket: ticket)
             return nil
         }
-        await activate(row, fresh: true, prompt: prompt, placement: placement)
+        await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket)
         return row
     }
 
     /// Starts (unless running) and focuses `row`, refreshes its list, places
     /// it in its own project's layout, then titles the session the owner
-    /// switched away from.
-    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement) async {
+    /// switched away from. A switch superseded by a later one (`beginSwitch`)
+    /// only starts its session: the later switch decides what is focused
+    /// and on screen.
+    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int) async {
+        let isLatest = isLatestSwitch(ticket, projectID: row.projectID)
         let previous = terminalCenter?.focusOrder.last
         notYetTitledStreak[row.id] = nil // the owner is back in it: ask again
         if let center = terminalCenter {
@@ -441,27 +475,37 @@ extension WorkbenchesViewModel {
             default:
                 resumeStarts[row.id] = nil
             }
-            center.focus(row.id)
+            if isLatest { center.focus(row.id) }
         }
-        if let projectID = row.projectID {
-            var updated = layout(projectID: projectID)
-            switch placement {
-            case .show: updated.show(.session(row.id))
-            case let .keeping(kept): updated.reveal(.session(row.id), keeping: kept)
-            case let .replacing(slot):
-                if !updated.replace(slot, with: .session(row.id)) { updated.show(.session(row.id)) }
-            case .inPlace:
-                break
-            case let .beside(kept): updated.openBeside(.session(row.id), keeping: kept)
-            }
-            setLayout(updated, projectID: projectID)
+        if isLatest, let projectID = row.projectID {
+            setLayout(placing(row.id, placement, in: layout(projectID: projectID)), projectID: projectID)
         }
         await loadSessions(projectID: row.projectID)
-        if let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+        if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
     }
 
-    private func failed(_ session: TerminalSession, _ what: String, _ error: Error) async {
-        setSessionError("\(what): \(error.localizedDescription)", projectID: session.projectID)
+    /// `layout` with session `id` placed the way `placement` says.
+    private func placing(_ id: Int64, _ placement: Placement, in layout: WorkspaceLayout) -> WorkspaceLayout {
+        var updated = layout
+        switch placement {
+        case .show: updated.show(.session(id))
+        case let .keeping(kept): updated.reveal(.session(id), keeping: kept)
+        case let .replacing(slot):
+            if !updated.replace(slot, with: .session(id)) { updated.show(.session(id)) }
+        case .inPlace:
+            break
+        case let .beside(kept): updated.openBeside(.session(id), keeping: kept)
+        }
+        return updated
+    }
+
+    private func failed(_ session: TerminalSession, _ what: String, _ error: Error, ticket: Int? = nil) async {
+        let message = "\(what): \(error.localizedDescription)"
+        if let ticket {
+            reportSwitchError(message, projectID: session.projectID, ticket: ticket)
+        } else {
+            setSessionError(message, projectID: session.projectID)
+        }
         if case .notFound(_)? = error as? TerminalSessionQueryError, let projectID = session.projectID {
             forgetInLayout(session.id, projectID: projectID)
         }
