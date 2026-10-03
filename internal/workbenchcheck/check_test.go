@@ -522,12 +522,43 @@ func TestProj07_GitUnavailableIsANote(t *testing.T) {
 	if out, code, err := ExecRunner(context.Background(), dir, nil, "git", "--version"); !errors.Is(err, gitbin.ErrUnavailable) || code != -1 || out != nil {
 		t.Fatalf("ExecRunner without git: out=%q code=%d err=%v", out, code, err)
 	}
-	board := []db.BoardNode{node(1, "in_progress", "merged", time.Hour), node(2, "done", "open", time.Hour)}
-	r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow})
-	if r.Git || r.Base != "" || len(r.Findings) != 0 || r.Incomplete {
-		t.Fatalf("no git: want git=false, no base, no findings, got %+v", r)
+	pr := node(1, "in_progress", "merged", time.Hour)
+	pr.Target.PR = "#7"
+	board := []db.BoardNode{pr, node(2, "done", "open", time.Hour)}
+	for _, network := range []bool{false, true} {
+		// gh reads the repository through git from its own PATH — the shim
+		// without the developer tools — so it does not run either.
+		var ghCalls int
+		run := func(ctx context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
+			if name == "gh" {
+				ghCalls++
+			}
+			return ExecRunner(ctx, d, in, name, args...)
+		}
+		r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow, Network: network, Run: run})
+		if r.Git || r.Base != "" || r.PRChecked || len(r.Findings) != 0 || r.Incomplete || ghCalls != 0 {
+			t.Fatalf("network=%v, no git: want git=false, no base, no findings, no gh call; got %d gh calls, %+v", network, ghCalls, r)
+		}
+		if !slices.Contains(r.Notes, "git is not available (no Command Line Tools); branch checks skipped") {
+			t.Fatalf("network=%v: notes must say git is unavailable: %v", network, r.Notes)
+		}
 	}
-	if !slices.Contains(r.Notes, "git is not available (no Command Line Tools); branch checks skipped") {
-		t.Fatalf("notes must say git is unavailable: %v", r.Notes)
+}
+
+// ExecRunner runs the git gitbin located, not whatever "git" PATH names, and
+// with the inherited repository variables dropped.
+func TestExecRunner_RunsTheLocatedGit(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "located-git")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"located $* ${GIT_DIR-unset}\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := locateGit
+	t.Cleanup(func() { locateGit = prev })
+	locateGit = func() (string, bool) { return bin, true }
+	t.Setenv("GIT_DIR", "/elsewhere/.git")
+
+	out, code, err := ExecRunner(context.Background(), t.TempDir(), nil, "git", "rev-parse")
+	if err != nil || code != 0 || strings.TrimSpace(string(out)) != "located rev-parse unset" {
+		t.Fatalf("want the located git without GIT_DIR, got out=%q code=%d err=%v", out, code, err)
 	}
 }

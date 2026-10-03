@@ -18,9 +18,9 @@ var repositoryEnv = []string{
 	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
 }
 
-// Exec runs name (git at the path Locate found, or gh beside it) in dir,
-// feeding it stdin (nil = none), and returns its stdout, its trimmed stderr
-// and exec's error (an *exec.ExitError for a non-zero exit). The process is
+// Exec runs name (git at the path Locate found, or another tool such as gh
+// from PATH) in dir, feeding it stdin (nil = none), and returns its stdout,
+// its trimmed stderr and exec's error (an *exec.ExitError for a non-zero exit). The process is
 // kept non-interactive: no optional locks, no credential or gh prompt, no
 // editor, C locale, and no inherited repository variables. Exec does not
 // locate git: a bare "git" would be a PATH lookup that can find the shim,

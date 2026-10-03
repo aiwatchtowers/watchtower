@@ -23,6 +23,9 @@ const squashWindow = 200
 // macOS /usr/bin/git shim.
 const noGitNote = "git is not available (no Command Line Tools); branch checks skipped"
 
+// noGitPRNote: without git the pull request states are not read either.
+const noGitPRNote = "git is not available; pull request states not checked"
+
 // locateGit finds git; a variable so a test can take git away.
 var locateGit = gitbin.Locate
 
@@ -54,12 +57,13 @@ func ExecRunner(ctx context.Context, dir string, stdin []byte, name string, args
 
 // insideRepository reports whether dir or one of its parents holds a .git
 // entry (a directory, or a linked worktree's gitdir file); no process runs.
-var insideRepository = gitbin.InsideRepository
+func insideRepository(dir string) bool { return gitbin.InsideRepository(dir) }
 
 // gitState is what the check knows about the folder's repository.
 type gitState struct {
 	o           Options
 	workTree    bool
+	noGit       bool     // inside a repository, but no git binary was found
 	defaultName string   // e.g. "main"
 	bases       []string // resolved commits of origin/<default> and <default>, whichever exist
 	baseLabel   string   // e.g. "origin/main"
@@ -80,6 +84,7 @@ func newGitState(ctx context.Context, o Options) *gitState {
 		return g // Check reports the deadline; no conclusion from a cut call
 	}
 	if errors.Is(err, gitbin.ErrUnavailable) {
+		g.noGit = true
 		g.notes = append(g.notes, noGitNote)
 		return g
 	}
