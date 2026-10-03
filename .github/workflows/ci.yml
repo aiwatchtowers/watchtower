@@ -259,6 +259,13 @@ jobs:
         with:
           xcode-version: "26.4.1"
 
+      # CodeNavRealCLITests builds the CLI from this checkout (go build .):
+      # the Go the other jobs use, not whatever the image carries (go.mod
+      # needs 1.25), so the suite runs here instead of skipping or failing.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
       # GRDB alone is minutes of compile on a cold runner; reuse build
       # products across runs until dependencies change.
       - name: Cache SPM build

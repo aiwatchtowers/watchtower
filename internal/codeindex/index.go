@@ -226,6 +226,7 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 		f, deleted, ok := lookupNamed(root, j.rel)
 		if !ok || j.ignored {
 			res.Deleted = deleted
+			res.Skipped = !deleted
 			return res, nil
 		}
 		rel = f.Rel
@@ -236,6 +237,7 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 		return FileResult{}, nil
 	case !ok:
 		res.Deleted = deleted
+		res.Skipped = !deleted
 		return res, nil
 	}
 	l := langFor(rel, src[:min(len(src), 256)])
@@ -250,6 +252,7 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 		return res, nil
 	}
 	res.Lang = l.id
+	res.NoDefinitions = !l.holdsDefinitions()
 	for i := range syms {
 		syms[i].Path, syms[i].Lang = res.File, l.id
 	}

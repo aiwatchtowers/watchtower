@@ -189,7 +189,7 @@ final class WorkbenchSwitcherTests: XCTestCase {
         await vm.reload()
         vm.drill(into: a)
         vm.layout.show(.board)
-        // ⌘⇧O then ⌥⌘S: the page stays, the panel is hidden at level 1, and
+        // All Workbenches then ⌥⌘S: the page stays, the panel is hidden at level 1, and
         // the title row's switcher still names this workbench.
         vm.showAllWorkbenches()
         vm.panelVisible = false

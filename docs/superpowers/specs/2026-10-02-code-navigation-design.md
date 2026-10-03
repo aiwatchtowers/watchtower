@@ -204,7 +204,14 @@ search.
 - A `--files`/`--serve` path the full run would not list — a directory, binary,
   over 2 MB, outside the folder, or `.gitignore`d (one `git check-ignore
   --stdin` per batch, inside a repository) — yields `"lang":""` with no
-  symbols, not `deleted`.
+  symbols and `"skipped":true`, not `deleted` (R21: a readable file of an
+  unsupported language is `"lang":""` without `skipped`).
+- A file of a language indexed without a grammar of its own — HTML, CSS, SCSS,
+  Dockerfile, Markdown, YAML, TOML, JSON (derived from the language table:
+  the languages indexed by a scan) — carries `"defs":false`: its entries are
+  never code definitions, so the Desktop treats it as unsupported for
+  navigation (the text-search heuristic on a miss, the jump bar's "Language X:
+  text search"; R32). Absent means the file may hold definitions.
 - Every `--files`/`--serve` result (and its symbols' `path`) echoes the request
   path verbatim, deleted ones included (`./a.go` stays `./a.go`).
 - A file whose parse fails or panics, or whose language's query does not
@@ -414,17 +421,23 @@ Decisions from these numbers:
 Added to the header comment of `CodeEditorWeb/index.html` and to the #275
 harness:
 
+Lines are 1-based, columns UTF-16 (the CLI's convention).
+
 | Direction | Message | Payload |
 |---|---|---|
-| page → Swift | `definition` | `{req, id, word, line, col}` |
-| page → Swift | `cursor` | `{id, line, col}` |
-| page → Swift | `selection` | `{id, text, startLine, startCol, endLine, endCol}` (≤ 20 KB; empty = none) |
-| page → Swift | `askAI` | `{id}` (⌘I in the editor) |
-| Swift → page | `definitionDone(req)` | — |
-| Swift → page | `reveal({id, line, col})` | put the cursor on and scroll to |
-| Swift → page | `selectionRect()` → `{x, y, w, h}` | for anchoring the popover |
-| Swift → page | `proposeEdit({id, range, text})` / `clearProposal(id)` | inline diff decoration |
-| Swift → page | `applyEdit({id, range, text})` | one undoable edit; then the normal `text` message |
+| page → Swift | `definition` | `{req, id, word, line, col, x, y}` — ⌘-click or `definitionAtCursor`; `req` a page counter; `x, y` the word's bottom left in page points, for the menu (R29) |
+| page → Swift | `cursor` | `{id, line, col}` — at most 10 a second, the last move always sent; `id` is the file now shown (set before the model, so the first message after a tab switch names it) |
+| page → Swift | `usages` | `{id, word, line, col}` — the word at the cursor, from `usagesAtCursor` or the context menu's "Show All Usages" |
+| page → Swift | `selection` | `{id, text, startLine, startCol, endLine, endCol}` (≤ 20 KB; empty = none) — phase C |
+| page → Swift | `askAI` | `{id}` (⌘I in the editor) — phase C |
+| Swift → page | `definitionAtCursor()` → Bool | ⌃⌘J from the menu: posts `definition` for the word at the cursor; false = no word |
+| Swift → page | `definitionDone(req)` | the request is answered: its busy underline goes (an older `req` is ignored) |
+| Swift → page | `usagesAtCursor()` → Bool | ⇧⌘U from the menu: posts `usages` for the word at the cursor; false = no word |
+| Swift → page | `reveal({id, line, col})` | put the cursor on and scroll to; a file not on screen takes it when shown |
+| Swift → page | `focus()` | the keyboard into the editor |
+| Swift → page | `selectionRect()` → `{x, y, w, h}` | for anchoring the popover — phase C |
+| Swift → page | `proposeEdit({id, range, text})` / `clearProposal(id)` | inline diff decoration — phase C |
+| Swift → page | `applyEdit({id, range, text})` | one undoable edit; then the normal `text` message — phase C |
 
 ---
 
@@ -533,7 +546,21 @@ harness:
 
 All are active only while a workbench is the key window's content; inside
 Monaco, the page forwards them (Monaco's own bindings for these chords are
-removed so they do not double-fire).
+removed so they do not double-fire). The Navigate menu enables its commands
+only while the workbench window — or its Open Quickly panel — is key (R36), so
+another window (Settings, say) keeps these chords.
+
+⇧⌘O belongs to Open Quickly on a workbench page (R26): the hidden "All
+Workbenches" title-row binding gave it up (its button and the ⌘K palette
+remain).
+
+Limit (R30): ⌥⌘↩ is taken from Monaco's find widget, so its Replace All chord
+is gone (the widget's button stays) — the key map gives ⌥⌘↩ to Hand to Claude
+Code.
+
+Limit (R36): the workbench window includes its embedded terminal, so the menu
+takes these chords there too — ⌃6 is swallowed in the workbench terminal (vim's
+Ctrl-^ never reaches it).
 
 ---
 

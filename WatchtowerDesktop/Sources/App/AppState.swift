@@ -102,7 +102,8 @@ final class AppState {
     /// meeting, …), so a reply keeps streaming after its screen closes or its
     /// section collapses; at most three such turns run at once.
     @ObservationIgnored private let embeddedChats = EmbeddedChatEngineFactory()
-    @ObservationIgnored private var embeddedChatSweep: Timer?
+    /// Once a minute: idle embedded chats and code indexes are released.
+    @ObservationIgnored private var idleReleaseSweep: Timer?
     var embeddedChatCenter: EmbeddedChatCenter { embeddedChats.center }
 
     /// App-wide, single-slot registry for the creation-time "brief the
@@ -166,6 +167,16 @@ final class AppState {
     /// Embedded Claude Code terminals, one per project. No DB needed; closed
     /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
     let terminalCenter = TerminalCenter()
+    /// The Workbench code viewer's symbol index, per workbench: survives
+    /// navigation, released 5 minutes after its last view (spec §7).
+    let codeIndexCenter = CodeIndexCenter()
+    /// Open Quickly (⇧⇧, ⇧⌘O, ⇧⌘F) for the workbench page on screen.
+    @ObservationIgnored private(set) lazy var openQuicklyCenter = OpenQuicklyCenter(codeIndex: codeIndexCenter)
+    /// Go to definition (⌘-click, ⌃⌘J) and the Files pane's back/forward
+    /// history (⌃⌘← / ⌃⌘→), per workbench.
+    @ObservationIgnored private(set) lazy var codeNavigationCenter = CodeNavigationCenter(codeIndex: codeIndexCenter)
+    /// Usages (⇧⌘U) and the Files pane's inspector, per workbench.
+    let codeUsagesCenter = CodeUsagesCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -612,6 +623,7 @@ final class AppState {
                     self?.embeddedChatCenter.finishAllAsPartial()
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
+                    self?.stopCodeNavigationChildren()
                     // Onboarding's people load: its child gets SIGTERM.
                     self?.peopleRoster.stop()
                     // Best-effort: the removal may not finish before exit;
@@ -620,11 +632,32 @@ final class AppState {
                 }
             }
         }
-        if embeddedChatSweep == nil {
-            embeddedChatSweep = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.embeddedChatCenter.sweep() }
+        if idleReleaseSweep == nil {
+            idleReleaseSweep = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.embeddedChatCenter.sweep()
+                    self?.codeIndexCenter.releaseIdleIndexes()
+                }
             }
         }
+    }
+
+    /// App quit: no `watchtower code …` child outlives the app — the index
+    /// children, and the searches of Open Quickly, go to definition and
+    /// Usages (ruling R34; each runs in a process group of its own).
+    private func stopCodeNavigationChildren() {
+        Self.stopCodeNavigationChildren(
+            index: codeIndexCenter, openQuickly: openQuicklyCenter, navigation: codeNavigationCenter, usages: codeUsagesCenter
+        )
+    }
+
+    static func stopCodeNavigationChildren(
+        index: CodeIndexCenter, openQuickly: OpenQuicklyCenter, navigation: CodeNavigationCenter, usages: CodeUsagesCenter
+    ) {
+        index.stopAll()
+        openQuickly.stopOpenQuicklySearch()
+        navigation.stopDefinitionSearches()
+        usages.stopUsagesSearches()
     }
 
     func initialize() {
@@ -1663,6 +1696,14 @@ final class AppState {
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
             agentStates: agentStates
         )
+        vm.codeFiles.codeIndex = codeIndexCenter
+        openQuicklyCenter.workbenches = vm
+        codeNavigationCenter.workbenches = vm
+        vm.codeFiles.navigation = codeNavigationCenter
+        codeUsagesCenter.workbenches = vm
+        codeUsagesCenter.navigation = codeNavigationCenter
+        codeNavigationCenter.usages = codeUsagesCenter
+        vm.codeFiles.usages = codeUsagesCenter
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)

@@ -6,7 +6,7 @@ import WatchtowerCore
 struct WorkbenchSwitcherActions {
     /// "New Workbench…": the workbench list's New Workbench… flow.
     let newWorkbench: () -> Void
-    /// "All Workbenches" (⌘⇧O): level 1, the panel shown.
+    /// "All Workbenches": level 1, the panel shown.
     let showAll: () -> Void
 }
 

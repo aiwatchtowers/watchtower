@@ -135,7 +135,7 @@ extension WorkbenchesViewModel {
         if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row) }
     }
 
-    /// The switcher's "All Workbenches" (⌘⇧O): back to level 1, the panel
+    /// The switcher's "All Workbenches": back to level 1, the panel
     /// shown if hidden; the page stays on screen.
     func showAllWorkbenches() {
         drilledWorkbenchID = nil
@@ -252,6 +252,40 @@ extension WorkbenchesViewModel {
         // open could replace it.
         await codeFiles.pullPending(project)
         codeFiles.open(relPath, project: project, preview: preview)
+        showFilesPane(projectID: project.id)
+    }
+
+    /// Open Quickly's ↩ and ⌥↩ (spec §8.1): the file in a preview tab, the
+    /// cursor on the target's line (if any) and the keyboard in the editor
+    /// once it shows. ↩ puts the Files pane on
+    /// screen like a FILES click; ⌥↩ (`beside`) puts it beside the pane on
+    /// screen, splitting a single pane (`WorkspaceLayout.openBeside`) — the
+    /// Files pane alone stays alone (a workbench has one Files pane).
+    func openFile(at target: OpenQuicklyTarget, project: Workbench, beside: Bool) async {
+        await codeFiles.pullPending(project)
+        codeFiles.open(target.path, project: project, preview: true)
+        codeFiles.requestReveal(target.path, line: target.line, col: target.col, project: project)
+        guard beside else {
+            showFilesPane(projectID: project.id)
+            return
+        }
+        var updated = layout(projectID: project.id)
+        let kept = updated.visiblePanes.first { $0 != .files } ?? updated.primary
+        updated.openBeside(.files, keeping: kept)
+        setLayout(updated, projectID: project.id)
+    }
+
+    /// Go to definition and back/forward (spec §8.2): `location` in the Files
+    /// pane, the cursor on its line and column. A jump (`keepingTab`) opens
+    /// a kept tab — keeping a preview tab it lands on; back/forward
+    /// activate the tab as it is, reopening a closed file as a kept tab.
+    func showLocation(_ location: CodeNavLocation, project: Workbench, keepingTab: Bool) {
+        if keepingTab || !codeFiles.tabs(for: project).contains(location.path) {
+            codeFiles.open(location.path, project: project, preview: false)
+        } else {
+            codeFiles.activate(location.path, project: project)
+        }
+        codeFiles.requestReveal(location.path, line: location.line, col: location.col, project: project)
         showFilesPane(projectID: project.id)
     }
 
