@@ -94,6 +94,18 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         ])
     }
 
+    /// The current CLI no longer imports documents (spec 2026-10-03 §7): its
+    /// envelope has no docs_ok/docs_error/docs keys, and still decodes.
+    func testDecodesAnEnvelopeWithoutTheDocumentKeys() throws {
+        let current = try decode(#"""
+            {"id":1,"integration_ok":true,"integration_error":"","skill":"unchanged","hooks_added":false,
+             "excluded":[],"mcp_registered":true,"mcp_command":"","suggestions":[],"suggestions_error":"",
+             "index_ok":true,"index_error":"","indexed":3,"index_skipped":false}
+            """#)
+        XCTAssertTrue(current.docsOK)
+        XCTAssertEqual(current.summaryLines, [line("Indexed 3 document(s) for search in this workbench's sessions")])
+    }
+
     /// Re-run Setup on a folder set up before the Workbench rename (spec
     /// 2026-10-02 §5.4): the migration's own lines, in Go's wording. The
     /// permission-rule note arrives as a suggestion (Go adds it), so it shows

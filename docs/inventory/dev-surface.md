@@ -281,10 +281,7 @@ spellings. Three rules keep it narrow:
    anything outside `Binding.WorkbenchID` ("… is not in this workbench") before
    any row, data or audit, is written; new rows take `project_id` from the
    binding only (a `project_id` argument is an unknown field and refused).
-   `attach_document` accepts only an existing `.md`/`.txt` regular file that
-   resolves, after symlinks, inside the workbench's `folder_path`
-   (`resolveInsideFolder`: `../`, absolute paths, and symlinked files or
-   directories pointing out are refused). Target images (`create_targets`'
+   Target images (`create_targets`'
    `images`, `update_target`'s `add_images`) attach only to workbench N's
    targets and `remove_image_ids` detaches only the target's own images
    (`scopeImageIDs`); the source file is read, never modified, and its copy

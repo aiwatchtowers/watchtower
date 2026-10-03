@@ -221,8 +221,10 @@ struct WorkbenchResynced: Decodable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        docsOK = try c.decode(Bool.self, forKey: .docsOK)
-        docsError = try c.decode(String.self, forKey: .docsError)
+        // A CLI that no longer imports documents (spec 2026-10-03 §7) sends
+        // none of the docs keys: nothing was imported, nothing failed.
+        docsOK = try c.decodeIfPresent(Bool.self, forKey: .docsOK) ?? true
+        docsError = try c.decodeIfPresent(String.self, forKey: .docsError) ?? ""
         let docs = try c.decodeIfPresent(WorkbenchDocsReport.self, forKey: .docs)
         imported = docs?.imported ?? []
         unreadable = docs?.unreadable ?? []
