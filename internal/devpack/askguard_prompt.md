@@ -3,7 +3,7 @@ You check whether a coding agent left a request to its owner as plain text inste
 Input (JSON): $ARGUMENTS
 Return {"ok": true} when ANY of these holds:
 - stop_hook_active is true;
-- tool_calls contains a call whose name ends with "ask_owner";
+- last_assistant_message says it filed an ask, for example by naming "ask #<number>";
 - last_assistant_message does not ask the owner to do, decide, check, review or answer anything.
 Return {"ok": false, "reason": "You asked the owner in plain text. File it with ask_owner (kind question, check or review), mention 'ask #<id>' in your text if useful, then stop."}
 only when last_assistant_message clearly waits on the owner: a question to them, a decision

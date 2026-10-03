@@ -53,7 +53,7 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 
 ## Asking the owner
 
-Anything that waits for the owner — an answer, a decision, a manual check, a document review — is an `ask_owner` call. Never leave it as text in the terminal, and never as a target comment: the owner answers asks from one stack in Watchtower, and a question in the terminal is easily missed. Your text may still mention the ask (`ask #12`).
+Anything that waits for the owner — an answer, a decision, a manual check, a document review — is an `ask_owner` call. Never leave it as text in the terminal, and never as a target comment: the owner answers asks from one stack in Watchtower, and a question in the terminal is easily missed. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): a check at the end of every turn sends a request left as plain text back to you, and the named ask is how it knows you filed it.
 
 - **When to ask:** a spec, plan or design before you build on it (`kind: review`, `doc_path` = the file, relative to this folder); a decision with no sensible default (`kind: question`); a manual check you cannot run yourself (`kind: check`, one `checklist` step per thing to try).
 - **What not to ask:** progress, reports, or anything with a sensible default — state the default you took and go on.

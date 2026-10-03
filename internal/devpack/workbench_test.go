@@ -82,6 +82,7 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 		"`previous_ask_id` = the earlier ask and `changes`",
 		"If nothing can proceed, end the turn",
 		"call `get_ask N` first",
+		"name it in your final text as `ask #<id>`",
 		"It never means waiting for the owner",
 		"not in a chat artifact",
 		"## Running a plan",
