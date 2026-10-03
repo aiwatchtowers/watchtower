@@ -53,6 +53,15 @@ final class CodeNavRealCLITests: XCTestCase {
         return try result.get()
     }
 
+    /// The CLI built for the suite goes with its temporary directory.
+    override static func tearDown() {
+        if case let .success(cli)? = binary {
+            try? FileManager.default.removeItem(at: cli.deletingLastPathComponent())
+        }
+        binary = nil
+        super.tearDown()
+    }
+
     override func setUp() async throws {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("code-nav-real-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder.appendingPathComponent("pkg"), withIntermediateDirectories: true)
