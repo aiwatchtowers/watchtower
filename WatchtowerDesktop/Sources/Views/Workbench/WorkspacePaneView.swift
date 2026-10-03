@@ -28,7 +28,8 @@ struct WorkspaceAreaView: View {
     }
 }
 
-/// One pane: Board, Files or a session's terminal. In a split it has a
+/// One pane: Board, Files, a session's terminal or its report (the Session
+/// view). In a split it has a
 /// slim header (its own picker, expand and close); a single pane has none —
 /// the page header's view buttons and the panel's session list cover it, so
 /// the terminal gets the height.
@@ -49,7 +50,9 @@ struct WorkspacePaneView: View {
                 header
                 Divider()
             }
-            if isHidden, case .session = pane {
+            if isHidden, WorkspaceView(pane) == .terminal || WorkspaceView(pane) == .report {
+                // A hidden Session view leaves the screen too: its report
+                // stops refreshing until it is back.
                 Color.clear
             } else {
                 content.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -134,6 +137,9 @@ struct WorkspacePaneView: View {
         case .files:
             CodeFilesPaneView(files: vm.codeFiles, project: project)
                 .id(project.id)
+        case let .sessionReport(id):
+            WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
+                .id(id)
         }
     }
 }
@@ -236,6 +242,7 @@ extension WorkspaceView {
     var title: String {
         switch self {
         case .terminal: "Terminal"
+        case .report: "Session"
         case .board: "Board"
         case .files: "Files"
         }
@@ -244,6 +251,7 @@ extension WorkspaceView {
     var icon: String {
         switch self {
         case .terminal: "terminal"
+        case .report: "list.bullet.rectangle"
         case .board: "square.grid.2x2"
         case .files: "chevron.left.forwardslash.chevron.right"
         }

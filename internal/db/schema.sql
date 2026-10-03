@@ -2218,6 +2218,10 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     closed_at         TEXT, -- legacy, unused since 2026-10-01 (no Close action): not a "session open" flag
     agent_state       TEXT CHECK (agent_state IN ('working','waiting','approval')), -- written by the workbench hooks only; NULL = never reported
     agent_state_at    TEXT, -- written by the workbench hooks only; UTC ms, e.g. 2026-10-03T12:34:56.789Z
+    finished_at       TEXT, -- finish_session's time, agent_state_at format; NULL = not finished; a 'working' state write clears it
+    finish_summary    TEXT NOT NULL DEFAULT '', -- the agent's last finish_session summary, kept after finished_at is cleared
+    agent_failed_at   TEXT, -- = agent_state_at of the StopFailure write that set it; NULL = no error
+    agent_error       TEXT NOT NULL DEFAULT '', -- the StopFailure error type, clipped to 60 runes; '' = unknown
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );
@@ -2253,3 +2257,28 @@ CREATE TABLE IF NOT EXISTS owner_asks (
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+
+-- Which targets a workbench session's agent wrote to (00101): one row per
+-- (session, target), upserted by the workbench write tools. Go writes it.
+CREATE TABLE IF NOT EXISTS terminal_session_targets (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    target_id  INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    first_at   TEXT NOT NULL, -- UTC ISO-8601 seconds; kept by later links
+    last_at    TEXT NOT NULL,
+    PRIMARY KEY (session_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_session_targets(target_id);
+
+-- Go-only cache of a workbench's PR/branch state for session reports (00101).
+CREATE TABLE IF NOT EXISTS workbench_pr_states (
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    ref         TEXT NOT NULL, -- 'pr:<number>' or 'branch:<name>'
+    state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
+    pr_number   INTEGER, -- set for a pr ref, and for a branch whose PR gh found
+    title       TEXT NOT NULL DEFAULT '',
+    additions   INTEGER,
+    deletions   INTEGER,
+    merged_at   TEXT NOT NULL DEFAULT '',
+    checked_at  TEXT NOT NULL,
+    PRIMARY KEY (project_id, ref)
+);

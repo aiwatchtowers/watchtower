@@ -27,13 +27,20 @@ const maxBatchTargets = 100
 // buildToolRegistry registers them. files stores the images attached to
 // targets.
 func WorkbenchTools(files workbenchfiles.Store) []*Tool {
+	return workbenchTools(files, processTerminalSession)
+}
+
+// workbenchTools is WorkbenchTools with the terminal session env read through
+// sessionEnv — tests inject their own.
+func workbenchTools(files workbenchfiles.Store, sessionEnv func() string) []*Tool {
 	return []*Tool{
 		NewWorkbenchInfo(), NewWorkbenchBoard(), NewUpdateWorkbench(),
 		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
-		NewCreateTargets(files), NewUpdateTarget(files),
-		NewListComments(), NewAddComment(), NewResolveComment(),
-		NewAskOwner(processTerminalSession), NewGetAsk(),
-		NewListAsks(processTerminalSession), NewWithdrawAsk(),
+		NewCreateTargets(files, sessionEnv), NewUpdateTarget(files, sessionEnv),
+		NewListComments(), NewAddComment(sessionEnv), NewResolveComment(),
+		NewAskOwner(sessionEnv), NewGetAsk(),
+		NewListAsks(sessionEnv), NewWithdrawAsk(),
+		NewFinishSession(sessionEnv),
 	}
 }
 

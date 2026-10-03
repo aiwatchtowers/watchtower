@@ -133,8 +133,86 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.decode(Data(expanded.utf8)), .default)
     }
 
-    func testTheHeaderViewsAreTerminalBoardAndFiles() {
-        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .board, .files])
+    func testTheHeaderViewsAreTerminalSessionBoardAndFiles() {
+        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .report, .board, .files])
+        XCTAssertEqual(WorkspaceView(.sessionReport(4)), .report)
+    }
+
+    // MARK: - Session view (spec 2026-10-03-workbench-session-report Part 7)
+
+    /// A layout saved before the Session view decodes as it was; one naming
+    /// a pane this build does not know decodes to `.default`.
+    func testOldLayoutsStillDecodeAndAnUnknownPaneGivesDefault() throws {
+        let old = #"{"primary":{"session":{"_0":3}},"secondary":{"board":{}},"expanded":{"board":{}},"dividerFraction":0.4}"#
+        let decoded = WorkspaceLayout.decode(Data(old.utf8))
+        XCTAssertEqual(decoded.visiblePanes, [.board])
+        XCTAssertEqual(decoded.primary, .session(3))
+        XCTAssertEqual(decoded.dividerFraction, 0.4)
+        let unknown = #"{"primary":{"session":{"_0":3}},"secondary":{"timeline":{"_0":3}},"dividerFraction":0.4}"#
+        XCTAssertEqual(WorkspaceLayout.decode(Data(unknown.utf8)), .default)
+    }
+
+    func testTheSessionViewRoundTrips() throws {
+        var l = WorkspaceLayout.default
+        l.show(.session(3))
+        l.split(with: .sessionReport(3))
+        l.toggleExpand(.sessionReport(3))
+        XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
+    }
+
+    /// A panel click in a split with the Session view: the session takes the
+    /// other slot and the report follows it.
+    func testTheSessionViewFollowsTheSessionPutOnScreen() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .sessionReport(1), expanded: nil, dividerFraction: 0.5)
+        l.show(.session(2))
+        XCTAssertEqual(l.visiblePanes, [.session(2), .sessionReport(2)])
+
+        var reportFirst = WorkspaceLayout(primary: .sessionReport(1), secondary: .board, expanded: nil, dividerFraction: 0.5)
+        reportFirst.show(.session(2))
+        XCTAssertEqual(reportFirst.visiblePanes, [.sessionReport(2), .session(2)], "the Board gives way, not the report")
+
+        var expanded = WorkspaceLayout(primary: .board, secondary: .sessionReport(1), expanded: .sessionReport(1), dividerFraction: 0.5)
+        expanded.show(.session(2))
+        XCTAssertEqual(expanded.visiblePanes, [.session(2), .sessionReport(2)])
+    }
+
+    func testTheSessionViewFollowsEveryWayASessionComesOnScreen() {
+        let paired = WorkspaceLayout(primary: .session(1), secondary: .sessionReport(1), expanded: nil, dividerFraction: 0.5)
+        var replaced = paired
+        replaced.replace(.session(1), with: .session(2))
+        XCTAssertEqual(replaced.visiblePanes, [.session(2), .sessionReport(2)], "a pane's picker")
+        var beside = paired
+        beside.openBeside(.session(2), keeping: .sessionReport(1))
+        XCTAssertEqual(beside.visiblePanes, [.session(2), .sessionReport(2)], "the go-to palette's ⌘↵")
+        var revealed = paired
+        revealed.reveal(.session(2), keeping: .sessionReport(1))
+        XCTAssertEqual(revealed.visiblePanes, [.session(2), .sessionReport(2)], "the Terminal toggle, Work on it")
+        var failed = paired
+        XCTAssertFalse(failed.replace(.files, with: .session(2)))
+        XCTAssertEqual(failed, paired, "a replace that places nothing moves nothing")
+    }
+
+    /// A single Session view gives way to the terminal on a panel click (the
+    /// asks drawer needs the terminal on screen).
+    func testASingleSessionViewGivesWayToTheTerminal() {
+        var l = WorkspaceLayout(primary: .sessionReport(1), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.show(.session(2))
+        XCTAssertEqual(l.visiblePanes, [.session(2)])
+    }
+
+    func testTheSessionButtonPutsTheReportBesideTheTerminal() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .board, expanded: nil, dividerFraction: 0.5)
+        l.showWorkbenchView(.sessionReport(1))
+        XCTAssertEqual(l.visiblePanes, [.session(1), .sessionReport(1)])
+        XCTAssertTrue(l.isShowing(.report))
+        l.hide(.report)
+        XCTAssertEqual(l.visiblePanes, [.session(1)])
+    }
+
+    func testDeletingTheReportedSessionKeepsTheSessionView() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .sessionReport(1), expanded: nil, dividerFraction: 0.5)
+        l.forgetSession(1, fallback: .board)
+        XCTAssertEqual(l.visiblePanes, [.sessionReport(1)], "it shows \"Pick a session\" until another one is picked")
     }
 
     func testDecodeClampsFraction() throws {

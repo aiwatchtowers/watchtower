@@ -245,8 +245,9 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 }
 
 // fileAsk inserts the ask (superseding an open previous ask in the same
-// transaction) and then indexes a review's document, best-effort: a failed
-// index is the result's index_warning, never a failed ask.
+// transaction) and then indexes a review's document and links its target to
+// the ask's session, both best-effort: a failed index is the result's
+// index_warning, a failed link its session_link_warning, never a failed ask.
 func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string) (any, error) {
 	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
@@ -296,6 +297,9 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 		if _, _, err := kb.IndexFileSet(ctx, d, set); err != nil {
 			out["index_warning"] = fmt.Sprintf("the ask is filed, but %s is not in search yet: %v", ask.DocPath, err)
 		}
+	}
+	if ask.SessionID.Valid && a.TargetID != 0 {
+		reportLinkFailure(out, linkTargets(d, ask.SessionID.Int64, []int64{a.TargetID}))
 	}
 	return out, nil
 }

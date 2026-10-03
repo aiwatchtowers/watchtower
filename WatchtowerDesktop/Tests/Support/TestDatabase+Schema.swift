@@ -1379,7 +1379,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     claude_session_id TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    closed_at         TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT,
+    closed_at         TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '',
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );
@@ -1545,6 +1545,25 @@ CREATE TABLE IF NOT EXISTS "project_comments" (
     read_at        TEXT NOT NULL DEFAULT '',
     CHECK (target_id IS NOT NULL OR parent_id IS NOT NULL)
 );
+CREATE TABLE IF NOT EXISTS terminal_session_targets (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    target_id  INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    first_at   TEXT NOT NULL,
+    last_at    TEXT NOT NULL,
+    PRIMARY KEY (session_id, target_id)
+);
+CREATE TABLE IF NOT EXISTS workbench_pr_states (
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    ref         TEXT NOT NULL,
+    state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
+    pr_number   INTEGER,
+    title       TEXT NOT NULL DEFAULT '',
+    additions   INTEGER,
+    deletions   INTEGER,
+    merged_at   TEXT NOT NULL DEFAULT '',
+    checked_at  TEXT NOT NULL,
+    PRIMARY KEY (project_id, ref)
+);
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
@@ -1694,6 +1713,7 @@ CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
 CREATE INDEX IF NOT EXISTS idx_project_comments_project ON project_comments(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_project_comments_target  ON project_comments(target_id);
 CREATE INDEX IF NOT EXISTS idx_project_comments_parent  ON project_comments(parent_id);
+CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_session_targets(target_id);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

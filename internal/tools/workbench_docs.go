@@ -182,8 +182,10 @@ type addCommentArgs struct {
 	Reason   string `json:"reason" jsonschema:"one sentence: why you comment"`
 }
 
-// NewAddComment posts an agent comment on a workbench target, or a reply.
-func NewAddComment() *Tool {
+// NewAddComment posts an agent comment on a workbench target, or a reply, and
+// links the comment's target — for a reply its root's — to the terminal
+// session sessionEnv names (linkSession).
+func NewAddComment(sessionEnv func() string) *Tool {
 	return &Tool{
 		Name: "add_comment",
 		Description: "Comment on a workbench target (target_id) or reply to a comment (parent_id) — questions for " +
@@ -219,7 +221,9 @@ func NewAddComment() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"comment_id": id}, nil
+			out := map[string]any{"comment_id": id}
+			linkCommentTarget(d, call.Binding, sessionEnv, out, id)
+			return out, nil
 		},
 	}
 }
@@ -234,6 +238,18 @@ func scopeComment(ctx context.Context, d *db.DB, b Binding, targetID, parentID i
 	}
 	_, err := commentInWorkbench(d, b.WorkbenchID, parentID)
 	return err
+}
+
+// linkCommentTarget links comment id's target: a reply is stored with its
+// root's target (placeReply), so the new row names the right one either way.
+func linkCommentTarget(d *db.DB, b Binding, sessionEnv func() string, out map[string]any, id int64) {
+	c, err := d.GetWorkbenchComment(id)
+	switch {
+	case err != nil:
+		reportLinkFailure(out, err)
+	case c != nil && c.TargetID.Valid:
+		linkSession(d, b, sessionEnv, out, c.TargetID.Int64)
+	}
 }
 
 func addAgentComment(d *db.DB, projectID, targetID, parentID int64, body string) (int64, error) {

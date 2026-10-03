@@ -741,12 +741,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         await vm.loadSessions(projectID: nil)
         XCTAssertEqual(vm.standaloneSessions.map(\.id), [shell.id], "a legacy closed terminal is listed")
-        XCTAssertFalse(vm.sessionState(shell).isLive)
+        XCTAssertFalse(vm.sessionState(shell).live)
 
         await vm.selectStandalone(shell)
 
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
-        XCTAssertTrue(vm.sessionState(shell).isLive)
+        XCTAssertTrue(vm.sessionState(shell).live)
         XCTAssertEqual(launches.count, 1)
     }
 
@@ -908,7 +908,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         await vm.showInPane(.board, item: .session(closed.id), projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .files], "the picked pane, not the secondary")
-        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive,
+        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).live,
                       "a session closed by an older build resumes like any not running one")
         XCTAssertTrue(launches.last?.args.last?.contains("--resume") == true)
 
@@ -918,7 +918,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.newSession(inPane: .session(closed.id), projectID: p)
         let fresh = try XCTUnwrap(vm.sessions.first { $0.id != closed.id })
         XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id), .board])
-        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive, "replacing a pane keeps its process")
+        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).live, "replacing a pane keeps its process")
     }
 
     /// The page header's buttons: Board / Files swap the pane beside the
@@ -1041,7 +1041,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.expanded, .session(row.id))
         await vm.startFresh(row, placement: .inPlace)
         XCTAssertEqual(vm.layout.expanded, .session(row.id))
-        XCTAssertTrue(vm.sessionState(row).isLive)
+        XCTAssertTrue(vm.sessionState(row).live)
     }
 
     /// A pane picked from a menu that left the layout while the session
@@ -1139,7 +1139,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.open(stopped)
         processes.last?.exit(0)
         await vm.open(live)
-        XCTAssertFalse(vm.sessionState(stopped).isLive)
+        XCTAssertFalse(vm.sessionState(stopped).live)
         let launchesBefore = launches.count
 
         await vm.revealTerminal(projectID: p, sessionID: stopped.id)
@@ -1147,7 +1147,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.drilledWorkbenchID, p)
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(stopped.id)])
         XCTAssertEqual(launches.count, launchesBefore, "no claude --resume from a banner")
-        XCTAssertFalse(vm.sessionState(stopped).isLive)
+        XCTAssertFalse(vm.sessionState(stopped).live)
     }
 
     /// A subject that names no session of the workbench (deleted, or

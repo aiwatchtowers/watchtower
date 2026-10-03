@@ -40,8 +40,9 @@ type createdTarget struct {
 // NewCreateTargets creates a batch of workbench targets in one transaction —
 // a whole plan in one call. Nesting is by parent_id (an existing target of
 // the workbench) or parent_key (an earlier item). An item's images are copied
-// into store before the transaction. All or nothing.
-func NewCreateTargets(store workbenchfiles.Store) *Tool {
+// into store before the transaction. All or nothing. Every created target is
+// linked to the terminal session sessionEnv names (linkSession).
+func NewCreateTargets(store workbenchfiles.Store, sessionEnv func() string) *Tool {
 	return &Tool{
 		Name: "create_targets",
 		Description: "Create targets on this workbench's board in one all-or-nothing call — e.g. a feature " +
@@ -76,7 +77,13 @@ func NewCreateTargets(store workbenchfiles.Store) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			return map[string]any{"created": created}, nil
+			out := map[string]any{"created": created}
+			ids := make([]int64, 0, len(created))
+			for _, c := range created {
+				ids = append(ids, c.TargetID)
+			}
+			linkSession(d, call.Binding, sessionEnv, out, ids...)
+			return out, nil
 		},
 	}
 }
@@ -259,8 +266,9 @@ type updateTargetArgs struct {
 
 // NewUpdateTarget changes one workbench target's status, progress, title,
 // intent or priority, and attaches or detaches its images (copied into
-// store).
-func NewUpdateTarget(store workbenchfiles.Store) *Tool {
+// store). The target is linked to the terminal session sessionEnv names
+// (linkSession).
+func NewUpdateTarget(store workbenchfiles.Store, sessionEnv func() string) *Tool {
 	return &Tool{
 		Name: "update_target",
 		Description: "Change a target on this workbench's board: status (todo, in_progress, in_review, blocked, done, " +
@@ -300,7 +308,12 @@ func NewUpdateTarget(store workbenchfiles.Store) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_target args: %w", err)
 			}
-			return applyTargetUpdate(d, store, call.Binding.WorkbenchID, a)
+			out, err := applyTargetUpdate(d, store, call.Binding.WorkbenchID, a)
+			if err != nil {
+				return nil, err
+			}
+			linkSession(d, call.Binding, sessionEnv, out, a.TargetID)
+			return out, nil
 		},
 	}
 }

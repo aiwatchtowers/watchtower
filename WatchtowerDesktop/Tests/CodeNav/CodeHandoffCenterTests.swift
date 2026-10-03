@@ -212,7 +212,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         await handoff.send(to: .session(session.id), workbenchID: project.id)
 
         XCTAssertEqual(processes[0].inputs, [bracketedPasteBytes(text)], "the refreshed state stops the Return")
-        XCTAssertEqual(vm.sessionState(session), .needsApproval)
+        XCTAssertEqual(vm.sessionState(session), .live(.needsApproval))
     }
 
     /// Ruling R54(d): Cancel during the pause stops the queued Return and

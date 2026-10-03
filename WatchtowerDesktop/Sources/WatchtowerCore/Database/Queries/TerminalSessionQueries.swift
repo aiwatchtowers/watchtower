@@ -94,21 +94,26 @@ package enum TerminalSessionQueries {
         )
     }
 
-    /// The hook-reported state of `ids` (the live `claude` sessions), with
+    /// The stored state of every workbench `claude` session, live or not,
+    /// plus `liveIDs` (a live standalone `claude` terminal): the hook state,
+    /// finished, the error, the open-ask count and the oldest open ask, with
     /// the workbench name a notice names. Read-only: Go writes these columns.
-    package static func fetchAgentStates(_ db: Database, ids: [Int64]) throws -> [SessionAgentStateRow] {
-        guard !ids.isEmpty else { return [] }
-        let marks = databaseQuestionMarks(count: ids.count)
+    package static func fetchAgentStates(_ db: Database, liveIDs: [Int64]) throws -> [SessionAgentStateRow] {
+        let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
-                SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name
+                SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
+                       s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
+                       (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open') AS open_asks,
+                       (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open')
+                           AS oldest_open_ask_id
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
-                WHERE s.id IN (\(marks))
+                WHERE (s.kind = 'claude' AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
                 ORDER BY s.id
                 """,
-            arguments: StatementArguments(ids)
+            arguments: StatementArguments(liveIDs)
         )
     }
 

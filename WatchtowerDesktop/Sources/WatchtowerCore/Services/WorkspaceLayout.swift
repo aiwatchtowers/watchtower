@@ -1,18 +1,25 @@
 import Foundation
 
-/// One pane of a project workspace: a terminal session, the Board, or the
-/// code editor with its file tabs (POC). A saved layout naming a pane that
-/// is gone (`documents`, spec 2026-10-03 Part 8) decodes to `.default`.
+/// One pane of a project workspace: a terminal session, a session's report
+/// (the Session view), the Board, or the code editor with its file tabs
+/// (POC). A saved layout naming a pane that is gone (`documents`, spec
+/// 2026-10-03 Part 8) or that this build does not know decodes to `.default`.
 package enum WorkspacePane: Codable, Hashable, Sendable {
     case session(Int64)
+    /// The Session view of a `claude` session (spec
+    /// 2026-10-03-workbench-session-report Part 7). It follows the session
+    /// put on screen (`show`, `reveal`, `replace`, `openBeside`).
+    case sessionReport(Int64)
     case board
     case files
 }
 
 /// The project page header's view buttons: a terminal (any session), the
-/// Board or the Files.
+/// Session view, the Board or the Files.
 package enum WorkspaceView: CaseIterable, Sendable {
     case terminal
+    /// A session's report (the Session view).
+    case report
     case board
     /// The code editor's file tabs (POC).
     case files
@@ -21,6 +28,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
     package init(_ pane: WorkspacePane) {
         switch pane {
         case .session: self = .terminal
+        case .sessionReport: self = .report
         case .board: self = .board
         case .files: self = .files
         }
@@ -77,12 +85,19 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
 
     /// Panel click: an expansion is dropped first; then a pane already in a
     /// slot stays as is, otherwise it replaces the primary (single) or the
-    /// secondary (split). Both slots never hold the same pane.
+    /// secondary (split) — in a split a session never replaces the Session
+    /// view: it takes the other slot, and the Session view follows it. Both
+    /// slots never hold the same pane.
     package mutating func show(_ pane: WorkspacePane) {
         expanded = nil
+        defer { follow(pane) }
         if pane == primary || pane == secondary { return }
         if isSplit {
-            secondary = pane
+            if case .session = pane, case .sessionReport? = secondary {
+                primary = pane
+            } else {
+                secondary = pane
+            }
         } else {
             primary = pane
         }
@@ -105,6 +120,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
             return false
         }
         if wasExpanded { expanded = pane }
+        follow(pane)
         return true
     }
 
@@ -124,6 +140,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     /// hiding `kept` (the pane the owner acted from). Visible already → nothing moves; a split
     /// replaces the other pane; a single pane switches to it.
     package mutating func reveal(_ pane: WorkspacePane, keeping kept: WorkspacePane) {
+        defer { follow(pane) }
         if visiblePanes.contains(pane) { return }
         if pane == primary || pane == secondary {
             expanded = nil
@@ -139,6 +156,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     /// pane splits with it second; a split replaces the pane that is not
     /// `kept` (`reveal`); on screen already → nothing moves.
     package mutating func openBeside(_ pane: WorkspacePane, keeping kept: WorkspacePane) {
+        defer { follow(pane) }
         if isSplit {
             reveal(pane, keeping: kept)
         } else {
@@ -185,7 +203,20 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
-    /// A deleted session never stays in the layout.
+    /// The Session view tracks the selected session: once `pane`, a
+    /// session, is put on screen, a Session view in either slot shows its
+    /// report.
+    private mutating func follow(_ pane: WorkspacePane) {
+        guard case let .session(id) = pane else { return }
+        let report = WorkspacePane.sessionReport(id)
+        if case .sessionReport = primary { primary = report }
+        if case .sessionReport? = secondary { secondary = report }
+        if case .sessionReport? = expanded { expanded = report }
+        if secondary == primary { unsplit() }
+    }
+
+    /// A deleted session never stays in the layout; a Session view on its
+    /// report stays, with no session to show until another one is picked.
     package mutating func forgetSession(_ id: Int64, fallback: WorkspacePane) {
         let gone = WorkspacePane.session(id)
         if expanded == gone { expanded = nil }
