@@ -7,8 +7,13 @@ import WatchtowerCore
 /// drawer on it (`WorkbenchesViewModel.showAsk`). The closed asks filed
 /// from outside the app have no session row: their "N closed" sits here.
 struct OwnerAskStackSection: View {
+    /// Past this the rows scroll, so a long stack never pushes the
+    /// session list off the panel.
+    static let maxRowsHeight: CGFloat = 220
+
     let vm: WorkbenchesViewModel
     let project: Workbench
+    @State private var rowsHeight: CGFloat = 0
 
     var body: some View {
         let asks = vm.asks
@@ -21,15 +26,21 @@ struct OwnerAskStackSection: View {
                         .sidebarSectionLabel()
                         .padding(.horizontal, 12)
                         .accessibilityAddTraits(.isHeader)
-                    ForEach(stack.asks) { ask in
-                        OwnerAskStackRow(
-                            ask: ask,
-                            sessionTitle: sessionTitle(ask),
-                            isSelected: asks.drawerAskIDs[project.id] == ask.id
-                        ) {
-                            Task { await vm.showAsk(ask.id, projectID: project.id) }
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(stack.asks) { ask in
+                                OwnerAskStackRow(
+                                    ask: ask,
+                                    sessionTitle: sessionTitle(ask),
+                                    isSelected: asks.drawerAskIDs[project.id] == ask.id
+                                ) {
+                                    Task { await vm.showAsk(ask.id, projectID: project.id) }
+                                }
+                            }
                         }
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { rowsHeight = $0 })
                     }
+                    .frame(height: min(rowsHeight, Self.maxRowsHeight))
                 }
                 if outsideClosed > 0 {
                     HStack(spacing: 4) {

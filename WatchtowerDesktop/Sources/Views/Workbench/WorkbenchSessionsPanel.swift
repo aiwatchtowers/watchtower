@@ -106,7 +106,6 @@ struct TerminalSessionRow: View {
             closedAsks
         }
         .listRowSeparator(.hidden)
-        .help(row.state.isLive ? session.title : "Not running — click to start")
         .contextMenu {
             Button("Rename…") { actions.rename(session) }
             Divider()
@@ -139,6 +138,7 @@ struct TerminalSessionRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { actions.open(session) }
+        .help(row.state.isLive ? session.title : "Not running — click to start")
     }
 }
 

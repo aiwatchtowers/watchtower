@@ -16,9 +16,17 @@ struct OwnerAskDrawerHost<Content: View>: View {
         let asks = vm.asks
         let expanded = ask != nil && asks.drawerExpanded
         HStack(spacing: 0) {
-            if !expanded {
-                content().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            // Hidden, never removed, while the drawer is expanded: the
+            // terminal host, the board and Monaco keep their identity and
+            // state (the split view's expanded-pane rule).
+            content()
+                .frame(width: expanded ? 0 : nil)
+                .frame(maxWidth: expanded ? 0 : .infinity, maxHeight: .infinity)
+                .clipped()
+                .opacity(expanded ? 0 : 1)
+                .disabled(expanded)
+                .allowsHitTesting(!expanded)
+                .accessibilityHidden(expanded)
             if let ask {
                 if !expanded { Divider() }
                 OwnerAskDrawer(vm: vm, ask: ask)

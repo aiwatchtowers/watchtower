@@ -66,7 +66,11 @@ struct OwnerAskChecklistBody: View {
     private func noteView(_ item: OwnerAskCheckItem) -> some View {
         let state = marks[item.id]
         if editable {
-            TextField(state == .broken ? "What broke? (required)" : "Note", text: Binding(get: { notes[item.id] ?? "" }, set: { setNote(item.id, $0) }), axis: .vertical)
+            TextField(
+                state == .broken ? "What broke? (required)" : "Note",
+                text: Binding(get: { notes[item.id] ?? "" }, set: { setNote(item.id, $0) }),
+                axis: .vertical
+            )
                 .textFieldStyle(.roundedBorder)
                 .font(.callout)
         } else if let note = notes[item.id], !note.isEmpty {
