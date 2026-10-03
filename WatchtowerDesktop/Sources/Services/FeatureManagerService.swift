@@ -295,21 +295,22 @@ final class FeatureManagerService {
 
     /// `enableNow(_:restart:)` for several features: each one still disabled
     /// is enabled in order (stopping at the first failure), then the daemon
-    /// restarts once if anything was enabled. Returns the ids it enabled and
-    /// whether the restart ran and succeeded; a failure is in `loadError`.
+    /// restarts once if anything was enabled. Returns the ids it enabled,
+    /// whether the restart ran and succeeded, and whether it did nothing
+    /// because another apply was in flight; a failure is in `loadError`.
     @discardableResult
     func enableNow(
         _ ids: [String],
         restart: @MainActor () async throws -> Void
-    ) async -> (enabled: [String], restarted: Bool) {
-        guard !isApplying else { return ([], false) }
+    ) async -> (enabled: [String], restarted: Bool, busy: Bool) {
+        guard !isApplying else { return ([], false, true) }
         isApplying = true
         defer { isApplying = false }
 
         await load()
-        guard loadError == nil else { return ([], false) }
+        guard loadError == nil else { return ([], false, false) }
         let toEnable = ids.filter { id in features.first { $0.id == id }?.state == "disabled" }
-        guard !toEnable.isEmpty else { return ([], false) }
+        guard !toEnable.isEmpty else { return ([], false, false) }
 
         var failure: Error?
         var enabled: [String] = []
@@ -338,7 +339,7 @@ final class FeatureManagerService {
         if let failure {
             loadError = failure.localizedDescription
         }
-        return (enabled, restarted)
+        return (enabled, restarted, false)
     }
 
     /// Onboarding's write path: makes exactly `enabled` on and the rest of

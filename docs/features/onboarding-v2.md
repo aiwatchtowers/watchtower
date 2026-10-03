@@ -52,8 +52,8 @@ Finish writes `onboarding_done` first, then brings the daemon up in the
 background (`OnboardingFinishPlan.bringUpDaemon`: start if none runs, else
 restart once), so Continue never waits on a slow restart. No one-shot
 `digest`/`tracks`/`people generate` runs: the daemon's first cycle does
-it. `pipelines_completed` is set only once the daemon is up; launch then
-just ensures a daemon runs.
+it; launch just ensures a daemon runs. A daemon that fails to come up
+shows a banner over the tab setup landed on.
 
 **Workspace without Slack.** Goals' Continue runs `watchtower workspace
 init --json` (at most once per app session, only while no Slack account exists): directory,

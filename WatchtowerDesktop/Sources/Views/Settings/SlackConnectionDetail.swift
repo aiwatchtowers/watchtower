@@ -263,7 +263,9 @@ struct SlackConnectionDetail: View {
             }
         }
         .sheet(isPresented: $showAddSlackAccountSheet) {
-            AddSlackAccountView()
+            // Settings opened during onboarding: its finish starts the
+            // daemon, not this sheet.
+            AddSlackAccountView(daemonPolicy: appState.needsOnboarding ? .deferred : .restart)
                 .environment(appState)
                 .marksAccountSheet(appState)
         }

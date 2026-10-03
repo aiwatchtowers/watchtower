@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -222,6 +223,13 @@ func TestLanguageInstruction(t *testing.T) {
 	pipe.cfg.Digest.Language = "Russian"
 	assert.Contains(t, pipe.languageInstruction(), "Russian")
 	assert.Contains(t, pipe.languageInstruction(), "IMPORTANT")
+
+	// A language picked in onboarding (any English name): the whole
+	// directive names it, never the default.
+	pipe.cfg.Digest.Language = "Polish"
+	assert.Equal(t, prompts.Directive("Polish"), pipe.languageInstruction())
+	assert.Contains(t, pipe.languageInstruction(), "Respond ONLY in Polish")
+	assert.NotContains(t, pipe.languageInstruction(), "English")
 }
 
 func TestLoadCaches(t *testing.T) {

@@ -131,6 +131,20 @@ struct MainNavigationView: View {
                 detailView
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .detailBackground()
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        if let failure = appState.daemonStartFailure {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                                Text(failure).font(.callout).lineLimit(2)
+                                Spacer()
+                                Button("Dismiss") { appState.dismissDaemonStartFailure() }
+                                    .buttonStyle(.borderless)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.orange.opacity(0.12))
+                        }
+                    }
             }
 
             StatusBarView()

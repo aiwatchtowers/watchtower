@@ -2347,7 +2347,7 @@ func (p *Pipeline) formatProfileContext() string {
 		lists.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.Reports))))
 	}
 
-	identity := p.profileIdentity()
+	identity := p.profile.Identity(sanitizePromptValue)
 	if identity == "" && lists.Len() == 0 {
 		return ""
 	}
@@ -2363,22 +2363,6 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString(lists.String())
 
 	return sb.String()
-}
-
-// profileIdentity is the profile's free-text identity: the legacy
-// CustomPromptContext when set, else the role and team lines.
-func (p *Pipeline) profileIdentity() string {
-	if p.profile.CustomPromptContext != "" {
-		return sanitizePromptValue(p.profile.CustomPromptContext)
-	}
-	var lines []string
-	if p.profile.Role != "" {
-		lines = append(lines, "Role: "+sanitizePromptValue(p.profile.Role))
-	}
-	if p.profile.Team != "" {
-		lines = append(lines, "Team: "+sanitizePromptValue(p.profile.Team))
-	}
-	return strings.Join(lines, "\n")
 }
 
 func (p *Pipeline) languageInstruction() string {

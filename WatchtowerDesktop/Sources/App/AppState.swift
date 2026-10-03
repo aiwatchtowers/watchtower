@@ -340,13 +340,14 @@ final class AppState {
         onboardingDefaults: UserDefaults = .standard,
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
-        featureManager: FeatureManagerService? = nil
+        featureManager: FeatureManagerService? = nil,
+        onboardingGoals: OnboardingGoalsModel? = nil
     ) {
         let features = featureManager ?? FeatureManagerService()
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
         self.onboardingDefaults = onboardingDefaults
-        onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
+        self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.openDatabase = openDatabase
     }
@@ -655,26 +656,15 @@ final class AppState {
                 if !needsOnboarding {
                     wireAppDatabase(manager)
                 }
-                // The daemon's cycle generates everything itself, so a launch
-                // after an interrupted generation needs nothing more than the
-                // daemon (`pipelinesCompletedKey` is kept for older builds).
+                // The daemon's cycle generates everything itself: a launch
+                // needs nothing more than a running daemon.
                 if !needsOnboarding {
                     // Ensure a fresh daemon is running (rebuild-safe): stop any existing
                     // one (possibly from an older binary), then start the current binary.
                     ensureDaemonRunning()
                 }
             } catch {
-                print("[AppState] database open failed: \(error.localizedDescription)")
-                errorMessage = error.localizedDescription
-                databaseManager = nil
-                if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
-                    ambiguousWorkspaces = names
-                } else {
-                    ambiguousWorkspaces = []
-                }
-                // No DB available — if state machine not complete, onboarding needed
-                await reconcileOnboarding(dbPool: nil)
-                isLoading = false
+                await handleLaunchDatabaseFailure(error)
             }
             // Any launch that lands in onboarding (a fresh install, or one
             // relaunched before finishing it) may let the transcription
@@ -844,6 +834,27 @@ final class AppState {
         return failure
     }
 
+    /// `initialize()` when the database could not be opened: on a fresh
+    /// install (no workspace yet) that is onboarding's starting point.
+    func handleLaunchDatabaseFailure(_ error: Error) async {
+        print("[AppState] database open failed: \(error.localizedDescription)")
+        errorMessage = error.localizedDescription
+        databaseManager = nil
+        if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
+            ambiguousWorkspaces = names
+        } else {
+            ambiguousWorkspaces = []
+        }
+        // No DB available — if state machine not complete, onboarding needed
+        await reconcileOnboarding(dbPool: nil)
+        if needsOnboarding {
+            // Nothing is connected without a database; only the sidebar of
+            // a finished install keeps failing open.
+            featureVisibility.connectedSources = .none
+        }
+        isLoading = false
+    }
+
     /// Launch-time onboarding state: the DB's `onboarding_done` wins over a
     /// local step that is not complete (no UserDefaults — a new Mac, a wiped
     /// defaults domain — must not re-run onboarding on a finished install);
@@ -876,7 +887,15 @@ final class AppState {
     /// The route onboarding follows: the goals of the last Continue and
     /// whether a Slack account is connected.
     var onboardingRoute: OnboardingRoute {
-        onboardingGoals.route(hasSlackAccount: featureVisibility.connectedSources.slack)
+        onboardingGoals.route(hasSlackAccount: onboardingHasSlackAccount)
+    }
+
+    /// Whether a Slack account is connected, for onboarding's decisions
+    /// (workspace init, the route). Never the sidebar's fail-open value:
+    /// with no database there is no account, whatever `connectedSources`
+    /// says.
+    var onboardingHasSlackAccount: Bool {
+        databaseManager != nil && featureVisibility.connectedSources.slack
     }
 
     private enum ProfileOnboarding {
@@ -913,11 +932,25 @@ final class AppState {
             let up = startOnly && daemon.daemonIsRunning()
                 ? true
                 : await OnboardingFinishPlan.bringUpDaemon(daemon)
-            // The flag tells the next launch nothing is left to resume.
             if up {
-                UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+                daemonStartFailure = nil
+            } else {
+                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
             }
         }
+    }
+
+    /// The background sync did not come up after setup: shown over the tab
+    /// setup landed on, not only in the tray.
+    private(set) var daemonStartFailure: String?
+
+    func dismissDaemonStartFailure() {
+        daemonStartFailure = nil
+    }
+
+    static func daemonStartFailureText(_ detail: String?) -> String {
+        let reason = detail.map { ": \($0)" } ?? "."
+        return "The background sync did not start\(reason) Open Settings → System to retry."
     }
 
     // MARK: - Features for a source connected from Settings
@@ -951,6 +984,16 @@ final class AppState {
     func settingsSheetDismissed(_ sheet: SettingsSheet) {
         if sheet == .aboutYou { showsLateAboutYou = false }
     }
+
+    /// Waits for the account view models' own daemon restarts (an Add or
+    /// Remove in Settings) still in flight.
+    private func awaitAccountDaemonRestarts() async {
+        await slackAccountsViewModel?.daemonRestartTask?.value
+        await googleAccountsViewModel?.daemonRestartTask?.value
+        await jiraAccountsViewModel?.daemonRestartTask?.value
+    }
+
+    static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
 
     /// Offered while an apply runs: merged once it is over.
     @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
@@ -995,7 +1038,15 @@ final class AppState {
         }
         let ids = featureSuggestion.map(\.id)
         let daemon = daemonControl
+        // The connect that raised the offer may still be restarting the
+        // daemon itself: one restart at a time.
+        await awaitAccountDaemonRestarts()
         let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        if result.busy {
+            // Settings → Features is applying its own batch.
+            featureSuggestionError = Self.featureChangesBusy
+            return
+        }
         let stillOff = Set(ids).intersection(featureManager.disabledFeatureIDs)
         if result.enabled.isEmpty, stillOff.isEmpty {
             // Everything is on already (a retry after a failed restart): the
@@ -1011,6 +1062,10 @@ final class AppState {
             // An enable or the restart failed: the offer stays, its retry
             // enables what is still off and restarts.
             featureSuggestionError = error
+            return
+        } else if result.enabled.isEmpty {
+            // Nothing enabled, nothing failed, yet some are still off.
+            featureSuggestionError = Self.featureChangesBusy
             return
         }
         featureSuggestionError = nil
@@ -1068,7 +1123,10 @@ final class AppState {
             Task { await initSidebarCounts(dbPool: pool) }
         }
         // Sources onboarding connected (its account sheets may write through
-        // the CLI without a VM reload) must reach the sidebar now.
+        // the CLI without a VM reload) must reach the sidebar now — as a new
+        // baseline: onboarding picked their features, so they raise no
+        // related-features offer.
+        lastReadConnectedSources = nil
         connectedSourcesRefresh = Task { await refreshConnectedSources() }
     }
 
@@ -1180,17 +1238,26 @@ final class AppState {
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
         }
-        try await daemon.waitUntilStopped()
-
-        // 2. Wipe LLM-generated tables and the daemon's stamps.
-        try db.wipeLLMData()
-        if let workspaceDir {
-            try DaemonStampFiles.clear(in: workspaceDir)
+        var failure: Error?
+        do {
+            try await daemon.waitUntilStopped()
+            // 2. Wipe LLM-generated tables and the daemon's stamps.
+            try db.wipeLLMData()
+            if let workspaceDir {
+                try DaemonStampFiles.clear(in: workspaceDir)
+            }
+        } catch {
+            failure = error
         }
 
-        // 3. Restart: waits for the stopped daemon to be gone, then starts it.
-        try await daemon.restartWaiting()
-        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+        // 3. Restart — also after a failure above, so the reset never leaves
+        // the app without a daemon; the first error is what is reported.
+        do {
+            try await daemon.restartWaiting()
+        } catch {
+            failure = failure ?? error
+        }
+        if let failure { throw failure }
     }
 
     /// Ensure the daemon is running against the current CLI binary.

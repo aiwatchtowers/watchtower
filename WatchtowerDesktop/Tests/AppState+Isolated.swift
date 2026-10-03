@@ -14,15 +14,18 @@ extension AppState {
     static func isolated(
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { throw CocoaError(.fileNoSuchFile) },
         peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") },
-        featuresRunner: any CLIRunnerProtocol = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8))
+        featuresRunner: any CLIRunnerProtocol = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)),
+        onboardingGoals: ((UserDefaults) -> OnboardingGoalsModel)? = nil
     ) -> AppState {
         let name = "WatchtowerDesktopTests.onboarding"
         UserDefaults.standard.removePersistentDomain(forName: name)
+        let defaults = UserDefaults(suiteName: name) ?? .standard
         let appState = AppState(
-            onboardingDefaults: UserDefaults(suiteName: name) ?? .standard,
+            onboardingDefaults: defaults,
             openDatabase: openDatabase,
             peopleRosterRun: peopleRosterRun,
-            featureManager: FeatureManagerService(runner: featuresRunner)
+            featureManager: FeatureManagerService(runner: featuresRunner),
+            onboardingGoals: onboardingGoals?(defaults)
         )
         appState.daemonControlOverride = FakeDaemon()
         appState.wireAppDatabaseOverride = { _ in }

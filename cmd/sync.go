@@ -630,8 +630,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if firstErr != nil {
 		return fmt.Errorf("sync failed: %w", firstErr)
 	}
-	// Skip post-sync pipelines in --progress-json mode: the desktop app
-	// runs them independently via BackgroundTaskManager after onboarding.
+	// Skip post-sync pipelines in --progress-json mode: that is a desktop
+	// caller showing progress (the onboarding people load among them), and
+	// the daemon's cycle runs the pipelines.
 	if !syncFlagProgressJSON && !syncFlagNoPipelines {
 		runPostSyncPipelines(ctx, database, cfg, logger)
 	}

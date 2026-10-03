@@ -456,23 +456,17 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(screen(appState), .onboarding)
     }
 
-    /// Run setup again: back to Goals; finish brings the daemon up again
-    /// (no pipeline burst, so the completion flag stays).
+    /// Run setup again: back to Goals; finish brings the daemon up again.
     func testStartOnboardingResetsToGoals() async throws {
         let (defaults, suiteName) = try onboardingSuite()
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-            UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
-        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(7, forKey: OnboardingStateMachineV2.legacyStepKey)
         let appState = await launch(defaults, db: dbManager)
-        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
 
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         XCTAssertEqual(appState.onboarding.currentStep, .purpose)
         XCTAssertTrue(appState.needsOnboarding)
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
     }
 
     func testLegacyCompleteStepWithoutADatabaseOpensMainWindow() async throws {
@@ -501,10 +495,7 @@ final class AppStateTests: XCTestCase {
 
     func testStartOnboardingResetsTheGoalsStep() async throws {
         let (defaults, suiteName) = try onboardingSuite()
-        defer {
-            defaults.removePersistentDomain(forName: suiteName)
-            UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
-        }
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let appState = await launch(defaults, db: dbManager)
         appState.onboardingGoals.isCustomizingFeatures = true
 
@@ -645,7 +636,6 @@ final class AppStateTests: XCTestCase {
     /// first, then the daemon started exactly once — and wires the rest of
     /// the app once.
     func testFinishAfterTheOnboardingOpenStartsTheDaemonOnce() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -655,7 +645,6 @@ final class AppStateTests: XCTestCase {
         var retries = 0
         appState.wireAppDatabaseOverride = { _ in appWirings += 1 }
         appState.needsOnboarding = true
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
 
         // Goals → Connect: no daemon.
         let route = OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)
@@ -675,7 +664,6 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(appState.needsOnboarding)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertNil(appState.onboardingStepError)
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
         let done = try await dbManager.dbPool.read { db in
             try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
         }
@@ -685,7 +673,6 @@ final class AppStateTests: XCTestCase {
     /// "Run setup again" with a live daemon: finish restarts it once so the
     /// new feature set reaches it.
     func testFinishRestartsARunningDaemonOnce() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -725,7 +712,6 @@ final class AppStateTests: XCTestCase {
     /// Landing: Catch-Up for work communication with Slack, else Workbench
     /// for development, else AI Chat.
     func testFinishLandsOnTheGoalsTab() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let cases: [(Set<OnboardingGoal>, Bool, Set<String>, SidebarDestination)] = [
             ([.workCommunication, .development], true, [], .catchUp),
             ([.workCommunication, .development], false, [], .workbench),
@@ -878,7 +864,6 @@ final class AppStateTests: XCTestCase {
 
     /// Leaving onboarding's About you (Done or Later) counts as shown.
     func testLeavingTheOnboardingStepMarksAboutYouShown() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -973,8 +958,6 @@ final class AppStateTests: XCTestCase {
     /// A restart may wait a minute for the old daemon to die: finish
     /// reaches .complete without waiting for it.
     func testFinishDoesNotWaitForTheRestart() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -990,17 +973,14 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertFalse(appState.needsOnboarding)
         await waitUntil { daemon.isRestartParked }
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey), "not before the daemon is up")
+        XCTAssertEqual(daemon.restarts, 1, "the restart is still running")
         daemon.releaseRestart()
         await appState.onboardingDaemonStart?.value
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
+        XCTAssertNil(appState.daemonStartFailure)
     }
 
-    /// A daemon that does not start still finishes onboarding; the
-    /// completion flag stays off so the next launch brings it up.
+    /// A daemon that does not start still finishes onboarding, and says so.
     func testFinishWhenTheDaemonFailsToStart() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -1015,7 +995,9 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
+        XCTAssertNotNil(appState.daemonStartFailure, "the landing says the sync did not start")
+        appState.dismissDaemonStartFailure()
+        XCTAssertNil(appState.daemonStartFailure)
     }
 
     private func workspaceWithStamps() throws -> String {
@@ -1030,7 +1012,6 @@ final class AppStateTests: XCTestCase {
     /// Reset LLM data: the daemon stops, the tables and its stamps go, then
     /// one restart rebuilds everything.
     func testResetLLMDataClearsStampsAndRestartsTheDaemon() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let dir = try workspaceWithStamps()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let appState = AppState.isolated()
@@ -1046,12 +1027,9 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(daemon.starts, 0)
         let left = try FileManager.default.contentsOfDirectory(atPath: dir)
         XCTAssertEqual(left, ["last_sync.json"], "only the stamps go; the sync record stays")
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
     }
 
     func testResetLLMDataSurfacesAFailedRestart() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
         let dir = try workspaceWithStamps()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let appState = AppState.isolated()
@@ -1066,17 +1044,6 @@ final class AppStateTests: XCTestCase {
         } catch {}
 
         XCTAssertEqual(daemon.stops, 0, "nothing to stop")
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
-    }
-
-    /// Run setup again keeps the completion flag: the daemon resumes, no
-    /// pipeline burst.
-    func testStartOnboardingKeepsThePipelinesFlag() {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
-        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
-        let appState = AppState.isolated()
-        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
-        XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
     }
 
     // MARK: - Run setup again
@@ -1144,11 +1111,10 @@ final class AppStateTests: XCTestCase {
 
     // MARK: - Verify follow-ups 2
 
-    /// The daemon outlives the stop: nothing is wiped, the failure reaches
-    /// Settings, no restart.
+    /// The daemon outlives the stop: nothing is wiped and the failure
+    /// reaches Settings; a restart is still attempted so the reset never
+    /// leaves the app without a daemon.
     func testResetLLMDataWipesNothingWhenTheDaemonDoesNotStop() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
         let dir = try workspaceWithStamps()
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let appState = AppState.isolated()
@@ -1161,19 +1127,19 @@ final class AppStateTests: XCTestCase {
         do {
             try await appState.resetLLMData(workspaceDir: dir)
             XCTFail("a daemon that does not stop must stop the reset")
-        } catch {}
+        } catch {
+            XCTAssertEqual(error as? DaemonRestartError, .stopTimedOut(pid: 4242), "the first error is reported")
+        }
 
         XCTAssertEqual(daemon.stops, 1)
-        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
                        Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
-        XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
     }
 
     /// Two finishes in a row (a quick re-run): the second bring-up waits
     /// for the first, so the restarts never overlap.
     func testFinishBringUpsAreChained() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -1233,7 +1199,6 @@ final class AppStateTests: XCTestCase {
     /// A re-run finished without a change: no restart, and the owner stays
     /// where they were.
     func testUnchangedRerunFinishKeepsTheDaemonAndTheTab() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -1254,7 +1219,6 @@ final class AppStateTests: XCTestCase {
 
     /// ...but a daemon that is not running gets started.
     func testUnchangedRerunFinishStartsAStoppedDaemon() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
@@ -1553,5 +1517,276 @@ final class AppStateTests: XCTestCase {
         await accept.value
 
         XCTAssertEqual(appState.featureSuggestion.map(\.id), ["tracks"], "applied ids cleared, the late one kept")
+    }
+
+    // MARK: - Fresh install (final review A)
+
+    /// Counts opens; fails until `ready`.
+    private final class FlakyOpen: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isReady = false
+        private var opens = 0
+        let manager: DatabaseManager
+        init(_ manager: DatabaseManager) { self.manager = manager }
+        func makeReady() { lock.withLock { isReady = true } }
+        var count: Int { lock.withLock { opens } }
+        func open() throws -> DatabaseManager {
+            try lock.withLock {
+                opens += 1
+                guard isReady else { throw CocoaError(.fileNoSuchFile) }
+                return manager
+            }
+        }
+    }
+
+    /// Records the Goals step's CLI actions.
+    @MainActor
+    private final class GoalsSpy {
+        var calls: [String] = []
+        var onInit: () -> Void = {}
+    }
+
+    private func goalsModel(_ spy: GoalsSpy, defaults: UserDefaults) -> OnboardingGoalsModel {
+        OnboardingGoalsModel(
+            defaults: defaults,
+            systemLanguage: "English",
+            checkCLI: { .ready(provider: "claude") },
+            actions: OnboardingGoalsActions(
+                initWorkspace: {
+                    spy.calls.append("workspace init")
+                    spy.onInit()
+                },
+                setLanguage: { spy.calls.append("language \($0)") },
+                applyFeatures: { _ in
+                    spy.calls.append("features")
+                    return (nil, false)
+                }
+            )
+        )
+    }
+
+    /// The real launch path of a fresh install: the database cannot open
+    /// (no workspace), so nothing is connected — not the sidebar's fail-open
+    /// `.all`. Goals' Continue then initializes the workspace, the route
+    /// goes to Connect, and the onboarding open succeeds.
+    func testFreshInstallInitializesTheWorkspaceAndOpensConnect() async throws {
+        let opener = FlakyOpen(try XCTUnwrap(dbManager))
+        let spy = GoalsSpy()
+        spy.onInit = { opener.makeReady() }
+        let open: @Sendable () throws -> DatabaseManager = { try opener.open() }
+        let appState = AppState.isolated(openDatabase: open) { self.goalsModel(spy, defaults: $0) }
+        XCTAssertTrue(appState.featureVisibility.connectedSources.slack, "the fail-open default before launch")
+
+        await appState.handleLaunchDatabaseFailure(CocoaError(.fileNoSuchFile))
+        XCTAssertTrue(appState.needsOnboarding)
+        XCTAssertFalse(appState.onboardingHasSlackAccount)
+        XCTAssertEqual(appState.featureVisibility.connectedSources, .none)
+
+        let model = appState.onboardingGoals
+        await model.prepare(configuredLanguage: nil)
+        let submitted = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount)
+        let route = try XCTUnwrap(submitted)
+        XCTAssertEqual(spy.calls.filter { $0 == "workspace init" }.count, 1)
+        XCTAssertEqual(route.step(after: .purpose), .connect)
+
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+
+        XCTAssertEqual(appState.onboarding.currentStep, .connect)
+        XCTAssertNotNil(appState.databaseManager)
+        XCTAssertNotNil(appState.slackAccountsViewModel, "the Connect sheets have their view models")
+        XCTAssertNil(appState.onboardingStepError)
+    }
+
+    /// Development only on a fresh install: no Connect, no About you; finish
+    /// opens the database itself, writes onboarding_done and starts the
+    /// daemon.
+    func testFreshDevelopmentOnlyInstallFinishes() async throws {
+        let opener = FlakyOpen(try XCTUnwrap(dbManager))
+        let spy = GoalsSpy()
+        spy.onInit = { opener.makeReady() }
+        let open: @Sendable () throws -> DatabaseManager = { try opener.open() }
+        let appState = AppState.isolated(openDatabase: open) { self.goalsModel(spy, defaults: $0) }
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        await appState.handleLaunchDatabaseFailure(CocoaError(.fileNoSuchFile))
+
+        let model = appState.onboardingGoals
+        model.selection.goals = [.development]
+        await model.prepare(configuredLanguage: nil)
+        let submitted = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount)
+        let route = try XCTUnwrap(submitted)
+        XCTAssertEqual(route.step(after: .purpose), .complete)
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(spy.calls.first, "workspace init")
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertEqual(daemon.starts, 1)
+        let done = try await dbManager.dbPool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
+        }
+        XCTAssertEqual(done, true)
+    }
+
+    /// Settings → Features applying its own batch: Turn on does nothing,
+    /// says so, and keeps the offer.
+    func testTurnOnWhileSettingsAppliesKeepsTheOffer() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = try await appStateOffering(runner)
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.featureManager.isApplying = true
+
+        await appState.acceptFeatureSuggestion()
+
+        XCTAssertEqual(appState.featureSuggestionError, AppState.featureChangesBusy)
+        XCTAssertEqual(appState.featureSuggestion.count, 2)
+        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertFalse(runner.calls.contains { $0.dropFirst().first == "enable" })
+
+        appState.featureManager.isApplying = false
+        await appState.acceptFeatureSuggestion()
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+        XCTAssertNil(appState.featureSuggestionError)
+    }
+
+    /// The wipe fails after the stop: the daemon is still restarted and the
+    /// wipe's error, the first one, is what Settings shows — even when the
+    /// restart fails too.
+    func testResetLLMDataRestartsAfterAFailedWipe() async throws {
+        let dir = try workspaceWithStamps()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir)
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir)
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.restartError = DaemonRestartError.cliNotFound
+        appState.daemonControlOverride = daemon
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a failed wipe must reach Settings")
+        } catch {
+            XCTAssertNotEqual(error as? DaemonRestartError, .cliNotFound, "the wipe's error, not the restart's")
+        }
+
+        XCTAssertEqual(daemon.restarts, 1)
+    }
+
+    // MARK: - Final review D
+
+    /// A Goals model whose Continue reports a feature change (`features`)
+    /// or writes a language, with a ready CLI.
+    private func changingGoals(_ spy: GoalsSpy, featuresChanged: Bool, defaults: UserDefaults) -> OnboardingGoalsModel {
+        OnboardingGoalsModel(
+            defaults: defaults,
+            systemLanguage: "English",
+            checkCLI: { .ready(provider: "claude") },
+            actions: OnboardingGoalsActions(
+                initWorkspace: { spy.calls.append("workspace init") },
+                setLanguage: { spy.calls.append("language \($0)") },
+                applyFeatures: { _ in
+                    spy.calls.append("features")
+                    return (nil, featuresChanged)
+                }
+            )
+        )
+    }
+
+    private func rerunAppState(_ spy: GoalsSpy, featuresChanged: Bool) throws -> (AppState, FakeDaemon) {
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open) {
+            self.changingGoals(spy, featuresChanged: featuresChanged, defaults: $0)
+        }
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: "English")
+        return (appState, daemon)
+    }
+
+    /// A re-run whose only change is a feature: finish restarts once.
+    func testRerunWithAFeatureChangeRestartsOnceOnFinish() async throws {
+        let (appState, daemon) = try rerunAppState(GoalsSpy(), featuresChanged: true)
+        let model = appState.onboardingGoals
+        model.selection.goals = [.development]
+        await model.prepare(configuredLanguage: nil)
+        let submitted = await model.submit(hasSlackAccount: false)
+        let route = try XCTUnwrap(submitted)
+
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(daemon.starts, 0)
+    }
+
+    /// A re-run whose only change is the language: Cancel restarts once.
+    func testRerunWithALanguageChangeRestartsOnceOnCancel() async throws {
+        let spy = GoalsSpy()
+        let (appState, daemon) = try rerunAppState(spy, featuresChanged: false)
+        let model = appState.onboardingGoals
+        await model.prepare(configuredLanguage: nil)
+        model.language = "Polish"
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertTrue(spy.calls.contains("language Polish"))
+
+        appState.cancelOnboardingRerun()
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(daemon.starts, 0)
+    }
+
+    /// The real onRetry (reinitializeAfterOnboarding) after a finish that
+    /// opened the database starts no second daemon.
+    func testFinishWithTheRealRetryStartsOneDaemon() async throws {
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.purpose)
+
+        await appState.leaveOnboardingStep(
+            .purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false),
+            onRetry: appState.reinitializeAfterOnboarding
+        )
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.starts, 1)
+        XCTAssertEqual(daemon.restarts, 0)
+    }
+
+    /// Jira connected in onboarding's own Connect step: finishing raises no
+    /// related-features offer (onboarding picked those features).
+    func testFinishingAFirstRunThatConnectedJiraOffersNothing() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open, featuresRunner: runner)
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.connect)
+        _ = await appState.openDatabaseForOnboarding()
+        try await dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertJiraAccount(db)
+            _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com", gmailEnabled: true)
+        }
+        // No refresh before finish: its own reads must not count as new.
+
+        await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)) {}
+        await appState.onboardingDaemonStart?.value
+        await appState.connectedSourcesRefresh?.value
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
     }
 }

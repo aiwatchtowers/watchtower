@@ -63,3 +63,14 @@ func TestFormatProfileContext_LegacyCustomContext_Unchanged(t *testing.T) {
 	want := "=== VIEWER PROFILE CONTEXT ===\nI lead the platform team.\n\nCOACHING PERSONALIZATION:\n- Tailor communication advice to the viewer's role and responsibilities\n\nVIEWER'S REPORTS: [\"U20\",\"U21\"] — coaching for managing these people\n\nVIEWER'S PEERS: [\"U30\"] — coaching for peer collaboration\n\nVIEWER'S MANAGER: U40 — coaching for managing up\n"
 	assert.Equal(t, want, p.formatProfileContext())
 }
+
+// A manager picked in About you is a namespaced id ("1:U40"); the prompt
+// carries its raw form, like reports and peers. A raw id is unchanged.
+func TestFormatProfileContext_NamespacedManagerRendersRaw(t *testing.T) {
+	for stored, want := range map[string]string{"1:U40": "U40", "U40": "U40"} {
+		p := &Pipeline{profile: &db.UserProfile{Manager: stored}}
+		got := p.formatProfileContext()
+		assert.Contains(t, got, "VIEWER'S MANAGER: "+want, stored)
+		assert.NotContains(t, got, "1:U40", stored)
+	}
+}
