@@ -61,6 +61,9 @@ func driftRepo(t *testing.T) string {
 // branch.
 func driftWorkbench(t *testing.T, database *db.DB, folder, branch string) (int64, int64) {
 	t.Helper()
+	// Run from a Watchtower terminal, `go test` inherits its row id; a test
+	// that wants the session state sets the variable itself afterwards.
+	unsetTerminalEnv(t)
 	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	var ids []int64

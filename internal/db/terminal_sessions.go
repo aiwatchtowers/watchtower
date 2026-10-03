@@ -42,9 +42,12 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d: %w", id, err)
 	}
+	// An unreadable stamp reads as never reported rather than failing the
+	// row: the /clear id move and `terminal title` read it too, and the next
+	// state write stores a valid stamp again.
 	if stateAt.Valid {
-		if s.AgentStateAt, err = time.Parse(agentStateAtLayout, stateAt.String); err != nil {
-			return nil, fmt.Errorf("reading terminal session %d agent_state_at: %w", id, err)
+		if at, perr := time.Parse(agentStateAtLayout, stateAt.String); perr == nil {
+			s.AgentStateAt = at
 		}
 	}
 	return &s, nil

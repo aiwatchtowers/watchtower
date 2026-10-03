@@ -207,17 +207,25 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 			fmt.Fprintf(stderr, "watchtower: board drift check failed: %v\n", r)
 		}
 	}()
+	at := hookNow()
 	inCtx, cancelIn := context.WithTimeout(ctx, stopHookStdinWait)
-	in, err := readHookInput[stopHookInput](inCtx, stdin)
+	// The session state's cap: Stop carries last_assistant_message, and a
+	// cut-off input would lose the "waiting" write.
+	in, err := readHookInputLimit[stopHookInput](inCtx, stdin, sessionStateStdinLimit)
 	cancelIn()
 	if err != nil {
+		if _, inTerminal := os.LookupEnv(terminalSessionEnv); inTerminal && !errors.Is(err, io.EOF) {
+			fmt.Fprintf(stderr, "watchtower: session state not recorded: reading the hook input: %v\n", err)
+		}
 		return
 	}
-	at := hookNow()
 	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
 	if err != nil || id <= 0 {
-		if !in.StopHookActive {
+		switch {
+		case !in.StopHookActive:
 			fmt.Fprintf(stderr, "watchtower: board drift check skipped: invalid %s %q\n", workbenchFlagName(vocab.Legacy), rawID)
+		case stopStateExpected(in.SessionID):
+			fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid %s %q\n", workbenchFlagName(vocab.Legacy), rawID)
 		}
 		return
 	}
@@ -233,7 +241,11 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 		// which our deadline must never cut off part-way (Claude Code's hook
 		// timeout still bounds the whole run).
 		if _, database, err = openJiraCmdDB(); err != nil {
-			fmt.Fprintf(stderr, "watchtower: board drift check skipped: %v\n", err)
+			lost := ""
+			if stopStateExpected(in.SessionID) {
+				lost = " and session state not recorded"
+			}
+			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", lost, err)
 			return
 		}
 		if blocked := stopHookDrift(ctx, stdout, stderr, database, id, vocab); blocked {
@@ -264,6 +276,14 @@ func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.D
 	}
 	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings, vocab)})
 	return true
+}
+
+// stopStateExpected: the Stop hook would record the session state (a
+// Desktop terminal and a payload naming its conversation), so a failure
+// before the write says the state was lost too.
+func stopStateExpected(sessionID string) bool {
+	_, inTerminal := os.LookupEnv(terminalSessionEnv)
+	return inTerminal && sessionID != ""
 }
 
 // recordStopAgentState records "waiting" for a turn the Stop hook let end.

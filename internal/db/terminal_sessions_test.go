@@ -239,6 +239,22 @@ func TestSetTerminalAgentState_OnlyFromApproval(t *testing.T) {
 	}
 }
 
+func TestGetTerminalSession_UnreadableStampReadsAsNeverReported(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = 'yesterday' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatalf("a bad stamp must not fail the row's other readers: %v", err)
+	}
+	if !s.AgentStateAt.IsZero() || s.AgentState.String != "waiting" || s.ClaudeSessionID.String != agentStateUUID {
+		t.Fatalf("row = %+v", s)
+	}
+}
+
 func TestSetTerminalAgentState_TimestampFormat(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)

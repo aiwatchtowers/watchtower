@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -244,6 +246,11 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 			if tc.name != "deleted row" {
 				assert.Equal(t, tc.wantState, storedAgentState(t, database, row))
 			}
+			if tc.name == "repeat is a no-op" {
+				s, err := database.GetTerminalSession(row)
+				require.NoError(t, err)
+				assert.True(t, s.AgentStateAt.Before(time.Now().Add(-30*time.Minute)), "a repeat keeps the transition time, got %v", s.AgentStateAt)
+			}
 		})
 	}
 }
@@ -338,6 +345,47 @@ func TestSessionState_StopHookActive(t *testing.T) {
 		assert.Empty(t, out)
 		assert.Empty(t, errOut, "a broken config would print a line if the DB were opened")
 	})
+}
+
+// In a Desktop terminal a Stop whose input cannot be read, or whose
+// --workbench is bad on the stop_hook_active path, says the state was lost
+// in one stderr line; stdout stays empty.
+func TestSessionState_StopHookLostStateIsOneLine(t *testing.T) {
+	for _, tc := range []struct{ name, rawID, input, want string }{
+		{"unreadable input", "", `{"session_id":`, "session state not recorded: reading the hook input"},
+		{"bad id on the continued turn", "abc", `{"session_id":"` + briefLaunchID + `","stop_hook_active":true}`, "session state not recorded: invalid --workbench"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopStateFixture(t, "open")
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			rawID := tc.rawID
+			if rawID == "" {
+				rawID = strconv.FormatInt(pid, 10)
+			}
+
+			out, errOut := stopHookIO(t, rawID, tc.input)
+
+			assert.Empty(t, out)
+			assert.Contains(t, errOut, tc.want)
+			assert.Equal(t, 1, strings.Count(errOut, "\n"), "one stderr line")
+			assert.Empty(t, storedAgentState(t, database, row))
+		})
+	}
+}
+
+// A folder never resynced since the rename runs the legacy Stop entry
+// (`project check --project N`); its state half arrives with the binary too.
+func TestSessionState_LegacyStopHookRecordsWaiting(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	var out, errOut bytes.Buffer
+
+	runStopHook(context.Background(), strings.NewReader(statePayload("Stop", briefLaunchID, "")), &out, &errOut,
+		strconv.FormatInt(pid, 10), legacyWorkbenchVocabulary)
+
+	assert.Empty(t, out.String())
+	assert.Empty(t, errOut.String())
+	assert.Equal(t, "waiting", storedAgentState(t, database, row))
 }
 
 // A failed state write on the Stop path is one stderr line; stdout stays

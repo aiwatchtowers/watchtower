@@ -112,8 +112,8 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 		}
 	}
 	if clearState {
-		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, hook.SessionID, time.Now()); err != nil {
-			return err
+		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, hook.SessionID, hookNow()); err != nil {
+			return fmt.Errorf("clearing the previous run's agent state: %w", err)
 		}
 	}
 	return nil

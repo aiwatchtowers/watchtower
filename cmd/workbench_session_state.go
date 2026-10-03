@@ -128,6 +128,9 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	if err != nil || workbenchID <= 0 {
 		return fmt.Errorf("invalid --workbench %q", briefClip(rawWorkbenchID, 40))
 	}
+	// The event time is when the hook started, not when a large input
+	// finished reading: a slow read must not outrank a later event.
+	at := hookNow()
 	ctx, cancel := context.WithTimeout(context.Background(), sessionStateInputWait)
 	in, err := readHookInputLimit[sessionStateInput](ctx, stdin, sessionStateStdinLimit)
 	cancel()
@@ -137,7 +140,6 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	if err != nil {
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
-	at := hookNow()
 	state, onlyFrom, ok := agentStateFor(in.HookEventName, in.NotificationType)
 	if !ok || in.SessionID == "" {
 		return nil
