@@ -45,6 +45,15 @@ final class OpenQuicklySupportTests: XCTestCase {
         )
     }
 
+    func testOnlyQuickLookTakingTheKeyboardKeepsThePanel() {
+        XCTAssertTrue(OpenQuicklyFocusPolicy.keepsPanelOnResign(newKeyIsQuickLook: true, panelIsKeyAgain: false))
+        XCTAssertTrue(OpenQuicklyFocusPolicy.keepsPanelOnResign(newKeyIsQuickLook: false, panelIsKeyAgain: true))
+        XCTAssertFalse(
+            OpenQuicklyFocusPolicy.keepsPanelOnResign(newKeyIsQuickLook: false, panelIsKeyAgain: false),
+            "a click into the workbench window closes it even with Quick Look up"
+        )
+    }
+
     // MARK: Recently opened
 
     func testRecentFilesMostRecentFirstWithoutDuplicatesCappedAt50() {

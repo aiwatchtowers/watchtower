@@ -36,6 +36,12 @@ package enum OpenQuicklyFocusPolicy {
     package static func makesParentKey(restoringFocus: Bool, keyWindowIsElsewhere: Bool) -> Bool {
         restoringFocus || !keyWindowIsElsewhere
     }
+
+    /// The panel lost the key window: it stays only when Quick Look took it
+    /// (or it is key again); anything else closes it.
+    package static func keepsPanelOnResign(newKeyIsQuickLook: Bool, panelIsKeyAgain: Bool) -> Bool {
+        newKeyIsQuickLook || panelIsKeyAgain
+    }
 }
 
 /// The files a workbench opened most recently, newest first, the last 50

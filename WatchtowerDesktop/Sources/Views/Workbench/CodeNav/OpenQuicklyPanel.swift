@@ -138,11 +138,16 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
 
     // MARK: NSWindowDelegate
 
-    /// A click outside closes the panel; Quick Look coming forward does not.
+    /// A click outside closes the panel (and Quick Look with it); only
+    /// Quick Look taking the keyboard keeps it.
     func windowDidResignKey(_ notification: Notification) {
         guard let resigned = notification.object as? NSPanel, resigned === panel else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, let panel = self.panel, panel === resigned, !panel.isKeyWindow, !Self.quickLookVisible else { return }
+            guard let self, let panel = self.panel, panel === resigned else { return }
+            let key = NSApp.keyWindow
+            guard !OpenQuicklyFocusPolicy.keepsPanelOnResign(newKeyIsQuickLook: key is QLPreviewPanel, panelIsKeyAgain: key === panel) else {
+                return
+            }
             center?.dismiss(restoringFocus: false)
         }
     }
