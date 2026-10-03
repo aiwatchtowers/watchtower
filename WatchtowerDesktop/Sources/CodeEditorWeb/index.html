@@ -36,6 +36,30 @@
                                                from the menu): posts `usages`
                                                for the word at the cursor;
                                                false = no word
+    askAI() → Bool                             Ask AI from the menu: posts
+                                               `selection` then `askAI` for
+                                               the file on screen; false =
+                                               no file
+    selectionRect() → {x, y, w, h} | null      the selection's box (a caret's
+                                               when empty) in page points,
+                                               clipped to the editor; null =
+                                               no file or scrolled away
+    proposeEdit({id, range, text}) → Bool      a suggested change as an
+                                               inline diff: the range struck
+                                               through, `text` below it;
+                                               replaces the file's earlier
+                                               one; false = unknown id
+    clearProposal(id)                          the diff goes
+    applyEdit({id, range, text, expected})     the change as ONE undoable
+        → "applied" | "changed" | "missing"    edit (Cmd+Z takes it back),
+                                               then the usual `text`
+                                               message; refused ("changed")
+                                               unless the range still holds
+                                               `expected`; "missing" = the
+                                               file is not open. The diff
+                                               goes when it applies.
+    (range = {startLine, startCol, endLine, endCol}, Monaco's: 1-based,
+    columns UTF-16, the end exclusive)
   page → Swift (webkit.messageHandlers.wt):
     ready
     text   {id, text, base, now, explicit}     300 ms after typing stops; at
@@ -53,11 +77,25 @@
     usages {id, word, line, col}               the word at the cursor, from
                                                usagesAtCursor or the context
                                                menu's "Show All Usages"
+    selection {id, text, truncated, startLine, startCol, endLine, endCol}
+                                               the selection changed (every
+                                               keystroke moves it); at most
+                                               10 a second, the last always
+                                               sent; text "" = a caret, cut
+                                               at 20 KB (truncated)
+    scroll {id}                                the editor scrolled; at most
+                                               10 a second, the last always
+                                               sent
+    askAI  {id}                                Cmd+I, the context menu's
+                                               "Ask AI" or askAI(), right
+                                               after a `selection` message
+                                               with the current selection
     error  {message}
 
   Monaco's own bindings for the app's navigation chords (spec §10) are
   removed so they reach the app's menu from inside the editor; Cmd held
-  over a word underlines it like a link.
+  over a word underlines it like a link. Cmd+I is the page's own: it
+  posts `askAI` and is consumed (no keybinding, so the chord check holds).
 -->
 <html>
 <head>
@@ -68,6 +106,8 @@
   @media (prefers-color-scheme: dark) { body { background: #1e1e1e; } }
   .wt-def-link { text-decoration: underline; cursor: pointer; }
   .wt-def-busy { text-decoration: underline dotted; }
+  .wt-proposal-old { background: rgba(215, 58, 73, 0.2); text-decoration: line-through; }
+  .wt-proposal-new { background: rgba(40, 167, 69, 0.18); white-space: pre; overflow: hidden; }
   #missing { display: none; font: 13px -apple-system, sans-serif; color: #888; padding: 16px; }
 </style>
 </head>
@@ -239,26 +279,129 @@
     editor.onMouseLeave(function () { decorate(link, null, null, ""); });
     editor.onKeyUp(function (e) { if (e.keyCode === monaco.KeyCode.Meta) { decorate(link, null, null, ""); } });
 
-    // The cursor for the jump bar and history: the first move at once, then
-    // at most one message per 100 ms carrying the latest position.
-    var cursorTimer = null, cursorDirty = false;
+    // `fn` at most once per 100 ms: the first call at once, the last one
+    // always made.
+    function throttled(fn) {
+      var timer = null, dirty = false;
+      return function () {
+        if (timer) { dirty = true; return; }
+        fn();
+        timer = setTimeout(function tick() {
+          if (dirty) {
+            dirty = false;
+            fn();
+            timer = setTimeout(tick, 100);
+          } else {
+            timer = null;
+          }
+        }, 100);
+      };
+    }
+
+    // The cursor for the jump bar and history.
     function sendCursor() {
       var position = editor.getPosition();
       if (current && position) { post({ type: "cursor", id: current, line: position.lineNumber, col: position.column }); }
     }
-    editor.onDidChangeCursorPosition(function () {
-      if (cursorTimer) { cursorDirty = true; return; }
-      sendCursor();
-      cursorTimer = setTimeout(function tick() {
-        if (cursorDirty) {
-          cursorDirty = false;
-          sendCursor();
-          cursorTimer = setTimeout(tick, 100);
-        } else {
-          cursorTimer = null;
-        }
-      }, 100);
+    editor.onDidChangeCursorPosition(throttled(sendCursor));
+
+    // Code questions (spec §9.2): the selection and the scroll for the ✦
+    // button, Cmd+I and the context menu's "Ask AI".
+    var SELECTION_LIMIT = 20480;
+    function sendSelection() {
+      var model = editor.getModel(), sel = editor.getSelection();
+      if (!current || !model || !sel) { return; }
+      var range = sel, truncated = false;
+      if (!sel.isEmpty() && model.getValueLengthInRange(sel) > SELECTION_LIMIT) {
+        var cut = model.getPositionAt(model.getOffsetAt(sel.getStartPosition()) + SELECTION_LIMIT);
+        range = new monaco.Range(sel.startLineNumber, sel.startColumn, cut.lineNumber, cut.column);
+        truncated = true;
+      }
+      post({ type: "selection", id: current, text: sel.isEmpty() ? "" : model.getValueInRange(range), truncated: truncated,
+        startLine: sel.startLineNumber, startCol: sel.startColumn, endLine: sel.endLineNumber, endCol: sel.endColumn });
+    }
+    editor.onDidChangeCursorSelection(throttled(sendSelection));
+    var sendScroll = throttled(function () { if (current) { post({ type: "scroll", id: current }); } });
+    editor.onDidScrollChange(function (e) { if (e.scrollTopChanged || e.scrollLeftChanged) { sendScroll(); } });
+
+    function requestAskAI() {
+      if (!current || !editor.getModel()) { return false; }
+      sendSelection();
+      post({ type: "askAI", id: current });
+      return true;
+    }
+    // Not a keybinding (the chord check would see one): consumed here, so
+    // the app's menu item for the same chord does not fire as well.
+    editor.onKeyDown(function (e) {
+      if (e.keyCode === monaco.KeyCode.KeyI && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        requestAskAI();
+      }
     });
+    editor.addAction({
+      id: "wt.askAI",
+      label: "Ask AI",
+      contextMenuGroupId: "navigation",
+      contextMenuOrder: 0,
+      run: function () { requestAskAI(); }
+    });
+
+    function selectionRect() {
+      var model = editor.getModel(), sel = editor.getSelection();
+      if (!current || !model || !sel) { return null; }
+      var start = editor.getScrolledVisiblePosition(sel.getStartPosition());
+      var end = editor.getScrolledVisiblePosition(sel.getEndPosition());
+      if (!start || !end) { return null; }
+      var layout = editor.getLayoutInfo();
+      var box = editor.getDomNode().getBoundingClientRect();
+      var top = Math.max(0, Math.min(start.top, end.top));
+      var bottom = Math.min(layout.height, Math.max(start.top + start.height, end.top + end.height));
+      if (bottom <= top) { return null; }
+      var oneLine = sel.startLineNumber === sel.endLineNumber;
+      var left = oneLine ? Math.min(start.left, end.left) : layout.contentLeft;
+      var right = oneLine ? Math.max(start.left, end.left) : layout.width - layout.verticalScrollbarWidth;
+      return { x: box.left + left, y: box.top + top, w: Math.max(1, right - left), h: bottom - top };
+    }
+
+    // A suggested change as an inline diff: the old text struck through
+    // (a model decoration, kept across tab switches), the new text in a
+    // view zone under it (per editor: re-added when the file is shown).
+    var proposals = {};   // buffer id -> {range, text, decorations, zone}
+    function proposalRange(p) {
+      return new monaco.Range(p.range.startLine, p.range.startCol, p.range.endLine, p.range.endCol);
+    }
+    function removeZone(p) {
+      if (p.zone === null) { return; }
+      var zone = p.zone;
+      p.zone = null;
+      editor.changeViewZones(function (zones) { zones.removeZone(zone); });
+    }
+    function addZone(id) {
+      var p = proposals[id], model = models[id];
+      if (!p || !model || current !== id || p.zone !== null || p.text === "") { return; }
+      var font = editor.getOption(monaco.editor.EditorOption.fontInfo);
+      var node = document.createElement("div");
+      node.className = "wt-proposal-new";
+      node.style.fontFamily = font.fontFamily;
+      node.style.fontSize = font.fontSize + "px";
+      node.style.lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight) + "px";
+      node.textContent = p.text;
+      monaco.editor.colorize(p.text, model.getLanguageId(), {}).then(function (html) {
+        if (proposals[id] === p) { node.innerHTML = html; }
+      }, function () {});
+      var after = p.range.endCol === 1 && p.range.endLine > p.range.startLine ? p.range.endLine - 1 : p.range.endLine;
+      editor.changeViewZones(function (zones) {
+        p.zone = zones.addZone({ afterLineNumber: after, heightInLines: p.text.split("\n").length, domNode: node });
+      });
+    }
+    function clearProposalOf(id) {
+      var p = proposals[id];
+      if (!p) { return; }
+      removeZone(p);
+      if (models[id] && !models[id].isDisposed()) { models[id].deltaDecorations(p.decorations, []); }
+      delete proposals[id];
+    }
 
     // Usages: the word at the cursor (a right-click moves the cursor there
     // first). No keybinding: Shift+Cmd+U belongs to the app's menu, which
@@ -287,6 +430,7 @@
     window.wt = {
       show: function (args) {
         if (!args) {
+          if (current && proposals[current]) { removeZone(proposals[current]); }
           if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
           editor.setModel(null);
           current = null;
@@ -294,6 +438,7 @@
         }
         if (current === args.id && editor.getModel()) { return; }
         flushAll(true);
+        if (current && proposals[current]) { removeZone(proposals[current]); }
         if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
         // Before setModel: setting the model and restoring its view state
         // move the cursor, and that cursor message must carry the new id.
@@ -301,6 +446,7 @@
         editor.setModel(modelFor(args));
         if (viewStates[args.id]) { editor.restoreViewState(viewStates[args.id]); }
         if (reveals[args.id]) { revealNow(reveals[args.id]); delete reveals[args.id]; }
+        addZone(args.id);
         editor.focus();
       },
       reveal: function (args) {
@@ -323,6 +469,7 @@
         }
         clearTimeout(pending[args.id]);
         delete pending[args.id];
+        if (model.getValue() !== args.text) { clearProposalOf(args.id); }
         replaceText(model, args.text);
         bases[args.id] = args.rev;
       },
@@ -337,6 +484,7 @@
       },
       close: function (id) {
         if (pending[id]) { send(id, true, false); }
+        clearProposalOf(id);
         if (models[id]) {
           if (current === id) { editor.setModel(null); current = null; }
           models[id].dispose();
@@ -361,7 +509,44 @@
       definitionDone: function (req) {
         if (req === busy.req) { decorate(busy, null, null, ""); busy.req = 0; }
       },
-      usagesAtCursor: function () { return requestUsages(); }
+      usagesAtCursor: function () { return requestUsages(); },
+      askAI: function () { return requestAskAI(); },
+      selectionRect: function () { return selectionRect(); },
+      proposeEdit: function (args) {
+        var model = models[args.id];
+        if (!model) { return false; }
+        clearProposalOf(args.id);
+        var p = { range: args.range, text: args.text, zone: null, decorations: [] };
+        p.decorations = model.deltaDecorations([], [{ range: proposalRange(p), options: { inlineClassName: "wt-proposal-old" } }]);
+        proposals[args.id] = p;
+        addZone(args.id);
+        if (current === args.id) { editor.revealRangeInCenterIfOutsideViewport(proposalRange(p)); }
+        return true;
+      },
+      clearProposal: function (id) { clearProposalOf(id); },
+      applyEdit: function (args) {
+        var model = models[args.id];
+        if (!model) { return "missing"; }
+        var range = new monaco.Range(args.range.startLine, args.range.startCol, args.range.endLine, args.range.endCol);
+        // Line breaks compared as LF: Monaco writes the model's own (CRLF
+        // in a CRLF file) whatever the suggestion used.
+        var lf = monaco.editor.EndOfLinePreference.LF;
+        if (!model.validateRange(range).equalsRange(range)
+          || model.getValueInRange(range, lf) !== String(args.expected).replace(/\r\n/g, "\n")) {
+          return "changed";
+        }
+        clearProposalOf(args.id);
+        if (current === args.id) {
+          editor.pushUndoStop();
+          editor.executeEdits("wt-ask-ai", [{ range: range, text: args.text, forceMoveMarkers: true }]);
+          editor.pushUndoStop();
+        } else {
+          model.pushStackElement();
+          model.pushEditOperations([], [{ range: range, text: args.text }], function () { return null; });
+          model.pushStackElement();
+        }
+        return "applied";
+      }
     };
     post({ type: "ready" });
   }, function (err) {

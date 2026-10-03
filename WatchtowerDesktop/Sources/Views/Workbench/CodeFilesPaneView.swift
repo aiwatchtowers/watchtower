@@ -49,11 +49,16 @@ struct CodeFilesPaneView: View {
                 }
                 MonacoEditorView(files: files, project: project, tabs: tabs)
                     .overlay { activeOverlay(tabs) }
+                    .overlay {
+                        if let questions = files.questions {
+                            AskAIButtonOverlay(questions: questions, project: project)
+                        }
+                    }
             }
         }
         .inspector(isPresented: inspectorShown) {
             if let usages = files.usages {
-                CodeInspector(usages: usages, project: project)
+                CodeInspector(usages: usages, questions: files.questions, project: project)
                     .inspectorColumnWidth(min: 220, ideal: 300, max: 560)
             }
         }
@@ -332,6 +337,7 @@ struct MonacoEditorView: NSViewRepresentable {
         files.register(context.coordinator, for: project)
         files.navigation?.registerPage(context.coordinator, for: project.id)
         files.usages?.registerPage(context.coordinator, for: project.id)
+        files.questions?.registerPage(context.coordinator, for: project.id)
         webView.load(URLRequest(url: CodeEditorSchemeHandler.pageURL))
         return webView
     }
@@ -355,7 +361,7 @@ struct MonacoEditorView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeEditorBridge, CodeDefinitionPage,
-        CodeUsagesPage {
+        CodeUsagesPage, CodeQuestionPage, NSPopoverDelegate {
         struct BufferState: Equatable {
             let path: String
             let revision: Int
@@ -374,6 +380,8 @@ struct MonacoEditorView: NSViewRepresentable {
         /// The last reveal sent: the center clears it a turn later, and an
         /// update in between must not send it again.
         private var sentRevealSerial: Int?
+        /// The code question popover at the selection, while open.
+        private var questionPopover: NSPopover?
 
         init(files: CodeFilesCenter, project: Workbench) {
             self.files = files
@@ -412,6 +420,8 @@ struct MonacoEditorView: NSViewRepresentable {
                 guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int,
                       let buffer = files.buffer(id: id) else { return }
                 files.cursorMoved(CodeNavLocation(path: buffer.relPath, line: line, col: col), workbenchID: project.id)
+            case "selection", "scroll", "askAI":
+                questionMessage(type, body)
             case "error":
                 files.editorErrors[project.id] = (body["message"] as? String) ?? "The editor reported an error."
             default:
@@ -445,6 +455,7 @@ struct MonacoEditorView: NSViewRepresentable {
             }
             if wantedActive != shown {
                 shown = wantedActive
+                if wantedActive == nil { files.questions?.editorCleared(workbenchID: project.id) }
                 if let id = wantedActive, let buffer = files.buffer(id: id), let state = wanted[id] {
                     call("wt.show", ["id": id, "path": buffer.relPath, "text": buffer.text, "rev": buffer.externalRevision])
                     told[id] = state
@@ -527,6 +538,115 @@ struct MonacoEditorView: NSViewRepresentable {
             }
         }
 
+        // MARK: CodeQuestionPage
+
+        /// The page's code question messages (spec §9.2).
+        private func questionMessage(_ type: String, _ body: [String: Any]) {
+            guard let questions = files.questions else { return }
+            switch type {
+            case "selection":
+                guard let selection = Self.selection(from: body) else {
+                    NSLog("CodeFilesPane: a malformed selection message was dropped")
+                    return
+                }
+                questions.selectionChanged(selection, workbenchID: project.id)
+            case "scroll":
+                questions.editorScrolled(workbenchID: project.id)
+            default:
+                // askAI: ⌘I in the editor, its context menu, the ✦ button or the menu.
+                guard let id = body["id"] as? String else { return }
+                let project = project
+                Task { await questions.askAI(bufferID: id, project: project) }
+            }
+        }
+
+        /// `selection {id, text, truncated, startLine, startCol, endLine, endCol}`.
+        static func selection(from body: [String: Any]) -> CodeEditorSelection? {
+            guard let id = body["id"] as? String, let text = body["text"] as? String,
+                  let startLine = body["startLine"] as? Int, let startCol = body["startCol"] as? Int,
+                  let endLine = body["endLine"] as? Int, let endCol = body["endCol"] as? Int else { return nil }
+            return CodeEditorSelection(
+                bufferID: id,
+                range: CodeTextRange(startLine: startLine, startCol: startCol, endLine: endLine, endCol: endCol),
+                text: text, truncated: body["truncated"] as? Bool ?? false
+            )
+        }
+
+        func requestAskAI() async -> Bool {
+            guard ready, let webView else { return false }
+            do {
+                return try await webView.evaluateJavaScript("wt.askAI()") as? Bool ?? false
+            } catch {
+                NSLog("CodeFilesPane: wt.askAI failed: %@", error.localizedDescription)
+                return false
+            }
+        }
+
+        func selectionRect() async -> CGRect? {
+            guard ready, let webView else { return nil }
+            let value: Any?
+            do {
+                value = try await webView.evaluateJavaScript("wt.selectionRect()")
+            } catch {
+                NSLog("CodeFilesPane: wt.selectionRect failed: %@", error.localizedDescription)
+                return nil
+            }
+            guard let box = value as? [String: Any],
+                  let x = (box["x"] as? NSNumber)?.doubleValue, let y = (box["y"] as? NSNumber)?.doubleValue,
+                  let width = (box["w"] as? NSNumber)?.doubleValue, let height = (box["h"] as? NSNumber)?.doubleValue
+            else { return nil }
+            return CGRect(x: x, y: y, width: width, height: height)
+        }
+
+        func proposeEdit(bufferID: String, range: CodeTextRange, text: String) {
+            call("wt.proposeEdit", ["id": bufferID, "range": range.pageArgument, "text": text])
+        }
+
+        func clearProposal(bufferID: String) {
+            call("wt.clearProposal", bufferID)
+        }
+
+        func applyEdit(bufferID: String, range: CodeTextRange, text: String, expected: String) async -> CodeEditApplyResult {
+            let argument: [String: Any] = ["id": bufferID, "range": range.pageArgument, "text": text, "expected": expected]
+            guard ready, let webView, let script = Self.script("wt.applyEdit", argument) else { return .missing }
+            do {
+                let answer = try await webView.evaluateJavaScript(script) as? String
+                return answer.flatMap(CodeEditApplyResult.init(rawValue:)) ?? .missing
+            } catch {
+                NSLog("CodeFilesPane: wt.applyEdit failed: %@", error.localizedDescription)
+                return .missing
+            }
+        }
+
+        /// Under the selection's box (page points from the top left).
+        func presentQuestionPopover(at rect: CGRect) -> Bool {
+            guard let webView, webView.window != nil, let questions = files.questions else { return false }
+            questionPopover?.delegate = nil
+            questionPopover?.close()
+            let hosting = NSHostingController(rootView: CodeQuestionPopoverHost(questions: questions, workbenchID: project.id))
+            hosting.sizingOptions = .preferredContentSize
+            let popover = NSPopover()
+            popover.behavior = .semitransient
+            popover.animates = true
+            popover.contentViewController = hosting
+            popover.delegate = self
+            questionPopover = popover
+            let anchor = webView.isFlipped ? rect
+                : CGRect(x: rect.minX, y: webView.bounds.height - rect.maxY, width: rect.width, height: rect.height)
+            popover.show(relativeTo: anchor, of: webView, preferredEdge: webView.isFlipped ? .maxY : .minY)
+            return true
+        }
+
+        func closeQuestionPopover() {
+            questionPopover?.close()
+        }
+
+        func popoverDidClose(_ notification: Notification) {
+            guard let popover = notification.object as? NSPopover, popover === questionPopover else { return }
+            questionPopover = nil
+            files.questions?.questionPopoverClosed(workbenchID: project.id)
+        }
+
         // MARK: CodeEditorBridge
 
         func takePending() async -> [CodeEditorPendingEdit]? {
@@ -552,6 +672,10 @@ struct MonacoEditorView: NSViewRepresentable {
         }
 
         func dismantle(_ webView: WKWebView) {
+            questionPopover?.delegate = nil
+            questionPopover?.close()
+            questionPopover = nil
+            files.questions?.unregisterPage(self, for: project.id)
             files.unregister(self, for: project.id)
             files.navigation?.unregisterPage(self, for: project.id)
             files.usages?.unregisterPage(self, for: project.id)
@@ -590,15 +714,21 @@ struct MonacoEditorView: NSViewRepresentable {
         /// `fn(arg)` with the argument JSON-encoded, so file text never
         /// needs escaping by hand.
         private func call(_ function: String, _ argument: Any) {
-            guard let data = try? JSONSerialization.data(withJSONObject: [argument], options: [.fragmentsAllowed]),
-                  let array = String(data: data, encoding: .utf8) else {
+            guard let script = Self.script(function, argument) else {
                 files.editorErrors[project.id] = "Editor: could not encode a call to \(function)."
                 return
             }
-            webView?.evaluateJavaScript("\(function)(\(array.dropFirst().dropLast()))") { [weak self] _, error in
+            webView?.evaluateJavaScript(script) { [weak self] _, error in
                 guard let self, let error else { return }
                 self.files.editorErrors[self.project.id] = "Editor: \(error.localizedDescription)"
             }
+        }
+
+        /// `fn(<JSON argument>)`; nil when the argument cannot be encoded.
+        private static func script(_ function: String, _ argument: Any) -> String? {
+            guard let data = try? JSONSerialization.data(withJSONObject: [argument], options: [.fragmentsAllowed]),
+                  let array = String(data: data, encoding: .utf8) else { return nil }
+            return "\(function)(\(array.dropFirst().dropLast()))"
         }
     }
 }

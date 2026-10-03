@@ -33,9 +33,13 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
         let panel = OpenQuicklyNSPanel(quickLook: quickLook)
         panel.delegate = self
         panel.keyHandler = { [weak self] event in self?.handleKey(event) ?? false }
-        let host = NSHostingView(rootView: OpenQuicklyView(session: session) { [weak self] option in
-            self?.activate(option: option, command: false)
-        })
+        let host = NSHostingView(rootView: OpenQuicklyView(
+            session: session,
+            questions: center.questions,
+            onActivate: { [weak self] option in self?.activate(option: option, command: false) },
+            onAnswerLink: { [weak center] url in Task { await center?.openAnswerLink(url) } },
+            onAnswerShown: { [weak self] in self?.focusAnswerField() }
+        ))
         panel.contentView = host
         panel.setContentSize(host.fittingSize)
         place(panel, over: window)
@@ -80,6 +84,13 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
 
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let session, let center else { return false }
+        // The answer card: its follow-up field has the keys (↩ follows up);
+        // only Esc closes the panel.
+        if session.answerConversationID != nil {
+            guard event.keyCode == 53 else { return false }
+            center.dismiss(restoringFocus: true)
+            return true
+        }
         // An input method composing in the field keeps its keys.
         if let editor = panel?.firstResponder as? NSTextView, editor.hasMarkedText() { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -102,6 +113,24 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
         default:
             return false
         }
+    }
+
+    /// The card replaced the search field: its follow-up field takes the
+    /// keyboard, once SwiftUI has put it in the panel.
+    private func focusAnswerField() {
+        DispatchQueue.main.async { [weak self] in
+            guard let panel = self?.panel, let field = Self.firstEditableTextView(in: panel.contentView) else { return }
+            panel.makeFirstResponder(field)
+        }
+    }
+
+    private static func firstEditableTextView(in view: NSView?) -> NSTextView? {
+        guard let view else { return nil }
+        if let text = view as? NSTextView, text.isEditable { return text }
+        for child in view.subviews {
+            if let found = firstEditableTextView(in: child) { return found }
+        }
+        return nil
     }
 
     private func activate(option: Bool, command: Bool) {

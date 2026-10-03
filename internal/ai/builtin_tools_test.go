@@ -25,17 +25,21 @@ import (
 // reachable from prompt-injected synced content.
 //   - ToolSearch (every chat): loads the deferred watchtower tool schemas;
 //   - WebSearch (warm `ai session` only, the main chat): public web search,
-//     the SessionDisallowedTools rule — WebFetch stays hidden everywhere.
+//     the SessionDisallowedTools rule — WebFetch stays hidden everywhere;
+//   - Read, Grep, Glob, LS (a workbench code question, `ai query
+//     --read-folder` only): the owner decision of 2026-10-03 (ruling R55).
 var approvedChatBuiltins = map[string][]string{
-	"one-shot ai query": {"ToolSearch"},
-	"warm ai session":   {"ToolSearch", "WebSearch"},
+	"one-shot ai query":           {"ToolSearch"},
+	"warm ai session":             {"ToolSearch", "WebSearch"},
+	"code question (read folder)": {"ToolSearch", "Read", "Grep", "Glob", "LS"},
 }
 
 // chatBuiltinRuns is each chat run's built-in allowlist (--tools) and deny
 // list (--disallowedTools), as buildArgs and cmd/ai_session.go pass them.
 var chatBuiltinRuns = map[string]struct{ tools, deny string }{
-	"one-shot ai query": {ChatBuiltinTools, DisallowedTools},
-	"warm ai session":   {SessionBuiltinTools, SessionDisallowedTools},
+	"one-shot ai query":           {ChatBuiltinTools, DisallowedTools},
+	"warm ai session":             {SessionBuiltinTools, SessionDisallowedTools},
+	"code question (read folder)": {ReadFolderBuiltinTools, ReadOnlyFolderDisallowedTools},
 }
 
 const builtinsSnapshot = "testdata/claude_builtins.txt"

@@ -151,6 +151,15 @@ text). The autosave never takes any of these choices by itself.
 The document view, its comments and every workbench tool still never write
 the file.
 
+**Amendment 2026-10-03 (owner-approved; code questions,
+spec `docs/superpowers/specs/2026-10-02-code-navigation-design.md` §9.2,
+ruling R47):** besides the owner's typed edits, the editor writes text the
+owner explicitly applies from a code-question suggestion (**Apply** in the
+popover at the selection): one undoable edit in the editor page, refused
+while the buffer has a problem with its disk version or when the selected
+text changed since the question, then the same base-revision, autosave and
+conflict path as a typed edit. The assistant never writes a file itself.
+
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop view — would race and lose either the agent's or
 the owner's edits; comments are the owner's channel into the document. The
@@ -697,6 +706,7 @@ session would be worse than none.
 
 ## Changelog
 
+- 2026-10-03 (code navigation phase C, Task 11, ruling R47): **PROJ-03 amendment (owner-approved 2026-10-03)** — the Files pane's editor may also write text the owner explicitly applies from a code-question suggestion (Apply), through the same base-revision and conflict path as the owner's typed edits (spec §9.2). Apply is refused while the buffer has a `CodeFileBuffer.Problem` or when the selected text changed since the question (`CodeQuestionCenterTests.testApplyRefusedWhileTheBufferIsInConflict`, `testApplyRefusedWhenTheSelectedTextChanged`; the editor bridge harness's `applyEdit` checks). No guard test changed.
 - 2026-10-03 (board #248, plan `docs/superpowers/plans/2026-10-02-workbench-git-branch.md` Task G1): **PROJ-07 amended** and **PROJ-10 approved**, both by the owner on 2026-10-03. `workbench check` now runs the git `internal/gitbin` locates (`ExecRunner` resolves `"git"` through `gitbin.Locate`; `insideRepository` is `gitbin.InsideRepository`) — never a PATH lookup on darwin, never the `/usr/bin/git` shim, closing the check's install-dialog hole; with no git found it runs no git and no gh (gh would run the shim itself), reports `git:false` and notes "git is not available (no Command Line Tools); branch checks skipped" (new guard `TestProj07_GitUnavailableIsANote`, offline and with network). The process runner of `internal/workbenchcheck` and `internal/workbenchgit` is consolidated into `gitbin.Exec`, so the check now also drops the inherited repository variables (`GIT_DIR`, `GIT_WORK_TREE`, …) and sets `GIT_EDITOR=true`, and `workbench git` now also sets `GH_PROMPT_DISABLED=1` (it runs no gh; harmless). This supersedes the 2026-10-02 (#233) entry's "PROJ-07 is unchanged: `workbench check` still runs `git` through PATH". PROJ-10 is now Enforced, locked 2026-10-03, wording unchanged. Every existing `TestProj07_*` and `TestProj10_*` guard runs unchanged.
 - 2026-10-03 (board #340): Stop state write gated on the state hooks — the Stop hook records `waiting` only when the workbench's folder has the session state hooks (`devpack.HasStateHooks`), so a folder not yet repaired no longer shows "waiting for you" after its first turn. The PROJ-07 note's state write is narrowed to those folders (it writes in fewer cases, never more); PROJ-07's stdout/exit contract, PROJ-11 and every guard are unchanged.
 - 2026-10-03 (board #312, plan `docs/superpowers/plans/2026-10-03-session-agent-state.md`): **PROJ-11** added and **PROJ-04** reworded, both approved by the owner on 2026-10-03 — Claude Code sessions in the Desktop's workbench terminal show working / waiting for you / needs approval from new async `workbench session-state` hook entries (`UserPromptSubmit`, `Notification`, `PostToolUse`, `StopFailure`; migration `00098`) and the extended Stop hook, with a macOS notice while the app is inactive. PROJ-04 now says one entry of ours per event we own, with a malformed state event counting as a malformed file (widened, no guard relaxed; two new guards). **PROJ-02** strengthened — remove/delete also take the state entries away (its hook guards extended). **PROJ-07** gains a note on the Stop hook's state write; its stdout/exit contract and guards are unchanged.

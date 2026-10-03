@@ -100,6 +100,23 @@ final class EmbeddedChatCenterTests: XCTestCase {
         XCTAssertEqual(center.gate.active.count, 0)
     }
 
+    /// One deleted conversation of a context (a code question) stops
+    /// quietly; another conversation of the same context keeps running.
+    func testDropStopsOneConversationQuietlyAndSparesItsSibling() throws {
+        let deleted = try trackSpec(4)
+        let sibling = try trackSpec(4)
+        let engine = center.engine(for: deleted)
+        engine.send("q")
+        let other = center.engine(for: sibling)
+        let conv = try XCTUnwrap(deleted.key.conversationID)
+        try pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
+        center.drop(deleted.key)
+        XCTAssertNil(center.loaded(deleted.key))
+        XCTAssertFalse(engine.isBusy)
+        XCTAssertNil(engine.bannerError, "quiet: the conversation is gone")
+        XCTAssertTrue(center.loaded(sibling.key) === other)
+    }
+
     func testReleaseDropsAMemoryChat() {
         let key = EmbeddedChatKey(contextType: "setup", contextID: "calendar", conversationID: nil)
         let spec = ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly,

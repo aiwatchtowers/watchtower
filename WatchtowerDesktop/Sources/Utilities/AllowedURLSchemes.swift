@@ -51,10 +51,16 @@ enum AllowedURLSchemes {
     /// visible but is not clickable at all. Only the attribute goes — the
     /// characters are untouched, which is why the collected ranges stay valid
     /// across the mutation.
-    static func strippingDisallowedLinks(_ attributed: AttributedString) -> AttributedString {
+    ///
+    /// `renderOnly` keeps links of schemes the rendering surface opens
+    /// itself and never hands to the system (a code answer's
+    /// `watchtower-code` links in the code question popover); `permits`
+    /// never includes them.
+    static func strippingDisallowedLinks(_ attributed: AttributedString, renderOnly: Set<String> = []) -> AttributedString {
         var result = attributed
         let disallowed = result.runs.compactMap { run -> Range<AttributedString.Index>? in
-            guard let link = run.link, !permits(link) else { return nil }
+            guard let link = run.link, !permits(link),
+                  !renderOnly.contains(link.scheme?.lowercased() ?? "") else { return nil }
             return run.range
         }
         for range in disallowed {

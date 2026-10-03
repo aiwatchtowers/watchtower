@@ -39,9 +39,21 @@ package enum WorkbenchCommentPrompt {
     /// without that mode nothing is written at all. Dropping every control
     /// scalar (ESC included) also means the payload can never contain the
     /// `ESC[201~` terminator that would end the paste early.
-    package static func terminalPayload(_ line: String, bracketedPaste: Bool) -> TerminalPayload {
+    ///
+    /// `keepingLineBreaks` (a code question handed to Claude Code, spec
+    /// 2026-10-02 §9.5): line breaks become LF and tabs stay — text inside a
+    /// paste, as SwiftTerm's own ⌘V sends it — while every other control
+    /// scalar is still dropped.
+    package static func terminalPayload(_ line: String, bracketedPaste: Bool, keepingLineBreaks: Bool = false) -> TerminalPayload {
         var clean = String.UnicodeScalarView()
-        clean.append(contentsOf: line.unicodeScalars.filter { !isControl($0) })
+        let source = keepingLineBreaks ? line.replacingOccurrences(of: "\r\n", with: "\n") : line
+        for scalar in source.unicodeScalars {
+            if keepingLineBreaks, CharacterSet.newlines.contains(scalar) {
+                clean.append("\n")
+            } else if !isControl(scalar) || (keepingLineBreaks && scalar == "\t") {
+                clean.append(scalar)
+            }
+        }
         let text = String(clean)
         guard bracketedPaste else { return .clipboard(text) }
         return .paste(pasteStart + Array(text.utf8) + pasteEnd)

@@ -16,7 +16,7 @@ Every assistant chat outside the main AI Chat (target, track, idea/decision, mee
 
 | Piece | Where | Role |
 |---|---|---|
-| `ChatSurfaceSpec` | `WatchtowerCore/Services/Chat/Embedded/` | A value that describes one chat: key, persistence (`.database` / `.memory`), **explicit** `toolAccess` (`.draftOnly` or `.actions(surface:)`, AGENT-04), system prompt (first turn only), per-turn prompt, `postTurn`, empty hint, starter prompts. |
+| `ChatSurfaceSpec` | `WatchtowerCore/Services/Chat/Embedded/` | A value that describes one chat: key, persistence (`.database` / `.memory`), **explicit** `toolAccess` (`.draftOnly` or `.actions(surface:)`, AGENT-04), system prompt (first turn only), per-turn prompt, `postTurn`, empty hint, starter prompts, and `runOptions` (provider, model, `--read-folder`; read when each turn starts, default all nil = config's provider at its strong tier). |
 | `EmbeddedChatStore` | same | Database store (the existing `chat_messages` columns, no migration) or memory store (negative synthetic ids). Every write throws. |
 | `EmbeddedStreamReducer` / `AIStreamText` | same | The single fold of `.text` / `.turnComplete` / `.reset` / `.sessionID` / `.error`. |
 | `EmbeddedChatEngine` | same | Owns the stream loop. Writes the owner row and the reply's `partial` placeholder before the process starts. Streams into a `LiveTurn` (render isolation). Flushes the text at most once per second. Ends each turn exactly once as `complete` (then `postTurn`), `partial` (Stop or quit) or `error` (with the real text and an error code). Also handles follow-ups, hidden prompts, local rows and Retry. |

@@ -64,7 +64,8 @@ final class CodeNavQuitTests: XCTestCase {
         let started = await searchesStarted(3)
         XCTAssertTrue(started, "three searches running: \(stub.startedPIDs)")
 
-        AppState.stopCodeNavigationChildren(index: codeIndex, openQuickly: openQuickly, navigation: navigation, usages: usages)
+        AppState.stopCodeNavigationChildren(index: codeIndex, openQuickly: openQuickly, navigation: navigation, usages: usages,
+                                            questions: CodeQuestionCenter())
 
         await stub.assertAllGroupsReaped()
         await definition.value

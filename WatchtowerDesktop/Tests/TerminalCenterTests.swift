@@ -23,6 +23,13 @@ final class FakeTerminalSession: TerminalSessionProcess {
     func detach() { detached = true }
     func sendInput(_ bytes: [UInt8]) { inputs.append(bytes) }
     func exit(_ code: Int32?) { onExit?(code) }
+
+    private(set) var pathLinkFolder: String?
+    private(set) var openPathLink: ((TerminalPathLinks.Location) -> Void)?
+    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
+        pathLinkFolder = folder
+        openPathLink = open
+    }
 }
 
 @MainActor
@@ -118,7 +125,8 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(launch.executable, "/bin/zsh")
         XCTAssertEqual(launch.currentDirectory, folder.path)
         XCTAssertEqual(launch.args.last,
-                       "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID)) '\(TerminalLaunch.firstRunPrompt(.current))'")
+                       "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(try XCTUnwrap(s.claudeSessionID)) \"$WATCHTOWER_FIRST_PROMPT\"")
+        XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
     }
 
     func testNonFreshStartResumesTheStoredSession() throws {
@@ -514,6 +522,112 @@ final class TerminalCenterTests: XCTestCase {
 
         center.dismissClipboardHint(sessionID: s.id)
         XCTAssertFalse(center.clipboardHints.contains(s.id))
+    }
+
+    // MARK: - Hand to Claude Code (spec 2026-10-02 §9.5)
+
+    private func bracketedPasteBytes(_ text: String) -> [UInt8] {
+        [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(text.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+    }
+
+    /// The hand-off is pasted once, lines kept, then submitted with one
+    /// Return after the pause — while the caller says the session may take
+    /// it (idle at its prompt, ruling R52), asked before and after the pause.
+    func testAHandOffIsPastedOnceThenSubmitted() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let text = "From a Watchtower code question:\nAsked at a.go:3\n\nQuestion: why?"
+        var asked = 0
+        let delivery = await center.submitPrompt(text, sessionID: s.id) {
+            asked += 1
+            return true
+        }
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes(text), [0x0D]])
+        XCTAssertEqual(slept, TerminalCenter.submitDelay)
+        XCTAssertEqual(asked, 2, "checked before and after the pause")
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+    }
+
+    /// Ruling R52: a session that may not take a Return (working, or a
+    /// state that changed during the pause) gets the paste only, and the
+    /// pane says to press Return.
+    func testAHandOffIsOnlyPastedWhenTheSessionMayNotTakeAReturn() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let notIdle = await center.submitPrompt("x", sessionID: s.id) { false }
+        XCTAssertEqual(notIdle, .pasted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")])
+        XCTAssertTrue(center.pasteHints.contains(s.id))
+
+        var refreshed = false
+        let changed = await center.submitPrompt("y", sessionID: s.id, refresh: { refreshed = true }, submitIf: { !refreshed })
+        XCTAssertTrue(refreshed, "the caller refreshes before the second check")
+        XCTAssertEqual(changed, .pasted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x"), bracketedPasteBytes("y")], "no Return after the state changed")
+        center.dismissClipboardHint(sessionID: s.id)
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+    }
+
+    /// Without bracketed paste the text goes to the clipboard and nothing,
+    /// not even Return, reaches the terminal.
+    func testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted() async throws {
+        let center = makeCenter()
+        var copied: [String] = []
+        center.copyToClipboard = { copied.append($0) }
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].bracketedPasteMode = false
+        let delivery = await center.submitPrompt("a\nb", sessionID: s.id) { true }
+        XCTAssertEqual(delivery, .copied)
+        XCTAssertTrue(sessions[0].inputs.isEmpty)
+        XCTAssertEqual(copied, ["a\nb"])
+    }
+
+    func testAHandOffToAnEndedSessionSendsNothing() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].exit(0)
+        let delivery = await center.submitPrompt("x", sessionID: s.id) { true }
+        XCTAssertEqual(delivery, .noSession)
+        XCTAssertTrue(sessions[0].inputs.isEmpty)
+    }
+
+    /// A workbench session's ⌘-clicked `path:line` reaches `onPathLink`
+    /// with its workbench; a standalone terminal keeps SwiftTerm's handler.
+    func testPathLinksAreWiredForWorkbenchSessionsOnly() throws {
+        let center = makeCenter()
+        var opened: [(Int64, TerminalPathLinks.Location)] = []
+        center.onPathLink = { opened.append(($0, $1)) }
+        let workbench = try row(project: 1)
+        let standalone = try row(project: nil, kind: .shell)
+        center.start(workbench, fresh: true)
+        center.start(standalone, fresh: true)
+        XCTAssertEqual(sessions[0].pathLinkFolder, folder.path)
+        XCTAssertNil(sessions[1].pathLinkFolder)
+        let location = TerminalPathLinks.Location(path: "a.go", line: 3, col: nil)
+        sessions[0].openPathLink?(location)
+        XCTAssertEqual(opened.map(\.0), [1])
+        XCTAssertEqual(opened.map(\.1), [location])
+    }
+
+    /// F3: SwiftTerm's own handler gets only a URL the app-wide allowlist
+    /// permits; a `file://` or path outside the folder opens nothing.
+    func testTerminalLinksPassTheURLAllowlist() throws {
+        let workbench = folder.path
+        for link in ["smb://server/share", "x-apple.systempreferences:com.apple.preference.security",
+                     "file:///etc/hosts", "/etc/hosts:1", "vnc://host"] {
+            XCTAssertEqual(PalettedTerminalView.linkAction(for: link, folder: workbench, folderRealPath: nil), .none, link)
+            XCTAssertEqual(PalettedTerminalView.linkAction(for: link, folder: nil, folderRealPath: nil), .none, "standalone: \(link)")
+        }
+        XCTAssertEqual(PalettedTerminalView.linkAction(for: "https://example.com/x", folder: workbench, folderRealPath: nil), .systemHandler)
+        XCTAssertEqual(PalettedTerminalView.linkAction(for: "http://host:80", folder: nil, folderRealPath: nil), .systemHandler)
+        try "x\n".write(to: folder.appendingPathComponent("a.go"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(PalettedTerminalView.linkAction(for: "a.go:3", folder: workbench, folderRealPath: nil),
+                       .open(.init(path: "a.go", line: 3, col: nil)))
     }
 
     func testAnExitedSessionReceivesNothing() throws {

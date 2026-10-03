@@ -79,25 +79,46 @@ struct ChatComposerView: View {
     }
 
     private var modelPill: some View {
+        ChatModelPicker(
+            provider: chatVM.selectedProvider,
+            model: chatVM.selectedModel,
+            suggestions: modelSuggestions,
+            onSelectProvider: { chatVM.switchProvider($0) },
+            onSelectModel: { chatVM.selectedModel = $0 }
+        )
+        .disabled(chatVM.isStreaming)
+    }
+}
+
+/// The provider/model pill of a chat composer: the main chat's, and the
+/// code questions' (spec 2026-10-02 §9.1). `model` "" is Auto — the
+/// provider's default tier.
+struct ChatModelPicker: View {
+    let provider: AIProvider
+    let model: String
+    let suggestions: [String]
+    let onSelectProvider: (AIProvider) -> Void
+    let onSelectModel: (String) -> Void
+
+    var body: some View {
         Menu {
             Section("Provider") {
                 ForEach(AIProvider.allCases) { provider in
-                    Button(provider.displayName) { chatVM.switchProvider(provider) }
+                    Button(provider.displayName) { onSelectProvider(provider) }
                 }
             }
             Section("Model") {
-                Button("Auto") { chatVM.selectedModel = "" }
-                ForEach(modelSuggestions, id: \.self) { model in
-                    Button(model) { chatVM.selectedModel = model }
+                Button("Auto") { onSelectModel("") }
+                ForEach(suggestions, id: \.self) { model in
+                    Button(model) { onSelectModel(model) }
                 }
             }
         } label: {
-            Text("\(chatVM.selectedProvider.displayName) · \(chatVM.selectedModel.isEmpty ? "Auto" : chatVM.selectedModel)")
+            Text("\(provider.displayName) · \(model.isEmpty ? "Auto" : model)")
                 .font(.caption)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .disabled(chatVM.isStreaming)
         .help("Provider and model for this chat")
     }
 }

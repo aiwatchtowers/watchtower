@@ -218,13 +218,12 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: project.id), layout)
     }
 
-    /// Ruling R35: the shipped center hides Ask AI — no row, and ⌘↩ / ⌥⌘↩
-    /// reach neither hook.
-    func testAskAIRowAndChordsAreAbsentUntilPhaseC() {
-        let (center, _) = makeCenter()
-        var called: [String] = []
-        center.onAskAI = { query, _ in called.append("ask \(query)") }
-        center.onHandToClaude = { query, _ in called.append("hand \(query)") }
+    /// With Ask AI off (ruling R35's switch) there is no row, and ⌘↩ /
+    /// ⌥⌘↩ ask nothing.
+    func testAskAIRowAndChordsAreAbsentWhenSwitchedOff() {
+        let (center, _) = makeCenter(askAIEnabled: false)
+        var handed: [String] = []
+        center.onHandToClaude = { query, _ in handed.append(query) }
         center.pageAppeared(project, window: nil)
         center.present(scope: .all)
         let session = center.session
@@ -233,31 +232,104 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertFalse(session?.model.rows.contains(.askAI(query: "save")) ?? true)
         center.perform(session?.activateSelection(option: false, command: true) ?? .none)
         center.perform(session?.activateSelection(option: true, command: true) ?? .none)
-        XCTAssertEqual(called, [])
+        XCTAssertNil(session?.answerConversationID)
+        XCTAssertEqual(handed, [])
         XCTAssertNotNil(center.session, "the panel stays")
     }
 
-    func testAskAndHandOverChordsReachTheirHooksAndKeepThePanel() {
-        let (center, _) = makeCenter(askAIEnabled: true)
-        var asked: [String] = []
-        center.onAskAI = { query, project in
-            XCTAssertEqual(project.id, 5)
-            asked.append(query)
-        }
+    /// A code question center over the test database and a scripted AI.
+    private func makeQuestions(_ vm: WorkbenchesViewModel, ai: ScriptedAIService) -> CodeQuestionCenter {
+        let claude: @MainActor () -> CodeQuestionSurface.ModelChoice = { .init(provider: .claude, model: "") }
+        let questions = CodeQuestionCenter(defaultChoice: claude)
+        questions.workbenches = vm
+        questions.dbPool = pool
+        let dbPool: DatabasePool = pool
+        questions.embeddedChats = EmbeddedChatCenter { spec, gate in makeSurfaceEngine(spec, dbPool: dbPool, ai: ai, gate: gate) }
+        return questions
+    }
+
+    /// Spec §9.5: ⌥⌘↩ closes the panel and hands the query to Claude Code
+    /// (the sheet goes on the page); nothing is asked here.
+    func testOptionCommandReturnHandsTheQueryAndClosesThePanel() throws {
+        let (center, _) = makeCenter()
+        var handed: [(query: String, workbenchID: Int64)] = []
+        center.onHandToClaude = { query, project in handed.append((query, project.id)) }
         center.pageAppeared(project, window: nil)
         center.present(scope: .all)
-        let session = center.session
-        session?.updateQuery("why save")
-        center.perform(session?.activateSelection(option: false, command: true) ?? .none)
-        session?.select(OpenQuicklyRow.askAI(query: "why save").id)
-        center.perform(session?.activateSelection(option: false, command: false) ?? .none)
-        XCTAssertEqual(asked, ["why save", "why save"])
-        var handed: [String] = []
-        center.onHandToClaude = { query, _ in handed.append(query) }
-        center.perform(session?.activateSelection(option: true, command: true) ?? .none)
-        XCTAssertEqual(handed, ["why save"])
-        XCTAssertEqual(asked.count, 2, "⌥⌘↩ is not an ask")
-        XCTAssertNotNil(center.session)
+        let session = try XCTUnwrap(center.session)
+        session.updateQuery("why save")
+        center.perform(session.activateSelection(option: true, command: true))
+        XCTAssertEqual(handed.map(\.query), ["why save"])
+        XCTAssertEqual(handed.map(\.workbenchID), [project.id])
+        XCTAssertNil(center.session, "the panel closed")
+        XCTAssertNil(session.answerConversationID, "nothing was asked")
+    }
+
+    /// Spec §9.3: ⌘↩ and the ✦ Ask AI row start a code question and show
+    /// its answer in the panel, which stays open.
+    func testCommandReturnAsksAndTheAnswerShowsInThePanel() async throws {
+        let (center, vm) = makeCenter()
+        let ai = ScriptedAIService()
+        let questions = makeQuestions(vm, ai: ai)
+        center.questions = questions
+        center.pageAppeared(project, window: nil)
+        center.present(scope: .all)
+        let session = try XCTUnwrap(center.session)
+        session.updateQuery("why save")
+        XCTAssertTrue(session.model.rows.contains(.askAI(query: "why save")))
+
+        center.perform(session.activateSelection(option: false, command: true))
+        let conversationID = try XCTUnwrap(session.answerConversationID)
+        XCTAssertTrue(center.session === session, "the answer is where the question was asked")
+        XCTAssertEqual(presenter.dismissals, [])
+        let started = await eventually { ai.calls.count == 1 }
+        XCTAssertTrue(started)
+        XCTAssertEqual(ai.calls.first?.prompt, "why save")
+        let contextType = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT context_type FROM chat_conversations WHERE id = ?", arguments: [conversationID])
+        }
+        XCTAssertEqual(contextType, "code_question")
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+
+        session.select(OpenQuicklyRow.askAI(query: "why save").id)
+        let other = try XCTUnwrap(center.session)
+        XCTAssertEqual(other.activateSelection(option: false, command: false), .askAI("why save"), "the row asks too")
+    }
+
+    /// A `path:line` link in the answer opens the file and closes the panel;
+    /// a link to a file that is not there keeps it.
+    func testAnAnswerLinkOpensTheFileAndClosesThePanel() async throws {
+        let (center, vm) = makeCenter()
+        let ai = ScriptedAIService()
+        let questions = makeQuestions(vm, ai: ai)  // `questions` is weak, as on AppState
+        center.questions = questions
+        center.pageAppeared(project, window: nil)
+        center.present(scope: .all)
+        center.session?.updateQuery("why")
+        center.perform(.askAI("why"))
+        let started = await eventually { ai.calls.count == 1 }
+        XCTAssertTrue(started)
+        guard started else { return }
+        ai.emit(.text("See src/save.swift:12."), .turnComplete("See src/save.swift:12."), .done)
+        ai.finish()
+
+        await center.openAnswerLink(try XCTUnwrap(URL(string: CodeLineLinks.url(path: "src/gone.swift", line: 1, col: nil))))
+        XCTAssertNotNil(center.session, "nothing to open: the panel stays")
+        await center.openAnswerLink(try XCTUnwrap(URL(string: CodeLineLinks.url(path: "src/save.swift", line: 12, col: nil))))
+        XCTAssertNil(center.session)
+        XCTAssertEqual(presenter.dismissals, [false])
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "src/save.swift")
+    }
+
+    /// No code question center: the panel says the question could not start.
+    func testAnAskThatCannotStartSaysSo() {
+        let (center, _) = makeCenter()
+        center.pageAppeared(project, window: nil)
+        center.present(scope: .all)
+        center.perform(.askAI("why"))
+        XCTAssertNil(center.session?.answerConversationID)
+        XCTAssertEqual(center.session?.askError, "Couldn't start the question.")
     }
 
     // MARK: Text search

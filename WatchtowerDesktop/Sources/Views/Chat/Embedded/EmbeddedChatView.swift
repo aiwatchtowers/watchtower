@@ -16,6 +16,9 @@ struct EmbeddedChatView<Accessory: View, Footer: View>: View {
     /// Hides the composer while the surface offers other input instead
     /// (onboarding's quick replies).
     var showsComposer = true
+    /// Esc in the composer; nil stops the running answer (a popover closes
+    /// itself instead).
+    var onEscape: (() -> Void)?
     @ViewBuilder var accessory: (ChatThreadItem) -> Accessory
     @ViewBuilder var footer: () -> Footer
 
@@ -27,7 +30,7 @@ struct EmbeddedChatView<Accessory: View, Footer: View>: View {
             footer()
             if showsComposer {
                 EmbeddedChatComposer(engine: engine, placeholder: placeholder,
-                                     dictationTargetID: dictationTargetID, density: density)
+                                     dictationTargetID: dictationTargetID, density: density, onEscape: onEscape)
             }
         }
     }
@@ -43,10 +46,11 @@ extension EmbeddedChatView where Accessory == EmptyView, Footer == EmptyView {
         engine: EmbeddedChatEngine,
         density: ChatDensity = .regular,
         placeholder: String,
-        dictationTargetID: String? = nil
+        dictationTargetID: String? = nil,
+        onEscape: (() -> Void)? = nil
     ) {
         self.init(engine: engine, density: density, placeholder: placeholder, dictationTargetID: dictationTargetID,
-                  accessory: { _ in EmptyView() }, footer: { EmptyView() })
+                  onEscape: onEscape, accessory: { _ in EmptyView() }, footer: { EmptyView() })
     }
 }
 
@@ -143,6 +147,7 @@ struct EmbeddedChatComposer: View {
     let placeholder: String
     var dictationTargetID: String?
     var density: ChatDensity = .regular
+    var onEscape: (() -> Void)?
 
     // Every closure here is a named role (send, stop, escape); none is "the" trailing one.
     // swiftlint:disable trailing_closure
@@ -158,7 +163,7 @@ struct EmbeddedChatComposer: View {
                 placeholder: placeholder,
                 dictationTargetID: dictationTargetID,
                 maxHeight: density.composerMaxHeight,
-                onEscape: { engine.stop() }
+                onEscape: { if let onEscape { onEscape() } else { engine.stop() } }
             )
         )
     }

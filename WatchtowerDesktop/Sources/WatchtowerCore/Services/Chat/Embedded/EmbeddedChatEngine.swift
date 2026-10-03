@@ -330,9 +330,10 @@ package final class EmbeddedChatEngine {
 
     private func begin(_ request: TurnRequest) {
         let turnID = UUID().uuidString
+        let options = spec.runOptions()
         let ids: (ownerID: Int64?, assistantID: Int64)
         do {
-            ids = try store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
+            ids = try store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: options.provider ?? provider)
         } catch {
             // Nothing was sent: the owner's text goes back to the composer,
             // its follow-ups back to the queue.
@@ -357,17 +358,19 @@ package final class EmbeddedChatEngine {
         running = RunningTurn(request: request, turn: turn, lastFlush: now, lastEvent: now, bannerAtBegin: bannerError)
         refreshRows()
 
-        let input = ChatTurnInput(text: request.promptText, isResumed: sessionID != nil,
+        let resumed = options.resumesSession ? sessionID : nil
+        let input = ChatTurnInput(text: request.promptText, isResumed: resumed != nil,
                                   previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turnID,
                                   alreadyApplied: request.alreadyApplied)
         let stream = aiService.stream(
             prompt: spec.turnPrompt(input),
-            systemPrompt: sessionID == nil ? spec.systemPrompt() : nil,
-            sessionID: sessionID,
+            systemPrompt: resumed == nil ? spec.systemPrompt() : nil,
+            sessionID: resumed,
             dbPath: store.dbPath,
-            model: nil,  // nil = the provider's resolved strong-tier model
-            provider: nil,
-            toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turnID)
+            model: options.model,  // nil = the provider's resolved strong-tier model
+            provider: options.provider,
+            toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turnID),
+            readFolder: options.readFolder
         )
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)

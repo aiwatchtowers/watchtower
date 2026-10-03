@@ -8,6 +8,7 @@ import WatchtowerCore
 /// terminal. N counts the drafts plus the open comments already saved.
 struct WorkbenchCommentsSendBar: View {
     static let copiedNote = "Prompt copied — press ⌘V in the terminal"
+    static let pastedNote = "Pasted into Claude — press Return to send"
     static let noSessionNote =
         "No Claude Code session is running for this workbench. The next session you start gets these comments in its brief."
 
@@ -36,7 +37,7 @@ struct WorkbenchCommentsSendBar: View {
             HStack(spacing: 8) {
                 switch delivery {
                 case .sent:
-                    Label("Pasted into Claude — press Return to send", systemImage: "checkmark")
+                    Label(Self.pastedNote, systemImage: "checkmark")
                         .font(.caption).foregroundStyle(.secondary)
                 case .copied:
                     Label(Self.copiedNote, systemImage: "doc.on.clipboard")

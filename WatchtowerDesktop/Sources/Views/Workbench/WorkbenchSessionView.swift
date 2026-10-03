@@ -108,9 +108,11 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             }
             switch state {
             case .running?:
-                if let session, center.clipboardHints.contains(session.id) {
+                if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
+                    let copied = center.clipboardHints.contains(session.id)
                     HStack {
-                        Label(WorkbenchCommentsSendBar.copiedNote, systemImage: "doc.on.clipboard")
+                        Label(copied ? WorkbenchCommentsSendBar.copiedNote : WorkbenchCommentsSendBar.pastedNote,
+                              systemImage: copied ? "doc.on.clipboard" : "checkmark")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("Dismiss") { center.dismissClipboardHint(sessionID: session.id) }

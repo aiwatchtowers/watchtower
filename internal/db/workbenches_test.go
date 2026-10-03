@@ -112,6 +112,29 @@ func TestGetProject_RoundTripsAndReportsNotFound(t *testing.T) {
 	assert.Equal(t, id, list[0].ID)
 }
 
+func TestWorkbenchByFolder_MatchesTheBoundFolderOnly(t *testing.T) {
+	d := openTestDB(t)
+	folder := filepath.Join(t.TempDir(), "Acme")
+	require.NoError(t, os.Mkdir(folder, 0o755))
+	id, err := d.CreateWorkbench("acme", folder)
+	require.NoError(t, err)
+
+	got, err := d.WorkbenchByFolder(folder)
+	require.NoError(t, err)
+	assert.Equal(t, id, got.ID)
+	assert.Equal(t, folder, got.FolderPath)
+
+	// APFS is case-insensitive: another spelling of the folder is the folder.
+	got, err = d.WorkbenchByFolder(strings.ToLower(folder))
+	require.NoError(t, err)
+	assert.Equal(t, id, got.ID)
+
+	_, err = d.WorkbenchByFolder(filepath.Join(folder, "sub"))
+	assert.ErrorIs(t, err, ErrWorkbenchNotFound, "a subfolder is not the workbench folder")
+	_, err = d.WorkbenchByFolder(filepath.Dir(folder))
+	assert.ErrorIs(t, err, ErrWorkbenchNotFound)
+}
+
 func TestUpdateProjectDescription(t *testing.T) {
 	d := openTestDB(t)
 	id := newTestWorkbench(t, d)
