@@ -48,7 +48,7 @@ final class SourceConnectPromptTests: XCTestCase {
         let ids = SourceConnectPrompt.suggestedFeatureIDs(
             for: [.workCommunication, .meetings], disabled: ["briefing", "secretary-inbox"], registryOrder: order
         )
-        XCTAssertEqual(ids, ["secretary-inbox", "briefing"])
+        XCTAssertEqual(ids, ["briefing"], "Attention detection is always on, not a goal feature: never offered")
     }
 
     func testNothingOffMeansNoSuggestion() {

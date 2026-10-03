@@ -12,17 +12,19 @@ package enum OnboardingGoal: String, CaseIterable, Sendable {
 /// table. Feature ids are the `internal/features/registry.go` ids verbatim.
 package enum OnboardingFeaturePlan {
     /// Toggleable features onboarding switches on whatever the goals are:
-    /// Knowledge search is mechanical (no AI) and the chat leans on it. The
-    /// registry's core entries (targets, chat) need no entry here — they have
-    /// no switch at all.
-    package static let alwaysOnFeatureIDs: Set<String> = ["knowledge-search"]
+    /// Knowledge search and Attention detection are mechanical (no AI);
+    /// the chat leans on the first, Inbox and Catch-Up on the second
+    /// (owner decision 2026-10-03, #283). Settings → Features still toggles
+    /// both. The registry's core entries (targets, chat) need no entry
+    /// here — they have no switch at all.
+    package static let alwaysOnFeatureIDs: Set<String> = ["knowledge-search", "secretary-inbox"]
 
     /// Off whatever the goals are: Memory is still an experiment, opted into
     /// only by hand.
     package static let alwaysOffFeatureIDs: Set<String> = ["memory"]
 
-    /// Development maps to nothing: Workbench, the chat, Knowledge search and
-    /// Targets are always on. Meetings' calendar connection is the Connect
+    /// Development maps to nothing: Workbench, the chat, Knowledge search,
+    /// Attention detection and Targets are always on. Meetings' calendar connection is the Connect
     /// step's business, not a feature switch.
     package static func featureIDs(for goal: OnboardingGoal) -> Set<String> {
         switch goal {
@@ -30,7 +32,7 @@ package enum OnboardingFeaturePlan {
             // Slack Digests is load-bearing: Tracks and People Cards mine its
             // output and have no material without it.
             return [
-                "secretary-inbox", "slack-digests", "tracks", "people-cards",
+                "slack-digests", "tracks", "people-cards",
                 "briefing", "day-plan", "ideas", "reaction-commands"
             ]
         case .tasksAndJira:

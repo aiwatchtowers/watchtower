@@ -10,13 +10,20 @@ UI text is English only.
 
 **Goal → feature mapping** (`OnboardingFeaturePlan`, WatchtowerCore). The
 goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
-- Work communication → `secretary-inbox`, `slack-digests`, `tracks`,
-  `people-cards`, `briefing`, `day-plan`, `ideas`, `reaction-commands`.
+- Work communication → `slack-digests`, `tracks`, `people-cards`,
+  `briefing`, `day-plan`, `ideas`, `reaction-commands`.
 - Tasks & Jira → `stream-digests`, `next-step`.
 - Meetings → `briefing` (meeting prep rides the daily briefing).
 - Development → nothing (Workbench, the chat, Targets and Knowledge search
   need no switch).
-- Always on: `knowledge-search`. Always off: `memory`. Left alone:
+- Always on: `knowledge-search`, `secretary-inbox` (Attention detection,
+  owner decision 2026-10-03, #283 — mechanical, and Inbox/Catch-Up lean on
+  it). Onboarding never disables an always-on feature: the Customize
+  screen lists them in its "Always on" row, and one the owner turned off
+  in Settings shows under "Off (as in Settings)" on a re-run and stays
+  off. Settings → Features keeps them as normal toggles, and the
+  related-features offer after a connect never proposes them. Always
+  off: `memory`. Left alone:
   `knowledge-connectors` (Confluence in search) and the core entries.
   `OnboardingFeaturePlanTests` parses `internal/features/registry.go` and
   fails on a toggleable feature that is in none of these sets.
