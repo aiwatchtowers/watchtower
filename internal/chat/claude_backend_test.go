@@ -468,6 +468,32 @@ func TestChat04_ClaudeArgsOnResume(t *testing.T) {
 	assert.True(t, contains(args, "--strict-mcp-config"), "a resumed session also sees only Watchtower's MCP servers")
 }
 
+// The warm child always carries the --tools built-in allowlist: the value it
+// is given, and "" (no built-in at all) when none is set, so a built-in a
+// later CLI release adds is never visible by default.
+func TestClaudeArgs_ToolsAllowlistAlwaysPassed(t *testing.T) {
+	for _, tools := range []string{"ToolSearch,WebSearch", ""} {
+		for _, resume := range []string{"", "sess-9"} {
+			args := claudeArgs(ClaudeOptions{Tools: tools, AllowedTools: "mcp__watchtower", DisallowedTools: "Bash"},
+				"/tmp/p", "/tmp/m", resume)
+			i := indexOf(args, "--tools")
+			require.GreaterOrEqual(t, i, 0, "tools=%q resume=%q", tools, resume)
+			require.Less(t, i+1, len(args))
+			assert.Equal(t, tools, args[i+1])
+			assert.Equal(t, i, lastIndexOf(args, "--tools"), "--tools passed once")
+		}
+	}
+}
+
+func lastIndexOf(args []string, s string) int {
+	for i := len(args) - 1; i >= 0; i-- {
+		if args[i] == s {
+			return i
+		}
+	}
+	return -1
+}
+
 // The claude child only ever sees the MCP servers Watchtower hands it
 // (--strict-mcp-config: watchtower + Quick Connections, never the owner's
 // claude.ai connectors) and runs in a dedicated, empty, stable directory, so

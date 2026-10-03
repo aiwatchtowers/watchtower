@@ -1,0 +1,61 @@
+# Known Claude Code built-in tool names, one per line (union across the CLI
+# versions Watchtower supports; a legacy name stays listed). Pinned so the
+# offline guard TestChatBuiltins_* runs in CI without a CLI. Seeded by hand
+# for Claude Code 2.1.288 from the CLI's tool registry strings and the
+# previous deny list. `scripts/check-claude-builtins.sh` compares the
+# installed CLI's built-in set against this file; with --update it appends
+# the names the CLI has that are missing here.
+Agent
+Artifact
+ArtifactCheck
+ArtifactComments
+ArtifactData
+AskUserQuestion
+Bash
+BashOutput
+ConnectGitHub
+CronCreate
+CronDelete
+CronList
+DesignSync
+Edit
+EnterPlanMode
+EnterWorktree
+ExitPlanMode
+ExitWorktree
+Glob
+Grep
+KillShell
+ListAgents
+ListMcpResourcesTool
+LS
+Monitor
+NotebookEdit
+PowerShell
+PushNotification
+Read
+ReadMcpResourceDirTool
+ReadMcpResourceTool
+RemoteTrigger
+ReportFindings
+ScheduleWakeup
+SendMessage
+SendUserMessage
+ShareOnboardingGuide
+Skill
+SlashCommand
+StructuredOutput
+SubagentHandback
+Task
+TaskCreate
+TaskGet
+TaskList
+TaskStop
+TaskUpdate
+TodoRead
+TodoWrite
+ToolSearch
+WebFetch
+WebSearch
+Workflow
+Write

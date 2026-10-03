@@ -218,6 +218,11 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
 		"--allowedTools", c.allowedToolsFlag(),
+		// Built-in allowlist: the model sees exactly the Claude Code built-ins
+		// named here (MCP tools are unaffected), so a built-in a future CLI
+		// release adds stays hidden by default instead of slipping past the
+		// deny list below. See ChatBuiltinTools.
+		"--tools", ChatBuiltinTools,
 		// Hide every built-in tool from the model outright, not just deny it:
 		// a tool that is merely denied still shows up in the model's tool list,
 		// so it tries the call, gets a silent headless rejection, and then asks
@@ -231,6 +236,9 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    for prompt-injection payloads in synced content;
 		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
 		//    and probing user folders can trigger TCC prompts (a project P0).
+		// The deny list is defence in depth behind --tools: it keeps every
+		// known built-in hidden even if a CLI release stopped honouring the
+		// allowlist.
 		"--disallowedTools", WithExternalDisallowed(DisallowedTools, c.externalServers),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
@@ -318,13 +326,34 @@ func writeMCPConfigTempFile(config string) (string, error) {
 	return fsutil.WritePrivateTemp("wt-mcp-*.json", config)
 }
 
+// ChatBuiltinTools is the --tools value of every chat run on the one-shot
+// client: the only Claude Code built-in it may see is ToolSearch, which loads
+// the deferred watchtower tool schemas. --tools is an allowlist over the
+// CLI's built-in set (MCP tools are not affected), so a built-in added by a
+// later CLI release is hidden by default — the deny list alone went stale
+// with every release (DesignSync, ReportFindings, ShareOnboardingGuide in
+// 2.1.288). Adding a name here exposes it to every chat: it must be approved
+// in TestChatBuiltins_OnlyApprovedNamesExposed first.
+const ChatBuiltinTools = ToolSearchTool
+
+// SessionBuiltinTools is the warm `ai session` (main chat, Claude backend)
+// --tools value: ChatBuiltinTools plus WebSearch, which that session alone
+// may use (see SessionDisallowedTools).
+const SessionBuiltinTools = ChatBuiltinTools + "," + WebSearchTool
+
+// ToolSearchTool is Claude Code's built-in deferred-tool loader.
+const ToolSearchTool = "ToolSearch"
+
 // DisallowedTools hides every built-in Claude Code tool from the chat model
 // (see buildArgs for why each group is hidden). Shared by the one-shot client
-// and the warm `ai session` backend. The last two lines are the newer CLI
-// built-ins (scheduling/remote triggers, workflows, agent/task plumbing, MCP
-// resource readers that would bypass the Quick Connections allowlist) — an
-// unknown name is ignored by older CLIs. ToolSearch stays allowed: it loads
-// the deferred watchtower tool schemas.
+// and the warm `ai session` backend. It is defence in depth behind the
+// ChatBuiltinTools/SessionBuiltinTools allowlist: the lines after the first
+// three are the newer CLI built-ins (scheduling/remote triggers, workflows,
+// agent/task plumbing, MCP resource readers that would bypass the Quick
+// Connections allowlist, host-UI tools) — an unknown name is ignored by older
+// CLIs. TestChatBuiltins_DenyListCoversSnapshot keeps it in step with the
+// pinned CLI built-in snapshot. ToolSearch stays allowed: it loads the
+// deferred watchtower tool schemas.
 const DisallowedTools = sessionDisallowedTools + "," + WebSearchTool
 
 // SessionDisallowedTools is DisallowedTools minus WebSearch: the main chat's
@@ -342,7 +371,10 @@ const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,
 	"ExitPlanMode,SlashCommand,Skill," +
 	"CronCreate,CronDelete,CronList,RemoteTrigger,ScheduleWakeup,PushNotification,Workflow,Monitor," +
 	"EnterWorktree,ExitWorktree,ListAgents,SendMessage,TaskCreate,TaskGet,TaskList,TaskStop,TaskUpdate," +
-	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool"
+	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool," +
+	"Agent,AskUserQuestion,EnterPlanMode,PowerShell,SendUserMessage,SubagentHandback,StructuredOutput," +
+	"Artifact,ArtifactCheck,ArtifactComments,ArtifactData,ConnectGitHub," +
+	"DesignSync,ReportFindings,ShareOnboardingGuide"
 
 // AllowedTools builds the --allowedTools value: the built-in watchtower
 // server plus one mcp__<Name>__<tool> token per allowed external tool, in
