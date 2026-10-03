@@ -370,7 +370,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: a, text: "Ship it") }
         let second = try await session(a, "second", lastActiveAt: "2026-09-03T10:00:00Z", targetID: target)
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-04T10:00:00Z"))
-        let rows = SessionSwitcherPresentation.rows([first, second], liveIDs: [first.id], now: now)
+        let rows = SessionSwitcherPresentation.rows([first, second], liveIDs: [first.id], statuses: [:], now: now)
 
         var picked = 0
         let running = SessionSwitcherRow(row: rows[0], isCurrent: true) { picked += 1 }

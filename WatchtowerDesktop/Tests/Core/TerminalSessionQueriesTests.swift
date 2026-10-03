@@ -134,4 +134,33 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertNil(try TerminalSessionQueries.fetch(db, id: row.id))
         }
     }
+
+    func testFetchAgentStatesReturnsOnlyTheAskedIDsWithTheWorkbenchName() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let waiting = try TerminalSessionQueries.create(db, claude(project, "Waiting"))
+            let fresh = try TerminalSessionQueries.create(db, claude(project, "Fresh"))
+            let other = try TerminalSessionQueries.create(db, claude(project, "Other"))
+            let loose = try TerminalSessionQueries.create(db, claude(nil, "Loose"))
+            for id in [waiting.id, other.id] {
+                try db.execute(
+                    sql: "UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?",
+                    arguments: ["2026-10-03T12:34:56.789Z", id]
+                )
+            }
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, ids: [waiting.id, fresh.id, loose.id])
+            XCTAssertEqual(rows.map(\.id), [waiting.id, fresh.id, loose.id], "only the asked ids")
+            XCTAssertEqual(rows[0], SessionAgentStateRow(
+                id: waiting.id, projectID: project, title: "Waiting", agentState: "waiting",
+                agentStateAt: "2026-10-03T12:34:56.789Z", workbenchName: "acme"
+            ))
+            XCTAssertEqual(rows[0].stored, .waiting)
+            XCTAssertNil(rows[1].agentState, "a NULL state reads as nil")
+            XCTAssertNil(rows[1].agentStateAt)
+            XCTAssertNil(rows[1].stored)
+            XCTAssertNil(rows[2].workbenchName, "a standalone terminal has no workbench")
+            XCTAssertEqual(try TerminalSessionQueries.fetchAgentStates(db, ids: []), [])
+        }
+    }
 }

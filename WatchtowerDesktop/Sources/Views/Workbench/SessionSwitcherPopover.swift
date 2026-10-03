@@ -56,7 +56,7 @@ struct SessionSwitcherPopover: View {
         let rows = SessionSwitcherPresentation.matching(
             SessionSwitcherPresentation.rows(
                 vm.orderedSessions(projectID: project.id),
-                liveIDs: vm.terminalCenter?.liveIDs ?? [], now: vm.now()
+                liveIDs: vm.terminalCenter?.liveIDs ?? [], statuses: [:], now: vm.now()
             ),
             query: query
         )

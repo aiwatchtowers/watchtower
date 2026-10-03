@@ -151,7 +151,7 @@ struct GoToPalette: View {
     private func currentSessionRows(now: Date) -> [Int64: SessionSwitcherPresentation.Row] {
         guard let projectID = vm.selectedWorkbenchID else { return [:] }
         let rows = SessionSwitcherPresentation.rows(
-            vm.orderedSessions(projectID: projectID), liveIDs: vm.terminalCenter?.liveIDs ?? [], now: now
+            vm.orderedSessions(projectID: projectID), liveIDs: vm.terminalCenter?.liveIDs ?? [], statuses: [:], now: now
         )
         return Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
     }
