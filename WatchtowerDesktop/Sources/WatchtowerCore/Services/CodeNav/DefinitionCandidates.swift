@@ -85,6 +85,10 @@ package enum DefinitionCandidates {
     package static func noDefinitionNotice(word: String) -> String {
         "No definition of `\(word)`"
     }
+
+    /// A miss while a full index run is under way: the definition may be
+    /// in a file it has not read yet.
+    package static let stillIndexingNotice = "Still indexing…"
 }
 
 /// The text-search fallback (spec §6.5) over `code search --word --case`

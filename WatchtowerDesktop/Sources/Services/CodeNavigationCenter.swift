@@ -12,6 +12,14 @@ protocol CodeDefinitionPage: AnyObject {
     func requestDefinitionAtCursor() async -> Bool
 }
 
+/// The jump bar of a Files pane (`JumpBarController`, a fake in tests):
+/// ⌃6 pops its last segment's menu, the file's symbols with a filter.
+@MainActor
+protocol FileSymbolsPresenting: AnyObject {
+    /// false = nothing to list (no file on screen, or no symbols).
+    func presentFileSymbols() -> Bool
+}
+
 /// Where the definition menu pops up: a point in `view`'s coordinates.
 struct DefinitionMenuAnchor {
     weak var view: NSView?
@@ -61,6 +69,7 @@ final class CodeNavigationCenter {
     @ObservationIgnored private let beep: @MainActor () -> Void
     @ObservationIgnored private let noticeDuration: Duration
     @ObservationIgnored private var pages: [Int64: WeakDefinitionPage] = [:]
+    @ObservationIgnored private var jumpBars: [Int64: WeakFileSymbols] = [:]
     @ObservationIgnored private var searches: [Int64: DefinitionTextSearch] = [:]
     /// Per workbench: the live request; an older one's answer is dropped.
     @ObservationIgnored private var generations: [Int64: Int] = [:]
@@ -158,10 +167,16 @@ final class CodeNavigationCenter {
             }
         case .searchText, .notFound:
             beep()
-            let notice = DefinitionCandidates.noDefinitionNotice(word: request.word)
+            let notice = Self.isIndexing(index.state) && !fromTextSearch ? DefinitionCandidates.stillIndexingNotice
+                : DefinitionCandidates.noDefinitionNotice(word: request.word)
             showNotice(failure.map { "\(notice) — text search failed: \($0)" } ?? notice, workbenchID: project.id)
         }
         if generations[project.id] == generation { generations[project.id] = nil }
+    }
+
+    private static func isIndexing(_ state: CodeIndexState) -> Bool {
+        if case .indexing = state { return true }
+        return false
     }
 
     /// `code search --word --case` for the heuristic; nil when superseded
@@ -215,6 +230,38 @@ final class CodeNavigationCenter {
         notices[workbenchID]
     }
 
+    // MARK: Jump bar
+
+    func registerJumpBar(_ bar: FileSymbolsPresenting, for workbenchID: Int64) {
+        jumpBars[workbenchID] = WeakFileSymbols(bar: bar)
+    }
+
+    func unregisterJumpBar(_ bar: FileSymbolsPresenting, for workbenchID: Int64) {
+        guard jumpBars[workbenchID]?.bar === bar else { return }
+        jumpBars[workbenchID] = nil
+    }
+
+    /// ⌃6: the jump bar's file symbol list; a beep when there is no file on
+    /// screen or nothing to list.
+    func showFileSymbols(project: Workbench) {
+        guard let bar = jumpBars[project.id]?.bar, bar.presentFileSymbols() else {
+            beep()
+            return
+        }
+    }
+
+    /// A pick in a jump bar menu: a symbol (`line`) or a file (nil: where
+    /// its cursor was). A jump like a definition's: the location it leaves
+    /// goes on Back.
+    func openFromJumpBar(path: String, line: Int?, col: Int?, project: Workbench) {
+        recordJumpFromCurrentLocation(project: project)
+        if let line {
+            workbenches?.showLocation(CodeNavLocation(path: path, line: line, col: col ?? 1), project: project, keepingTab: true)
+        } else {
+            workbenches?.codeFiles.open(path, project: project, preview: false)
+        }
+    }
+
     // MARK: History
 
     func canGoBack(workbenchID: Int64?) -> Bool {
@@ -225,12 +272,12 @@ final class CodeNavigationCenter {
         workbenchID.flatMap { histories[$0]?.canGoForward } ?? false
     }
 
-    /// ⌃⌘← (and the jump bar's ‹, Task 9).
+    /// ⌃⌘← (and the jump bar's ‹).
     func goBack(project: Workbench) {
         step(project: project) { history, current in history.goBack(from: current) }
     }
 
-    /// ⌃⌘→ (and the jump bar's ›, Task 9).
+    /// ⌃⌘→ (and the jump bar's ›).
     func goForward(project: Workbench) {
         step(project: project) { history, current in history.goForward(from: current) }
     }
@@ -278,4 +325,8 @@ private final class DefinitionTextSearch {
 
 private struct WeakDefinitionPage {
     weak var page: CodeDefinitionPage?
+}
+
+private struct WeakFileSymbols {
+    weak var bar: FileSymbolsPresenting?
 }

@@ -187,9 +187,10 @@ package struct JumpBarSymbolRow: Equatable, Sendable {
 
     /// By first line, the wider range first; ties keep their order.
     private static func byRange(_ symbols: [CodeSymbol]) -> [CodeSymbol] {
-        symbols.enumerated().sorted { a, b in
+        let sorted = symbols.enumerated().sorted { a, b in
             (a.element.line, -a.element.endLine, a.offset) < (b.element.line, -b.element.endLine, b.offset)
-        }.map(\.element)
+        }
+        return sorted.map(\.element)
     }
 
     /// `outer`'s lines hold `inner`'s and are more: an equal range is a

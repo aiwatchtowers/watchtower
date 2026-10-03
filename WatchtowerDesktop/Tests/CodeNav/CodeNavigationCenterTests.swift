@@ -21,6 +21,7 @@ final class CodeNavigationCenterTests: XCTestCase {
     private var menu: RecordingMenu!
     private var searches: DefinitionSearches!
     private var beeps = 0
+    private var codeIndex: CodeIndexCenter!
 
     override func setUpWithError() throws {
         (pool, dbPath) = try TestDatabase.createPool()
@@ -52,6 +53,7 @@ final class CodeNavigationCenterTests: XCTestCase {
 
     private func makeCenter(symbols: [CodeSymbol]) -> (CodeNavigationCenter, WorkbenchesViewModel) {
         let codeIndex = CodeIndexCenter { nil }
+        self.codeIndex = codeIndex
         let center = CodeNavigationCenter(
             codeIndex: codeIndex, menu: menu, startSearch: searches.start,
             beep: { [weak self] in self?.beeps += 1 }, noticeDuration: .milliseconds(80)
@@ -316,6 +318,83 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertFalse(center.canGoBack(workbenchID: nil))
     }
 
+    // MARK: Jump bar
+
+    /// During the first full run the definition may be in a file not read
+    /// yet: the miss says so instead of "No definition".
+    func testAMissWhileIndexingSaysStillIndexing() async {
+        let (center, _) = makeCenter(symbols: [loadInStore])
+        codeIndex.index(for: project.id).state = .indexing(done: 2, total: 40)
+        await center.goToDefinition(request("frob", at: "src/store.swift", 30, 12), project: project, anchor: nil)
+        XCTAssertEqual(beeps, 1)
+        XCTAssertEqual(center.notice(for: project.id), "Still indexing…")
+        XCTAssertTrue(searches.started.isEmpty)
+    }
+
+    func testFileSymbolsAskTheJumpBarOfTheWorkbench() {
+        let (center, _) = makeCenter(symbols: [])
+        let bar = FakeFileSymbols(answer: true)
+        center.registerJumpBar(bar, for: project.id)
+        center.showFileSymbols(project: project)
+        XCTAssertEqual(bar.asked, 1)
+        XCTAssertEqual(beeps, 0)
+
+        bar.answer = false
+        center.showFileSymbols(project: project)
+        XCTAssertEqual(bar.asked, 2)
+        XCTAssertEqual(beeps, 1, "no symbols to list: a beep")
+
+        center.unregisterJumpBar(bar, for: project.id)
+        center.showFileSymbols(project: project)
+        XCTAssertEqual(bar.asked, 2)
+        XCTAssertEqual(beeps, 2, "no jump bar on screen: a beep")
+    }
+
+    func testAnOlderJumpBarGoingAwayKeepsTheNewOne() {
+        let (center, _) = makeCenter(symbols: [])
+        let old = FakeFileSymbols(answer: true)
+        let new = FakeFileSymbols(answer: true)
+        center.registerJumpBar(old, for: project.id)
+        center.registerJumpBar(new, for: project.id)
+        center.unregisterJumpBar(old, for: project.id)
+        center.showFileSymbols(project: project)
+        XCTAssertEqual(new.asked, 1)
+    }
+
+    func testAJumpBarPickOpensTheSymbolAndGoesOnTheHistory() {
+        let (center, vm) = makeCenter(symbols: [saveInStore])
+        vm.codeFiles.open("src/views/list.swift", project: project, preview: true)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 4, col: 2), workbenchID: project.id)
+        XCTAssertFalse(center.canGoBack(workbenchID: project.id), "‹ off before any jump")
+
+        center.openFromJumpBar(path: "src/store.swift", line: 12, col: 10, project: project)
+        let reveal = vm.codeFiles.reveals[project.id]
+        XCTAssertEqual(reveal?.path, "src/store.swift")
+        XCTAssertEqual(reveal?.line, 12)
+        XCTAssertEqual(reveal?.col, 10)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).tabs.first { $0.path == "src/store.swift" }?.isPreview, false)
+        XCTAssertTrue(center.canGoBack(workbenchID: project.id), "‹ on after a jump bar jump")
+        XCTAssertFalse(center.canGoForward(workbenchID: project.id))
+
+        // The page reports the cursor where the reveal put it.
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/store.swift", line: 12, col: 10), workbenchID: project.id)
+        center.goBack(project: project)
+        XCTAssertEqual(vm.codeFiles.reveals[project.id]?.path, "src/views/list.swift")
+        XCTAssertEqual(vm.codeFiles.reveals[project.id]?.line, 4)
+        XCTAssertTrue(center.canGoForward(workbenchID: project.id), "› on after going back")
+    }
+
+    func testAJumpBarFilePickOpensTheFileWhereItsCursorWas() {
+        let (center, vm) = makeCenter(symbols: [])
+        vm.codeFiles.open("src/views/list.swift", project: project, preview: false)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 4, col: 2), workbenchID: project.id)
+        center.openFromJumpBar(path: "src/store.swift", line: nil, col: nil, project: project)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "src/store.swift")
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).tabs.first { $0.path == "src/store.swift" }?.isPreview, false)
+        XCTAssertNil(vm.codeFiles.reveals[project.id]?.line, "no line: the file's own cursor")
+        XCTAssertTrue(center.canGoBack(workbenchID: project.id))
+    }
+
     /// Whether `task` ends within `eventually`'s wait — a failure, not a
     /// hung run, when a cancelled search never answers its caller.
     private func finishes(_ task: Task<Void, Never>) async -> Bool {
@@ -359,6 +438,21 @@ private final class FakeDefinitionPage: CodeDefinitionPage {
     }
 
     func requestDefinitionAtCursor() async -> Bool {
+        asked += 1
+        return answer
+    }
+}
+
+@MainActor
+private final class FakeFileSymbols: FileSymbolsPresenting {
+    var answer: Bool
+    var asked = 0
+
+    init(answer: Bool) {
+        self.answer = answer
+    }
+
+    func presentFileSymbols() -> Bool {
         asked += 1
         return answer
     }

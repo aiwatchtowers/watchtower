@@ -42,12 +42,8 @@ struct CodeFilesPaneView: View {
                 Divider()
                 if let active = tabs.active {
                     let buffer = files.buffer(for: project, relPath: active)
-                    CodeFileHeader(buffer: buffer, status: git.files[active])
-                        .overlay(alignment: .leading) {
-                            if let notice = files.navigation?.notice(for: project.id) {
-                                CodeNavNotice(text: notice)
-                            }
-                        }
+                    JumpBar(files: files, project: project, buffer: buffer, status: git.files[active])
+                        .id(project.id)
                     Divider()
                     CodeFileBanners(buffer: buffer)
                 }
@@ -261,66 +257,6 @@ enum GitMark {
         case .added, .untracked: .green
         case .deleted, .conflicted: .red
         }
-    }
-}
-
-/// The active file's path, its git mark and whether it is on disk yet.
-private struct CodeFileHeader: View {
-    let buffer: CodeFileBuffer
-    let status: GitFileStatus?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(buffer.relPath)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.head)
-                .help(buffer.url.path)
-            Spacer(minLength: 4)
-            if let status {
-                Text(status.letter)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(GitMark.color(status))
-                    .help("Not committed")
-            }
-            Text(saveState)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button {
-                NSWorkspace.shared.open(buffer.url)
-            } label: {
-                Image(systemName: "arrow.up.forward.app")
-            }
-            .buttonStyle(.borderless)
-            .help("Open in the default app")
-            .accessibilityLabel("Open in the default app")
-        }
-        .controlSize(.small)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-    }
-
-    private var saveState: String {
-        if buffer.problem != nil || buffer.saveError != nil { return "Not saved" }
-        if buffer.deletedOnDisk { return "Deleted" }
-        return buffer.isDirty ? "Edited" : "Saved"
-    }
-}
-
-/// A go-to-definition miss ("No definition of `w`", spec §8.2), over the
-/// path line for 2 s — the place the jump bar (Task 9) takes over.
-private struct CodeNavNotice: View {
-    let text: String
-
-    var body: some View {
-        Label(text, systemImage: "questionmark.circle")
-            .font(.caption)
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .frame(maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .transition(.opacity)
-            .accessibilityAddTraits(.updatesFrequently)
     }
 }
 

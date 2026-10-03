@@ -66,8 +66,6 @@ final class DefinitionMenuController: NSObject, DefinitionMenuPresenting {
         guard let kind else {
             return NSImage(systemSymbolName: "text.alignleft", accessibilityDescription: "Text match")
         }
-        let renderer = ImageRenderer(content: CodeKindBadge(kind: kind).environment(\.colorScheme, scheme))
-        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
-        return renderer.nsImage
+        return CodeKindBadge.menuImage(kind, scheme: scheme)
     }
 }

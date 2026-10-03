@@ -448,6 +448,9 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.shift, .command])
                 .disabled(shown == nil)
+                Button("File Symbols…") { if let shown { navigation.showFileSymbols(project: shown) } }
+                    .keyboardShortcut("6", modifiers: .control)
+                    .disabled(shown == nil)
                 Button("Back") { if let shown { navigation.goBack(project: shown) } }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoBack(workbenchID: shown?.id))

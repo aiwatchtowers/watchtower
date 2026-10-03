@@ -20,13 +20,15 @@ final class JumpBarSegmentsTests: XCTestCase {
     private lazy var other = sym("Other", .enum, 52, 60)
     private lazy var all = [outer, inner, save, load, count, flush, helper, other]
 
-    private func sym(_ name: String, _ kind: CodeSymbolKind, _ line: Int, _ end: Int,
-                     container: String = "", outline: Bool = false, file: String? = nil) -> CodeSymbol {
+    private func sym(
+        _ name: String, _ kind: CodeSymbolKind, _ line: Int, _ end: Int, container: String = "", outline: Bool = false, file: String? = nil
+    ) -> CodeSymbol {
         CodeSymbol(name: name, kind: kind, path: file ?? path, line: line, col: 1, endLine: end, container: container, outline: outline)
     }
 
-    private func model(line: Int?, symbols: [CodeSymbol]? = nil, language: String? = "swift",
-                       state: CodeIndexState = .ready, file: String? = nil) -> JumpBarModel {
+    private func model(
+        line: Int?, symbols: [CodeSymbol]? = nil, language: String? = "swift", state: CodeIndexState = .ready, file: String? = nil
+    ) -> JumpBarModel {
         JumpBarModel(path: file ?? path, rootName: "acme", cursorLine: line, symbols: symbols ?? all, language: language, state: state)
     }
 
