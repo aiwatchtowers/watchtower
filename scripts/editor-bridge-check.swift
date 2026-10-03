@@ -774,6 +774,14 @@ func navigationChecks(_ page: Page) async {
     check("cursor: steady moves send at most one message per 100 ms, the last position last",
           page.cursors.count >= 2 && page.cursors.count <= allowed && page.cursors.last?.col == lastCol,
           "\(page.cursors.count) messages over \(span) ms (allowed \(allowed)), last \(String(describing: page.cursors.last)) vs col \(lastCol)")
+    // A tab switch: the first cursor message names the file now shown, so
+    // the jump bar and the Back history see the new file at once.
+    await pause(0.35)
+    page.cursors.removeAll()
+    await page.call("wt.show", ["id": "n", "path": "nav.swift", "text": source, "rev": 1])
+    let switched = await wait(2) { !page.cursors.isEmpty }
+    check("cursor: the first message after a tab switch carries the new file's id",
+          switched && page.cursors.first?.id == "n", "\(page.cursors)")
     await page.call("wt.close", "n")
     await page.call("wt.close", "e")
     page.cursors.removeAll()

@@ -296,6 +296,42 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertEqual(forward?.col, 10)
     }
 
+    /// The page's only cursor message after a tab switch is the one its
+    /// `show` sends, and it names the file now shown: Back right after the
+    /// jump and Forward right after Back (no cursor move in between) keep
+    /// each other's location. A message still naming the file left behind
+    /// (the page's old order) would leave the location unknown and Forward
+    /// empty.
+    func testBackThenForwardAfterATabSwitchWithNoCursorMove() async {
+        let (center, vm) = makeCenter(symbols: [saveInStore])
+        vm.codeFiles.open("src/views/list.swift", project: project, preview: true)
+        await center.goToDefinition(request("save", at: "src/views/list.swift", 7, 4), project: project, anchor: nil)
+        // The tab switch: the page's show reports the cursor of the new file.
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/store.swift", line: 12, col: 10), workbenchID: project.id)
+
+        center.goBack(project: project)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "src/views/list.swift")
+        XCTAssertTrue(center.canGoForward(workbenchID: project.id), "Back kept the location it left for Forward")
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 7, col: 4), workbenchID: project.id)
+
+        center.goForward(project: project)
+        let forward = vm.codeFiles.reveals[project.id]
+        XCTAssertEqual(forward.map { CodeNavLocation(path: $0.path, line: $0.line ?? 0, col: $0.col) },
+                       CodeNavLocation(path: "src/store.swift", line: 12, col: 10))
+        XCTAssertTrue(center.canGoBack(workbenchID: project.id), "Forward kept the location it left for Back")
+    }
+
+    func testACursorMessageNamingTheFileLeftBehindKeepsNothingForForward() async {
+        let (center, vm) = makeCenter(symbols: [saveInStore])
+        vm.codeFiles.open("src/views/list.swift", project: project, preview: true)
+        await center.goToDefinition(request("save", at: "src/views/list.swift", 7, 4), project: project, anchor: nil)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 12, col: 10), workbenchID: project.id)
+
+        center.goBack(project: project)
+        XCTAssertFalse(center.canGoForward(workbenchID: project.id),
+                       "the location on screen is unknown, so nothing is kept — why the page names the new file first")
+    }
+
     func testBackReopensAClosedFileAsAKeptTab() async {
         let (center, vm) = makeCenter(symbols: [saveInStore])
         vm.codeFiles.open("src/views/list.swift", project: project, preview: false)

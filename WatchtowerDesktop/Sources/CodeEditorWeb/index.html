@@ -295,9 +295,11 @@
         if (current === args.id && editor.getModel()) { return; }
         flushAll(true);
         if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+        // Before setModel: setting the model and restoring its view state
+        // move the cursor, and that cursor message must carry the new id.
+        current = args.id;
         editor.setModel(modelFor(args));
         if (viewStates[args.id]) { editor.restoreViewState(viewStates[args.id]); }
-        current = args.id;
         if (reveals[args.id]) { revealNow(reveals[args.id]); delete reveals[args.id]; }
         editor.focus();
       },
