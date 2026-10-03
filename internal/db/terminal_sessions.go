@@ -85,6 +85,31 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 	return n > 0, nil
 }
 
+// ClearTerminalAgentState starts a new process run of workbench workbenchID's
+// claude row id with no agent state — the SessionStart hook of a launch or a
+// resume of conversation sessionID at at. Otherwise a new run whose first
+// state equals the previous run's last one would be skipped as a repeat and
+// keep the old run's time, which the Desktop does not trust. agent_state_at
+// becomes at, not NULL, so a late async hook of the previous run (stamped
+// earlier) still cannot land. Same row guards as SetTerminalAgentState; false
+// when there was no state to clear or a guard held it back.
+func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
+	stamp := at.UTC().Format(agentStateAtLayout)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND agent_state IS NOT NULL
+		  AND (agent_state_at IS NULL OR agent_state_at < ?)`,
+		stamp, id, workbenchID, sessionID, stamp)
+	if err != nil {
+		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // SetTerminalAgentState records what workbench workbenchID's claude row id is
 // doing, reported by a Claude Code hook of conversation sessionID at at. It
 // writes only when the row still runs that conversation (a nested `claude -p`

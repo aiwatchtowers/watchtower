@@ -42,13 +42,22 @@ type sessionStartInput struct {
 // inherits the env var and starts with "startup" — it must not take the row.
 var sessionSwitchSources = map[string]bool{"clear": true, "compact": true, "resume": true, "fork": true}
 
+// newRunSources are the SessionStart sources of a new process run — the
+// Desktop's launch (`--session-id`) and its relaunch (`--resume`): the row's
+// agent state from the previous run is cleared (board #312). /clear and
+// compaction continue the same run, so its state stays.
+var newRunSources = map[string]bool{"startup": true, "resume": true}
+
 // recordTerminalSessionID keeps an embedded terminal's row on the Claude
 // Code conversation it is in (board #160): the Desktop relaunches the stored
 // id, so after /clear it would otherwise resume the pre-clear conversation.
-// nil when there is nothing to record — no env var (not a Desktop-launched
-// session), another source, a row that is gone or already current; an error
-// means the row may still name the previous conversation. Never panics: the
-// hook must exit 0.
+// A new process run also clears the row's agent state (`newRunSources`),
+// after the id moved, so the clear's guard sees the final id; a nested
+// `claude -p` has another id and clears nothing. nil when there is nothing
+// to record — no env var (not a Desktop-launched session), another source,
+// a row that is gone or already current; an error means the row may still
+// name the previous conversation or keep the previous run's state. Never
+// panics: the hook must exit 0.
 func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -68,7 +77,8 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 	if err != nil {
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
-	if !sessionSwitchSources[hook.Source] {
+	switches, newRun := sessionSwitchSources[hook.Source], newRunSources[hook.Source]
+	if !switches && !newRun {
 		return nil
 	}
 	if !terminal.IsSessionID(hook.SessionID) {
@@ -88,12 +98,23 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 	if err != nil {
 		return err
 	}
-	if row.ClaudeSessionID.String == hook.SessionID {
+	moveID := switches && row.ClaudeSessionID.String != hook.SessionID
+	clearState := newRun && row.AgentState.Valid
+	if !moveID && !clearState {
 		return nil
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err = database.SetTerminalClaudeSessionID(rowID, workbenchID, hook.SessionID)
-	return err
+	if moveID {
+		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, hook.SessionID); err != nil {
+			return err
+		}
+	}
+	if clearState {
+		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, hook.SessionID, time.Now()); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -264,3 +264,49 @@ func TestSetTerminalAgentState_TimestampFormat(t *testing.T) {
 		t.Fatalf("round trip = %v, want %v in UTC", s.AgentStateAt, at)
 	}
 }
+
+// Board #312: a new run starts with no state, so its first state is written
+// even when it equals the previous run's last one; a late hook of the
+// previous run (stamped before the clear) still cannot land.
+func TestClearTerminalAgentState_NewRunStartsEmpty(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, ""); err != nil || !ok {
+		t.Fatalf("first write: ok=%v err=%v", ok, err)
+	}
+	for _, tc := range []struct {
+		name      string
+		workbench int64
+		uuid      string
+	}{
+		{"another workbench", other, agentStateUUID},
+		{"a nested session's id", pid, "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"},
+	} {
+		if ok, err := d.ClearTerminalAgentState(id, tc.workbench, tc.uuid, t0.Add(time.Second)); err != nil || ok {
+			t.Fatalf("%s: cleared=%v err=%v", tc.name, ok, err)
+		}
+	}
+	cleared := t0.Add(2 * time.Second)
+	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, cleared); err != nil || !ok {
+		t.Fatalf("clear: ok=%v err=%v", ok, err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AgentState.Valid || !s.AgentStateAt.Equal(cleared) {
+		t.Fatalf("after the clear: state %v at %v, want NULL at %v", s.AgentState, s.AgentStateAt, cleared)
+	}
+	if ok, _ := d.ClearTerminalAgentState(id, pid, agentStateUUID, cleared.Add(time.Second)); ok {
+		t.Fatal("a second clear with nothing stored wrote")
+	}
+	if ok, _ := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Second), ""); ok {
+		t.Fatal("a late hook of the previous run landed after the clear")
+	}
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", cleared.Add(time.Second), ""); err != nil || !ok {
+		t.Fatalf("the new run's first state, equal to the old one: ok=%v err=%v", ok, err)
+	}
+}
