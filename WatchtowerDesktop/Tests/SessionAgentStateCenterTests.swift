@@ -24,6 +24,15 @@ private final class ReadLog: @unchecked Sendable {
 }
 
 @MainActor
+private final class RecordingSessionNotifier: SessionAgentNotifying {
+    private(set) var posted: [SessionAgentNoticePolicy.Notice] = []
+    private(set) var withdrawn: [String] = []
+
+    func sendSessionAgentNotice(_ notice: SessionAgentNoticePolicy.Notice) { posted.append(notice) }
+    func withdrawSessionAgentNotice(identifier: String) { withdrawn.append(identifier) }
+}
+
+@MainActor
 final class SessionAgentStateCenterTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
@@ -32,6 +41,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
     private var terminals: TerminalCenter!
     private var log: ReadLog!
     private var centers: [SessionAgentStateCenter] = []
+    private var notifier: RecordingSessionNotifier!
+    private var defaults: UserDefaults!
+    private var appActive = false
     private let started = Date(timeIntervalSince1970: 1_790_000_000)
 
     override func setUpWithError() throws {
@@ -41,6 +53,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         processes = []
         log = ReadLog()
         centers = []
+        notifier = RecordingSessionNotifier()
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "SessionAgentStateCenterTests-\(UUID().uuidString)"))
+        appActive = false
         terminals = TerminalCenter { [weak self] in
             let process = FakeTerminalSession(pid: 0)
             self?.processes.append(process)
@@ -65,7 +80,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
             guard let pool else { return [] }
             return try await pool.read { try TerminalSessionQueries.fetchAgentStates($0, ids: ids) }
         }
-        let center = SessionAgentStateCenter(dbPool: pool, terminalCenter: terminals, interval: interval, read: reader)
+        let center = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: terminals, interval: interval, notifier: notifier, defaults: defaults,
+            read: reader
+        )
+        center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
         return center
     }
@@ -247,12 +266,17 @@ final class SessionAgentStateCenterTests: XCTestCase {
         appState.terminalCenter.shell = { "/bin/zsh" }
         appState.terminalCenter.transcriptExists = { _ in true }
         appState.terminalCenter.now = { [started] in started }
-        appState.initWorkbenches(dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier())
+        let sessionNotifier = RecordingSessionNotifier()
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: sessionNotifier
+        )
         defer {
             appState.sessionAgentStateCenter?.stop()
             appState.workbenchNotificationCenter?.stop()
         }
         let center = try XCTUnwrap(appState.sessionAgentStateCenter)
+        center.isAppActive = { false }
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         XCTAssertTrue(vm.agentStates === center, "the VM reads the AppState-owned center")
 
@@ -264,8 +288,74 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await eventually("published with the Workbench tab not shown") {
             center.statuses[row.id]?.state == .waitingForOwner
         }
+        XCTAssertEqual(sessionNotifier.posted.map(\.sessionID), [row.id], "announced with the tab not shown")
         appState.selectedDestination = .workbench
         XCTAssertEqual(vm.sessionState(row), .waitingForOwner)
+    }
+
+    // MARK: - Notices
+
+    func testATransitionWithTheAppInactivePostsOneNotice() async throws {
+        let center = makeCenter()
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        await center.poll()
+        try hookWrites(row.id, "waiting", at: 1)
+        await center.poll()
+        await center.poll()
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work is waiting for you", body: "acme")])
+        XCTAssertEqual(notifier.posted.first?.identifier, "workbench-session-\(row.id)")
+        try hookWrites(row.id, "approval", at: 2)
+        await center.poll()
+        XCTAssertEqual(notifier.posted.map(\.title).last, "Release work needs approval")
+        XCTAssertEqual(notifier.posted.count, 2)
+    }
+
+    func testTheAppActivePostsNothingAndDoesNotReplayLater() async throws {
+        appActive = true
+        let center = makeCenter()
+        let row = try await session()
+        terminals.start(row, fresh: true)
+        try hookWrites(row.id, "waiting", at: 1)
+        await center.poll()
+        appActive = false
+        await center.poll()
+        XCTAssertEqual(notifier.posted, [], "the transition seen while active is not replayed")
+        try hookWrites(row.id, "approval", at: 2)
+        await center.poll()
+        XCTAssertEqual(notifier.posted.count, 1, "the next transition is announced")
+    }
+
+    func testNotificationsOffOrQuietHoursPostNothing() async throws {
+        for (key, value) in [(WorkbenchNotificationCenter.enabledKey, false), ("quietHoursEnabled", true)] {
+            defaults.set(value, forKey: key)
+            let center = makeCenter()
+            let row = try await session()
+            terminals.start(row, fresh: true)
+            try hookWrites(row.id, "waiting", at: 1)
+            await center.poll()
+            XCTAssertEqual(notifier.posted, [], "\(key)")
+            defaults.removeObject(forKey: key)
+            center.stop()
+        }
+    }
+
+    func testBackToWorkingWithdrawsTheBanner() async throws {
+        let center = makeCenter()
+        let row = try await session()
+        terminals.start(row, fresh: true)
+        try hookWrites(row.id, "waiting", at: 1)
+        await center.poll()
+        try hookWrites(row.id, "working", at: 2)
+        await center.poll()
+        XCTAssertEqual(notifier.withdrawn, ["workbench-session-\(row.id)"])
+        try hookWrites(row.id, "waiting", at: 3)
+        await center.poll()
+        processes.last?.exit(0)
+        await center.poll()
+        XCTAssertEqual(notifier.posted.count, 2)
+        XCTAssertEqual(notifier.withdrawn.count, 2, "a session that stops takes its banner away")
     }
 
     // MARK: - Views

@@ -992,9 +992,12 @@ final class AppState {
     func initWorkbenches(
         dbPool: DatabasePool,
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
-        notifier: WorkbenchNotifying = NotificationService.shared
+        notifier: WorkbenchNotifying = NotificationService.shared,
+        sessionNotifier: SessionAgentNotifying = NotificationService.shared
     ) {
-        let agentStates = SessionAgentStateCenter(dbPool: dbPool, terminalCenter: terminalCenter)
+        let agentStates = SessionAgentStateCenter(
+            dbPool: dbPool, terminalCenter: terminalCenter, notifier: sessionNotifier
+        )
         let vm = WorkbenchesViewModel(
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
             agentStates: agentStates

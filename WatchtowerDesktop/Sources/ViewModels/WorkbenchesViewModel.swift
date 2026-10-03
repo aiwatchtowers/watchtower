@@ -437,16 +437,28 @@ final class WorkbenchesViewModel {
         case .documents: layout.show(.documents)
         case .terminal:
             let projectID = route.projectID
-            Task { await revealTerminal(projectID: projectID) }
+            let sessionID = route.subjectID
+            Task { await revealTerminal(projectID: projectID, sessionID: sessionID) }
         }
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
     }
 
-    /// The live session, else the most recent one (its pane offers Resume)
-    /// — read first, since a project just selected has no list yet.
-    func revealTerminal(projectID: Int64) async {
-        if terminalSessions[projectID] == nil {
+    /// `sessionID` (a session notice's click, board #312) opens that session
+    /// of the workbench the way a panel row click does. Without one, or when
+    /// it names no session of the workbench (deleted meanwhile), the live
+    /// session, else the most recent one (its pane offers Resume) — read
+    /// first, since a project just selected has no list yet.
+    func revealTerminal(projectID: Int64, sessionID: Int64? = nil) async {
+        // A session created since the last read is not in the list yet.
+        let listed = terminalSessions[projectID]
+        let unlisted = sessionID.map { id in !(listed ?? []).contains { $0.id == id } } ?? false
+        if listed == nil || unlisted {
             guard await loadSessions(projectID: projectID) else { return }
+        }
+        if let sessionID, let row = terminalSessions[projectID]?.first(where: { $0.id == sessionID }) {
+            drill(into: projectID)
+            await open(row, placement: .show)
+            return
         }
         let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
         guard let id else { return }

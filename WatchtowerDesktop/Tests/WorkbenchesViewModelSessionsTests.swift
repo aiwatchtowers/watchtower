@@ -1101,6 +1101,57 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(launches.isEmpty, "a deep link starts nothing")
     }
 
+    /// A session notice's click (board #312): the deep link's subject is
+    /// that session, drilled into and on screen — not the live-else-latest
+    /// one — also when it was created after the last read.
+    func testTerminalDeepLinkWithASubjectShowsThatSession() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        let latest = try await liveSession(p, "latest")
+        await vm.open(latest)
+        let waiting = try await liveSession(p, "waiting")
+        await vm.open(waiting)
+        await vm.open(latest)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(latest.id)])
+        let later = try await liveSession(p, "created since the read")
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                           arguments: [later.id])
+        }
+        let launchesBefore = launches.count
+
+        await vm.revealTerminal(projectID: p, sessionID: waiting.id)
+        XCTAssertEqual(vm.drilledWorkbenchID, p)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(waiting.id)])
+        XCTAssertEqual(launches.count, launchesBefore, "a live session is shown, not started again")
+
+        await vm.revealTerminal(projectID: p, sessionID: later.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(later.id)], "a session missing from the last read is found too")
+    }
+
+    /// A subject that names no session of the workbench (deleted, or
+    /// another workbench's) falls back to the live-else-latest one.
+    func testTerminalDeepLinkWithAGoneSubjectFallsBack() async throws {
+        let p = try await workbenchWithFolder()
+        let other = try await workbenchWithFolder("other")
+        let foreign = try await insertSession(.init(
+            projectID: other, kind: .claude, title: "foreign", folderPath: acme,
+            claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        let live = try await liveSession(p, "live")
+        await vm.open(live)
+        let gone = try await liveSession(p, "gone")
+        try await pool.write { try TerminalSessionQueries.delete($0, id: gone.id) }
+        let launchesBefore = launches.count
+
+        await vm.revealTerminal(projectID: p, sessionID: gone.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(live.id)])
+        await vm.revealTerminal(projectID: p, sessionID: foreign.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(live.id)])
+        XCTAssertEqual(launches.count, launchesBefore, "the fallback starts nothing")
+    }
+
     /// Two overlapping reads, the older one finishing last: the newer list
     /// stays, and a session placed between the two starts is not pruned.
     func testAnOlderReadFinishingLastNeitherHidesTheNewListNorPrunesTheLayout() async throws {

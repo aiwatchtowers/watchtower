@@ -287,6 +287,35 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// A workbench session's agent waits for the owner or for approval
+    /// (board #312). The workbench push's payload with the session as the
+    /// subject, so a click opens that session; one identifier per session,
+    /// so a newer state replaces its older banner.
+    func sendSessionAgentNotice(_ notice: SessionAgentNoticePolicy.Notice) {
+        let content = UNMutableNotificationContent()
+        content.title = String(notice.title.prefix(200))
+        content.body = String(notice.body.prefix(200))
+        content.sound = .default
+        content.userInfo = Self.sessionAgentUserInfo(notice)
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil))
+    }
+
+    /// The workbench push's payload (`NotificationDelegate` routes it).
+    static func sessionAgentUserInfo(_ notice: SessionAgentNoticePolicy.Notice) -> [String: Any] {
+        [
+            "type": "project",
+            "projectId": notice.workbenchID,
+            "pane": WorkbenchPane.terminal.rawValue,
+            "subjectId": notice.sessionID
+        ]
+    }
+
+    /// The session is working again or stopped: its banner goes.
+    func withdrawSessionAgentNotice(identifier: String) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
     /// Pre-meeting reminder. With a conference link the push carries the
     /// Join / Join + Record action category; without one it is plain. The
     /// dedup key (event id + start time) makes the identifier stable, so a

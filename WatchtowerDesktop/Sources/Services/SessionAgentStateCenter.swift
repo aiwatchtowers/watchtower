@@ -1,7 +1,17 @@
+import AppKit
 import Foundation
 import GRDB
 import Observation
 import WatchtowerCore
+
+/// Native-push seam for the session notices (the `WorkbenchNotifying`
+/// shape), so the center is testable without `UNUserNotificationCenter`.
+protocol SessionAgentNotifying {
+    func sendSessionAgentNotice(_ notice: SessionAgentNoticePolicy.Notice)
+    func withdrawSessionAgentNotice(identifier: String)
+}
+
+extension NotificationService: SessionAgentNotifying {}
 
 /// What each live Claude Code session's agent is doing — working, waiting
 /// for the owner, needing approval — as its workbench hooks write it to
@@ -10,7 +20,9 @@ import WatchtowerCore
 /// fires: a 1 s poll, and only while at least one `claude` session runs here
 /// (it follows `TerminalCenter.liveClaudeIDs`). Owned by `AppState`, so it
 /// keeps going with the Workbench tab or the window closed. Never writes:
-/// Go is the only writer of those columns.
+/// Go is the only writer of those columns. Each change feeds
+/// `SessionAgentNoticePolicy`: a session turning to the owner is announced
+/// while the app is in the background (decision 12).
 @MainActor
 @Observable
 final class SessionAgentStateCenter {
@@ -24,6 +36,12 @@ final class SessionAgentStateCenter {
 
     @ObservationIgnored private let terminalCenter: TerminalCenter
     @ObservationIgnored private let read: Reader
+    @ObservationIgnored private let notifier: SessionAgentNotifying
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private var notices = SessionAgentNoticePolicy()
+    /// Whether the app is frontmost, when a banner is not needed. Without an
+    /// application object (a test host) nothing is posted.
+    @ObservationIgnored var isAppActive: () -> Bool = { NSApp?.isActive ?? true }
     @ObservationIgnored private let interval: Duration
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var following = false
@@ -34,10 +52,14 @@ final class SessionAgentStateCenter {
         dbPool: DatabasePool,
         terminalCenter: TerminalCenter,
         interval: Duration = SessionAgentStateCenter.pollInterval,
+        notifier: SessionAgentNotifying = NotificationService.shared,
+        defaults: UserDefaults = .standard,
         read: Reader? = nil
     ) {
         self.terminalCenter = terminalCenter
         self.interval = interval
+        self.notifier = notifier
+        self.defaults = defaults
         self.read = read ?? { ids in
             try await dbPool.read { try TerminalSessionQueries.fetchAgentStates($0, ids: ids) }
         }
@@ -84,9 +106,18 @@ final class SessionAgentStateCenter {
         }
     }
 
-    /// Assigned only on a change, so an unchanged poll re-renders nothing.
+    /// Assigned only on a change, so an unchanged poll re-renders nothing;
+    /// the change is what the notice policy decides on.
     private func publish(_ next: [Int64: SessionAgentStatus]) {
-        if next != statuses { statuses = next }
+        guard next != statuses else { return }
+        statuses = next
+        let canPost = !isAppActive() && WorkbenchNotificationCenter.sending(defaults)
+        for action in notices.update(next, canPost: canPost) {
+            switch action {
+            case let .post(notice): notifier.sendSessionAgentNotice(notice)
+            case let .withdraw(identifier): notifier.withdrawSessionAgentNotice(identifier: identifier)
+            }
+        }
     }
 
     /// Starts the loop while a `claude` session is live and ends it when the
