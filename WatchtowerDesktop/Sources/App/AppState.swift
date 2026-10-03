@@ -271,6 +271,9 @@ final class AppState {
     private(set) var workbenchesViewModel: WorkbenchesViewModel?
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
+    /// The live workbench sessions' agent states (board #312), polled while
+    /// a `claude` session runs, whatever tab is shown.
+    private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
@@ -611,6 +614,9 @@ final class AppState {
                     self?.workbenchesViewModel?.codeFiles.flushAll()
                     // Onboarding's people load: its child gets SIGTERM.
                     self?.peopleRoster.stop()
+                    // Best-effort: the removal may not finish before exit;
+                    // the next launch removes what is left.
+                    self?.sessionAgentStateCenter?.withdrawAllNotices()
                 }
             }
         }
@@ -1647,10 +1653,15 @@ final class AppState {
     func initWorkbenches(
         dbPool: DatabasePool,
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
-        notifier: WorkbenchNotifying = NotificationService.shared
+        notifier: WorkbenchNotifying = NotificationService.shared,
+        sessionNotifier: SessionAgentNotifying = NotificationService.shared
     ) {
+        let agentStates = SessionAgentStateCenter(
+            dbPool: dbPool, terminalCenter: terminalCenter, notifier: sessionNotifier
+        )
         let vm = WorkbenchesViewModel(
-            dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter
+            dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
+            agentStates: agentStates
         )
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
@@ -1671,9 +1682,12 @@ final class AppState {
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
         workbenchesViewModel = vm
         workbenchNotificationCenter = notices
+        sessionAgentStateCenter?.stop()
+        sessionAgentStateCenter = agentStates
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
+        agentStates.start()
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

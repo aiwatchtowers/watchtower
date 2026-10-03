@@ -3,6 +3,41 @@ module watchtower
 go 1.25.7
 
 require (
+	github.com/alexaandru/go-sitter-forest/bash v1.9.6
+	github.com/alexaandru/go-sitter-forest/c v1.9.4
+	github.com/alexaandru/go-sitter-forest/c_sharp v1.9.6
+	github.com/alexaandru/go-sitter-forest/clojure v1.9.1
+	github.com/alexaandru/go-sitter-forest/cpp v1.9.5
+	github.com/alexaandru/go-sitter-forest/dart v1.9.4
+	github.com/alexaandru/go-sitter-forest/elixir v1.9.5
+	github.com/alexaandru/go-sitter-forest/elm v1.9.1
+	github.com/alexaandru/go-sitter-forest/erlang v1.9.7
+	github.com/alexaandru/go-sitter-forest/go v1.9.4
+	github.com/alexaandru/go-sitter-forest/graphql v1.9.0
+	github.com/alexaandru/go-sitter-forest/groovy v1.9.4
+	github.com/alexaandru/go-sitter-forest/haskell v1.9.2
+	github.com/alexaandru/go-sitter-forest/hcl v1.9.3
+	github.com/alexaandru/go-sitter-forest/java v1.9.5
+	github.com/alexaandru/go-sitter-forest/javascript v1.9.2
+	github.com/alexaandru/go-sitter-forest/julia v1.9.10
+	github.com/alexaandru/go-sitter-forest/kotlin v1.9.4
+	github.com/alexaandru/go-sitter-forest/lua v1.9.3
+	github.com/alexaandru/go-sitter-forest/nim v1.9.1
+	github.com/alexaandru/go-sitter-forest/objc v1.9.1
+	github.com/alexaandru/go-sitter-forest/ocaml v1.9.6
+	github.com/alexaandru/go-sitter-forest/perl v1.9.9
+	github.com/alexaandru/go-sitter-forest/php v1.9.5
+	github.com/alexaandru/go-sitter-forest/proto v1.9.1
+	github.com/alexaandru/go-sitter-forest/python v1.9.10
+	github.com/alexaandru/go-sitter-forest/r v1.9.6
+	github.com/alexaandru/go-sitter-forest/ruby v1.9.3
+	github.com/alexaandru/go-sitter-forest/rust v1.9.13
+	github.com/alexaandru/go-sitter-forest/scala v1.9.8
+	github.com/alexaandru/go-sitter-forest/sql v1.9.13
+	github.com/alexaandru/go-sitter-forest/swift v1.9.5
+	github.com/alexaandru/go-sitter-forest/tsx v1.9.2
+	github.com/alexaandru/go-sitter-forest/typescript v1.9.4
+	github.com/alexaandru/go-sitter-forest/zig v1.9.4
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/dustin/go-humanize v1.0.1
@@ -21,6 +56,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
+	github.com/tree-sitter/go-tree-sitter v0.25.0
 	golang.org/x/net v0.53.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.43.0
@@ -67,6 +103,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-isatty v0.0.21 // indirect
+	github.com/mattn/go-pointer v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect

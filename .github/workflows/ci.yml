@@ -161,6 +161,57 @@ jobs:
         timeout-minutes: 40
         run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
 
+  # Whether this change touches the code index or its grammar modules — the
+  # only reason to pay for the full grammar set (codeindex-full below). A
+  # workflow_dispatch run always says yes: it is the "prove it" escape hatch.
+  codeindex-changes:
+    name: Code index changes
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      codeindex: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.codeindex == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: filter
+        if: github.event_name != 'workflow_dispatch'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            codeindex:
+              - 'internal/codeindex/**'
+              - 'internal/codewalk/**'
+              - 'go.mod'
+              - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+
+  # The code index over the full grammar set (-tags codegrammars, the release
+  # build's); Go Test above stays untagged and compiles only the Go, Swift and
+  # Python grammars. Skipped — neutral, not failed — when the change leaves the
+  # index, its walk, go.mod/go.sum, the Makefile and this workflow alone (a
+  # docs-only PR). ubuntu ships gcc, so cgo works; setup-go caches the grammar
+  # builds after the first cold run.
+  codeindex-full:
+    name: Code Index (full grammars)
+    needs: [gate, codeindex-changes]
+    if: needs.gate.outputs.run == 'true' && needs.codeindex-changes.outputs.codeindex == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Test (full grammar set)
+        run: make test-codeindex-full
+
   swift-lint:
     name: Swift Lint
     needs: gate

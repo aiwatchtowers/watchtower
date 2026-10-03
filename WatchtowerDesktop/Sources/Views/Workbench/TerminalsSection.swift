@@ -12,9 +12,9 @@ struct TerminalsSection: View {
     var body: some View {
         let sessions = vm.orderedSessions(projectID: nil)
         Section {
-            ForEach(sessions) { session in
-                TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
-                    .tag(WorkbenchesPanelItem.terminal(session.id))
+            ForEach(vm.sessionRows(sessions)) { row in
+                TerminalSessionRow(row: row, actions: actions)
+                    .tag(WorkbenchesPanelItem.terminal(row.id))
             }
             .onMove { vm.moveSessions(sessions, projectID: nil, from: $0, to: $1) }
             // Shown on the terminal's own page when one is on screen.

@@ -249,7 +249,7 @@ func (db *DB) MarkReactionCommandsSeeded(id int64) error {
 }
 
 // SlackRosterSyncedAt returns when accountID's full workspace roster was last
-// fetched (migration 00097); the zero time means never, or a missing row.
+// fetched (migration 00099); the zero time means never, or a missing row.
 func (db *DB) SlackRosterSyncedAt(id int64) (time.Time, error) {
 	var stamp string
 	err := db.QueryRow(`SELECT roster_synced_at FROM slack_accounts WHERE id = ?`, id).Scan(&stamp)

@@ -94,6 +94,24 @@ package enum TerminalSessionQueries {
         )
     }
 
+    /// The hook-reported state of `ids` (the live `claude` sessions), with
+    /// the workbench name a notice names. Read-only: Go writes these columns.
+    package static func fetchAgentStates(_ db: Database, ids: [Int64]) throws -> [SessionAgentStateRow] {
+        guard !ids.isEmpty else { return [] }
+        let marks = databaseQuestionMarks(count: ids.count)
+        return try SessionAgentStateRow.fetchAll(
+            db,
+            sql: """
+                SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name
+                FROM terminal_sessions s
+                LEFT JOIN projects p ON p.id = s.project_id
+                WHERE s.id IN (\(marks))
+                ORDER BY s.id
+                """,
+            arguments: StatementArguments(ids)
+        )
+    }
+
     /// Best-effort, unchecked: a session deleted meanwhile is not active,
     /// which is what it asks for.
     package static func touch(_ db: Database, id: Int64) throws {

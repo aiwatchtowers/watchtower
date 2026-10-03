@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package acme.store.v1;
+
+option go_package = "example.com/acme/store/v1;storev1";
+
+// A value kept under a key.
+message Entry {
+  string key = 1;
+  int64 value = 2;
+  // The shape of the entry.
+  Shape shape = 3;
+
+  // A label attached to an entry.
+  message Label {
+    string name = 1;
+  }
+
+  repeated Label labels = 4;
+  map<string, string> meta = 5;
+
+  oneof source {
+    string user = 6;
+    string system = 7;
+  }
+}
+
+/* How an entry is drawn. */
+enum Shape {
+  SHAPE_UNSPECIFIED = 0;
+  SHAPE_CIRCLE = 1;
+}
+
+// Stores entries by key.
+service StoreService {
+  // Adds an entry.
+  rpc Add(AddRequest) returns (Entry);
+  rpc Watch(WatchRequest) returns (stream Entry) {
+    option deprecated = true;
+  }
+}
+
+message AddRequest { Entry entry = 1; }
+message WatchRequest {}

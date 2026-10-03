@@ -1,0 +1,86 @@
+[
+  {
+    "name": "CounterProps",
+    "kind": "interface",
+    "path": "sample.tsx",
+    "line": 6,
+    "col": 18,
+    "end_line": 9,
+    "container": "",
+    "signature": "export interface CounterProps",
+    "doc": "The props a counter takes.",
+    "lang": "tsx"
+  },
+  {
+    "name": "start",
+    "kind": "field",
+    "path": "sample.tsx",
+    "line": 8,
+    "col": 3,
+    "end_line": 8,
+    "container": "CounterProps",
+    "signature": "start: number",
+    "doc": "The value to start from.",
+    "lang": "tsx"
+  },
+  {
+    "name": "Label",
+    "kind": "type",
+    "path": "sample.tsx",
+    "line": 12,
+    "col": 6,
+    "end_line": 12,
+    "container": "",
+    "signature": "type Label = string;",
+    "doc": "A label, as a string.",
+    "lang": "tsx"
+  },
+  {
+    "name": "Counter",
+    "kind": "function",
+    "path": "sample.tsx",
+    "line": 15,
+    "col": 17,
+    "end_line": 18,
+    "container": "",
+    "signature": "export function Counter({ start }: CounterProps)",
+    "doc": "A counter button.",
+    "lang": "tsx"
+  },
+  {
+    "name": "Badge",
+    "kind": "function",
+    "path": "sample.tsx",
+    "line": 21,
+    "col": 14,
+    "end_line": 21,
+    "container": "",
+    "signature": "export const Badge = ({ label }: { label: Label }) => <span>{label}</span>",
+    "doc": "Shows a label.",
+    "lang": "tsx"
+  },
+  {
+    "name": "Panel",
+    "kind": "class",
+    "path": "sample.tsx",
+    "line": 24,
+    "col": 14,
+    "end_line": 28,
+    "container": "",
+    "signature": "export class Panel extends Component<CounterProps>",
+    "doc": "A class component.",
+    "lang": "tsx"
+  },
+  {
+    "name": "render",
+    "kind": "method",
+    "path": "sample.tsx",
+    "line": 25,
+    "col": 3,
+    "end_line": 27,
+    "container": "Panel",
+    "signature": "render()",
+    "doc": "",
+    "lang": "tsx"
+  }
+]

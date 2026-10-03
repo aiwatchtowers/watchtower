@@ -1,18 +1,45 @@
 import Foundation
 
 /// The collapsed header's session popover (board #251, variant H), kept out
-/// of the views so it is testable. A session is running or not started —
-/// v1 has no "waiting for an answer" state.
+/// of the views so it is testable. A running session also shows what its
+/// workbench hooks reported (`SessionAgentStatus`, board #312).
 package enum SessionSwitcherPresentation {
     package enum State: Equatable, Sendable {
-        case running
         case notStarted
+        /// Live, with no state reported during this run.
+        case running
+        case working
+        case waitingForOwner
+        case needsApproval
+
+        package var isLive: Bool { self != .notStarted }
+
+        /// The state's one name — the dot's accessibility label, the
+        /// switcher button's, and (lower-cased) a live row's caption.
+        package var label: String {
+            switch self {
+            case .notStarted: "Not running"
+            case .running: "Running"
+            case .working: "Working"
+            case .waitingForOwner: "Waiting for you"
+            case .needsApproval: "Needs approval"
+            }
+        }
+
+        /// The caption a live state carries ("waiting for you"); nil for
+        /// plain running and for not started (whose caption carries the age).
+        package var agentCaption: String? {
+            switch self {
+            case .working, .waitingForOwner, .needsApproval: label.lowercased()
+            case .running, .notStarted: nil
+            }
+        }
     }
 
     package struct Row: Identifiable, Equatable, Sendable {
         package let session: TerminalSession
         package let state: State
-        /// "not started · 5m"; nil for a running session.
+        /// "not started · 5m", "waiting for you", …; nil for plain running.
         package let caption: String?
         /// `#233` for a session working on a target.
         package let badge: String?
@@ -26,19 +53,38 @@ package enum SessionSwitcherPresentation {
     package static let maxShortcut = 9
 
     /// `sessions` already in the panel's order (`orderedSessions`).
-    package static func rows(_ sessions: [TerminalSession], liveIDs: Set<Int64>, now: Date) -> [Row] {
+    /// Liveness decides first: a status of a session that is no longer live
+    /// is ignored.
+    package static func rows(
+        _ sessions: [TerminalSession],
+        liveIDs: Set<Int64>,
+        statuses: [Int64: SessionAgentStatus],
+        now: Date
+    ) -> [Row] {
         sessions.enumerated().map { index, session in
-            let live = liveIDs.contains(session.id)
-            let caption = TimeFormatting.shortAge(from: session.lastActiveAt, now: now).map { "not started · \($0)" }
-                ?? "not started"
+            let state = state(of: session.id, liveIDs: liveIDs, statuses: statuses)
             return Row(
                 session: session,
-                state: live ? .running : .notStarted,
-                caption: live ? nil : caption,
+                state: state,
+                caption: state.isLive ? state.agentCaption : notStartedCaption(session, now: now),
                 badge: session.targetID.map { "#\($0)" },
                 shortcut: index < maxShortcut ? index + 1 : nil
             )
         }
+    }
+
+    /// A session's state: not started unless live, then its reported status.
+    package static func state(
+        of sessionID: Int64,
+        liveIDs: Set<Int64>,
+        statuses: [Int64: SessionAgentStatus]
+    ) -> State {
+        guard liveIDs.contains(sessionID) else { return .notStarted }
+        return statuses[sessionID]?.state ?? .running
+    }
+
+    private static func notStartedCaption(_ session: TerminalSession, now: Date) -> String {
+        TimeFormatting.shortAge(from: session.lastActiveAt, now: now).map { "not started · \($0)" } ?? "not started"
     }
 
     /// Case- and diacritic-insensitive substring match on the title, or the

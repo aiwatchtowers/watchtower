@@ -393,7 +393,10 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let held = HeldCLIRunner(stdout: createdJSON(id))
         let appState = AppState.isolated()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
-        appState.initWorkbenches(dbPool: pool, cliRunner: held, notifier: RecordingWorkbenchNotifier())
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: held, notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         appState.selectedDestination = .workbench
 
@@ -425,7 +428,10 @@ final class WorkbenchesViewModelTests: XCTestCase {
         ])
         let appState = AppState.isolated()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
-        appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier())
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
 
         await vm.createWorkbench(folder: folder, name: nil)
@@ -513,7 +519,10 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let process = FakeTerminalSession(pid: 0)
         appState.terminalCenter.makeProcess = { process }
         appState.terminalCenter.shell = { "/bin/zsh" }
-        appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier())
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
 
         await vm.createWorkbench(folder: folder, name: nil)

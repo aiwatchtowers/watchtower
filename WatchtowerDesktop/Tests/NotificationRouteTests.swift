@@ -275,6 +275,38 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
+    /// A session notice (board #312) routes to the terminal pane with the
+    /// session as the subject, so the reveal opens that session.
+    func testSessionNoticeRoutesToItsSession() async {
+        for forwarded in [true, false] {
+            let appState = AppState()
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: NotificationService.sessionAgentUserInfo(
+                    .init(sessionID: 12, workbenchID: 3, title: "Release work is waiting for you", body: "acme")
+                ),
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.selectedDestination, .workbench, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .terminal, subjectID: 12))
+        }
+    }
+
+    func testSessionNoticePayloadSurvivesForwarding() throws {
+        let json = try XCTUnwrap(NotificationForwarding.encode(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: NotificationService.sessionAgentUserInfo(
+                .init(sessionID: 12, workbenchID: 3, title: "t", body: "b")
+            )
+        ))
+        let info = try XCTUnwrap(NotificationForwarding.decode(json)).userInfo
+        XCTAssertEqual(info["type"] as? String, "project")
+        XCTAssertEqual(info["projectId"] as? Int64, 3)
+        XCTAssertEqual(info["pane"] as? String, "terminal")
+        XCTAssertEqual(info["subjectId"] as? Int64, 12)
+    }
+
     func testProjectKeysSurviveForwarding() throws {
         let json = try XCTUnwrap(NotificationForwarding.encode(
             actionID: UNNotificationDefaultActionIdentifier,

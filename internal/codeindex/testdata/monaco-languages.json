@@ -1,0 +1,254 @@
+{
+  "_comment": "Monaco's built-in language associations (extensions and file names) for the languages the code index knows or will, copied from basic-languages/monaco.contribution.js (JSON: language/json's registration) of the monaco-editor build scripts/fetch-monaco.sh pins. That build is gitignored, so they are pinned here; refresh them when the pinned version changes.",
+  "monaco": "0.57.0",
+  "languages": {
+    "c": {
+      "extensions": [
+        ".c",
+        ".h"
+      ]
+    },
+    "clojure": {
+      "extensions": [
+        ".clj",
+        ".cljs",
+        ".cljc",
+        ".edn"
+      ]
+    },
+    "cpp": {
+      "extensions": [
+        ".cpp",
+        ".cc",
+        ".cxx",
+        ".hpp",
+        ".hh",
+        ".hxx"
+      ]
+    },
+    "csharp": {
+      "extensions": [
+        ".cs",
+        ".csx",
+        ".cake"
+      ]
+    },
+    "css": {
+      "extensions": [
+        ".css"
+      ]
+    },
+    "dart": {
+      "extensions": [
+        ".dart"
+      ]
+    },
+    "dockerfile": {
+      "extensions": [
+        ".dockerfile"
+      ],
+      "filenames": [
+        "Dockerfile"
+      ]
+    },
+    "elixir": {
+      "extensions": [
+        ".ex",
+        ".exs"
+      ]
+    },
+    "go": {
+      "extensions": [
+        ".go"
+      ]
+    },
+    "graphql": {
+      "extensions": [
+        ".graphql",
+        ".gql"
+      ]
+    },
+    "hcl": {
+      "extensions": [
+        ".tf",
+        ".tfvars",
+        ".hcl"
+      ]
+    },
+    "html": {
+      "extensions": [
+        ".html",
+        ".htm",
+        ".shtml",
+        ".xhtml",
+        ".mdoc",
+        ".jsp",
+        ".asp",
+        ".aspx",
+        ".jshtm"
+      ]
+    },
+    "java": {
+      "extensions": [
+        ".java",
+        ".jav"
+      ]
+    },
+    "javascript": {
+      "extensions": [
+        ".js",
+        ".es6",
+        ".jsx",
+        ".mjs",
+        ".cjs"
+      ],
+      "filenames": [
+        "jakefile"
+      ]
+    },
+    "json": {
+      "extensions": [
+        ".json",
+        ".bowerrc",
+        ".jshintrc",
+        ".jscsrc",
+        ".eslintrc",
+        ".babelrc",
+        ".har"
+      ]
+    },
+    "julia": {
+      "extensions": [
+        ".jl"
+      ]
+    },
+    "kotlin": {
+      "extensions": [
+        ".kt",
+        ".kts"
+      ]
+    },
+    "lua": {
+      "extensions": [
+        ".lua"
+      ]
+    },
+    "markdown": {
+      "extensions": [
+        ".md",
+        ".markdown",
+        ".mdown",
+        ".mkdn",
+        ".mkd",
+        ".mdwn",
+        ".mdtxt",
+        ".mdtext"
+      ]
+    },
+    "objective-c": {
+      "extensions": [
+        ".m"
+      ]
+    },
+    "perl": {
+      "extensions": [
+        ".pl",
+        ".pm"
+      ]
+    },
+    "php": {
+      "extensions": [
+        ".php",
+        ".php4",
+        ".php5",
+        ".phtml",
+        ".ctp"
+      ]
+    },
+    "proto": {
+      "extensions": [
+        ".proto"
+      ]
+    },
+    "python": {
+      "extensions": [
+        ".py",
+        ".rpy",
+        ".pyw",
+        ".cpy",
+        ".gyp",
+        ".gypi"
+      ]
+    },
+    "r": {
+      "extensions": [
+        ".r",
+        ".rhistory",
+        ".rmd",
+        ".rprofile",
+        ".rt"
+      ]
+    },
+    "ruby": {
+      "extensions": [
+        ".rb",
+        ".rbx",
+        ".rjs",
+        ".gemspec",
+        ".pp"
+      ],
+      "filenames": [
+        "rakefile",
+        "Gemfile"
+      ]
+    },
+    "rust": {
+      "extensions": [
+        ".rs",
+        ".rlib"
+      ]
+    },
+    "scala": {
+      "extensions": [
+        ".scala",
+        ".sc",
+        ".sbt"
+      ]
+    },
+    "scss": {
+      "extensions": [
+        ".scss"
+      ]
+    },
+    "shell": {
+      "extensions": [
+        ".sh",
+        ".bash"
+      ]
+    },
+    "sql": {
+      "extensions": [
+        ".sql"
+      ]
+    },
+    "swift": {
+      "extensions": [
+        ".swift"
+      ]
+    },
+    "typescript": {
+      "extensions": [
+        ".ts",
+        ".tsx",
+        ".cts",
+        ".mts"
+      ]
+    },
+    "yaml": {
+      "extensions": [
+        ".yaml",
+        ".yml"
+      ]
+    }
+  }
+}

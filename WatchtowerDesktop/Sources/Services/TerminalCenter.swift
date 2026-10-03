@@ -63,6 +63,11 @@ final class TerminalCenter {
     /// The latest keyboard focus move asked into a session's terminal
     /// (`requestKeyboardFocus`); its host honours each serial once.
     private(set) var keyboardFocusRequest: KeyboardFocusRequest?
+    /// When the current process run of each session started — the session
+    /// agent state's trust rule (board #312): a hook state stamped before it
+    /// belongs to an earlier run. Replaced on every relaunch.
+    @ObservationIgnored private(set) var startedAt: [Int64: Date] = [:]
+    @ObservationIgnored var now: () -> Date = Date.init
     @ObservationIgnored private var processes: [Int64: any TerminalSessionProcess] = [:]
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
@@ -92,6 +97,13 @@ final class TerminalCenter {
 
     var liveIDs: Set<Int64> {
         Set(states.compactMap { $0.value == .running ? $0.key : nil })
+    }
+
+    /// The live `claude` sessions — the ones whose workbench hooks report a
+    /// state.
+    var liveClaudeIDs: Set<Int64> {
+        let live = liveIDs
+        return Set(rows.values.filter { $0.kind == .claude && live.contains($0.id) }.map(\.id))
     }
 
     func process(for sessionID: Int64) -> (any TerminalSessionProcess)? {
@@ -249,6 +261,7 @@ final class TerminalCenter {
             self?.onSessionExit?(id, code)
         }
         processes[id] = process
+        startedAt[id] = now()
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
         return mode
@@ -288,6 +301,7 @@ final class TerminalCenter {
     private func forget(_ sessionID: Int64) {
         states[sessionID] = nil
         rows[sessionID] = nil
+        startedAt[sessionID] = nil
         clipboardHints.remove(sessionID)
         focusOrder.removeAll { $0 == sessionID }
     }

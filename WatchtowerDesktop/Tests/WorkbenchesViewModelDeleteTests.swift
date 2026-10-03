@@ -201,7 +201,10 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
             processes.append(process)
             return process
         }
-        appState.initWorkbenches(dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingWorkbenchNotifier())
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         await vm.reload()
         for s in [a, b, kept] { appState.terminalCenter.start(s, fresh: true) }
