@@ -35,8 +35,10 @@ under `mcp --project N`) until the owner resyncs it; see
 **Module:** `internal/db/{workbenches,workbench_comments,workbench_board}.go` +
 `internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_images,workbench_scope,workbench_names}.go` +
 `internal/db/workbench_images.go` + `internal/workbenchfiles/` +
-`cmd/{workbench,workbench_brief,workbench_check,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
-`WatchtowerDesktop/Sources/Views/Workbench/`
+`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
+`internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
+`WatchtowerDesktop/Sources/Views/Workbench/` + `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift`
 **Last full audit:** 2026-09-29
 
 ## PROJ-01 — workbench targets never reach a non-board reader
