@@ -709,6 +709,20 @@ struct UpdateServiceRelaunchTests {
         #expect(svc.state == .restartRequired)
     }
 
+    @Test("the live quit runs from the run loop, never inside the calling task")
+    func liveQuitIsDeferredToRunLoop() {
+        var ran = false
+        UpdateService.performOnRunLoop { ran = true }
+        // Called synchronously, NSApp.terminate's .terminateLater loop would
+        // starve the main queue and hang the relaunch on "Restarting…".
+        #expect(!ran)
+        let deadline = Date().addingTimeInterval(2)
+        while !ran, Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        #expect(ran)
+    }
+
     @Test("no app bundle: restartRequired, nothing spawned or quit")
     func noBundle() async {
         let rec = RelaunchRecorder()

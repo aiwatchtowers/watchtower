@@ -545,13 +545,27 @@ final class UpdateService {
         static var live: Self {
             Self(
                 spawn: { try UpdateService.spawnRelaunchWaiter(pid: $0, appPath: $1) },
-                requestQuit: { TrayAppDelegate.requestQuit() },
+                requestQuit: { UpdateService.performOnRunLoop { TrayAppDelegate.requestQuit() } },
                 sleep: { try? await Task.sleep(for: $0) }
             )
         }
     }
 
     var relaunchSteps: RelaunchSteps = .live
+
+    /// Runs `action` from the main run loop instead of the current main-queue
+    /// job. `relaunch()` runs inside a MainActor task, which is a main-queue
+    /// block; calling `NSApp.terminate` there makes `.terminateLater` spin a
+    /// nested run loop that never drains the main queue again — the quit
+    /// path's own `Task { … reply(true) }` and the `quitGrace` timer both wait
+    /// on it, so the app sat on "Restarting…" forever while Cmd+Q (a run-loop
+    /// event) still quit fine. A run-loop block is the same context Cmd+Q
+    /// runs in.
+    nonisolated static func performOnRunLoop(_ action: @escaping @MainActor () -> Void) {
+        RunLoop.main.perform {
+            MainActor.assumeIsolated { action() }
+        }
+    }
 
     /// The running app's bundle; nil outside a `.app` (e.g. `swift test`).
     var currentAppURL: () -> URL? = { UpdateService.currentAppBundleURL() }
@@ -796,7 +810,31 @@ final class UpdateService {
         // Bundle.main.bundleURL points to Watchtower.app/
         let bundleURL = Bundle.main.bundleURL
         guard bundleURL.pathExtension == "app" else { return nil }
-        return bundleURL
+        return originalURL(ofPossiblyTranslocated: bundleURL)
+    }
+
+    /// A quarantined app the Finder never moved runs from a read-only App
+    /// Translocation mount (/private/var/folders/…/AppTranslocation/…), where
+    /// the swap always fails. Install over (and relaunch from) the bundle the
+    /// user actually has instead; the new bundle carries no quarantine, so
+    /// that relaunch is no longer translocated. Falls back to `url` when the
+    /// original cannot be resolved.
+    private static func originalURL(ofPossiblyTranslocated url: URL) -> URL {
+        // SecTranslocate.h is public but not in the Security module map, so
+        // the two calls are looked up at run time.
+        typealias IsTranslocated = @convention(c) (CFURL, UnsafeMutablePointer<Bool>, UnsafeMutableRawPointer?) -> Bool
+        typealias OriginalPath = @convention(c) (CFURL, UnsafeMutableRawPointer?) -> Unmanaged<CFURL>?
+        guard let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY),
+              let isSym = dlsym(security, "SecTranslocateIsTranslocatedURL"),
+              let originalSym = dlsym(security, "SecTranslocateCreateOriginalPathForURL")
+        else { return url }
+        let isTranslocated = unsafeBitCast(isSym, to: IsTranslocated.self)
+        let originalPath = unsafeBitCast(originalSym, to: OriginalPath.self)
+        var translocated = false
+        guard isTranslocated(url as CFURL, &translocated, nil), translocated,
+              let original = originalPath(url as CFURL, nil)?.takeRetainedValue()
+        else { return url }
+        return original as URL
     }
 
     /// A Team ID usable in a designated requirement: exactly 10 alphanumeric
