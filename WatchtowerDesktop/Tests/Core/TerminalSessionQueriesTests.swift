@@ -81,6 +81,25 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    func testFetchAllWorkbenchSessionsSkipsStandaloneNewestFirst() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let acme = try TestDatabase.insertWorkbench(db)
+            let other = try TestDatabase.insertWorkbench(db, name: "other", folder: "/tmp/other")
+            let old = try TerminalSessionQueries.create(db, claude(acme, "Old"))
+            let new = try TerminalSessionQueries.create(db, claude(other, "New"))
+            let mid = try TerminalSessionQueries.create(db, claude(acme, "Mid"))
+            let loose = try TerminalSessionQueries.create(db, claude(nil))
+            for (row, stamp) in [(old, "2026-01-01T00:00:00Z"), (new, "2026-01-03T00:00:00Z"),
+                                 (mid, "2026-01-02T00:00:00Z"), (loose, "2026-01-04T00:00:00Z")] {
+                try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = ? WHERE id = ?",
+                               arguments: [stamp, row.id])
+            }
+            XCTAssertEqual(try TerminalSessionQueries.fetchAllWorkbenchSessions(db).map(\.id),
+                           [new.id, mid.id, old.id])
+        }
+    }
+
     func testDeletingProjectCascadesButKeepsStandalone() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

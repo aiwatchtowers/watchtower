@@ -147,7 +147,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     @ViewBuilder
     private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
-            TerminalHost(session: process)
+            TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id))
         }
     }
 }
@@ -156,24 +156,38 @@ private struct TerminalSessionPane<NotStarted: View>: View {
 /// the hierarchy — the center keeps it (and the process) alive.
 private struct TerminalHost: NSViewRepresentable {
     let session: any TerminalSessionProcess
+    /// `TerminalCenter.keyboardFocusSerial(for:)` of this session.
+    let focusSerial: Int?
+
+    /// The focus request serial already honoured.
+    final class Coordinator {
+        var honouredSerial: Int?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> TerminalContainerView {
         let container = TerminalContainerView()
-        attach(to: container)
+        attach(to: container, context.coordinator)
         return container
     }
 
     func updateNSView(_ container: TerminalContainerView, context: Context) {
-        attach(to: container)
+        attach(to: container, context.coordinator)
     }
 
-    static func dismantleNSView(_ container: TerminalContainerView, coordinator: ()) {
+    static func dismantleNSView(_ container: TerminalContainerView, coordinator: Coordinator) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
-    private func attach(to container: TerminalContainerView) {
+    private func attach(to container: TerminalContainerView, _ coordinator: Coordinator) {
         let terminal = session.view
-        guard TerminalHostAttachment.attach(terminal, to: container) else { return }
+        let attached = TerminalHostAttachment.attach(terminal, to: container)
+        let focus = TerminalHostAttachment.needsFocus(
+            attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial
+        )
+        coordinator.honouredSerial = focusSerial
+        guard focus else { return }
         DispatchQueue.main.async { terminal.window?.makeFirstResponder(terminal) }
     }
 }
@@ -212,6 +226,13 @@ enum TerminalHostAttachment {
             container.addSubview(terminal)
         }
         return true
+    }
+
+    /// Whether the host moves the keyboard into its terminal: after an
+    /// attach that changed something, or for a focus request
+    /// (`TerminalCenter.requestKeyboardFocus`) it has not honoured yet.
+    static func needsFocus(attached: Bool, requested: Int?, honoured: Int?) -> Bool {
+        attached || (requested != nil && requested != honoured)
     }
 }
 

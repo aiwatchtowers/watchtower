@@ -22,6 +22,18 @@ final class WorkbenchesViewModel {
     let codeFiles: CodeFilesCenter
 
     private(set) var summaries: [WorkbenchSummary] = []
+    /// The workbench switcher's rows (board #250), read when its popover opens.
+    private(set) var switcherSummaries: [WorkbenchSwitcherSummary] = []
+    /// Why the last switcher read failed; the next successful read clears it.
+    private(set) var switcherError: String?
+    // Go-to palette state. Written only by WorkbenchesViewModel+GoTo.swift,
+    // which cannot reach a `private(set)` setter from its own file.
+
+    /// The go-to palette's sessions of every workbench (board #252), read
+    /// when it opens; its workbenches are `switcherSummaries`.
+    var goToSessions: [TerminalSession] = []
+    /// Why the last palette read of the sessions failed; the next success clears it.
+    var goToError: String?
     var selectedWorkbenchID: Int64? {
         didSet {
             if selectedWorkbenchID != oldValue {
@@ -130,6 +142,13 @@ final class WorkbenchesViewModel {
     /// Always nil or `selectedWorkbenchID`: selecting a project drills into
     /// it, Back sets it to nil.
     var drilledWorkbenchID: Int64?
+    /// Whether the left panel is shown. Persisted under the key the view's
+    /// `@AppStorage` used (the `projects.` prefix predates the rename, spec
+    /// 2026-10-02 A1), so the owner's choice carries over.
+    var panelVisible: Bool {
+        didSet { defaults.set(panelVisible, forKey: Self.panelVisibleKey) }
+    }
+    static let panelVisibleKey = "projects.panelVisible"
     /// The standalone terminal on screen; mutually exclusive with
     /// `selectedWorkbenchID` (setting a project clears it).
     var selectedStandaloneID: Int64?
@@ -272,6 +291,7 @@ final class WorkbenchesViewModel {
         self.cli = cli
         self.defaults = defaults
         self.terminalCenter = terminalCenter
+        panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
         if let cli {
@@ -287,7 +307,12 @@ final class WorkbenchesViewModel {
 
     /// Sidebar badge: unread agent comments + documents revised since last viewed.
     var badgeCount: Int {
-        summaries.reduce(0) { $0 + $1.unreadAgentComments + revisedDocumentCount(for: $1) }
+        summaries.reduce(0) { $0 + badgeCount(for: $1) }
+    }
+
+    /// A workbench row's blue badge: unread agent comments + revised documents.
+    func badgeCount(for summary: WorkbenchSummary) -> Int {
+        summary.unreadAgentComments + revisedDocumentCount(for: summary)
     }
 
     func revisedDocumentCount(for summary: WorkbenchSummary) -> Int {
@@ -321,6 +346,17 @@ final class WorkbenchesViewModel {
         }
         if let selectedWorkbenchID { await loadSessions(projectID: selectedWorkbenchID) }
         await loadSessions(projectID: nil)
+    }
+
+    /// The switcher popover's read. A failure keeps the rows of the last
+    /// read beside the error.
+    func loadSwitcherSummaries() async {
+        do {
+            switcherSummaries = try await dbPool.read { try WorkbenchQueries.switcherSummaries($0) }
+            switcherError = nil
+        } catch {
+            switcherError = "Could not load workbenches: \(error.localizedDescription)"
+        }
     }
 
     /// Deletes a project (spec §6.1, Review Focus #5). Order matters: the
