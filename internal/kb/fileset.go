@@ -88,10 +88,8 @@ func indexFileSet(ctx context.Context, d *db.DB, set FileSet, prune bool) (docs,
 	if !ok {
 		return 0, 0, fmt.Errorf("kb: %q keeps no file set", set.Source)
 	}
-	for _, rel := range set.Files {
-		if !filepath.IsLocal(filepath.FromSlash(rel)) || rel == "." {
-			return 0, 0, fmt.Errorf("kb: %q is not a path inside the folder", rel)
-		}
+	if err := checkSetPaths(set.Files); err != nil {
+		return 0, 0, err
 	}
 	var indexed []string
 	if prune {
@@ -101,18 +99,7 @@ func indexFileSet(ctx context.Context, d *db.DB, set FileSet, prune bool) (docs,
 			return 0, 0, fmt.Errorf("kb: listing indexed %s documents: %w", set.Source, err)
 		}
 	}
-	live := make(map[string]bool, len(set.Files))
-	var keys []string
-	var rendered []*Doc
-	for _, rel := range set.Files {
-		key := kind.containerPrefix(set.Container) + rel
-		if live[key] {
-			continue
-		}
-		live[key] = true
-		keys = append(keys, key)
-		rendered = append(rendered, renderFile(set.Source, kind, set.Container, set.Root, rel)) // before the write tx opens
-	}
+	live, keys, rendered := renderFileSet(kind, set) // before the write tx opens
 	prepared := prepareBatch(rendered)
 	err = withTx(ctx, d, func(tx *sql.Tx) error {
 		written, deleted, err := storeBatch(ctx, tx, keys, prepared)
@@ -123,24 +110,60 @@ func indexFileSet(ctx context.Context, d *db.DB, set FileSet, prune bool) (docs,
 		if !prune {
 			return nil
 		}
-		for _, id := range indexed {
-			if live[id] {
-				continue
-			}
-			removed, err := deleteDoc(ctx, tx, id)
-			if err != nil {
-				return err
-			}
-			if removed {
-				changed++
-			}
-		}
-		return nil
+		pruned, err := pruneUnlistedDocs(ctx, tx, indexed, live)
+		changed += pruned
+		return err
 	})
 	if err != nil {
 		return 0, 0, err
 	}
 	return len(live), changed, nil
+}
+
+// checkSetPaths refuses a file set naming a path that is not inside its
+// folder.
+func checkSetPaths(files []string) error {
+	for _, rel := range files {
+		if !filepath.IsLocal(filepath.FromSlash(rel)) || rel == "." {
+			return fmt.Errorf("kb: %q is not a path inside the folder", rel)
+		}
+	}
+	return nil
+}
+
+// renderFileSet renders each distinct file of set once, returning the keys
+// it covers (live), in listing order (keys) with their renders (rendered).
+func renderFileSet(kind fileSetKind, set FileSet) (live map[string]bool, keys []string, rendered []*Doc) {
+	live = make(map[string]bool, len(set.Files))
+	for _, rel := range set.Files {
+		key := kind.containerPrefix(set.Container) + rel
+		if live[key] {
+			continue
+		}
+		live[key] = true
+		keys = append(keys, key)
+		rendered = append(rendered, renderFile(set.Source, kind, set.Container, set.Root, rel))
+	}
+	return live, keys, rendered
+}
+
+// pruneUnlistedDocs deletes every indexed document not in live, returning
+// how many were removed.
+func pruneUnlistedDocs(ctx context.Context, tx *sql.Tx, indexed []string, live map[string]bool) (int, error) {
+	n := 0
+	for _, id := range indexed {
+		if live[id] {
+			continue
+		}
+		removed, err := deleteDoc(ctx, tx, id)
+		if err != nil {
+			return n, err
+		}
+		if removed {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // docTimesWithPrefix maps every indexed document whose id starts with
