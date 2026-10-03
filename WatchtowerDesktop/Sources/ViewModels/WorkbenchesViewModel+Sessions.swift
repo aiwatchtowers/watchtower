@@ -55,6 +55,13 @@ extension WorkbenchesViewModel {
 
     func setLayout(_ layout: WorkspaceLayout, projectID: Int64) {
         layouts[projectID] = layout
+        // The ask drawer sits beside its session's terminal: once that
+        // session leaves the screen, the drawer (and the stack's highlight)
+        // goes with it. The draft stays.
+        if let sessionID = asks.drawerAsk(projectID: projectID)?.sessionID,
+           !layout.visiblePanes.contains(.session(sessionID)) {
+            asks.closeDrawer(projectID: projectID)
+        }
         do {
             defaults.set(try JSONEncoder().encode(layout), forKey: WorkspaceLayout.key(workbenchID: projectID))
         } catch {

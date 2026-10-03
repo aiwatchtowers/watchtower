@@ -8,13 +8,20 @@ extension WorkbenchesViewModel {
     /// session on screen — shown, never started (a stopped one offers
     /// Resume), so a click never launches an agent. An ask filed outside the
     /// app has no session: its drawer opens at the page's trailing edge.
-    func showAsk(_ askID: Int64, projectID: Int64) async {
+    /// The drawer opens once the session is on screen (it closes whenever
+    /// that session leaves it, `setLayout`). Returns false when the ask is
+    /// gone or could not be read.
+    @discardableResult
+    func showAsk(_ askID: Int64, projectID: Int64) async -> Bool {
         if selectedWorkbenchID != projectID { drill(into: projectID) }
-        guard let ask = await asks.lookUp(askID: askID, projectID: projectID) else { return }
-        asks.openDrawer(ask)
+        guard let ask = await asks.lookUp(askID: askID, projectID: projectID) else { return false }
         if let sessionID = ask.sessionID {
             await revealTerminal(projectID: projectID, sessionID: sessionID)
+            // A failed open already reports itself; no drawer beside nothing.
+            guard layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return true }
         }
+        asks.openDrawer(ask)
+        return true
     }
 
     /// The drawer's "k of N ›": the next ask of the stack, switching to its

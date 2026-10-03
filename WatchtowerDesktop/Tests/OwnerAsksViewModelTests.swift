@@ -135,11 +135,13 @@ final class OwnerAsksViewModelTests: XCTestCase {
         vm.layout.show(.board)
         let ask = try await openAsk(vm, project: p, id: askID)
         vm.asks.openDrawer(askID: askID, projectID: p)
+        vm.asks.drawerExpanded = true
         pick(vm, askID)
 
         let delivery = await vm.asks.answer(ask)
 
         XCTAssertEqual(delivery, .sent)
+        XCTAssertFalse(vm.asks.drawerExpanded, "closed through closeDrawer")
         let stored = try await status(askID)
         XCTAssertEqual(stored.status, "answered")
         XCTAssertEqual(try OwnerAskAnswer.decode(stored.answer).answers, [.init(id: "a", labels: ["Yes"])])

@@ -180,12 +180,15 @@ final class OwnerAsksViewModel {
     func loadClosed(projectID: Int64, sessionID: Int64?) async {
         let key = ClosedListKey(projectID: projectID, sessionID: sessionID)
         do {
-            let (asks, replaced) = try await dbPool.read { db in
+            // The counts come with the list, so "N closed" matches what it opens.
+            let (asks, replaced, counts) = try await dbPool.read { db in
                 (try OwnerAskQueries.closedAsks(db, projectID: projectID, sessionID: sessionID),
-                 try OwnerAskQueries.replacements(db, projectID: projectID))
+                 try OwnerAskQueries.replacements(db, projectID: projectID),
+                 try OwnerAskQueries.closedCounts(db, projectID: projectID))
             }
             closedLists[key] = asks
             replacements[projectID] = replaced
+            closedCounts[projectID] = counts
             closedErrors[key] = nil
         } catch {
             closedErrors[key] = "Could not load the closed asks: \(error.localizedDescription)"
@@ -349,7 +352,7 @@ final class OwnerAsksViewModel {
         let delivery = ask.sessionID.flatMap { terminalCenter?.sendPrompt(line, sessionID: $0) } ?? .noSession
         notices[askID] = .delivered(delivery)
         if delivery != .noSession, let sessionID = ask.sessionID {
-            if drawerAskIDs[projectID] == askID { drawerAskIDs[projectID] = nil }
+            if drawerAskIDs[projectID] == askID { closeDrawer(projectID: projectID) }
             onDelivered?(projectID, sessionID)
         }
         await load(projectID: projectID)

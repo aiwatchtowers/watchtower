@@ -345,14 +345,21 @@ final class WorkbenchesViewModel {
 
     /// A deep link puts its pane on screen the way a panel click does. An
     /// ask's notice (`route.askID`) opens that ask the way a stack row does
-    /// (`showAsk`): its session on screen and the drawer on it.
+    /// (`showAsk`): its session on screen and the drawer on it; an ask gone
+    /// meanwhile falls back to the notice's pane and session.
     func reveal(_ route: WorkbenchRoute) {
         selectedWorkbenchID = route.projectID
         if let askID = route.askID {
-            let projectID = route.projectID
-            Task { await showAsk(askID, projectID: projectID) }
+            Task {
+                guard await !showAsk(askID, projectID: route.projectID) else { return }
+                showPane(of: route)
+            }
             return
         }
+        showPane(of: route)
+    }
+
+    private func showPane(of route: WorkbenchRoute) {
         switch route.pane {
         case .board: layout.show(.board)
         case .terminal:

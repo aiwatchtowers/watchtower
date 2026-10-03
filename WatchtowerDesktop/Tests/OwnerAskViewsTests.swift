@@ -137,6 +137,30 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertNil(vm.asks.drawerAsk(projectID: s.project)?.sessionID, "the page's own edge hosts it")
     }
 
+    func testANoticeForAnAskGoneMeanwhileStillShowsItsSession() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+
+        vm.reveal(WorkbenchRoute(projectID: s.project, pane: .terminal, subjectID: s.second, askID: s.secondAsk + 100))
+
+        await waitUntil { self.shows(vm, session: s.second, project: s.project) }
+        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+    }
+
+    func testTheDrawerClosesWhenItsSessionLeavesTheScreen() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        await vm.showAsk(s.firstAsk, projectID: s.project)
+        vm.asks.editDraft(s.firstAsk) { $0.note = "half done" }
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk)
+
+        await vm.revealTerminal(projectID: s.project, sessionID: s.second)
+
+        XCTAssertFalse(shows(vm, session: s.first, project: s.project))
+        XCTAssertNil(vm.asks.drawerAskIDs[s.project], "no drawer, no highlighted row, for a session off screen")
+        XCTAssertEqual(vm.asks.drafts.draft(for: s.firstAsk).note, "half done", "the draft stays")
+    }
+
     // MARK: - Closed and withdrawn asks
 
     func testAClosedAskOpensReadOnlyWithItsAnswer() async throws {
@@ -152,9 +176,14 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(vm.asks.closedCounts[s.project]?[s.first], 1, "the session row's \"1 closed\"")
         XCTAssertNil(vm.asks.closedCounts[s.project]?[s.second])
 
+        try await pool.write {
+            try TestDatabase.insertOwnerAsk($0, projectID: s.project, sessionID: s.first, status: "withdrawn", withdrawnReason: "agent")
+        }
         await vm.asks.loadClosed(projectID: s.project, sessionID: s.first)
+        XCTAssertEqual(vm.asks.closedCounts[s.project]?[s.first], 2, "the count follows the list it opens")
         let key = OwnerAsksViewModel.ClosedListKey(projectID: s.project, sessionID: s.first)
-        XCTAssertEqual(vm.asks.closedLists[key]?.map(\.id), [closed])
+        XCTAssertEqual(vm.asks.closedLists[key]?.count, 2)
+        XCTAssertTrue(vm.asks.closedLists[key]?.contains { $0.id == closed } == true)
 
         await vm.showAsk(closed, projectID: s.project)
         let shown = try XCTUnwrap(vm.asks.drawerAsk(projectID: s.project))
