@@ -5,9 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -58,13 +55,9 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 			err = fmt.Errorf("panic: %v", r)
 		}
 	}()
-	raw, ok := os.LookupEnv(terminalSessionEnv)
-	if !ok {
-		return nil
-	}
-	rowID, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-	if err != nil || rowID <= 0 {
-		return fmt.Errorf("invalid %s %q", terminalSessionEnv, briefClip(raw, 40))
+	rowID, ok, err := terminalSessionRowID()
+	if !ok || err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionStartInputWait)
 	hook, err := readHookInput[sessionStartInput](ctx, stdin)
