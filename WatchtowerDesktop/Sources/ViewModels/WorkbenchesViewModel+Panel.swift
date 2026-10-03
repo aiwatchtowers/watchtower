@@ -230,7 +230,6 @@ extension WorkbenchesViewModel {
     func showView(_ view: WorkspaceView, project: Workbench) async {
         var updated = layout(projectID: project.id)
         guard !updated.isShowing(view) else { return }
-        beginSwitch(projectID: project.id)
         switch view {
         case .board:
             updated.showWorkbenchView(.board)
@@ -240,12 +239,16 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.files)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
+            // `openMostRecentSession` takes its own ticket — past its
+            // in-flight guard, so a repeated click never supersedes the
+            // open it is waiting for.
             guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
                 await openMostRecentSession(project: project, placement: .keeping(kept))
                 return
             }
             updated.reveal(.session(id), keeping: kept)
         }
+        beginSwitch(projectID: project.id)
         setLayout(updated, projectID: project.id)
     }
 

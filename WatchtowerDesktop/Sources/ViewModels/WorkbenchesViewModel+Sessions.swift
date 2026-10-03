@@ -203,11 +203,11 @@ extension WorkbenchesViewModel {
                 return (project, rows.filter { $0.projectID == projectID })
             }
         } catch {
-            setSessionError("Could not read the target: \(error.localizedDescription)", projectID: projectID ?? selectedWorkbenchID)
+            reportSwitchError("Could not read the target: \(error.localizedDescription)", projectID: askedIn, ticket: ticket)
             return
         }
         guard let found else {
-            setSessionError("Target #\(targetID) is not on a workbench board.", projectID: projectID ?? selectedWorkbenchID)
+            reportSwitchError("Target #\(targetID) is not on a workbench board.", projectID: askedIn, ticket: ticket)
             return
         }
         if found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }

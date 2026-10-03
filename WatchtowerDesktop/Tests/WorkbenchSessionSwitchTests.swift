@@ -182,6 +182,40 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         XCTAssertEqual(appState.terminalCenter.states[slow.id], .running)
     }
 
+    /// ⌘1 with the panel's list not read yet loads it first; a view button
+    /// pressed during that load is the later action and wins.
+    func testAShortcutWaitingForTheListLosesToALaterViewButton() async throws {
+        let a = try await insertSession("a")
+        let vm = try vm
+        await vm.reload()
+        vm.selectedWorkbenchID = projectID
+        XCTAssertNil(vm.terminalSessions[projectID], "the list is not read yet")
+        let project = try XCTUnwrap(vm.selectedWorkbench)
+
+        let shortcut = Task { await vm.openSession(atShortcut: 1) }
+        let board = Task { await vm.showView(.files, project: project) }
+        _ = await (shortcut.value, board.value)
+
+        XCTAssertEqual(onScreen(vm), .files)
+        XCTAssertEqual(appState.terminalCenter.states[a.id], .running, "the shortcut's session still started")
+    }
+
+    /// A session notice's click on a stopped session reads the list first;
+    /// a view button pressed during that read wins over its layout change.
+    func testANoticeRevealWaitingForTheListLosesToALaterViewButton() async throws {
+        let a = try await insertSession("a")
+        let vm = try await page(running: [a])
+        let project = try XCTUnwrap(vm.selectedWorkbench)
+        let stopped = try await insertSession("stopped") // not listed, not running
+
+        let reveal = Task { await vm.revealTerminal(projectID: self.projectID, sessionID: stopped.id) }
+        let files = Task { await vm.showView(.files, project: project) }
+        _ = await (reveal.value, files.value)
+
+        XCTAssertEqual(onScreen(vm), .files)
+        XCTAssertNil(appState.terminalCenter.states[stopped.id], "a stale notice never starts a session")
+    }
+
     /// Work on it reads the target first; a panel click made during that
     /// read is the later one and wins. The work-on session is still created
     /// and started — it shows in the panel, not on screen.
