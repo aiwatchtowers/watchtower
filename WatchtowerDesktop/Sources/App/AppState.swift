@@ -350,6 +350,11 @@ final class AppState {
         self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.openDatabase = openDatabase
+        // A daemon that came up after all (a later poll, a Settings start)
+        // takes the "did not start" banner with it.
+        daemonManager.onRunningChanged = { [weak self] running in
+            if running { self?.daemonStartFailure = nil }
+        }
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -437,6 +442,10 @@ final class AppState {
     }
 
     private var isInitializing = false
+    /// `initialize()`'s launch work and its daemon (re)start — held so tests
+    /// can await them.
+    @ObservationIgnored private(set) var launchTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var ensureDaemonTask: Task<Void, Never>?
     private var terminateObserver: NSObjectProtocol?
 
     /// Brief-run chat VMs need the open DB; wired once it opens rather than
@@ -627,7 +636,7 @@ final class AppState {
         meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
         dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
         installLifecycleHooks()
-        Task {
+        launchTask = Task {
             await syncCLIBinaryStore()
             // Only now resolve the CLI path and start polling: before the sync
             // the store copy may still be the stale one, and DaemonManager
@@ -890,6 +899,12 @@ final class AppState {
         onboardingGoals.route(hasSlackAccount: onboardingHasSlackAccount)
     }
 
+    /// Settings' account changes (Add, Remove, re-login) while onboarding is
+    /// on screen leave the daemon to its finish.
+    var accountDaemonPolicy: DaemonRestartPolicy {
+        needsOnboarding ? .deferred : .restart
+    }
+
     /// Whether a Slack account is connected, for onboarding's decisions
     /// (workspace init, the route). Never the sidebar's fail-open value:
     /// with no database there is no account, whatever `connectedSources`
@@ -949,7 +964,7 @@ final class AppState {
     }
 
     static func daemonStartFailureText(_ detail: String?) -> String {
-        let reason = detail.map { ": \($0)" } ?? "."
+        let reason = detail.map { ": \($0)." } ?? "."
         return "The background sync did not start\(reason) Open Settings → System to retry."
     }
 
@@ -994,6 +1009,8 @@ final class AppState {
     }
 
     static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
+    static let featureStagedInSettings =
+        "This feature has an unsaved change in Settings → Features — apply or discard it first"
 
     /// Offered while an apply runs: merged once it is over.
     @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
@@ -1063,13 +1080,18 @@ final class AppState {
             // enables what is still off and restarts.
             featureSuggestionError = error
             return
-        } else if result.enabled.isEmpty {
-            // Nothing enabled, nothing failed, yet some are still off.
-            featureSuggestionError = Self.featureChangesBusy
+        }
+        // What came on is done; what is still off stays offered.
+        featureSuggestion.removeAll { ids.contains($0.id) && !stillOff.contains($0.id) }
+        if !stillOff.isEmpty {
+            // Off only through a change staged in Settings → Features (on
+            // live, so `features enable` skips it), or nothing ran at all.
+            featureSuggestionError = stillOff.contains { featureManager.pending[$0] == false }
+                ? Self.featureStagedInSettings
+                : Self.featureChangesBusy
             return
         }
         featureSuggestionError = nil
-        featureSuggestion.removeAll { ids.contains($0.id) }
     }
 
     func declineFeatureSuggestion() {
@@ -1265,13 +1287,14 @@ final class AppState {
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle.
     private func ensureDaemonRunning() {
-        Task {
+        let daemon = daemonControl
+        ensureDaemonTask = Task {
             daemonManager.resolvePathIfNeeded()
-            if DaemonManager.checkDaemonRunning() {
-                await daemonManager.stopDaemon()
+            if daemon.daemonIsRunning() {
+                await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            await daemonManager.startDaemon()
+            _ = await daemon.startDetached()
         }
     }
 

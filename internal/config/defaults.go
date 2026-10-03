@@ -188,9 +188,8 @@ func DefaultJiraFeatures(role string) JiraFeatureToggles {
 //
 // The IC baseline is seeded, not a per-role set, and deliberately. Load has
 // no DB handle, and the role lives in user_profile.role, which is FREE TEXT
-// collected from an onboarding TextField placeholdered "e.g. Engineering
-// Manager". The structured RoleLevel exists only in Swift
-// (WatchtowerCore/Models/UserProfile.swift) and is never persisted, so
+// (onboarding's About you "Role and team" field). No structured role level
+// is persisted anywhere, so
 // DefaultJiraFeatures falls to its IC branch for every real user — `jira
 // features reset` has always reset to IC. Seeding the IC baseline here is
 // therefore not an approximation of the role default; today it IS the role

@@ -1297,7 +1297,7 @@ final class AppStateTests: XCTestCase {
     /// Jira connected from Settings: its task features, off now, are
     /// offered; Turn on enables them through the CLI and restarts once.
     func testNewJiraOffersItsFeaturesAndTurnOnEnablesThem() async throws {
-        let runner = featuresRunner(disabled: ["stream-digests", "next-step", "memory"], enabled: ["tracks"])
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step", "memory"], enabled: ["tracks"])
         let appState = AppState.isolated(featuresRunner: runner)
         let daemon = FakeDaemon()
         appState.daemonControlOverride = daemon
@@ -1308,19 +1308,19 @@ final class AppStateTests: XCTestCase {
         await appState.refreshConnectedSources()
         await appState.featureSuggestionCheck?.value
 
-        XCTAssertEqual(appState.featureSuggestion.map(\.id), ["stream-digests", "next-step"])
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step"])
         XCTAssertTrue(appState.showsFeatureSuggestion)
-        XCTAssertFalse(runner.invocations.contains { $0.first == "features" && $0.dropFirst().first == "enable" },
+        XCTAssertFalse(runner.calls.contains { $0.first == "features" && $0.dropFirst().first == "enable" },
                        "nothing is enabled before Turn on")
 
         appState.featureManager.setPending("tracks", enabled: false)
         await appState.acceptFeatureSuggestion()
 
         XCTAssertEqual(appState.featureManager.pending, ["tracks": false], "Settings → Features' staged change is left alone")
-        XCTAssertFalse(runner.invocations.contains(["features", "disable", "tracks"]))
-        XCTAssertTrue(runner.invocations.contains(["features", "enable", "next-step"]))
-        XCTAssertTrue(runner.invocations.contains(["features", "enable", "stream-digests"]))
-        XCTAssertFalse(runner.invocations.contains(["features", "enable", "memory"]))
+        XCTAssertFalse(runner.calls.contains(["features", "disable", "tracks"]))
+        XCTAssertTrue(runner.calls.contains(["features", "enable", "next-step"]))
+        XCTAssertTrue(runner.calls.contains(["features", "enable", "stream-digests"]))
+        XCTAssertFalse(runner.calls.contains(["features", "enable", "memory"]))
         XCTAssertEqual(daemon.restarts, 1)
         XCTAssertTrue(appState.featureSuggestion.isEmpty)
     }
@@ -1376,8 +1376,8 @@ final class AppStateTests: XCTestCase {
         private var states: [String: String]
         private(set) var calls: [[String]] = []
 
-        init(disabled: [String]) {
-            states = Dictionary(uniqueKeysWithValues: disabled.map { ($0, "disabled") })
+        init(disabled: [String], enabled: [String] = []) {
+            states = Dictionary(uniqueKeysWithValues: disabled.map { ($0, "disabled") } + enabled.map { ($0, "enabled") })
         }
 
         func run(args: [String]) async throws -> Data {
@@ -1760,9 +1760,14 @@ final class AppStateTests: XCTestCase {
             onRetry: appState.reinitializeAfterOnboarding
         )
         await appState.onboardingDaemonStart?.value
+        // Had the retry re-run the launch, its daemon (re)start would count too.
+        await appState.launchTask?.value
+        await appState.ensureDaemonTask?.value
 
+        XCTAssertNil(appState.launchTask, "the open database means no second launch")
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertEqual(daemon.stops, 0)
     }
 
     /// Jira connected in onboarding's own Connect step: finishing raises no
@@ -1787,6 +1792,70 @@ final class AppStateTests: XCTestCase {
         await appState.featureSuggestionCheck?.value
 
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+    }
+
+    // MARK: - Final verify follow-ups
+
+    /// A feature that is on, but off in a change staged in Settings →
+    /// Features: Turn on says so, and keeps only that one offered.
+    func testTurnOnNamesAChangeStagedInSettings() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = try await appStateOffering(runner)
+        appState.daemonControlOverride = FakeDaemon()
+        _ = try await runner.run(args: ["features", "enable", "next-step"])
+        await appState.featureManager.load()
+        appState.featureManager.setPending("next-step", enabled: false)
+
+        await appState.acceptFeatureSuggestion()
+
+        XCTAssertEqual(appState.featureSuggestionError, AppState.featureStagedInSettings)
+        XCTAssertEqual(appState.featureSuggestion.map(\.id), ["next-step"], "the one that came on is done")
+        XCTAssertEqual(appState.featureManager.pending["next-step"], false, "the staged change is left alone")
+    }
+
+    /// The "did not start" banner goes once the status poll sees a daemon.
+    func testDaemonStartFailureClearsWhenTheDaemonRuns() async throws {
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        let daemon = FakeDaemon()
+        daemon.startSucceeds = false
+        appState.daemonControlOverride = daemon
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.purpose)
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.onboardingDaemonStart?.value
+        XCTAssertNotNil(appState.daemonStartFailure)
+
+        appState.daemonManager.isRunning = true
+
+        XCTAssertNil(appState.daemonStartFailure)
+    }
+
+    func testDaemonStartFailureTextEndsItsSentences() {
+        XCTAssertEqual(AppState.daemonStartFailureText("exit 1"),
+                       "The background sync did not start: exit 1. Open Settings → System to retry.")
+        XCTAssertEqual(AppState.daemonStartFailureText(nil),
+                       "The background sync did not start. Open Settings → System to retry.")
+    }
+
+    /// Finishing restarts the related-features baseline by itself: even
+    /// with sources read during onboarding left stale, the completion read
+    /// is only a baseline.
+    func testCompletionResetsTheFeatureOfferBaseline() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        appState.needsOnboarding = true
+        await appState.refreshConnectedSources()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+
+        appState.completeOnboarding()
+        await appState.connectedSourcesRefresh?.value
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertTrue(appState.featureVisibility.connectedSources.jira)
         XCTAssertTrue(appState.featureSuggestion.isEmpty)
     }
 }

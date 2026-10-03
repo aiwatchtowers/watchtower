@@ -42,7 +42,11 @@ enum PidWaitOutcome: Equatable {
 @MainActor
 @Observable
 package final class DaemonManager {
-    package var isRunning = false
+    package var isRunning = false {
+        didSet { if isRunning != oldValue { onRunningChanged?(isRunning) } }
+    }
+    /// Called when `isRunning` flips (the status poll included).
+    @ObservationIgnored package var onRunningChanged: (@MainActor (Bool) -> Void)?
     /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when
     /// no heartbeat file exists yet (no sync has run since the daemon shipped
     /// this file) — read it through `SyncProgress.isSyncing`, never through

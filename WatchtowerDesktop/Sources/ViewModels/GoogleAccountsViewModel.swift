@@ -176,7 +176,7 @@ final class GoogleAccountsViewModel {
     /// --app-return` — same OAuth loopback-browser flow shape as `addAccount`,
     /// used when an account's status is "error"/"revoked" and needs a fresh
     /// grant.
-    func relogin(_ account: GoogleAccount) {
+    func relogin(_ account: GoogleAccount, daemonPolicy: DaemonRestartPolicy = .restart) {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
@@ -206,7 +206,7 @@ final class GoogleAccountsViewModel {
                 if result.exitCode == 0 {
                     self.error = nil
                     self.refresh()
-                    self.daemonRestartTask = DaemonRestartPolicy.restart.apply(using: self.daemon)
+                    self.daemonRestartTask = daemonPolicy.apply(using: self.daemon)
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
