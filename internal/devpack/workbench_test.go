@@ -50,7 +50,7 @@ func TestProjectSkillTeachesEveryProjectTool(t *testing.T) {
 	for _, tool := range []string{
 		"workbench_info", "workbench_board", "update_workbench",
 		"add_workbench_source", "remove_workbench_source",
-		"create_targets", "update_target", "attach_document",
+		"create_targets", "update_target",
 		"list_comments", "add_comment", "resolve_comment",
 	} {
 		if !strings.Contains(content, "`"+tool+"`") {
@@ -74,13 +74,13 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 		"## Documents for review",
 		"Every spec, plan and design you write",
 		"Pick the review target",
-		"then `update_target` that target to `blocked`",
+		"`update_target` the review target to `blocked`",
 		"It never means waiting for the owner",
 		"not in a chat artifact",
 		"When the owner says it is approved",
-		"## Revising an attached document",
+		"## Revising a document",
 		"Before editing",
-		"`attach_document` again",
+		"the document is revised and ready for another look",
 		"## Running a plan",
 		"verbatim into the implementer's brief",
 		"After the task's review passes",

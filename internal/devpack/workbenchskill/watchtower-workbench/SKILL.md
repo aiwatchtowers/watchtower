@@ -1,12 +1,12 @@
 ---
 name: watchtower-workbench
-description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you are blocked on an owner decision. Keeps the Watchtower board, documents and comments in step with the work.
+description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you are blocked on an owner decision. Keeps the Watchtower board and comments in step with the work.
 x-watchtower-pack: v1
 ---
 
 # Watchtower Workbench
 
-This folder is bound to a Watchtower workbench. The owner follows the work in the Watchtower app: a **board** of targets with sub-targets, **documents** (specs and plans) they comment on inline, and **comments** on targets. The board outlives your session — it is how the owner, and the next session, know where things stand. Keep it true.
+This folder is bound to a Watchtower workbench. The owner follows the work in the Watchtower app: a **board** of targets with sub-targets, and **comments** on targets. The board outlives your session — it is how the owner, and the next session, know where things stand. Keep it true.
 
 The tools come from the `watchtower-workbench` MCP server (in Claude Code they appear as `mcp__watchtower-workbench__<tool>`). They act only on this workbench and apply immediately — there is no approval step, so every write must be something you would say out loud to the owner. Every write tool takes a `reason`: one short sentence saying why.
 
@@ -15,14 +15,13 @@ At session start a hook prints the workbench brief: counts, the open part of the
 ## Tools
 
 - `workbench_info` — name, folder, description, sources, counts.
-- `workbench_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters, attached documents.
+- `workbench_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters.
 - `update_workbench` — set the workbench description.
 - `add_workbench_source` / `remove_workbench_source` — a source of kind `slack_channel`, `jira_project`, `confluence_space`, `person` or `link`.
 - `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, branch?, pr?, parent_id? | parent_key?, images?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`; `branch`/`pr` link the git work (see "Keeping the board in step with git"); `images` are absolute paths of image files to attach (see Images).
 - `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`), `branch` and `pr` (`""` clears one); `add_images` (absolute paths) and `remove_image_ids` attach and detach images. `parent_id` moves the target under another target of this workbench (`0` = to the top level; never under itself or one of its own sub-targets). Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
 - `get_target` — one target with its status history and its images (each with the `path` of Watchtower's copy — read it to look at the image).
-- `attach_document` — `rel_path` (relative to this folder, a `.md` or `.txt` file), `kind` (`spec`, `plan` or `doc`), optional `title` and `target_id`. Attaching a path that is already attached — imported ones included — marks it revised and tells the owner it is ready for review, so do that only after you actually revised it. How you mark a document that waits for the owner is in "Documents for review".
-- `list_comments` — by `target_id`, by `document_id`, or, by default, everything new for you.
+- `list_comments` — by `target_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
 
@@ -30,14 +29,14 @@ At session start a hook prints the workbench brief: counts, the open part of the
 
 Run this when the owner asks you to set the workbench up — the first-run prompt reads "Set up this Watchtower workbench using the watchtower-workbench skill." — or when `workbench_info` shows an empty description.
 
-1. Call `workbench_info` and `workbench_board`. If the workbench already has a description and a board, say so and stop: setup is done. The folder's existing README and its `docs/**/specs` and `docs/**/plans` files are already attached as documents (Watchtower imported them when the workbench was created, `origin` `import`) — do not attach them again. If `workbench_board` shows none of them (a workbench created before the import existed, or an import that failed), run `watchtower workbench import-docs <workbench id>` instead of attaching them one by one (the owner's **Re-run Setup** on the workbench page does the same and also refreshes the folder's Watchtower setup — suggest it rather than running it yourself).
+1. Call `workbench_info` and `workbench_board`. If the workbench already has a description and a board, say so and stop: setup is done.
 2. Read what the folder says about itself: the README, CLAUDE.md or AGENTS.md, and the index of `docs/` if there is one. Skim; do not read the whole tree.
 3. Call `update_workbench` with a description of two to four sentences: what this is, who it is for, and where it stands now.
 4. Call `add_workbench_source` for each source the docs **clearly name**: a Slack channel, a Jira project key, a Confluence space, a person who owns part of the work, a key link (repository, design document, dashboard). Never guess a source from a vague mention — list the ones you are unsure of for the owner instead. The Slack channels, Jira projects and Confluence spaces you add make `search_knowledge` rank their threads, issues and pages first in this workbench (hits marked `in_scope`; `workbench_scope: only` keeps just those, `off` ignores them) and put their recent activity in the session brief.
 5. Propose a first board in the terminal: three to seven top-level targets for the work that is actually open (from TODOs, open issues the docs name, a roadmap), each with at most a few sub-targets and a priority (`high` for what should come first, `low` for what can wait, `medium` otherwise), as a short indented list. Ask the owner whether to create it.
 6. Only after the owner agrees — and with their edits — call `create_targets` once with the whole tree. Then show the owner the board with the ids you got back.
 
-During setup, create no targets, attach no documents and add no comments before the owner has answered step 5. Afterwards attach only documents that are not on the board yet — a new spec or plan you write.
+During setup, create no targets and add no comments before the owner has answered step 5.
 
 ## Features, specs and plans
 
@@ -45,7 +44,7 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 
 - **A feature is agreed** with the owner → `create_targets` with one target for it: text = the feature's name, intent = one or two sentences on what done means. If a target on the board already covers it, use that one instead.
 - **Group related targets — before every `create_targets`.** Read the board (`workbench_board`) and look for targets on the same topic as the new one: the same feature, screen, component or kind of fix. If they already sit under a common group target, create the new one under that group (`parent_id`). If they are loose at the top level, first create a group target for them (text = the shared topic, intent = what the group covers), move the related targets under it (`update_target` with `parent_id`), then create the new one under it too. Only a target with no topical neighbour goes to the top level. Do not regroup targets the owner placed on purpose; if a grouping is unclear, ask in a comment instead of guessing.
-- **A spec, plan or design is written** → hand it to the owner for review, every time, as "Documents for review" below says. The review happens in the workbench's Documents pane — not in a chat artifact or anywhere else.
+- **A spec, plan or design is written** → hand it to the owner for review, every time, as "Documents for review" below says. The review happens in Watchtower — not in a chat artifact or anywhere else.
 - **A plan is written** → also `create_targets` in one call, one sub-target per plan task, under the feature target (`parent_id` = the feature target's id). Text = the task's title; intent = the plan path plus the task number, e.g. `docs/plans/feature-x.md — Task 3`, so any later session can find the task's steps. Nest deeper with `parent_key` only where the plan itself nests.
 
 ## Documents for review
@@ -56,16 +55,16 @@ Every spec, plan and design you write goes through the owner's review in Watchto
    - a spec or design for a feature whose target has no sub-targets, and whose plan you will not write before the owner approves it → that feature target;
    - a plan → first create its task sub-targets (as in "A plan is written"), then one more sub-target under the feature for the review: text = the board-language word for "Review" followed by the document title (e.g. `Review: <title>`);
    - any document whose target already has sub-targets → such a review sub-target as well.
-2. **Attach it and mark the wait:** `attach_document` with its path, `kind` `spec` (a design is a spec) or `plan`, and the review target's `target_id` — that tells the owner it is ready for review; then `update_target` that target to `blocked` and `add_comment` on it once: the document awaits the owner's review, and what it blocks. If reviewer agents review the document first, the target is `in_review` while they do and turns `blocked` when it is handed to the owner.
-3. **Keep working meanwhile** on anything that does not depend on the document. The owner answers with comments on the passages they mean, sent to you as one batch (a line in the terminal naming the document, or the next session's brief). Work through them as in "Revising an attached document"; the target stays `blocked` through every revision.
+2. **Mark the wait:** `update_target` the review target to `blocked` and `add_comment` on it once: the document's path relative to this folder, that it awaits the owner's review, and what it blocks. If reviewer agents review the document first, the target is `in_review` while they do and turns `blocked` when it is handed to the owner.
+3. **Keep working meanwhile** on anything that does not depend on the document. The owner answers with comments on the review target (shown in the next session's brief). Work through them as in "Revising a document"; the target stays `blocked` through every revision.
 4. **When the owner says it is approved:** a review sub-target goes to `done`; a feature target reviewed directly goes back to `todo` or `in_progress`. Do not build from a spec or plan the owner has not approved, unless they told you to go ahead. Never set the status of a target that has sub-targets.
 
-## Revising an attached document
+## Revising a document
 
-1. **Before editing:** `list_comments` with the document's `document_id`. An owner comment carries the quoted passage and its nearest heading — that is where it applies. Treat the owner's comments as instructions for this revision.
+1. **Before editing:** `list_comments` with the review target's `target_id`. Treat the owner's comments as instructions for this revision.
 2. Revise the file.
 3. **After editing:** for each comment you addressed, `resolve_comment` with a one-line reply saying what changed. A comment you could not address, or disagree with, stays open: reply with `add_comment` (`parent_id` = the comment) saying why, and leave the decision to the owner.
-4. Call `attach_document` again with the same path. That marks the document revised and tells the owner it is ready for another look.
+4. `add_comment` on the review target once: the document is revised and ready for another look.
 
 ## Running a plan (subagent-driven development)
 
