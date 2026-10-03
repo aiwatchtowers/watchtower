@@ -184,14 +184,18 @@ jobs:
           filters: |
             codeindex:
               - 'internal/codeindex/**'
+              - 'internal/codewalk/**'
               - 'go.mod'
               - 'go.sum'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
 
   # The code index over the full grammar set (-tags codegrammars, the release
   # build's); Go Test above stays untagged and compiles only the Go, Swift and
   # Python grammars. Skipped — neutral, not failed — when the change leaves the
-  # index and go.mod/go.sum alone (a docs-only PR). ubuntu ships gcc, so cgo
-  # works; setup-go caches the grammar builds after the first cold run.
+  # index, its walk, go.mod/go.sum, the Makefile and this workflow alone (a
+  # docs-only PR). ubuntu ships gcc, so cgo works; setup-go caches the grammar
+  # builds after the first cold run.
   codeindex-full:
     name: Code Index (full grammars)
     needs: [gate, codeindex-changes]
