@@ -1,11 +1,31 @@
 # Workbench session report — plan (2026-10-03)
 
-**Spec:** `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` (Parts referenced as §N).
-**Board:** feature target id in the board comment on it; one sub-target per task below.
-**Branch:** `feature/workbench-session-report`, cut from `feature/workbench-owner-asks` (PR #147). Rebase it onto main once
-#147 merges, renumbering the migration if main took `00101`.
-**Before starting:** the owner approves the §8 inventory amendments (PROJ-11, PROJ-13, new PROJ-14). Until then no task
-changes a PROJ guard's assertions. Task 11 also waits for the owner's toolbar pick (§1 decision 1).
+**Spec:** `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`, revision 2 (Parts referenced as §N;
+the state model is §4b). Approved by the owner 2026-10-03 (ask #2).
+**Board:** feature target #343; one sub-target per task below.
+**Branch:** `feature/workbench-session-report`, cut from main (owner asks, PR #147, is in main). Renumber the migration if
+main takes `00101` first.
+**Inventory:** the §8 amendments (PROJ-11 to the §4b state set, PROJ-13 prompt v2, new PROJ-14) are approved with the
+spec. Guards are changed only as §8 names them. Task 11 still waits for the owner's toolbar pick (§1 decision 1).
+
+## Global constraints
+- Every UI string ships in English; the captions are exactly §4b's table.
+- Go is the only writer of every new column and table; the Desktop only reads them.
+- `agent_state`'s CHECK is not widened: the error is `agent_failed_at`/`agent_error` (§2).
+- PROJ-11's run-scoping holds for the hook states (`working`, `waiting`, `approval`, error); only `finished_at` and open
+  asks show on a not-live session.
+- Tests that spawn a process (the gh stub, a fake CLI) kill its process group and wait in `t.Cleanup`.
+
+## Review focus
+- A StopFailure right after a Stop already wrote `waiting` must still record the error (the relaxed "different state or
+  failure flag" guard) — Task 1.
+- A session finished, then closed, then reopened by the owner without a prompt: still Finished (blue, filled again), not
+  Running — Task 7.
+- An ask answered from the drawer while its session is closed: the orange ring turns grey at once, not after a 1 s poll
+  that is not running — Task 9.
+- An old saved layout and a Claude Code that sends no error type in StopFailure must not crash or blank a row — Tasks 7
+  and 1.
+- Two notices for one event (the ask's own notice plus a state notice) — Task 9.
 
 Every task runs only its inner loop (`go test ./internal/<pkg>`, `make test-swift FILTER=…`, `make lint-diff`). The full
 gate is Task 13. The reviewer checklist is `docs/review/review-rules.md`; the implementer self-reviews against it before
@@ -19,13 +39,21 @@ hand-back. Go tasks may run in parallel lanes where `Depends on` allows. Swift t
 - **Files:**
   - `internal/db/migrations/00101_workbench_session_report.sql`, `internal/db/schema.sql`
   - `internal/db/terminal_sessions.go`, new `internal/db/session_report.go`
+  - `cmd/workbench_session_state.go` (StopFailure passes the failure), `internal/db/testdata` or `cmd/testdata` for the
+    captured StopFailure payload
   - tests, the schema golden, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
 - **Produces:**
   - `db.LinkSessionTarget(sessionID, targetID int64) error` (an upsert; `first_at` is kept)
   - `db.FinishTerminalSession(sessionID int64, summary string, at time.Time) error`
   - `db.SessionLinkedTargets(sessionID) ([]int64, error)`
   - `db.UpsertPRState(PRState) error`, `db.PRStates(projectID) (map[string]PRState, error)`
-  - `SetTerminalAgentState` clears `finished_at` when it writes `working` (§4)
+  - `SetTerminalAgentState(…, failure *AgentFailure)` (`AgentFailure{At string; Error string}`): a `working` write clears
+    `finished_at`; every write sets `agent_failed_at`/`agent_error` from `failure` (nil → NULL/''); the guard is "a
+    different state, or a different failure flag" (§4)
+  - `agentStateFor` unchanged; the hook reads the StopFailure error type (field pinned by a fixture captured from a real
+    StopFailure in this task — run one `claude` turn against a stub that returns 429, or copy the payload from Claude
+    Code's hook reference if a live capture is impossible, and say which in the hand-back), clips it to 60 runes through
+    `asks.OneLine`
 - **Depends on:** none.
 - **Tests:**
   - Up/Down round trip: rows of other tables survive.
@@ -33,8 +61,11 @@ hand-back. Go tasks may run in parallel lanes where `Depends on` allows. Swift t
   - Linking twice keeps `first_at` and moves `last_at`.
   - Cascades: deleting a session drops its links; deleting a target drops its links; deleting a workbench drops its links
     and its PR cache (PROJ-02 leftover test).
-  - `TestProj11_WorkingClearsFinished`: `working` clears `finished_at` and keeps `finish_summary`; `waiting` and
-    `approval` keep `finished_at`.
+  - `TestProj11_WorkingClearsFinishedAndError`: `working` clears `finished_at` and the error and keeps `finish_summary`;
+    `waiting` and `approval` keep `finished_at`.
+  - `TestProj11_StopFailureRecordsErrorOtherWritesClearIt`: StopFailure from `working` and from `waiting` both store
+    `agent_failed_at = agent_state_at` and the error; a following `waiting` (Stop) or `approval` clears both; a payload
+    with no or a non-string error field stores `''`; a 200-rune error is clipped to 60.
   - An older `working` event, refused by the existing time guard, does not clear `finished_at` either.
   - The PR state CHECK rejects an unknown state.
 
@@ -129,22 +160,33 @@ hand-back. Go tasks may run in parallel lanes where `Depends on` allows. Swift t
 
 ## Phase 2 — Desktop (one lane, in order)
 
-### Task 7 — Core: report model, presentation, finished state
+### Task 7 — Core: report model, the session state model, presentation
 - **Files:**
   - `WatchtowerCore/Models/SessionReport.swift`
   - `WatchtowerCore/Services/SessionReportPresentation.swift`
-  - `SessionAgentStatus` (`effective`), `SessionSwitcherPresentation.swift` (`.finished`)
-  - `TerminalSession` model + `TerminalSessionQueries` (read `finished_at`/`finish_summary`)
+  - `SessionAgentStatus` (`effective`), `SessionSwitcherPresentation.swift` (`State` becomes the §4b struct)
+  - new `WatchtowerCore/Services/SessionStatePresentation.swift`
+  - `TerminalSession` model + `TerminalSessionQueries` (`fetchAgentStates` also reads `finished_at`, `finish_summary`,
+    `agent_failed_at`, `agent_error` and the open-ask count, for live and not-live `claude` rows)
   - tests in `Tests/Core`
 - **Produces:**
   - `SessionReport`/`SessionReportSummary` decoding.
-  - The presentation strings.
-  - The §4 effective-state order.
+  - `SessionSwitcherPresentation.State { kind: Kind; live: Bool; openAsks: Int; error: String }`,
+    `Kind = notStarted | running | working | needsApproval | failed | waitingOnAsk | stopped | finished`.
+  - `SessionAgentStatus.effective(row:, live:, startedAt:) -> State` — the §4b order.
+  - `SessionStatePresentation.color/glyph/isRing/caption(for: State, oldestAskID: Int64?)` — §4b's table.
+  - The report presentation strings.
 - **Depends on:** Task 5 (JSON shape).
 - **Tests:**
   - Decode the Task 5 golden; extra/missing keys decode with defaults.
-  - `testProj11_FinishedOutranksWaitingButNotApprovalOrNewerWork`: every pair of (live, agent_state, agent_state_at vs
-    finished_at) in the §4 order, including not live + finished → finished.
+  - `testProj11_StateOrder`: a table over (live, hook state, trusted or a previous run's, failed, finished, openAsks)
+    giving every §4b kind in order — approval > error > working > finished > open ask > stopped > running > not
+    started; not live + finished → finished (ring); not live + open ask → waitingOnAsk (ring); not live + a previous run's
+    error/approval → notStarted.
+  - `testProj11_TurnEndWithoutAskIsStoppedNotWaiting`; the existing guards asserting `waiting` → `waitingForOwner` are
+    rewritten to `stopped` (§8), their run-scoping assertions kept.
+  - `SessionStatePresentation`: each table row's colour, glyph, ring and caption; "Working · 1 ask open" vs "2 asks
+    open"; "Waiting for you · ask #12" and "· 3 asks"; "Error: rate limit" and "Stopped on an error" for `''`.
   - Caption texts: "#314 · 14/15 · PR #147 open", no ticket, no PR, stale.
   - Phase time spans: same day, across midnight, still running ("07:47 – …").
   - "Previous summary" shows when `finished_at` is NULL and a summary exists.
@@ -161,15 +203,22 @@ hand-back. Go tasks may run in parallel lanes where `Depends on` allows. Swift t
   - A session switch cancels nothing in flight and drops the stale result for the old session.
   - The center survives navigation (state lives on AppState).
 
-### Task 9 — Sessions panel: second line and the blue dot
-- **Files:** the sessions panel row, `SessionLiveDot`, the switcher button and popover, the Go to… palette rows, tests.
+### Task 9 — Session states at every dot site, panel second line, notices
+- **Files:** the sessions panel row, `SessionLiveDot`, the switcher button and popover, the Go to… palette rows,
+  `SessionAgentStateCenter` (refresh triggers), `SessionAgentNoticePolicy`, tests.
 - **Depends on:** Task 8.
+- **Produces:** `SessionLiveDot(state:)` drawing fill or ring in the kind's colour; a `SessionStateLabel` (glyph +
+  caption) used by the panel row, the switcher button and popover, and the report badge.
 - **Tests:**
-  - The row caption comes from the summary; a stale summary shows the last caption marked stale.
-  - A standalone terminal has no second line.
-  - The blue dot appears at all four dot sites for a finished session, live or not.
-  - The `finished` notice: one per transition, under PROJ-11's conditions, body = the first summary line, same
-    identifier.
+  - The row shows the state label, then the report caption from the summary; a stale summary shows the last caption
+    marked stale; a standalone terminal shows neither.
+  - Each dot site renders the §4b kind; the palette shows the dot only; every site's accessibility label is the caption.
+  - `SessionAgentStateCenter` refreshes on app activation, on the Workbench tab appearing and right after an ask answer
+    even with no live session (the 1 s poll stays live-only); a closed session's orange ring turns grey after its ask is
+    answered without waiting for a poll.
+  - Notices: into `needsApproval`, `failed`, `stopped`, `finished` (body = first summary line, or "N asks waiting for
+    you") — one per transition, PROJ-11's conditions, identifier `workbench-session-<id>`; into `waitingOnAsk` or
+    `working` with asks → no state notice; back to `working` or not live → withdrawn.
 
 ### Task 10 — Session view
 - **Files:**
@@ -205,7 +254,7 @@ hand-back. Go tasks may run in parallel lanes where `Depends on` allows. Swift t
 ### Task 12 — Documentation and inventory
 - **Files:**
   - `docs/features/workbench.md`: a session report bullet and the v1 limits from §9
-  - `docs/app-guide.md`: the Session view, the blue dot, `finish_session`
+  - `docs/app-guide.md`: the Session view, the session states table (§1), `finish_session`
   - `docs/inventory/workbench.md`: the PROJ-11 and PROJ-13 amendments and PROJ-14 exactly as §8, plus the changelog
   - `docs/inventory/dev-surface.md`: DEV-06 lists `finish_session`
 - **Depends on:** Tasks 1–10 (Task 11 when done).
@@ -219,6 +268,9 @@ hand-back. Go tasks may run in parallel lanes where `Depends on` allows. Swift t
      `finish_session`. The dot turns blue, and the report shows the summary, X/Y and the PR.
   2. Send a new prompt to the blue session → green, with "Previous summary" shown.
   3. An agent that ends with "all done, PR opened" without the tool gets the reminder once, then calls it.
-  4. Without gh on PATH: branch state shows and `pr_note` explains.
-  5. The rows of five sessions show their captions within 15 s of opening the tab.
-  6. The reports of #314 and #257 match the §1 done criteria.
+  4. States: an agent files an ask and keeps working → green "? 1"; it stops → orange "Waiting for you · ask #N"; answer
+     it → green; a plain chat turn ending → grey "Stopped" with a "stopped" notice (app in background); a permission
+     prompt → orange hand; finish with an ask open → orange ✓; close that session → orange ring.
+  5. Without gh on PATH: branch state shows and `pr_note` explains.
+  6. The rows of five sessions show their captions within 15 s of opening the tab.
+  7. The reports of #314 and #257 match the §1 done criteria.
