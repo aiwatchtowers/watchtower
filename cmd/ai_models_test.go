@@ -70,7 +70,7 @@ func TestAIModels_JSONShape(t *testing.T) {
 	}
 	claude := parsed.Providers[byID["claude"]]
 	assert.Equal(t, "haiku", claude.ResolvedLight)
-	assert.Equal(t, "sonnet", claude.ResolvedStrong)
+	assert.Equal(t, "opus", claude.ResolvedStrong)
 	assert.Equal(t, "cli", claude.Kind)
 	// Known CLI aliases flow through `models` so the Desktop picker can
 	// suggest opus even though it is no tier's default.
@@ -146,7 +146,7 @@ func TestAIModels_HumanOutput(t *testing.T) {
 	assert.Contains(t, out, "* Claude (claude)")
 	assert.Contains(t, out, "(not set — pick a model", "empty ollama resolution renders a hint, not a blank")
 	assert.Contains(t, out, "light:  haiku")
-	assert.Contains(t, out, "strong: sonnet")
+	assert.Contains(t, out, "strong: opus")
 	assert.Contains(t, out, "Codex (codex)")
 	assert.Contains(t, out, "Ollama / Local (ollama)")
 }

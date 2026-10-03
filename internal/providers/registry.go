@@ -5,7 +5,11 @@
 // never hardcoded in Swift.
 package providers
 
-import "watchtower/internal/config"
+import (
+	"regexp"
+
+	"watchtower/internal/config"
+)
 
 // Provider describes one AI backend.
 type Provider struct {
@@ -34,7 +38,7 @@ var registry = []Provider{
 		DisplayName:   "Claude",
 		Kind:          "cli",
 		DefaultLight:  "haiku",
-		DefaultStrong: "sonnet",
+		DefaultStrong: "opus",
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
 	},
 	{
@@ -91,6 +95,10 @@ func ByID(id string) Provider {
 // The legacy ai.model value is ignored when it equals the retired
 // config.DefaultAIModel constant: setup used to seed that literal into every
 // config.yaml, so it means "never chose a model", not a deliberate pin.
+// A pinned full Claude model id (`claude-opus-4-6`, `claude-haiku-4-5-20251001`)
+// resolves to its family alias (`opus`, `haiku`): a pin written once — by an
+// older setup, a Settings pick or a hand edit — otherwise stays on that release
+// forever while the aliases move on to the newest model of the class.
 // For single-model backends (ollama), an unset light tier follows the
 // resolved strong model, so configuring one model configures both tiers.
 // Ollama ships no default model — an unconfigured ollama resolves to empty
@@ -110,6 +118,7 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 	if strong == "" {
 		strong = p.DefaultStrong
 	}
+	strong = claudeFamilyAlias(p.ID, strong)
 
 	if configured {
 		light = cfg.AI.Models.Light
@@ -121,5 +130,19 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 			light = p.DefaultLight
 		}
 	}
-	return light, strong
+	return claudeFamilyAlias(p.ID, light), strong
+}
+
+var claudeFullModelID = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-[0-9]`)
+
+// claudeFamilyAlias maps a full Claude model id to its CLI family alias;
+// any other value (an alias, another provider's model) is returned as is.
+func claudeFamilyAlias(providerID, model string) string {
+	if providerID != "claude" {
+		return model
+	}
+	if m := claudeFullModelID.FindStringSubmatch(model); m != nil {
+		return m[1]
+	}
+	return model
 }
