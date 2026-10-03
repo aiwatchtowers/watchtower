@@ -12,7 +12,7 @@ final class OwnerAskAnswerTests: XCTestCase {
             let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: file.data) as? [String: Any], file.name)
             let canonical = try XCTUnwrap(fixture["canonical"] as? String, file.name)
             let answer = try OwnerAskAnswer.decode(OwnerAskFixtures.json(try XCTUnwrap(fixture["answer"])))
-            XCTAssertEqual(try answer.encoded(), canonical, file.name)
+            XCTAssertEqual(Data(try answer.encoded().utf8), Data(canonical.utf8), "\(file.name): byte for byte")
             XCTAssertEqual(try OwnerAskAnswer.decode(canonical), answer, "\(file.name) round-trips")
         }
     }

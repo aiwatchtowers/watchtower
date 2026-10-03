@@ -85,11 +85,23 @@ package struct OwnerAskSnapshotDiff: Equatable, Sendable {
     private static func sections(_ lines: [String]) -> [(key: SectionKey, body: [String])] {
         var out: [(key: SectionKey, body: [String])] = []
         var seen: [String: Int] = [:]
-        var inFence = false
+        // The open fence's character and length: only a run of the same
+        // character, at least as long, closes it (CommonMark).
+        var fence: (char: Character, count: Int)?
         for line in lines {
+            let indent = line.prefix { $0 == " " }.count
+            // Four spaces or a tab make an indented code line: never a fence or a heading.
+            let markdown = indent < 4 && line.dropFirst(indent).first != "\t"
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle() }
-            if !inFence, let title = heading(trimmed) {
+            if markdown, let first = trimmed.first, first == "`" || first == "~" {
+                let run = trimmed.prefix { $0 == first }.count
+                if let open = fence {
+                    if first == open.char, run >= open.count, trimmed.allSatisfy({ $0 == first }) { fence = nil }
+                } else if run >= 3 {
+                    fence = (first, run)
+                }
+            }
+            if fence == nil, markdown, let title = heading(trimmed) {
                 let occurrence = seen[title, default: 0]
                 seen[title] = occurrence + 1
                 out.append((SectionKey(title: title, occurrence: occurrence), []))

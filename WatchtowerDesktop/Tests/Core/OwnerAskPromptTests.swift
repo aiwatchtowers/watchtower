@@ -1,7 +1,7 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// The line typed into an ask's session (PROJ-11): the same text as Go's
+/// The line typed into an ask's session (PROJ-12): the same text as Go's
 /// `asks.DeliveryLine` for every `internal/asks/testdata/lines` fixture.
 final class OwnerAskPromptTests: XCTestCase {
     func testTheLineMatchesEveryGoFixture() throws {

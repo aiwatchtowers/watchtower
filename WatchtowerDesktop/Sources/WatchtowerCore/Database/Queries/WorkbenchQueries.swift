@@ -3,7 +3,6 @@ import GRDB
 
 package enum WorkbenchQueryError: LocalizedError, Equatable {
     case emptyBody
-    case noSubject
     case wrongWorkbench
     case notARoot(Int64)
     case invalidStatus(String)
@@ -11,7 +10,6 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
     package var errorDescription: String? {
         switch self {
         case .emptyBody: "A comment needs some text."
-        case .noSubject: "A comment belongs to a target."
         case .wrongWorkbench: "That target belongs to another workbench."
         case let .notARoot(id): "Comment \(id) is a reply; only a thread's first comment has a status."
         case let .invalidStatus(status): "Unknown comment status \u{201C}\(status)\u{201D}."
@@ -113,10 +111,9 @@ package enum WorkbenchQueries {
 
     /// A new owner thread on a target of `projectID`.
     @discardableResult
-    package static func addOwnerComment(_ db: Database, projectID: Int64, targetID: Int64?, body: String) throws -> Int64 {
+    package static func addOwnerComment(_ db: Database, projectID: Int64, targetID: Int64, body: String) throws -> Int64 {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw WorkbenchQueryError.emptyBody }
-        guard let targetID else { throw WorkbenchQueryError.noSubject }
         try requireInWorkbench(db, projectID: projectID, table: "targets", id: targetID)
         try db.execute(
             sql: "INSERT INTO project_comments (project_id, target_id, author, body) VALUES (?, ?, 'owner', ?)",

@@ -92,16 +92,13 @@ final class WorkbenchQueriesTests: XCTestCase {
         }
     }
 
-    func testOwnerCommentRejectsEmptyBodyNoSubjectAndForeignTarget() throws {
+    func testOwnerCommentRejectsEmptyBodyAndForeignTarget() throws {
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
             let other = try TestDatabase.insertWorkbench(d, name: "other", folder: "/tmp/other")
             let foreign = try TestDatabase.insertWorkbenchTarget(d, projectID: other)
             XCTAssertThrowsError(try WorkbenchQueries.addOwnerComment(d, projectID: p, targetID: foreign, body: "x")) {
                 XCTAssertEqual($0 as? WorkbenchQueryError, .wrongWorkbench)
-            }
-            XCTAssertThrowsError(try WorkbenchQueries.addOwnerComment(d, projectID: p, targetID: nil, body: "x")) {
-                XCTAssertEqual($0 as? WorkbenchQueryError, .noSubject)
             }
             let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
             XCTAssertThrowsError(try WorkbenchQueries.addOwnerComment(d, projectID: p, targetID: t, body: "   ")) {

@@ -59,6 +59,27 @@ final class OwnerAskSnapshotDiffTests: XCTestCase {
         XCTAssertTrue(diff.removedHeadings.isEmpty)
     }
 
+    /// A ``` fence is not closed by ~~~ (nor by a shorter run): a `# line`
+    /// inside it stays code, so no heading is added or removed.
+    func testAFenceClosesOnlyOnItsOwnKindAndLength() {
+        let previous = "## Setup\n```\n~~~\n# one\n```\n## After\nx"
+        let current = "## Setup\n```\n~~~\n# two\n```\n## After\nx"
+        let diff = OwnerAskSnapshotDiff(previous: previous, current: current)
+        XCTAssertEqual(diff.changedHeadings, ["Setup"])
+        XCTAssertTrue(diff.addedHeadings.isEmpty, "~~~ does not close a ``` fence: `# two` is code")
+        XCTAssertTrue(diff.removedHeadings.isEmpty)
+
+        let longer = OwnerAskSnapshotDiff(previous: "````\n```\n# a\n````\n# Real", current: "````\n```\n# b\n````\n# Real")
+        XCTAssertTrue(longer.addedHeadings.isEmpty, "a shorter run does not close a four-backtick fence")
+        XCTAssertTrue(longer.changedHeadings.isEmpty, "the change is before the first heading")
+    }
+
+    func testAnIndentedHashLineIsCodeNotAHeading() {
+        let diff = OwnerAskSnapshotDiff(previous: "## Shell\n    # old", current: "## Shell\n    # new\n\t# tab\n   # Three")
+        XCTAssertEqual(diff.changedHeadings, ["Shell"], "four spaces or a tab make a code line in Shell's body")
+        XCTAssertEqual(diff.addedHeadings, ["Three"], "up to three spaces is still a heading")
+    }
+
     func testRepeatedHeadingsAreToldApartAndClosingHashesDropped() {
         let previous = "## Notes ##\none\n## Notes\ntwo\n## C#\nx"
         let current = "## Notes\none\n## Notes\nthree\n## C#\nx"
