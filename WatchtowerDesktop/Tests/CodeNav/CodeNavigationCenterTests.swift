@@ -197,7 +197,8 @@ final class CodeNavigationCenterTests: XCTestCase {
         let first = Task { await center.goToDefinition(request("frob", at: "src/run.pl", 1, 1, req: 1), project: project, anchor: nil) }
         _ = await eventually { self.searches.started.count == 1 }
         await center.goToDefinition(request("save", at: "src/run.pl", 1, 1, req: 2), project: project, anchor: nil)
-        await first.value
+        let ended = await finishes(first)
+        XCTAssertTrue(ended, "the superseded request returns")
         XCTAssertEqual(searches.started.first?.handle.cancelled, true, "the old search is killed")
         searches.started.first?.onMatch(match("lib/other.pl", 9, "sub frob {"))
         searches.started.first?.onDone(.finished(CodeSearchDone(files: 1, matches: 1, truncated: false)))
@@ -212,7 +213,8 @@ final class CodeNavigationCenterTests: XCTestCase {
         let task = Task { await center.goToDefinition(request("frob", at: "src/run.pl", 1, 1), project: project, anchor: nil) }
         _ = await eventually { self.searches.started.count == 1 }
         center.unregisterPage(page, for: project.id)
-        await task.value
+        let ended = await finishes(task)
+        XCTAssertTrue(ended, "the request returns once its page went")
         XCTAssertEqual(searches.started.first?.handle.cancelled, true)
         XCTAssertEqual(beeps, 0, "a cancelled search is not a miss")
     }
@@ -284,6 +286,17 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertTrue(center.canGoBack(workbenchID: project.id), "the Files pane going away keeps its history")
         XCTAssertFalse(center.canGoBack(workbenchID: 1234))
         XCTAssertFalse(center.canGoBack(workbenchID: nil))
+    }
+
+    /// Whether `task` ends within `eventually`'s wait — a failure, not a
+    /// hung run, when a cancelled search never answers its caller.
+    private func finishes(_ task: Task<Void, Never>) async -> Bool {
+        var done = false
+        Task { @MainActor in
+            await task.value
+            done = true
+        }
+        return await eventually { done }
     }
 
     private func match(_ path: String, _ line: Int, col: Int = 1, _ text: String) -> CodeSearchMatch {
