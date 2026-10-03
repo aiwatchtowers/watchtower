@@ -45,8 +45,8 @@ var registry = []Provider{
 		ID:            "codex",
 		DisplayName:   "Codex",
 		Kind:          "cli",
-		DefaultLight:  "gpt-5.4-mini",
-		DefaultStrong: "gpt-5.4",
+		DefaultLight:  "gpt-6-luna",
+		DefaultStrong: "gpt-6-astra",
 	},
 	{
 		ID:          "ollama",
@@ -99,6 +99,9 @@ func ByID(id string) Provider {
 // resolves to its family alias (`opus`, `haiku`): a pin written once — by an
 // older setup, a Settings pick or a hand edit — otherwise stays on that release
 // forever while the aliases move on to the newest model of the class.
+// For `codex`, a pinned gpt-5 family model (`gpt-5.4`, `gpt-5.4-mini`,
+// `gpt-5.5`, `gpt-5.3-codex`) resolves to the tier default: OpenAI retired
+// them from Codex (2026-08-31 … 2026-10-14), and a pin would fail every call.
 // For single-model backends (ollama), an unset light tier follows the
 // resolved strong model, so configuring one model configures both tiers.
 // Ollama ships no default model — an unconfigured ollama resolves to empty
@@ -118,7 +121,7 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 	if strong == "" {
 		strong = p.DefaultStrong
 	}
-	strong = claudeFamilyAlias(p.ID, strong)
+	strong = normalizePinnedModel(p, strong, p.DefaultStrong)
 
 	if configured {
 		light = cfg.AI.Models.Light
@@ -130,19 +133,27 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 			light = p.DefaultLight
 		}
 	}
-	return claudeFamilyAlias(p.ID, light), strong
+	return normalizePinnedModel(p, light, p.DefaultLight), strong
 }
 
-var claudeFullModelID = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-[0-9]`)
+var (
+	claudeFullModelID  = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-[0-9]`)
+	codexRetiredModels = regexp.MustCompile(`^gpt-5([.-]|$)`)
+)
 
-// claudeFamilyAlias maps a full Claude model id to its CLI family alias;
-// any other value (an alias, another provider's model) is returned as is.
-func claudeFamilyAlias(providerID, model string) string {
-	if providerID != "claude" {
-		return model
-	}
-	if m := claudeFullModelID.FindStringSubmatch(model); m != nil {
-		return m[1]
+// normalizePinnedModel keeps a pinned model from going stale: a full Claude
+// id becomes its CLI family alias, a retired Codex model becomes the tier
+// default. Any other value is returned as is.
+func normalizePinnedModel(p Provider, model, tierDefault string) string {
+	switch p.ID {
+	case "claude":
+		if m := claudeFullModelID.FindStringSubmatch(model); m != nil {
+			return m[1]
+		}
+	case "codex":
+		if codexRetiredModels.MatchString(model) {
+			return tierDefault
+		}
 	}
 	return model
 }
