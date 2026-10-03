@@ -1,7 +1,8 @@
 ---
 type: bug
 title: Flaky cmd test TestCodeSearch_SIGTERMMidRunExitsAtOnceWithNoDone (50 ms wall-clock bound)
-status: open
+status: done
+resolution: SIGTERM bounds of the code search and code index tests relaxed to 500 ms (target ~50 ms), behavioural checks kept; the Swift query-latency test likewise to 300 ms
 priority: med
 tags: [ci, flaky-test, codesearch, cmd]
 context: PR #152 (OWNER-01 variant A) — Go Test failed on CI although the PR touches no Go; passed on rerun
