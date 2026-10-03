@@ -227,7 +227,7 @@ func (w *walker) check(rel string) (f File, realPath string, isLink bool, err er
 
 // Lookup checks one path relative to root the way the walk checks every
 // candidate: fs.ErrNotExist when nothing is there, ErrSkipped when the walk
-// would not list it. It ignores git: a caller naming a path wants it read.
+// would not list it. It does not ask git; Ignored does, for a batch.
 func Lookup(root, rel string) (File, error) {
 	w, err := newWalker(root)
 	if err != nil {
@@ -235,6 +235,81 @@ func Lookup(root, rel string) (File, error) {
 	}
 	f, _, _, err := w.check(rel)
 	return f, err
+}
+
+// Ignored reports which of rels (paths relative to root, as a caller
+// names them) the folder's repository ignores, so a caller naming paths
+// leaves out what Files would not list. One `git check-ignore --stdin`
+// answers the batch; like ls-files it never counts a tracked file as
+// ignored. It is nil outside a repository, without a git, when the
+// folder itself is ignored (Files then walks it, .gitignore aside) and —
+// noted on warnings — when git fails. A path the walk would skip anyway
+// (absolute, outside the folder) is not asked about.
+func Ignored(ctx context.Context, root string, rels []string) map[string]bool {
+	return ignored(ctx, root, rels, gitbin.Locate)
+}
+
+func ignored(ctx context.Context, root string, rels []string, locateGit func() (string, bool)) map[string]bool {
+	bin, ok := locateGit()
+	if !ok || len(rels) == 0 || !gitbin.InsideRepository(root) {
+		return nil
+	}
+	in, asked := checkIgnoreInput(rels)
+	out, err := gitCheckIgnore(ctx, bin, root, in)
+	if err != nil {
+		if ctx.Err() == nil {
+			fmt.Fprintf(warnings, "code walk: %v; .gitignore not applied to the named paths\n", err)
+		}
+		return nil
+	}
+	set := map[string]bool{}
+	for name := range bytes.SplitSeq(out, []byte{0}) {
+		if string(name) == "." {
+			return nil
+		}
+		for _, rel := range asked[string(name)] {
+			set[rel] = true
+		}
+	}
+	return set
+}
+
+// checkIgnoreInput is check-ignore's stdin for rels — the folder itself,
+// then each path inside the folder once, clean, NUL-separated — and the
+// caller's spellings of each clean path.
+func checkIgnoreInput(rels []string) (in []byte, asked map[string][]string) {
+	asked = map[string][]string{}
+	in = []byte(".\x00")
+	for _, rel := range rels {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+		if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			continue
+		}
+		if asked[clean] == nil {
+			in = append(append(in, clean...), 0)
+		}
+		asked[clean] = append(asked[clean], rel)
+	}
+	return in, asked
+}
+
+// gitCheckIgnore runs check-ignore from the folder over the NUL-separated
+// paths of stdin and returns the ignored ones, NUL-separated. Its exit 1
+// (none ignored) is not a failure.
+func gitCheckIgnore(ctx context.Context, bin, root string, stdin []byte) ([]byte, error) {
+	c := exec.CommandContext(ctx, bin, "check-ignore", "--stdin", "-z")
+	c.Dir = root
+	c.Env = gitEnv()
+	c.Stdin = bytes.NewReader(stdin)
+	out, err := c.Output()
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, gitError("git check-ignore", err)
+	}
+	return out, nil
 }
 
 func inside(root, path string) bool {
@@ -327,12 +402,7 @@ func gitListFiles(ctx context.Context, bin, root string) ([]string, error) {
 	c.Env = gitEnv()
 	out, err := c.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
-			msg, _, _ := strings.Cut(strings.TrimSpace(string(exit.Stderr)), "\n")
-			return nil, fmt.Errorf("git ls-files: %w: %s", err, msg)
-		}
-		return nil, fmt.Errorf("git ls-files: %w", err)
+		return nil, gitError("git ls-files", err)
 	}
 	names := []string{}
 	for name := range bytes.SplitSeq(out, []byte{0}) {
@@ -341,4 +411,15 @@ func gitListFiles(ctx context.Context, bin, root string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// gitError wraps a failed git command's error with the first line of its
+// stderr, if it wrote one.
+func gitError(what string, err error) error {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+		msg, _, _ := strings.Cut(strings.TrimSpace(string(exit.Stderr)), "\n")
+		return fmt.Errorf("%s: %w: %s", what, err, msg)
+	}
+	return fmt.Errorf("%s: %w", what, err)
 }

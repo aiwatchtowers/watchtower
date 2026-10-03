@@ -43,8 +43,9 @@ func DefaultWorkers() int {
 // goroutine, in completion order. paths nil indexes every file the walk
 // lists (skipping those over codewalk.MaxIndexBytes); otherwise exactly
 // those paths (relative to root): a path that is gone yields a Deleted
-// result, one the walk would skip or this build cannot parse an empty
-// result with lang "". An emit error stops the run and is returned. A
+// result, one the walk would skip (.gitignore'd included) or this build
+// cannot parse an empty result with lang "". An emit error stops the run
+// and is returned. A
 // cancelled ctx stops it between files with ctx's error.
 func Run(ctx context.Context, root string, paths []string, workers int, emit func(FileResult) error) (Summary, error) {
 	return run(ctx, root, paths, workers, newParser, emit)
@@ -54,6 +55,8 @@ type job struct {
 	rel      string
 	size     int64
 	explicit bool
+	// ignored: a path asked for by name that the repository ignores.
+	ignored bool
 }
 
 type outcome struct {
@@ -134,8 +137,9 @@ func feed(ctx context.Context, root string, paths []string, jobs chan<- job) err
 		}
 	}
 	if paths != nil {
+		ignored := codewalk.Ignored(ctx, root, paths)
 		for _, p := range paths {
-			if !send(job{rel: p, explicit: true}) {
+			if !send(job{rel: p, explicit: true, ignored: ignored[p]}) {
 				return nil
 			}
 		}
@@ -165,7 +169,7 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	res := FileResult{File: j.rel}
 	if j.explicit {
 		f, deleted, ok := lookupNamed(root, j.rel)
-		if !ok {
+		if !ok || j.ignored {
 			res.Deleted = deleted
 			return res, nil
 		}

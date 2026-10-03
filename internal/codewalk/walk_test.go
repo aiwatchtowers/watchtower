@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -386,5 +387,65 @@ func TestFiles_DirectoryLinksInThePath(t *testing.T) {
 	}
 	if got := list(t, files(context.Background(), root, noGit)); !slices.Equal(got, []string{"dir/sub.go"}) {
 		t.Fatalf("walk = %v, want [dir/sub.go]", got)
+	}
+}
+
+// Ignored answers for a batch of named paths what the walk decides by
+// listing: an ignored untracked path is ignored, a tracked one under an
+// ignore rule is not, every spelling of a path gets the answer, and a
+// path the walk skips anyway is not asked about.
+func TestIgnored(t *testing.T) {
+	repo := t.TempDir()
+	git := gitInit(t, repo)
+	write(t, repo, ".gitignore", []byte("dist/\n*.log\n"))
+	write(t, repo, "a.go", []byte("package a\n"))
+	write(t, repo, "dist/x.js", []byte("var x\n"))
+	write(t, repo, "dist/kept.js", []byte("var kept\n"))
+	git("add", "a.go", ".gitignore")
+	git("add", "-f", "dist/kept.js")
+
+	got := Ignored(context.Background(), repo, []string{"a.go", "dist/x.js", "./dist/x.js", "dist/kept.js", "new.log", "gone.go", "../up.go", "/etc/hosts"})
+	want := map[string]bool{"dist/x.js": true, "./dist/x.js": true, "new.log": true}
+	if !maps.Equal(got, want) {
+		t.Errorf("Ignored = %v, want %v", got, want)
+	}
+
+	// Outside a repository, or for a folder the repository ignores (the
+	// walk lists all of it), nothing is ignored.
+	plain := t.TempDir()
+	if !gitbin.InsideRepository(plain) {
+		if got := Ignored(context.Background(), plain, []string{"x.log"}); got != nil {
+			t.Errorf("Ignored(no repo) = %v, want nil", got)
+		}
+	}
+	write(t, repo, "ignored/only.js", []byte("var only\n"))
+	write(t, repo, ".gitignore", []byte("dist/\n*.log\nignored/\n"))
+	if got := Ignored(context.Background(), filepath.Join(repo, "ignored"), []string{"only.js"}); got != nil {
+		t.Errorf("Ignored(ignored folder) = %v, want nil", got)
+	}
+	// An ignored folder holding a tracked file is listed by git (that file
+	// only), so its untracked files stay ignored — as Files has it.
+	dist := filepath.Join(repo, "dist")
+	if got := Ignored(context.Background(), dist, []string{"x.js", "kept.js"}); !maps.Equal(got, map[string]bool{"x.js": true}) {
+		t.Errorf("Ignored(dist) = %v, want only x.js", got)
+	}
+	if got := list(t, Files(context.Background(), dist)); !slices.Equal(got, []string{"kept.js"}) {
+		t.Errorf("Files(dist) = %v, want [kept.js]", got)
+	}
+}
+
+// A git that fails leaves the batch unfiltered, with one note.
+func TestIgnored_GitFailure(t *testing.T) {
+	if _, ok := gitbin.Locate(); !ok {
+		t.Skip("no git binary")
+	}
+	repo := t.TempDir()
+	write(t, repo, ".git", []byte("gitdir: /nonexistent/worktree\n"))
+	warned := captureWarnings(t)
+	if got := Ignored(context.Background(), repo, []string{"a.go"}); got != nil {
+		t.Errorf("Ignored(broken repo) = %v, want nil", got)
+	}
+	if w := warned.String(); strings.Count(w, "\n") != 1 || !strings.Contains(w, "git check-ignore") {
+		t.Errorf("warnings = %q, want one line naming the git failure", w)
 	}
 }

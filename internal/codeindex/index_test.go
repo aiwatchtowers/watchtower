@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"watchtower/internal/codewalk"
+	"watchtower/internal/gitbin"
 )
 
 func write(t *testing.T, root, rel string, data []byte) {
@@ -294,5 +297,51 @@ func TestRun_ScanSkipsALeadingBOM(t *testing.T) {
 		if len(syms) != 1 || syms[0].Name != "first" || syms[0].Line != 1 || syms[0].Col != wantCol[rel] {
 			t.Errorf("%s = %+v, want first at 1:%d", rel, syms, wantCol[rel])
 		}
+	}
+}
+
+// Paths named by --files or --serve are filtered by .gitignore like the
+// full run's list: an ignored file yields an empty result (lang ""), a
+// tracked file under an ignore rule and an untracked kept one are indexed.
+func TestRun_NamedPathsHonourGitignore(t *testing.T) {
+	bin, ok := gitbin.Locate()
+	if !ok {
+		t.Skip("no git binary")
+	}
+	root := t.TempDir()
+	git := func(args ...string) {
+		c := exec.Command(bin, args...)
+		c.Dir = root
+		c.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			return strings.HasPrefix(kv, "GIT_DIR=") || strings.HasPrefix(kv, "GIT_WORK_TREE=") || strings.HasPrefix(kv, "GIT_INDEX_FILE=")
+		}), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	write(t, root, ".gitignore", []byte("dist/\n"))
+	write(t, root, "dist/x.md", []byte("# Built\n"))
+	write(t, root, "dist/tracked.md", []byte("# Tracked\n"))
+	write(t, root, "docs/a.md", []byte("# Kept\n"))
+	git("add", "-f", "dist/tracked.md")
+
+	paths := []string{"dist/x.md", "dist/tracked.md", "docs/a.md"}
+	got := collect(t, root, paths, func() parser { return panicParser{} })
+	if r := got["dist/x.md"]; r.Lang != "" || len(r.Symbols) != 0 || r.Deleted {
+		t.Errorf("ignored dist/x.md = %+v, want lang \"\" with no symbols", r)
+	}
+	for _, p := range []string{"dist/tracked.md", "docs/a.md"} {
+		if r := got[p]; r.Lang != "markdown" || len(r.Symbols) != 1 {
+			t.Errorf("%s = %+v, want its heading", p, r)
+		}
+	}
+	// The full run agrees.
+	full := collect(t, root, nil, func() parser { return panicParser{} })
+	if _, ok := full["dist/x.md"]; ok {
+		t.Error("the full run listed an ignored file")
+	}
+	if _, ok := full["dist/tracked.md"]; !ok {
+		t.Error("the full run missed a tracked file")
 	}
 }
