@@ -2,7 +2,7 @@ version: "2"
 
 run:
   timeout: 5m
-  # Lint the code index's full grammar set too (grammars_full.go and the
+  # Lint the code index's full grammar set too (grammar_<id>.go and the
   # tagged tests); the untagged grammars_min.go is the only file left out.
   build-tags:
     - codegrammars

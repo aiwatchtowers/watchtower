@@ -219,7 +219,8 @@ search.
   that some upstream grammar repos do not commit — e.g. Swift's — so `go get`
   of an upstream binding alone cannot build). smacker is not used (stale since
   2024, ABI 14 grammars, no queries).
-- **Build constraints:** the full set in `grammars_full.go` under
+- **Build constraints:** the full set — one `grammar_<id>.go` per language,
+  each registering itself into the `grammars_full.go` map from `init` — under
   `//go:build codegrammars && cgo`; Go, Swift and Python in
   `grammars_min.go` under `//go:build !codegrammars && cgo`; a `!cgo` stub
   registers none, so `CGO_ENABLED=0` builds and tools still compile (the index

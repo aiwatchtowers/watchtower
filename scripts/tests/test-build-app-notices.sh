@@ -3,7 +3,7 @@
 #   - scripts/build-app.sh copies THIRD_PARTY_NOTICES.md into the bundle's
 #     Contents/Resources;
 #   - the notices file names every grammar module the release build compiles
-#     in (internal/codeindex/grammars_full.go and grammars_min.go), and
+#     in (internal/codeindex/grammar_<id>.go and grammars_min.go), and
 #     carries the licence texts the grammars need: the MIT text, the full
 #     Apache-2.0 text, the Elixir NOTICE and the MPL-2.0 source pointer.
 #
@@ -25,9 +25,9 @@ else
 fi
 
 modules=$(grep -ohE 'github\.com/alexaandru/go-sitter-forest/[a-z_]+' \
-    "$ROOT/internal/codeindex/grammars_full.go" "$ROOT/internal/codeindex/grammars_min.go" | sort -u)
+    "$ROOT"/internal/codeindex/grammar_*.go "$ROOT/internal/codeindex/grammars_min.go" | sort -u)
 if [ -z "$modules" ]; then
-    fail "no grammar modules found in grammars_full.go / grammars_min.go"
+    fail "no grammar modules found in grammar_*.go / grammars_min.go"
 fi
 for m in $modules; do
     grep -qF "\`$m\`" "$NOTICES" || fail "THIRD_PARTY_NOTICES.md does not list $m"

@@ -5,7 +5,7 @@
 // top-level keys from a scan, Vue and Svelte by their <script> blocks.
 //
 // Grammars are cgo. Untagged cgo builds carry Go, Swift and Python
-// (grammars_min.go); `-tags codegrammars` the full set (grammars_full.go);
+// (grammars_min.go); `-tags codegrammars` the full set (grammar_<id>.go, one per language);
 // a CGO_ENABLED=0 build none (grammars_nocgo.go), so every file except a
 // scanned one (Markdown, YAML, TOML, JSON, HTML…) then reports lang "".
 package codeindex

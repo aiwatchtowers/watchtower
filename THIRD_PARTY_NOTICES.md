@@ -10,7 +10,7 @@ to that C code, the forest licence to the Go wrapper.
 
 An untagged build carries the Go, Python and Swift grammars; the release build
 (`-tags codegrammars`) carries every grammar below. A grammar joins this file
-in the same change that adds it to `internal/codeindex/grammars_full.go`.
+in the same change that adds its `internal/codeindex/grammar_<id>.go`.
 
 Markdown, YAML, TOML, JSON, HTML, CSS, SCSS and Dockerfiles are indexed by
 scanners in the package itself, with no grammar; Vue and Svelte files are
