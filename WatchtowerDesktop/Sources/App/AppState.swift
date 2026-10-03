@@ -91,7 +91,8 @@ final class AppState {
     /// meeting, …), so a reply keeps streaming after its screen closes or its
     /// section collapses; at most three such turns run at once.
     @ObservationIgnored private let embeddedChats = EmbeddedChatEngineFactory()
-    @ObservationIgnored private var embeddedChatSweep: Timer?
+    /// Once a minute: idle embedded chats and code indexes are released.
+    @ObservationIgnored private var idleReleaseSweep: Timer?
     var embeddedChatCenter: EmbeddedChatCenter { embeddedChats.center }
 
     /// App-wide, single-slot registry for the creation-time "brief the
@@ -155,6 +156,9 @@ final class AppState {
     /// Embedded Claude Code terminals, one per project. No DB needed; closed
     /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
     let terminalCenter = TerminalCenter()
+    /// The Workbench code viewer's symbol index, per workbench: survives
+    /// navigation, released 5 minutes after its last view (spec §7).
+    let codeIndexCenter = CodeIndexCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -563,13 +567,17 @@ final class AppState {
                     self?.embeddedChatCenter.finishAllAsPartial()
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
+                    self?.codeIndexCenter.stopAll()
                 }
                 self?.backgroundTaskManager.terminateProcessesSync()
             }
         }
-        if embeddedChatSweep == nil {
-            embeddedChatSweep = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.embeddedChatCenter.sweep() }
+        if idleReleaseSweep == nil {
+            idleReleaseSweep = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.embeddedChatCenter.sweep()
+                    self?.codeIndexCenter.sweep()
+                }
             }
         }
     }
@@ -994,6 +1002,7 @@ final class AppState {
         let vm = WorkbenchesViewModel(
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter
         )
+        vm.codeFiles.codeIndex = codeIndexCenter
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)

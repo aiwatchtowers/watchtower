@@ -80,6 +80,9 @@ final class CodeFilesCenter {
     /// Off in tests, which feed `handle` themselves.
     @ObservationIgnored private let watchesFolders: Bool
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    /// The symbol index (on `AppState`), told when a workbench shows and
+    /// hides and fed this center's FSEvents batches — one stream per folder.
+    @ObservationIgnored weak var codeIndex: CodeIndexCenter?
 
     init(
         defaults: UserDefaults = .standard,
@@ -123,6 +126,7 @@ final class CodeFilesCenter {
     /// `stopShowing` when that view goes.
     func startWatching(_ project: Workbench) {
         showing[project.id, default: 0] += 1
+        codeIndex?.markShown(workbenchID: project.id, folder: project.folderURL)
         let isNew = folders[project.id] != project.folderURL
         folders[project.id] = project.folderURL
         if watchesFolders, isNew || watchers[project.id] == nil {
@@ -143,6 +147,7 @@ final class CodeFilesCenter {
 
     func stopShowing(_ project: Workbench) {
         showing[project.id] = max(0, (showing[project.id] ?? 0) - 1)
+        codeIndex?.markHidden(workbenchID: project.id)
     }
 
     /// `startWatching` for as long as the calling task runs — a view's
@@ -158,6 +163,7 @@ final class CodeFilesCenter {
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, projectID: Int64) {
         guard folders[projectID] != nil else { return }
+        codeIndex?.handle(batch, workbenchID: projectID)
         let tree = trees[projectID]
         if batch.mustRescan {
             tree?.reloadAll()
