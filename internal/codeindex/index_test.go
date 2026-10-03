@@ -144,6 +144,12 @@ func TestLanguageFor(t *testing.T) {
 		{"bin/run2", "#!/usr/bin/python3.12 -u\n", "python"},
 		{"bin/run3", "#!/usr/bin/env -S python -u\n", "python"},
 		{"bin/sh", "#!/bin/sh\n", "bash"},
+		// A case-insensitive name hit (BUILD) loses to a shebang; the exact
+		// name keeps its language, and so does a name with no shebang.
+		{"scripts/build", "#!/bin/sh\nset -e\n", "bash"},
+		{"pkg/BUILD", "#!/bin/sh\n", "python"},
+		{"pkg/build", "", "python"},
+		{"pkg/Build", "#!/usr/bin/env python3\n", "python"},
 		{"bin/fish", "#!/usr/bin/env fish\n", ""},
 		{"README.md", "", "markdown"},
 		{"notes.MD", "", "markdown"},

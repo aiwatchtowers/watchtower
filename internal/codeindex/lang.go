@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -412,7 +413,8 @@ func indexLanguages() (byID, byExt, byName, byInterpreter map[string]*langSpec) 
 // LanguageFor names the language of the file at rel (slash-separated),
 // from its file name, then its extension (both case-insensitive, as
 // Monaco matches them), then a shebang or a known opening in head (the
-// file's first bytes). "" = not a language this table knows. It says
+// file's first bytes); a shebang beats a name that matches only in
+// another case. "" = not a language this table knows. It says
 // nothing about whether this build has the grammar.
 func LanguageFor(rel string, head []byte) string {
 	if l := langFor(rel, head); l != nil {
@@ -424,6 +426,11 @@ func LanguageFor(rel string, head []byte) string {
 func langFor(rel string, head []byte) *langSpec {
 	base := path.Base(rel)
 	if l := langByName[strings.ToLower(base)]; l != nil {
+		// A name that matches only case-insensitively (a script `build`,
+		// not Bazel's BUILD) yields to a shebang naming another language.
+		if sh := langByInterpreter[interpreter(head)]; sh != nil && sh != l && !slices.Contains(l.names, base) {
+			return sh
+		}
 		return l
 	}
 	if l := langByExt[strings.ToLower(path.Ext(base))]; l != nil {
