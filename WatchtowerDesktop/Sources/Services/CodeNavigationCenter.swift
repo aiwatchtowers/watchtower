@@ -110,18 +110,25 @@ final class CodeNavigationCenter {
     }
 
     /// ⌘-click or ⌃⌘J (spec §8.2): one index candidate opens, several ask,
-    /// none fall back to the text-search heuristic (spec §6.5), then a beep
-    /// and the notice. Returns once the request is settled or superseded;
-    /// the caller then answers the page with `definitionDone`.
+    /// none fall back to the text-search heuristic (spec §6.5) in a file the
+    /// index does not read (R31), then a beep and the notice. Returns once
+    /// the request is settled or superseded; the caller then answers the
+    /// page with `definitionDone`.
     func goToDefinition(_ request: CodeDefinitionRequest, project: Workbench, anchor: DefinitionMenuAnchor?) async {
         nextGeneration += 1
         let generation = nextGeneration
         generations[project.id] = generation
         searches.removeValue(forKey: project.id)?.cancel()
-        let symbols = codeIndex.index(for: project.id).symbols(named: request.word)
-        var outcome = DefinitionCandidates.outcome(for: symbols, from: request.origin.path)
+        let index = codeIndex.index(for: project.id)
+        var outcome = DefinitionCandidates.outcome(for: index.symbols(named: request.word), from: request.origin.path)
         var fromTextSearch = false
         var failure: String?
+        // Ruling R31 (spec §6.5): the text search only stands in for a
+        // language the index does not read (or a file it has not seen yet);
+        // in an indexed one a miss is a miss.
+        if outcome == .searchText, index.language(of: request.origin.path)?.isEmpty == false {
+            outcome = .notFound
+        }
         if outcome == .searchText {
             fromTextSearch = true
             let found = await searchText(request.word, project: project)

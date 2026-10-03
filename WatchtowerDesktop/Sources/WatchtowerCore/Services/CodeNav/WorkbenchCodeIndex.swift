@@ -22,6 +22,8 @@ package enum CodeIndexRunKind: Sendable {
 package final class WorkbenchCodeIndex {
     private struct Entry {
         let file: String
+        /// As the CLI reported it; "" = a language it does not index.
+        var lang: String
         /// UTF-16 offset of the file name in the path.
         let nameStart: Int
         let nameSlot: Int
@@ -72,6 +74,12 @@ package final class WorkbenchCodeIndex {
         return files.filter(paths.contains).flatMap { path in
             symbols(in: path).filter { $0.name == name }
         }
+    }
+
+    /// The language the CLI reported for `path` ("" = not one it indexes);
+    /// nil when the file is not in the index (yet).
+    package func language(of path: String) -> String? {
+        position[path].flatMap { entries[$0]?.lang }
     }
 
     /// The symbols of one file, by line.
@@ -127,6 +135,7 @@ package final class WorkbenchCodeIndex {
             unlinkDefinitions(entry.symbols, path: result.file)
             entry.symbolSlots.filter { $0 >= 0 }.forEach { corpus.killSlot($0) }
             entry.symbols = symbols
+            entry.lang = result.lang
             entry.symbolSlots = symbolSlots(symbols, entry: id)
             entries[id] = entry
         } else {
@@ -137,7 +146,7 @@ package final class WorkbenchCodeIndex {
             let pathSlot = addSlot(result.file, tag: Tag.path, SlotOwner(entry: id, symbol: SlotOwner.pathSlot))
             position[result.file] = id
             entries[id] = Entry(
-                file: result.file, nameStart: result.file.utf16.count - name.utf16.count, nameSlot: nameSlot, pathSlot: pathSlot,
+                file: result.file, lang: result.lang, nameStart: result.file.utf16.count - name.utf16.count, nameSlot: nameSlot, pathSlot: pathSlot,
                 symbols: symbols, symbolSlots: symbolSlots(symbols, entry: id)
             )
             files.append(result.file)
@@ -183,7 +192,7 @@ package final class WorkbenchCodeIndex {
             let nameSlot = addSlot(CodeRanking.fileName(path), tag: Tag.name, SlotOwner(entry: id, symbol: SlotOwner.nameSlot))
             let pathSlot = addSlot(path, tag: Tag.path, SlotOwner(entry: id, symbol: SlotOwner.pathSlot))
             entries[id] = Entry(
-                file: path, nameStart: old.nameStart, nameSlot: nameSlot, pathSlot: pathSlot,
+                file: path, lang: old.lang, nameStart: old.nameStart, nameSlot: nameSlot, pathSlot: pathSlot,
                 symbols: old.symbols, symbolSlots: symbolSlots(old.symbols, entry: id)
             )
         }

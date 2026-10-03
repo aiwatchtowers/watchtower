@@ -27,6 +27,20 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.symbols(in: "a.swift").map(\.name), ["Buffer", "save"])
     }
 
+    /// Ruling R31: go to definition searches text only in a file whose
+    /// language the index does not read.
+    func testTheLanguageOfAFileAsTheCLIReportedIt() {
+        let index = WorkbenchCodeIndex()
+        index.applyIndexLines([file("a.swift"), file("run.pl", lang: "")], from: .fullRun)
+        XCTAssertEqual(index.language(of: "a.swift"), "swift")
+        XCTAssertEqual(index.language(of: "run.pl"), "", "a workbench file in a language the CLI does not index")
+        XCTAssertNil(index.language(of: "other.go"), "not (yet) in the index")
+        index.applyIndexLines([file("run.pl", lang: "perl")], from: .update)
+        XCTAssertEqual(index.language(of: "run.pl"), "perl", "an update replaces it")
+        index.applyIndexLines([.deleted("run.pl")], from: .update)
+        XCTAssertNil(index.language(of: "run.pl"))
+    }
+
     func testDeletedRemovesTheFileAndItsSubtree() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines([

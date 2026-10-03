@@ -59,10 +59,15 @@ final class CodeNavigationCenterTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         center.workbenches = vm
         vm.codeFiles.navigation = center
-        let byFile = Dictionary(grouping: symbols, by: \.path)
-        codeIndex.index(for: project.id).applyIndexLines(byFile.map { path, symbols in
+        // Swift files are indexed (even with no symbol); the Perl ones are
+        // workbench files in a language the index does not read.
+        var byFile = Dictionary(grouping: symbols, by: \.path)
+        for path in ["src/views/list.swift", "src/store.swift"] where byFile[path] == nil { byFile[path] = [] }
+        let swiftFiles: [CodeIndexLine] = byFile.map { path, symbols in
             .file(CodeIndexFileResult(file: path, lang: "swift", symbols: symbols))
-        }, from: .update)
+        }
+        let perlFiles: [CodeIndexLine] = ["src/run.pl", "lib/other.pl"].map { .file(CodeIndexFileResult(file: $0, lang: "", symbols: [])) }
+        codeIndex.index(for: project.id).applyIndexLines(swiftFiles + perlFiles, from: .update)
         return (center, vm)
     }
 
@@ -152,6 +157,26 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertEqual(vm.codeFiles.reveals[project.id]?.col, 5)
         XCTAssertTrue(menu.asked.isEmpty, "the clicked occurrence is not a choice")
         XCTAssertEqual(beeps, 0)
+    }
+
+    /// Ruling R31: in a language the index reads, a miss is a miss — no
+    /// folder-wide text search.
+    func testAMissInAnIndexedLanguageBeepsWithoutSearching() async {
+        let (center, vm) = makeCenter(symbols: [loadInStore])
+        await center.goToDefinition(request("frob", at: "src/store.swift", 30, 12), project: project, anchor: nil)
+        XCTAssertTrue(searches.started.isEmpty, "no text search for an indexed file")
+        XCTAssertEqual(beeps, 1)
+        XCTAssertEqual(center.notice(for: project.id), "No definition of `frob`")
+        XCTAssertNil(vm.codeFiles.reveals[project.id])
+    }
+
+    func testAFileTheIndexHasNotSeenFallsBackToTheTextSearch() async {
+        let (center, _) = makeCenter(symbols: [])
+        let task = Task { await center.goToDefinition(request("frob", at: "new/file.swift", 1, 1), project: project, anchor: nil) }
+        let started = await eventually { self.searches.started.count == 1 }
+        XCTAssertTrue(started, "not in the index yet: its language is not known")
+        searches.started.first?.onDone(.finished(CodeSearchDone(files: 0, matches: 0, truncated: false)))
+        await task.value
     }
 
     func testSeveralTextMatchesAskWithDefinitionLooksFirst() async {
