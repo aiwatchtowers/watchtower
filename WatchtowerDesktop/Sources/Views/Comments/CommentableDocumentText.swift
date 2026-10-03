@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// `DocumentTextView` with Google-Docs-style commenting: selecting text shows
 /// a floating Comment button next to it (also "Comment…" in the context
-/// menu), which opens a composer right at the selection. Shared by the
-/// project Documents pane and the chat artifact panel.
+/// menu), which opens a composer right at the selection. Used by the chat
+/// artifact panel and an owner ask's review body.
 ///
 /// The composer remembers the selection and `contentID` it opened on: if the
 /// text is re-rendered while it is open, saving is refused with the typed
@@ -19,10 +19,16 @@ struct CommentableDocumentText: View {
     @Binding var composerText: String
     var horizontalInset: CGFloat = ReadableColumn.minInset
     var scrollTarget: DocumentScrollTarget?
+    /// `DocumentTextView`'s tracked ranges and highlights, passed through.
+    var trackedRanges: [NSRange] = []
+    var trackedRects: Binding<[NSRange: CGRect]> = .constant([:])
+    var textExtent: Binding<CGRect?> = .constant(nil)
+    var highlightRanges: [NSRange] = []
     /// Saves a comment on `range`; returns whether it was saved (the composer
     /// then closes and clears). On false the composer stays open with the
-    /// text and a generic note; the host's own error line says why.
-    let onComment: (_ body: String, _ range: NSRange) async -> Bool
+    /// text and a generic note; the host's own error line says why. nil
+    /// offers no commenting: the text is only selectable.
+    let onComment: ((_ body: String, _ range: NSRange) async -> Bool)?
     let onClick: (Int) -> Void
 
     @State private var selectionRect: CGRect?
@@ -44,8 +50,12 @@ struct CommentableDocumentText: View {
                 selection: $selection,
                 horizontalInset: horizontalInset,
                 selectionRect: $selectionRect,
-                onCommentRequest: openComposer,
+                onCommentRequest: onComment == nil ? nil : openComposer,
                 scrollTarget: scrollTarget,
+                trackedRanges: trackedRanges,
+                trackedRects: trackedRects,
+                textExtent: textExtent,
+                highlightRanges: highlightRanges,
                 onClick: onClick
             )
             .overlay(alignment: .topLeading) { commentButton(in: geo.size) }
@@ -56,7 +66,7 @@ struct CommentableDocumentText: View {
 
     @ViewBuilder
     private func commentButton(in size: CGSize) -> some View {
-        let live = selection.length > 0
+        let live = selection.length > 0 && onComment != nil
             ? SelectionCommentPlacement.origin(selection: selectionRect, container: size, button: Self.buttonSize)
             : nil
         // While composing the button stays where it opened (top-left when the
@@ -78,7 +88,7 @@ struct CommentableDocumentText: View {
     }
 
     private func openComposer() {
-        guard selection.length > 0 else { return }
+        guard selection.length > 0, onComment != nil else { return }
         composeRange = selection
         composeContentID = contentID
         composeError = nil
@@ -96,6 +106,10 @@ struct CommentableDocumentText: View {
                 .frame(width: 320)
             if let composeError {
                 Text(composeError).font(.caption).foregroundStyle(.red)
+            } else if onComment == nil {
+                // Commenting closed while composing (an ask's answer is
+                // being sent): the typed text stays, Comment is disabled.
+                Text(Self.closedNote).font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Text("⌘↩ or ⌃↩ to comment").font(.caption).foregroundStyle(.secondary)
@@ -112,14 +126,20 @@ struct CommentableDocumentText: View {
         .padding(12)
     }
 
+    static let closedNote = "Comments can't be added now; your text is kept."
+
     private var canSave: Bool {
-        !saving && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        onComment != nil && !saving && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func save() {
         guard canSave else { return }
         if let refusal = SelectionCommentCheck.refusal(openedOn: composeContentID, current: contentID) {
             composeError = refusal
+            return
+        }
+        guard let onComment else {
+            composeError = Self.closedNote
             return
         }
         let (body, range) = (composerText, composeRange)

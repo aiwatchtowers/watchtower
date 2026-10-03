@@ -1751,6 +1751,7 @@ final class AppState {
                 && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
         }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
+        workbenchesViewModel?.asks.stop()
         workbenchesViewModel = vm
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
@@ -1758,6 +1759,7 @@ final class AppState {
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
+        vm.asks.start()
         agentStates.start()
     }
 

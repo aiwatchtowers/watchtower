@@ -169,143 +169,9 @@ func TestProjectSources_AddIsIdempotentAndRemoveIsScoped(t *testing.T) {
 	assert.Empty(t, list)
 }
 
-func TestUpsertProjectDocument_CreatesThenRevises(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	tid := insertWorkbenchTargetRow(t, d, pid, "feature")
-
-	id, created, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/plan.md",
-		Kind: "plan", Title: "Plan", TargetID: nullID(tid)})
-	require.NoError(t, err)
-	assert.True(t, created)
-
-	_, err = d.Exec(`UPDATE project_documents SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`, id)
-	require.NoError(t, err)
-	again, created, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/plan.md"})
-	require.NoError(t, err)
-	assert.Equal(t, id, again)
-	assert.False(t, created)
-
-	doc, err := d.GetWorkbenchDocument(id)
-	require.NoError(t, err)
-	assert.Equal(t, "plan", doc.Kind, "an empty kind keeps the stored one")
-	assert.Equal(t, "Plan", doc.Title, "an empty title keeps the stored one")
-	assert.Equal(t, nullID(tid), doc.TargetID, "an unset target keeps the stored link")
-	assert.NotEqual(t, "2000-01-01T00:00:00Z", doc.UpdatedAt, "re-attach marks the document revised")
-
-	list, err := d.ListWorkbenchDocuments(pid)
-	require.NoError(t, err)
-	assert.Len(t, list, 1)
-}
-
-// The agent re-attaching an imported document under another letter case
-// revises it (APFS: the same file), keeping the stored spelling, rather than
-// adding a second row; among rows differing only in case (attached before the
-// lookup ignored case) the exact spelling wins.
-func TestUpsertProjectDocument_MatchesRelPathIgnoringCase(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	inserted, err := d.ImportWorkbenchDocuments(pid, []WorkbenchDocument{{RelPath: "docs/Specs/Plan.md", Kind: "plan", Title: "Plan"}})
-	require.NoError(t, err)
-	require.Len(t, inserted, 1)
-	docs, err := d.ListWorkbenchDocuments(pid)
-	require.NoError(t, err)
-	imported := docs[0].ID
-
-	id, created, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/specs/plan.md"})
-	require.NoError(t, err)
-	assert.False(t, created, "another spelling of an attached file is a revision")
-	assert.Equal(t, imported, id)
-	doc, err := d.GetWorkbenchDocument(id)
-	require.NoError(t, err)
-	assert.Equal(t, "docs/Specs/Plan.md", doc.RelPath, "the stored spelling stays")
-	assert.Equal(t, "agent", doc.Origin)
-
-	_, err = d.Exec(`INSERT INTO project_documents (project_id, rel_path, kind, title, origin) VALUES (?, 'docs/specs/plan.md', 'doc', 'dup', 'agent')`, pid)
-	require.NoError(t, err)
-	var dup int64
-	require.NoError(t, d.QueryRow(`SELECT id FROM project_documents WHERE rel_path = 'docs/specs/plan.md'`).Scan(&dup))
-	id, created, err = d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/specs/plan.md"})
-	require.NoError(t, err)
-	assert.False(t, created)
-	assert.Equal(t, dup, id, "the exact spelling wins over a case-only match")
-	docs, err = d.ListWorkbenchDocuments(pid)
-	require.NoError(t, err)
-	assert.Len(t, docs, 2)
-}
-
-func TestUpsertProjectDocument_RefusesBadInput(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	foreign := insertWorkbenchTargetRow(t, d, newTestWorkbench(t, d), "other board")
-
-	_, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "a.md", TargetID: nullID(foreign)})
-	assert.ErrorIs(t, err, ErrNotInWorkbench)
-	_, _, err = d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "a.md", Kind: "memo"})
-	assert.Error(t, err, "unknown kind")
-	_, _, err = d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: " "})
-	assert.Error(t, err, "empty path")
-	_, _, err = d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "/etc/passwd"})
-	assert.Error(t, err, "absolute path")
-}
-
-func TestAttachOwnerProjectDocument_InsertsOwnerRowAndNeverRevises(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	tid := insertWorkbenchTargetRow(t, d, pid, "feature")
-
-	id, rel, created, err := d.AttachOwnerWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/notes.md",
-		Kind: "spec", Title: "Notes", TargetID: nullID(tid)})
-	require.NoError(t, err)
-	assert.True(t, created)
-	assert.Equal(t, "docs/notes.md", rel)
-	doc, err := d.GetWorkbenchDocument(id)
-	require.NoError(t, err)
-	assert.Equal(t, "owner", doc.Origin)
-	assert.Equal(t, "spec", doc.Kind)
-	assert.Equal(t, nullID(tid), doc.TargetID)
-
-	_, err = d.Exec(`UPDATE project_documents SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`, id)
-	require.NoError(t, err)
-	again, rel, created, err := d.AttachOwnerWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "DOCS/Notes.md", Kind: "plan"})
-	require.NoError(t, err)
-	assert.Equal(t, id, again, "another spelling of the same path is the same document")
-	assert.Equal(t, "docs/notes.md", rel, "the stored spelling is reported")
-	assert.False(t, created)
-	doc, err = d.GetWorkbenchDocument(id)
-	require.NoError(t, err)
-	assert.Equal(t, "2000-01-01T00:00:00Z", doc.UpdatedAt, "an owner attach never marks a document revised")
-	assert.Equal(t, "spec", doc.Kind, "an existing row is left untouched")
-
-	// An agent re-attach makes it the agent's, as it does for an import.
-	_, _, err = d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/notes.md"})
-	require.NoError(t, err)
-	doc, err = d.GetWorkbenchDocument(id)
-	require.NoError(t, err)
-	assert.Equal(t, "agent", doc.Origin)
-}
-
-func TestAttachOwnerProjectDocument_RefusesBadInput(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	foreign := insertWorkbenchTargetRow(t, d, newTestWorkbench(t, d), "other board")
-
-	_, _, _, err := d.AttachOwnerWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "a.md", TargetID: nullID(foreign)})
-	assert.ErrorIs(t, err, ErrNotInWorkbench)
-	_, _, _, err = d.AttachOwnerWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid + 100, RelPath: "a.md"})
-	assert.ErrorIs(t, err, ErrWorkbenchNotFound)
-	_, _, _, err = d.AttachOwnerWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "a.md", Kind: "memo"})
-	assert.Error(t, err, "unknown kind")
-	_, _, _, err = d.AttachOwnerWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "/etc/passwd"})
-	assert.Error(t, err, "absolute path")
-	docs, err := d.ListWorkbenchDocuments(pid)
-	require.NoError(t, err)
-	assert.Empty(t, docs)
-}
-
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
 // (docs/inventory/workbench.md): deleting a project leaves no project, target,
-// source, document or comment row of it, and touches no other project.
+// source, comment or ask row of it, and touches no other project.
 // Task 12 adds the folder half.
 func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	d := openTestDB(t)
@@ -317,10 +183,7 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		VALUES ('task', '2026-09-29', '2026-09-29', ?, ?)`, pid, parent)
 	require.NoError(t, err)
 	keepTarget := insertWorkbenchTargetRow(t, d, keep, "other board")
-	docID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/spec.md", Kind: "spec"})
-	require.NoError(t, err)
-	root, err := d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, DocumentID: nullID(docID), Author: "owner",
-		Body: "why?", AnchorQuote: "the quote"})
+	root, err := d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: nullID(parent), Author: "owner", Body: "why?"})
 	require.NoError(t, err)
 	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, ParentID: nullID(root), Author: "agent", Body: "because"})
 	require.NoError(t, err)
@@ -334,10 +197,13 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		return err
 	}))
 
-	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
-		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid-1')`, pid)
-	require.NoError(t, err)
-	// The documents' search index entries (PROJ-08), this project's and another's.
+	sid := newTestSession(t, d, pid)
+	mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), TargetID: nullID(parent),
+		Kind: "question", Title: "Which?"})
+	answered := mustInsertAsk(t, d, questionAsk(pid, "Done?"))
+	markAskAnswered(t, d, answered)
+	keepAsk := mustInsertAsk(t, d, questionAsk(keep, "Theirs"))
+	// The folder files' search index entries (PROJ-08), this project's and another's.
 	for _, doc := range []struct {
 		id  string
 		pid int64
@@ -359,9 +225,9 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		`SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM targets WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_sources WHERE project_id = ?`,
-		`SELECT COUNT(*) FROM project_documents WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_comments WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_target_images WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM owner_asks WHERE project_id = ?`,
 	} {
 		var n int
 		require.NoError(t, d.QueryRow(q, pid).Scan(&n))
@@ -380,6 +246,8 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	assert.Equal(t, 1, kept, "another project's index entries are untouched")
 	_, err = d.GetTargetByID(int(keepTarget))
 	assert.NoError(t, err, "another project's board is untouched")
+	_, err = d.GetOwnerAsk(keep, keepAsk)
+	assert.NoError(t, err, "another project's asks are untouched")
 	var standalone int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
 	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")
@@ -390,15 +258,13 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 // rowid PK hands out max(rowid)+1, so deleting the newest project and
 // creating another would reuse its id — silently rebinding the old folder's
 // hook, MCP registration ("watchtower mcp --project N") and any
-// "watchtower document <id>"/comment_id the agent still holds to the new
-// project's board. AUTOINCREMENT on projects/project_documents/
-// project_comments (migration 00081) must make that impossible.
-func TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused(t *testing.T) {
+// comment_id the agent still holds to the new project's board.
+// AUTOINCREMENT on projects/project_comments (migration 00081) must make that
+// impossible.
+func TestProj02_DeletedProjectAndCommentIDsAreNeverReused(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	sourceID, err := d.AddWorkbenchSource(WorkbenchSource{WorkbenchID: pid, Kind: "link", Ref: "https://example.com"})
-	require.NoError(t, err)
-	docID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/spec.md", Kind: "spec"})
 	require.NoError(t, err)
 	target := insertWorkbenchTargetRow(t, d, pid, "feature")
 	commentID, err := d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: nullID(target), Author: "owner", Body: "why?"})
@@ -408,10 +274,6 @@ func TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused(t *testing.T) 
 
 	newPID := newTestWorkbench(t, d)
 	assert.Greater(t, newPID, pid, "a new project must never reuse a deleted project's id")
-
-	newDocID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: newPID, RelPath: "docs/spec.md", Kind: "spec"})
-	require.NoError(t, err)
-	assert.Greater(t, newDocID, docID, "a new document must never reuse a deleted one's id")
 
 	newTarget := insertWorkbenchTargetRow(t, d, newPID, "feature")
 	newCommentID, err := d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: newPID, TargetID: nullID(newTarget), Author: "owner", Body: "why?"})

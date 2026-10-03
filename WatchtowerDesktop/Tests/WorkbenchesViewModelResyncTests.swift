@@ -22,27 +22,23 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         super.tearDown()
     }
 
-    /// The Go side's empty-state wire shape: no new documents, nothing to
-    /// install, no suggestions — every array present and empty.
+    /// The Go side's empty-state wire shape: nothing to install, no
+    /// suggestions — every array present and empty.
     private static let upToDate = #"""
-        {"id":1,"docs_ok":true,"docs_error":"",
-         "docs":{"imported":[],"already_attached":["README.md"],"skipped_over_cap":[],"unreadable":[],"dry_run":false},
+        {"id":1,
          "integration_ok":true,"integration_error":"","skill":"unchanged","hooks_added":false,"excluded":[],
          "mcp_registered":true,"mcp_command":"","suggestions":[],"suggestions_error":""}
         """#
 
     private static let added = #"""
-        {"id":1,"docs_ok":true,"docs_error":"",
-         "docs":{"imported":["docs/specs/a.md"],"already_attached":[],"skipped_over_cap":["docs/plans/b.md"],
-                 "unreadable":["docs/x: permission denied"],"dry_run":false},
+        {"id":1,
          "integration_ok":true,"integration_error":"","skill":"updated","hooks_added":true,"excluded":[".claude/"],
          "mcp_registered":true,"mcp_command":"","suggestions":["The project has no sources: add them."],
          "suggestions_error":"","index_ok":true,"index_error":"","indexed":2,"index_skipped":false}
         """#
 
-    /// A failed import carries no docs report (Go `omitempty`).
     private static let failed = #"""
-        {"id":1,"docs_ok":false,"docs_error":"permission denied","integration_ok":false,
+        {"id":1,"integration_ok":false,
          "integration_error":"claude CLI not found","skill":"drifted","hooks_added":false,"excluded":[],
          "mcp_registered":false,"mcp_command":"cd /tmp/a && claude mcp add","suggestions":[],
          "suggestions_error":"listing sources: database is locked",
@@ -72,9 +68,6 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         XCTAssertEqual(skipped.summaryLines, [line("Documents not indexed for search: knowledge search is off")])
 
         XCTAssertEqual(try decode(Self.added).summaryLines, [
-            line("Attached 1 new document(s): docs/specs/a.md"),
-            line("1 more document(s) past the import cap — run Re-run Setup again", problem: true),
-            line("Could not read docs/x: permission denied", problem: true),
             line("Indexed 2 document(s) for search in this workbench's sessions"),
             line("Updated the watchtower-workbench skill"),
             line("Added the session hooks"),
@@ -84,7 +77,6 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
 
         let failed = try decode(Self.failed)
         XCTAssertEqual(failed.summaryLines, [
-            line("Attaching documents failed: permission denied", problem: true),
             line("Indexing the documents for search failed: database is locked", problem: true),
             line("Your own copy of the watchtower-workbench skill was kept, so its update was not applied "
                  + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true),
@@ -92,6 +84,26 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
             line("Installing into the folder failed: claude CLI not found", problem: true),
             line("Suggestions may be incomplete: listing sources: database is locked", problem: true)
         ])
+    }
+
+    /// The CLI no longer imports documents (spec 2026-10-03 §7): the index
+    /// keys decode, and an older CLI's docs keys are ignored, never shown.
+    func testDecodesTheIndexKeysAndIgnoresAnOlderCLIsDocumentKeys() throws {
+        let current = try decode(#"""
+            {"id":1,"integration_ok":true,"integration_error":"","skill":"unchanged","hooks_added":false,
+             "excluded":[],"mcp_registered":true,"mcp_command":"","suggestions":[],"suggestions_error":"",
+             "index_ok":true,"index_error":"","indexed":3,"index_skipped":false}
+            """#)
+        XCTAssertTrue(current.indexOK)
+        XCTAssertEqual(current.indexed, 3)
+        XCTAssertEqual(current.summaryLines, [line("Indexed 3 document(s) for search in this workbench's sessions")])
+
+        let older = try decode(#"""
+            {"id":1,"docs_ok":false,"docs_error":"permission denied","docs":{"imported":["a.md"]},
+             "integration_ok":true,"integration_error":"","skill":"unchanged","hooks_added":false,
+             "excluded":[],"mcp_registered":true,"mcp_command":"","suggestions":[],"suggestions_error":""}
+            """#)
+        XCTAssertEqual(older.summaryLines, [line("Everything was already up to date.")])
     }
 
     /// Re-run Setup on a folder set up before the Workbench rename (spec
@@ -185,7 +197,7 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
             ["workbench", "resync", String(id), "--json"],
             ["integrate", "status", "--workbench", String(id), "--json"]
         ])
-        XCTAssertEqual(vm.resyncResults[id]?.imported, ["docs/specs/a.md"])
+        XCTAssertEqual(vm.resyncResults[id]?.indexed, 2)
         XCTAssertNil(vm.resyncErrors[id])
         XCTAssertFalse(vm.resyncing.contains(id))
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
@@ -214,7 +226,7 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
                        "the CLI may have changed the folder before failing: the status is re-read")
     }
 
-    /// Version skew: the CLI ran (and may have attached documents) but its
+    /// Version skew: the CLI ran (and may have changed the folder) but its
     /// report does not decode — say so, and still refresh the page.
     func testAnUnreadableReportSaysTheRunHappened() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }

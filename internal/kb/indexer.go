@@ -137,19 +137,24 @@ func indexAllWorkbenchDocs(ctx context.Context, d *db.DB) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("kb: listing projects: %w", err)
 	}
+	// One folder that cannot be listed (gone, a git failure) never stops the
+	// other workbenches; every failure is returned.
 	total := 0
+	var errs []error
 	for _, id := range ids {
 		pid, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
 			return total, fmt.Errorf("kb: project id %q: %w", id, err)
 		}
+		if cerr := ctx.Err(); cerr != nil {
+			errs = append(errs, cerr)
+			break
+		}
 		_, n, err := IndexWorkbenchDocs(ctx, d, pid)
 		total += n
-		if err != nil {
-			return total, err
-		}
+		errs = append(errs, err)
 	}
-	return total, nil
+	return total, errors.Join(errs...)
 }
 
 // selectSources builds fresh source instances (so per-run caches such as
@@ -249,10 +254,11 @@ func runSource(ctx context.Context, d *db.DB, src Source, now time.Time, overBud
 // indexBatch renders keys, then stores them and runs finish (the range's
 // cursor save on its last batch) in one write transaction.
 func indexBatch(ctx context.Context, d *db.DB, src Source, keys []string, finish func(*sql.Tx) error, st *Stats) error {
-	docs, err := buildBatch(ctx, d, src, keys)
+	rendered, err := buildBatch(ctx, d, src, keys)
 	if err != nil {
 		return err
 	}
+	docs := prepareBatch(rendered)
 	var written, deleted int
 	err = withTx(ctx, d, func(tx *sql.Tx) error {
 		var err error
@@ -289,12 +295,12 @@ func buildBatch(ctx context.Context, q Queryer, src Source, keys []string) ([]*D
 	return docs, nil
 }
 
-// storeBatch writes (or, for a gone or blank document, deletes) each key's
-// rendered document inside tx, returning how many it wrote and deleted.
-func storeBatch(ctx context.Context, tx *sql.Tx, keys []string, docs []*Doc) (written, deleted int, err error) {
+// storeBatch writes (or, for a gone or blank document — nil — deletes) each key's
+// prepared document inside tx, returning how many it wrote and deleted.
+func storeBatch(ctx context.Context, tx *sql.Tx, keys []string, docs []*preparedDoc) (written, deleted int, err error) {
 	for i, key := range keys {
 		doc := docs[i]
-		if doc == nil || isBlank(doc) {
+		if doc == nil {
 			removed, err := deleteDoc(ctx, tx, key)
 			if err != nil {
 				return 0, 0, err
@@ -304,7 +310,7 @@ func storeBatch(ctx context.Context, tx *sql.Tx, keys []string, docs []*Doc) (wr
 			}
 			continue
 		}
-		wrote, err := writeDoc(ctx, tx, doc)
+		wrote, err := storeDoc(ctx, tx, doc)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -315,10 +321,22 @@ func storeBatch(ctx context.Context, tx *sql.Tx, keys []string, docs []*Doc) (wr
 	return written, deleted, nil
 }
 
+// prepareBatch prepares each rendered document for storeBatch, outside any
+// transaction; a gone or blank document stays nil (storeBatch deletes it).
+func prepareBatch(docs []*Doc) []*preparedDoc {
+	out := make([]*preparedDoc, len(docs))
+	for i, doc := range docs {
+		if doc != nil && !isBlank(doc) {
+			out[i] = prepareDoc(doc)
+		}
+	}
+	return out
+}
+
 // isBlank reports whether a document has neither a non-blank title nor any
 // non-blank section text: nothing to index, so it is treated as gone (and
 // counted as a deletion when indexed). A title-only document is indexed
-// (writeDoc makes the title its one section).
+// (prepareDoc makes the title its one section).
 func isBlank(doc *Doc) bool {
 	if strings.TrimSpace(doc.Title) != "" {
 		return false

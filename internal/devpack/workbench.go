@@ -110,12 +110,14 @@ type WorkbenchInstallReport struct {
 // StateForeign. CurrentMCP and LegacyMCP say which registration MCP stands
 // for, so a report can name each one that is there.
 type WorkbenchStatus struct {
-	Skill       SkillStatus
-	Hook        bool // the SessionStart hook (the brief)
-	StopHook    bool // the Stop hook (the board drift check, PROJ-07)
-	StateHooks  bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
-	MCP         bool // CurrentMCP || LegacyMCP
-	ClaudeFound bool
+	Skill        SkillStatus
+	Hook         bool // the SessionStart hook (the brief)
+	StopHook     bool // the Stop hook (the board drift check, PROJ-07)
+	StateHooks   bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
+	AskGuard     bool // the Stop prompt hook sending a plain-text request to ask_owner (PROJ-13)
+	AskToolBlock bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)
+	MCP          bool // CurrentMCP || LegacyMCP
+	ClaudeFound  bool
 
 	Legacy      bool
 	LegacySkill SkillStatus
@@ -169,6 +171,12 @@ func WorkbenchSessionStateHookCommand(bin string, workbenchID int64) string {
 	return stateHookSpecs[0].command(bin, workbenchID)
 }
 
+// WorkbenchAskGuardHookCommand is the PreToolUse hook's command line (the
+// block of AskUserQuestion).
+func WorkbenchAskGuardHookCommand(bin string, workbenchID int64) string {
+	return askToolBlockSpec.command(bin, workbenchID)
+}
+
 // WorkbenchMCPCommand is the registration the owner can run by hand when the
 // claude CLI is unavailable to us.
 func WorkbenchMCPCommand(o WorkbenchInstallOptions) string {
@@ -187,7 +195,7 @@ func mcpRemoveCommand(o WorkbenchInstallOptions, server string) string {
 
 // InstallWorkbench makes the folder ready for Claude Code: exclude lines
 // first (so nothing we write ever shows in git status), then the local MCP
-// registration, the skill and the SessionStart, Stop and session state hooks. Every step
+// registration, the skill and the SessionStart, Stop, session state and ask guard hooks. Every step
 // runs even when an earlier one failed; the failures come back joined.
 //
 // It is also the migration of a folder set up before the Workbench rename
@@ -308,6 +316,9 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	if _, err := RemoveStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
+	if _, err := RemoveAskGuardHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
 	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
 		if _, err := removeSkill(o.skillsDir(), s); err != nil {
 			errs = append(errs, err)
@@ -373,6 +384,12 @@ func statusHooks(o WorkbenchInstallOptions, ps *WorkbenchStatus) []error {
 	if ps.StateHooks, err = HasStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
+	if ps.AskGuard, err = HasAskGuardHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if ps.AskToolBlock, err = HasAskToolBlockHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
 	// Its only possible failure is the malformed file already reported above.
 	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
 	return errs
@@ -413,8 +430,8 @@ func bothMalformed(first, second error) bool {
 	return errors.Is(first, ErrMalformedSettings) && errors.Is(second, ErrMalformedSettings)
 }
 
-// installWorkbenchHooks installs the SessionStart, Stop and session state
-// hooks; changed is true when any was added or repaired. A malformed
+// installWorkbenchHooks installs the SessionStart, Stop, session state and
+// ask guard hooks; changed is true when any was added or repaired. A malformed
 // settings file is reported once, by the first install, and the others are
 // not attempted.
 func installWorkbenchHooks(o WorkbenchInstallOptions) (bool, error) {
@@ -424,7 +441,8 @@ func installWorkbenchHooks(o WorkbenchInstallOptions) (bool, error) {
 	}
 	stopped, stopErr := InstallStopHook(o.Folder, WorkbenchStopHookCommand(o.Bin, o.WorkbenchID), o.WorkbenchID)
 	stated, stateErr := InstallStateHooks(o.Folder, o.Bin, o.WorkbenchID)
-	return started || stopped || stated, errors.Join(err, stopErr, stateErr)
+	guarded, guardErr := InstallAskGuardHooks(o.Folder, o.Bin, o.WorkbenchID)
+	return started || stopped || stated || guarded, errors.Join(err, stopErr, stateErr, guardErr)
 }
 
 func (o WorkbenchInstallOptions) mcpAddArgs() []string {

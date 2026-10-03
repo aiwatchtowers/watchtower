@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
 	"watchtower/internal/tools"
@@ -44,8 +44,7 @@ const (
 )
 
 var briefRules = []string{
-	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.",
-	"Before revising an attached document call list_comments(document_id); resolve each comment you addressed (resolve_comment), then attach_document again.",
+	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; anything that waits on the owner (a question, a decision, a check, a review) is an ask_owner call, never terminal text or a comment, and you keep working; comments are for blockers and done summaries.",
 }
 
 var workbenchBriefCmd = &cobra.Command{
@@ -53,12 +52,13 @@ var workbenchBriefCmd = &cobra.Command{
 	Short: "Print a workbench's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
 		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
-		"comments waiting for the agent, recent threads, issues and pages from the workbench's\n" +
-		"sources when room is left, and the board rules. Always exits 0 — a hook must\n" +
-		"never break a session start, so any failure (workbench gone, folder moved, database\n" +
-		"unreadable) is one line. Inside a session the Desktop launched (" + terminalSessionEnv + "\n" +
-		"set) it also reads the hook's stdin payload and, after /clear, /compact, a resume or a fork,\n" +
-		"stores the conversation's session id on that terminal row.",
+		"comments waiting for the agent, the owner's answers to its asks, recent threads, issues\n" +
+		"and pages from the workbench's sources when room is left, and the board rules. Always\n" +
+		"exits 0 — a hook must never break a session start, so any failure (workbench gone,\n" +
+		"folder moved, database unreadable) is one line. Inside a session the Desktop launched\n" +
+		"(" + terminalSessionEnv + " set) it also reads the hook's stdin payload and, after\n" +
+		"/clear, /compact, a resume or a fork, stores the conversation's session id on that\n" +
+		"terminal row.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadWorkbenchBrief loads config itself.
@@ -163,19 +163,37 @@ func briefFromDB(database *db.DB, p *db.Workbench, vocab vocabulary) string {
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
 	}
-	docs, err := database.ListWorkbenchDocuments(p.ID)
-	if err != nil {
-		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
-	}
-	byID := make(map[int64]db.WorkbenchDocument, len(docs))
-	for _, d := range docs {
-		byID[d.ID] = d
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), briefDriftBudget)
 	defer cancel()
 	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
-	return renderWorkbenchBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now, vocab)
+	return renderWorkbenchBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now, vocab)
+}
+
+// briefAsks is the answered-asks input: the asks for the brief's own session
+// (its own, unbound or of a gone session; spec 2026-10-03 Part 5) and how
+// many the workbench's other sessions have. err is shown as the section's
+// one line, never failing the brief. Listing never delivers an ask: only
+// get_ask does.
+type briefAsks struct {
+	list   []db.OwnerAsk
+	others int
+	err    error
+}
+
+func loadBriefAsks(database *db.DB, workbenchID int64) *briefAsks {
+	// An invalid env var reads as no own session; recordTerminalSessionID
+	// already reported it on stderr.
+	sessionID, _, err := terminalSessionRowID()
+	if err != nil {
+		sessionID = 0
+	}
+	list, others, err := database.AnsweredAsksForBrief(workbenchID, sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: answered asks: %v\n", workbenchID, err)
+		return &briefAsks{err: err}
+	}
+	return &briefAsks{list: list, others: others}
 }
 
 // briefRecent is the recent-in-workbench-sources input; nil when the
@@ -232,13 +250,14 @@ func briefUnavailable(id int64, reason string) string {
 const briefLegacyLine = "This folder's Watchtower setup predates the Workbench rename — suggest Re-run Setup to the owner."
 
 // renderWorkbenchBrief is the hook body: header, the board drift (when any),
-// the open tree, the comments new for the agent, recent documents of the
-// workbench's sources (recent nil = the workbench has none, the section is
-// left out), the rules — at most briefMaxChars runes. vocab names the skill
-// and tools the folder's install knows; a legacy folder also gets
-// briefLegacyLine after the header when it fits. A drift check cut short
+// the open tree, the comments new for the agent, the answered asks (left out
+// when there are none; one row is reserved before the board is cut), recent
+// documents of the workbench's sources (recent nil = the workbench has none,
+// the section is left out), the rules — at most briefMaxChars runes. vocab
+// names the skill and tools the folder's install knows; a legacy folder also
+// gets briefLegacyLine after the header when it fits. A drift check cut short
 // says so, so a partial check never reads as a clean board. Pure.
-func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, drift workbenchcheck.Report, recent *briefRecent, now time.Time, vocab vocabulary) string {
+func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary) string {
 	header := briefHeader(p, board, len(comments), vocab)
 	head := header
 	rules := strings.Join(briefRules, "\n")
@@ -247,23 +266,35 @@ func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.W
 		head += "\n" + section
 		budget -= utf8.RuneCountInString(section) + 1
 	}
-	commentLines := briefCommentLines(comments, docs, boardTitles(board))
+	// The answered asks come after the board on the cut order, but their
+	// floor (one row) is set aside first: an answer is never dropped.
+	asksFloor, _ := briefAsksSection(answered, 0, now)
+	shared := budget
+	if asksFloor != "" {
+		shared -= utf8.RuneCountInString(asksFloor) + 1 // its joining newline
+	}
+	commentLines := briefCommentLines(comments, boardTitles(board))
 	const commentsTitle = "New comments for you:"
 	// Without comments the section is still its "none." line; the tree
 	// leaves room for it.
-	treeBudget := budget - utf8.RuneCountInString(briefNone(commentsTitle))
+	treeBudget := shared - utf8.RuneCountInString(briefNone(commentsTitle))
 	if len(commentLines) > 0 {
-		treeBudget = budget / 2
+		treeBudget = shared / 2
 	}
 	targetLines := briefTargetLines(board, now)
 	tree, treeShown := fitBriefSection("Open targets:", targetLines, treeBudget, "targets ("+vocab.BoardTool+")")
-	section, commentsShown := fitBriefSection(commentsTitle, commentLines, budget-utf8.RuneCountInString(tree), "comments (list_comments)")
+	section, commentsShown := fitBriefSection(commentsTitle, commentLines, shared-utf8.RuneCountInString(tree), "comments (list_comments)")
 	parts := []string{head, tree, section}
-	// Recent documents only ever use room nothing else wanted: once targets
-	// or comments were cut, the section is left out.
-	if treeShown == len(targetLines) && commentsShown == len(commentLines) {
-		left := budget - utf8.RuneCountInString(tree) - utf8.RuneCountInString(section) - 1 // its joining newline
-		if r := briefRecentSection(recent, min(left, briefRecentChars)); r != "" {
+	left := budget - utf8.RuneCountInString(tree) - utf8.RuneCountInString(section)
+	asksSection, asksWhole := briefAsksSection(answered, left-1, now) // its joining newline
+	if asksSection != "" {
+		parts = append(parts, asksSection)
+		left -= utf8.RuneCountInString(asksSection) + 1
+	}
+	// Recent documents only ever use room nothing else wanted: once targets,
+	// comments or answered asks were cut, the section is left out.
+	if treeShown == len(targetLines) && commentsShown == len(commentLines) && asksWhole {
+		if r := briefRecentSection(recent, min(left-1, briefRecentChars)); r != "" { // its joining newline
 			parts = append(parts, r)
 		}
 	}
@@ -332,6 +363,54 @@ func briefRecentSection(recent *briefRecent, limit int) string {
 		return "" // not even one document fits: a bare "… N more" says nothing
 	}
 	return out
+}
+
+const briefAsksTitle = "Answered asks for you:"
+
+// briefAsksSection renders the answered asks within limit runes, but never
+// less than one row with the "… N more" line: that floor is what a limit of
+// 0 renders, and the caller sets it aside before the board. "" when there is
+// no answered ask at all; whole says nothing was cut.
+func briefAsksSection(a *briefAsks, limit int, now time.Time) (section string, whole bool) {
+	switch {
+	case a == nil || (a.err == nil && len(a.list) == 0 && a.others == 0):
+		return "", true
+	case a.err != nil:
+		return briefClip(briefAsksTitle+" unavailable: "+a.err.Error(), briefLineChars), true
+	}
+	tail := ""
+	if a.others > 0 {
+		tail = fmt.Sprintf("\n%d more answered for other sessions of this workbench — leave them to those sessions.", a.others)
+	}
+	if len(a.list) == 0 {
+		return briefNone(briefAsksTitle) + tail, true
+	}
+	lines := make([]string, 0, len(a.list))
+	for _, ask := range a.list {
+		lines = append(lines, briefAskLine(ask, now))
+	}
+	const what = "answered asks (list_asks)"
+	// Row 0 plus the marker fitBriefSection reserves while writing it (it
+	// counts all len(lines), one digit more at 10, 100, …).
+	floor := utf8.RuneCountInString(briefAsksTitle) + 1 + utf8.RuneCountInString(lines[0])
+	if len(lines) > 1 {
+		floor += utf8.RuneCountInString(fmt.Sprintf("\n… %d more %s", len(lines), what))
+	}
+	out, shown := fitBriefSection(briefAsksTitle, lines, max(limit-utf8.RuneCountInString(tail), floor), what)
+	return out + tail, shown == len(lines)
+}
+
+// briefAskLine is one answered ask, `#id kind — title (answered <age>) →
+// get_ask id` (spec Part 5). The title is the agent's own words, put on one
+// line and clipped so the get_ask pointer always survives.
+func briefAskLine(a db.OwnerAsk, now time.Time) string {
+	answered := "answered"
+	if age := statusAge(a.AnsweredAt, now); age != "" {
+		answered += " " + age
+	}
+	// OneLine turns an ESC into a space but leaves its parameters ("[31m")
+	// visible on purpose, the DeliveryLine rule: inert text, never a sequence.
+	return fmt.Sprintf("#%d %s — %s (%s) → get_ask %d", a.ID, a.Kind, briefClip(asks.OneLine(a.Title), 120), answered, a.ID)
 }
 
 // briefDay is the date part of an RFC 3339 time, the whole string otherwise.
@@ -449,9 +528,6 @@ func briefTargetLine(n db.BoardNode, depth int, now time.Time) string {
 	if n.NewForAgent > 0 {
 		line += fmt.Sprintf(" (%d new comments)", n.NewForAgent)
 	}
-	if len(n.Documents) > 0 {
-		line += fmt.Sprintf(" (%d docs)", len(n.Documents))
-	}
 	return indent + briefClip(line, briefLineChars-len(indent))
 }
 
@@ -468,36 +544,22 @@ func boardTitles(board []db.BoardNode) map[int64]string {
 	return titles
 }
 
-// briefCommentLines renders target comments first, then document comments.
-func briefCommentLines(comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, titles map[int64]string) []string {
-	ordered := append([]db.WorkbenchComment(nil), comments...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return !ordered[i].DocumentID.Valid && ordered[j].DocumentID.Valid
-	})
-	lines := make([]string, 0, len(ordered))
-	for _, c := range ordered {
-		lines = append(lines, briefClip(briefCommentLine(c, docs, titles), briefLineChars))
+// briefCommentLines renders the comments in the order given.
+func briefCommentLines(comments []db.WorkbenchComment, titles map[int64]string) []string {
+	lines := make([]string, 0, len(comments))
+	for _, c := range comments {
+		lines = append(lines, briefClip(briefCommentLine(c, titles), briefLineChars))
 	}
 	return lines
 }
 
-func briefCommentLine(c db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, titles map[int64]string) string {
+func briefCommentLine(c db.WorkbenchComment, titles map[int64]string) string {
 	who := fmt.Sprintf("- comment #%d", c.ID)
 	if c.ParentID.Valid {
 		who += fmt.Sprintf(" (reply in thread #%d)", c.ParentID.Int64)
 	}
 	body := briefClip(c.Body, 160)
-	if !c.DocumentID.Valid {
-		return fmt.Sprintf("%s on target #%d %q: %s", who, c.TargetID.Int64, briefClip(titles[c.TargetID.Int64], 60), body)
-	}
-	where := docs[c.DocumentID.Int64].RelPath
-	if c.AnchorHeading != "" {
-		where += " § " + briefClip(c.AnchorHeading, 60)
-	}
-	if c.AnchorQuote != "" {
-		where += fmt.Sprintf(" on %q", briefClip(c.AnchorQuote, 80))
-	}
-	return fmt.Sprintf("%s on document #%d %s: %s", who, c.DocumentID.Int64, where, body)
+	return fmt.Sprintf("%s on target #%d %q: %s", who, c.TargetID.Int64, briefClip(titles[c.TargetID.Int64], 60), body)
 }
 
 // briefClip collapses whitespace to single spaces and cuts s to n runes.

@@ -32,7 +32,7 @@ func newLegacyWorkbenchSession(t *testing.T, database *db.DB, projectID int64) *
 func newBoundWorkbenchSession(t *testing.T, database *db.DB, projectID int64, legacy bool) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
-	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir()), false), tools.ReadTools()...) {
+	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir())), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +151,7 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 		t.Fatal(err)
 	}
 	workbench := map[string]bool{}
-	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, false) {
+	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}) {
 		workbench[tool.Name] = true
 	}
 	out := map[string]string{}
@@ -168,16 +168,16 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 }
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists only the
-// new names, `mcp --project N` only the old ones — eleven workbench tools
+// new names, `mcp --project N` only the old ones — fourteen workbench tools
 // either way, with no description or input schema pointing at a tool the
 // session lacks.
-func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing.T) {
+func TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
 	for _, legacy := range []bool{false, true} {
 		listed := workbenchToolsListed(t, newBoundWorkbenchSession(t, database, pid, legacy))
-		if len(listed) != 11 {
-			t.Errorf("legacy=%v: want 11 workbench tools, got %d: %v", legacy, len(listed), listed)
+		if len(listed) != 14 {
+			t.Errorf("legacy=%v: want 14 workbench tools, got %d: %v", legacy, len(listed), listed)
 		}
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			want, unwanted := newName, oldName
@@ -202,6 +202,74 @@ func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing
 		if !strings.Contains(listed[remove], want) {
 			t.Errorf("legacy=%v: %s's schema lacks %q: %s", legacy, remove, want, listed[remove])
 		}
+	}
+}
+
+// Spec 2026-10-03 §4: the ask tools have no legacy spelling — both
+// vocabularies serve them under the same names, and an ask filed through one
+// applies directly with its audit row.
+func TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies(t *testing.T) {
+	database := seedDB(t)
+	pid := seedMCPWorkbench(t, database)
+	for _, legacy := range []bool{false, true} {
+		cs := newBoundWorkbenchSession(t, database, pid, legacy)
+		listed := workbenchToolsListed(t, cs)
+		for _, name := range []string{"ask_owner", "get_ask", "list_asks", "withdraw_ask"} {
+			if _, ok := listed[name]; !ok {
+				t.Errorf("legacy=%v: %s is not listed", legacy, name)
+			}
+		}
+		res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "ask_owner",
+			Arguments: map[string]any{"kind": "check", "title": "Run it", "reason": "r",
+				"checklist": []any{map[string]any{"text": "Open the app"}}}})
+		if err != nil || res.IsError {
+			t.Fatalf("legacy=%v: ask_owner: %v %v", legacy, err, res)
+		}
+		var rc tools.Receipt
+		if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
+			t.Fatal(err)
+		}
+		if rc.Status != "applied" || rc.Tool != "ask_owner" {
+			t.Errorf("legacy=%v: want an applied ask_owner receipt, got %+v", legacy, rc)
+		}
+	}
+	asks, err := database.ListOwnerAsks(pid, db.OwnerAskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asks) != 2 {
+		t.Errorf("want 2 open asks, got %d", len(asks))
+	}
+}
+
+// Spec 2026-10-03 §4: attach_document is gone — neither vocabulary lists it,
+// and a call to it is an unknown tool, not a workbench write.
+func TestWorkbenchMode_AttachDocumentIsUnknown(t *testing.T) {
+	database := seedDB(t)
+	pid := seedMCPWorkbench(t, database)
+	for _, legacy := range []bool{false, true} {
+		cs := newBoundWorkbenchSession(t, database, pid, legacy)
+		res, err := cs.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, tool := range res.Tools {
+			if tool.Name == "attach_document" {
+				t.Errorf("legacy=%v: attach_document is listed", legacy)
+			}
+		}
+		_, err = cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "attach_document",
+			Arguments: map[string]any{"rel_path": "a.md", "kind": "doc", "reason": "r"}})
+		if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+			t.Errorf("legacy=%v: attach_document call: want an unknown-tool error, got %v", legacy, err)
+		}
+	}
+	var n int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("an unknown tool leaves no audit row, got %d", n)
 	}
 }
 

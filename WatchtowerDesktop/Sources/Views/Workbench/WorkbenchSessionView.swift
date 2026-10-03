@@ -12,9 +12,30 @@ struct WorkbenchSessionView: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
+        if let vm = appState.workbenchesViewModel {
+            // The drawer opens beside the terminal of the session that filed
+            // the ask (spec 2026-10-03 Part 8); the banner points at it.
+            let drawerAsk = vm.asks.drawerAsk(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
+            let waiting = vm.asks.stack(projectID: projectID).asks.filter { $0.sessionID == sessionID }
+            OwnerAskDrawerHost(vm: vm, ask: drawerAsk) {
+                VStack(spacing: 0) {
+                    if drawerAsk == nil, !waiting.isEmpty {
+                        OwnerAskBanner(asks: waiting) { ask in vm.asks.openDrawer(ask) }
+                        Divider()
+                    }
+                    pane
+                }
+            }
+        } else {
+            pane
+        }
+    }
+
+    private var pane: some View {
         let vm = appState.workbenchesViewModel
         let session = vm?.session(sessionID, projectID: projectID)
-        TerminalSessionPane(session: session, error: nil) {
+        let obscured = vm?.isObscured(sessionID: sessionID, projectID: projectID) ?? false
+        return TerminalSessionPane(session: session, error: nil, obscured: obscured) {
             VStack(spacing: 8) {
                 if let session {
                     Text("\(session.title) is not running.")
@@ -38,7 +59,7 @@ struct WorkbenchSessionView: View {
 
 /// A standalone terminal (no project, spec §3): always the whole page,
 /// single pane, under a slim header — its folder, Rename and Delete
-/// (the title is in the Workbench tab's title row). No install badge, board or documents: nothing of a project.
+/// (the title is in the Workbench tab's title row). No install badge or board: nothing of a project.
 struct StandaloneTerminalView: View {
     let session: TerminalSession
     /// The panel's row actions: Rename and Delete open the page's own sheet
@@ -90,6 +111,9 @@ struct StandaloneTerminalView: View {
 private struct TerminalSessionPane<NotStarted: View>: View {
     let session: TerminalSession?
     let error: String?
+    /// Covered by an expanded ask drawer: the terminal never takes focus.
+    var obscured = false
+    @Environment(\.askDrawerCovers) private var drawerCovers
     @ViewBuilder let notStarted: () -> NotStarted
     @Environment(AppState.self) private var appState
 
@@ -111,7 +135,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                 if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
                     let copied = center.clipboardHints.contains(session.id)
                     HStack {
-                        Label(copied ? WorkbenchCommentsSendBar.copiedNote : WorkbenchCommentsSendBar.pastedNote,
+                        Label(copied ? OwnerAsksViewModel.copiedNote : OwnerAsksViewModel.sentNote,
                               systemImage: copied ? "doc.on.clipboard" : "checkmark")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
@@ -149,7 +173,8 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     @ViewBuilder
     private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
-            TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id))
+            TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id),
+                         obscured: obscured || drawerCovers)
         }
     }
 }
@@ -160,6 +185,8 @@ private struct TerminalHost: NSViewRepresentable {
     let session: any TerminalSessionProcess
     /// `TerminalCenter.keyboardFocusSerial(for:)` of this session.
     let focusSerial: Int?
+    /// Under an expanded ask drawer: no attach or request moves focus here.
+    let obscured: Bool
 
     /// The focus request serial already honoured.
     final class Coordinator {
@@ -186,7 +213,7 @@ private struct TerminalHost: NSViewRepresentable {
         let terminal = session.view
         let attached = TerminalHostAttachment.attach(terminal, to: container)
         let focus = TerminalHostAttachment.needsFocus(
-            attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial
+            attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured
         )
         coordinator.honouredSerial = focusSerial
         guard focus else { return }
@@ -232,9 +259,23 @@ enum TerminalHostAttachment {
 
     /// Whether the host moves the keyboard into its terminal: after an
     /// attach that changed something, or for a focus request
-    /// (`TerminalCenter.requestKeyboardFocus`) it has not honoured yet.
-    static func needsFocus(attached: Bool, requested: Int?, honoured: Int?) -> Bool {
-        attached || (requested != nil && requested != honoured)
+    /// (`TerminalCenter.requestKeyboardFocus`) it has not honoured yet —
+    /// never while an expanded ask drawer covers it (`obscured`; such a
+    /// request is dropped, not kept for later).
+    static func needsFocus(attached: Bool, requested: Int?, honoured: Int?, obscured: Bool = false) -> Bool {
+        !obscured && (attached || (requested != nil && requested != honoured))
+    }
+
+    /// Whether the keyboard is in a session's terminal (a view inside a
+    /// `TerminalContainerView`) of `window`.
+    @MainActor
+    static func terminalHasFocus(in window: NSWindow?) -> Bool {
+        var view = window?.firstResponder as? NSView
+        while let current = view {
+            if current is TerminalContainerView { return true }
+            view = current.superview
+        }
+        return false
     }
 }
 

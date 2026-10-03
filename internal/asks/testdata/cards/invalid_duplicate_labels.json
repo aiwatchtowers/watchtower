@@ -1,0 +1,3 @@
+{"questions": [
+  {"question": "Same label twice?", "options": [{"label": "A"}, {"label": " A "}]}
+]}

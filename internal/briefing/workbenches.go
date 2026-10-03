@@ -26,19 +26,19 @@ const (
 // workbenchActivity is one project's slice of the briefing. Mechanical, no AI.
 type workbenchActivity struct {
 	inProgress, inReview, blocked, doneSince []string
-	unreadAgent                              int
-	docsAwaiting                             []string
+	// openAsks are the titles of the agent's asks still waiting on the owner.
+	openAsks    []string
+	unreadAgent int
 }
 
 func (a workbenchActivity) empty() bool {
 	return len(a.inProgress) == 0 && len(a.inReview) == 0 && len(a.blocked) == 0 && len(a.doneSince) == 0 &&
-		a.unreadAgent == 0 && len(a.docsAwaiting) == 0
+		len(a.openAsks) == 0 && a.unreadAgent == 0
 }
 
 // gatherWorkbenches renders the WORKBENCHES block: per project with activity — in
-// progress, blocked, done since `since` (the previous briefing), unread agent
-// comments, and documents whose owner comments still wait for the agent. A
-// project that fails to load is logged and skipped; the rest still render.
+// progress, blocked, done since `since` (the previous briefing), open owner
+// asks and unread agent comments. A project that fails to load is logged and skipped; the rest still render.
 func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
 	projects, err := p.db.ListWorkbenches()
 	if err != nil {
@@ -80,12 +80,15 @@ func (p *Pipeline) workbenchActivity(projectID int64, sinceTS string) (workbench
 	if err != nil {
 		return a, fmt.Errorf("comments: %w", err)
 	}
-	docs, err := p.db.ListWorkbenchDocuments(projectID)
+	open, err := p.db.ListOwnerAsks(projectID, db.OwnerAskFilter{Statuses: []string{"open"}})
 	if err != nil {
-		return a, fmt.Errorf("documents: %w", err)
+		return a, fmt.Errorf("asks: %w", err)
 	}
 	a.addTargets(board, sinceTS)
-	a.addComments(comments, docs)
+	a.addComments(comments)
+	for _, ask := range open {
+		a.openAsks = append(a.openAsks, firstLine(ask.Title))
+	}
 	return a, nil
 }
 
@@ -106,19 +109,10 @@ func (a *workbenchActivity) addTargets(nodes []db.BoardNode, sinceTS string) {
 	}
 }
 
-func (a *workbenchActivity) addComments(comments []db.WorkbenchComment, docs []db.WorkbenchDocument) {
-	awaiting := map[int64]bool{}
+func (a *workbenchActivity) addComments(comments []db.WorkbenchComment) {
 	for _, c := range comments {
 		if c.Author == "agent" && c.ReadAt == "" {
 			a.unreadAgent++
-		}
-		if c.Author == "owner" && c.Status == "open" && !c.ParentID.Valid && c.DocumentID.Valid {
-			awaiting[c.DocumentID.Int64] = true
-		}
-	}
-	for _, d := range docs {
-		if awaiting[d.ID] {
-			a.docsAwaiting = append(a.docsAwaiting, documentTitle(d))
 		}
 	}
 }
@@ -130,10 +124,10 @@ func renderWorkbenchActivity(pr db.Workbench, a workbenchActivity) string {
 	writeWorkbenchLine(&sb, "In review", a.inReview)
 	writeWorkbenchLine(&sb, "Blocked", a.blocked)
 	writeWorkbenchLine(&sb, "Done since the last briefing", a.doneSince)
+	writeWorkbenchLine(&sb, "Open asks waiting for the owner", a.openAsks)
 	if a.unreadAgent > 0 {
 		fmt.Fprintf(&sb, "Unread agent comments: %d\n", a.unreadAgent)
 	}
-	writeWorkbenchLine(&sb, "Documents with open owner comments", a.docsAwaiting)
 	return sb.String()
 }
 
@@ -148,13 +142,6 @@ func writeWorkbenchLine(sb *strings.Builder, label string, items []string) {
 		more = fmt.Sprintf(" (+%d more)", len(items)-maxWorkbenchItems)
 	}
 	fmt.Fprintf(sb, "%s (%d): %s%s\n", label, len(items), strings.Join(shown, "; "), more)
-}
-
-func documentTitle(d db.WorkbenchDocument) string {
-	if d.Title != "" {
-		return d.Title
-	}
-	return d.RelPath
 }
 
 func firstLine(s string) string {

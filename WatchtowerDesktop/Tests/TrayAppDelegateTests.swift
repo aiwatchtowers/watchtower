@@ -49,6 +49,33 @@ final class TrayAppDelegateTerminateTests: XCTestCase {
         XCTAssertFalse(stopped)
     }
 
+    /// Unsent ask answers live in memory only (spec 2026-10-03 Part 8):
+    /// quitting with any asks first; with nothing to lose it does not.
+    func testQuittingWithAskDraftsAsksFirst() {
+        XCTAssertNil(TrayAppDelegate.quitPrompt(recording: false, askDrafts: 0), "nothing to lose, nothing to ask")
+
+        let one = TrayAppDelegate.quitPrompt(recording: false, askDrafts: 1)
+        XCTAssertEqual(one?.message, "You have 1 unsent ask answer")
+        XCTAssertEqual(one?.quitTitle, "Quit")
+        XCTAssertEqual(TrayAppDelegate.quitPrompt(recording: false, askDrafts: 2)?.message, "You have 2 unsent ask answers")
+
+        let both = TrayAppDelegate.quitPrompt(recording: true, askDrafts: 2)
+        XCTAssertEqual(both?.quitTitle, "Stop & Quit")
+        XCTAssertTrue(both?.informative.hasSuffix(" Your 2 unsent ask answers will be lost.") == true)
+        XCTAssertEqual(TrayAppDelegate.quitPrompt(recording: true, askDrafts: 0)?.informative.contains("ask"), false)
+
+        var confirmed = false
+        let reply = TrayAppDelegate.terminateDecision(
+            managesLifecycle: true,
+            hasBlockingWork: one != nil,
+            confirmQuit: { confirmed = true; return false },
+            stopDaemon: { XCTFail("a cancelled quit stops nothing") },
+            reply: { _ in XCTFail("must not reply when quit is cancelled") }
+        )
+        XCTAssertTrue(confirmed, "drafts make the quit ask first")
+        XCTAssertEqual(reply, .terminateCancel)
+    }
+
     func testTerminateDecisionClosesChatSessionsWhenManagingLifecycle() async {
         var closed = false
         let replied = expectation(description: "replied")

@@ -110,41 +110,41 @@ var DefaultVersions = map[string]int{
 	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
-	BriefingDaily:              9, // v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
-	DigestChannelBatch:         5, // v5: instruct the model to echo channel_id verbatim from the block header (C1)
-	PeopleBatch:                1, // v1: batch people cards for low-data users
-	TasksGenerate:              1, // v1: AI task generation with checklist and due date
-	TasksUpdate:                1, // v1: AI task update from user instruction
-	MeetingPrep:                5, // v5: the secretary/assistant persona merge — one assistant everywhere
-	MeetingRecap:               3, // v3: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
-	MeetingNotes:               2, // v2: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
-	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
-	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
-	DayPlanGenerate:            4, // v4: the secretary/assistant persona merge — one assistant everywhere
-	TargetsExtract:             2, // v2: GROUPING/sub_items + LANGUAGE rules reconciled from the compiled const (fix b7640c0b)
-	TargetsLink:                1, // v1: single-target link proposal against active snapshot
-	TrackCompose:               1, // v1: draft custom-track title+instruction from a free-text request
-	TrackRun:                   1, // v1: custom-track timeline events from recent cross-source activity
-	TrackShortlist:             1, // v1: cheap title-only relevance filter for custom-track backfill
-	MemoryExtractEpisodes:      2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	MemoryExtractEpisodesBatch: 3, // v3: the secretary/assistant persona merge — one assistant everywhere
-	MemoryExtractEmailEpisodes: 2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	MemoryEntityRewrite:        2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	MemoryReviseBeliefs:        2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	MemoryRenderMap:            2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	MemoryReflect:              2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	MemoryRenderChannelDigest:  2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	IdeasDigestEmail:           2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	IdeasDigestJira:            2, // v2: the secretary/assistant persona merge — one assistant everywhere
-	IdeasConsolidate:           4, // v4: the secretary/assistant persona merge — one assistant everywhere
-	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
-	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
-	CatchupCompose:             1, // v1: strong-tier absence-recap composer
-	CatchupLearn:               1, // v1: catch-up feedback → learned-rules interpreter
-	TargetsNextStep:            1, // v1: single next action per target with urgency and action buttons
-	InboxStyleSample:           1, // v1: owner communication-style profile from their own Slack messages
-	ChatTitle:                  1, // v1: light-tier conversation title from the first exchange
-	TerminalTitle:              1, // v1: light-tier name for an embedded Claude Code session
+	BriefingDaily:              11, // v11: open owner asks in WORKBENCHES (owner asks, spec 2026-10-03); v10: no workbench documents (owner asks, spec 2026-10-03); v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
+	DigestChannelBatch:         5,  // v5: instruct the model to echo channel_id verbatim from the block header (C1)
+	PeopleBatch:                1,  // v1: batch people cards for low-data users
+	TasksGenerate:              1,  // v1: AI task generation with checklist and due date
+	TasksUpdate:                1,  // v1: AI task update from user instruction
+	MeetingPrep:                5,  // v5: the secretary/assistant persona merge — one assistant everywhere
+	MeetingRecap:               3,  // v3: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
+	MeetingNotes:               2,  // v2: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
+	MeetingChapters:            1,  // v1: chapterize a meeting from a timecoded per-utterance transcript
+	MeetingFollowup:            1,  // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
+	DayPlanGenerate:            4,  // v4: the secretary/assistant persona merge — one assistant everywhere
+	TargetsExtract:             2,  // v2: GROUPING/sub_items + LANGUAGE rules reconciled from the compiled const (fix b7640c0b)
+	TargetsLink:                1,  // v1: single-target link proposal against active snapshot
+	TrackCompose:               1,  // v1: draft custom-track title+instruction from a free-text request
+	TrackRun:                   1,  // v1: custom-track timeline events from recent cross-source activity
+	TrackShortlist:             1,  // v1: cheap title-only relevance filter for custom-track backfill
+	MemoryExtractEpisodes:      2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryExtractEpisodesBatch: 3,  // v3: the secretary/assistant persona merge — one assistant everywhere
+	MemoryExtractEmailEpisodes: 2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryEntityRewrite:        2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryReviseBeliefs:        2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryRenderMap:            2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryReflect:              2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	MemoryRenderChannelDigest:  2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasDigestEmail:           2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasDigestJira:            2,  // v2: the secretary/assistant persona merge — one assistant everywhere
+	IdeasConsolidate:           4,  // v4: the secretary/assistant persona merge — one assistant everywhere
+	DictationClean:             1,  // v1: dictation transcript cleanup (idea/note modes)
+	ReactionCommand:            1,  // v1: compose an agent-action's args from a reacted Slack message
+	CatchupCompose:             1,  // v1: strong-tier absence-recap composer
+	CatchupLearn:               1,  // v1: catch-up feedback → learned-rules interpreter
+	TargetsNextStep:            1,  // v1: single next action per target with urgency and action buttons
+	InboxStyleSample:           1,  // v1: owner communication-style profile from their own Slack messages
+	ChatTitle:                  1,  // v1: light-tier conversation title from the first exchange
+	TerminalTitle:              1,  // v1: light-tier name for an embedded Claude Code session
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -506,7 +506,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
-- WORKBENCHES: the WORKBENCHES section lists the user's Watchtower workbenches — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a workbench into "attention" only for a blocked target, unread agent comments (an agent may be waiting for an answer), or documents whose comments still wait for the agent; use source_type="project" and source_id=the block's project_id (both keep their stored names). Never put a workbench's targets into "your_day" or into target_id — they live on the workbench board, not among the user's targets. If the section reads "(no project activity)", do not mention workbenches at all.
+- WORKBENCHES: the WORKBENCHES section lists the user's Watchtower workbenches — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a workbench into "attention" only for a blocked target, open asks waiting for the owner (an agent is waiting for the owner's answer in the Desktop app) or unread agent comments; use source_type="project" and source_id=the block's project_id (both keep their stored names). Never put a workbench's targets into "your_day" or into target_id — they live on the workbench board, not among the user's targets. If the section reads "(no project activity)", do not mention workbenches at all.
 - MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the assistant's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.

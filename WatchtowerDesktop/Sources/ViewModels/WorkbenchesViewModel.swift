@@ -13,13 +13,11 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class WorkbenchesViewModel {
-    /// Document id (string) → the `updated_at` the owner last opened. The
-    /// `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
-    static let viewedDocumentsKey = "projects.viewedDocuments"
-
     /// The code viewer's file trees and open buffers (POC), here so unsaved
     /// edits survive switching panes and tabs.
     let codeFiles: CodeFilesCenter
+    /// The owner asks: open lists, drafts and answers (spec 2026-10-03 Part 8).
+    let asks: OwnerAsksViewModel
 
     private(set) var summaries: [WorkbenchSummary] = []
     /// The workbench switcher's rows (board #250), read when its popover opens.
@@ -36,12 +34,6 @@ final class WorkbenchesViewModel {
     var goToError: String?
     var selectedWorkbenchID: Int64? {
         didSet {
-            if selectedWorkbenchID != oldValue {
-                closeDocument()
-                documents = []
-                attachNotice = nil
-                documentQuery = ""
-            }
             // One thing is on screen: a project, or a standalone terminal.
             // Selecting a project also drills the panel into it.
             if let selectedWorkbenchID {
@@ -52,9 +44,6 @@ final class WorkbenchesViewModel {
             }
         }
     }
-    /// The document the documents pane should open next (a deep link); the
-    /// pane consumes and clears it.
-    var pendingDocumentID: Int64?
     private(set) var isCreating = false
     private(set) var repairing: Set<Int64> = []
     private(set) var resyncing: Set<Int64> = []
@@ -70,58 +59,11 @@ final class WorkbenchesViewModel {
     private var installNotes: [Int64: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     private var statusReadErrors: [Int64: String] = [:]
-    /// What create's document import could not do (`WorkbenchCreated.importNote`),
-    /// per project. A status read says nothing about it, so it stays for the
-    /// session; a retry runs in the terminal, which the Desktop does not watch.
-    private(set) var importNotes: [Int64: String] = [:]
     /// The page's error line, per project — never the shared `errorMessage`,
     /// where one project's failure would outlive a switch to another.
     var installErrors: [Int64: String] {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
-    private(set) var documents: [WorkbenchDocumentListItem] = []
-    /// The Documents list's title search (#81); cleared on a project switch.
-    var documentQuery = ""
-    /// Collapsed groups of the Documents list, per project; kept for the session.
-    private(set) var collapsedDocumentGroups: [Int64: Set<WorkbenchDocumentGrouping.Group>] = [:]
-
-    var documentSections: [WorkbenchDocumentGrouping.Section] {
-        WorkbenchDocumentGrouping.sections(documents, query: documentQuery)
-    }
-
-    func isDocumentGroupCollapsed(_ group: WorkbenchDocumentGrouping.Group) -> Bool {
-        selectedWorkbenchID.map { collapsedDocumentGroups[$0, default: []].contains(group) } ?? false
-    }
-
-    func setDocumentGroup(_ group: WorkbenchDocumentGrouping.Group, collapsed: Bool) {
-        guard let selectedWorkbenchID else { return }
-        if collapsed {
-            collapsedDocumentGroups[selectedWorkbenchID, default: []].insert(group)
-        } else {
-            collapsedDocumentGroups[selectedWorkbenchID]?.remove(group)
-        }
-    }
-
-    /// An opened document is always findable in the list: a search that
-    /// hides it is cleared and its group unfolded (a deep link or an attach
-    /// may open one the list currently hides).
-    private func revealInList(_ document: WorkbenchDocument) {
-        if !WorkbenchDocumentGrouping.matches(document, query: documentQuery) { documentQuery = "" }
-        setDocumentGroup(WorkbenchDocumentGrouping.Group.of(document), collapsed: false)
-    }
-    /// An "Add document…" attach is running (#80); the sheet disables Attach.
-    private(set) var isAttachingDocument = false
-    /// Why the last attach failed (the CLI's refusal); the sheet shows it.
-    private(set) var attachError: String?
-    /// Set when the chosen file was already attached: it opened unchanged,
-    /// so the kind and target picked in the sheet were not applied.
-    private(set) var attachNotice: String?
-    /// The open document. Kept here (not in the view) so it survives pane
-    /// switches and tab changes with its watcher running.
-    private(set) var documentViewModel: WorkbenchDocumentViewModel?
-    /// Unsent document comments: kept here so they outlive the open document.
-    let commentDrafts = WorkbenchCommentDrafts()
-
     /// A project was created: Task 18 seeds its notification baseline.
     var onWorkbenchCreated: ((Workbench, _ installed: Bool) -> Void)?
     /// The embedded terminals. AppState passes its own; nil (most tests) =
@@ -210,9 +152,8 @@ final class WorkbenchesViewModel {
     /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
     /// Whether the Workbench tab is what the owner is looking at (AppState:
-    /// sidebar on Projects, main window visible). The poll marks agent
-    /// replies read only then — an open-but-hidden document is not "seen".
-    /// Unwired = never on screen.
+    /// sidebar on Projects, main window visible). The git status refresh
+    /// runs only then. Unwired = never on screen.
     var isTabOnScreen: () -> Bool = { false }
     /// The project a delete is running for; the page disables Delete meanwhile.
     private(set) var deletingWorkbenchID: Int64?
@@ -286,7 +227,6 @@ final class WorkbenchesViewModel {
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
     let cli: WorkbenchCLI?
     let defaults: UserDefaults
-    private var viewed: [String: String]
 
     init(
         dbPool: DatabasePool,
@@ -302,7 +242,7 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
-        viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
+        asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
@@ -311,40 +251,30 @@ final class WorkbenchesViewModel {
         terminalCenter?.onPathLink = { [weak self] workbenchID, location in
             Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
         }
+        asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
+        asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
+        asks.onDelivered = { [weak self] projectID, sessionID in
+            self?.showAnsweredSession(sessionID, projectID: projectID)
+        }
     }
 
     var selectedWorkbench: Workbench? {
         summaries.first { $0.id == selectedWorkbenchID }?.project
     }
 
-    /// Sidebar badge: unread agent comments + documents revised since last viewed.
+    /// Sidebar badge: open asks plus unread agent comments (spec 2026-10-03 Part 8).
     var badgeCount: Int {
         summaries.reduce(0) { $0 + badgeCount(for: $1) }
     }
 
-    /// A workbench row's blue badge: unread agent comments + revised documents.
+    /// A workbench row's blue badge: open asks plus unread agent comments.
     func badgeCount(for summary: WorkbenchSummary) -> Int {
-        summary.unreadAgentComments + revisedDocumentCount(for: summary)
-    }
-
-    func revisedDocumentCount(for summary: WorkbenchSummary) -> Int {
-        summary.documentStamps.filter { id, stamp in viewed[String(id)] != stamp }.count
-    }
-
-    func isRevised(_ document: WorkbenchDocument) -> Bool {
-        document.isAgentAttached && viewed[String(document.id)] != document.updatedAt
-    }
-
-    func markDocumentViewed(_ document: WorkbenchDocument) {
-        viewed[String(document.id)] = document.updatedAt
-        defaults.set(viewed, forKey: Self.viewedDocumentsKey)
+        summary.openAsks + summary.unreadAgentComments
     }
 
     func reload() async {
         let previousIDs = summaries.map(\.id)
         do {
-            // A deleted project's documents fall out of `summaries`; their
-            // stale `viewed` stamps are never read again, so none are pruned.
             summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
         } catch {
             errorMessage = "Could not load workbenches: \(error.localizedDescription)"
@@ -405,30 +335,10 @@ final class WorkbenchesViewModel {
         return true
     }
 
-    /// The notification center's 30 s poll. The agent writes documents and
-    /// comments from another process (DB only, no file change), so besides
-    /// the list this also refreshes the documents pane and the open
-    /// document's threads — neither re-renders the file, so an open composer
-    /// keeps its selection. An agent reply that arrived on the document the
-    /// owner has on screen is marked read, the way opening it does; the list
-    /// reloads last so its unread badge already reflects that.
+    /// The notification center's 30 s poll. The agent writes comments and
+    /// asks from another process (DB only), so the list — and the badge — reloads.
     func refreshOnPoll() async {
-        if selectedWorkbenchID != nil {
-            await loadDocuments()
-            await documentViewModel?.refreshThreads(markRead: layout.visiblePanes.contains(.documents) && isTabOnScreen())
-        }
         await reload()
-    }
-
-    /// Opens `pendingDocumentID` (a deep link). The list is reloaded first
-    /// whenever the id is not in it — a notification for a document the
-    /// agent just attached must open even when others are already listed.
-    func openPendingDocument() async {
-        guard let id = pendingDocumentID else { return }
-        if !documents.contains(where: { $0.id == id }) { await loadDocuments() }
-        guard let item = documents.first(where: { $0.id == id }) else { return }
-        pendingDocumentID = nil
-        await openDocument(item.document)
     }
 
     nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {
@@ -436,18 +346,45 @@ final class WorkbenchesViewModel {
         return previous.filter { !now.contains($0) }
     }
 
-    /// A deep link puts its pane on screen the way a panel click does.
+    /// A deep link puts its pane on screen the way a panel click does. An
+    /// ask's notice (`route.askID`) opens that ask the way a stack row does
+    /// (`showAsk`): its session on screen and the drawer on it; an ask gone
+    /// meanwhile falls back to the notice's pane and session.
     func reveal(_ route: WorkbenchRoute) {
         selectedWorkbenchID = route.projectID
+        if let askID = route.askID {
+            Task {
+                guard await !showAsk(askID, projectID: route.projectID) else { return }
+                showPane(of: route)
+            }
+            return
+        }
+        showPane(of: route)
+    }
+
+    private func showPane(of route: WorkbenchRoute) {
         switch route.pane {
         case .board: layout.show(.board)
-        case .documents: layout.show(.documents)
         case .terminal:
             let projectID = route.projectID
             let sessionID = route.subjectID
             Task { await revealTerminal(projectID: projectID, sessionID: sessionID) }
         }
-        pendingDocumentID = route.pane == .documents ? route.subjectID : nil
+    }
+
+    /// An answer's line was typed or copied into `sessionID` (spec 2026-10-03
+    /// Part 5): that terminal goes on its workbench's page and the keyboard
+    /// into it, so the owner reads the line (or pastes it) and presses
+    /// Return. Keyed by the ask's own workbench, never the selection. Takes
+    /// a switch ticket: a slower session switch still pending must not land
+    /// afterwards and move the keyboard off the line (board #187).
+    func showAnsweredSession(_ sessionID: Int64, projectID: Int64) {
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.show(.session(sessionID))
+        setLayout(updated, projectID: projectID)
+        terminalCenter?.focus(sessionID)
+        terminalCenter?.requestKeyboardFocus(sessionID)
     }
 
     /// `sessionID` (a session notice's click, board #312) puts that session
@@ -499,7 +436,6 @@ final class WorkbenchesViewModel {
             errorMessage = "Could not create the workbench: \(error.localizedDescription)"
             return
         }
-        importNotes[created.id] = created.importNote
         var installed = true
         do {
             try await cli.install(projectID: created.id)
@@ -590,8 +526,8 @@ final class WorkbenchesViewModel {
         await refreshInstallStatus(projectID: projectID)
     }
 
-    /// Re-run setup (#91): `workbench resync` attaches the folder's new
-    /// documents and re-installs missing or outdated integration pieces, then
+    /// Re-run setup (#91): `workbench resync` re-indexes the folder's
+    /// documents for search and re-installs missing or outdated integration pieces, then
     /// the page reloads what it may have changed. Additive only — it never
     /// creates targets; the result's suggestions say what to ask the agent.
     func resync(projectID: Int64) async {
@@ -612,10 +548,9 @@ final class WorkbenchesViewModel {
         } catch {
             resyncErrors[projectID] = "Re-run Setup failed: \(error.localizedDescription)"
         }
-        // The CLI may have attached documents or installed files even when
-        // it failed or its report could not be read.
+        // The CLI may have installed files even when it failed or its report
+        // could not be read.
         await reload()
-        if selectedWorkbenchID == projectID { await loadDocuments() }
         await refreshInstallStatus(projectID: projectID)
     }
 
@@ -628,81 +563,5 @@ final class WorkbenchesViewModel {
     func dismissResync(projectID: Int64) {
         resyncResults[projectID] = nil
         resyncErrors[projectID] = nil
-    }
-
-    func loadDocuments() async {
-        guard let projectID = selectedWorkbenchID else { return }
-        do {
-            documents = try await dbPool.read { try WorkbenchQueries.documentListItems($0, projectID: projectID) }
-        } catch {
-            errorMessage = "Could not load documents: \(error.localizedDescription)"
-        }
-    }
-
-    /// "Add document…" (#80): `workbench attach-doc` writes the owner's row —
-    /// the CLI checks the file is a .md/.txt inside the folder, symlinks
-    /// resolved — and the pane opens it. The file itself is never written
-    /// (PROJ-03). Returns whether it attached; on false `attachError` says why.
-    func attachDocument(fileURL: URL, kind: String, targetID: Int64?) async -> Bool {
-        guard let project = selectedWorkbench, !isAttachingDocument else { return false }
-        guard let cli else {
-            attachError = "The watchtower CLI was not found."
-            return false
-        }
-        isAttachingDocument = true
-        clearAttachMessages()
-        defer { isAttachingDocument = false }
-        let attached: WorkbenchDocumentAttached
-        do {
-            attached = try await cli.attachDocument(projectID: project.id, path: fileURL.path, kind: kind, targetID: targetID)
-        } catch {
-            attachError = "Could not attach the document: \(error.localizedDescription)"
-            return false
-        }
-        if attached.created { onOwnerWrite?(project.id, .document(attached.documentID)) }
-        await loadDocuments()
-        // Still on this project: open it (also for an already attached path).
-        if let item = documents.first(where: { $0.id == attached.documentID }) {
-            await openDocument(item.document)
-            // Still the open document: a project switch during the open closed it.
-            if !attached.created, documentViewModel?.document.id == attached.documentID {
-                attachNotice = "\(attached.relPath) was already attached — it is open, with its kind and target unchanged."
-            }
-        }
-        return true
-    }
-
-    func clearAttachMessages() {
-        attachError = nil
-        attachNotice = nil
-    }
-
-    /// The target picker's choices for "Add document…", in board order.
-    func targetChoices() async throws -> [WorkbenchBoardRow] {
-        guard let projectID = selectedWorkbenchID else { return [] }
-        let board = try await dbPool.read { try WorkbenchQueries.board($0, projectID: projectID) }
-        return WorkbenchBoardOutline.rows(board, collapsed: [], showDone: true)
-    }
-
-    func openDocument(_ document: WorkbenchDocument) async {
-        guard let project = selectedWorkbench, project.id == document.projectID else { return }
-        attachNotice = nil
-        revealInList(document)
-        if documentViewModel?.document.id != document.id {
-            closeDocument()
-            let docVM = WorkbenchDocumentViewModel(dbPool: dbPool, project: project, document: document, drafts: commentDrafts)
-            docVM.onOwnerWrite = { [weak self] subject in self?.onOwnerWrite?(project.id, subject) }
-            docVM.startWatching()
-            documentViewModel = docVM
-        }
-        await documentViewModel?.load()
-        if let loaded = documentViewModel?.document { markDocumentViewed(loaded) }
-        await loadDocuments()
-        await reload()
-    }
-
-    func closeDocument() {
-        documentViewModel?.stopWatching()
-        documentViewModel = nil
     }
 }

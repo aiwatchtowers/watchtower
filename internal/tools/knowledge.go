@@ -15,7 +15,7 @@ import (
 
 type searchKnowledgeArgs struct {
 	Queries []string `json:"queries" jsonschema:"1-5 search queries: the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms (e.g. договор*)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, project_doc (this workbench's attached documents; workbench sessions only)"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, project_doc (this workbench folder's .md/.markdown/.txt files; workbench sessions only)"`
 	From    string   `json:"from,omitempty" jsonschema:"only documents active on/after this date (YYYY-MM-DD)"`
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
@@ -60,7 +60,7 @@ func NewSearchKnowledge() *Tool {
 			"document there with from_chunk) with its chunk_anchor (e.g. the Slack message ts), and a source " +
 			"anchor and permalink for links. In a workbench session or a chat project's chat, hits from its own " +
 			"Slack/Jira/Confluence sources rank first and carry in_scope (workbench_scope: only or off to change " +
-			"that); a workbench's attached documents (source project_doc) are searchable too.",
+			"that); a workbench folder's text files (source project_doc) are searchable too.",
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
@@ -68,7 +68,7 @@ func NewSearchKnowledge() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			// A workbench session sees its own attached documents; every other
+			// A workbench session sees its own folder's files; every other
 			// caller (ProjectID 0) none of them (PROJ-08) — and is told so
 			// rather than handed an empty result that reads as "no match".
 			if call.Binding.WorkbenchID == 0 && slices.Contains(a.Sources, kb.WorkbenchDocSource) {

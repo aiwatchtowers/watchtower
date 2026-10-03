@@ -1,0 +1,6 @@
+{
+  "id": 12,
+  "kind": "review",
+  "answer": {"answers": [], "checklist": [], "comments": [{"quote": "q", "prefix": "", "suffix": "", "heading": "", "body": "b"}], "note": "", "verdict": "changes"},
+  "line": "Ask #12 answered (review: changes requested) — read it with get_ask 12 using the watchtower-workbench skill."
+}

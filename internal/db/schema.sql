@@ -2147,9 +2147,9 @@ END;
 -- projects* tables = Workbench (UI/CLI/code name since 2026-10-02; table names kept).
 -- Projects (00081, spec 2026-09-29-project-board-poc-design.md): a folder-bound
 -- project worked on by Claude Code through `watchtower mcp --project N`. Its
--- targets carry targets.project_id and appear only on its board. Documents are
--- files inside folder_path (rel_path); comments hang off a target, a document
--- or a thread root (parent_id; replies are flat, parent_id = the root).
+-- targets carry targets.project_id and appear only on its board. Comments hang
+-- off a target or a thread root (parent_id; replies are flat, parent_id = the
+-- root); attached documents and their comments were replaced by owner_asks (00100).
 -- author 'agent' comments are unread for the owner while read_at = ''.
 CREATE TABLE IF NOT EXISTS projects (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2169,20 +2169,6 @@ CREATE TABLE IF NOT EXISTS project_sources (
     label      TEXT NOT NULL DEFAULT '',
     UNIQUE(project_id, kind, ref)
 );
-
-CREATE TABLE IF NOT EXISTS project_documents (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    target_id  INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    rel_path   TEXT NOT NULL,
-    kind       TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
-    title      TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    origin     TEXT NOT NULL DEFAULT 'agent' CHECK(origin IN ('agent','import','owner')),  -- import = found by the setup scan
-    UNIQUE(project_id, rel_path)
-);
-CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
 
 -- Images attached to project targets (00088); path = absolute 0600 copy under
 -- <workspace>/project_files/<project_id>/. Board-only (PROJ-01).
@@ -2204,23 +2190,17 @@ CREATE TABLE IF NOT EXISTS project_comments (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
-    document_id    INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
     parent_id      INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
     author         TEXT NOT NULL CHECK(author IN ('owner','agent')),
     agent_label    TEXT NOT NULL DEFAULT '',
     body           TEXT NOT NULL,
-    anchor_quote   TEXT NOT NULL DEFAULT '',
-    anchor_prefix  TEXT NOT NULL DEFAULT '',
-    anchor_suffix  TEXT NOT NULL DEFAULT '',
-    anchor_heading TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     read_at        TEXT NOT NULL DEFAULT '',
-    CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
+    CHECK (target_id IS NOT NULL OR parent_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_project_comments_project  ON project_comments(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_project_comments_target   ON project_comments(target_id);
-CREATE INDEX IF NOT EXISTS idx_project_comments_document ON project_comments(document_id);
 CREATE INDEX IF NOT EXISTS idx_project_comments_parent   ON project_comments(parent_id);
 
 -- Embedded terminal sessions; project_id NULL = a standalone terminal.
@@ -2243,3 +2223,33 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
+
+-- Asks the workbench agent puts to the owner (00100): a document review, a
+-- check or questions. Go writes open/withdrawn/delivered; the Desktop writes
+-- only open -> answered (answer + answered_at, guarded on status = 'open').
+-- delivered = get_ask has read the answer. At most 30 open per workbench.
+CREATE TABLE IF NOT EXISTS owner_asks (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id       INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    target_id        INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question')),
+    title            TEXT NOT NULL CHECK(title != ''),
+    summary          TEXT NOT NULL DEFAULT '',
+    changes          TEXT NOT NULL DEFAULT '',   -- review re-round: what changed, agent-written
+    payload          TEXT NOT NULL DEFAULT '{}', -- JSON: focus[], questions[], checklist[]
+    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside the folder
+    doc_snapshot     TEXT NOT NULL DEFAULT '',   -- review only: file text at ask time
+    previous_ask_id  INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
+    status           TEXT NOT NULL DEFAULT 'open'
+                     CHECK(status IN ('open','answered','delivered','withdrawn')),
+    withdrawn_reason TEXT NOT NULL DEFAULT '' CHECK(withdrawn_reason IN ('','agent','superseded')),
+    answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    answered_at      TEXT NOT NULL DEFAULT '',
+    delivered_at     TEXT NOT NULL DEFAULT '',
+    CHECK ((kind = 'review') = (doc_path != '')),
+    CHECK ((status IN ('answered','delivered')) = (answer != ''))
+);
+CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);

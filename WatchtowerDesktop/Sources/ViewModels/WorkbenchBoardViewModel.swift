@@ -22,6 +22,8 @@ final class WorkbenchBoardViewModel {
     private(set) var selectedComments: [WorkbenchComment] = []
     /// The selected target's images (board target #117), read-only here.
     private(set) var selectedImages: [WorkbenchTargetImage] = []
+    /// The selected target's owner asks, newest first (spec 2026-10-03 Part 8).
+    private(set) var selectedAsks: [OwnerAskListItem] = []
     private(set) var errorMessage: String?
 
     /// List or Kanban, remembered per project.
@@ -80,22 +82,25 @@ final class WorkbenchBoardViewModel {
         do {
             let pid = projectID
             let selected = selectedTargetID
-            let (board, comments, images, stamp) = try dbPool.read { db in
+            let (board, comments, images, asks, stamp) = try dbPool.read { db in
                 (
                     try WorkbenchQueries.board(db, projectID: pid),
                     try selected.map { try WorkbenchQueries.comments(db, targetID: Int64($0)) } ?? [],
                     try selected.map { try WorkbenchQueries.images(db, targetID: Int64($0)) } ?? [],
+                    try selected.map { try OwnerAskQueries.targetAsks(db, projectID: pid, targetID: Int64($0)) } ?? [],
                     try Self.fingerprint(db, projectID: pid)
                 )
             }
             roots = board
             selectedComments = comments
             selectedImages = images
+            selectedAsks = asks
             fingerprint = stamp
             if let selected, WorkbenchBoardOutline.find(selected, in: board) == nil {
                 selectedTargetID = nil
                 selectedComments = []
                 selectedImages = []
+                selectedAsks = []
             }
         } catch {
             errorMessage = "Could not load the board: \(error.localizedDescription)"
@@ -148,11 +153,6 @@ final class WorkbenchBoardViewModel {
                 """,
             arguments: [projectID]
         )
-        let docs = try Row.fetchOne(
-            db,
-            sql: "SELECT COUNT(*), MAX(updated_at) FROM project_documents WHERE project_id = ?",
-            arguments: [projectID]
-        )
         // Rows are only inserted and deleted, never updated: count + max id
         // changes with every attach and detach.
         let images = try Row.fetchOne(
@@ -160,7 +160,18 @@ final class WorkbenchBoardViewModel {
             sql: "SELECT COUNT(*), MAX(id) FROM project_target_images WHERE project_id = ?",
             arguments: [projectID]
         )
-        return [targets, comments, docs, images].map { $0?.description ?? "" }.joined(separator: "|")
+        // An ask changes status (answered, delivered, withdrawn) in place:
+        // the open count and the latest stamps move with it.
+        let asks = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT COUNT(*), MAX(id), SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
+                       MAX(answered_at), MAX(delivered_at)
+                FROM owner_asks WHERE project_id = ?
+                """,
+            arguments: [projectID]
+        )
+        return [targets, comments, images, asks].map { $0?.description ?? "" }.joined(separator: "|")
     }
 
     // MARK: - Selection
@@ -173,9 +184,7 @@ final class WorkbenchBoardViewModel {
         do {
             let pid = projectID
             try dbPool.write { db in
-                try WorkbenchQueries.markAgentCommentsRead(
-                    db, projectID: pid, targetID: Int64(node.target.id), documentID: nil
-                )
+                try WorkbenchQueries.markAgentCommentsRead(db, projectID: pid, targetID: Int64(node.target.id))
             }
             load()
         } catch {
@@ -191,6 +200,7 @@ final class WorkbenchBoardViewModel {
         selectedTargetID = nil
         selectedComments = []
         selectedImages = []
+        selectedAsks = []
         load()
     }
 
@@ -288,9 +298,7 @@ final class WorkbenchBoardViewModel {
         guard let id = selectedTargetID, !text.isEmpty else { return false }
         let pid = projectID
         return write("add the comment") { db in
-            _ = try WorkbenchQueries.addOwnerComment(
-                db, projectID: pid, targetID: Int64(id), documentID: nil, anchor: nil, body: text
-            )
+            _ = try WorkbenchQueries.addOwnerComment(db, projectID: pid, targetID: Int64(id), body: text)
         }
     }
 

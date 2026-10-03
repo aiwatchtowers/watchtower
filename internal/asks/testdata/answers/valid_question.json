@@ -1,0 +1,25 @@
+{
+  "kind": "question",
+  "payload": {
+    "focus": [{"text": "Both are cheap to build."}],
+    "questions": [
+      {"id": "scope", "question": "Which release should the summary cover?",
+       "options": [{"label": "v0.11", "description": "The release being cut now", "recommended": true},
+                   {"label": "v0.10", "description": "The last shipped release"}]},
+      {"id": "2", "question": "Who is it for?", "multi": true,
+       "options": [{"label": "Engineering"}, {"label": "Support"}, {"label": "Sales"}]}
+    ],
+    "checklist": []
+  },
+  "answer": {
+    "answers": [
+      {"id": "scope", "labels": ["v0.11"], "other": ""},
+      {"id": "2", "labels": ["Engineering", "Support"], "other": "the partner team"}
+    ],
+    "checklist": [],
+    "comments": [],
+    "note": "Keep it short.",
+    "verdict": ""
+  },
+  "canonical": "{\"answers\":[{\"id\":\"scope\",\"labels\":[\"v0.11\"],\"other\":\"\"},{\"id\":\"2\",\"labels\":[\"Engineering\",\"Support\"],\"other\":\"the partner team\"}],\"checklist\":[],\"comments\":[],\"note\":\"Keep it short.\",\"verdict\":\"\"}"
+}

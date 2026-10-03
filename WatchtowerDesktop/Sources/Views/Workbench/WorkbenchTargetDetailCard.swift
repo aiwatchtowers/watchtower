@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// The selected board target as a card over the board (board #155/#156): a
 /// header (editable title, close), a metadata row of capsule menus, Work on
-/// it with the progress, then the intent, documents, images and comment
+/// it with the progress, then the intent, asks, images and comment
 /// threads; the comment composer stays pinned under them. The card is as
 /// tall as its content and scrolls inside once the pane is shorter.
 struct WorkbenchTargetDetailCard: View {
@@ -179,20 +179,8 @@ struct WorkbenchTargetDetailCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if !node.documents.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    WorkbenchDetailSectionHeader(title: "Documents", systemImage: "doc.text", count: node.documents.count)
-                    ForEach(node.documents, id: \.id) { doc in
-                        Label(doc.title.isEmpty ? doc.relPath : doc.title, systemImage: "doc.text")
-                            .font(.callout)
-                            .lineLimit(2)
-                            .help(doc.relPath)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }
+            if !vm.selectedAsks.isEmpty {
+                asksSection
             }
             if !vm.selectedImages.isEmpty {
                 WorkbenchTargetImagesSection(images: vm.selectedImages)
@@ -217,6 +205,27 @@ struct WorkbenchTargetDetailCard: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
+    }
+
+    /// What the agent asked the owner about this target: title and status,
+    /// newest first (spec 2026-10-03 Part 8). Read-only here.
+    private var asksSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            WorkbenchDetailSectionHeader(title: "Asks", systemImage: "person.crop.circle.badge.questionmark",
+                                         count: vm.selectedAsks.count)
+            ForEach(vm.selectedAsks) { ask in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(ask.title)
+                        .font(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(ask.statusLabel)
+                        .font(.caption)
+                        .foregroundStyle(ask.status == OwnerAskStatus.open.rawValue ? Color.accentColor : .secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
     }
 
     // MARK: - Composer
@@ -275,7 +284,7 @@ struct WorkbenchTargetDetailCard: View {
     }
 }
 
-/// A section title inside the target detail card (Documents, Images,
+/// A section title inside the target detail card (Asks, Images,
 /// Comments), so every section reads the same.
 struct WorkbenchDetailSectionHeader: View {
     let title: String

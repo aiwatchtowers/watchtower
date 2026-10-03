@@ -19,6 +19,7 @@ struct ForwardedNotificationResponse: Codable {
         info[NotificationForwarding.transcriptIDKey] = payload[NotificationForwarding.transcriptIDKey].flatMap(Int64.init)
         info[NotificationForwarding.workbenchIDKey] = payload[NotificationForwarding.workbenchIDKey].flatMap(Int64.init)
         info[NotificationForwarding.workbenchSubjectIDKey] = payload[NotificationForwarding.workbenchSubjectIDKey].flatMap(Int64.init)
+        info[NotificationForwarding.workbenchAskIDKey] = payload[NotificationForwarding.workbenchAskIDKey].flatMap(Int64.init)
         return info
     }
 }
@@ -52,12 +53,15 @@ enum NotificationForwarding {
     static let workbenchIDKey = "projectId"
     static let workbenchSubjectIDKey = "subjectId"
     static let workbenchPaneKey = "pane"
+    /// The owner ask a workbench push opens (spec 2026-10-03 Part 8).
+    static let workbenchAskIDKey = "askId"
 
     /// The `userInfo` keys forwarded routing in `NotificationDelegate.route` actually
     /// reads — anything else in the push is dropped rather than shipped across the
     /// process boundary.
     static let routedKeys = [
-        "type", digestIDKey, ideaIDKey, transcriptIDKey, workbenchIDKey, workbenchSubjectIDKey, workbenchPaneKey
+        "type", digestIDKey, ideaIDKey, transcriptIDKey, workbenchIDKey, workbenchSubjectIDKey, workbenchPaneKey,
+        workbenchAskIDKey
     ]
 
     static func encode(actionID: String, userInfo: [AnyHashable: Any]) -> String? {

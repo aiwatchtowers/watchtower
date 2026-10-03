@@ -6,10 +6,10 @@ import WatchtowerCore
 /// markers, code blocks and quotes as boxes, tables as real tables (TextKit 1
 /// `NSTextTable`, which `DocumentTextView` is built on), a rule as a line.
 /// Then a yellow background on every anchored thread (stronger on the
-/// active one) and a blue one on every unsent draft comment.
+/// active one) and a blue one on every unsent draft comment. Sizes and
+/// rhythm come from a `DocumentTypography`: `.standard` for the comment
+/// views, `ReviewTypography.style` for an owner ask's review body.
 enum DocumentAttributedString {
-    static let bodyFont = NSFont.systemFont(ofSize: 14)
-    static let codeFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     static let highlight = NSColor.systemYellow.withAlphaComponent(0.25)
     static let activeHighlight = NSColor.systemYellow.withAlphaComponent(0.55)
     static let draftHighlight = NSColor.systemBlue.withAlphaComponent(0.2)
@@ -23,9 +23,10 @@ enum DocumentAttributedString {
         _ doc: RenderedDocument,
         highlights: [Int64: NSRange],
         activeThreadID: Int64?,
-        drafts: [NSRange] = []
+        drafts: [NSRange] = [],
+        typography: DocumentTypography = .standard
     ) -> NSAttributedString {
-        let key = Key(doc: doc, highlights: highlights, activeThreadID: activeThreadID, drafts: drafts)
+        let key = Key(doc: doc, highlights: highlights, activeThreadID: activeThreadID, drafts: drafts, typography: typography)
         if let hit = recent.first(where: { $0.key == key }) { return hit.text }
         let text = build(key)
         recent = [(key, text)] + recent.prefix(recentLimit - 1)
@@ -37,6 +38,7 @@ enum DocumentAttributedString {
         let highlights: [Int64: NSRange]
         let activeThreadID: Int64?
         let drafts: [NSRange]
+        let typography: DocumentTypography
     }
 
     /// A few documents may be on screen at once (a project document, an
@@ -46,9 +48,10 @@ enum DocumentAttributedString {
 
     private static func build(_ key: Key) -> NSAttributedString {
         let doc = key.doc
+        let type = key.typography
         let out = NSMutableAttributedString(
             string: doc.text,
-            attributes: [.font: bodyFont, .foregroundColor: NSColor.labelColor]
+            attributes: [.font: type.bodyFont, .foregroundColor: NSColor.labelColor]
         )
         var layout = ParagraphLayout(string: doc.text as NSString)
         let length = out.length
@@ -59,9 +62,9 @@ enum DocumentAttributedString {
             .sorted { $0.element.length != $1.element.length ? $0.element.length > $1.element.length : $0.offset < $1.offset }
             .map(\.element)
         for run in runs {
-            apply(run, to: out, layout: &layout)
+            apply(run, to: out, layout: &layout, typography: type)
         }
-        layout.commit(to: out)
+        layout.commit(to: out, typography: type)
         for (id, range) in key.highlights where NSMaxRange(range) <= length {
             out.addAttribute(.backgroundColor, value: id == key.activeThreadID ? activeHighlight : highlight, range: range)
         }
@@ -71,19 +74,25 @@ enum DocumentAttributedString {
         return out
     }
 
-    private static func apply(_ run: DocumentStyleRun, to out: NSMutableAttributedString, layout: inout ParagraphLayout) {
+    private static func apply(
+        _ run: DocumentStyleRun,
+        to out: NSMutableAttributedString,
+        layout: inout ParagraphLayout,
+        typography type: DocumentTypography
+    ) {
         let range = NSRange(location: run.location, length: run.length)
         switch run.style {
         case let .heading(level):
-            out.addAttribute(.font, value: NSFont.systemFont(ofSize: headingSize(level), weight: .bold), range: range)
+            out.addAttribute(.font, value: NSFont.systemFont(ofSize: type.headingSize(level), weight: .bold), range: range)
+            layout.mark(range, .heading(level))
         case .strong:
-            convertFonts(in: out, range: range, trait: .boldFontMask)
+            convertFonts(in: out, range: range, trait: .boldFontMask, typography: type)
         case .emphasis:
-            convertFonts(in: out, range: range, trait: .italicFontMask)
+            convertFonts(in: out, range: range, trait: .italicFontMask, typography: type)
         case .strikethrough:
             out.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
         case .code:
-            out.addAttributes([.font: codeFont, .backgroundColor: NSColor.quaternaryLabelColor], range: range)
+            out.addAttributes([.font: type.codeFont, .backgroundColor: NSColor.quaternaryLabelColor], range: range)
         case let .link(destination):
             // Styled, with the destination on hover: a click selects text for
             // commenting, it never opens a URL from a document the agent wrote.
@@ -92,7 +101,8 @@ enum DocumentAttributedString {
         case let .codeToken(kind):
             out.addAttribute(.foregroundColor, value: color(for: kind), range: range)
         case .codeBlock:
-            out.addAttribute(.font, value: codeFont, range: range)
+            out.addAttribute(.font, value: type.codeFont, range: range)
+            layout.mark(range, .code)
             let block = box(padding: 8)
             block.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06)
             layout.edit(range) { _, style in style.textBlocks.append(block) }
@@ -100,10 +110,13 @@ enum DocumentAttributedString {
             out.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
             layout.edit(range) { _, style in style.textBlocks.append(quoteBlock()) }
         case let .listItem(marker):
-            applyListItem(run, marker: marker, to: out, layout: &layout)
+            applyListItem(run, marker: marker, to: out, layout: &layout, typography: type)
+            layout.mark(range, .listItem)
         case let .tableCell(cell):
-            applyTableCell(cell, range: range, to: out, layout: &layout)
+            applyTableCell(cell, range: range, to: out, layout: &layout, typography: type)
+            layout.mark(range, .tableCell)
         case .rule:
+            layout.mark(range, .rule)
             let block = box(padding: 0)
             block.setWidth(1, type: .absoluteValueType, for: .border, edge: .maxY)
             block.setBorderColor(NSColor.separatorColor, for: .maxY)
@@ -135,10 +148,11 @@ enum DocumentAttributedString {
         _ run: DocumentStyleRun,
         marker: Int,
         to out: NSMutableAttributedString,
-        layout: inout ParagraphLayout
+        layout: inout ParagraphLayout,
+        typography type: DocumentTypography
     ) {
         let prefix = (out.string as NSString).substring(with: NSRange(location: run.location, length: min(marker, run.length)))
-        let indent = ceil((prefix as NSString).size(withAttributes: [.font: bodyFont]).width)
+        let indent = ceil((prefix as NSString).size(withAttributes: [.font: type.bodyFont]).width)
         layout.edit(NSRange(location: run.location, length: run.length)) { paragraph, style in
             style.headIndent = indent
             style.firstLineHeadIndent = paragraph.location == run.location ? 0 : indent
@@ -149,9 +163,10 @@ enum DocumentAttributedString {
         _ cell: DocumentTableCell,
         range: NSRange,
         to out: NSMutableAttributedString,
-        layout: inout ParagraphLayout
+        layout: inout ParagraphLayout,
+        typography type: DocumentTypography
     ) {
-        if cell.header { convertFonts(in: out, range: range, trait: .boldFontMask) }
+        if cell.header { convertFonts(in: out, range: range, trait: .boldFontMask, typography: type) }
         let block = NSTextTableBlock(table: layout.table(cell), startingRow: cell.row, rowSpan: 1,
                                      startingColumn: cell.column, columnSpan: 1)
         block.setWidth(4, type: .absoluteValueType, for: .padding)
@@ -170,20 +185,16 @@ enum DocumentAttributedString {
         }
     }
 
-    private static func headingSize(_ level: Int) -> CGFloat {
-        switch level {
-        case 1: 22
-        case 2: 18
-        case 3: 16
-        default: 14
-        }
-    }
-
     /// Adds `trait` to every font already in `range` (bold code stays
     /// monospaced, a bold word in a heading keeps the heading size).
-    private static func convertFonts(in out: NSMutableAttributedString, range: NSRange, trait: NSFontTraitMask) {
+    private static func convertFonts(
+        in out: NSMutableAttributedString,
+        range: NSRange,
+        trait: NSFontTraitMask,
+        typography type: DocumentTypography
+    ) {
         out.enumerateAttribute(.font, in: range) { value, sub, _ in
-            let font = value as? NSFont ?? bodyFont
+            let font = value as? NSFont ?? type.bodyFont
             out.addAttribute(.font, value: NSFontManager.shared.convert(font, toHaveTrait: trait), range: sub)
         }
     }
@@ -202,6 +213,9 @@ enum DocumentAttributedString {
         let string: NSString
         private var styles: [Int: NSMutableParagraphStyle] = [:]
         private var tables: [Int: NSTextTable] = [:]
+        /// What each paragraph is, for a typography with a rhythm; the
+        /// innermost run wins (a code block in a list item is code).
+        private var roles: [Int: DocumentTypography.Role] = [:]
 
         init(string: NSString) {
             self.string = string
@@ -233,10 +247,39 @@ enum DocumentAttributedString {
             return table
         }
 
-        func commit(to out: NSMutableAttributedString) {
-            for (location, style) in styles {
+        mutating func mark(_ range: NSRange, _ role: DocumentTypography.Role) {
+            var location = range.location
+            while location < NSMaxRange(range) {
                 let paragraph = string.paragraphRange(for: NSRange(location: location, length: 0))
+                roles[paragraph.location] = role
+                location = NSMaxRange(paragraph)
+            }
+        }
+
+        func commit(to out: NSMutableAttributedString, typography type: DocumentTypography) {
+            guard let rhythm = type.rhythm else {
+                for (location, style) in styles {
+                    let paragraph = string.paragraphRange(for: NSRange(location: location, length: 0))
+                    out.addAttribute(.paragraphStyle, value: style, range: paragraph)
+                }
+                return
+            }
+            // Every paragraph gets its line height and spacing.
+            let styler = DocumentTypography.Styler(type, rhythm: rhythm)
+            var location = 0
+            while location < string.length {
+                let paragraph = string.paragraphRange(for: NSRange(location: location, length: 0))
+                let style = styles[paragraph.location] ?? NSMutableParagraphStyle()
+                let role = roles[paragraph.location] ?? .body
+                if role == .body, paragraph.length == 1, string.character(at: paragraph.location) == 0x0A {
+                    // The blank line every block ends with: the spacing
+                    // sets the rhythm, so it is kept small.
+                    out.addAttribute(.font, value: NSFont.systemFont(ofSize: rhythm.blankLineSize), range: paragraph)
+                } else {
+                    styler.apply(role, to: style)
+                }
                 out.addAttribute(.paragraphStyle, value: style, range: paragraph)
+                location = NSMaxRange(paragraph)
             }
         }
     }

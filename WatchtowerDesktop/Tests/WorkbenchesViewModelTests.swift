@@ -28,187 +28,76 @@ final class WorkbenchesViewModelTests: XCTestCase {
         Data(#"{"id":\#(id),"folder":"/tmp/acme","name":"acme"}"#.utf8)
     }
 
-    func testReloadBuildsSummariesAndTheBadgeCountsUnreadAndUnviewedDocuments() async throws {
-        let ids = try await pool.write { d -> (Int64, Int64) in
+    func testReloadBuildsSummariesAndTheBadgeCountsUnreadAgentComments() async throws {
+        let p = try await pool.write { d -> Int64 in
             let p = try TestDatabase.insertWorkbench(d)
-            let doc = try TestDatabase.insertWorkbenchDocument(d, projectID: p)
             let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
             _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: t)
-            return (p, doc)
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: t, readAt: "seen")
+            return p
         }
         let vm = makeVM()
         await vm.reload()
-        XCTAssertEqual(vm.summaries.map(\.id), [ids.0])
-        XCTAssertEqual(vm.badgeCount, 2, "one unread agent comment + one never-viewed document")
-        XCTAssertEqual(vm.revisedDocumentCount(for: vm.summaries[0]), 1)
+        XCTAssertEqual(vm.summaries.map(\.id), [p])
+        XCTAssertEqual(vm.badgeCount, 1, "one unread agent comment; a read one does not count")
     }
 
-    func testViewedDocumentStopsCountingUntilItIsRevisedAgain() async throws {
-        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
+    /// Spec 2026-10-03 Part 8: the badge is open asks plus unread agent
+    /// target comments, summed over the workbenches.
+    func testTheBadgeCountsOpenAsksPlusUnreadAgentComments() async throws {
+        let (p, other) = try await pool.write { d -> (Int64, Int64) in
             let p = try TestDatabase.insertWorkbench(d)
-            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, updatedAt: "2026-09-29T10:00:00Z"))
+            let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: t)
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p)
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
+            for status in ["answered", "delivered", "withdrawn"] {
+                _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: status, answer: status == "withdrawn" ? "" : "{}")
+            }
+            let other = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: other)
+            return (p, other)
         }
         let vm = makeVM()
         await vm.reload()
-        let fetched = try await pool.read { try WorkbenchQueries.document($0, id: doc) }
-        let document = try XCTUnwrap(fetched)
-        vm.markDocumentViewed(document)
-        XCTAssertEqual(vm.badgeCount, 0)
-        XCTAssertFalse(vm.isRevised(document))
+        let summaries = Dictionary(uniqueKeysWithValues: vm.summaries.map { ($0.id, $0) })
+        XCTAssertEqual(summaries[p].map(vm.badgeCount(for:)), 3, "two open asks and one unread comment; closed asks never count")
+        XCTAssertEqual(summaries[other].map(vm.badgeCount(for:)), 1)
+        XCTAssertEqual(vm.badgeCount, 4)
+    }
 
-        // A fresh VM reads the persisted stamp: the mark survives relaunch.
-        let relaunched = makeVM()
-        await relaunched.reload()
-        XCTAssertEqual(relaunched.badgeCount, 0)
-
+    /// An ask whose session row was deleted (`session_id` set to NULL by the
+    /// foreign key) is still open: it still counts.
+    func testAnOpenAskWhoseSessionWasDeletedStillCounts() async throws {
         try await pool.write { d in
-            try d.execute(sql: "UPDATE project_documents SET updated_at = '2026-09-29T11:00:00Z' WHERE id = ?", arguments: [doc])
-        }
-        await relaunched.reload()
-        XCTAssertEqual(relaunched.badgeCount, 1, "re-attached (revised) after the owner last looked")
-        XCTAssertEqual(relaunched.summaries.first?.id, p)
-    }
-
-    func testImportedDocumentNeverLightsTheBadge() async throws {
-        let doc = try await pool.write { d -> Int64 in
             let p = try TestDatabase.insertWorkbench(d)
-            return try TestDatabase.insertWorkbenchDocument(d, projectID: p, origin: "import")
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "s", folderPath: "/tmp/acme")).id
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s)
+            try TerminalSessionQueries.delete(d, id: s)
+            let orphaned = try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM owner_asks WHERE session_id IS NULL")
+            XCTAssertEqual(orphaned, 1, "the delete nulls the ask's session")
         }
         let vm = makeVM()
         await vm.reload()
-        XCTAssertEqual(vm.badgeCount, 0, "a never-opened imported document is not revised")
-        let fetched = try await pool.read { try WorkbenchQueries.document($0, id: doc) }
-        XCTAssertFalse(vm.isRevised(try XCTUnwrap(fetched)))
+        XCTAssertEqual(vm.badgeCount, 1)
     }
 
-    /// #80: "Add document…" goes through `project attach-doc` (the CLI writes
-    /// the row) and opens the attached document; the owner's own write is
-    /// reported so it is never announced back.
-    func testAttachDocumentRunsTheCLIAndOpensTheDocument() async throws {
-        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertWorkbench(d)
-            // The row `project attach-doc` wrote.
-            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "notes/x.md", origin: "owner"))
-        }
-        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":\#(doc),"rel_path":"notes/x.md","created":true}"#.utf8))
-        let vm = makeVM(runner)
-        var ownerWrites: [WorkbenchSubject] = []
-        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-
-        let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/notes/x.md"), kind: "spec", targetID: nil)
-        XCTAssertTrue(ok)
-        XCTAssertEqual(runner.invocations, [["workbench", "attach-doc", "--kind", "spec", "--json", "--", "\(p)", "/tmp/acme/notes/x.md"]])
-        XCTAssertEqual(vm.documentViewModel?.document.id, doc)
-        XCTAssertEqual(ownerWrites, [.document(doc)])
-        XCTAssertNil(vm.attachError)
-        XCTAssertFalse(vm.isAttachingDocument)
-        XCTAssertEqual(vm.badgeCount, 0, "the owner's own document is never revised")
-        XCTAssertNil(vm.attachNotice)
-    }
-
-    func testAttachingAnAlreadyAttachedFileOpensItAndSaysNothingChanged() async throws {
-        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertWorkbench(d)
-            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/plan.md"))
-        }
-        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":\#(doc),"rel_path":"docs/plan.md","created":false}"#.utf8))
-        let vm = makeVM(runner)
-        var ownerWrites: [WorkbenchSubject] = []
-        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-
-        let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/docs/plan.md"), kind: "spec", targetID: nil)
-        XCTAssertTrue(ok)
-        XCTAssertEqual(vm.documentViewModel?.document.id, doc)
-        XCTAssertTrue(vm.attachNotice?.contains("already attached") ?? false)
-        XCTAssertEqual(ownerWrites, [], "nothing was written, so a real agent revision is not muted")
-
-        vm.selectedWorkbenchID = nil
-        XCTAssertNil(vm.attachNotice, "the notice belongs to the project it was shown on")
-    }
-
-    func testAttachDocumentRefusedByTheCLIKeepsTheReason() async throws {
+    /// The notification center's poll reloads the list, so an ask the agent
+    /// files from another process lights the badge without a navigation, and
+    /// the owner's answer clears it.
+    func testRefreshOnPollPicksUpAnAskAndItsAnswer() async throws {
         let p = try await pool.write { try TestDatabase.insertWorkbench($0) }
-        let runner = FakeCLIRunner()
-        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: /etc/x.md resolves outside the project folder")
-        let vm = makeVM(runner)
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-
-        let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/etc/x.md"), kind: "doc", targetID: 4)
-        XCTAssertFalse(ok)
-        XCTAssertTrue(vm.attachError?.contains("resolves outside the project folder") ?? false)
-        XCTAssertNil(vm.documentViewModel)
-        XCTAssertFalse(vm.isAttachingDocument)
-    }
-
-    func testTargetChoicesFollowTheBoardWithDepth() async throws {
-        let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertWorkbench(d)
-            let feature = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Feature")
-            try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Task", parentID: feature)
-            return p
-        }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedWorkbenchID = p
-        let rows = try await vm.targetChoices()
-        XCTAssertEqual(rows.map(\.node.target.text), ["Feature", "Task"])
-        XCTAssertEqual(rows.map(\.depth), [0, 1])
-    }
+        XCTAssertEqual(vm.badgeCount, 0)
 
-    /// #81: the list groups by kind and filters by title; the search belongs
-    /// to one project and is cleared on a switch.
-    func testDocumentSectionsFollowTheSearchAndASwitchClearsIt() async throws {
-        let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertWorkbench(d)
-            try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/specs/sync.md", kind: "spec", title: "Sync")
-            try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/plans/auth.md", kind: "plan", title: "Auth")
-            try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "README.md", kind: "doc", origin: "import")
-            return p
-        }
-        let vm = makeVM()
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-        await vm.loadDocuments()
-        XCTAssertEqual(vm.documentSections.map(\.group), [.specs, .plans, .imported])
+        let ask = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: p) }
+        await vm.refreshOnPoll()
+        XCTAssertEqual(vm.badgeCount, 1)
 
-        vm.documentQuery = "auth"
-        XCTAssertEqual(vm.documentSections.map(\.group), [.plans])
-
-        // Opening a document the list hides (a deep link, an attach) reveals it.
-        vm.setDocumentGroup(.specs, collapsed: true)
-        let spec = try XCTUnwrap(vm.documents.first { $0.document.kind == "spec" })
-        await vm.openDocument(spec.document)
-        XCTAssertEqual(vm.documentQuery, "", "the search that hid it is cleared")
-        XCTAssertFalse(vm.isDocumentGroupCollapsed(.specs), "its group is unfolded")
-
-        vm.setDocumentGroup(.plans, collapsed: true)
-        vm.documentQuery = "auth"
-        vm.selectedWorkbenchID = nil
-        XCTAssertEqual(vm.documentQuery, "")
-        XCTAssertFalse(vm.isDocumentGroupCollapsed(.plans), "folding is per project")
-        vm.selectedWorkbenchID = p
-        XCTAssertTrue(vm.isDocumentGroupCollapsed(.plans), "and kept for the session")
-    }
-
-    func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
-        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
-        let runner = ScriptedCLIRunner(results: [
-            .success(Data(#"{"id":\#(id),"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#.utf8)),
-            .success(Data("installed".utf8)),
-            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
-        ])
-        let vm = makeVM(runner)
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
-        let note = try XCTUnwrap(vm.importNotes[id])
-        XCTAssertTrue(note.contains("permission denied"))
-        XCTAssertTrue(note.contains("watchtower workbench import-docs \(id)"))
-        XCTAssertNil(vm.installErrors[id], "its own line, apart from the install note")
-        XCTAssertNil(vm.errorMessage, "the project exists; the note belongs to it")
+        try await pool.write { try OwnerAskQueries.answer($0, askID: ask, projectID: p, with: OwnerAskAnswer()) }
+        await vm.refreshOnPoll()
+        XCTAssertEqual(vm.badgeCount, 0)
     }
 
     func testCreateRunsCreateThenInstallSelectsTheProjectAndAnnouncesIt() async throws {
@@ -380,9 +269,12 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
     func testRevealSelectsTheProjectAndPane() {
         let vm = makeVM()
-        vm.reveal(WorkbenchRoute(projectID: 4, pane: .documents, subjectID: 9))
+        vm.selectedWorkbenchID = 4
+        vm.layout.show(.files)
+        XCTAssertEqual(vm.layout.visiblePanes, [.files], "the reveal must move the pane")
+        vm.reveal(WorkbenchRoute(projectID: 4, pane: .board, subjectID: 9))
         XCTAssertEqual(vm.selectedWorkbenchID, 4)
-        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
     }
 
     /// House rule: an async operation started from a screen survives leaving
@@ -549,152 +441,6 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 2, pane: .board))
     }
 
-    func testOpenDocumentMarksItViewedAndKeepsItsViewModelAcrossPaneSwitches() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        try "# Plan".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
-        let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
-            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p)
-            return p
-        }
-        let vm = makeVM()
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-        await vm.loadDocuments()
-        let doc = try XCTUnwrap(vm.documents.first?.document)
-
-        await vm.openDocument(doc)
-        let opened = try XCTUnwrap(vm.documentViewModel)
-        XCTAssertFalse(vm.isRevised(doc))
-        vm.layout.show(.board)
-        vm.layout.show(.documents)
-        XCTAssertTrue(vm.documentViewModel === opened)
-        XCTAssertEqual(opened.rendered?.text, "Plan\n\n")
-        vm.closeDocument()
-    }
-
-    /// A deep link to a document the agent attached after the list loaded
-    /// must still open: the list reloads whenever the id is not in it.
-    func testOpenPendingReloadsWhenTheDocumentIsNotListedYet() async throws {
-        let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertWorkbench(d, name: "one", folder: "/tmp/one")
-            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/a.md")
-            return p
-        }
-        let vm = makeVM()
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-        await vm.loadDocuments()
-        XCTAssertEqual(vm.documents.count, 1)
-        let added = try await pool.write { try TestDatabase.insertWorkbenchDocument($0, projectID: p, relPath: "docs/b.md") }
-
-        vm.pendingDocumentID = added
-        await vm.openPendingDocument()
-
-        XCTAssertEqual(vm.documentViewModel?.document.id, added)
-        XCTAssertNil(vm.pendingDocumentID)
-        vm.closeDocument()
-    }
-
-    /// The agent writes documents and comments DB-only: the poll refreshes
-    /// the list and the open document's threads without re-rendering it.
-    func testRefreshOnPollPicksUpAgentDBWrites() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
-        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
-            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p))
-        }
-        let vm = makeVM()
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-        await vm.loadDocuments()
-        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
-        let docVM = try XCTUnwrap(vm.documentViewModel)
-        let version = docVM.renderVersion
-        try await pool.write { d in
-            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/spec.md")
-            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: "Which date?", documentID: doc, quote: "Ship it")
-        }
-
-        await vm.refreshOnPoll()
-
-        XCTAssertEqual(vm.documents.count, 2)
-        XCTAssertEqual(docVM.threads.count, 1)
-        XCTAssertNotNil(docVM.anchoredRanges[try XCTUnwrap(docVM.threads.first?.id)])
-        XCTAssertEqual(docVM.renderVersion, version, "an open composer's selection stays valid")
-        vm.closeDocument()
-    }
-
-    /// An agent reply that lands while the document is on screen is marked
-    /// read by the poll, as opening it would; the same reply stays unread when
-    /// the document is open but not shown (another pane, another tab).
-    func testRefreshOnPollMarksAgentRepliesReadOnlyForTheDocumentOnScreen() async throws {
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
-        try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
-        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
-            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p))
-        }
-        let root = try await pool.write { d in
-            try TestDatabase.insertWorkbenchComment(d, projectID: p, author: "owner", documentID: doc, quote: "Ship it")
-        }
-        var onScreen = false
-        let vm = makeVM()
-        vm.isTabOnScreen = { onScreen }
-        await vm.reload()
-        vm.selectedWorkbenchID = p
-        vm.layout.show(.documents)
-        await vm.loadDocuments()
-        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
-        func unread() throws -> Int {
-            try pool.read { d in
-                try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM project_comments WHERE author = 'agent' AND read_at = ''") ?? -1
-            }
-        }
-        func reply(_ body: String) async throws {
-            try await pool.write { d in
-                _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: body, documentID: doc, parentID: root)
-            }
-        }
-
-        try await reply("Hidden tab")
-        await vm.refreshOnPoll()
-        XCTAssertEqual(try unread(), 1, "not on screen: the reply stays unread")
-
-        onScreen = true
-        vm.layout.show(.board)
-        await vm.refreshOnPoll()
-        XCTAssertEqual(try unread(), 1, "another pane: the document is not on screen")
-
-        vm.layout.show(.documents)
-        await vm.refreshOnPoll()
-        XCTAssertEqual(try unread(), 0, "on screen: marked read like the open path")
-        XCTAssertEqual(vm.summaries.first?.unreadAgentComments, 0, "the list reloads after marking")
-        vm.closeDocument()
-    }
-
-    func testSwitchingProjectClosesTheOpenDocument() async throws {
-        let (p1, p2) = try await pool.write { d -> (Int64, Int64) in
-            let p1 = try TestDatabase.insertWorkbench(d, name: "one", folder: "/tmp/one")
-            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p1)
-            return (p1, try TestDatabase.insertWorkbench(d, name: "two", folder: "/tmp/two"))
-        }
-        let vm = makeVM()
-        await vm.reload()
-        vm.selectedWorkbenchID = p1
-        await vm.loadDocuments()
-        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
-        XCTAssertNotNil(vm.documentViewModel)
-        vm.selectedWorkbenchID = p2
-        XCTAssertNil(vm.documentViewModel)
-    }
 }
 
 /// Returns one scripted result per call, in order (the last one repeats).

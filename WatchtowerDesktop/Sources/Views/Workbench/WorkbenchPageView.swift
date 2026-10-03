@@ -29,8 +29,12 @@ struct WorkbenchPageView: View {
                     .padding(8)
                 Divider()
             }
-            WorkspaceAreaView(vm: vm, project: project)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // An ask filed outside the app has no terminal to sit beside:
+            // its drawer takes the page's trailing edge.
+            OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
+                WorkspaceAreaView(vm: vm, project: project)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
         .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
@@ -40,6 +44,8 @@ struct WorkbenchPageView: View {
         }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
+        // The 5 s poll follows the asks from here; this is the first read.
+        .task(id: project.id) { await vm.asks.refreshIfChanged(projectID: project.id) }
         .onChange(of: project.id) { old, _ in vm.stopGitWatching(projectID: old) }
         .onDisappear { vm.stopGitWatching(projectID: project.id) }
         .confirmationDialog(
@@ -119,16 +125,6 @@ struct WorkbenchPageView: View {
                     .lineLimit(1)
                     .help(installError)
             }
-            if let importNote = vm.importNotes[project.id] {
-                // Selectable: it ends with the command that retries.
-                Text(importNote)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(importNote)
-            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
@@ -152,7 +148,7 @@ struct WorkbenchPageView: View {
                 Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(installing)
-            .help("Attach new documents and re-install what is missing. Never changes the board, comments or sources.")
+            .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
             Divider()
             Button(role: .destructive) {
                 confirmDelete()
@@ -236,7 +232,8 @@ struct WorkbenchPageView: View {
     private func repairHelp(_ status: WorkbenchInstallStatus) -> String {
         "Skill \(status.skillDisplay) · hook \(status.hook ? "on" : "missing") · "
             + "drift hook \(status.stopHook ? "on" : "missing") · "
-            + "state hooks \(status.stateHooks ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
+            + "state hooks \(status.stateHooks ? "on" : "missing") · "
+            + "ask guard \(status.askGuard && status.askToolBlock ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 
     /// Repair cannot register the MCP server without `claude`: a warning
@@ -263,7 +260,7 @@ struct WorkbenchPageView: View {
         .accessibilityLabel("Claude Code CLI not found")
     }
 
-    /// Terminal / Board / Documents: on = on screen. Turning one on shows it
+    /// Terminal / Board / Files: on = on screen. Turning one on shows it
     /// (beside the terminal in a split); turning it off closes that pane of
     /// a split. Split then puts two side by side.
     private var viewButtons: some View {
@@ -333,7 +330,6 @@ private extension WorkspaceView {
         switch self {
         case .terminal: "Show the terminal (in a split, beside the other pane)"
         case .board: "Show the Board (in a split, beside the terminal)"
-        case .documents: "Show the Documents (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         }
     }

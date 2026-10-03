@@ -139,7 +139,7 @@ func (s extSource) fillPage(ctx context.Context, doc *Doc, r *extRow, names *ext
 }
 
 // fillAttachment renders an attachment: its extracted text (none = the
-// title-only rule of writeDoc indexes the file name).
+// title-only rule of prepareDoc indexes the file name).
 func (s extSource) fillAttachment(ctx context.Context, doc *Doc, r *extRow, names *extNames) error {
 	var parentTitle string
 	if r.parentID != "" {

@@ -11,34 +11,15 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["workbench", "create", "--folder", "/tmp/acme dir", "--json", "--name", "Acme"]])
     }
 
-    func testCreateDecodesAFailedDocumentImport() async throws {
-        let json = #"{"id":7,"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#
-        let created = try await WorkbenchCLI(runner: FakeCLIRunner(stdout: Data(json.utf8))).create(folder: "/tmp/acme", name: nil)
-        XCTAssertFalse(created.docsImportOK)
-        XCTAssertEqual(created.docsImportError, "permission denied")
-        XCTAssertEqual(created.importNote,
-                       "Importing the folder's documents failed (permission denied) — retry with: watchtower workbench import-docs 7")
-    }
-
-    func testCreateDecodesSkippedPathsAndAnOlderEnvelopeMeansNothingFailed() throws {
-        let json = #"""
-            {"id":7,"folder":"/tmp/acme","name":"acme","docs_import_ok":true,"docs_import_error":"",
-             "docs_import":{"imported":["README.md"],"already_attached":[],"dry_run":false,
-             "skipped_over_cap":["docs/specs/a.md","docs/specs/b.md"],
-             "unreadable":["docs/private: permission denied","docs/x: no such file or directory"]}}
-            """#
-        let created = try JSONDecoder().decode(WorkbenchCreated.self, from: Data(json.utf8))
-        XCTAssertEqual(created.unreadable.count, 2)
-        XCTAssertEqual(created.skippedOverCap, 2)
-        XCTAssertEqual(created.importNote,
-                       "Could not read docs/private: permission denied and 1 more — fix it, then run: "
-                       + "watchtower workbench import-docs 7. 2 more document(s) past the import cap — run: "
-                       + "watchtower workbench import-docs 7")
-
-        let older = try JSONDecoder().decode(WorkbenchCreated.self, from: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
-        XCTAssertTrue(older.docsImportOK)
-        XCTAssertEqual(older.docsImportError, "")
-        XCTAssertNil(older.importNote, "a CLI without the keys reports no failure")
+    /// The current envelope also carries the folder's index keys; an older
+    /// CLI's document-import keys are ignored.
+    func testCreateDecodesTheCurrentAndAnOlderEnvelope() throws {
+        let current = #"{"id":7,"folder":"/tmp/acme","name":"acme","index_ok":true,"index_error":"","indexed":3,"index_skipped":false}"#
+        XCTAssertEqual(try JSONDecoder().decode(WorkbenchCreated.self, from: Data(current.utf8)),
+                       WorkbenchCreated(id: 7, folder: "/tmp/acme", name: "acme"))
+        let older = #"{"id":7,"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#
+        XCTAssertEqual(try JSONDecoder().decode(WorkbenchCreated.self, from: Data(older.utf8)),
+                       WorkbenchCreated(id: 7, folder: "/tmp/acme", name: "acme"))
     }
 
     func testCreateWithoutNameOmitsTheFlag() async throws {
@@ -89,6 +70,29 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// Owner asks (spec 2026-10-03 §6): a workbench missing either ask guard
+    /// hook is offered Repair; an older CLI without the keys has nothing to
+    /// install.
+    func testMissingAskGuardHooksNeedRepair() throws {
+        let base = #""skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true"#
+        for (keys, guarded, blocked) in [
+            (#""ask_guard":false,"ask_tool_block":true"#, false, true),
+            (#""ask_guard":true,"ask_tool_block":false"#, true, false)
+        ] {
+            let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base),\(keys)}".utf8))
+            XCTAssertEqual(missing.askGuard, guarded, keys)
+            XCTAssertEqual(missing.askToolBlock, blocked, keys)
+            XCTAssertTrue(missing.needsRepair, keys)
+        }
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"ask_guard\":true,\"ask_tool_block\":true}".utf8))
+        XCTAssertFalse(present.needsRepair)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base)}".utf8))
+        XCTAssertTrue(older.askGuard)
+        XCTAssertTrue(older.askToolBlock)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await WorkbenchCLI(runner: runner).checkDrift(projectID: 4)
@@ -121,18 +125,6 @@ final class WorkbenchCLITests: XCTestCase {
             WorkbenchDeleted(id: 3, deleted: true, removalOK: false, removalError: "a", filesOK: false, filesError: "b").cleanupWarning,
             "The workbench was deleted, but cleaning its folder failed: a; removing its stored images failed: b"
         )
-    }
-
-    func testAttachDocumentEndsFlagsBeforeThePathAndDecodesTheEnvelope() async throws {
-        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":9,"rel_path":"docs/-x.md","created":true}"#.utf8))
-        let cli = WorkbenchCLI(runner: runner)
-        let attached = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/docs/-x.md", kind: "spec", targetID: 5)
-        XCTAssertEqual(attached, WorkbenchDocumentAttached(documentID: 9, relPath: "docs/-x.md", created: true))
-        _ = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/a.md", kind: "doc", targetID: nil)
-        XCTAssertEqual(runner.invocations, [
-            ["workbench", "attach-doc", "--kind", "spec", "--json", "--target", "5", "--", "3", "/tmp/acme/docs/-x.md"],
-            ["workbench", "attach-doc", "--kind", "doc", "--json", "--", "3", "/tmp/acme/a.md"]
-        ])
     }
 
     func testNeedsRepairOnlyWhenSomethingIsMissing() {

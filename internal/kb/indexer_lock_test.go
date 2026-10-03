@@ -59,3 +59,41 @@ func TestRun_RendersOutsideTheWriteLock(t *testing.T) {
 	require.GreaterOrEqual(t, builds, 5, "every thread was rendered")
 	require.Empty(t, errs, "a concurrent writer never hit the indexer's write lock")
 }
+
+// Fix round 1 of the owner-asks Task 5 review: chunking and hashing — the
+// CPU work of a document, seconds for a 2 MiB review file — run before the
+// write transaction opens, for a file set as for the indexer.
+func TestIndexFileSet_ChunksOutsideTheWriteLock(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	d, err := db.Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	folder := seedWorkbenchDocs(t, d)
+	exec(t, d, `CREATE TABLE lock_probe (k TEXT)`)
+	writeWorkbenchFile(t, folder, "docs/new.md", "# New\nfresh text\n")
+
+	other, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = other.Close() })
+	other.SetMaxOpenConns(1)
+	_, err = other.Exec(`PRAGMA busy_timeout=0`)
+	require.NoError(t, err)
+
+	var errs []error
+	chunked := 0
+	buildChunks = func(sections []Section) []Chunk {
+		chunked++
+		if _, err := other.ExecContext(ctx, `INSERT INTO lock_probe (k) VALUES ('x')`); err != nil {
+			errs = append(errs, err)
+		}
+		return BuildChunks(sections)
+	}
+	t.Cleanup(func() { buildChunks = BuildChunks })
+
+	_, _, err = IndexFileSet(ctx, d, FileSet{Source: WorkbenchDocSource, Container: fixtureWorkbenchID,
+		Root: folder, Files: []string{"docs/new.md", "README.md"}})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, chunked, 2, "every file was chunked")
+	require.Empty(t, errs, "a concurrent writer never hit the file set's write lock")
+}

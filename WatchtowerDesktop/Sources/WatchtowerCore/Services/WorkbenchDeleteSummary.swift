@@ -10,7 +10,7 @@ package struct WorkbenchDeleteSummary: Equatable {
     package let name: String
     package let folder: String
     package let targets: Int
-    package let documents: Int
+    package let asks: Int
     package let comments: Int
     package let vocabulary: WorkbenchVocabulary
 
@@ -18,14 +18,14 @@ package struct WorkbenchDeleteSummary: Equatable {
         name: String,
         folder: String,
         targets: Int,
-        documents: Int,
+        asks: Int,
         comments: Int,
         vocabulary: WorkbenchVocabulary = .current
     ) {
         self.name = name
         self.folder = folder
         self.targets = targets
-        self.documents = documents
+        self.asks = asks
         self.comments = comments
         self.vocabulary = vocabulary
     }
@@ -39,7 +39,7 @@ package struct WorkbenchDeleteSummary: Equatable {
             name: project.name,
             folder: project.folderPath,
             targets: try count("targets"),
-            documents: try count("project_documents"),
+            asks: try count("owner_asks"),
             comments: try count("project_comments"),
             vocabulary: vocabulary
         )
@@ -50,8 +50,8 @@ package struct WorkbenchDeleteSummary: Equatable {
     package var message: String {
         """
         Watchtower removes the board: \(Self.plural(targets, "target")), \
-        \(Self.plural(documents, "document")) and \(Self.plural(comments, "comment")). \
-        The document files themselves stay in the folder; Watchtower's own \
+        \(Self.plural(asks, "ask")) and \(Self.plural(comments, "comment")). \
+        The files in the folder themselves stay; Watchtower's own \
         copies of images attached to targets are deleted.
 
         In \(folder) it removes what it installed: the \(vocabulary.skillName) skill, \

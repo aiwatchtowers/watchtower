@@ -1,0 +1,13 @@
+{
+  "kind": "question",
+  "payload": {
+    "focus": [],
+    "questions": [
+      {"id": "1", "question": "First?", "options": [{"label": "A"}, {"label": "B"}]},
+      {"id": "2", "question": "Second?", "options": [{"label": "A"}, {"label": "B"}]}
+    ],
+    "checklist": []
+  },
+  "answer": {"answers": [{"id": "1", "labels": ["A"], "other": ""}], "checklist": [], "comments": [], "note": "", "verdict": ""},
+  "error": "answers: question \"2\" has no answer"
+}

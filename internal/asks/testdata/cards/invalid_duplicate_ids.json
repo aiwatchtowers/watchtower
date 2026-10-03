@@ -1,0 +1,4 @@
+{"questions": [
+  {"id": "2", "question": "Explicit id 2", "options": [{"label": "A"}, {"label": "B"}]},
+  {"question": "Defaults to id 2", "options": [{"label": "A"}, {"label": "B"}]}
+]}

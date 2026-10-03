@@ -26,14 +26,14 @@ const maxBatchTargets = 100
 // WorkbenchTools returns every workbench tool (surface "project"), in the order
 // buildToolRegistry registers them. files stores the images attached to
 // targets.
-// indexDocs says whether attach_document also re-indexes the workbench's
-// documents for its search (knowledge.enabled, PROJ-08).
-func WorkbenchTools(files workbenchfiles.Store, indexDocs bool) []*Tool {
+func WorkbenchTools(files workbenchfiles.Store) []*Tool {
 	return []*Tool{
 		NewWorkbenchInfo(), NewWorkbenchBoard(), NewUpdateWorkbench(),
 		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
 		NewCreateTargets(files), NewUpdateTarget(files),
-		NewAttachDocument(indexDocs), NewListComments(), NewAddComment(), NewResolveComment(),
+		NewListComments(), NewAddComment(), NewResolveComment(),
+		NewAskOwner(processTerminalSession), NewGetAsk(),
+		NewListAsks(processTerminalSession), NewWithdrawAsk(),
 	}
 }
 
@@ -104,7 +104,6 @@ type workbenchInfoView struct {
 	BoardLanguageRule string         `json:"board_language_rule"`
 	Sources           []sourceView   `json:"sources"`
 	Targets           map[string]int `json:"targets_by_status"`
-	Documents         int            `json:"documents"`
 	NewComments       int            `json:"comments_new_for_agent"`
 }
 
@@ -114,7 +113,7 @@ func NewWorkbenchInfo() *Tool {
 	return &Tool{
 		Name: WorkbenchInfoTool,
 		Description: "Describe this Watchtower workbench: name, folder, description, board language, sources, target counts by " +
-			"status, attached documents and owner comments waiting for you. An empty description means the " +
+			"status and owner comments waiting for you. An empty description means the " +
 			"workbench is not set up yet (run the setup of the Watchtower skill in this folder).",
 		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
@@ -138,10 +137,6 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading board: %w", err)
 	}
-	docs, err := d.ListWorkbenchDocuments(p.ID)
-	if err != nil {
-		return nil, fmt.Errorf("listing documents: %w", err)
-	}
 	fresh, err := d.ListWorkbenchComments(db.WorkbenchCommentFilter{WorkbenchID: p.ID, NewForAgent: true})
 	if err != nil {
 		return nil, fmt.Errorf("listing comments: %w", err)
@@ -149,7 +144,7 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 	v := &workbenchInfoView{
 		ID: p.ID, Name: p.Name, Folder: p.FolderPath, Description: p.Description,
 		BoardLanguageRule: BoardLanguageLine, Sources: make([]sourceView, 0, len(sources)),
-		Targets: map[string]int{}, Documents: len(docs), NewComments: len(fresh),
+		Targets: map[string]int{}, NewComments: len(fresh),
 	}
 	for _, s := range sources {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
@@ -167,16 +162,6 @@ func countStatuses(nodes []db.BoardNode, into map[string]int) {
 
 // ---- workbench_board ---------------------------------------------------
 
-type documentView struct {
-	ID       int64  `json:"id"`
-	RelPath  string `json:"rel_path"`
-	Kind     string `json:"kind"`
-	Title    string `json:"title,omitempty"`
-	TargetID int64  `json:"target_id,omitempty"`
-	Updated  string `json:"updated_at"`
-	Origin   string `json:"origin"` // agent | import (found by the setup scan) | owner
-}
-
 type boardNodeView struct {
 	ID             int             `json:"id"`
 	Text           string          `json:"text"`
@@ -189,24 +174,21 @@ type boardNodeView struct {
 	PR             string          `json:"pr,omitempty"`           // the pull request, a number or URL
 	NewForAgent    int             `json:"comments_new_for_agent,omitempty"`
 	UnreadForOwner int             `json:"comments_unread_for_owner,omitempty"`
-	Documents      []documentView  `json:"documents,omitempty"`
 	Children       []boardNodeView `json:"children,omitempty"`
 }
 
 type workbenchBoardView struct {
 	WorkbenchID int64           `json:"workbench_id"`
 	Targets     []boardNodeView `json:"targets"`
-	Documents   []documentView  `json:"documents"`
 }
 
 // NewWorkbenchBoard returns the bound workbench's target tree with comment
-// counters, plus every attached document.
+// counters.
 func NewWorkbenchBoard() *Tool {
 	return &Tool{
 		Name: WorkbenchBoardTool,
-		Description: "The workbench board: the target tree (ids, status and since when, priority, progress, comment counters, " +
-			"linked documents; siblings sorted by priority, then status) and every attached document. " +
-			"Read it before changing the board.",
+		Description: "The workbench board: the target tree (ids, status and since when, priority, progress, comment counters; " +
+			"siblings sorted by priority, then status). Read it before changing the board.",
 		InputSchema: mustSchema[emptyArgs](WorkbenchBoardTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
@@ -219,11 +201,7 @@ func NewWorkbenchBoard() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("loading board: %w", err)
 			}
-			docs, err := d.ListWorkbenchDocuments(p.ID)
-			if err != nil {
-				return nil, fmt.Errorf("listing documents: %w", err)
-			}
-			return workbenchBoardView{WorkbenchID: p.ID, Targets: boardViews(board), Documents: documentViews(docs)}, nil
+			return workbenchBoardView{WorkbenchID: p.ID, Targets: boardViews(board)}, nil
 		},
 	}
 }
@@ -235,18 +213,7 @@ func boardViews(nodes []db.BoardNode) []boardNodeView {
 			ID: n.Target.ID, Text: n.Target.Text, Intent: n.Target.Intent,
 			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress,
 			StatusSince: n.StatusSince, Branch: n.Target.Branch, PR: n.Target.PR, NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
-			Documents: documentViews(n.Documents), Children: boardViews(n.Children),
-		})
-	}
-	return out
-}
-
-func documentViews(docs []db.WorkbenchDocument) []documentView {
-	out := make([]documentView, 0, len(docs))
-	for _, doc := range docs {
-		out = append(out, documentView{
-			ID: doc.ID, RelPath: doc.RelPath, Kind: doc.Kind, Title: doc.Title,
-			TargetID: doc.TargetID.Int64, Updated: doc.UpdatedAt, Origin: doc.Origin,
+			Children: boardViews(n.Children),
 		})
 	}
 	return out

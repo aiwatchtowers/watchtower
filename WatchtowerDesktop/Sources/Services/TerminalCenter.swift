@@ -129,8 +129,8 @@ final class TerminalCenter {
         Set(rows.values.filter { $0.projectID == projectID }.map(\.id))
     }
 
-    /// Where the project's Send comments goes: its most recently focused live
-    /// `claude` session.
+    /// The project's active session — the one the Terminal toggle shows
+    /// first: its most recently focused live `claude` session.
     func activeSession(projectID: Int64) -> TerminalSession? {
         TerminalSessionPolicy.activeSession(
             rows.values.filter { $0.projectID == projectID }, live: liveIDs, lastFocused: focusOrder

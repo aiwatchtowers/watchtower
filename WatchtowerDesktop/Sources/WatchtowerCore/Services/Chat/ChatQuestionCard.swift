@@ -68,7 +68,7 @@ package enum ChatQuestionParser {
             }
             let body = close.lowerBound > lineEnd ? String(text[text.index(after: lineEnd)..<close.lowerBound]) : ""
             cursor = close.upperBound
-            if let decoded = decode(body) {
+            if let decoded = decodeCard(Data(body.utf8)) {
                 card = decoded
                 cardRange = open.lowerBound..<close.upperBound
             }
@@ -148,8 +148,12 @@ package enum ChatQuestionParser {
         }
     }
 
-    private static func decode(_ json: String) -> ChatQuestionCard? {
-        guard let raw = try? JSONDecoder().decode(RawCard.self, from: Data(json.utf8)),
+    /// A card body (`{"questions": [...]}`, unknown keys ignored), or nil
+    /// when it does not decode or breaks a bound. Also the decoder of an
+    /// owner ask's stored questions — the dual path with Go's
+    /// `asks.Validate`, pinned by `internal/asks/testdata/cards`.
+    package static func decodeCard(_ json: Data) -> ChatQuestionCard? {
+        guard let raw = try? JSONDecoder().decode(RawCard.self, from: json),
               (1...4).contains(raw.questions.count) else { return nil }
         var questions: [ChatQuestion] = []
         for (index, rawQuestion) in raw.questions.enumerated() {

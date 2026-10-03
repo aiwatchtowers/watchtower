@@ -93,7 +93,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
 
         XCTAssertEqual(onScreen(vm), .session(a.id), "the session clicked last is on screen")
         XCTAssertEqual(vm.panelSelection, .session(a.id))
-        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id, "and is the one Send comments goes to")
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id, "and is the workbench's active session")
     }
 
     /// A → B → A while B resumes (not running, not yet in the list): A ends
@@ -180,6 +180,25 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
 
         XCTAssertEqual(onScreen(vm), .board)
         XCTAssertEqual(appState.terminalCenter.states[slow.id], .running)
+    }
+
+    /// An answer's line typed into session A while a slower click on
+    /// another session is pending: the answer reveal is the later action, so
+    /// A stays on screen with the keyboard — the owner's Return never lands
+    /// in the other session.
+    func testAnAnswerRevealSupersedesAPendingSwitch() async throws {
+        let a = try await insertSession("a")
+        let vm = try await page(running: [a])
+        let slow = try await insertSession("slow")
+        let projectID = projectID
+
+        let click = Task { await vm.showSession(id: slow.id) }
+        let answer = Task { vm.showAnsweredSession(a.id, projectID: projectID) }
+        _ = await (click.value, answer.value)
+
+        XCTAssertEqual(onScreen(vm), .session(a.id))
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id)
+        XCTAssertEqual(appState.terminalCenter.states[slow.id], .running, "the superseded click's session still started")
     }
 
     /// ⌘1 with the panel's list not read yet loads it first; a view button

@@ -18,11 +18,11 @@ import (
 // workbenchFixture is two projects side by side plus a plain (non-project)
 // target, so every scope test can aim a call at the other project.
 type workbenchFixture struct {
-	d                            *db.DB
-	a, b                         int64 // project ids; sessions are bound to a
-	aTarget, bTarget, plain      int64
-	bSource, bComment, bDocument int64
-	bImage                       int64
+	d                       *db.DB
+	a, b                    int64 // project ids; sessions are bound to a
+	aTarget, bTarget, plain int64
+	bSource, bComment       int64
+	bImage                  int64
 }
 
 func newWorkbenchFixture(t *testing.T) workbenchFixture {
@@ -40,8 +40,6 @@ func newWorkbenchFixture(t *testing.T) workbenchFixture {
 	fx.bComment, err = d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: fx.b,
 		TargetID: sql.NullInt64{Int64: fx.bTarget, Valid: true}, Author: "owner", Body: "why?"})
 	require.NoError(t, err)
-	fx.bDocument, _, err = d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: fx.b, RelPath: "docs/beta.md", Kind: "doc"})
-	require.NoError(t, err)
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		fx.bImage, err = db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{WorkbenchID: fx.b, TargetID: fx.bTarget,
 			FileName: "beta.png", MIME: "image/png", Size: 3, SHA256: "beta", Path: "/store/2/beta.png"})
@@ -53,7 +51,7 @@ func newWorkbenchFixture(t *testing.T) workbenchFixture {
 func workbenchRegistry(t *testing.T, d *db.DB) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range append(WorkbenchTools(workbenchfiles.New(t.TempDir()), true), NewListTargets(), NewGetTarget()) {
+	for _, tool := range append(WorkbenchTools(workbenchfiles.New(t.TempDir())), NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg
@@ -91,7 +89,7 @@ func countActions(t *testing.T, d *db.DB) int {
 }
 
 func TestProjectTools_AllOnProjectSurfaceNeverExternal(t *testing.T) {
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, false) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
 		assert.Equal(t, []string{"project"}, tool.Surfaces, tool.Name)
 		assert.False(t, tool.External, "%s must stay on this machine (DEV-06)", tool.Name)
 		if tool.Access == AccessWrite {
@@ -109,6 +107,7 @@ func TestProjectInfo_DescribesTheBoundProject(t *testing.T) {
 	assert.Contains(t, got, `"name":"alpha"`)
 	assert.Contains(t, got, `"description":"A test project."`)
 	assert.Contains(t, got, `"targets_by_status":{"todo":1}`)
+	assert.NotContains(t, got, `"documents"`)
 	assert.NotContains(t, got, "beta", "another project's data never leaks into project_info")
 }
 
@@ -150,7 +149,7 @@ func callReadIn(t *testing.T, reg *Registry, projectID int64, name, args string)
 	return string(b)
 }
 
-func TestProjectBoard_ReturnsTheTreeAndDocuments(t *testing.T) {
+func TestProjectBoard_ReturnsTheTree(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)
 	mustApply(t, reg, fx.a, "create_targets", fmt.Sprintf(
@@ -161,6 +160,7 @@ func TestProjectBoard_ReturnsTheTreeAndDocuments(t *testing.T) {
 	assert.Contains(t, got, `"children":[{"id":`)
 	assert.Contains(t, got, `"text":"Task 1"`)
 	assert.NotContains(t, got, "Beta feature")
+	assert.NotContains(t, got, `"documents"`, "attached documents are gone (spec 2026-10-03 §4)")
 }
 
 func TestProjectSources_AddAndRemove(t *testing.T) {
@@ -371,14 +371,9 @@ type outsideWorkbenchCall struct {
 }
 
 // outsideWorkbenchCalls lists every write the DEV-06 guard aims at project b (or
-// at no project) from a session bound to project a. Task 8 appends the
-// document and comment tools. The attach_document case needs a real file
-// inside project a's folder — otherwise resolveInsideFolder's "does not
-// exist" check refuses the call before optionalTarget ever runs, making the
-// case vacuous for the cross-project-target guard it is meant to exercise.
+// at no project) from a session bound to project a.
 func outsideWorkbenchCalls(t *testing.T, fx workbenchFixture) []outsideWorkbenchCall {
 	t.Helper()
-	writeWorkbenchFile(t, fx.d, fx.a, "docs/other-project-link.md", "# doc\n")
 	return []outsideWorkbenchCall{
 		{"update another project's target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.bTarget), true},
 		{"update a non-project target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.plain), true},
@@ -392,7 +387,6 @@ func outsideWorkbenchCalls(t *testing.T, fx workbenchFixture) []outsideWorkbench
 		{"resolve another project's comment", "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"done","reason":"r"}`, fx.bComment), true},
 		{"attach an image to another project's target", "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%q],"reason":"r"}`, fx.bTarget, fakeImage(t, "x.png", "x")), true},
 		{"detach another project's image", "update_target", fmt.Sprintf(`{"target_id":%d,"remove_image_ids":[%d],"reason":"r"}`, fx.aTarget, fx.bImage), true},
-		{"link a document to another project's target", "attach_document", fmt.Sprintf(`{"rel_path":"docs/other-project-link.md","kind":"doc","target_id":%d,"reason":"r"}`, fx.bTarget), true},
 	}
 }
 
@@ -430,7 +424,6 @@ func snapshotWorkbench(t *testing.T, d *db.DB, projectID int64) []string {
 		`SELECT id || '|' || name || '|' || description || '|' || updated_at FROM projects WHERE id = ?`,
 		`SELECT id || '|' || kind || '|' || ref FROM project_sources WHERE project_id = ? ORDER BY id`,
 		`SELECT id || '|' || text || '|' || status || '|' || progress || '|' || updated_at FROM targets WHERE project_id = ? ORDER BY id`,
-		`SELECT id || '|' || rel_path || '|' || updated_at FROM project_documents WHERE project_id = ? ORDER BY id`,
 		`SELECT id || '|' || status || '|' || body FROM project_comments WHERE project_id = ? ORDER BY id`,
 		`SELECT id || '|' || target_id || '|' || path FROM project_target_images WHERE project_id = ? ORDER BY id`,
 	}

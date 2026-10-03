@@ -1,24 +1,14 @@
 import Foundation
 
-/// "Send N comments to Claude" on a workbench document: ONE prompt line typed
-/// into the workbench's Claude Code session. The line carries only the
-/// document's path and id — Claude reads the open comments themselves through
-/// its `list_comments` tool — so the whole batch goes at once. Pure.
+/// A line typed into a workbench's Claude Code session — today an answered
+/// ask's (`OwnerAskPrompt`) — and how it gets there. Pure.
 package enum WorkbenchCommentPrompt {
-    /// Open owner threads on a document — what the button counts.
-    package static func openOwnerCount(_ threads: [WorkbenchCommentThread]) -> Int {
-        threads.filter { $0.root.isOpen && !$0.root.isAgent }.count
-    }
-
-    /// The rel path is agent-supplied, so every control or newline scalar in
-    /// it becomes a space: the line can never submit early or carry an escape.
-    /// `vocabulary` names the skill the folder has installed (spec 2026-10-02 §5.3).
-    package static func line(relPath: String, documentID: Int64, count: Int, vocabulary: WorkbenchVocabulary) -> String {
-        let path = String(relPath.unicodeScalars.map { scalar -> Character in
+    /// Every control or newline scalar becomes a space: a line carrying
+    /// agent-supplied text can never submit early or carry an escape.
+    package static func oneLine(_ text: String) -> String {
+        String(text.unicodeScalars.map { scalar -> Character in
             isControl(scalar) ? " " : Character(scalar)
         })
-        let what = count == 1 ? "the open comment" : "the \(count) open comments"
-        return "Address \(what) on \(path) (watchtower document \(documentID)) using the \(vocabulary.skillName) skill."
     }
 
     /// How the line reaches Claude Code — never with a trailing Enter.

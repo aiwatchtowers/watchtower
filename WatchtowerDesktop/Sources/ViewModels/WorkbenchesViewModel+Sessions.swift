@@ -20,8 +20,8 @@ extension WorkbenchesViewModel {
     enum Placement: Equatable {
         /// A panel click: `WorkspaceLayout.show`.
         case show
-        /// Without hiding this pane (Send comments / Open terminal from a
-        /// document): `WorkspaceLayout.reveal(_:keeping:)`.
+        /// Without hiding this pane (the Terminal toggle, Work on it):
+        /// `WorkspaceLayout.reveal(_:keeping:)`.
         case keeping(WorkspacePane)
         /// Into this pane's slot (a pane's own picker); a slot gone from
         /// the layout meanwhile falls back to `.show`.
@@ -57,6 +57,13 @@ extension WorkbenchesViewModel {
 
     func setLayout(_ layout: WorkspaceLayout, projectID: Int64) {
         layouts[projectID] = layout
+        // The ask drawer sits beside its session's terminal: once that
+        // session leaves the screen, the drawer (and the stack's highlight)
+        // goes with it. The draft stays.
+        if let sessionID = asks.drawerAsk(projectID: projectID)?.sessionID,
+           !layout.visiblePanes.contains(.session(sessionID)) {
+            asks.closeDrawer(projectID: projectID)
+        }
         do {
             defaults.set(try JSONEncoder().encode(layout), forKey: WorkspaceLayout.key(workbenchID: projectID))
         } catch {

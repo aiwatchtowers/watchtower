@@ -2,11 +2,12 @@ import SwiftUI
 import WatchtowerCore
 
 /// The left panel's level 2 (spec 2026-09-30-project-workspace-sessions §3):
-/// one header row (the workbench switcher, New session), a SESSIONS label
+/// one header row (the workbench switcher, New session), the owner asks
+/// waiting (`OwnerAskStackSection`, spec 2026-10-03 Part 8), a SESSIONS label
 /// in the app sidebar's style, then the project's sessions. The session on
 /// screen is a tab of the workspace: filled with its backdrop, it runs on
 /// into the page beside it (`panelTab(isSelected:)`, `panelSurface()`).
-/// Board and Documents are picked in a pane's own header (`WorkspacePaneView`).
+/// Board and Files are picked in a pane's own header (`WorkspacePaneView`).
 struct WorkbenchSessionsPanel: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -15,8 +16,11 @@ struct WorkbenchSessionsPanel: View {
 
     var body: some View {
         let sessions = vm.drilledSessions
+        let stack = vm.asks.stack(projectID: project.id)
+        let closed = vm.asks.closedCounts[project.id] ?? [:]
         VStack(alignment: .leading, spacing: 0) {
             header
+            OwnerAskStackSection(vm: vm, project: project)
             Text("SESSIONS")
                 .sidebarSectionLabel()
                 .padding(.horizontal, 12)
@@ -30,8 +34,15 @@ struct WorkbenchSessionsPanel: View {
             // (VoiceOver has the row's action).
             List {
                 ForEach(vm.sessionRows(sessions)) { row in
-                    TerminalSessionRow(row: row, actions: actions)
-                        .panelTab(isSelected: vm.panelSelection == .session(row.id))
+                    TerminalSessionRow(
+                        row: row,
+                        actions: actions,
+                        openAsks: stack.count(session: row.id),
+                        closedAsks: (closed[row.id] ?? 0) > 0
+                            ? OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: row.id, count: closed[row.id] ?? 0)
+                            : nil
+                    )
+                    .panelTab(isSelected: vm.panelSelection == .session(row.id))
                 }
                 .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
             }
@@ -70,14 +81,39 @@ struct SessionRowActions {
 }
 
 /// One terminal session in the panel: its state dot and caption ("waiting
-/// for you", "not started · 5m"), and the target it works on.
+/// for you", "not started · 5m"), and the target it works on. A workbench's
+/// rows also count the session's open asks and offer "▸ N closed"; that
+/// button sits outside the row's open click, which would start the session.
 struct TerminalSessionRow: View {
     let row: SessionSwitcherPresentation.Row
     let actions: SessionRowActions
+    var openAsks = 0
+    var closedAsks: OwnerAskClosedButton?
 
     private var session: TerminalSession { row.session }
 
     var body: some View {
+        HStack(spacing: 4) {
+            opener
+            if openAsks > 0 {
+                Text("\(openAsks)")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 5)
+                    .background(Color.accentColor.opacity(0.2), in: Capsule())
+                    .help("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+                    .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
+            }
+            closedAsks
+        }
+        .listRowSeparator(.hidden)
+        .contextMenu {
+            Button("Rename…") { actions.rename(session) }
+            Divider()
+            Button("Delete…", role: .destructive) { actions.delete(session) }
+        }
+    }
+
+    private var opener: some View {
         HStack(spacing: 6) {
             SessionLiveDot(state: row.state)
                 .frame(width: 16)
@@ -102,13 +138,7 @@ struct TerminalSessionRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { actions.open(session) }
-        .listRowSeparator(.hidden)
         .help(row.state.isLive ? session.title : "Not running — click to start")
-        .contextMenu {
-            Button("Rename…") { actions.rename(session) }
-            Divider()
-            Button("Delete…", role: .destructive) { actions.delete(session) }
-        }
     }
 }
 

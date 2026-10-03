@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// The Workbench tab's left panel (spec 2026-09-30-project-workspace-sessions
 /// §3): level 1 lists projects and standalone terminals, level 2 one
-/// project's Board, Documents and sessions. The views only call these.
+/// project's Board, Files and sessions. The views only call these.
 extension WorkbenchesViewModel {
     /// Level 2's project, when it is still listed.
     var drilledWorkbench: Workbench? {
@@ -191,22 +191,11 @@ extension WorkbenchesViewModel {
         await newSession(projectID: projectID)
     }
 
-    /// Puts `sessionID` on screen the way `Placement.keeping(.documents)`
-    /// does — the session a Send comments line was just pasted into, so the
-    /// owner sees it land: beside the document in a split (already visible →
-    /// nothing moves), in its place in a single pane.
-    func showTerminal(sessionID: Int64, projectID: Int64) {
-        beginSwitch(projectID: projectID)
-        var updated = layout(projectID: projectID)
-        updated.reveal(.session(sessionID), keeping: .documents)
-        setLayout(updated, projectID: projectID)
-    }
-
     // MARK: - Main area (single / split / expand)
 
     /// The page's Split toggle. A split's second pane is Board when the
     /// first is a session, else the active live session, else whichever of
-    /// Board and Documents is not already shown. Nothing starts.
+    /// Board and Files is not already shown. Nothing starts.
     func toggleSplit(projectID: Int64) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
@@ -217,13 +206,13 @@ extension WorkbenchesViewModel {
         } else if let id = activeSessionID(projectID: projectID) {
             updated.split(with: .session(id))
         } else {
-            updated.split(with: updated.primary == .board ? .documents : .board)
+            updated.split(with: updated.primary == .board ? .files : .board)
         }
         setLayout(updated, projectID: projectID)
     }
 
-    /// The page header's Terminal / Board / Documents buttons. Board and
-    /// Documents never hide a terminal (`WorkspaceLayout.showWorkbenchView`).
+    /// The page header's Terminal / Board / Files buttons. Board and Files
+    /// never hide a terminal (`WorkspaceLayout.showWorkbenchView`).
     /// Terminal keeps the view on screen beside it in a split: a session
     /// already in a slot (or the live one) comes back as is; otherwise the
     /// most recent open session is resumed, or a new one starts.
@@ -233,8 +222,6 @@ extension WorkbenchesViewModel {
         switch view {
         case .board:
             updated.showWorkbenchView(.board)
-        case .documents:
-            updated.showWorkbenchView(.documents)
         case .files:
             updated.showWorkbenchView(.files)
         case .terminal:
@@ -254,7 +241,7 @@ extension WorkbenchesViewModel {
 
     /// A FILES tree click (POC): the file opens in a tab (a preview tab on a
     /// single click, a kept one on a double click) and the Files pane goes
-    /// on screen the way Board and Documents do — beside a terminal in a
+    /// on screen the way the Board does — beside a terminal in a
     /// split, else in place.
     func openFile(_ relPath: String, project: Workbench, preview: Bool) async {
         // An edit still unsent in the preview tab keeps it before a preview

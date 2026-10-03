@@ -1,0 +1,6 @@
+{
+  "kind": "review",
+  "payload": {"focus": [], "questions": [], "checklist": []},
+  "answer": {"answers": [], "checklist": [], "comments": [], "note": "", "verdict": "approved"},
+  "canonical": "{\"answers\":[],\"checklist\":[],\"comments\":[],\"note\":\"\",\"verdict\":\"approved\"}"
+}

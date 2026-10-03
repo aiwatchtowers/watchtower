@@ -117,9 +117,6 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             if row.node.openComments > 0 {
                 counter("\(row.node.openComments)", systemImage: "text.bubble", help: "Open comments", color: .orange)
             }
-            if !row.node.documents.isEmpty {
-                counter("\(row.node.documents.count)", systemImage: "doc.text", help: "Documents")
-            }
         }
         .lineLimit(1)
     }

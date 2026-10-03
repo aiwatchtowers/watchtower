@@ -2,8 +2,8 @@ import Foundation
 
 package enum WorkbenchNoticeKind: String, Codable, Sendable {
     case agentAsks
-    case documentReady
-    case commentsAnswered
+    /// The agent filed an owner ask (spec 2026-10-03 Part 8).
+    case askOpened
     case targetDone
     /// A write the agent proposed from the workbench terminal that only the
     /// owner can approve (a Slack send, DEV-06) — the card is in the Inbox.
@@ -40,51 +40,15 @@ package enum WorkbenchNotificationPolicy {
         }
     }
 
-    package struct DocumentState: Codable, Equatable, Sendable {
+    /// An `owner_asks` row still `open` at the poll.
+    package struct OpenAsk: Codable, Equatable, Sendable {
         package let title: String
-        package let updatedAt: String
-        package let openOwnerComments: Int
-        /// Not attached by the agent (`origin` import or owner): never "ready
-        /// for review". The name predates owner attaches; kept for persisted snapshots.
-        package let imported: Bool
-        /// The agent put its target `in_review` (`WorkbenchDocumentListItem.awaitingReview`,
-        /// minus a review the owner started themselves).
-        package let awaitingReview: Bool
-        /// False for a snapshot persisted before `awaitingReview` existed: its
-        /// review state is unknown, so no "entered review" edge is read from it.
-        /// Not encoded — every snapshot written now knows.
-        package let reviewKnown: Bool
+        /// The terminal session that filed it; nil for one filed outside the app.
+        package let sessionID: Int64?
 
-        package init(
-            title: String,
-            updatedAt: String,
-            openOwnerComments: Int,
-            imported: Bool = false,
-            awaitingReview: Bool = false,
-            reviewKnown: Bool = true
-        ) {
+        package init(title: String, sessionID: Int64? = nil) {
             self.title = title
-            self.updatedAt = updatedAt
-            self.openOwnerComments = openOwnerComments
-            self.imported = imported
-            self.awaitingReview = awaitingReview
-            self.reviewKnown = reviewKnown
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case title, updatedAt, openOwnerComments, imported, awaitingReview
-        }
-
-        package init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            title = try c.decode(String.self, forKey: .title)
-            updatedAt = try c.decode(String.self, forKey: .updatedAt)
-            openOwnerComments = try c.decode(Int.self, forKey: .openOwnerComments)
-            // A snapshot persisted before the key existed held no imports.
-            imported = try c.decodeIfPresent(Bool.self, forKey: .imported) ?? false
-            let review = try c.decodeIfPresent(Bool.self, forKey: .awaitingReview)
-            awaitingReview = review ?? false
-            reviewKnown = review != nil
+            self.sessionID = sessionID
         }
     }
 
@@ -123,8 +87,13 @@ package enum WorkbenchNotificationPolicy {
         package var lastActionID: Int64
         package var pendingActions: [PendingAction]
         package var questions: [Question]
-        package var documents: [Int64: DocumentState]
         package var targets: [Int64: TargetState]
+        /// The open asks by id. An ask is announced when its id first shows.
+        package var openAsks: [Int64: OpenAsk]
+        /// False for a snapshot persisted before asks existed: which asks it
+        /// had seen is unknown, so none is announced from it (the `reviewKnown`
+        /// precedent). Not encoded — every snapshot written now knows.
+        package var asksKnown: Bool
         package var ownerTouched: Set<WorkbenchSubject>
 
         package init(
@@ -132,9 +101,10 @@ package enum WorkbenchNotificationPolicy {
             projectName: String,
             lastAgentCommentID: Int64,
             questions: [Question],
-            documents: [Int64: DocumentState],
             targets: [Int64: TargetState],
             ownerTouched: Set<WorkbenchSubject>,
+            openAsks: [Int64: OpenAsk] = [:],
+            asksKnown: Bool = true,
             lastActionID: Int64 = 0,
             pendingActions: [PendingAction] = []
         ) {
@@ -144,15 +114,16 @@ package enum WorkbenchNotificationPolicy {
             self.lastActionID = lastActionID
             self.pendingActions = pendingActions
             self.questions = questions
-            self.documents = documents
             self.targets = targets
+            self.openAsks = openAsks
+            self.asksKnown = asksKnown
             self.ownerTouched = ownerTouched
         }
 
         /// The baseline of a project just created in-app: everything after it counts.
         package static func empty(projectID: Int64, projectName: String) -> Self {
             Self(projectID: projectID, projectName: projectName, lastAgentCommentID: 0,
-                 questions: [], documents: [:], targets: [:], ownerTouched: [])
+                 questions: [], targets: [:], ownerTouched: [])
         }
 
         package var persisted: Self {
@@ -165,7 +136,7 @@ package enum WorkbenchNotificationPolicy {
 
         private enum CodingKeys: String, CodingKey {
             case projectID, projectName, lastAgentCommentID, lastActionID, pendingActions
-            case questions, documents, targets, ownerTouched
+            case questions, targets, openAsks, ownerTouched
         }
 
         package init(from decoder: Decoder) throws {
@@ -179,8 +150,12 @@ package enum WorkbenchNotificationPolicy {
             lastActionID = try c.decodeIfPresent(Int64.self, forKey: .lastActionID) ?? Self.unknownActionWatermark
             pendingActions = try c.decodeIfPresent([PendingAction].self, forKey: .pendingActions) ?? []
             questions = try c.decode([Question].self, forKey: .questions)
-            documents = try c.decode([Int64: DocumentState].self, forKey: .documents)
+            // A snapshot persisted before asks still carries its retired
+            // `documents` key; it is ignored.
             targets = try c.decode([Int64: TargetState].self, forKey: .targets)
+            let asks = try c.decodeIfPresent([Int64: OpenAsk].self, forKey: .openAsks)
+            openAsks = asks ?? [:]
+            asksKnown = asks != nil
             ownerTouched = try c.decode(Set<WorkbenchSubject>.self, forKey: .ownerTouched)
         }
 
@@ -192,8 +167,7 @@ package enum WorkbenchNotificationPolicy {
     package static func decide(previous: Snapshot, current: Snapshot) -> [WorkbenchNotice] {
         [
             coalesce(questions(previous, current), kind: .agentAsks, in: current),
-            coalesce(readyDocuments(previous, current), kind: .documentReady, in: current),
-            coalesce(answeredDocuments(previous, current), kind: .commentsAnswered, in: current),
+            coalesce(openedAsks(previous, current), kind: .askOpened, in: current),
             coalesce(doneTargets(previous, current), kind: .targetDone, in: current),
             coalesce(proposedActions(previous, current), kind: .actionAwaitsApproval, in: current)
         ].flatMap { $0 }
@@ -211,36 +185,19 @@ package enum WorkbenchNotificationPolicy {
         }
     }
 
-    /// A revised agent document, or one whose target the agent just put in
-    /// review (#105) — one notice either way, keyed by the revision, so
-    /// attaching and marking the review in one go never notifies twice. A
-    /// revision of a document already in review is titled as awaiting review.
-    private static func readyDocuments(_ previous: Snapshot, _ current: Snapshot) -> [WorkbenchNotice] {
-        current.documents.sorted { $0.key < $1.key }.compactMap { id, doc in
-            guard !doc.imported else { return nil }
-            let before = previous.documents[id]
-            let revised = before?.updatedAt != doc.updatedAt
-            let awaiting = doc.awaitingReview
-            // A previous state of unknown review is no edge: an upgrade must
-            // not re-announce reviews that were already running.
-            let enteredReview = awaiting && before.map { $0.reviewKnown && !$0.awaitingReview } ?? true
-            guard revised || enteredReview else { return nil }
-            return notice(.documentReady, current,
-                          title: awaiting ? "\(doc.title) awaits your review" : "\(doc.title) ready for review",
-                          body: current.projectName,
-                          route: WorkbenchRoute(projectID: current.projectID, pane: .documents, subjectID: id),
-                          key: "\(id)-\(doc.updatedAt)")
-        }
-    }
-
-    private static func answeredDocuments(_ previous: Snapshot, _ current: Snapshot) -> [WorkbenchNotice] {
-        current.documents.sorted { $0.key < $1.key }.compactMap { id, doc in
-            guard let before = previous.documents[id], before.openOwnerComments > 0, doc.openOwnerComments == 0,
-                  !current.ownerTouched.contains(.document(id)) else { return nil }
-            return notice(.commentsAnswered, current,
-                          title: "All comments on \(doc.title) answered", body: current.projectName,
-                          route: WorkbenchRoute(projectID: current.projectID, pane: .documents, subjectID: id),
-                          key: "\(id)-\(doc.updatedAt)")
+    /// An ask open now that the previous poll did not see. The owner's
+    /// answer only closes asks, so it is never announced.
+    private static func openedAsks(_ previous: Snapshot, _ current: Snapshot) -> [WorkbenchNotice] {
+        guard previous.asksKnown else { return [] }
+        return current.openAsks.sorted { $0.key < $1.key }.compactMap { id, ask in
+            guard previous.openAsks[id] == nil else { return nil }
+            // The session it was filed from; one filed outside the app has
+            // none, so it lands on the board (the asks stack sits beside it).
+            let route = ask.sessionID.map {
+                WorkbenchRoute(projectID: current.projectID, pane: .terminal, subjectID: $0, askID: id)
+            } ?? WorkbenchRoute(projectID: current.projectID, pane: .board, askID: id)
+            return notice(.askOpened, current, title: "Agent asks: \(ask.title)", body: current.projectName,
+                          route: route, key: "\(id)")
         }
     }
 
@@ -272,18 +229,16 @@ package enum WorkbenchNotificationPolicy {
 
     private static func coalesce(_ notices: [WorkbenchNotice], kind: WorkbenchNoticeKind, in snapshot: Snapshot) -> [WorkbenchNotice] {
         guard notices.count >= coalesceThreshold else { return notices }
-        let pane: WorkbenchPane = kind == .documentReady || kind == .commentsAnswered ? .documents : .board
         return [notice(kind, snapshot,
                        title: summaryTitle(kind, count: notices.count), body: snapshot.projectName,
-                       route: WorkbenchRoute(projectID: snapshot.projectID, pane: pane),
+                       route: WorkbenchRoute(projectID: snapshot.projectID, pane: .board),
                        key: "summary-" + notices.map(\.identifier).joined(separator: ",").hashValueString)]
     }
 
     private static func summaryTitle(_ kind: WorkbenchNoticeKind, count: Int) -> String {
         switch kind {
         case .agentAsks: "\(count) agent questions"
-        case .documentReady: "\(count) documents ready for review"
-        case .commentsAnswered: "All comments answered on \(count) documents"
+        case .askOpened: "Waiting for you (\(count))"
         case .targetDone: "\(count) targets done"
         case .actionAwaitsApproval: "\(count) proposals await your approval"
         }

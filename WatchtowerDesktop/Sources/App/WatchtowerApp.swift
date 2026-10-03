@@ -93,7 +93,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
     /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`, `transcriptID`,
-    /// `projectId`, `pane`, `subjectId`) must stay in sync with
+    /// `projectId`, `pane`, `subjectId`, `askId`) must stay in sync with
     /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
     /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
     /// those keys are absent by design from the forwarded payload and must stay so.
@@ -208,8 +208,12 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             userInfo[key] as? Int64 ?? (userInfo[key] as? NSNumber)?.int64Value
         }
         guard let projectID = int64("projectId") else { return nil }
-        let pane = (userInfo["pane"] as? String).flatMap(WorkbenchPane.init(rawValue:)) ?? .board
-        return WorkbenchRoute(projectID: projectID, pane: pane, subjectID: int64("subjectId"))
+        let paneName = userInfo["pane"] as? String
+        let pane = paneName.flatMap(WorkbenchPane.init(rawValue:)) ?? .board
+        // A pane this build no longer has (`documents`, delivered before spec
+        // 2026-10-03 Part 8) opens the board, without the subject it named there.
+        let known = paneName == nil || paneName == pane.rawValue
+        return WorkbenchRoute(projectID: projectID, pane: pane, subjectID: known ? int64("subjectId") : nil, askID: int64("askId"))
     }
 
     /// Pre-meeting push actions: Join / Join + Record route through the shared

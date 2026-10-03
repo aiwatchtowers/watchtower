@@ -62,13 +62,6 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 		Author: "agent", Body: "Which currency list?",
 	})
 	require.NoError(t, err)
-	docID, _, err := d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: busy, RelPath: "docs/plan.md", Kind: "plan", Title: "Payments plan"})
-	require.NoError(t, err)
-	_, err = d.AddWorkbenchComment(db.WorkbenchComment{
-		WorkbenchID: busy, DocumentID: sql.NullInt64{Int64: docID, Valid: true},
-		Author: "owner", Body: "Split task 3", AnchorQuote: "Task 3",
-	})
-	require.NoError(t, err)
 
 	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
 	pipe.shown = newShownIDs()
@@ -82,9 +75,43 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	assert.Contains(t, ctx, "Done since the last briefing (1): Task 1: schema")
 	assert.NotContains(t, ctx, "Task 0: spike", "done before the window")
 	assert.Contains(t, ctx, "Unread agent comments: 1")
-	assert.Contains(t, ctx, "Documents with open owner comments (1): Payments plan")
+	assert.NotContains(t, ctx, "Documents", "attached documents are gone (spec 2026-10-03 §7)")
 	assert.NotContains(t, ctx, "quiet", "a project with no activity is omitted")
 	assert.True(t, pipe.shown.workbenches[busy])
+}
+
+// An agent's question now waits as an open ask, not an agent comment; the
+// briefing still shows that the agent is waiting, by title and capped.
+func TestGatherProjects_ListsOpenOwnerAsks(t *testing.T) {
+	d := testDB(t)
+	pid := seedWorkbench(t, d, "acme")
+	other := seedWorkbench(t, d, "other")
+	for i := 0; i < maxWorkbenchItems+1; i++ {
+		_, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'question', ?)`,
+			pid, "Which currency list "+strings.Repeat("x", i+1)+"?\nsecond line")
+		require.NoError(t, err)
+	}
+	_, err := d.Exec(`INSERT INTO owner_asks (project_id, kind, title, status, answer) VALUES (?, 'check', 'Answered already', 'answered', '{}')`, pid)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO owner_asks (project_id, kind, title, status, withdrawn_reason) VALUES (?, 'check', 'Withdrawn one', 'withdrawn', 'agent')`, other)
+	require.NoError(t, err)
+
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+	pipe.shown = newShownIDs()
+	ctx, has := pipe.gatherWorkbenches(time.Now().Add(-24 * time.Hour))
+
+	require.True(t, has, "open asks alone are activity")
+	assert.Contains(t, ctx, "Open asks waiting for the owner (6): Which currency list ")
+	assert.Contains(t, ctx, "(+1 more)")
+	assert.NotContains(t, ctx, "second line", "one line per title")
+	assert.NotContains(t, ctx, "Answered already", "only open asks wait on the owner")
+	assert.NotContains(t, ctx, "other", "a withdrawn ask is no activity")
+	assert.True(t, pipe.shown.workbenches[pid])
+}
+
+func TestBriefingDailyV11_NamesOpenAsks(t *testing.T) {
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 11, "the reworded rule must auto-upgrade stored v10 rows")
+	assert.Contains(t, prompts.Defaults[prompts.BriefingDaily], "open asks waiting for the owner")
 }
 
 func TestGatherProjects_ListsTargetsInReview(t *testing.T) {

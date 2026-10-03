@@ -11,6 +11,12 @@ import (
 	"watchtower/internal/db"
 )
 
+// writeDoc prepares and stores one document — the two steps storeBatch's
+// callers split around their write transaction.
+func writeDoc(ctx context.Context, q Queryer, d *Doc) (bool, error) {
+	return storeDoc(ctx, q, prepareDoc(d))
+}
+
 func testNow() time.Time { return time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC) }
 
 func testDoc() *Doc {

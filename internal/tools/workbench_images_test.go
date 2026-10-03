@@ -21,7 +21,7 @@ func imageRegistry(t *testing.T, d *db.DB) (*Registry, workbenchfiles.Store) {
 	t.Helper()
 	store := workbenchfiles.New(t.TempDir())
 	reg := New(d)
-	for _, tool := range append(WorkbenchTools(store, false), NewGetTarget()) {
+	for _, tool := range append(WorkbenchTools(store), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg, store

@@ -130,7 +130,7 @@ func TestIntegrateProjectStatusJSON(t *testing.T) {
 	if got.WorkbenchID != 7 || got.Folder != p.FolderPath || got.Skill != "unchanged" || !got.Hook || !got.MCP || !got.ClaudeFound {
 		t.Fatalf("unexpected status: %+v", got)
 	}
-	if !got.StopHook || !got.StateHooks {
+	if !got.StopHook || !got.StateHooks || !got.AskGuard || !got.AskToolBlock {
 		t.Fatalf("every hook is installed: %+v", got)
 	}
 }
@@ -167,6 +167,76 @@ func TestIntegrateWorkbenchStatusJSON_StateHooksFalseWithOneMissing(t *testing.T
 	}
 	if !strings.Contains(out.String(), `"state_hooks": false`) || !strings.Contains(out.String(), `"stop_hook": true`) {
 		t.Fatalf("status --json must report state_hooks false and stop_hook true:\n%s", out.String())
+	}
+}
+
+// ask_guard and ask_tool_block each go false with their own entry gone
+// (the Desktop then offers Repair).
+func TestIntegrateWorkbenchStatusJSON_AskGuardKeys(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		drop       func(hooks map[string]any)
+		gone, kept string
+	}{
+		{"prompt hook", func(hooks map[string]any) {
+			// Keep the drift check's group, drop the prompt hook's.
+			var kept []any
+			for _, g := range hooks["Stop"].([]any) {
+				h := g.(map[string]any)["hooks"].([]any)[0].(map[string]any)
+				if h["type"] != "prompt" {
+					kept = append(kept, g)
+				}
+			}
+			hooks["Stop"] = kept
+		}, `"ask_guard": false`, `"ask_tool_block": true`},
+		{"tool block", func(hooks map[string]any) { delete(hooks, "PreToolUse") },
+			`"ask_tool_block": false`, `"ask_guard": true`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useFakeWorkbenchClaude(t)
+			p := testWorkbench(t)
+			var out bytes.Buffer
+			if err := runWorkbenchInstall(context.Background(), &out, p); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			out.Reset()
+			if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+				t.Fatalf("status: %v", err)
+			}
+			if !strings.Contains(out.String(), `"ask_guard": true`) || !strings.Contains(out.String(), `"ask_tool_block": true`) {
+				t.Fatalf("an installed workbench reports both keys true:\n%s", out.String())
+			}
+			editSettingsHooks(t, p.FolderPath, tc.drop)
+			out.Reset()
+			if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+				t.Fatalf("status: %v", err)
+			}
+			if !strings.Contains(out.String(), tc.gone) || !strings.Contains(out.String(), tc.kept) || !strings.Contains(out.String(), `"stop_hook": true`) {
+				t.Fatalf("status --json must report %s and %s:\n%s", tc.gone, tc.kept, out.String())
+			}
+		})
+	}
+}
+
+// editSettingsHooks rewrites the folder's settings.local.json with edit
+// applied to its hooks object.
+func editSettingsHooks(t *testing.T, folder string, edit func(hooks map[string]any)) {
+	t.Helper()
+	settings := filepath.Join(folder, ".claude", "settings.local.json")
+	b, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	edit(m["hooks"].(map[string]any))
+	if b, err = json.Marshal(m); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, b, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

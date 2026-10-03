@@ -32,7 +32,6 @@ final class WorkbenchPersistedKeysTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.key(workbenchID: 7), "projects.layout.7")
         XCTAssertEqual(TerminalSessionOrder.key(workbenchID: 7), "projects.sessionOrder.7")
         XCTAssertEqual(TerminalSessionOrder.key(workbenchID: nil), "projects.sessionOrder.standalone")
-        XCTAssertEqual(WorkbenchesViewModel.viewedDocumentsKey, "projects.viewedDocuments")
         XCTAssertEqual(WorkbenchNotificationCenter.enabledKey, "projects.notifications")
         XCTAssertEqual(WorkbenchNotificationCenter.snapshotKey(7), "projects.notificationSnapshot.7")
         XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
@@ -112,46 +111,6 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         XCTAssertTrue(notifier.sent.isEmpty)
     }
 
-    func testOwnerResolvingTheLastCommentDoesNotAnnounceAllAnswered() async throws {
-        var root: Int64 = 0
-        try await write { d in
-            let doc = try TestDatabase.insertWorkbenchDocument(d, projectID: self.projectID, title: "Plan")
-            root = try TestDatabase.insertWorkbenchComment(d, projectID: self.projectID, author: "owner", documentID: doc, quote: "x")
-        }
-        let center = makeCenter()
-        await center.poll()
-        let doc = try await pool.read { try Int64.fetchOne($0, sql: "SELECT id FROM project_documents") }
-        try await write { try WorkbenchQueries.setStatus($0, commentID: root, status: "resolved") }
-        center.recordOwnerWrite(projectID: projectID, subject: .document(try XCTUnwrap(doc)))
-        await center.poll()
-        XCTAssertTrue(notifier.sent.isEmpty)
-    }
-
-    func testAgentResolvingTheLastCommentAnnouncesAllAnswered() async throws {
-        var root: Int64 = 0
-        try await write { d in
-            let doc = try TestDatabase.insertWorkbenchDocument(d, projectID: self.projectID, title: "Plan")
-            root = try TestDatabase.insertWorkbenchComment(d, projectID: self.projectID, author: "owner", documentID: doc, quote: "x")
-        }
-        let center = makeCenter()
-        await center.poll()
-        try await write { try $0.execute(sql: "UPDATE project_comments SET status = 'resolved' WHERE id = ?", arguments: [root]) }
-        await center.poll()
-        XCTAssertEqual(notifier.sent.map(\.title), ["All comments on Plan answered"])
-        XCTAssertEqual(notifier.sent.first?.route.pane, .documents)
-    }
-
-    func testSeededBaselineReportsADocumentAttachedRightAfterCreate() async throws {
-        let center = makeCenter()
-        let pid = try XCTUnwrap(projectID)
-        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: pid) }
-        let project = try XCTUnwrap(fetched)
-        center.seedBaseline(project: project)
-        try await write { _ = try TestDatabase.insertWorkbenchDocument($0, projectID: self.projectID, title: "Spec") }
-        await center.poll()
-        XCTAssertEqual(notifier.sent.map(\.title), ["Spec ready for review"])
-    }
-
     func testDisabledOrQuietHoursSendNothingButStillAdvanceTheWatermark() async throws {
         let center = makeCenter()
         await center.poll()
@@ -169,6 +128,49 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         defaults.set(false, forKey: "quietHoursEnabled")
         await center.poll()
         XCTAssertTrue(notifier.sent.isEmpty, "turning notifications back on never replays what happened while off")
+    }
+
+    /// Spec 2026-10-03 Part 8: a new open ask is announced once, routed to
+    /// the session that filed it; the owner's answer is not announced.
+    func testANewAskIsAnnouncedOnceAndItsAnswerIsNot() async throws {
+        let center = makeCenter()
+        await center.poll()
+        let pid: Int64 = projectID
+        let (session, ask) = try await pool.write { d -> (Int64, Int64) in
+            let session = try TerminalSessionQueries.create(d, .init(projectID: pid, kind: .shell, title: "s", folderPath: "/tmp/acme")).id
+            return (session, try TestDatabase.insertOwnerAsk(d, projectID: pid, sessionID: session, title: "Review the plan"))
+        }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.map(\.title), ["Agent asks: Review the plan"])
+        XCTAssertEqual(notifier.sent.first?.route, WorkbenchRoute(projectID: projectID, pane: .terminal, subjectID: session, askID: ask))
+        await center.poll()
+        XCTAssertEqual(notifier.sent.count, 1, "still open: no repeat")
+
+        try await write { try OwnerAskQueries.answer($0, askID: ask, projectID: self.projectID, with: OwnerAskAnswer()) }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.count, 1, "the owner's own answer is not announced")
+    }
+
+    /// A workbench created in-app starts from an empty baseline, so an ask
+    /// the agent files during setup is announced (re-pins `seedBaseline`).
+    func testSeededBaselineReportsAnAskFiledRightAfterCreate() async throws {
+        let center = makeCenter()
+        let pid: Int64 = projectID
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: pid) }
+        center.seedBaseline(project: try XCTUnwrap(fetched))
+        try await write { _ = try TestDatabase.insertOwnerAsk($0, projectID: self.projectID, title: "Which stack?") }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.map(\.title), ["Agent asks: Which stack?"])
+
+        // Without a seed, the first poll baselines silently.
+        notifier = RecordingWorkbenchNotifier()
+        let other = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p)
+            return p
+        }
+        await makeCenter().poll()
+        XCTAssertTrue(notifier.sent.isEmpty, "workbench \(other) was discovered, not created: no replay")
     }
 
     func testPollReloadsTheProjectsList() async {

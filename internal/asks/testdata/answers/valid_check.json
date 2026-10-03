@@ -1,0 +1,24 @@
+{
+  "kind": "check",
+  "payload": {
+    "focus": [],
+    "questions": [],
+    "checklist": [
+      {"id": "1", "text": "Launch the app"},
+      {"id": "login", "text": "Sign in with a second account", "hint": "Settings, Accounts"},
+      {"id": "3", "text": "Export a report"}
+    ]
+  },
+  "answer": {
+    "answers": [],
+    "checklist": [
+      {"id": "1", "state": "ok", "note": ""},
+      {"id": "login", "state": "broken", "note": "The sheet closes on its own.\nTried twice."},
+      {"id": "3", "state": "skipped", "note": ""}
+    ],
+    "comments": [],
+    "note": "",
+    "verdict": ""
+  },
+  "canonical": "{\"answers\":[],\"checklist\":[{\"id\":\"1\",\"note\":\"\",\"state\":\"ok\"},{\"id\":\"login\",\"note\":\"The sheet closes on its own.\\nTried twice.\",\"state\":\"broken\"},{\"id\":\"3\",\"note\":\"\",\"state\":\"skipped\"}],\"comments\":[],\"note\":\"\",\"verdict\":\"\"}"
+}

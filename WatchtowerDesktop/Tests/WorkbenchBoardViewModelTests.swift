@@ -511,6 +511,35 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.rows.first?.node.unreadForOwner, 1)
     }
 
+    /// Spec 2026-10-03 Part 8: the detail card lists the target's asks, and
+    /// a status the agent's process changes in place (a withdrawal, a
+    /// delivery) moves the fingerprint.
+    func testSelectedTargetsAsksLoadAndAStatusChangeElsewhereIsPickedUp() throws {
+        let (pid, tid, ask) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let tid = try Self.insertTarget(db, project: pid, text: "Plan")
+            let other = try Self.insertTarget(db, project: pid, text: "Other")
+            try TestDatabase.insertOwnerAsk(db, projectID: pid, targetID: other, title: "Elsewhere")
+            return (pid, tid, try TestDatabase.insertOwnerAsk(db, projectID: pid, targetID: tid, title: "Review the plan"))
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.select(Int(tid))
+        XCTAssertEqual(vm.selectedAsks.map(\.title), ["Review the plan"], "another target's ask never shows")
+        XCTAssertEqual(vm.selectedAsks.map(\.statusLabel), ["Open"])
+
+        let foreign = try DatabasePool(path: dbPath)
+        try foreign.write { db in
+            try db.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?",
+                           arguments: [ask])
+        }
+        XCTAssertTrue(vm.refreshIfChanged(), "a withdrawal from the agent's process changes the fingerprint")
+        XCTAssertEqual(vm.selectedAsks.map(\.statusLabel), ["Withdrawn"])
+
+        vm.closeDetail()
+        XCTAssertTrue(vm.selectedAsks.isEmpty)
+    }
+
     func testSelectedTargetsImagesLoadAndAnAgentAttachIsPickedUp() throws {
         let (pid, tid, other) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
             let pid = try Self.insertWorkbench(db)

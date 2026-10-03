@@ -12,12 +12,15 @@
 > `WatchtowerDesktop/Sources/**/Workbench*`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
-A workbench is a folder with a board of targets, attached documents and
-owner↔agent comments, worked on by Claude Code through
+A workbench is a folder with a board of targets, owner↔agent target
+comments and the agent's asks to the owner (`owner_asks`, PROJ-12/13),
+worked on by Claude Code through
 `watchtower mcp --workbench N` (DEV-06 in `dev-surface.md`), a workbench skill,
-a `SessionStart` hook (the brief), a `Stop` hook (the board drift check, PROJ-07)
-and the session state hooks (PROJ-11). Design:
-`docs/superpowers/specs/2026-09-29-project-board-poc-design.md`.
+a `SessionStart` hook (the brief), a `Stop` hook (the board drift check, PROJ-07),
+the session state hooks (PROJ-11) and the ask guard (a `Stop` prompt hook and a
+`PreToolUse` block of `AskUserQuestion`, PROJ-13). Design:
+`docs/superpowers/specs/2026-09-29-project-board-poc-design.md`; owner asks:
+`docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`.
 
 **Naming (2026-10-02):** this feature was called *Projects* until the
 Workbench rename (`docs/superpowers/specs/2026-10-02-workbench-rename-design.md`).
@@ -33,12 +36,15 @@ under `mcp --project N`) until the owner resyncs it; see
 `docs/features/workbench.md`, "Rename".
 
 **Module:** `internal/db/{workbenches,workbench_comments,workbench_board}.go` +
-`internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_images,workbench_scope,workbench_names}.go` +
+`internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_asks,workbench_images,workbench_scope,workbench_names}.go` +
 `internal/db/workbench_images.go` + `internal/workbenchfiles/` +
-`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
+`internal/asks/` + `internal/db/owner_asks.go` + `internal/db/migrations/00100_owner_asks.sql` + `internal/kb/{fileset,source_workbench}.go` +
+`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_prompt.md` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
 `internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
 `WatchtowerDesktop/Sources/Views/Workbench/` + `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift` +
-`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift`
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/OwnerAsk,Database/Queries/OwnerAskQueries,Services/OwnerAsk*}.swift` +
+`WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift`
 **Last full audit:** 2026-09-29
 
 ## PROJ-01 — workbench targets never reach a non-board reader
@@ -76,13 +82,15 @@ calls on it.
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
 `watchtower-workbench` skill, our hook entries — `SessionStart`, `Stop` and,
 since 2026-10-03, the session state entries under `UserPromptSubmit`,
-`Notification`, `PostToolUse` and `StopFailure` (PROJ-11) — the local
+`Notification`, `PostToolUse` and `StopFailure` (PROJ-11) and the two ask
+guard entries — the `Stop` prompt hook and the `PreToolUse` command hook
+matched to `AskUserQuestion` (PROJ-13) — the local
 `watchtower-workbench` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the workbench row, which removes every workbench target,
-source, document entry, comment, target-image row and terminal session row
+source, owner ask, comment, target-image row and terminal session row
 in the same transaction (`db.DeleteWorkbench`, `ON DELETE CASCADE` from `projects`)
-together with its documents' search index entries (`kb_documents`/`kb_chunks`
+together with its folder files' search index entries (`kb_documents`/`kb_chunks`
 of source `project_doc` for that workbench, PROJ-08), and then removes
 the workbench's stored image copies (`<workspace>/project_files/<id>/`,
 `workbenchfiles.Store.RemoveWorkbench`; a failure is reported as `files_ok:
@@ -91,7 +99,7 @@ false` and never undoes the delete). Deleting one workbench target
 the workbench still names; `update_target`'s `remove_image_ids` does the same
 for a detached image. A Claude Code
 session still connected answers `workbench N no longer exists` on every tool
-(DEV-06). The document files themselves are the owner's and stay in the
+(DEV-06). The folder's files themselves are the owner's and stay in the
 folder. An exclude line is removed only when its path is gone — a skill the
 owner edited (kept, PROJ-04) or a settings file holding the owner's own keys
 keeps its line, so removal never surfaces an owner file in `git status`.
@@ -108,35 +116,36 @@ registered against a dead id — is worse than no workbench at all, and the owne
 must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
-- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows`
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
 - `internal/mcp/workbench_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
-- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled` (the fixture asserts every hook, the state hooks included, is installed before the removal)
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled` (the fixture asserts every hook, the state hooks and both ask guard hooks included, is installed before the removal)
 - `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
-- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook`
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook` (two owner `PreToolUse` groups — an `AskUserQuestion` command and a `Bash` prompt hook — come back exactly the owner's)
 - `cmd/integrate_workbench_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
-- `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (no hook of the deleted workbench — brief, drift check or session state — survives in `settings.local.json`; the owner's own `Stop` and `UserPromptSubmit` hooks and keys do)
+- `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (no hook of the deleted workbench — brief, drift check, session state or ask guard — survives in `settings.local.json`; the owner's own `Stop`, `UserPromptSubmit` and `PreToolUse` hooks and keys do)
 - `internal/devpack/workbench_legacy_test.go::TestProj02_RemoveLegacyFolderLeavesNothingInstalled` (a never-resynced pre-rename folder: legacy hooks, skill, registration and exclude lines gone, `git status` clean, `integrate status` reports nothing installed)
 
 **Locked since:** 2026-09-29
 
 ## PROJ-03 — the Desktop never writes a workbench document behind anyone's back
 
-**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version)
+**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents)
 
-**Observable:** The Desktop reads an attached document (`project_documents.rel_path`
-under the workbench folder) to render it and re-anchor its comments, and writes
-only `project_comments` rows — owner comments, replies, status, `read_at` —
-never the file. Only the agent edits a document; the Desktop watches the file
-and re-anchors, and a comment whose quote is gone becomes `outdated`, never
-re-attached elsewhere — except that a thread with an owner reply newer than
-its latest agent comment stays `open` until the agent answers, so an
-unanswered owner reply is never hidden from the agent by a re-anchor. No workbench tool writes a file in the
-workbench folder either: `attach_document` only resolves and stats it, and a
-target image is copied *out* of wherever it is into Watchtower's own
-workspace directory (`project_files/`), never into the folder.
+**Observable:** The Desktop writes files of the workbench folder only through
+the code viewer — the owner's own actions there: the Files pane editor's saves
+under the 2026-10-02 rule below (never over a version it has not seen), and the
+FILES tree's create, rename/move and Move to Trash (the sessions panel's FILES
+section, `WorkbenchFilesSection`; see the Code viewer notes in
+`docs/features/workbench.md`). No workbench MCP tool writes a file in the
+workbench folder: `ask_owner` only resolves and reads its `doc_path`
+(`tools.ResolveWorkbenchDocumentPath`, then a read through `os.OpenRoot` on
+the folder) into the ask's `doc_snapshot`, `get_ask`, `list_asks` and
+`withdraw_ask` touch only `owner_asks` rows, and a target image is copied
+*out* of wherever it is into Watchtower's own workspace directory
+(`project_files/`), never into the folder.
 
 **Amended 2026-10-02 (board #234, owner decision in the code-viewer review):**
 the Files pane's editor writes a file of the workbench folder — an attached
@@ -151,6 +160,12 @@ text). The autosave never takes any of these choices by itself.
 The document view, its comments and every workbench tool still never write
 the file.
 
+**Amended 2026-10-03 (owner asks, spec
+`docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md` §9,
+approved by the owner):** the Desktop document view, its comments and their
+re-anchoring are removed with attached documents; the contract is the Files
+pane rule above plus "no workbench tool writes the folder".
+
 **Amendment 2026-10-03 (owner-approved; code questions,
 spec `docs/superpowers/specs/2026-10-02-code-navigation-design.md` §9.2,
 ruling R47):** besides the owner's typed edits, the editor writes text the
@@ -161,18 +176,18 @@ text changed since the question, then the same base-revision, autosave and
 conflict path as a typed edit. The assistant never writes a file itself.
 
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
-the terminal and the Desktop view — would race and lose either the agent's or
-the owner's edits; comments are the owner's channel into the document. The
-amendment keeps that promise for the agent's side (nothing it wrote is ever
-overwritten unseen) while letting the owner fix a line by hand.
+the terminal and the Desktop — would race and lose either the agent's or
+the owner's edits. The 2026-10-02 amendment keeps that promise for the
+agent's side (nothing it wrote is ever overwritten unseen) while letting the
+owner fix a line by hand.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/WorkbenchDocumentViewModelTests.swift::testProj03DesktopNeverWritesTheDocument`
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03FilesEditorNeverWritesOverANewerDiskVersion`
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave`
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnUnreadableDiskVersionIsNeverWrittenOver`
-- Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go`
+- `internal/tools/workbench_asks_test.go::TestProj03_AskOwnerNeverWritesTheFolder` (a tree snapshot — content hash, mode and mtime per entry — is unchanged across a review ask, a supersede, an answer, `get_ask`, `list_asks`, a question ask and a withdraw)
+- Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go internal/tools/workbench_asks.go`
 (expected: no match).
 
 **Locked since:** 2026-09-29
@@ -183,24 +198,33 @@ overwritten unseen) while letting the owner fix a line by hand.
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
-owner has, adding exactly one entry of ours per event we own — `SessionStart`
-(the brief), `Stop` (PROJ-07) and, since 2026-10-03, `UserPromptSubmit`,
-`Notification`, `PostToolUse` and `StopFailure` (the session state hooks,
-PROJ-11) — each recognised per event by its command suffix after a
-`watchtower` binary (installing twice leaves one of each; the state entries
-have no legacy spelling, so nothing else is taken for one); a malformed
-settings file — `hooks`, or the entry list of any event we own, of the wrong
-type — is left byte-identical and reported once; `integrate remove
---workbench N` deletes only those entries. The `watchtower-workbench` skill follows DEV-04: a copy the owner
+owner has, adding a fixed set of entries of ours: one under `SessionStart`
+(the brief); under `Stop` the drift check (PROJ-07) and, since 2026-10-03,
+the ask guard prompt hook (PROJ-13) — two entries of ours on that event; one
+each under `UserPromptSubmit`, `Notification`, `PostToolUse` and
+`StopFailure` (the session state hooks, PROJ-11); and, since 2026-10-03, one
+`PreToolUse` command entry in its own group with matcher `AskUserQuestion`
+(the ask tool block, PROJ-13). A command entry is recognised per event by its
+command suffix after a `watchtower` binary, the prompt entry by its first
+line being exactly the marker `[watchtower-workbench ask-guard N]`
+(installing twice leaves one of each; the state and ask guard entries have no
+legacy spelling, so nothing else is taken for one). Our prompt entry whose
+text was edited is set back in place, the owner's other keys on it kept; our
+`PreToolUse` entry found in another matcher group is taken out of that group
+(the owner's hooks there kept) and re-added in its own `AskUserQuestion`
+group. A malformed settings file — `hooks`, or the entry list of any event
+we own (`PreToolUse` included since 2026-10-03), of the wrong type — is left
+byte-identical and reported once; `integrate remove --workbench N` deletes
+only those entries. The `watchtower-workbench` skill follows DEV-04: a copy the owner
 edited (differs from both what we ship and its `.watchtower-shipped` digest)
 is never overwritten or deleted. The same holds for the pre-rename
 `watchtower-project` skill (since 2026-10-02): a resync (`workbench resync`,
 Re-run Setup, `integrate claude-code --workbench N`) deletes it only when it
 is our marked, un-edited copy; an edited or foreign copy stays byte-identical,
 is reported, and keeps its exclude line. The resync replaces our own legacy
-hook entries in place (one `SessionStart` and one `Stop` entry of ours
-afterwards, plus the state entries added, the owner's hooks and keys
-byte-exact), and allow rules naming
+hook entries in place (one `SessionStart` and one drift-check `Stop` entry of
+ours afterwards, plus the state and ask guard entries added, the owner's hooks
+and keys byte-exact), and allow rules naming
 `mcp__watchtower-project__…` are only counted for a suggestion, never
 rewritten.
 
@@ -219,6 +243,9 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/workbench_legacy_test.go::TestProj04_ResyncKeepsAnEditedLegacySkill` (an edited legacy skill and its sidecar stay byte-identical, reported `drifted`, its exclude line kept; a later removal keeps it too)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_StateHooksKeepOwnerHooksAndKeys` (the owner's own entries under the state events — a matcher, `async`, unknown keys and number literals — stay as they were next to exactly one entry of ours; remove takes only ours)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_MalformedStateEventLeavesTheFileByteIdentical` (each state event of the wrong type leaves the file byte-identical)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` (our edited prompt entry is set back in place with the owner's keys on it kept; the owner's `Stop` and `PreToolUse` hooks stay)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`
+- supporting: `internal/devpack/workbench_ask_guard_test.go::TestAskToolBlock_InAnotherMatcherGroupIsRepaired` (our entry under `""`, `"*"`, no matcher or `Bash` counts as missing and moves back to its own group, the owner's hooks there kept)
 
 **Locked since:** 2026-09-29
 
@@ -408,56 +435,75 @@ timeout would be worse than none.
 
 ## PROJ-08 — a workbench's documents are searchable only from its own sessions
 
-**Status:** Enforced
+**Status:** Enforced (amended 2026-10-03 — the folder's text files instead of attached documents)
 
-**Observable:** Attached workbench documents (`project_documents`, read from
-the workbench folder) are indexed into the knowledge index as source
-`project_doc` (`internal/kb/source_workbench.go`; anchor `project_id`,
-`document_id`, `rel_path`; sections split at `#`–`###` headings, the heading
-as `chunk_anchor`). They are visible only to a search or an open made in
+**Observable:** Every `.md`/`.markdown`/`.txt` file of the workbench folder
+that git does not ignore (or, outside a git repository, that the walk keeps),
+at most 2000 per workbench, is indexed into the knowledge index as source
+`project_doc` (`internal/kb/source_workbench.go` over the shared file-set
+mechanism `internal/kb/fileset.go`; key `wbdoc:<project_id>:<rel_path>`,
+anchor `project_id`, `rel_path`; sections split at `#`–`###` headings, the
+heading as `chunk_anchor`). The listing is `workbenchdocs.ListTextFiles`:
+inside a repository `git ls-files -z --cached --others --exclude-standard`
+(through `internal/workbenchgit`'s environment rules, 5 s budget), otherwise
+a walk that never follows a symlink; both skip the Files tree's hidden names
+(`.git`, `.build`, `node_modules`, `.claude/worktrees`, …) and the installed
+skill directories (`.claude/skills/watchtower-workbench`,
+`.claude/skills/watchtower-project`), list only regular files, and keep the
+2000 newest by mtime (the cut is logged). A failed git run is an error for
+that pass — logged, the workbench's existing entries kept — never an empty
+set. They are visible only to a search or an open made in
 that workbench's own session — `watchtower mcp --workbench N`, whose
 `tools.Binding.WorkbenchID` is N. `kb.Search` (`Request.WorkbenchID`),
 `kb.GetDocument` (`DocOptions.WorkbenchID`) and `kb.Recent` apply one SQL
 condition (`workbenchDocVisible`, `internal/kb/search.go`) on every call, so
 the default — WorkbenchID 0, i.e. the main AI Chat, every Discuss chat, `kb
 search`, the Confluence title lookup, `get_task_context` and any other
-caller — sees no workbench document at all; `search_knowledge` asked for
+caller — sees no workbench file at all; `search_knowledge` asked for
 `sources: ["project_doc"]` outside a workbench session is refused (not an
 empty result), and another workbench's session sees only its own. An open of
 a hidden document reads as "not found", the same as a missing one. Deleting
 the workbench deletes its index entries in the same transaction (PROJ-02).
 
-Indexing is mechanical (no AI, KB-02): the daemon's knowledge phase
-re-renders a document whose file's mtime differs from the indexed one (any
-direction) or whose file is gone, hash-gated; it never reads a folder under
+Indexing is mechanical (no AI, KB-02): the daemon's knowledge phase lists
+each workbench folder and re-renders a file whose mtime differs from the
+indexed one (any direction), hash-gated; a file that left the listing
+(deleted, or now ignored) loses its entry. It never reads a folder under
 `~/Documents`, `~/Desktop`, `~/Downloads`, `~/Library/CloudStorage`,
 `~/Library/Mobile Documents` or `/Volumes` (case-insensitive; a background
 read there could raise a macOS privacy prompt attributed to Watchtower, and
-a dead network mount could block it), and it never follows a symlink out of
+a dead network mount could block it) — it neither lists such a folder nor
+drops its entries — and it never follows a symlink out of
 a workbench folder (`resolveInside` refuses each step before touching it).
 Those workbenches are indexed only by an explicit trigger —
-`kb.IndexWorkbenchDocs`, run by `workbench resync`, by `kb reindex` (owner-
-started; it re-indexes every workbench so a rebuild loses nothing) and, when
-`knowledge.enabled` is on, by the agent's `attach_document` and by the
-owner's `workbench create`, `workbench import-docs` (not a dry run) and
-`workbench attach-doc` (the Desktop's Add Document) — best-effort: a failure
-there is a stderr warning, the attach stands. A
-file that is gone, not a regular file (never opened blocking), or no longer
-resolves inside the folder (symlinks followed inside it only) is indexed by its title only,
-its anchor's `unreadable` saying why; a file over 2 MiB is indexed up to
-that, its anchor's `truncated` saying so.
+`kb.IndexWorkbenchDocs`, run by `kb reindex` (owner-started; it re-indexes
+every workbench so a rebuild loses nothing, one failing folder never stopping
+the others) and, when `knowledge.enabled` is on, by `workbench resync`
+(Re-run Setup) and the owner's `workbench create` — best-effort: a failure
+there is a stderr warning (`create`) or the `index_ok`/`index_error` report
+(`resync`), the workbench stands — and the agent's `ask_owner` with a
+`doc_path` indexes that one file (`kb.IndexFileSet`, best-effort, a failure
+is the result's `index_warning`). An explicit trigger renders every listed
+file, gated only by its content hash (an edit in the same second as the last
+index is never missed), and drops the entries of files that left the
+listing; only the daemon pass is mtime-gated. A file that is not a regular
+file (never opened blocking) or no longer resolves inside the folder
+(symlinks followed inside it only) is indexed by its title only, its
+anchor's `unreadable` saying why; a file over 2 MiB is indexed up to that,
+its anchor's `truncated` saying so.
 
-**Why locked:** Owner decision (board target #89): workbench documents are
+**Why locked:** Owner decision (board target #89): workbench files are
 working material of one workbench and its coding agent; they must not leak
 into the owner's general assistant or another workbench — the PROJ-01 spirit
 applied to search.
 
 **Test guards:**
-- `internal/kb/source_workbench_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
-- `internal/tools/workbench_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
+- `internal/kb/source_workbench_test.go::TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`
+- `internal/tools/workbench_knowledge_test.go::TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`
 - `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (the index entries go with the workbench)
-- `cmd/workbench_test.go::TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`
+- `cmd/workbench_test.go::TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (renamed in place from `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`: create and resync index unattached files at once, visible only in the workbench's session; a daemon pass never reads the `~/Documents` fixture folder and keeps what create indexed)
 - `cmd/workbench_test.go::TestProj08_IndexFailureIsAWarningNotAnError`
+- supporting: `TestWorkbenchDoc_GitIgnoredFilesAreNotIndexed`, `TestWorkbenchDoc_IndexesTheNewest2000`, `TestWorkbenchDoc_FailingGitKeepsTheEntries`, `TestWorkbenchDoc_DaemonSkipsProtectedFoldersExplicitIndexDoesNot` (`internal/kb`); `TestListTextFiles_GitListsTrackedAndUntrackedButNotIgnored`, `TestListTextFiles_GitSkipsTheHiddenNamesTooEvenWhenNotIgnored`, `TestListTextFiles_FailingGitIsAnError` (`internal/workbenchdocs`)
 
 **Locked since:** 2026-10-01
 
@@ -637,6 +683,85 @@ session would be worse than none.
 
 **Locked since:** 2026-10-03
 
+## PROJ-12 — an ask reaches its session as typed text, never submitted
+
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks)
+
+**Observable:** When the owner answers an ask in the Desktop, the answer is
+stored first — one guarded `UPDATE owner_asks SET status='answered', answer,
+answered_at … WHERE status='open'` (`OwnerAskQueries.answer`; zero rows means
+the agent withdrew or superseded it meanwhile: nothing is written or typed,
+the draft is kept) — and only then is anything typed. The typed text is
+exactly the fixed line `Ask #<id> answered (<kind>: <short>) — read it with
+get_ask <id> using the watchtower-workbench skill.` (Swift `OwnerAskPrompt`, a
+dual path with Go `asks.DeliveryLine` pinned by `internal/asks/testdata/lines`;
+every control character and newline becomes a space), sent once through
+`TerminalCenter.sendPrompt` to the ask's own session as a bracketed paste and
+never followed by Enter (without bracketed paste it is copied, not typed). An
+ask with no session, or whose session is not running, gets nothing typed: the
+session's next `workbench brief` lists it under "Answered asks for you" (its
+own session's, session-less and gone-session asks; the section keeps at least
+its first row at the 4000-rune cap and never marks anything delivered).
+`delivered` is set only by `get_ask` reading the answer (guarded `WHERE
+status='answered'`); a line the owner never submitted leaves the ask
+`answered`, so the next brief still lists it.
+
+**Why locked:** Owner decision (spec 2026-10-03, decision 3). An
+auto-submitted Enter could confirm whatever Claude Code's TUI shows at that
+moment (a permission dialog's default, a half-typed prompt) without the owner
+seeing it, and a line typed before the answer is stored would send the agent
+to read an answer that is not there — the `WorkbenchCommentPrompt` rule
+carried over to asks.
+
+**Test guards:**
+- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedAndNeverSubmitted` (a probed process reads the DB at input time; no CR/LF)
+- `internal/asks/line_test.go::TestDeliveryLineFixtures`, `internal/asks/line_test.go::TestDeliveryLineIsOneLine`
+- `WatchtowerDesktop/Tests/Core/OwnerAskPromptTests.swift` (`testTheLineMatchesEveryGoFixture`, `testTheLineIsOneLineWithNoControlCharacters`)
+- `WatchtowerDesktop/Tests/TerminalCenterTests.swift` (`testARunningSessionGetsOneBracketedPasteWithNoEnter`, `testWithoutBracketedPasteTheLineIsCopiedNotTyped`)
+- `WatchtowerDesktop/Tests/Core/OwnerAskQueriesTests.swift` (`testAnsweringAnAskWithdrawnMeanwhileThrowsNotOpenAndWritesNothing`)
+- `cmd/workbench_brief_test.go::TestProj12_AnsweredAskSurvivesAFullBoard`
+- supporting: `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
+
+**Locked since:** 2026-10-03
+
+## PROJ-13 — the ask guard never traps a turn
+
+**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; the pass clause reworded during implementation, see the changelog)
+
+**Observable:** The `Stop` prompt hook (`type: prompt`, `timeout: 30`,
+`internal/devpack/askguard_prompt.md`, pinned by a golden) tells the model to
+return `{"ok": true}` when `stop_hook_active` is true, or when
+`last_assistant_message` says it filed an ask (for example names
+`ask #<number>` — Claude Code's Stop input has no `tool_calls`, and the skill
+has the agent name every ask it filed in its final text), or when the message
+asks the owner for nothing; it blocks only a message that clearly waits on
+the owner, and passes when unsure. The intent is one nudge per stop: the
+prompt tells the model to pass when `stop_hook_active` is set (pinned by the
+golden; the model's compliance is not something a test can check). The
+`PreToolUse` command hook (`workbench ask-guard --workbench N
+--pre-tool-use`, matcher `AskUserQuestion`, `timeout: 5`) prints the deny
+decision only when workbench N exists and its stdin (read for at most 0.5 s)
+names `tool_name` `AskUserQuestion`; on any failure — another tool,
+unreadable, empty or never-closed input, a bad or unknown id, a deleted
+workbench, a broken config, a missing or locked database, a panic — it
+prints nothing on stdout or stderr and exits 0, so the tool runs. It opens
+the database with `db.OpenExisting` (never creates it, never migrates,
+`query_only`, a 500 ms busy timeout), so it finishes in under 2 s.
+
+**Why locked:** Owner decision (spec 2026-10-03, decision 3) and the PROJ-07
+precedent: a guard that could loop a turn, fail a turn, or block a tool
+because Watchtower is broken would be worse than none.
+
+**Test guards:**
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (the golden carries both pass clauses)
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardFailurePrintsNothingAndExitsZero`
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardFinishesFastOnALockedDatabase`
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardWithNoDatabaseCreatesNothing`
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardNeverRunsAMigration`
+- supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench`, `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys`
+
+**Locked since:** 2026-10-03
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -656,8 +781,8 @@ session would be worse than none.
 - **TCC attribution (owner decision 2026-09-30).** A workbench folder under a
   TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud
   drives under `~/Library/CloudStorage`) can make macOS show a privacy prompt
-  attributed to Watchtower, because the Desktop reads the documents and
-  launches `claude` from its own process. Accepted for the POC — the Desktop
+  attributed to Watchtower, because the Desktop reads the folder (the FILES
+  tree, the Files pane) and launches `claude` from its own process. Accepted for the POC — the Desktop
   warns at create; the real fix (read and launch outside the app process) is a
   follow-up before any non-dogfood use.
 - **Full read tool set in a workbench session.** `watchtower mcp --workbench N`
@@ -686,26 +811,41 @@ session would be worse than none.
 - **Audit rows outlive their workbench.** `agent_actions` rows with
   `context_type='project'` are kept after a workbench delete as audit history
   and are never shown on the Inbox action strip.
-- **Re-anchor hides an owner root.** A Desktop re-anchor that marks an owner
-  root `outdated` removes it from the agent's new-for-agent channels
-  (`list_comments`, the brief, the board counts); the owner has to reply,
-  reopen or re-post it.
 - **An owner reply reopens a closed thread.** New-for-agent reads only open
   threads, so an owner reply under a `resolved` or `outdated` root reopens
   that root in the same write (Go `AddWorkbenchCommentTx` ↔ Swift
   `WorkbenchQueries.reply`); otherwise the reply would silently never reach
-  the agent. An agent reply never reopens a thread. While such a reply is
-  unanswered (newer than the thread's latest agent comment), the Desktop
-  re-anchor leaves the root `open` even though its quote is still gone — a
-  narrow exception to PROJ-03's "a comment whose quote is gone becomes
-  `outdated`" — so the next document load cannot hide the reply again; once
-  the agent answers, the next re-anchor marks it `outdated` as usual
-  (`WorkbenchCommentThread.hasUnansweredOwnerReply`).
+  the agent. An agent reply never reopens a thread. (Comments are on targets
+  only since 2026-10-03; the document re-anchoring that could mark a root
+  `outdated` is gone with attached documents.)
 
-- **Board language is advisory.** It is an instruction to the agent (brief, `workbench_info`, skill) — always the session's language — never enforced on a write: a target written in another language is accepted, and nothing already on the board is translated. The mechanical document import keeps each file's own title.
+- **Board language is advisory.** It is an instruction to the agent (brief, `workbench_info`, skill) — always the session's language — never enforced on a write: a target written in another language is accepted, and nothing already on the board is translated.
+
+- **Owner asks (2026-10-03, PROJ-12/13).** (a) The `Stop` prompt hook costs
+  one fast-model call per agent stop of a workbench session (about 1–2 s);
+  it may miss a plain-text request (told to pass when unsure), and an agent
+  that filed an ask without naming it gets one extra nudge (then
+  the prompt tells it to pass on `stop_hook_active`). (b) After a stop the ask guard blocks, the
+  session's PROJ-11 state reads "waiting for you" (and may post its notice
+  while the app is inactive) for the whole nudged turn:
+  the drift `Stop` hook runs in parallel and records `waiting` whenever it
+  lets the turn end, and `PostToolUse` only clears "needs approval" — the
+  state is right again at the turn's next stop or the owner's next prompt
+  (owner asked on #323 whether to change PROJ-11). (c) A `claude` in an
+  external terminal files session-less asks, delivered by the brief only;
+  a nested `claude -p` that inherited `WATCHTOWER_TERMINAL_SESSION_ID` files
+  as its session. (d) Codex-run sessions get the ask tools but no hooks.
+  (e) Margin comments anchor on the ask's snapshot, never on the live file; a
+  later round is a new ask. (f) The delivery line always names the
+  `watchtower-workbench` skill, so a pre-rename folder reads a skill name it
+  lacks until Re-run Setup. (g) Without git installed, a folder inside a
+  repository is listed by the walk, which knows no ignore rules; the daemon's
+  mtime gate is whole seconds, so an edit in the same second as its last
+  render waits for the next change or an explicit trigger.
 
 ## Changelog
 
+- 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-owner-asks.md`). **Approved by the owner (§9, 2026-10-03):** attached documents, document comments and the Desktop Documents pane are replaced by **owner asks** (`owner_asks`, migration `00100`, which also drops `project_documents` and the document columns of `project_comments`). **PROJ-03 amended** — the document view and its comment re-anchoring are gone (the guard `testProj03DesktopNeverWritesTheDocument` went with `WorkbenchDocumentViewModelTests.swift`); the contract is the Files pane rule plus "no workbench tool writes the folder" (`ask_owner` only reads `doc_path`), new guard `TestProj03_AskOwnerNeverWritesTheFolder`; the Files pane guards are unchanged. **PROJ-08 amended** — "attached documents" becomes every `.md`/`.markdown`/`.txt` file of the folder git does not ignore (or the walk keeps outside git), ≤ 2000 per workbench; visibility, privacy, symlink, caps and PROJ-02 deletion unchanged. (Beyond §9, see the rulings below: explicit triggers render every file gated by content hash (only the daemon is mtime-gated), a file that left the listing loses its entry, the installed skill directories are skipped, and a privacy-protected folder is indexed only by an explicit trigger (`resync`, `create`, `kb reindex`, `ask_owner`'s one file.) Guards renamed in place, assertions kept: `TestProj08_ProjectDocsOnlyInTheirOwnProjectSession` → `TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`, `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` → `TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`, `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` → `TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (its "a dry run indexes nothing" step went with `import-docs` and became "a daemon pass never reads a protected folder"). **PROJ-12 added** (the spec's "PROJ-11", renumbered — PROJ-11 is the session state hooks): an ask reaches its session as typed text, never submitted. **PROJ-13 added** (the spec's "PROJ-12"): the ask guard never traps a turn. **PROJ-02** — asks join the cascaded rows and both ask guard hooks the removal (its guards extended, none relaxed); `TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused` lost its document half with the table and is now `TestProj02_DeletedProjectAndCommentIDsAreNeverReused`. **Implementation rulings, pending owner confirmation:** (1) the PROJ-13 pass clause "tool_calls contains a call whose name ends with ask_owner" became "last_assistant_message says it filed an ask, e.g. names ask #<number>", since Claude Code's Stop input has no `tool_calls`; (2) the PROJ-08 extras in parentheses above; (3) **PROJ-04 reworded** (widened, no guard relaxed) — `Stop` now holds two entries of ours (the drift command and the ask guard prompt, recognised by its marker line) and `PreToolUse` is a newly owned event (matcher `AskUserQuestion`; malformed counts as a malformed file); new guards `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks`, `TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`; (4) `get_ask`'s unaudited `delivered` write, the AGENT-06 scope exception and DEV-06's ask session binding (`dev-surface.md`, `agent-actions.md`). The v1 note "Re-anchor hides an owner root" is retired with re-anchoring; owner-asks limits are added. PROJ-01, 05–07, 09–11 unchanged.
 - 2026-10-03 (code navigation phase C, Task 11, ruling R47): **PROJ-03 amendment (owner-approved 2026-10-03)** — the Files pane's editor may also write text the owner explicitly applies from a code-question suggestion (Apply), through the same base-revision and conflict path as the owner's typed edits (spec §9.2). Apply is refused while the buffer has a `CodeFileBuffer.Problem` or when the selected text changed since the question (`CodeQuestionCenterTests.testApplyRefusedWhileTheBufferIsInConflict`, `testApplyRefusedWhenTheSelectedTextChanged`; the editor bridge harness's `applyEdit` checks). No guard test changed.
 - 2026-10-03 (board #248, plan `docs/superpowers/plans/2026-10-02-workbench-git-branch.md` Task G1): **PROJ-07 amended** and **PROJ-10 approved**, both by the owner on 2026-10-03. `workbench check` now runs the git `internal/gitbin` locates (`ExecRunner` resolves `"git"` through `gitbin.Locate`; `insideRepository` is `gitbin.InsideRepository`) — never a PATH lookup on darwin, never the `/usr/bin/git` shim, closing the check's install-dialog hole; with no git found it runs no git and no gh (gh would run the shim itself), reports `git:false` and notes "git is not available (no Command Line Tools); branch checks skipped" (new guard `TestProj07_GitUnavailableIsANote`, offline and with network). The process runner of `internal/workbenchcheck` and `internal/workbenchgit` is consolidated into `gitbin.Exec`, so the check now also drops the inherited repository variables (`GIT_DIR`, `GIT_WORK_TREE`, …) and sets `GIT_EDITOR=true`, and `workbench git` now also sets `GH_PROMPT_DISABLED=1` (it runs no gh; harmless). This supersedes the 2026-10-02 (#233) entry's "PROJ-07 is unchanged: `workbench check` still runs `git` through PATH". PROJ-10 is now Enforced, locked 2026-10-03, wording unchanged. Every existing `TestProj07_*` and `TestProj10_*` guard runs unchanged.
 - 2026-10-03 (board #340): Stop state write gated on the state hooks — the Stop hook records `waiting` only when the workbench's folder has the session state hooks (`devpack.HasStateHooks`), so a folder not yet repaired no longer shows "waiting for you" after its first turn. The PROJ-07 note's state write is narrowed to those folders (it writes in fewer cases, never more); PROJ-07's stdout/exit contract, PROJ-11 and every guard are unchanged.
@@ -720,7 +860,7 @@ session would be worse than none.
 - 2026-10-01 (board target #192, release audit): **PROJ-07 strengthened** — the session brief says when its drift check was cut short or its branch checks could not run (no default branch resolves), so a partial check never reads as a clean board ("a failed or partial check is shown as such" now holds for the brief too); `project check` adds a note when the default branch named by `origin/HEAD` no longer resolves. The brief also frames the recent-in-sources titles as other people's words — data, not instructions. New guards `TestProj07_BriefSaysWhenTheDriftCheckWasPartial`, `TestProj07_UnresolvableDefaultBranchIsANote`. Also: the agent's `attach_document` matches an attached `rel_path` ignoring case (as the import and the owner attach do) and reports the stored spelling.
 - 2026-10-01 (board target #192, release audit): **PROJ-04 strengthened** — a remove that leaves a symlinked `settings.local.json` empty writes `{}` to the link's target instead of deleting the link (which left our hooks in the dotfiles target); new guard `TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`.
 - 2026-10-01 (board target #192, release audit): **PROJ-07 strengthened** — squash detection compares zero-context patch ids (`git diff -U0`, `git log -p -U0`), so a squash is recognised even when main changed a line next to the branch's hunks (the documented limit stays: a diff changed in conflict resolution); `TestProj07_GitRules` gains that case for an open and a done target.
-- 2026-10-01 (board target #192, release audit): **PROJ-08 strengthened** — `project create`, `import-docs` and `attach-doc` now index the project's documents themselves (best-effort, when `knowledge.enabled` is on), so a project in a folder the daemon never reads (~/Documents, ~/Desktop, …) has its owner-attached and imported documents searchable at once; `create --json` and `attach-doc --json` carry the outcome as `index_ok`/`index_error`/`index_skipped` (resync's names); new guards `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`, `TestProj08_IndexFailureIsAWarningNotAnError`.
+- 2026-10-01 (board target #192, release audit): **PROJ-08 strengthened** — `project create`, `import-docs` and `attach-doc` now index the project's documents themselves (best-effort, when `knowledge.enabled` is on), so a project in a folder the daemon never reads (~/Documents, ~/Desktop, …) has its owner-attached and imported documents searchable at once; `create --json` and `attach-doc --json` carry the outcome as `index_ok`/`index_error`/`index_skipped` (resync's names); new guards `TestProj08_ResyncAndCreateIndexTheFolderAtOnce`, `TestProj08_IndexFailureIsAWarningNotAnError`.
 - 2026-10-01 (board item #153): the per-project board-language override (#122) is retired — the board always follows the session language. `watchtower project update`, `update_project`'s `board_language` (an unknown field again; `description` is required again), the Desktop menu and the `terminal title` override are removed; `tools.BoardLanguageLine` is a constant. The `projects.board_language` column (00087) stays, unread. No contract semantics or guard tests changed.
 - 2026-10-01 (board item #105): specs, plans and designs are review documents in the project's Documents pane (not chat artifacts). The `watchtower-project` skill requires attaching every one the agent writes and setting its review target `in_review` (the feature target for a spec on a feature without sub-targets, else a `Review: <title>` sub-target — always for a plan) until the owner approves. The Desktop marks an agent document whose target is `in_review` **In review** (`ProjectDocumentListItem.awaitingReview`) and the existing "ready for review" notification also fires when such a target enters review, titled "awaits your review" and keyed by the revision so attaching and marking never notify twice; an owner's own move to `in_review` (the latest `target_status_history` row is theirs) is not announced back, and a snapshot persisted before this change reads as "review unknown" so an upgrade never re-announces a running review. Known limit: the marker keys on the target's status, so an agent document on a leaf target put `in_review` for a code review is marked too — the skill routes plan and sub-targeted reviews through a dedicated review sub-target to keep that rare. No schema change; no contract semantics or guard tests changed.
 - 2026-10-01 (board target #89): **PROJ-08** added — attached project documents are indexed into kb (`project_doc`) and searchable only from their own project's session. `project resync` re-indexes the project right after its import (`index_ok`/`index_error`/`indexed`/`index_skipped`, skipped when `knowledge.enabled` is off) and the Desktop's Re-run Setup summary says so; `attach_document` re-indexes too. **PROJ-02 amended (strengthened):** `db.DeleteProject` also deletes the project's index entries in its transaction, and `TestProj02_DeleteProjectLeavesNoRows` asserts it (plus that another project's entries stay).

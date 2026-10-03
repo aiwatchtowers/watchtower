@@ -4,7 +4,7 @@ import Foundation
 package enum TerminalSessionPolicy {
     package static let maxTitleAttempts = 5
 
-    /// Send-comments destination: the most recently focused live claude
+    /// A workbench's active session: the most recently focused live claude
     /// session (`lastFocused` is ordered oldest → newest), else the most
     /// recently active live claude session.
     package static func activeSession(

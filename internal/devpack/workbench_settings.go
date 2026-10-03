@@ -2,6 +2,7 @@ package devpack
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,7 +29,10 @@ var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 // replaces that entry in place and a removal takes it out. An empty one
 // means the hook is newer than the rename and has no old spelling. async
 // installs the entry as `"async": true`: Claude Code runs it in the
-// background and never waits for it.
+// background and never waits for it. matcher, when set, goes on the group a
+// new entry is added in. prompt makes the entry a `type: prompt` hook: its
+// text is askGuardPrompt and it is recognised by that text's marker line,
+// not by a command suffix (subcommand and flags are then unused).
 type hookSpec struct {
 	event            string
 	subcommand       string // e.g. "workbench brief --workbench"; the workbench id follows
@@ -36,6 +40,8 @@ type hookSpec struct {
 	flags            string // appended after the id, e.g. " --stop-hook"
 	timeoutSec       int
 	async            bool
+	matcher          string
+	prompt           bool
 }
 
 var (
@@ -59,9 +65,45 @@ var (
 		stateHookSpec("PostToolUse"),
 		stateHookSpec("StopFailure"),
 	}
+	// askGuardSpec: the Stop prompt hook that sends a request the agent left
+	// as plain text back to ask_owner (spec 2026-10-03 §6.2, PROJ-13). Claude
+	// Code's model judges it; the prompt passes a continued turn.
+	askGuardSpec = hookSpec{event: "Stop", prompt: true, timeoutSec: 30}
+	// askToolBlockSpec: the PreToolUse hook denying AskUserQuestion, so a
+	// question to the owner goes through ask_owner (§6.3). `workbench
+	// ask-guard` bounds its own DB wait well under this timeout and always
+	// exits 0.
+	askToolBlockSpec = hookSpec{event: "PreToolUse", subcommand: "workbench ask-guard --workbench",
+		flags: " --pre-tool-use", timeoutSec: 5, matcher: "AskUserQuestion"}
 	// ownedHookSpecs is every event the workbench install owns an entry in.
-	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec}, stateHookSpecs...)
+	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, stateHookSpecs...)
 )
+
+// askGuardPromptText is the ask guard's prompt as the spec pins it, opened
+// by askGuardMarkerTemplate.
+//
+//go:embed askguard_prompt.md
+var askGuardPromptText string
+
+const askGuardMarkerTemplate = "[watchtower-workbench ask-guard <N>]"
+
+// askGuardMarker is the first line of workbenchID's ask guard prompt: what
+// recognises the prompt hook as ours, whatever else its text says.
+func askGuardMarker(workbenchID int64) string {
+	return strings.Replace(askGuardMarkerTemplate, "<N>", strconv.FormatInt(workbenchID, 10), 1)
+}
+
+// askGuardPrompt is the Stop prompt hook's text for workbenchID: the
+// embedded prompt with its marker's <N> substituted. Claude Code puts the
+// hook input where it says $ARGUMENTS.
+func askGuardPrompt(workbenchID int64) string {
+	body, ok := strings.CutPrefix(strings.TrimSuffix(askGuardPromptText, "\n"), askGuardMarkerTemplate)
+	if !ok {
+		// An embed without its marker is a build-time defect.
+		panic("devpack: askguard_prompt.md must open with " + askGuardMarkerTemplate)
+	}
+	return askGuardMarker(workbenchID) + body
+}
 
 func stateHookSpec(event string) hookSpec {
 	return hookSpec{event: event, subcommand: "workbench session-state --workbench", timeoutSec: 5, async: true}
@@ -85,6 +127,15 @@ func (h hookSpec) legacySuffix(workbenchID int64) string {
 		return ""
 	}
 	return " " + h.legacySubcommand + " " + strconv.FormatInt(workbenchID, 10) + h.flags
+}
+
+// hookType is the entry's "type", which is also the key holding what
+// installHook sets: "command", or "prompt" for a prompt hook's text.
+func (h hookSpec) hookType() string {
+	if h.prompt {
+		return "prompt"
+	}
+	return "command"
 }
 
 func settingsLocalPath(dir string) string {
@@ -124,7 +175,23 @@ func InstallStateHooks(dir, bin string, workbenchID int64) (bool, error) {
 	return changed, nil
 }
 
-func installHook(dir string, spec hookSpec, command string, projectID int64) (bool, error) {
+// InstallAskGuardHooks installs the ask guard for workbenchID under the
+// PROJ-04 rules: the Stop prompt hook (askGuardPrompt) and the PreToolUse
+// command hook denying AskUserQuestion, running bin. An entry of ours whose
+// text the owner edited is set back in place, its other keys kept. A
+// malformed file is reported once and neither is attempted.
+func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
+	guarded, err := installHook(dir, askGuardSpec, askGuardPrompt(workbenchID), workbenchID)
+	if err != nil {
+		return guarded, err
+	}
+	blocked, err := installHook(dir, askToolBlockSpec, askToolBlockSpec.command(bin, workbenchID), workbenchID)
+	return guarded || blocked, err
+}
+
+// installHook sets spec's entry for projectID to value: the command, or a
+// prompt hook's text (hookSpec.hookType).
+func installHook(dir string, spec hookSpec, value string, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
@@ -134,7 +201,7 @@ func installHook(dir string, spec hookSpec, command string, projectID int64) (bo
 	if err != nil {
 		return false, err
 	}
-	updated, changed := upsertOurHook(groups, spec, projectID, command)
+	updated, changed := upsertOurHook(groups, spec, projectID, value)
 	if !changed {
 		return false, nil
 	}
@@ -170,6 +237,17 @@ func RemoveStateHooks(dir string, workbenchID int64) (bool, error) {
 		changed = changed || c
 	}
 	return changed, nil
+}
+
+// RemoveAskGuardHooks removes both ask guard entries of workbenchID
+// (PROJ-02/04); the owner's own Stop and PreToolUse entries stay.
+func RemoveAskGuardHooks(dir string, workbenchID int64) (bool, error) {
+	guarded, err := removeHook(dir, askGuardSpec, workbenchID)
+	if err != nil {
+		return guarded, err
+	}
+	blocked, err := removeHook(dir, askToolBlockSpec, workbenchID)
+	return guarded || blocked, err
 }
 
 func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
@@ -224,6 +302,18 @@ func HasStateHooks(dir string, workbenchID int64) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// HasAskGuardHook reports whether workbenchID's Stop prompt hook is
+// installed.
+func HasAskGuardHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, askGuardSpec, workbenchID)
+}
+
+// HasAskToolBlockHook reports whether workbenchID's PreToolUse block of
+// AskUserQuestion is installed.
+func HasAskToolBlockHook(dir string, workbenchID int64) (bool, error) {
+	return hasHook(dir, askToolBlockSpec, workbenchID)
 }
 
 func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
@@ -360,8 +450,19 @@ func unquoteShellSingle(s string) string {
 }
 
 func isOurHook(h any, spec hookSpec, projectID int64) bool {
+	if spec.prompt {
+		text, ok := hookString(h, "prompt")
+		return ok && opensWithLine(text, askGuardMarker(projectID))
+	}
 	cmd, ok := hookCommand(h)
 	return ok && looksLikeOurHook(cmd, spec, projectID)
+}
+
+// opensWithLine reports whether text's first line (a trailing "\r"
+// ignored) is exactly line.
+func opensWithLine(text, line string) bool {
+	first, _, _ := strings.Cut(text, "\n")
+	return trimCR(first) == line
 }
 
 func isLegacyHook(h any, spec hookSpec, projectID int64) bool {
@@ -371,16 +472,37 @@ func isLegacyHook(h any, spec hookSpec, projectID int64) bool {
 
 // hookCommand is a hook object's command string.
 func hookCommand(h any) (string, bool) {
+	return hookString(h, "command")
+}
+
+// hookString is a hook object's string field key.
+func hookString(h any, key string) (string, bool) {
 	m, ok := h.(map[string]any)
 	if !ok {
 		return "", false
 	}
-	cmd, ok := m["command"].(string)
-	return cmd, ok
+	v, ok := m[key].(string)
+	return v, ok
 }
 
+// hasOurHook counts our entry only in a group whose matcher is spec's: in
+// another group it is not the hook we install (one under matcher "" would
+// fire for every tool), and an install repairs it.
 func hasOurHook(groups []any, spec hookSpec, projectID int64) bool {
-	return anyHook(groups, func(h any) bool { return isOurHook(h, spec, projectID) })
+	for _, g := range groups {
+		m, hs, ok := groupHooks(g)
+		if ok && inOurGroup(m, spec) && slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) }) {
+			return true
+		}
+	}
+	return false
+}
+
+// inOurGroup reports whether group m is where spec's entry belongs: any
+// group for a spec without a matcher, otherwise a group whose matcher is
+// exactly spec's.
+func inOurGroup(m map[string]any, spec hookSpec) bool {
+	return spec.matcher == "" || m["matcher"] == spec.matcher
 }
 
 func anyHook(groups []any, match func(h any) bool) bool {
@@ -442,13 +564,16 @@ func LegacyPermissionRules(dir string) (int, error) {
 	return n, nil
 }
 
-// upsertOurHook returns groups with our hook for projectID set to command.
-// The first entry recognised by isOurHook is kept and, if its command
-// differs, updated in place; any further one (there should never be more
-// than one, but a hand-edited file could hold a leftover) is dropped as a
-// duplicate. Absent any match, a new group is appended. changed is false
-// only when exactly one matching entry already ran command.
-func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string) ([]any, bool) {
+// upsertOurHook returns groups with our hook for projectID set to value
+// (its command, or a prompt hook's type and text). The first entry
+// recognised by isOurHook is kept and, if it differs, updated in place with
+// its other keys kept; any further one (there should never be more than
+// one, but a hand-edited file could hold a leftover) is dropped as a
+// duplicate. An entry of ours in a group with another matcher than spec's
+// is dropped too, so it is re-added in a group of its own. Absent any
+// match, a new group is appended, carrying spec's matcher. changed is false
+// only when exactly one matching entry already held value.
+func upsertOurHook(groups []any, spec hookSpec, projectID int64, value string) ([]any, bool) {
 	found := false
 	changed := false
 	out := make([]any, 0, len(groups))
@@ -465,23 +590,18 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string)
 				rest = append(rest, h)
 				continue
 			}
-			if found {
-				groupChanged = true // a duplicate stale entry: drop it
+			if found || !inOurGroup(m, spec) {
+				groupChanged = true // a duplicate stale entry, or one in the wrong group: drop it
 				continue
 			}
 			found = true
 			hm, _ := h.(map[string]any)
-			if cur, _ := hm["command"].(string); cur == command {
+			if hasValue(hm, spec, value) {
 				rest = append(rest, h)
 				continue
 			}
 			groupChanged = true
-			cp := make(map[string]any, len(hm))
-			for k, v := range hm {
-				cp[k] = v
-			}
-			cp["command"] = command
-			rest = append(rest, cp)
+			rest = append(rest, withOurHookValue(hm, spec, value))
 		}
 		if !groupChanged {
 			out = append(out, g)
@@ -491,22 +611,61 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string)
 		if len(rest) == 0 {
 			continue
 		}
-		cp := make(map[string]any, len(m))
-		for k, v := range m {
-			cp[k] = v
-		}
-		cp["hooks"] = rest
-		out = append(out, cp)
+		out = append(out, groupWithHooks(m, rest))
 	}
 	if !found {
-		h := map[string]any{"type": "command", "command": command, "timeout": spec.timeoutSec}
-		if spec.async {
-			h["async"] = true
-		}
-		out = append(out, map[string]any{"hooks": []any{h}})
+		out = append(out, newOurHookGroup(spec, value))
 		changed = true
 	}
 	return out, changed
+}
+
+// withOurHookValue returns a copy of our entry hm with value set (and, for a
+// prompt hook, its type set back to prompt); its other keys are kept.
+func withOurHookValue(hm map[string]any, spec hookSpec, value string) map[string]any {
+	cp := make(map[string]any, len(hm))
+	for k, v := range hm {
+		cp[k] = v
+	}
+	cp[spec.hookType()] = value
+	if spec.prompt {
+		cp["type"] = spec.hookType()
+	}
+	return cp
+}
+
+// newOurHookGroup builds a fresh group holding only our hook set to value,
+// carrying spec's matcher when it has one.
+func newOurHookGroup(spec hookSpec, value string) map[string]any {
+	h := map[string]any{"type": spec.hookType(), spec.hookType(): value, "timeout": spec.timeoutSec}
+	if spec.async {
+		h["async"] = true
+	}
+	g := map[string]any{"hooks": []any{h}}
+	if spec.matcher != "" {
+		g["matcher"] = spec.matcher
+	}
+	return g
+}
+
+// groupWithHooks returns a copy of group m with its hooks replaced by rest;
+// the group's other keys (its matcher among them) are kept.
+func groupWithHooks(m map[string]any, rest []any) map[string]any {
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	cp["hooks"] = rest
+	return cp
+}
+
+// hasValue: our entry hm already holds value — and, for a prompt hook, is
+// still of type prompt (an owner-retyped entry is set back).
+func hasValue(hm map[string]any, spec hookSpec, value string) bool {
+	if cur, _ := hm[spec.hookType()].(string); cur != value {
+		return false
+	}
+	return !spec.prompt || hm["type"] == spec.hookType()
 }
 
 // withoutOurHook filters our hook objects (isOurHook, by projectID) out of
@@ -530,12 +689,7 @@ func withoutOurHook(groups []any, spec hookSpec, projectID int64) ([]any, bool) 
 		if len(rest) == 0 {
 			continue
 		}
-		cp := make(map[string]any, len(m))
-		for k, v := range m {
-			cp[k] = v
-		}
-		cp["hooks"] = rest
-		kept = append(kept, cp)
+		kept = append(kept, groupWithHooks(m, rest))
 	}
 	return kept, changed
 }

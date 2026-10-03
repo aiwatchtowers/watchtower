@@ -34,7 +34,7 @@ struct NotificationSettings: View {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Daily summary notifications", isOn: $notifyDailySummary)
                 Toggle("Workbench notifications", isOn: $notifyWorkbenches)
-                    .help("Agent questions, documents ready for review, answered comments, finished targets")
+                    .help("Agent questions and asks, finished targets, proposals awaiting approval")
             }
 
             Section("Meeting Reminders") {

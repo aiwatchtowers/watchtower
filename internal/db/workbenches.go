@@ -11,7 +11,7 @@ import (
 )
 
 // Workbench is a folder-bound workbench (Projects POC, migration 00081). Its
-// targets, documents and comments live only on its board (PROJ-01,
+// targets and comments live only on its board (PROJ-01,
 // docs/inventory/workbench.md).
 type Workbench struct {
 	ID          int64
@@ -32,32 +32,15 @@ type WorkbenchSource struct {
 	Label       string
 }
 
-// WorkbenchDocument is a file inside the workbench folder (a spec, a plan, a doc)
-// that Claude Code attached for owner review.
-type WorkbenchDocument struct {
-	ID          int64
-	WorkbenchID int64
-	TargetID    sql.NullInt64
-	RelPath     string // relative to the workbench folder
-	Kind        string // spec | plan | doc
-	Title       string
-	CreatedAt   string
-	UpdatedAt   string // bumped by every re-attach ("revised")
-	Origin      string // agent | import | owner (migration 00083)
-}
-
 var (
 	ErrWorkbenchFolderTaken = errors.New("folder is already bound to a workbench")
 	ErrWorkbenchNotFound    = errors.New("workbench not found")
-	// ErrNotInWorkbench is returned when a target, document, source or comment
+	// ErrNotInWorkbench is returned when a target, source or comment
 	// named by a workbench write belongs to another workbench, or to none.
 	ErrNotInWorkbench = errors.New("does not belong to this workbench")
 )
 
-var (
-	workbenchSourceKinds   = map[string]bool{"slack_channel": true, "jira_project": true, "confluence_space": true, "person": true, "link": true}
-	workbenchDocumentKinds = map[string]bool{"spec": true, "plan": true, "doc": true}
-)
+var workbenchSourceKinds = map[string]bool{"slack_channel": true, "jira_project": true, "confluence_space": true, "person": true, "link": true}
 
 // workbenchCols leaves out board_language (00087): the board always follows the
 // session language (board item #153), so the column is kept but never read.
@@ -207,7 +190,7 @@ func (db *DB) UpdateWorkbenchDescription(id int64, description string) error {
 }
 
 // DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
-// sources, documents and comments, and its documents' search index entries
+// sources and comments, and its folder files' search index entries
 // (kb source project_doc, PROJ-08) go in the same transaction, so the delete
 // is all-or-nothing (PROJ-02). The folder install is removed by the caller.
 func (db *DB) DeleteWorkbench(id int64) error {
@@ -223,7 +206,7 @@ func (db *DB) DeleteWorkbench(id int64) error {
 	})
 }
 
-// deleteWorkbenchDocIndex drops a workbench's documents from the knowledge index
+// deleteWorkbenchDocIndex drops a workbench's folder files from the knowledge index
 // (kb_chunks first: the FTS triggers hang off it).
 func deleteWorkbenchDocIndex(tx *sql.Tx, projectID int64) error {
 	const docs = `SELECT id FROM kb_documents WHERE source = 'project_doc'
@@ -262,19 +245,12 @@ func requireWorkbench(q targetsQuerier, id int64) error {
 	return nil
 }
 
-const (
-	targetWorkbenchQuery   = `SELECT project_id FROM targets WHERE id = ?`
-	documentWorkbenchQuery = `SELECT project_id FROM project_documents WHERE id = ?`
-)
+const targetWorkbenchQuery = `SELECT project_id FROM targets WHERE id = ?`
 
 // checkTargetInWorkbench fails with ErrNotInWorkbench unless target id is on
 // workbench projectID's board.
 func checkTargetInWorkbench(q targetsQuerier, projectID, id int64) error {
 	return checkOwnedBy(q, targetWorkbenchQuery, "target", projectID, id)
-}
-
-func checkDocumentInWorkbench(q targetsQuerier, projectID, id int64) error {
-	return checkOwnedBy(q, documentWorkbenchQuery, "document", projectID, id)
 }
 
 func checkOwnedBy(q targetsQuerier, query, noun string, projectID, id int64) error {
@@ -338,207 +314,4 @@ func (db *DB) ListWorkbenchSources(projectID int64) ([]WorkbenchSource, error) {
 		out = append(out, s)
 	}
 	return out, rows.Err()
-}
-
-const workbenchDocumentCols = `id, project_id, target_id, rel_path, kind, title, created_at, updated_at, origin`
-
-func scanWorkbenchDocument(row interface{ Scan(...any) error }) (*WorkbenchDocument, error) {
-	var d WorkbenchDocument
-	if err := row.Scan(&d.ID, &d.WorkbenchID, &d.TargetID, &d.RelPath, &d.Kind, &d.Title, &d.CreatedAt, &d.UpdatedAt, &d.Origin); err != nil {
-		return nil, err
-	}
-	return &d, nil
-}
-
-func validateWorkbenchDocument(d WorkbenchDocument) error {
-	if strings.TrimSpace(d.RelPath) == "" || filepath.IsAbs(d.RelPath) {
-		return fmt.Errorf("document path %q must be relative to the workbench folder", d.RelPath)
-	}
-	if d.Kind != "" && !workbenchDocumentKinds[d.Kind] {
-		return fmt.Errorf("invalid document kind %q", d.Kind)
-	}
-	return nil
-}
-
-// UpsertWorkbenchDocument attaches d as the agent's. On an existing (workbench,
-// rel_path) it bumps updated_at ("revised"), marks it origin 'agent' (an
-// imported document the agent revises is the agent's from then on) and
-// replaces kind/title/target only with the values d sets; created reports
-// whether a new row was inserted. rel_path is compared ignoring case, as the
-// import and the owner attach do (APFS: another spelling is the same file),
-// and the stored spelling is kept. Whether rel_path stays inside the folder
-// is the caller's check.
-func (db *DB) UpsertWorkbenchDocument(d WorkbenchDocument) (id int64, created bool, err error) {
-	if err := validateWorkbenchDocument(d); err != nil {
-		return 0, false, err
-	}
-	err = db.WithTx(func(tx *sql.Tx) error {
-		if d.TargetID.Valid {
-			if err := checkTargetInWorkbench(tx, d.WorkbenchID, d.TargetID.Int64); err != nil {
-				return err
-			}
-		}
-		// An exact match first: rows attached before this lookup ignored
-		// case may differ only in case.
-		qerr := tx.QueryRow(`SELECT id FROM project_documents WHERE project_id = ? AND rel_path = ? COLLATE NOCASE
-			ORDER BY rel_path = ? DESC, id LIMIT 1`,
-			d.WorkbenchID, d.RelPath, d.RelPath).Scan(&id)
-		if errors.Is(qerr, sql.ErrNoRows) {
-			created = true
-			id, qerr = insertWorkbenchDocument(tx, d, "agent")
-			return qerr
-		}
-		if qerr != nil {
-			return fmt.Errorf("looking up document %q: %w", d.RelPath, qerr)
-		}
-		return reviseWorkbenchDocument(tx, id, d)
-	})
-	if err != nil {
-		return 0, false, err
-	}
-	return id, created, nil
-}
-
-func insertWorkbenchDocument(tx *sql.Tx, d WorkbenchDocument, origin string) (int64, error) {
-	kind := d.Kind
-	if kind == "" {
-		kind = "doc"
-	}
-	res, err := tx.Exec(`INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, origin)
-		VALUES (?, ?, ?, ?, ?, ?)`, d.WorkbenchID, d.TargetID, d.RelPath, kind, d.Title, origin)
-	if err != nil {
-		return 0, fmt.Errorf("inserting document %q: %w", d.RelPath, err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("inserting document %q: %w", d.RelPath, err)
-	}
-	return id, nil
-}
-
-func reviseWorkbenchDocument(tx *sql.Tx, id int64, d WorkbenchDocument) error {
-	_, err := tx.Exec(`UPDATE project_documents SET
-		kind = CASE WHEN ? = '' THEN kind ELSE ? END,
-		title = CASE WHEN ? = '' THEN title ELSE ? END,
-		target_id = COALESCE(?, target_id),
-		origin = 'agent',
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, d.Kind, d.Kind, d.Title, d.Title, d.TargetID, id)
-	if err != nil {
-		return fmt.Errorf("revising document %d: %w", id, err)
-	}
-	return nil
-}
-
-// AttachOwnerWorkbenchDocument attaches d as the owner's (origin 'owner', the
-// Desktop's "Add document…"). A rel_path the workbench already has — compared
-// ignoring case, the import rule — is left untouched: created=false, and the
-// returned relPath is the stored spelling. The owner attaching a file is never
-// a revision. Whether rel_path stays inside the folder is the caller's check.
-func (db *DB) AttachOwnerWorkbenchDocument(d WorkbenchDocument) (id int64, relPath string, created bool, err error) {
-	if err := validateWorkbenchDocument(d); err != nil {
-		return 0, "", false, err
-	}
-	err = db.WithTx(func(tx *sql.Tx) error {
-		if err := requireWorkbench(tx, d.WorkbenchID); err != nil {
-			return err
-		}
-		if d.TargetID.Valid {
-			if err := checkTargetInWorkbench(tx, d.WorkbenchID, d.TargetID.Int64); err != nil {
-				return err
-			}
-		}
-		qerr := tx.QueryRow(`SELECT id, rel_path FROM project_documents WHERE project_id = ? AND rel_path = ? COLLATE NOCASE`,
-			d.WorkbenchID, d.RelPath).Scan(&id, &relPath)
-		switch {
-		case qerr == nil:
-			return nil
-		case !errors.Is(qerr, sql.ErrNoRows):
-			return fmt.Errorf("looking up document %q: %w", d.RelPath, qerr)
-		}
-		created, relPath = true, d.RelPath
-		id, qerr = insertWorkbenchDocument(tx, d, "owner")
-		return qerr
-	})
-	if err != nil {
-		return 0, "", false, err
-	}
-	return id, relPath, created, nil
-}
-
-// GetWorkbenchDocument returns document id, or (nil, nil) when absent.
-func (db *DB) GetWorkbenchDocument(id int64) (*WorkbenchDocument, error) {
-	d, err := scanWorkbenchDocument(db.QueryRow(`SELECT `+workbenchDocumentCols+` FROM project_documents WHERE id = ?`, id))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("getting document %d: %w", id, err)
-	}
-	return d, nil
-}
-
-// ListWorkbenchDocuments returns the workbench's documents in id order.
-func (db *DB) ListWorkbenchDocuments(projectID int64) ([]WorkbenchDocument, error) {
-	rows, err := db.Query(`SELECT `+workbenchDocumentCols+` FROM project_documents WHERE project_id = ? ORDER BY id`, projectID)
-	if err != nil {
-		return nil, fmt.Errorf("listing documents: %w", err)
-	}
-	defer rows.Close()
-	var out []WorkbenchDocument
-	for rows.Next() {
-		d, err := scanWorkbenchDocument(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scanning document: %w", err)
-		}
-		out = append(out, *d)
-	}
-	return out, rows.Err()
-}
-
-// ImportWorkbenchDocuments attaches docs as origin 'import' in one transaction,
-// skipping every rel_path the workbench already has — an attached document,
-// whatever its origin, is never touched. It returns the rel_paths inserted.
-func (db *DB) ImportWorkbenchDocuments(projectID int64, docs []WorkbenchDocument) ([]string, error) {
-	var inserted []string
-	err := db.WithTx(func(tx *sql.Tx) error {
-		if err := requireWorkbench(tx, projectID); err != nil {
-			return err
-		}
-		for _, d := range docs {
-			ok, err := importWorkbenchDocument(tx, projectID, d)
-			if err != nil {
-				return err
-			}
-			if ok {
-				inserted = append(inserted, d.RelPath)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return inserted, nil
-}
-
-// importWorkbenchDocument inserts d unless the workbench already has its
-// rel_path — compared ignoring case, since APFS is case-insensitive and the
-// agent may have attached another spelling of the same file.
-func importWorkbenchDocument(tx *sql.Tx, projectID int64, d WorkbenchDocument) (bool, error) {
-	if err := validateWorkbenchDocument(d); err != nil {
-		return false, err
-	}
-	res, err := tx.Exec(`INSERT INTO project_documents (project_id, rel_path, kind, title, origin)
-		SELECT ?, ?, ?, ?, 'import' WHERE NOT EXISTS (SELECT 1 FROM project_documents
-			WHERE project_id = ? AND rel_path = ? COLLATE NOCASE)`,
-		projectID, d.RelPath, d.Kind, d.Title, projectID, d.RelPath)
-	if err != nil {
-		return false, fmt.Errorf("importing document %q: %w", d.RelPath, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("importing document %q: %w", d.RelPath, err)
-	}
-	return n > 0, nil
 }

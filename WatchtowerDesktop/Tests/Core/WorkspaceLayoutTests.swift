@@ -33,16 +33,16 @@ final class WorkspaceLayoutTests: XCTestCase {
 
     func testShowSingleReplacesPrimary() {
         var l = WorkspaceLayout.default
-        l.show(.documents)
-        XCTAssertEqual(l.primary, .documents)
+        l.show(.files)
+        XCTAssertEqual(l.primary, .files)
         XCTAssertFalse(l.isSplit)
     }
 
     func testShowSplitReplacesSecondary() {
         var l = split()
-        l.show(.documents)
+        l.show(.files)
         XCTAssertEqual(l.primary, .board)
-        XCTAssertEqual(l.secondary, .documents)
+        XCTAssertEqual(l.secondary, .files)
     }
 
     func testShowVisibleIsNoOp() {
@@ -56,9 +56,9 @@ final class WorkspaceLayoutTests: XCTestCase {
     func testShowWhileExpandedClearsExpansion() {
         var l = split()
         l.toggleExpand(.board)
-        l.show(.documents)
+        l.show(.files)
         XCTAssertNil(l.expanded)
-        XCTAssertEqual(l.visiblePanes, [.board, .documents])
+        XCTAssertEqual(l.visiblePanes, [.board, .files])
     }
 
     func testShowSlottedPaneWhileExpandedRestoresSplit() {
@@ -82,9 +82,9 @@ final class WorkspaceLayoutTests: XCTestCase {
     }
 
     func testForgetPrimaryPromotesSecondaryOrFallsBack() {
-        var l = WorkspaceLayout(primary: .session(7), secondary: .documents, expanded: nil, dividerFraction: 0.5)
+        var l = WorkspaceLayout(primary: .session(7), secondary: .files, expanded: nil, dividerFraction: 0.5)
         l.forgetSession(7, fallback: .board)
-        XCTAssertEqual(l.primary, .documents)
+        XCTAssertEqual(l.primary, .files)
         XCTAssertNil(l.secondary)
 
         var single = WorkspaceLayout(primary: .session(7), secondary: nil, expanded: nil, dividerFraction: 0.5)
@@ -119,6 +119,24 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.decode(nil), .default)
     }
 
+    /// The Documents pane is gone (spec 2026-10-03 Part 8): a layout saved
+    /// naming it decodes to `.default`, as a pane this build does not know
+    /// always has (the Files precedent).
+    func testASavedLayoutNamingTheDocumentsPaneDecodesToDefault() {
+        let saved = { (pane: String) in
+            Data(#"{"primary":{"session":{"_0":3}},"secondary":{"\#(pane)":{}},"dividerFraction":0.4}"#.utf8)
+        }
+        XCTAssertEqual(WorkspaceLayout.decode(saved("files")).visiblePanes, [.session(3), .files],
+                       "the same layout with a known pane still reads")
+        XCTAssertEqual(WorkspaceLayout.decode(saved("documents")), .default)
+        let expanded = #"{"primary":{"board":{}},"secondary":{"files":{}},"expanded":{"documents":{}},"dividerFraction":0.5}"#
+        XCTAssertEqual(WorkspaceLayout.decode(Data(expanded.utf8)), .default)
+    }
+
+    func testTheHeaderViewsAreTerminalBoardAndFiles() {
+        XCTAssertEqual(WorkspaceView.allCases, [.terminal, .board, .files])
+    }
+
     func testDecodeClampsFraction() throws {
         var l = WorkspaceLayout.default
         l.dividerFraction = 1.5
@@ -133,7 +151,7 @@ final class WorkspaceLayoutTests: XCTestCase {
     }
 
     func testDecodeDropsExpansionOutsideSlots() throws {
-        let stored = WorkspaceLayout(primary: .board, secondary: .session(1), expanded: .documents, dividerFraction: 0.5)
+        let stored = WorkspaceLayout(primary: .board, secondary: .session(1), expanded: .files, dividerFraction: 0.5)
         let decoded = WorkspaceLayout.decode(try JSONEncoder().encode(stored))
         XCTAssertNil(decoded.expanded)
         XCTAssertEqual(decoded.visiblePanes, [.board, .session(1)])
@@ -143,7 +161,7 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.key(workbenchID: 12), "projects.layout.12")
     }
 
-    // MARK: - Pane pickers, close, Send comments, divider
+    // MARK: - Pane pickers, close, reveal keeping a pane, divider
 
     func testReplaceSwapsWhenThePaneIsInTheOtherSlot() {
         var l = split()
@@ -155,15 +173,15 @@ final class WorkspaceLayoutTests: XCTestCase {
     func testReplaceFillsTheSlotAndKeepsTheExpansionOnIt() {
         var l = split()
         l.toggleExpand(.session(1))
-        l.replace(.session(1), with: .documents)
-        XCTAssertEqual(l.secondary, .documents)
-        XCTAssertEqual(l.expanded, .documents)
+        l.replace(.session(1), with: .files)
+        XCTAssertEqual(l.secondary, .files)
+        XCTAssertEqual(l.expanded, .files)
     }
 
     func testReplaceOfAPaneNotInASlotIsNoOp() {
         var l = split()
         let before = l
-        XCTAssertFalse(l.replace(.documents, with: .session(9)))
+        XCTAssertFalse(l.replace(.files, with: .session(9)))
         XCTAssertEqual(l, before)
         XCTAssertTrue(l.replace(.board, with: .board), "a slot replaced by itself is applied, unchanged")
     }
@@ -195,24 +213,24 @@ final class WorkspaceLayoutTests: XCTestCase {
 
     func testRevealInSplitReplacesThePaneThatIsNotKept() {
         var l = WorkspaceLayout.default
-        l.split(with: .documents)
-        l.reveal(.session(3), keeping: .documents)
-        XCTAssertEqual(l.visiblePanes, [.session(3), .documents])
-        var m = WorkspaceLayout(primary: .documents, secondary: .board, expanded: nil, dividerFraction: 0.5)
-        m.reveal(.session(3), keeping: .documents)
-        XCTAssertEqual(m.visiblePanes, [.documents, .session(3)])
+        l.split(with: .files)
+        l.reveal(.session(3), keeping: .files)
+        XCTAssertEqual(l.visiblePanes, [.session(3), .files])
+        var m = WorkspaceLayout(primary: .files, secondary: .board, expanded: nil, dividerFraction: 0.5)
+        m.reveal(.session(3), keeping: .files)
+        XCTAssertEqual(m.visiblePanes, [.files, .session(3)])
     }
 
     func testRevealWhileTheKeptPaneIsExpandedShowsBoth() {
-        var l = WorkspaceLayout(primary: .session(3), secondary: .documents, expanded: .documents, dividerFraction: 0.5)
-        l.reveal(.session(3), keeping: .documents)
+        var l = WorkspaceLayout(primary: .session(3), secondary: .files, expanded: .files, dividerFraction: 0.5)
+        l.reveal(.session(3), keeping: .files)
         XCTAssertNil(l.expanded)
-        XCTAssertEqual(l.visiblePanes, [.session(3), .documents])
+        XCTAssertEqual(l.visiblePanes, [.session(3), .files])
     }
 
     func testRevealInSinglePaneSwitchesToIt() {
-        var l = WorkspaceLayout(primary: .documents, secondary: nil, expanded: nil, dividerFraction: 0.5)
-        l.reveal(.session(3), keeping: .documents)
+        var l = WorkspaceLayout(primary: .files, secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.reveal(.session(3), keeping: .files)
         XCTAssertEqual(l.visiblePanes, [.session(3)])
     }
 
@@ -236,17 +254,17 @@ final class WorkspaceLayoutTests: XCTestCase {
         var l = split()
         XCTAssertTrue(l.isShowing(.board))
         XCTAssertTrue(l.isShowing(.terminal))
-        XCTAssertFalse(l.isShowing(.documents))
+        XCTAssertFalse(l.isShowing(.files))
         l.toggleExpand(.session(1))
         XCTAssertFalse(l.isShowing(.board), "an expansion hides the other pane")
     }
 
     func testShowProjectViewNeverHidesTheTerminal() {
         var l = WorkspaceLayout(primary: .session(1), secondary: .board, expanded: nil, dividerFraction: 0.5)
-        l.showWorkbenchView(.documents)
-        XCTAssertEqual(l.visiblePanes, [.session(1), .documents])
+        l.showWorkbenchView(.files)
+        XCTAssertEqual(l.visiblePanes, [.session(1), .files])
 
-        l.toggleExpand(.documents)
+        l.toggleExpand(.files)
         l.showWorkbenchView(.board)
         XCTAssertEqual(l.visiblePanes, [.session(1), .board], "the expansion ends; the session stays")
 
@@ -256,9 +274,9 @@ final class WorkspaceLayoutTests: XCTestCase {
     }
 
     func testShowProjectViewInASplitWithoutASession() {
-        var l = WorkspaceLayout(primary: .board, secondary: .documents, expanded: .documents, dividerFraction: 0.5)
+        var l = WorkspaceLayout(primary: .board, secondary: .files, expanded: .files, dividerFraction: 0.5)
         l.showWorkbenchView(.board)
-        XCTAssertEqual(l.visiblePanes, [.board, .documents], "a pane in a slot comes back; the expansion ends")
+        XCTAssertEqual(l.visiblePanes, [.board, .files], "a pane in a slot comes back; the expansion ends")
     }
 
     func testHideClosesOnlyAPaneOfAVisibleSplit() {
@@ -276,15 +294,15 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(expanded.visiblePanes, [.board], "an expanded pane stays")
 
         var other = split()
-        other.hide(.documents)
+        other.hide(.files)
         XCTAssertEqual(other, split(), "a view not on screen changes nothing")
     }
 
     func testTerminalSlotIsTheVisibleSessionElseTheLastVisiblePane() {
         XCTAssertEqual(split().terminalSlot, .session(1))
         XCTAssertEqual(WorkspaceLayout.default.terminalSlot, .board, "a single pane is replaced")
-        var views = WorkspaceLayout(primary: .board, secondary: .documents, expanded: nil, dividerFraction: 0.5)
-        XCTAssertEqual(views.terminalSlot, .documents, "the first view stays, as with the Terminal button")
+        var views = WorkspaceLayout(primary: .board, secondary: .files, expanded: nil, dividerFraction: 0.5)
+        XCTAssertEqual(views.terminalSlot, .files, "the first view stays, as with the Terminal button")
         views.toggleExpand(.board)
         XCTAssertEqual(views.terminalSlot, .board, "only what is on screen")
     }
@@ -292,14 +310,14 @@ final class WorkspaceLayoutTests: XCTestCase {
     func testWorkspaceViewOfAPane() {
         XCTAssertEqual(WorkspaceView(.session(3)), .terminal)
         XCTAssertEqual(WorkspaceView(.board), .board)
-        XCTAssertEqual(WorkspaceView(.documents), .documents)
+        XCTAssertEqual(WorkspaceView(.files), .files)
         XCTAssertTrue(WorkspaceView.terminal.matches(.session(3)))
-        XCTAssertFalse(WorkspaceView.board.matches(.documents))
+        XCTAssertFalse(WorkspaceView.board.matches(.files))
     }
 
     // POC (code viewer): the Files pane round-trips through the saved
     // layout, opens beside a terminal without displacing it, and is a
-    // header view like Board and Documents.
+    // header view like the Board.
     func testFilesPaneRoundTripsAndKeepsTheTerminal() throws {
         var l = split()
         l.showWorkbenchView(.files)

@@ -11,9 +11,9 @@ import (
 
 // TestMigration00081_CreatesProjectTablesAndTargetsColumn pins the spec §3
 // shape: four project tables with their columns, and targets.project_id with
-// its index.
+// its index. Read at 00081: 00100 drops project_documents and the anchors.
 func TestMigration00081_CreatesProjectTablesAndTargetsColumn(t *testing.T) {
-	d := openTestDB(t)
+	raw := rawDBAt(t, 81)
 
 	want := map[string][]string{
 		"projects":          {"id", "name", "folder_path", "description", "created_at", "updated_at"},
@@ -23,26 +23,27 @@ func TestMigration00081_CreatesProjectTablesAndTargetsColumn(t *testing.T) {
 			"body", "anchor_quote", "anchor_prefix", "anchor_suffix", "anchor_heading", "status", "created_at", "read_at"},
 	}
 	for table, cols := range want {
-		got := columnNames(t, d.DB, table)
+		got := columnNames(t, raw, table)
 		for _, c := range cols {
 			assert.True(t, got[c], "%s.%s missing", table, c)
 		}
 	}
-	assert.True(t, columnNames(t, d.DB, "targets")["project_id"], "targets.project_id missing")
+	assert.True(t, columnNames(t, raw, "targets")["project_id"], "targets.project_id missing")
 
 	for _, idx := range []string{"idx_targets_project", "idx_project_documents_target", "idx_project_comments_project",
 		"idx_project_comments_target", "idx_project_comments_document", "idx_project_comments_parent"} {
 		var name string
-		require.NoError(t, d.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, idx).Scan(&name),
+		require.NoError(t, raw.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?`, idx).Scan(&name),
 			"index %s missing", idx)
 	}
 }
 
 // TestMigration00081_ConstraintsHold: the UNIQUE folder, the kind/author/
 // status CHECKs, the "a comment hangs off something" CHECK, and the cascade
-// from a project to its targets and their comments.
+// from a project to its targets and their comments. Run at 00081: 00100 drops
+// project_documents.
 func TestMigration00081_ConstraintsHold(t *testing.T) {
-	d := openTestDB(t)
+	d := rawDBAt(t, 81)
 	res, err := d.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')`)
 	require.NoError(t, err)
 	pid, err := res.LastInsertId()

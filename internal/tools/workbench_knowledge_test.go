@@ -170,10 +170,12 @@ func TestSearchKnowledge_ProjectScopeErrors(t *testing.T) {
 	assert.Contains(t, res.ScopeNote, "slack_channel #no-such-channel")
 }
 
-// PROJ-08 at the tool layer: search_knowledge and get_knowledge_document
-// show a project's attached documents only in that project's session — the
-// main and Discuss chats (no ProjectID) and another project see nothing.
-func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
+// PROJ-08 at the tool layer (was ...ShowProjectDocsOnlyToTheirProject;
+// amended 2026-10-03): search_knowledge and get_knowledge_document show a
+// workbench folder's files — none attached — only in that workbench's
+// session; the main and Discuss chats (no WorkbenchID) and another
+// workbench see nothing.
+func TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench(t *testing.T) {
 	d := openDB(t)
 	folder := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
@@ -181,8 +183,6 @@ func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
 	_, err := d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, folder, p)
 	require.NoError(t, err)
 	other := seedWorkbench(t, d, "beta")
-	_, _, err = d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: p, RelPath: "plan.md", Kind: "plan", Title: "Plan"})
-	require.NoError(t, err)
 	_, err = kb.Run(context.Background(), d, kb.Options{})
 	require.NoError(t, err)
 	reg := knowledgeRegistry(t, d)
@@ -204,31 +204,6 @@ func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
 		require.ErrorAs(t, err, &ve, "binding %+v", b)
 		assert.Contains(t, ve.Msg, "no document with that ref", "indistinguishable from a missing one")
 	}
-}
-
-// attach_document re-indexes the project's documents (when knowledge search
-// is on), so an attached or revised document is searchable from the
-// project's session at once — protected folder or not.
-func TestAttachDocument_IndexesForTheProjectsSearch(t *testing.T) {
-	d := openDB(t)
-	reg := workbenchRegistry(t, d) // knowledge search on
-	require.NoError(t, reg.Register(NewSearchKnowledge()))
-	p := seedWorkbench(t, d, "alpha")
-	proj, err := d.GetWorkbench(p)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
-
-	out := mustApply(t, reg, p, "attach_document", `{"rel_path":"plan.md","kind":"plan","reason":"r"}`)
-	assert.NotContains(t, out, "index_warning")
-	res, err := searchIn(t, reg, p, `{"queries":["канареечн*"]}`)
-	require.NoError(t, err)
-	require.Len(t, res.Hits, 1)
-
-	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nСиний выкат\n"), 0o600))
-	mustApply(t, reg, p, "attach_document", `{"rel_path":"plan.md","kind":"plan","reason":"revised"}`)
-	res, err = searchIn(t, reg, p, `{"queries":["синий"]}`)
-	require.NoError(t, err)
-	assert.Len(t, res.Hits, 1, "the revision is searchable at once")
 }
 
 func TestSearchKnowledge_ProjectDocSourceOutsideAProjectSessionIsRefused(t *testing.T) {

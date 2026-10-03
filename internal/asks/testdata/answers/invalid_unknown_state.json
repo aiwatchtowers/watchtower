@@ -1,0 +1,6 @@
+{
+  "kind": "check",
+  "payload": {"focus": [], "questions": [], "checklist": [{"id": "1", "text": "Launch the app"}]},
+  "answer": {"answers": [], "checklist": [{"id": "1", "state": "maybe", "note": ""}], "comments": [], "note": "", "verdict": ""},
+  "error": "checklist[0].state: must be ok, broken or skipped"
+}

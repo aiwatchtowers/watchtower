@@ -1,0 +1,6 @@
+{
+  "kind": "review",
+  "payload": {"focus": [], "questions": [], "checklist": []},
+  "answer": {"answers": [], "checklist": [], "comments": [], "note": "Looks fine", "verdict": ""},
+  "error": "verdict: required for a review"
+}

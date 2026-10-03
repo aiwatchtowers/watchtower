@@ -5,285 +5,181 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
-	"net/url"
+	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"watchtower/internal/db"
+	"watchtower/internal/workbenchdocs"
 )
 
-// WorkbenchDocSource is the source name of attached workbench documents. Its
-// documents are visible only to a search or open that names their workbench
-// (Request.WorkbenchID, DocOptions.WorkbenchID; workbenchDocVisible in search.go) —
-// PROJ-08: a workbench session sees its own documents, every other caller none.
-// The value keeps its pre-rename spelling: it is persisted in kb_documents
-// (spec 2026-10-02 A1).
+// WorkbenchDocSource is the source name of workbench documents: the text
+// files of a workbench folder (a file set, fileset.go). Its documents are
+// visible only to a search or open that names their workbench
+// (Request.WorkbenchID, DocOptions.WorkbenchID; workbenchDocVisible in
+// search.go) — PROJ-08: a workbench session sees its own documents, every
+// other caller none. The value keeps its pre-rename spelling: it is
+// persisted in kb_documents (spec 2026-10-02 A1).
 const WorkbenchDocSource = "project_doc"
 
-const (
-	workbenchDocPrefix = WorkbenchDocSource + ":"
-	// workbenchDocMaxBytes caps how much of one file is read; a longer file is
-	// indexed up to it and its anchor says so (attached documents are
-	// .md/.txt plans and specs).
-	workbenchDocMaxBytes = 2 << 20
-)
+// workbenchDocPrefix starts every workbench document key:
+// wbdoc:<workbench id>:<rel path>.
+const workbenchDocPrefix = "wbdoc:"
 
-// workbenchDocSource renders one document per attached workbench document
-// (project_documents), reading the file from the workbench folder.
+// listTextFiles lists a folder's text documents (workbenchdocs.Lister.List).
+type listTextFiles func(ctx context.Context, folder string) ([]workbenchdocs.File, error)
+
+// workbenchDocSource indexes the text files of every workbench folder —
+// every .md/.markdown/.txt file git does not ignore (or the walk keeps
+// outside git), at most workbenchdocs.MaxTextFiles a workbench.
 //
-// There is no cursor: a file changes on disk without its row changing, and
-// an edit can carry an older mtime (cp -p, a sync client). Changed instead
-// lists every document whose file's mtime differs from the indexed
-// document's time (the render stores the mtime, and the time is part of the
-// content hash), plus every document whose file is gone (nothing to read,
-// hash-gated). A file whose stat fails otherwise keeps its indexed text.
+// Changed lists each folder and returns the files whose mtime differs from
+// their indexed document's (fileset.go, needsRender); Keys is the same
+// listing, so a file that left it (deleted, or now ignored) loses its entry
+// at the reconcile that follows. A listing is made once per run.
 //
 // The daemon never touches a folder under a privacy-protected location
 // (~/Documents, ~/Desktop, ~/Downloads, iCloud and cloud storage): a
 // background read there could raise a macOS privacy prompt attributed to
-// Watchtower. Those projects' documents are indexed only on an explicit
-// trigger — IndexWorkbenchDocs, run by `workbench resync` and the agent's
-// attach_document.
-type workbenchDocSource struct{}
-
-func (workbenchDocSource) Name() string { return WorkbenchDocSource }
-
-const workbenchDocSelect = `SELECT d.id, d.project_id, d.rel_path, d.kind, d.title, d.updated_at, p.folder_path, p.name
-	FROM project_documents d JOIN projects p ON p.id = d.project_id`
-
-type workbenchDocRow struct {
-	id, workbenchID                 int64
-	relPath, kind, title, updatedAt string
-	folder, workbenchName           string
+// Watchtower. Those workbenches are indexed only on an explicit trigger —
+// IndexWorkbenchDocs — and Keys keeps what the trigger indexed. A listing
+// that fails (a git error) is logged and keeps the workbench's entries too;
+// a folder that is gone (deleted or moved) keeps them without a log line, so
+// it does not log on every knowledge cycle.
+type workbenchDocSource struct {
+	list   listTextFiles
+	listed map[int64]listing
 }
 
-func scanWorkbenchDoc(s interface{ Scan(...any) error }) (workbenchDocRow, error) {
-	var r workbenchDocRow
-	err := s.Scan(&r.id, &r.workbenchID, &r.relPath, &r.kind, &r.title, &r.updatedAt, &r.folder, &r.workbenchName)
-	return r, err
+type listing struct {
+	files []workbenchdocs.File
+	err   error
 }
 
-func workbenchDocKey(id int64) string { return workbenchDocPrefix + strconv.FormatInt(id, 10) }
+func newWorkbenchDocSource() *workbenchDocSource {
+	return &workbenchDocSource{list: workbenchdocs.ListTextFiles}
+}
 
-func (workbenchDocSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
-	rs, err := q.QueryContext(ctx, `SELECT d.id, p.folder_path, d.rel_path, COALESCE(k.doc_time_unix, -1)
-		FROM project_documents d JOIN projects p ON p.id = d.project_id
-		LEFT JOIN kb_documents k ON k.id = '`+workbenchDocPrefix+`' || d.id ORDER BY d.id`)
+func (*workbenchDocSource) Name() string { return WorkbenchDocSource }
+
+var workbenchDocKind = fileSetKinds[WorkbenchDocSource]
+
+type workbenchFolder struct {
+	id     int64
+	folder string
+}
+
+func listWorkbenchFolders(ctx context.Context, q Queryer) ([]workbenchFolder, error) {
+	rows, err := q.QueryContext(ctx, `SELECT id, folder_path FROM projects ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []workbenchFolder
+	for rows.Next() {
+		var w workbenchFolder
+		if err := rows.Scan(&w.id, &w.folder); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+// files is w's listing for this run, or nil when the daemon must not read
+// the folder (protected), the folder is gone, or the listing failed (logged).
+func (s *workbenchDocSource) files(ctx context.Context, w workbenchFolder) ([]workbenchdocs.File, bool) {
+	if privacyProtected(w.folder) {
+		return nil, false
+	}
+	if _, err := os.Stat(w.folder); errors.Is(err, fs.ErrNotExist) {
+		return nil, false
+	}
+	l, ok := s.listed[w.id]
+	if !ok {
+		l.files, l.err = s.list(ctx, w.folder)
+		if l.err != nil {
+			log.Printf("kb: listing workbench %d documents: %v (its index entries are kept)", w.id, l.err)
+		}
+		if s.listed == nil {
+			s.listed = map[int64]listing{}
+		}
+		s.listed[w.id] = l
+	}
+	return l.files, l.err == nil
+}
+
+func (s *workbenchDocSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
+	folders, err := listWorkbenchFolders(ctx, q)
 	if err != nil {
 		return nil, cursor, true, fmt.Errorf("kb workbench docs: %w", err)
 	}
-	defer rs.Close()
+	indexed, err := docTimesWithPrefix(ctx, q, workbenchDocPrefix)
+	if err != nil {
+		return nil, cursor, true, fmt.Errorf("kb workbench docs: %w", err)
+	}
 	var keys []string
-	for rs.Next() {
-		var id int64
-		var folder, rel string
-		var indexed float64
-		if err := rs.Scan(&id, &folder, &rel, &indexed); err != nil {
-			return nil, cursor, true, fmt.Errorf("kb workbench docs: %w", err)
-		}
-		if privacyProtected(folder) {
+	for _, w := range folders {
+		files, ok := s.files(ctx, w)
+		if !ok {
 			continue
 		}
-		fi, err := statInside(folder, rel)
-		switch {
-		case errors.Is(err, fs.ErrNotExist), errors.Is(err, errDocOutside):
-			// Gone, or now leading out of the folder: re-rendered as its
-			// title (the render refuses the link before touching it).
-			keys = append(keys, workbenchDocKey(id))
-		case err != nil:
-			// Unreadable for now: keep the indexed text.
-		case float64(fi.ModTime().Unix()) != indexed:
-			keys = append(keys, workbenchDocKey(id))
+		for _, f := range files {
+			key := workbenchDocKind.containerPrefix(w.id) + f.RelPath
+			at, ok := indexed[key]
+			if !ok {
+				at = -1
+			}
+			if needsRender(w.folder, f.RelPath, at) {
+				keys = append(keys, key)
+			}
 		}
 	}
-	return keys, cursor, true, rs.Err()
+	return keys, cursor, true, nil
 }
 
-// statInside stats folder/rel after resolveInside.
-func statInside(folder, rel string) (fs.FileInfo, error) {
-	realFolder, err := filepath.EvalSymlinks(folder)
+func (s *workbenchDocSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
+	folders, err := listWorkbenchFolders(ctx, q)
 	if err != nil {
 		return nil, err
 	}
-	path, err := resolveInside(realFolder, rel)
-	if err != nil {
-		return nil, err
-	}
-	return os.Stat(path)
-}
-
-// resolveInside resolves rel inside realFolder, following symlinks one
-// path component at a time and refusing — before touching it — any step
-// that would leave the folder. Unlike filepath.EvalSymlinks it never
-// stats a path outside the folder, so a link into a location macOS guards
-// cannot make the indexer touch it.
-func resolveInside(realFolder, rel string) (string, error) {
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	cur, hops := realFolder, 0
-	for len(parts) > 0 {
-		part := parts[0]
-		parts = parts[1:]
-		if part == "" || part == "." {
+	var keys []string
+	for _, w := range folders {
+		files, ok := s.files(ctx, w)
+		if !ok {
+			// Not read in the background, or not listable now: what is
+			// indexed stays.
+			kept, err := docIDsWithPrefix(ctx, q, workbenchDocKind.containerPrefix(w.id))
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, kept...)
 			continue
 		}
-		next := filepath.Join(cur, part)
-		if !strictlyInside(realFolder, next) {
-			return "", errDocOutside
+		for _, f := range files {
+			keys = append(keys, workbenchDocKind.containerPrefix(w.id)+f.RelPath)
 		}
-		fi, err := os.Lstat(next)
-		if err != nil {
-			return "", err
-		}
-		if fi.Mode()&fs.ModeSymlink == 0 {
-			cur = next
-			continue
-		}
-		if hops++; hops > 40 {
-			return "", errors.New("too many symbolic links")
-		}
-		target, err := os.Readlink(next)
-		if err != nil {
-			return "", err
-		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(cur, target)
-		}
-		if target = filepath.Clean(target); !strictlyInside(realFolder, target) {
-			return "", errDocOutside
-		}
-		// Resolve the target's own components from the folder again: one of
-		// them may be a link too.
-		relTarget, err := filepath.Rel(realFolder, target)
-		if err != nil {
-			return "", errDocOutside
-		}
-		parts = append(strings.Split(filepath.ToSlash(relTarget), "/"), parts...)
-		cur = realFolder
 	}
-	if cur == realFolder {
-		return "", errDocNotRegular
-	}
-	return cur, nil
+	return keys, nil
 }
 
-func strictlyInside(root, path string) bool {
-	return strings.HasPrefix(path, root+string(filepath.Separator))
-}
-
-func (workbenchDocSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
-	return queryStrings(ctx, q, `SELECT '`+workbenchDocPrefix+`' || id FROM project_documents`)
-}
-
-func (workbenchDocSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
-	idStr, ok := splitRef(key, workbenchDocPrefix)
+func (*workbenchDocSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
+	id, rel, ok := workbenchDocKind.parseKey(key)
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil
 	}
-	r, err := scanWorkbenchDoc(q.QueryRowContext(ctx, workbenchDocSelect+` WHERE d.id = ?`, idStr))
+	var folder string
+	err := q.QueryRowContext(ctx, `SELECT folder_path FROM projects WHERE id = ?`, id).Scan(&folder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kb %s: %w", key, err)
 	}
-	return renderWorkbenchDoc(key, r), nil
-}
-
-func renderWorkbenchDoc(key string, r workbenchDocRow) *Doc {
-	title := r.title
-	if strings.TrimSpace(title) == "" {
-		title = r.relPath
-	}
-	path := filepath.Join(r.folder, r.relPath)
-	doc := &Doc{
-		ID:     key,
-		Source: WorkbenchDocSource,
-		Title:  title,
-		Meta:   joinNonEmpty([]string{r.workbenchName, r.relPath, r.kind}),
-		Link:   (&url.URL{Scheme: "file", Path: path}).String(),
-		Time:   parseTime(r.updatedAt),
-		Anchor: map[string]string{
-			"project_id":  strconv.FormatInt(r.workbenchID, 10),
-			"document_id": strconv.FormatInt(r.id, 10),
-			"rel_path":    r.relPath,
-		},
-	}
-	f, err := readWorkbenchDoc(r.folder, r.relPath)
-	if err != nil {
-		// Indexed by the title the row still carries; the anchor says why
-		// the text is missing, so an open does not read as an empty file.
-		doc.Anchor["unreadable"] = err.Error()
-		return doc
-	}
-	doc.Time = f.modTime
-	doc.Sections = markdownSections(f.text)
-	if f.truncated {
-		doc.Anchor["truncated"] = "indexed up to 2 MiB"
-	}
-	return doc
-}
-
-type workbenchDocFile struct {
-	text      string
-	modTime   time.Time
-	truncated bool
-}
-
-var (
-	errDocMissing    = errors.New("file is missing")
-	errDocNotRegular = errors.New("not a regular file")
-	errDocOutside    = errors.New("no longer inside the workbench folder")
-)
-
-// readWorkbenchDoc reads a regular file that still resolves (symlinks
-// followed, resolveInside) inside folder, capped at workbenchDocMaxBytes and
-// cut to valid UTF-8. The type is checked before the open, and the open
-// never blocks, so a named pipe put in a document's place cannot stall the
-// indexer.
-func readWorkbenchDoc(folder, rel string) (workbenchDocFile, error) {
-	realFolder, err := filepath.EvalSymlinks(folder)
-	if err != nil {
-		return workbenchDocFile{}, fmt.Errorf("workbench folder: %w", err)
-	}
-	realPath, err := resolveInside(realFolder, rel)
-	if errors.Is(err, fs.ErrNotExist) {
-		return workbenchDocFile{}, errDocMissing
-	}
-	if err != nil {
-		return workbenchDocFile{}, err
-	}
-	if fi, err := os.Stat(realPath); err != nil || !fi.Mode().IsRegular() {
-		return workbenchDocFile{}, errDocNotRegular
-	}
-	f, err := os.OpenFile(realPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return workbenchDocFile{}, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil || !fi.Mode().IsRegular() {
-		return workbenchDocFile{}, errDocNotRegular
-	}
-	b, err := io.ReadAll(io.LimitReader(f, workbenchDocMaxBytes+1))
-	if err != nil {
-		return workbenchDocFile{}, err
-	}
-	out := workbenchDocFile{modTime: fi.ModTime().UTC(), truncated: len(b) > workbenchDocMaxBytes}
-	if out.truncated {
-		b = b[:workbenchDocMaxBytes]
-	}
-	for len(b) > 0 && !utf8.Valid(b) {
-		b = b[:len(b)-1] // a cap can split a multi-byte rune
-	}
-	out.text = string(b)
-	return out, nil
+	return renderFile(WorkbenchDocSource, workbenchDocKind, id, folder, rel), nil
 }
 
 // privacyProtected reports whether folder sits where macOS asks the user
@@ -319,109 +215,33 @@ func hasPathPrefix(path, root string) bool {
 		(len(path) > len(root) && path[len(root)] == filepath.Separator && strings.EqualFold(path[:len(root)], root))
 }
 
-// IndexWorkbenchDocs re-renders every attached document of one workbench now,
-// protected location or not — an explicit trigger (`workbench resync`, the
-// agent's attach_document) runs in a process the owner or the agent started
-// — and drops index entries of documents the workbench no longer has. An
-// unreadable document is indexed by its title, never an error. documents is
-// how many the workbench has, changed how many index entries were written or
-// removed.
+// IndexWorkbenchDocs indexes the text files of one workbench folder now,
+// protected location or not — an explicit trigger (`workbench resync`,
+// `workbench create`, `kb reindex`) runs in a process the owner or the agent
+// started — and drops the entries of files the folder no longer lists. A
+// failed listing is an error and leaves every entry in place. An unreadable
+// file is indexed by its path, never an error. documents is how many files
+// the folder lists, changed how many index entries were written or removed.
 func IndexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64) (documents, changed int, err error) {
-	rows, err := workbenchDocRows(ctx, d, projectID)
+	return indexWorkbenchDocs(ctx, d, projectID, workbenchdocs.ListTextFiles)
+}
+
+func indexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64, list listTextFiles) (documents, changed int, err error) {
+	var folder string
+	if err := d.QueryRowContext(ctx, `SELECT folder_path FROM projects WHERE id = ?`, projectID).Scan(&folder); err != nil {
+		return 0, 0, fmt.Errorf("kb: workbench %d: %w", projectID, err)
+	}
+	files, err := list(ctx, folder)
 	if err != nil {
 		return 0, 0, fmt.Errorf("kb: listing workbench %d documents: %w", projectID, err)
 	}
-	docs := make([]*Doc, 0, len(rows))
-	live := map[string]bool{}
-	for _, r := range rows {
-		key := workbenchDocKey(r.id)
-		live[key] = true
-		docs = append(docs, renderWorkbenchDoc(key, r)) // rendered before the write tx opens
+	set := FileSet{Source: WorkbenchDocSource, Container: projectID, Root: folder, Files: make([]string, 0, len(files))}
+	for _, f := range files {
+		set.Files = append(set.Files, f.RelPath)
 	}
-	err = withTx(ctx, d, func(tx *sql.Tx) error {
-		for _, doc := range docs {
-			wrote, err := writeDoc(ctx, tx, doc)
-			if err != nil {
-				return err
-			}
-			if wrote {
-				changed++
-			}
-		}
-		indexed, err := queryStrings(ctx, tx, `SELECT id FROM kb_documents WHERE source = ?
-			AND json_extract(anchor_json, '$.project_id') = ?`, WorkbenchDocSource, strconv.FormatInt(projectID, 10))
-		if err != nil {
-			return err
-		}
-		for _, id := range indexed {
-			if live[id] {
-				continue
-			}
-			if _, err := deleteDoc(ctx, tx, id); err != nil {
-				return err
-			}
-			changed++
-		}
-		return nil
-	})
+	documents, changed, err = indexFileSet(ctx, d, set, true)
 	if err != nil {
 		return 0, 0, fmt.Errorf("kb: indexing workbench %d documents: %w", projectID, err)
 	}
-	return len(docs), changed, nil
-}
-
-func workbenchDocRows(ctx context.Context, q Queryer, projectID int64) ([]workbenchDocRow, error) {
-	rs, err := q.QueryContext(ctx, workbenchDocSelect+` WHERE d.project_id = ? ORDER BY d.id`, projectID)
-	if err != nil {
-		return nil, err
-	}
-	defer rs.Close()
-	var out []workbenchDocRow
-	for rs.Next() {
-		r, err := scanWorkbenchDoc(rs)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rs.Err()
-}
-
-// markdownSections splits text at its #, ## and ### headings (outside fenced
-// code); each section's anchor is its heading text, so a hit's chunk_anchor
-// names the part of the document it matched. Text before the first heading
-// is a section without an anchor.
-func markdownSections(text string) []Section {
-	var out []Section
-	var cur strings.Builder
-	anchor, fenced := "", false
-	flush := func() {
-		if strings.TrimSpace(cur.String()) != "" {
-			out = append(out, Section{Text: cur.String(), Anchor: anchor})
-		}
-		cur.Reset()
-	}
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			fenced = !fenced
-		}
-		if h, isHeading := markdownHeading(trimmed); isHeading && !fenced {
-			flush()
-			anchor = h
-		}
-		cur.WriteString(line)
-		cur.WriteString("\n")
-	}
-	flush()
-	return out
-}
-
-// markdownHeading returns the text of a level 1–3 ATX heading line.
-func markdownHeading(line string) (string, bool) {
-	level := len(line) - len(strings.TrimLeft(line, "#"))
-	if level < 1 || level > 3 || len(line) == level || line[level] != ' ' {
-		return "", false
-	}
-	return strings.TrimSpace(line[level:]), true
+	return documents, changed, nil
 }
