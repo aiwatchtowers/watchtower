@@ -37,7 +37,7 @@ func TestServe_OneRunPerLineEachEndingInDone(t *testing.T) {
 	write(t, root, "b.md", []byte("# C\n"))
 	in := strings.NewReader("a.md\n\n\nb.md\tgone.md\n")
 	var out bytes.Buffer
-	if err := Serve(context.Background(), root, 2, in, &out); err != nil {
+	if err := Serve(context.Background(), root, Options{Workers: 2}, in, &out); err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
 	runs := streamLines(t, out.String())
@@ -65,7 +65,7 @@ func TestStream_CancelledRunHasNoDoneLine(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var out bytes.Buffer
-	if err := Stream(ctx, root, nil, 2, &out); err == nil {
+	if err := Stream(ctx, root, nil, Options{Workers: 2}, &out); err == nil {
 		t.Fatal("want ctx's error")
 	}
 	if strings.Contains(out.String(), `"done"`) {

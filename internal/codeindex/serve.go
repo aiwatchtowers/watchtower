@@ -19,16 +19,19 @@ type doneLine struct {
 	Files   int   `json:"files"`
 	Symbols int   `json:"symbols"`
 	MS      int64 `json:"ms"`
+	// RulesError is why the owner's rules file was ignored (spec §6.5).
+	RulesError string `json:"rules_error,omitempty"`
 }
 
 // Stream runs one pass (paths nil = every file) and writes it to w as JSON
-// lines: one FileResult per file, then a done line. A cancelled run writes
-// no done line and returns ctx's error.
-func Stream(ctx context.Context, root string, paths []string, workers int, w io.Writer) error {
+// lines: one FileResult per file, then a done line, which carries
+// opts.RulesErr as rules_error. A cancelled run writes no done line and
+// returns ctx's error.
+func Stream(ctx context.Context, root string, paths []string, opts Options, w io.Writer) error {
 	start := time.Now()
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
-	sum, err := Run(ctx, root, paths, workers, func(r FileResult) error {
+	sum, err := Run(ctx, root, paths, opts, func(r FileResult) error {
 		if err := enc.Encode(r); err != nil {
 			return fmt.Errorf("writing %s: %w", r.File, err)
 		}
@@ -37,7 +40,11 @@ func Stream(ctx context.Context, root string, paths []string, workers int, w io.
 	if err != nil {
 		return err
 	}
-	if err := enc.Encode(doneLine{Done: true, Files: sum.Files, Symbols: sum.Symbols, MS: time.Since(start).Milliseconds()}); err != nil {
+	done := doneLine{Done: true, Files: sum.Files, Symbols: sum.Symbols, MS: time.Since(start).Milliseconds()}
+	if opts.RulesErr != nil {
+		done.RulesError = opts.RulesErr.Error()
+	}
+	if err := enc.Encode(done); err != nil {
 		return fmt.Errorf("writing the done line: %w", err)
 	}
 	return nil
@@ -48,7 +55,7 @@ func Stream(ctx context.Context, root string, paths []string, workers int, w io.
 // a done line; an empty line is ignored. The process stays up between
 // runs, so a language's query is compiled once, not once per save. It
 // returns nil when r reaches EOF.
-func Serve(ctx context.Context, root string, workers int, r io.Reader, w io.Writer) error {
+func Serve(ctx context.Context, root string, opts Options, r io.Reader, w io.Writer) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxServeLine)
 	for sc.Scan() {
@@ -56,7 +63,7 @@ func Serve(ctx context.Context, root string, workers int, r io.Reader, w io.Writ
 		if line == "" {
 			continue
 		}
-		if err := Stream(ctx, root, strings.Split(line, "\t"), workers, w); err != nil {
+		if err := Stream(ctx, root, strings.Split(line, "\t"), opts, w); err != nil {
 			return err
 		}
 	}
