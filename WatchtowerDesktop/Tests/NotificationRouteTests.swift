@@ -22,7 +22,7 @@ final class NotificationRouteTests: XCTestCase {
     /// arriving over it must not arm a recording or open the conference link. It lands
     /// the user on the Calendar tab and nothing else.
     func testForwardedMeetingReminderNavigatesWithoutOpeningTheLink() async {
-        let appState = AppState()
+        let appState = AppState.isolated()
         var opened: [URL] = []
 
         await NotificationDelegate.route(
@@ -65,7 +65,7 @@ final class NotificationRouteTests: XCTestCase {
     /// not somehow arm one, not proof that an in-flight capture would survive (driving a
     /// real capture needs audio hardware and stays out of `swift test`).
     func testForwardedStopRecordingOnlyNavigates() async {
-        let appState = AppState()
+        let appState = AppState.isolated()
 
         await NotificationDelegate.route(
             actionID: NotificationService.stopRecordingActionID,
@@ -83,7 +83,7 @@ final class NotificationRouteTests: XCTestCase {
     /// makes this branch navigate — a non-action tap does the same thing either way,
     /// which is why the forwarded assertion above is about the action id, not the tap.
     func testSelfReceivedStopRecordingPlainTapNavigates() async {
-        let appState = AppState()
+        let appState = AppState.isolated()
 
         await NotificationDelegate.route(
             actionID: UNNotificationDefaultActionIdentifier,
@@ -102,7 +102,7 @@ final class NotificationRouteTests: XCTestCase {
     /// live `openURL` default is left in place here precisely because a regression would
     /// have to find a URL first, and the allowlist never ships one.
     func testRouteForwardedAppliesTheNavigationOnlyPolicy() async {
-        let appState = AppState()
+        let appState = AppState.isolated()
         let json = NotificationForwarding.encode(
             actionID: NotificationService.joinRecordActionID,
             userInfo: [
@@ -156,7 +156,7 @@ final class NotificationRouteTests: XCTestCase {
 
         for type in pushTypes {
             for actionID in actionIDs {
-                let appState = AppState()
+                let appState = AppState.isolated()
                 var opened: [URL] = []
 
                 await NotificationDelegate.route(
@@ -188,7 +188,7 @@ final class NotificationRouteTests: XCTestCase {
     /// installs), self-received or forwarded alike: it is pure navigation.
     func testUpdatePushOpensSettingsOnSystem() async {
         for forwarded in [false, true] {
-            let appState = AppState()
+            let appState = AppState.isolated()
             appState.settingsTab = .connections
             var opened = 0
             appState.openSettingsWindow = { opened += 1 }
@@ -207,7 +207,7 @@ final class NotificationRouteTests: XCTestCase {
     /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
     /// without one it can only land on the Digests tab.
     func testDecisionRoutesToLedgerEntry() async {
-        let withID = AppState()
+        let withID = AppState.isolated()
         await NotificationDelegate.route(
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: ["type": "decision", "ideaId": 4242],
@@ -218,7 +218,7 @@ final class NotificationRouteTests: XCTestCase {
         XCTAssertEqual(withID.pendingDecisionID, 4242)
         XCTAssertNil(withID.pendingDigestID)
 
-        let withoutID = AppState()
+        let withoutID = AppState.isolated()
         await NotificationDelegate.route(
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: ["type": "decision"],
@@ -243,7 +243,7 @@ final class NotificationRouteTests: XCTestCase {
 
         for forwarded in [true, false] {
             for (type, destination) in cases {
-                let appState = AppState()
+                let appState = AppState.isolated()
                 await NotificationDelegate.route(
                     actionID: UNNotificationDefaultActionIdentifier,
                     userInfo: ["type": type],
@@ -263,7 +263,7 @@ final class NotificationRouteTests: XCTestCase {
     /// navigation, so the forwarded path routes it the same way.
     func testProjectPushOpensItsPane() async {
         for forwarded in [true, false] {
-            let appState = AppState()
+            let appState = AppState.isolated()
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier,
                 userInfo: ["type": "project", "projectId": Int64(3), "pane": "documents", "subjectId": Int64(8)],
@@ -273,6 +273,38 @@ final class NotificationRouteTests: XCTestCase {
             XCTAssertEqual(appState.selectedDestination, .workbench, "forwarded: \(forwarded)")
             XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .documents, subjectID: 8))
         }
+    }
+
+    /// A session notice (board #312) routes to the terminal pane with the
+    /// session as the subject, so the reveal opens that session.
+    func testSessionNoticeRoutesToItsSession() async {
+        for forwarded in [true, false] {
+            let appState = AppState()
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: NotificationService.sessionAgentUserInfo(
+                    .init(sessionID: 12, workbenchID: 3, title: "Release work is waiting for you", body: "acme")
+                ),
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.selectedDestination, .workbench, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .terminal, subjectID: 12))
+        }
+    }
+
+    func testSessionNoticePayloadSurvivesForwarding() throws {
+        let json = try XCTUnwrap(NotificationForwarding.encode(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: NotificationService.sessionAgentUserInfo(
+                .init(sessionID: 12, workbenchID: 3, title: "t", body: "b")
+            )
+        ))
+        let info = try XCTUnwrap(NotificationForwarding.decode(json)).userInfo
+        XCTAssertEqual(info["type"] as? String, "project")
+        XCTAssertEqual(info["projectId"] as? Int64, 3)
+        XCTAssertEqual(info["pane"] as? String, "terminal")
+        XCTAssertEqual(info["subjectId"] as? Int64, 12)
     }
 
     func testProjectKeysSurviveForwarding() throws {
@@ -291,7 +323,7 @@ final class NotificationRouteTests: XCTestCase {
     /// so unlike Join/Stop it is not downgraded on the forwarded path either.
     func testVoiceLabelOpensTheQueueForItsTranscript() async {
         for forwarded in [true, false] {
-            let appState = AppState()
+            let appState = AppState.isolated()
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier,
                 userInfo: ["type": "voice_label", "transcriptID": Int64(5)],
@@ -305,7 +337,7 @@ final class NotificationRouteTests: XCTestCase {
     /// A malformed/racy payload with no transcript id must not crash and must leave
     /// the queue unscoped rather than guessing.
     func testVoiceLabelWithoutTranscriptIDIsANoop() async {
-        let appState = AppState()
+        let appState = AppState.isolated()
         await NotificationDelegate.route(
             actionID: UNNotificationDefaultActionIdentifier,
             userInfo: ["type": "voice_label"],
@@ -318,7 +350,7 @@ final class NotificationRouteTests: XCTestCase {
     /// An unknown or absent type is not an error — routing falls through and leaves the
     /// UI where the user left it.
     func testUnknownTypeLeavesNavigationAlone() async {
-        let appState = AppState()
+        let appState = AppState.isolated()
         let initial = appState.selectedDestination
 
         await NotificationDelegate.route(

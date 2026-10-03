@@ -118,12 +118,16 @@ struct ProfileSettings: View {
     @ViewBuilder
     private var onboardingSection: some View {
         Section {
-            Button("Re-run Onboarding") {
-                appState.startOnboarding()
+            Button(appState.isPreparingRerun ? "Reading your setup…" : "Run Setup Again") {
+                Task { await appState.rerunOnboarding() }
             }
             .foregroundStyle(.secondary)
+            .disabled(appState.needsOnboarding || appState.isPreparingRerun)
+            if let rerunError = appState.rerunError {
+                Text(rerunError).font(.caption).foregroundStyle(.red)
+            }
         } footer: {
-            Text("Re-run the onboarding chat to update your role, pain points, and tracking preferences.")
+            Text("Go through setup again: your goals, sources and team. Your data and current settings stay.")
         }
     }
 

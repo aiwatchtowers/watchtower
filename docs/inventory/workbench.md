@@ -15,7 +15,8 @@
 A workbench is a folder with a board of targets, attached documents and
 owner↔agent comments, worked on by Claude Code through
 `watchtower mcp --workbench N` (DEV-06 in `dev-surface.md`), a workbench skill,
-a `SessionStart` hook (the brief) and a `Stop` hook (the board drift check, PROJ-07). Design:
+a `SessionStart` hook (the brief), a `Stop` hook (the board drift check, PROJ-07)
+and the session state hooks (PROJ-11). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`.
 
 **Naming (2026-10-02):** this feature was called *Projects* until the
@@ -34,8 +35,10 @@ under `mcp --project N`) until the owner resyncs it; see
 **Module:** `internal/db/{workbenches,workbench_comments,workbench_board}.go` +
 `internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_images,workbench_scope,workbench_names}.go` +
 `internal/db/workbench_images.go` + `internal/workbenchfiles/` +
-`cmd/{workbench,workbench_brief,workbench_check,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
-`WatchtowerDesktop/Sources/Views/Workbench/`
+`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
+`internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
+`WatchtowerDesktop/Sources/Views/Workbench/` + `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift`
 **Last full audit:** 2026-09-29
 
 ## PROJ-01 — workbench targets never reach a non-board reader
@@ -71,7 +74,9 @@ calls on it.
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
-`watchtower-workbench` skill, our `SessionStart` and `Stop` hook entries, the local
+`watchtower-workbench` skill, our hook entries — `SessionStart`, `Stop` and,
+since 2026-10-03, the session state entries under `UserPromptSubmit`,
+`Notification`, `PostToolUse` and `StopFailure` (PROJ-11) — the local
 `watchtower-workbench` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the workbench row, which removes every workbench target,
@@ -108,11 +113,11 @@ must be able to undo the whole feature for a folder in one step.
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
 - `internal/mcp/workbench_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
-- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled`
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled` (the fixture asserts every hook, the state hooks included, is installed before the removal)
 - `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
 - `internal/devpack/workbench_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook`
 - `cmd/integrate_workbench_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
-- `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (neither hook of the deleted workbench survives in `settings.local.json`; the owner's own `Stop` hook and keys do)
+- `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (no hook of the deleted workbench — brief, drift check or session state — survives in `settings.local.json`; the owner's own `Stop` and `UserPromptSubmit` hooks and keys do)
 - `internal/devpack/workbench_legacy_test.go::TestProj02_RemoveLegacyFolderLeavesNothingInstalled` (a never-resynced pre-rename folder: legacy hooks, skill, registration and exclude lines gone, `git status` clean, `integrate status` reports nothing installed)
 
 **Locked since:** 2026-09-29
@@ -169,12 +174,15 @@ overwritten unseen) while letting the owner fix a line by hand.
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
-owner has, adding exactly one `SessionStart` entry and one `Stop` entry
-(PROJ-07), each recognised by its command suffix after a `watchtower` binary
-(installing twice leaves one of each); a malformed settings file — `hooks`,
-`hooks.SessionStart` or `hooks.Stop` of the wrong type — is left
-byte-identical and reported once; `integrate remove --workbench N` deletes only
-those entries. The `watchtower-workbench` skill follows DEV-04: a copy the owner
+owner has, adding exactly one entry of ours per event we own — `SessionStart`
+(the brief), `Stop` (PROJ-07) and, since 2026-10-03, `UserPromptSubmit`,
+`Notification`, `PostToolUse` and `StopFailure` (the session state hooks,
+PROJ-11) — each recognised per event by its command suffix after a
+`watchtower` binary (installing twice leaves one of each; the state entries
+have no legacy spelling, so nothing else is taken for one); a malformed
+settings file — `hooks`, or the entry list of any event we own, of the wrong
+type — is left byte-identical and reported once; `integrate remove
+--workbench N` deletes only those entries. The `watchtower-workbench` skill follows DEV-04: a copy the owner
 edited (differs from both what we ship and its `.watchtower-shipped` digest)
 is never overwritten or deleted. The same holds for the pre-rename
 `watchtower-project` skill (since 2026-10-02): a resync (`workbench resync`,
@@ -182,7 +190,8 @@ Re-run Setup, `integrate claude-code --workbench N`) deletes it only when it
 is our marked, un-edited copy; an edited or foreign copy stays byte-identical,
 is reported, and keeps its exclude line. The resync replaces our own legacy
 hook entries in place (one `SessionStart` and one `Stop` entry of ours
-afterwards, the owner's hooks and keys byte-exact), and allow rules naming
+afterwards, plus the state entries added, the owner's hooks and keys
+byte-exact), and allow rules naming
 `mcp__watchtower-project__…` are only counted for a suggestion, never
 rewritten.
 
@@ -199,6 +208,8 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/workbench_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
 - `internal/devpack/workbench_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`
 - `internal/devpack/workbench_legacy_test.go::TestProj04_ResyncKeepsAnEditedLegacySkill` (an edited legacy skill and its sidecar stay byte-identical, reported `drifted`, its exclude line kept; a later removal keeps it too)
+- `internal/devpack/workbench_state_hooks_test.go::TestProj04_StateHooksKeepOwnerHooksAndKeys` (the owner's own entries under the state events — a matcher, `async`, unknown keys and number literals — stay as they were next to exactly one entry of ours; remove takes only ours)
+- `internal/devpack/workbench_state_hooks_test.go::TestProj04_MalformedStateEventLeavesTheFileByteIdentical` (each state event of the wrong type leaves the file byte-identical)
 
 **Locked since:** 2026-09-29
 
@@ -309,7 +320,15 @@ never starting with `-`; a branch is the plain local name — no `origin/` or
 [--json] [--stale-days D] [--no-network]` (`internal/workbenchcheck`,
 mechanical, no AI) reads the board and the workbench folder's git state and
 never writes — no DB row, no ref, no object, only read-only git subcommands,
-and no git process at all outside a repository. Kinds:
+and no git process at all outside a repository (`gitbin.InsideRepository`).
+git is the binary `internal/gitbin` locates (PROJ-10's lookup) — never a PATH
+lookup on darwin, never the `/usr/bin/git` xcrun shim — and runs with the
+inherited repository variables dropped (`gitbin.Exec`). With no git found the
+check runs no git, reports `git:false` with the note "git is not available
+(no Command Line Tools); branch checks skipped" and gives no branch finding;
+it runs no gh either (gh reads the repository through the git on its own
+PATH — the shim), noting "git is not available; pull request states not
+checked" — never an install dialog. Kinds:
 - `merged_but_open` — an open target's branch is in `origin/<default>` or
   `<default>`: a merge commit; a fast-forward (a local branch counts only if
   its reflog shows its tip committed on the branch, so a branch just cut,
@@ -349,6 +368,19 @@ failed or partial check is shown as such, never as "in step") — the Desktop de
 re-derives them (`WorkbenchDriftReport`). `integrate status --json` reports
 `stop_hook`, and a workbench without it is offered Repair.
 
+**Note (2026-10-03, PROJ-11):** when `WATCHTOWER_TERMINAL_SESSION_ID` is set
+and the workbench's folder has the session state hooks, the Stop hook also
+records the session's agent state (`waiting`) after its drift decision —
+never when it blocks the stop, and also on the `stop_hook_active` path. A
+folder without them (or with a malformed settings file) gets no write and
+no stderr line: nothing there records `working`, so a `waiting` would stick.
+The gate reads the settings file at each Stop, not the hook set the running
+session loaded. The write runs after the drift output is encoded, under its
+own 1 s busy timeout, and its failure is one stderr line; stdout
+(the block JSON or nothing) and exit 0 are unchanged in every case. Without
+the variable the hook does exactly what it did before (no DB open on the
+`stop_hook_active` path). The three guards below run unchanged.
+
 **Why locked:** Owner request (board target #131). The agent finished and
 merged work but never moved its targets, so a board that looks alive lied
 about what was done; the product, not the agent's memory, must catch that.
@@ -361,7 +393,7 @@ timeout would be worse than none.
 - `cmd/workbench_check_test.go::TestProj07_StopHookFailuresAreSilent`
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
 - `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
-- `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
+- `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01
 
@@ -464,7 +496,7 @@ separation of boards.
 
 ## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
 
-**Status:** Proposed — pending owner approval (Go and Desktop; the rule lives in Go)
+**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03)
 
 **Observable:** Branch switching from the Workbench header never loses work,
 never switches without the owner's confirmation, and never runs git where it
@@ -562,7 +594,39 @@ attributed to Watchtower.
   `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 
-**Locked since:** — (proposed 2026-10-02; not locked until the owner approves)
+**Locked since:** 2026-10-03 (proposed 2026-10-02)
+
+## PROJ-11 — session state hooks never steer Claude Code and never show a stale state
+
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03)
+
+**Observable:** `workbench session-state --workbench N` (installed async,
+`"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse` and
+`StopFailure`) and the Stop hook's state write (PROJ-07 note) never print to
+stdout, never exit non-zero, never block or delay a prompt (async entries),
+and do nothing without `WATCHTOWER_TERMINAL_SESSION_ID` (stdin unread). They
+write only workbench N's `claude` row whose stored `claude_session_id` equals
+the payload's `session_id` (a nested `claude -p` that inherited the variable
+never moves the row), never replace a newer state with an older one (an
+event time not later than the stored `agent_state_at` writes nothing), and
+never rewrite an unchanged state. The Desktop shows a stored state only for
+the process run it was written in (the row is live and `agent_state_at` is
+not earlier than that run's start, `SessionAgentStatus.effective`), and
+announces each transition into waiting/approval at most once
+(`SessionAgentNoticePolicy`), only while the app is inactive.
+
+**Why locked:** Owner decisions of board #312 (2026-10-03). A status hook that
+injected text into the agent, blocked a prompt, or showed "waiting" for a dead
+session would be worse than none.
+
+**Test guards:**
+- `cmd/workbench_session_state_test.go::TestProj11_HookNeverWritesStdoutAndExitsZero`
+- `cmd/workbench_session_state_test.go::TestProj11_NestedSessionNeverMovesTheRow`
+- `internal/db/terminal_sessions_test.go::TestProj11_OlderEventNeverOverwritesANewerState`
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateFromAnEarlierRunIsIgnored`
+- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition`
+
+**Locked since:** 2026-10-03
 
 ## v1 limits and notes (accepted)
 
@@ -633,6 +697,9 @@ attributed to Watchtower.
 
 ## Changelog
 
+- 2026-10-03 (board #248, plan `docs/superpowers/plans/2026-10-02-workbench-git-branch.md` Task G1): **PROJ-07 amended** and **PROJ-10 approved**, both by the owner on 2026-10-03. `workbench check` now runs the git `internal/gitbin` locates (`ExecRunner` resolves `"git"` through `gitbin.Locate`; `insideRepository` is `gitbin.InsideRepository`) — never a PATH lookup on darwin, never the `/usr/bin/git` shim, closing the check's install-dialog hole; with no git found it runs no git and no gh (gh would run the shim itself), reports `git:false` and notes "git is not available (no Command Line Tools); branch checks skipped" (new guard `TestProj07_GitUnavailableIsANote`, offline and with network). The process runner of `internal/workbenchcheck` and `internal/workbenchgit` is consolidated into `gitbin.Exec`, so the check now also drops the inherited repository variables (`GIT_DIR`, `GIT_WORK_TREE`, …) and sets `GIT_EDITOR=true`, and `workbench git` now also sets `GH_PROMPT_DISABLED=1` (it runs no gh; harmless). This supersedes the 2026-10-02 (#233) entry's "PROJ-07 is unchanged: `workbench check` still runs `git` through PATH". PROJ-10 is now Enforced, locked 2026-10-03, wording unchanged. Every existing `TestProj07_*` and `TestProj10_*` guard runs unchanged.
+- 2026-10-03 (board #340): Stop state write gated on the state hooks — the Stop hook records `waiting` only when the workbench's folder has the session state hooks (`devpack.HasStateHooks`), so a folder not yet repaired no longer shows "waiting for you" after its first turn. The PROJ-07 note's state write is narrowed to those folders (it writes in fewer cases, never more); PROJ-07's stdout/exit contract, PROJ-11 and every guard are unchanged.
+- 2026-10-03 (board #312, plan `docs/superpowers/plans/2026-10-03-session-agent-state.md`): **PROJ-11** added and **PROJ-04** reworded, both approved by the owner on 2026-10-03 — Claude Code sessions in the Desktop's workbench terminal show working / waiting for you / needs approval from new async `workbench session-state` hook entries (`UserPromptSubmit`, `Notification`, `PostToolUse`, `StopFailure`; migration `00098`) and the extended Stop hook, with a macOS notice while the app is inactive. PROJ-04 now says one entry of ours per event we own, with a malformed state event counting as a malformed file (widened, no guard relaxed; two new guards). **PROJ-02** strengthened — remove/delete also take the state entries away (its hook guards extended). **PROJ-07** gains a note on the Stop hook's state write; its stdout/exit contract and guards are unchanged.
 - 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.
 - 2026-10-02 (board target #186): **PROJ-09** added — a workbench target can be re-parented within its workbench (`update_target`'s `parent_id`, the Desktop board's drag onto a row and **Move to…**), never into a cycle or across boards; `db.UpdateTarget` (`targets update --parent`) and Swift `TargetQueries.updateParent` refuse a cycle too. PROJ-05's rollup already covered a `parent_id` change; its wording and guards are unchanged. The `watchtower-workbench` skill now has the agent nest a new target under a topical group (creating the group if needed). PROJ-01..08 unchanged.

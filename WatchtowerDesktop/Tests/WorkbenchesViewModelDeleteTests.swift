@@ -193,7 +193,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         let b = try await session(id)
         let kept = try await session(other)
 
-        let appState = AppState()
+        let appState = AppState.isolated()
         // pid 0: close() never signals a real process group.
         var processes: [FakeTerminalSession] = []
         appState.terminalCenter.makeProcess = {
@@ -201,7 +201,10 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
             processes.append(process)
             return process
         }
-        appState.initWorkbenches(dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingWorkbenchNotifier())
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
         await vm.reload()
         for s in [a, b, kept] { appState.terminalCenter.start(s, fresh: true) }

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet for connecting a new Atlassian site, presented from Settings → Jira.
 /// A workspace can have any number of Jira accounts side by side, each
@@ -12,6 +13,14 @@ struct AddJiraAccountView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var vm: JiraAccountsViewModel? { appState.jiraAccountsViewModel }
+
+    /// `.deferred` from onboarding: the connect must not restart the daemon
+    /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
+    let daemonPolicy: DaemonRestartPolicy
+
+    init(daemonPolicy: DaemonRestartPolicy = .restart) {
+        self.daemonPolicy = daemonPolicy
+    }
 
     @State private var label = ""
     /// Optional site hint passed through as `--site`. The CLI's site picker is
@@ -88,7 +97,7 @@ struct AddJiraAccountView: View {
         let trimmed = label.trimmingCharacters(in: .whitespaces)
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            await vm.addAccount(label: trimmed, site: trimmedSite)
+            await vm.addAccount(label: trimmed, site: trimmedSite, daemonPolicy: daemonPolicy)
             // addAccount is awaited: on success `error` is nil. A user Cancel
             // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss
             // on `cancelled` to keep the sheet open when the flow was

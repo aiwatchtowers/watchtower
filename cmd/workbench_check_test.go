@@ -61,6 +61,9 @@ func driftRepo(t *testing.T) string {
 // branch.
 func driftWorkbench(t *testing.T, database *db.DB, folder, branch string) (int64, int64) {
 	t.Helper()
+	// Run from a Watchtower terminal, `go test` inherits its row id; a test
+	// that wants the session state sets the variable itself afterwards.
+	unsetTerminalEnv(t)
 	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	var ids []int64
@@ -201,19 +204,31 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 	p := testWorkbench(t)
 	settings := filepath.Join(p.FolderPath, ".claude", "settings.local.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o755))
-	require.NoError(t, os.WriteFile(settings, []byte(`{"model":"sonnet","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`), 0o644))
+	require.NoError(t, os.WriteFile(settings, []byte(`{"model":"sonnet","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}],`+
+		`"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo mine-prompt"}]}]}}`), 0o644))
 	var out bytes.Buffer
 	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p), out.String())
 	installed, err := os.ReadFile(settings)
 	require.NoError(t, err)
-	require.Contains(t, string(installed), devpack.WorkbenchStopHookCommand("/usr/local/bin/watchtower", p.ID))
-	require.Contains(t, string(installed), devpack.WorkbenchHookCommand("/usr/local/bin/watchtower", p.ID))
+	ours := []string{
+		devpack.WorkbenchStopHookCommand("/usr/local/bin/watchtower", p.ID),
+		devpack.WorkbenchHookCommand("/usr/local/bin/watchtower", p.ID),
+		devpack.WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", p.ID),
+	}
+	for _, c := range ours {
+		require.Contains(t, string(installed), c)
+	}
 
 	require.NoError(t, workbenchRemoveInstall(context.Background(), nil, p))
 	after, err := os.ReadFile(settings)
 	require.NoError(t, err)
 	assert.NotContains(t, string(after), "--project 7", "PROJ-02: a hook of the deleted project survived:\n%s", after)
+	for _, c := range ours {
+		assert.NotContains(t, string(after), c, "PROJ-02: a hook of the deleted project survived:\n%s", after)
+	}
+	assert.NotContains(t, string(after), "session-state", "PROJ-02: a session state hook survived:\n%s", after)
 	assert.Contains(t, string(after), "echo mine", "PROJ-04: the owner's own Stop hook stays")
+	assert.Contains(t, string(after), "echo mine-prompt", "PROJ-04: the owner's own UserPromptSubmit hook stays")
 	assert.Contains(t, string(after), `"model": "sonnet"`)
 }
 

@@ -349,7 +349,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
     func testTheSessionButtonSaysNoSessionWithoutOne() throws {
         var taps = 0
-        let button = SessionSwitcherButton(title: nil, isLive: false) { taps += 1 }
+        let button = SessionSwitcherButton(title: nil, state: .notStarted) { taps += 1 }
         XCTAssertNoThrow(try button.inspect().find(text: "No session"))
         XCTAssertThrowsError(try button.inspect().find(viewWithAccessibilityLabel: "Running"))
         try button.inspect().find(ViewType.Button.self).tap()
@@ -358,10 +358,12 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertNoThrow(try button.inspect().find(viewWithAccessibilityLabel: "No session"))
 
         // VoiceOver hears the state with the title, not as a separate element.
-        let live = SessionSwitcherButton(title: "one", isLive: true) {}
+        let live = SessionSwitcherButton(title: "one", state: .running) {}
         XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, running"))
-        let idle = SessionSwitcherButton(title: "one", isLive: false) {}
+        let idle = SessionSwitcherButton(title: "one", state: .notStarted) {}
         XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, not running"))
+        let waiting = SessionSwitcherButton(title: "one", state: .waitingForOwner) {}
+        XCTAssertNoThrow(try waiting.inspect().find(viewWithAccessibilityLabel: "Session one, waiting for you"))
     }
 
     func testASessionRowShowsItsBadgeCaptionAndShortcut() async throws {
@@ -370,7 +372,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: a, text: "Ship it") }
         let second = try await session(a, "second", lastActiveAt: "2026-09-03T10:00:00Z", targetID: target)
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-04T10:00:00Z"))
-        let rows = SessionSwitcherPresentation.rows([first, second], liveIDs: [first.id], now: now)
+        let rows = SessionSwitcherPresentation.rows([first, second], liveIDs: [first.id], statuses: [:], now: now)
 
         var picked = 0
         let running = SessionSwitcherRow(row: rows[0], isCurrent: true) { picked += 1 }

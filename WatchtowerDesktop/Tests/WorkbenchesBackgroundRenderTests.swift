@@ -43,7 +43,7 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
         vm.drill(into: projectID)
         XCTAssertNil(vm.errorMessage)
         XCTAssertEqual(vm.selectedWorkbench?.id, projectID, "the page, not the empty state, is on screen")
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = manager
 
         for name in [NSAppearance.Name.darkAqua, .aqua] {
@@ -99,7 +99,7 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
         vm.layout = layout
         XCTAssertEqual(vm.drilledSessions.map(\.id), sessions.reversed().map(\.id))
         XCTAssertEqual(vm.panelSelection, .session(selected.id))
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = manager
 
         for name in [NSAppearance.Name.darkAqua, .aqua] {
@@ -107,14 +107,15 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
             let detail = try pixel(render(Color.clear.detailBackground(), appearance), x: 450, y: 250)
             let page = try render(WorkbenchesView(vm: vm).environment(appState), appearance)
             // The panel's last column, where its edge line runs; the rows sit
-            // under the header and the SESSIONS label, about 26pt apart.
+            // under the header and the SESSIONS label, about 38pt apart (a title
+            // and its caption).
             let edge = Int(PanelResizeHandle.defaultWidth) - 1
             let line = try pixel(page, x: edge, y: 400)
             XCTAssertNotEqual(line, detail, "\(name): the edge line shows below the list")
-            XCTAssertEqual(try pixel(page, x: edge, y: 90), detail, "\(name): the selected tab covers the line")
-            XCTAssertEqual(try pixel(page, x: edge, y: 64), line, "\(name): another row keeps the line")
+            XCTAssertEqual(try pixel(page, x: edge, y: 110), detail, "\(name): the selected tab covers the line")
+            XCTAssertEqual(try pixel(page, x: edge, y: 70), line, "\(name): another row keeps the line")
             // Through the resize strip into the page, the same colour.
-            XCTAssertEqual(try pixel(page, x: edge + 4, y: 90), detail, "\(name): the strip beside the tab")
+            XCTAssertEqual(try pixel(page, x: edge + 4, y: 110), detail, "\(name): the strip beside the tab")
         }
     }
 

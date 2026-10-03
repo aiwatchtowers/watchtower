@@ -247,3 +247,41 @@ func (db *DB) MarkReactionCommandsSeeded(id int64) error {
 	}
 	return nil
 }
+
+// SlackRosterSyncedAt returns when accountID's full workspace roster was last
+// fetched (migration 00099); the zero time means never, or a missing row.
+func (db *DB) SlackRosterSyncedAt(id int64) (time.Time, error) {
+	var stamp string
+	err := db.QueryRow(`SELECT roster_synced_at FROM slack_accounts WHERE id = ?`, id).Scan(&stamp)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, fmt.Errorf("reading roster stamp for slack account %d: %w", id, err)
+	}
+	if stamp == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing roster stamp for slack account %d: %w", id, err)
+	}
+	return t, nil
+}
+
+// SetSlackRosterSyncedAt stamps accountID's roster as fetched at at.
+func (db *DB) SetSlackRosterSyncedAt(id int64, at time.Time) error {
+	res, err := db.Exec(`UPDATE slack_accounts SET roster_synced_at = ? WHERE id = ?`,
+		at.UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("stamping roster for slack account %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("stamping roster for slack account %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("stamping roster: no slack_accounts row %d", id)
+	}
+	return nil
+}

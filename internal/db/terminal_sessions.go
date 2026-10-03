@@ -4,12 +4,23 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 
+// agentStateAtLayout is agent_state_at's fixed-width UTC form: string order
+// is time order, and the Desktop parses it pinned to UTC.
+const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
+
+// agentStateAtGlob matches a stamp in agentStateAtLayout. A stored stamp that
+// does not match never blocks a write: string order means nothing for it, and
+// the next write replaces it with a valid one.
+const agentStateAtGlob = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z"
+
 // TerminalSession is the slice of a terminal_sessions row Go reads; the
-// Desktop owns every other column.
+// Desktop owns every other column but the agent state, which only the
+// workbench hooks write.
 type TerminalSession struct {
 	ID              int64
 	WorkbenchID     sql.NullInt64
@@ -18,18 +29,31 @@ type TerminalSession struct {
 	TitleSource     string
 	FolderPath      string
 	ClaudeSessionID sql.NullString
+	AgentState      sql.NullString
+	AgentStateAt    time.Time // zero when never reported
 }
 
 func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
-	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id
+	var stateAt sql.NullString
+	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
+		agent_state, agent_state_at
 		FROM terminal_sessions WHERE id = ?`, id).
-		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID)
+		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
+			&s.AgentState, &stateAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d: %w", id, err)
+	}
+	// An unreadable stamp reads as never reported rather than failing the
+	// row: the /clear id move and `terminal title` read it too, and the next
+	// state write stores a valid stamp again.
+	if stateAt.Valid {
+		if at, perr := time.Parse(agentStateAtLayout, stateAt.String); perr == nil {
+			s.AgentStateAt = at
+		}
 	}
 	return &s, nil
 }
@@ -65,6 +89,57 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d claude session id: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// ClearTerminalAgentState starts a new process run of workbench workbenchID's
+// claude row id with no agent state — the SessionStart hook of a launch or a
+// resume of conversation sessionID at at. Otherwise a new run whose first
+// state equals the previous run's last one would be skipped as a repeat and
+// keep the old run's time, which the Desktop does not trust. agent_state_at
+// becomes at, not NULL, so a late async hook of the previous run (stamped
+// earlier) still cannot land. Same row guards as SetTerminalAgentState; false
+// when there was no state to clear or a guard held it back.
+func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
+	stamp := at.UTC().Format(agentStateAtLayout)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND agent_state IS NOT NULL
+		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
+		stamp, id, workbenchID, sessionID, stamp)
+	if err != nil {
+		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// SetTerminalAgentState records what workbench workbenchID's claude row id is
+// doing, reported by a Claude Code hook of conversation sessionID at at. It
+// writes only when the row still runs that conversation (a nested `claude -p`
+// that inherited the row's env has another id), the state changes (a repeat
+// keeps the transition time), at is later than the stored time (a late async
+// hook never overwrites a newer state) and, with onlyFrom set, the stored
+// state is onlyFrom. One guarded UPDATE, no transaction; false when a guard
+// held it back.
+func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string) (bool, error) {
+	stamp := at.UTC().Format(agentStateAtLayout)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND agent_state IS NOT ?
+		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')
+		  AND (? = '' OR agent_state = ?)`,
+		state, stamp, id, workbenchID, sessionID, state, stamp, onlyFrom, onlyFrom)
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}
 	return n > 0, nil
 }

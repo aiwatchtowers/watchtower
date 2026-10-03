@@ -68,6 +68,7 @@ struct EmailConnectionDetail: View {
         .sheet(isPresented: $showAddEmailAccountSheet) {
             AddEmailAccountView()
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(accountPendingRemoval?.displayName ?? "this account")?",

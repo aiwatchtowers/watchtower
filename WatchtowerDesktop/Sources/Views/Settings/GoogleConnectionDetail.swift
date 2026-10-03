@@ -56,7 +56,7 @@ struct GoogleConnectionDetail: View {
                                 .help(account.isOK ? "Connected" : account.error)
                             if !account.isOK {
                                 Button("Re-login") {
-                                    vm.relogin(account)
+                                    vm.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
                                 }
                                 .disabled(vm.isConnecting)
                             }
@@ -87,8 +87,11 @@ struct GoogleConnectionDetail: View {
             }
         }
         .sheet(isPresented: $showAddGoogleAccountSheet) {
-            AddGoogleAccountView()
+            // Settings opened during onboarding: its finish starts the
+            // daemon, not this sheet.
+            AddGoogleAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(googleAccountPendingRemoval?.displayName ?? "this account")?",
@@ -100,7 +103,7 @@ struct GoogleConnectionDetail: View {
         ) {
             Button("Remove Account", role: .destructive) {
                 if let account = googleAccountPendingRemoval {
-                    Task { await appState.googleAccountsViewModel?.remove(account) }
+                    Task { await appState.googleAccountsViewModel?.remove(account, daemonPolicy: appState.accountDaemonPolicy) }
                 }
                 googleAccountPendingRemoval = nil
             }

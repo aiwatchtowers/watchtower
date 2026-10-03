@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -223,4 +224,25 @@ func TestSlackAccount_MarkReactionCommandsSeeded_MissingRow(t *testing.T) {
 	d := openTestDB(t)
 
 	require.Error(t, d.MarkReactionCommandsSeeded(999))
+}
+
+func TestSlackRosterSyncedAtRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.CreateSlackAccount(SlackAccount{TeamID: "T1"})
+	require.NoError(t, err)
+
+	got, err := d.SlackRosterSyncedAt(id)
+	require.NoError(t, err)
+	assert.True(t, got.IsZero(), "a new account has never fetched its roster")
+
+	at := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+	require.NoError(t, d.SetSlackRosterSyncedAt(id, at))
+	got, err = d.SlackRosterSyncedAt(id)
+	require.NoError(t, err)
+	assert.True(t, at.Equal(got), "want %s, got %s", at, got)
+
+	missing, err := d.SlackRosterSyncedAt(id + 99)
+	require.NoError(t, err)
+	assert.True(t, missing.IsZero(), "a missing row reads as never fetched")
+	require.Error(t, d.SetSlackRosterSyncedAt(id+99, at), "stamping a missing row is an error")
 }

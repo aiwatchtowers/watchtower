@@ -151,7 +151,7 @@ struct GoToPalette: View {
     private func currentSessionRows(now: Date) -> [Int64: SessionSwitcherPresentation.Row] {
         guard let projectID = vm.selectedWorkbenchID else { return [:] }
         let rows = SessionSwitcherPresentation.rows(
-            vm.orderedSessions(projectID: projectID), liveIDs: vm.terminalCenter?.liveIDs ?? [], now: now
+            vm.orderedSessions(projectID: projectID), liveIDs: vm.terminalCenter?.liveIDs ?? [], statuses: vm.sessionStatuses, now: now
         )
         return Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
     }
@@ -198,15 +198,21 @@ struct GoToPalette: View {
         switch item {
         case let .session(session, workbench):
             if let row = currentRows[session.id] {
-                SessionLiveDot(isLive: row.state == .running).frame(width: 12)
+                SessionLiveDot(state: row.state).frame(width: 12)
                 Text(row.session.title).font(.callout).lineLimit(1).truncationMode(.tail)
                 if let badge = row.badge { WorkbenchCapsuleBadge(text: badge) }
                 Spacer(minLength: 4)
                 if let caption = row.caption {
-                    Text(caption).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    // A live caption repeats the dot's label for VoiceOver.
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .accessibilityHidden(row.state.isLive)
                 }
             } else {
-                SessionLiveDot(isLive: vm.isLive(session)).frame(width: 12)
+                SessionLiveDot(state: vm.sessionState(session)).frame(width: 12)
                 Text(GoToPresentation.sessionTitle(session, workbench: workbench, currentWorkbenchID: vm.selectedWorkbenchID))
                     .font(.callout).lineLimit(1).truncationMode(.tail)
                 Spacer(minLength: 4)

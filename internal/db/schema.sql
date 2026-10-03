@@ -1258,7 +1258,8 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    reaction_commands_seeded_at TEXT NOT NULL DEFAULT ''  -- when the reaction-commands ledger was seeded with this account's history; '' = never
+    reaction_commands_seeded_at TEXT NOT NULL DEFAULT '',  -- when the reaction-commands ledger was seeded with this account's history; '' = never
+    roster_synced_at  TEXT NOT NULL DEFAULT ''  -- last full users.list roster fetch (sync and sync --users-only); '' = never
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -2235,6 +2236,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     closed_at         TEXT, -- legacy, unused since 2026-10-01 (no Close action): not a "session open" flag
+    agent_state       TEXT CHECK (agent_state IN ('working','waiting','approval')), -- written by the workbench hooks only; NULL = never reported
+    agent_state_at    TEXT, -- written by the workbench hooks only; UTC ms, e.g. 2026-10-03T12:34:56.789Z
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );

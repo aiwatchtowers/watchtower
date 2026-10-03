@@ -1,6 +1,7 @@
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 final class SidebarSectionTests: XCTestCase {
 
@@ -117,32 +118,103 @@ final class SidebarSectionTests: XCTestCase {
     // MARK: - Feature-gated visibility
 
     func testDisabledFeatureHidesItsTabs() {
-        XCTAssertFalse(SidebarDestination.ideas.isVisible(disabledFeatures: ["ideas"]))
-        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["ideas"]))
+        XCTAssertFalse(SidebarDestination.ideas.isVisible(disabledFeatures: ["ideas"], connected: .all))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["ideas"], connected: .all))
     }
 
     /// .digests requires ANY of slack-digests/stream-digests/ideas: hidden
     /// only when all three are disabled, visible if any one is enabled.
     func testDigestsAnyOfRule() {
-        XCTAssertFalse(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "stream-digests", "ideas"]))
-        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "stream-digests"]))
-        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "ideas"]))
-        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["stream-digests", "ideas"]))
+        XCTAssertFalse(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "stream-digests", "ideas"], connected: .all))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "stream-digests"], connected: .all))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["slack-digests", "ideas"], connected: .all))
+        XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["stream-digests", "ideas"], connected: .all))
     }
 
+    /// Core tabs have neither gate: everything off, nothing connected.
     func testCoreTabsAlwaysVisible() {
         let everythingDisabled: Set<String> = [
             "slack-digests", "stream-digests", "ideas", "memory",
             "briefing", "day-plan", "tracks", "people-cards", "secretary-inbox"
         ]
-        XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled))
-        XCTAssertTrue(SidebarDestination.targets.isVisible(disabledFeatures: everythingDisabled))
-        XCTAssertTrue(SidebarDestination.chat.isVisible(disabledFeatures: everythingDisabled))
-        XCTAssertTrue(SidebarDestination.calendar.isVisible(disabledFeatures: everythingDisabled))
+        XCTAssertTrue(SidebarDestination.targets.isVisible(disabledFeatures: everythingDisabled, connected: .none))
+        XCTAssertTrue(SidebarDestination.chat.isVisible(disabledFeatures: everythingDisabled, connected: .none))
+    }
+
+    /// Inbox and Calendar have no feature gate, only a source one.
+    func testInboxAndCalendarIgnoreFeaturesButNeedTheirSource() {
+        let everythingDisabled: Set<String> = ["secretary-inbox", "briefing", "day-plan"]
+        XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled, connected: ConnectedSources(slack: true)))
+        XCTAssertFalse(SidebarDestination.inbox.isVisible(disabledFeatures: [], connected: .none))
+        XCTAssertTrue(SidebarDestination.calendar.isVisible(disabledFeatures: everythingDisabled, connected: ConnectedSources(calendar: true)))
+        XCTAssertFalse(SidebarDestination.calendar.isVisible(disabledFeatures: [], connected: .none))
     }
 
     func testRootItemTracksFilterable() {
-        XCTAssertFalse(SidebarDestination.tracks.isVisible(disabledFeatures: ["tracks"]))
+        XCTAssertFalse(SidebarDestination.tracks.isVisible(disabledFeatures: ["tracks"], connected: .all))
+    }
+
+    // MARK: - Source-gated visibility
+
+    /// Every feature onboarding switches off for "only Development"
+    /// (`OnboardingFeaturePlan`): all managed ids but Knowledge search.
+    private static let devOnlyDisabled = OnboardingFeaturePlan.managedFeatureIDs
+        .subtracting(OnboardingFeaturePlan.enabledFeatureIDs(for: [.development]))
+
+    func testDevOnlyInstallSeesExactlyTheUngatedTabs() {
+        let visible = SidebarDestination.allCases.filter {
+            $0.isVisible(disabledFeatures: Self.devOnlyDisabled, connected: .none)
+        }
+        XCTAssertEqual(Set(visible), [.workbench, .chat, .targets, .search, .usage, .mcpServer])
+    }
+
+    func testDevOnlyFallbackIsWorkbench() {
+        XCTAssertEqual(
+            SidebarDestination.fallbackDestination(current: .inbox, disabled: Self.devOnlyDisabled, connected: .none),
+            .workbench
+        )
+        XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: Self.devOnlyDisabled, connected: .none))
+    }
+
+    func testFallbackPrefersInboxWhenItShows() {
+        XCTAssertEqual(
+            SidebarDestination.fallbackDestination(current: .boards, disabled: [], connected: ConnectedSources(slack: true)),
+            .inbox
+        )
+    }
+
+    /// Catch-Up is fed by Attention detection: Slack Digests off no longer
+    /// hides it, Attention detection off does.
+    func testCatchUpFollowsAttentionDetectionNotSlackDigests() {
+        let slack = ConnectedSources(slack: true)
+        XCTAssertTrue(SidebarDestination.catchUp.isVisible(disabledFeatures: ["slack-digests"], connected: slack))
+        XCTAssertFalse(SidebarDestination.catchUp.isVisible(disabledFeatures: ["secretary-inbox"], connected: slack))
+        XCTAssertFalse(SidebarDestination.catchUp.isVisible(disabledFeatures: [], connected: .none))
+    }
+
+    /// Feature × source for every source-gated tab: each needs its source,
+    /// and Catch-Up needs its feature too.
+    func testSourceMatrix() {
+        let cases: [(SidebarDestination, ConnectedSources, Bool)] = [
+            (.calendar, ConnectedSources(calendar: true), true),
+            (.calendar, ConnectedSources(slack: true, mail: true, jira: true), false),
+            (.inbox, ConnectedSources(slack: true), true),
+            (.inbox, ConnectedSources(mail: true), true),
+            (.inbox, ConnectedSources(calendar: true, jira: true), false),
+            (.statistics, ConnectedSources(mail: true), true),
+            (.statistics, ConnectedSources(jira: true), false),
+            (.catchUp, ConnectedSources(mail: true), true),
+            (.catchUp, ConnectedSources(calendar: true), false)
+        ]
+        for (tab, connected, expected) in cases {
+            XCTAssertEqual(tab.isVisible(disabledFeatures: [], connected: connected), expected, "\(tab) with \(connected)")
+        }
+        for tab in [SidebarDestination.boards, .workload, .blockers, .projectMap, .releases] {
+            XCTAssertTrue(tab.isVisible(disabledFeatures: [], connected: ConnectedSources(jira: true)), "\(tab)")
+            XCTAssertFalse(tab.isVisible(disabledFeatures: [], connected: ConnectedSources(slack: true, mail: true, calendar: true)), "\(tab)")
+        }
+        // Both axes: a source alone does not resurrect a disabled feature's tab.
+        XCTAssertFalse(SidebarDestination.tracks.isVisible(disabledFeatures: ["tracks"], connected: .all))
     }
 
     // MARK: - Collapsed-section badge aggregation
@@ -153,11 +225,14 @@ final class SidebarSectionTests: XCTestCase {
         .catchUp: 2, .briefings: 3, .dayPlan: 4, .inbox: 5, .ideas: 7
     ]
 
-    private func todayBadge(hidden: Set<String> = [], disabled: Set<String> = []) -> Int {
+    private func todayBadge(
+        hidden: Set<String> = [], disabled: Set<String> = [], connected: ConnectedSources = .all
+    ) -> Int {
         SidebarView.sectionBadgeCount(
             in: .today,
             hidden: hidden,
-            disabledFeatures: disabled
+            disabledFeatures: disabled,
+            connected: connected
         ) { Self.todayCounts[$0] ?? 0 }
     }
 
@@ -172,10 +247,16 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertEqual(todayBadge(disabled: ["ideas"]), 14, "Ideas' 7 must drop out with the feature off")
         XCTAssertEqual(todayBadge(disabled: ["ideas", "briefing"]), 11, "Briefings' 3 drops too")
         XCTAssertEqual(
-            todayBadge(disabled: ["ideas", "briefing", "day-plan", "slack-digests"]),
+            todayBadge(disabled: ["ideas", "briefing", "day-plan", "secretary-inbox"]),
             5,
             "only the ungated .inbox count survives"
         )
+    }
+
+    /// Same rule on the source axis: with no message source, Catch-Up's 2
+    /// and Inbox's 5 drop out.
+    func testSectionBadgeExcludesSourceGatedItems() {
+        XCTAssertEqual(todayBadge(connected: .none), 14)
     }
 
     func testSectionBadgeExcludesUserHiddenItems() {
@@ -185,11 +266,11 @@ final class SidebarSectionTests: XCTestCase {
     // MARK: - Navigation fallback
 
     func testFallbackDestinationSwitchesAwayWhenCurrentBecomesHidden() {
-        XCTAssertEqual(SidebarDestination.fallbackDestination(current: .ideas, disabled: ["ideas"]), .inbox)
+        XCTAssertEqual(SidebarDestination.fallbackDestination(current: .ideas, disabled: ["ideas"], connected: .all), .inbox)
     }
 
     func testFallbackDestinationNilWhenCurrentStillVisible() {
-        XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: ["ideas"]))
+        XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: ["ideas"], connected: .all))
     }
 
     // MARK: - Icon rail

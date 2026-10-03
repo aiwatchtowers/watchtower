@@ -127,6 +127,9 @@ final class WorkbenchesViewModel {
     /// The embedded terminals. AppState passes its own; nil (most tests) =
     /// nothing launches.
     let terminalCenter: TerminalCenter?
+    /// What the live sessions' agents are doing (board #312). AppState passes
+    /// its own; nil = plain running dots.
+    let agentStates: SessionAgentStateCenter?
     /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
     @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
@@ -285,12 +288,14 @@ final class WorkbenchesViewModel {
         dbPool: DatabasePool,
         cli: WorkbenchCLI?,
         defaults: UserDefaults = .standard,
-        terminalCenter: TerminalCenter? = nil
+        terminalCenter: TerminalCenter? = nil,
+        agentStates: SessionAgentStateCenter? = nil
     ) {
         self.dbPool = dbPool
         self.cli = cli
         self.defaults = defaults
         self.terminalCenter = terminalCenter
+        self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
@@ -432,18 +437,34 @@ final class WorkbenchesViewModel {
         case .documents: layout.show(.documents)
         case .terminal:
             let projectID = route.projectID
-            Task { await revealTerminal(projectID: projectID) }
+            let sessionID = route.subjectID
+            Task { await revealTerminal(projectID: projectID, sessionID: sessionID) }
         }
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
     }
 
-    /// The live session, else the most recent one (its pane offers Resume)
-    /// — read first, since a project just selected has no list yet.
-    func revealTerminal(projectID: Int64) async {
-        if terminalSessions[projectID] == nil {
+    /// `sessionID` (a session notice's click, board #312) puts that session
+    /// of the workbench on screen: a live one the way a panel row click does,
+    /// one that stopped since the banner without starting it — a stale
+    /// banner never launches an agent; its pane offers Resume. Without one, or when
+    /// it names no session of the workbench (deleted meanwhile), the live
+    /// session, else the most recent one (its pane offers Resume) — read
+    /// first, since a project just selected has no list yet.
+    func revealTerminal(projectID: Int64, sessionID: Int64? = nil) async {
+        // A session created since the last read is not in the list yet.
+        let listed = terminalSessions[projectID]
+        let unlisted = sessionID.map { id in !(listed ?? []).contains { $0.id == id } } ?? false
+        if listed == nil || unlisted {
             guard await loadSessions(projectID: projectID) else { return }
         }
-        let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
+        let subject = sessionID.flatMap { id in terminalSessions[projectID]?.first { $0.id == id } }
+        if let subject, terminalCenter?.liveIDs.contains(subject.id) == true {
+            drill(into: projectID)
+            await open(subject, placement: .show)
+            return
+        }
+        if subject != nil { drill(into: projectID) }
+        let id = subject?.id ?? activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
         guard let id else { return }
         var updated = layout(projectID: projectID)
         updated.show(.session(id))

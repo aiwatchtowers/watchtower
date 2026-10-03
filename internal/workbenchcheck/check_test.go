@@ -2,6 +2,7 @@ package workbenchcheck
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/gitbin"
 )
 
 // gitEnv isolates every git call of a test from the developer's own config.
@@ -501,5 +503,65 @@ func TestProj07_UnresolvableDefaultBranchIsANote(t *testing.T) {
 	}
 	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "default branch master could not be resolved") }) {
 		t.Fatalf("notes must say why the branch checks were skipped: %v", r.Notes)
+	}
+}
+
+// On a Mac without the developer tools the only git is the /usr/bin/git
+// shim, which pops the install dialog: the check locates git through
+// gitbin, runs none when there is none, and says so in a note.
+func TestProj07_GitUnavailableIsANote(t *testing.T) {
+	gitEnv(t)
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := locateGit
+	t.Cleanup(func() { locateGit = prev })
+	locateGit = func() (string, bool) { return "", false }
+
+	if out, code, err := ExecRunner(context.Background(), dir, nil, "git", "--version"); !errors.Is(err, gitbin.ErrUnavailable) || code != -1 || out != nil {
+		t.Fatalf("ExecRunner without git: out=%q code=%d err=%v", out, code, err)
+	}
+	pr := node(1, "in_progress", "merged", time.Hour)
+	pr.Target.PR = "#7"
+	board := []db.BoardNode{pr, node(2, "done", "open", time.Hour)}
+	for _, network := range []bool{false, true} {
+		// gh reads the repository through git from its own PATH — the shim
+		// without the developer tools — so it does not run either.
+		var ghCalls int
+		run := func(ctx context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
+			if name == "gh" {
+				ghCalls++
+			}
+			return ExecRunner(ctx, d, in, name, args...)
+		}
+		r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow, Network: network, Run: run})
+		if r.Git || r.Base != "" || r.PRChecked || len(r.Findings) != 0 || r.Incomplete || ghCalls != 0 {
+			t.Fatalf("network=%v, no git: want git=false, no base, no findings, no gh call; got %d gh calls, %+v", network, ghCalls, r)
+		}
+		if !slices.Contains(r.Notes, "git is not available (no Command Line Tools); branch checks skipped") {
+			t.Fatalf("network=%v: notes must say git is unavailable: %v", network, r.Notes)
+		}
+		if prNote := slices.Contains(r.Notes, "git is not available; pull request states not checked"); prNote != network {
+			t.Fatalf("network=%v: the pull request note must appear exactly when the network is on: %v", network, r.Notes)
+		}
+	}
+}
+
+// ExecRunner runs the git gitbin located, not whatever "git" PATH names, and
+// with the inherited repository variables dropped.
+func TestExecRunner_RunsTheLocatedGit(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "located-git")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"located $* ${GIT_DIR-unset}\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := locateGit
+	t.Cleanup(func() { locateGit = prev })
+	locateGit = func() (string, bool) { return bin, true }
+	t.Setenv("GIT_DIR", "/elsewhere/.git")
+
+	out, code, err := ExecRunner(context.Background(), t.TempDir(), nil, "git", "rev-parse")
+	if err != nil || code != 0 || strings.TrimSpace(string(out)) != "located rev-parse unset" {
+		t.Fatalf("want the located git without GIT_DIR, got out=%q code=%d err=%v", out, code, err)
 	}
 }

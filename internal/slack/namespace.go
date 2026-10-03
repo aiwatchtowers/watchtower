@@ -25,6 +25,14 @@ func SplitAccountID(id string) (accountID int64, rawID string, ok bool) {
 	return n, id[idx+1:], true
 }
 
+// RawID is id's raw Slack form: a namespaced id ("1:U456") loses its
+// account prefix, anything else passes through unchanged. The scalar
+// counterpart of RawIDsJSON, for a single id rendered into a prompt.
+func RawID(id string) string {
+	_, rawID, _ := SplitAccountID(id)
+	return rawID
+}
+
 // RawIDsJSON takes a JSON array of Slack ids as stored (e.g. `["1:U456"]`) and
 // returns the same array with every element reduced to its raw form (e.g.
 // `["U456"]`). It is for rendering an id blob into AI prompt text that must be

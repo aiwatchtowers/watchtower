@@ -8,6 +8,9 @@ import WatchtowerCore
 // history of recaps; the right pane renders whichever one is selected.
 struct CatchUpView: View {
     @Bindable var vm: CatchUpViewModel
+    /// The first sync's line while it runs (`OnboardingFinishPlan.firstSyncText`):
+    /// right after onboarding there is nothing to recap yet.
+    var firstSync: (title: String, detail: String)?
 
     /// Custom-range mode. View-local on purpose: it only decides WHICH control
     /// edits `vm.windowChoice`, and the choice itself — the state that has to
@@ -178,6 +181,16 @@ struct CatchUpView: View {
             // field holding text typed against a different recap.
             CatchUpRecapDocument(recap: recap, vm: vm)
                 .id(recap.id)
+        } else if let firstSync {
+            VStack(spacing: 8) {
+                ProgressView()
+                Text(firstSync.title)
+                    .font(.title3)
+                Text(firstSync.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             VStack(spacing: 8) {
                 Image(systemName: "tray.and.arrow.down")

@@ -814,7 +814,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -1409,7 +1409,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     claude_session_id TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    closed_at         TEXT,
+    closed_at         TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );

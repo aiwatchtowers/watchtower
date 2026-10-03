@@ -161,7 +161,7 @@ final class MeetingPrepViewModelTests: XCTestCase {
     /// The center is an AppState `let`, so every screen re-reading it after
     /// navigation gets the same per-event VM.
     func testAppStateCenterKeepsViewModelAcrossReads() {
-        let appState = AppState()
+        let appState = AppState.isolated()
         let first = appState.meetingPrepCenter.viewModel(for: "evt-1")
         XCTAssertTrue(appState.meetingPrepCenter.viewModel(for: "evt-1") === first)
     }

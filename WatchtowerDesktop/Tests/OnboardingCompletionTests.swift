@@ -8,7 +8,7 @@ import Testing
 @MainActor
 @Suite("OnboardingCompletion")
 struct OnboardingCompletionTests {
-    @Test("finish() runs markOnboardingDone, startPipelines, completeOnboarding, onRetry in that fixed order, and returns true")
+    @Test("finish() runs markOnboardingDone, startDaemon, completeOnboarding, onRetry in that fixed order, and returns true")
     func finishRunsInPinnedOrderOnSuccess() async {
         var order: [String] = []
 
@@ -20,12 +20,12 @@ struct OnboardingCompletionTests {
                 order.append("markOnboardingDone")
                 return true
             },
-            startPipelines: { order.append("startPipelines") },
+            startDaemon: { order.append("startDaemon") },
             completeOnboarding: { order.append("completeOnboarding") },
             onRetry: { order.append("onRetry") }
         )
 
-        #expect(order == ["markOnboardingDone", "startPipelines", "completeOnboarding", "onRetry"])
+        #expect(order == ["markOnboardingDone", "startDaemon", "completeOnboarding", "onRetry"])
         #expect(result == true)
     }
 
@@ -43,7 +43,7 @@ struct OnboardingCompletionTests {
                 order.append("markOnboardingDone")
                 return false
             },
-            startPipelines: { order.append("startPipelines") },
+            startDaemon: { order.append("startDaemon") },
             completeOnboarding: { order.append("completeOnboarding") },
             onRetry: { order.append("onRetry") }
         )
