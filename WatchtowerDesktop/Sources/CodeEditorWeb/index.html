@@ -24,12 +24,33 @@
                                                file not on screen takes it
                                                when it is shown
     focus()                                    the keyboard into the editor
+    definitionAtCursor() → Bool                Go to Definition (Ctrl+Cmd+J
+                                               from the menu): posts
+                                               `definition` for the word at
+                                               the cursor; false = no word
+    definitionDone(req)                        the definition request `req`
+                                               is answered: its busy
+                                               underline goes; an older req
+                                               is ignored
   page → Swift (webkit.messageHandlers.wt):
     ready
     text   {id, text, base, now, explicit}     300 ms after typing stops; at
                                                once (now) on a tab switch or
                                                blur; explicit on Cmd+S
+    definition {req, id, word, line, col, x, y}  Cmd+click on a word (or
+                                               definitionAtCursor): req is a
+                                               page counter; line:col is the
+                                               click (1-based, UTF-16); x, y
+                                               the bottom left of the word in
+                                               page points, for the menu
+    cursor {id, line, col}                     the cursor moved; at most 10 a
+                                               second, the last move always
+                                               sent
     error  {message}
+
+  Monaco's own bindings for the app's navigation chords (spec §10) are
+  removed so they reach the app's menu from inside the editor; Cmd held
+  over a word underlines it like a link.
 -->
 <html>
 <head>
@@ -38,6 +59,8 @@
   html, body, #editor { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
   body { background: #ffffff; }
   @media (prefers-color-scheme: dark) { body { background: #1e1e1e; } }
+  .wt-def-link { text-decoration: underline; cursor: pointer; }
+  .wt-def-busy { text-decoration: underline dotted; }
   #missing { display: none; font: 13px -apple-system, sans-serif; color: #888; padding: 16px; }
 </style>
 </head>
@@ -78,6 +101,20 @@
         if (d.setDiagnosticsOptions) { d.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: true }); }
       });
     }
+
+    // The app's navigation chords (spec §10) that Monaco 0.57 binds by
+    // default; "-command" removes that command's binding to the chord.
+    // scripts/editor-bridge-check.swift asserts none of the chords is left.
+    var K = monaco.KeyCode, M = monaco.KeyMod;
+    monaco.editor.addKeybindingRules([
+      { keybinding: M.CtrlCmd | M.Shift | K.KeyO, command: "-editor.action.quickOutline" },
+      { keybinding: M.CtrlCmd | K.KeyI, command: "-editor.action.triggerSuggest" },
+      { keybinding: M.CtrlCmd | K.KeyI, command: "-focusSuggestion" },
+      { keybinding: M.CtrlCmd | K.KeyI, command: "-toggleSuggestionDetails" },
+      { keybinding: M.CtrlCmd | M.Alt | K.Enter, command: "-editor.action.replaceAll" },
+      { keybinding: M.CtrlCmd | M.Alt | K.Enter, command: "-quickInput.accept" },
+      { keybinding: M.CtrlCmd | M.WinCtrl | K.RightArrow, command: "-quickInput.acceptInBackground" }
+    ]);
 
     var dark = window.matchMedia("(prefers-color-scheme: dark)");
     function applyTheme() { monaco.editor.setTheme(dark.matches ? "wt-dark" : "wt-light"); }
@@ -144,6 +181,77 @@
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text: text }], function () { return null; });
       model.__replacing = false;
     }
+
+    // Go to definition: Cmd+click (or the menu's definitionAtCursor) posts
+    // the word; it stays underlined (busy) until Swift answers that req.
+    var definitionReq = 0;
+    var busy = { model: null, ids: [], req: 0 };
+    var link = { model: null, ids: [] };
+
+    function decorate(holder, model, range, cls) {
+      if (holder.model && !holder.model.isDisposed()) { holder.model.deltaDecorations(holder.ids, []); }
+      holder.model = model;
+      holder.ids = model && range ? model.deltaDecorations([], [{ range: range, options: { inlineClassName: cls } }]) : [];
+    }
+
+    function wordRange(model, position) {
+      var word = model.getWordAtPosition(position);
+      return word ? { word: word.word,
+        range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn) } : null;
+    }
+
+    function requestDefinition(position) {
+      var model = editor.getModel();
+      var hit = model && current ? wordRange(model, position) : null;
+      if (!hit) { return false; }
+      definitionReq += 1;
+      decorate(link, null, null, "");
+      decorate(busy, model, hit.range, "wt-def-busy");
+      busy.req = definitionReq;
+      var at = editor.getScrolledVisiblePosition({ lineNumber: position.lineNumber, column: hit.range.startColumn });
+      var box = editor.getDomNode().getBoundingClientRect();
+      post({ type: "definition", req: definitionReq, id: current, word: hit.word,
+        line: position.lineNumber, col: position.column,
+        x: box.left + (at ? at.left : 0), y: box.top + (at ? at.top + at.height : 0) });
+      return true;
+    }
+
+    function isDefinitionGesture(e) {
+      return e.event.metaKey && !e.event.altKey && !e.event.shiftKey && !e.event.ctrlKey
+        && e.target.type === monaco.editor.MouseTargetType.CONTENT_TEXT && e.target.position;
+    }
+
+    editor.onMouseDown(function (e) {
+      if (e.event.leftButton && isDefinitionGesture(e)) { requestDefinition(e.target.position); }
+    });
+    editor.onMouseMove(function (e) {
+      var model = editor.getModel();
+      var hit = model && isDefinitionGesture(e) ? wordRange(model, e.target.position) : null;
+      decorate(link, hit ? model : null, hit ? hit.range : null, "wt-def-link");
+    });
+    editor.onMouseLeave(function () { decorate(link, null, null, ""); });
+    editor.onKeyUp(function (e) { if (e.keyCode === monaco.KeyCode.Meta) { decorate(link, null, null, ""); } });
+
+    // The cursor for the jump bar and history: the first move at once, then
+    // at most one message per 100 ms carrying the latest position.
+    var cursorTimer = null, cursorDirty = false;
+    function sendCursor() {
+      var position = editor.getPosition();
+      if (current && position) { post({ type: "cursor", id: current, line: position.lineNumber, col: position.column }); }
+    }
+    editor.onDidChangeCursorPosition(function () {
+      if (cursorTimer) { cursorDirty = true; return; }
+      sendCursor();
+      cursorTimer = setTimeout(function tick() {
+        if (cursorDirty) {
+          cursorDirty = false;
+          sendCursor();
+          cursorTimer = setTimeout(tick, 100);
+        } else {
+          cursorTimer = null;
+        }
+      }, 100);
+    });
 
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
       if (current) { send(current, true, true); }
@@ -217,7 +325,14 @@
           return { id: id, text: models[id] ? models[id].getValue() : "", base: bases[id] };
         }).filter(function (edit) { return models[edit.id]; });
       },
-      focus: function () { editor.focus(); }
+      focus: function () { editor.focus(); },
+      definitionAtCursor: function () {
+        var position = editor.getPosition();
+        return !!position && requestDefinition(position);
+      },
+      definitionDone: function (req) {
+        if (req === busy.req) { decorate(busy, null, null, ""); busy.req = 0; }
+      }
     };
     post({ type: "ready" });
   }, function (err) {
