@@ -46,7 +46,7 @@ struct OnboardingGoalsStepView: View {
                 goals
             }
         }
-        .task { await model.prepare(configuredLanguage: ConfigService().digestLanguage) }
+        .task { await model.prepareGoalsStep(configuredLanguage: ConfigService().digestLanguage) }
     }
 
     private var cliFailed: Bool {
@@ -130,7 +130,7 @@ struct OnboardingGoalsStepView: View {
     private func goalCard(_ goal: OnboardingGoal) -> some View {
         let checked = model.selection.goals.contains(goal)
         return Button {
-            model.toggle(goal)
+            model.toggleGoal(goal)
         } label: {
             HStack(alignment: .top, spacing: 12) {
                 Image(systemName: checked ? "checkmark.square.fill" : "square")
@@ -165,7 +165,7 @@ struct OnboardingGoalsStepView: View {
         HStack(spacing: 8) {
             ForEach(OnboardingGoal.allCases, id: \.self) { goal in
                 let checked = model.selection.goals.contains(goal)
-                Button(goal.title) { model.toggle(goal) }
+                Button(goal.title) { model.toggleGoal(goal) }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
