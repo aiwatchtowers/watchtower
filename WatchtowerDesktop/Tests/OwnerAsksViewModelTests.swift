@@ -195,7 +195,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertTrue(typed.isEmpty, "no keystrokes reach the terminal")
         XCTAssertEqual(copied.count, 1)
         XCTAssertTrue(center.clipboardHints.contains(s.id), "the session's pane shows the hint")
-        XCTAssertEqual(vm.asks.notices[askID]?.text, WorkbenchCommentsSendBar.copiedNote)
+        XCTAssertEqual(vm.asks.notices[askID]?.text, OwnerAsksViewModel.copiedNote)
         XCTAssertNil(vm.asks.drawerAskIDs[p])
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id))
     }

@@ -26,7 +26,7 @@ final class OwnerAsksViewModel {
         var text: String {
             switch self {
             case .delivered(.sent): OwnerAsksViewModel.sentNote
-            case .delivered(.copied): WorkbenchCommentsSendBar.copiedNote
+            case .delivered(.copied): OwnerAsksViewModel.copiedNote
             case .delivered(.noSession): OwnerAsksViewModel.noSessionNote
             case .withdrawn: OwnerAsksViewModel.withdrawnNote
             }
@@ -34,6 +34,8 @@ final class OwnerAsksViewModel {
     }
 
     static let sentNote = "Pasted into Claude — press Return to send"
+    /// Also the session pane's clipboard hint (`TerminalCenter.clipboardHints`).
+    static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
     static let withdrawnNote = "The agent withdrew this ask — your draft is kept"
     static let pollInterval: Duration = .seconds(5)

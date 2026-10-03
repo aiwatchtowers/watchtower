@@ -25,7 +25,8 @@ final class WorkbenchDocumentsRemovedScanTests: XCTestCase {
     func testNoSourceNamesARemovedDocumentType() throws {
         let removed = [
             "WorkbenchDocumentsView", "WorkbenchDocumentsList", "WorkbenchDocumentThreadsPanel",
-            "AddWorkbenchDocumentSheet", "WorkbenchDocumentViewModel", "WorkbenchDocumentGrouping"
+            "AddWorkbenchDocumentSheet", "WorkbenchDocumentViewModel", "WorkbenchDocumentGrouping",
+            "WorkbenchCommentsSendBar"
         ]
         // The document models and the attach envelope, as whole words (the
         // names above all start with `WorkbenchDocument`).

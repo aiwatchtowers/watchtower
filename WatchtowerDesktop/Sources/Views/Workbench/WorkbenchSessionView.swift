@@ -134,7 +134,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             case .running?:
                 if let session, center.clipboardHints.contains(session.id) {
                     HStack {
-                        Label(WorkbenchCommentsSendBar.copiedNote, systemImage: "doc.on.clipboard")
+                        Label(OwnerAsksViewModel.copiedNote, systemImage: "doc.on.clipboard")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("Dismiss") { center.dismissClipboardHint(sessionID: session.id) }
