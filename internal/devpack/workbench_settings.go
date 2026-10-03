@@ -601,15 +601,7 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, value string) (
 				continue
 			}
 			groupChanged = true
-			cp := make(map[string]any, len(hm))
-			for k, v := range hm {
-				cp[k] = v
-			}
-			cp[spec.hookType()] = value
-			if spec.prompt {
-				cp["type"] = spec.hookType()
-			}
-			rest = append(rest, cp)
+			rest = append(rest, withOurHookValue(hm, spec, value))
 		}
 		if !groupChanged {
 			out = append(out, g)
@@ -619,26 +611,52 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, value string) (
 		if len(rest) == 0 {
 			continue
 		}
-		cp := make(map[string]any, len(m))
-		for k, v := range m {
-			cp[k] = v
-		}
-		cp["hooks"] = rest
-		out = append(out, cp)
+		out = append(out, groupWithHooks(m, rest))
 	}
 	if !found {
-		h := map[string]any{"type": spec.hookType(), spec.hookType(): value, "timeout": spec.timeoutSec}
-		if spec.async {
-			h["async"] = true
-		}
-		g := map[string]any{"hooks": []any{h}}
-		if spec.matcher != "" {
-			g["matcher"] = spec.matcher
-		}
-		out = append(out, g)
+		out = append(out, newOurHookGroup(spec, value))
 		changed = true
 	}
 	return out, changed
+}
+
+// withOurHookValue returns a copy of our entry hm with value set (and, for a
+// prompt hook, its type set back to prompt); its other keys are kept.
+func withOurHookValue(hm map[string]any, spec hookSpec, value string) map[string]any {
+	cp := make(map[string]any, len(hm))
+	for k, v := range hm {
+		cp[k] = v
+	}
+	cp[spec.hookType()] = value
+	if spec.prompt {
+		cp["type"] = spec.hookType()
+	}
+	return cp
+}
+
+// newOurHookGroup builds a fresh group holding only our hook set to value,
+// carrying spec's matcher when it has one.
+func newOurHookGroup(spec hookSpec, value string) map[string]any {
+	h := map[string]any{"type": spec.hookType(), spec.hookType(): value, "timeout": spec.timeoutSec}
+	if spec.async {
+		h["async"] = true
+	}
+	g := map[string]any{"hooks": []any{h}}
+	if spec.matcher != "" {
+		g["matcher"] = spec.matcher
+	}
+	return g
+}
+
+// groupWithHooks returns a copy of group m with its hooks replaced by rest;
+// the group's other keys (its matcher among them) are kept.
+func groupWithHooks(m map[string]any, rest []any) map[string]any {
+	cp := make(map[string]any, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	cp["hooks"] = rest
+	return cp
 }
 
 // hasValue: our entry hm already holds value — and, for a prompt hook, is
@@ -671,12 +689,7 @@ func withoutOurHook(groups []any, spec hookSpec, projectID int64) ([]any, bool) 
 		if len(rest) == 0 {
 			continue
 		}
-		cp := make(map[string]any, len(m))
-		for k, v := range m {
-			cp[k] = v
-		}
-		cp["hooks"] = rest
-		kept = append(kept, cp)
+		kept = append(kept, groupWithHooks(m, rest))
 	}
 	return kept, changed
 }

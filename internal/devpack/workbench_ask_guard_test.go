@@ -83,26 +83,8 @@ func TestInstallWorkbenchInstallsTheAskGuardHooks(t *testing.T) {
 		}
 	}
 	m := decodeSettings(t, folder)
-
-	stop := eventGroups(t, m, "Stop")
-	prompts := promptHooks(stop)
-	if len(stop) != 2 || len(prompts) != 1 || countCommand(stop, WorkbenchStopHookCommand(o.Bin, 7)) != 1 {
-		t.Fatalf("Stop must hold the drift command and one prompt hook, got %#v", stop)
-	}
-	if p := prompts[0]; p["prompt"] != goldenAskGuardPrompt7 || p["timeout"] != float64(30) || p["async"] != nil {
-		t.Fatalf("the prompt hook is %#v", p)
-	}
-
-	pre := eventGroups(t, m, "PreToolUse")
-	cmd := WorkbenchAskGuardHookCommand(o.Bin, 7)
-	if len(pre) != 1 || countCommand(pre, cmd) != 1 {
-		t.Fatalf("PreToolUse must hold one group running %q, got %#v", cmd, pre)
-	}
-	g := pre[0].(map[string]any)
-	h := g["hooks"].([]any)[0].(map[string]any)
-	if g["matcher"] != "AskUserQuestion" || h["type"] != "command" || h["timeout"] != float64(5) || h["async"] != nil {
-		t.Fatalf("the PreToolUse group is %#v", g)
-	}
+	assertAskGuardStopGroups(t, eventGroups(t, m, "Stop"), o.Bin)
+	assertAskToolBlockGroup(t, eventGroups(t, m, "PreToolUse"), o.Bin)
 
 	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil || !st.AskGuard || !st.AskToolBlock {
@@ -110,6 +92,34 @@ func TestInstallWorkbenchInstallsTheAskGuardHooks(t *testing.T) {
 	}
 	if rep, err := InstallWorkbench(context.Background(), o); err != nil || rep.HookChanged {
 		t.Fatalf("reinstall: changed=%v err=%v", rep.HookChanged, err)
+	}
+}
+
+// assertAskGuardStopGroups: a fresh install's Stop event holds the drift
+// command and exactly one prompt hook, the golden prompt with its defaults.
+func assertAskGuardStopGroups(t *testing.T, stop []any, bin string) {
+	t.Helper()
+	prompts := promptHooks(stop)
+	if len(stop) != 2 || len(prompts) != 1 || countCommand(stop, WorkbenchStopHookCommand(bin, 7)) != 1 {
+		t.Fatalf("Stop must hold the drift command and one prompt hook, got %#v", stop)
+	}
+	if p := prompts[0]; p["prompt"] != goldenAskGuardPrompt7 || p["timeout"] != float64(30) || p["async"] != nil {
+		t.Fatalf("the prompt hook is %#v", p)
+	}
+}
+
+// assertAskToolBlockGroup: a fresh install's PreToolUse event holds one
+// AskUserQuestion group running our synchronous block command.
+func assertAskToolBlockGroup(t *testing.T, pre []any, bin string) {
+	t.Helper()
+	cmd := WorkbenchAskGuardHookCommand(bin, 7)
+	if len(pre) != 1 || countCommand(pre, cmd) != 1 {
+		t.Fatalf("PreToolUse must hold one group running %q, got %#v", cmd, pre)
+	}
+	g := pre[0].(map[string]any)
+	h := g["hooks"].([]any)[0].(map[string]any)
+	if g["matcher"] != "AskUserQuestion" || h["type"] != "command" || h["timeout"] != float64(5) || h["async"] != nil {
+		t.Fatalf("the PreToolUse group is %#v", g)
 	}
 }
 
@@ -268,13 +278,7 @@ func TestAskToolBlock_InAnotherMatcherGroupIsRepaired(t *testing.T) {
 			if changed, err := InstallAskGuardHooks(dir, "/tmp/acme bin/watchtower", 7); err != nil || !changed {
 				t.Fatalf("install: changed=%v err=%v", changed, err)
 			}
-			pre := eventGroups(t, decodeSettings(t, dir), "PreToolUse")
-			if len(pre) != 2 || countCommand(pre[:1], "echo owner-pre") != 1 || countCommand(pre[:1], cmd) != 0 {
-				t.Fatalf("the owner's group must keep only the owner's hook, got %#v", pre)
-			}
-			if g := pre[1].(map[string]any); g["matcher"] != "AskUserQuestion" || countCommand(pre[1:], cmd) != 1 {
-				t.Fatalf("ours must move to its own AskUserQuestion group, got %#v", g)
-			}
+			assertAskToolBlockMovedOut(t, eventGroups(t, decodeSettings(t, dir), "PreToolUse"), cmd)
 			if ok, err := HasAskToolBlockHook(dir, 7); err != nil || !ok {
 				t.Fatalf("after the repair it is installed: ok=%v err=%v", ok, err)
 			}
@@ -282,5 +286,17 @@ func TestAskToolBlock_InAnotherMatcherGroupIsRepaired(t *testing.T) {
 				t.Fatalf("remove: changed=%v err=%v", changed, err)
 			}
 		})
+	}
+}
+
+// assertAskToolBlockMovedOut: after a repair the owner's group keeps only the
+// owner's hook and ours sits in an AskUserQuestion group of its own after it.
+func assertAskToolBlockMovedOut(t *testing.T, pre []any, cmd string) {
+	t.Helper()
+	if len(pre) != 2 || countCommand(pre[:1], "echo owner-pre") != 1 || countCommand(pre[:1], cmd) != 0 {
+		t.Fatalf("the owner's group must keep only the owner's hook, got %#v", pre)
+	}
+	if g := pre[1].(map[string]any); g["matcher"] != "AskUserQuestion" || countCommand(pre[1:], cmd) != 1 {
+		t.Fatalf("ours must move to its own AskUserQuestion group, got %#v", g)
 	}
 }
