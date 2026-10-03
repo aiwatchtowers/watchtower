@@ -197,8 +197,9 @@ type stopHookOutput struct {
 //
 // In a Desktop terminal (the terminal env var set) and a folder with the
 // session state hooks, the hook also records "waiting" on the session's row
-// whenever it lets the turn end: Claude Code runs an event's hooks in parallel, so only the process that decides the
-// block knows whether the turn really ended. That write comes after the
+// whenever it lets the turn end: Claude Code runs an event's hooks in
+// parallel, so only the process that decides the block knows whether the
+// turn really ended. That write comes after the
 // drift output, never changes stdout, and a failure is one stderr line.
 func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, rawID string, vocab vocabulary) {
 	defer func() {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -427,6 +428,19 @@ func TestSessionState_StopHookWithoutStateHooksRecordsNothing(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, changed)
 		}},
+		{"one state hook missing", func(t *testing.T, folder string, _ int64) {
+			file := filepath.Join(folder, ".claude", "settings.local.json")
+			b, err := os.ReadFile(file)
+			require.NoError(t, err)
+			var settings map[string]any
+			require.NoError(t, json.Unmarshal(b, &settings))
+			hooks := settings["hooks"].(map[string]any)
+			require.Contains(t, hooks, "StopFailure")
+			delete(hooks, "StopFailure")
+			b, err = json.Marshal(settings)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(file, b, 0o644))
+		}},
 		{"no settings file", func(t *testing.T, folder string, _ int64) {
 			require.NoError(t, os.Remove(filepath.Join(folder, ".claude", "settings.local.json")))
 		}},
@@ -454,6 +468,20 @@ func TestSessionState_StopHookWithoutStateHooksRecordsNothing(t *testing.T) {
 			})
 		}
 	}
+	t.Run("gone workbench", func(t *testing.T) {
+		database, pid, row := stopStateFixture(t, "open")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		for _, payload := range []string{
+			statePayload("Stop", briefLaunchID, ""),
+			`{"session_id":"` + briefLaunchID + `","hook_event_name":"Stop","stop_hook_active":true}`,
+		} {
+			out, errOut := stopHookIO(t, strconv.FormatInt(pid+100, 10), payload)
+
+			assert.Empty(t, out)
+			assert.Empty(t, errOut, "a deleted workbench's leftover hook says nothing")
+			assert.Empty(t, storedAgentState(t, database, row))
+		}
+	})
 	t.Run("continued turn", func(t *testing.T) {
 		database, pid, row := stopStateFixture(t, "merged")
 		_, err := devpack.RemoveStateHooks(mustFolder(t, database, pid), pid)
