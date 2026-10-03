@@ -45,12 +45,11 @@ final class CodeCLIProcess: @unchecked Sendable {
     let pid: pid_t
     /// stdout as it arrives; finishes at EOF.
     let output: AsyncStream<Data>
-    private let stdin: FileHandle
+    private let stdin: CodeCLIInputChannel
     /// Kept alive while its `readabilityHandler` feeds `output`.
     private let stdout: FileHandle
     private let exitTask: Task<Exit, Never>
     private let lock = NSLock()
-    private var inputClosed = false
     private var terminated = false
     /// Reaped: the pid may belong to someone else from now on, so it is
     /// never signalled again.
@@ -61,7 +60,10 @@ final class CodeCLIProcess: @unchecked Sendable {
 
     private init(pid: pid_t, stdin: FileHandle, stdout: FileHandle, stderr: FileHandle) {
         self.pid = pid
-        self.stdin = stdin
+        self.stdin = CodeCLIInputChannel(
+            write: { try stdin.write(contentsOf: $0) },
+            close: { try? stdin.close() }
+        )
         self.stdout = stdout
         output = stdout.dataChunks
         let stderrRead = Task.detached { () -> Data in
@@ -120,25 +122,14 @@ final class CodeCLIProcess: @unchecked Sendable {
     /// Writes `line` and a newline to the child's stdin, off the caller's
     /// thread (a child busy on a run does not read; the write must not block
     /// the main actor). A failed write is logged; the child's exit tells.
+    /// A line sent after `closeInput` is dropped.
     func sendLine(_ line: String) {
-        let data = Data((line + "\n").utf8)
-        let handle = stdin
-        Thread.detachNewThread {
-            do {
-                try handle.write(contentsOf: data)
-            } catch {
-                NSLog("CodeCLIProcess: writing a request to the CLI failed: %@", String(describing: error))
-            }
-        }
+        stdin.write(Data((line + "\n").utf8))
     }
 
     /// EOF on stdin: a `--serve` child exits 0.
     func closeInput() {
-        let shouldClose = lock.withLock {
-            defer { inputClosed = true }
-            return !inputClosed
-        }
-        if shouldClose { try? stdin.close() }
+        stdin.close()
     }
 
     /// SIGTERM to the whole group, then SIGKILL to what is left of it after
@@ -214,6 +205,48 @@ final class CodeCLIProcess: @unchecked Sendable {
 
     private static func exitCode(_ status: Int32) -> Int32 {
         wasSignaled(status) ? 128 + (status & 0x7F) : (status >> 8) & 0xFF
+    }
+}
+
+/// A child's stdin: every write and the close run in order on one serial
+/// queue, so a write can never reach the descriptor after the close — when
+/// the number may already name another file. Writes block that queue, not
+/// the caller.
+final class CodeCLIInputChannel: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "watchtower.code-cli.stdin", qos: .utility)
+    private let writeData: @Sendable (Data) throws -> Void
+    private let closeHandle: @Sendable () -> Void
+    /// Confined to `queue`.
+    private var isClosed = false
+
+    init(write: @escaping @Sendable (Data) throws -> Void, close: @escaping @Sendable () -> Void) {
+        writeData = write
+        closeHandle = close
+    }
+
+    func write(_ data: Data) {
+        queue.async { [self] in
+            guard !isClosed else { return }
+            do {
+                try writeData(data)
+            } catch {
+                NSLog("CodeCLIProcess: writing a request to the CLI failed: %@", String(describing: error))
+            }
+        }
+    }
+
+    /// Idempotent; writes queued before it still go first.
+    func close() {
+        queue.async { [self] in
+            guard !isClosed else { return }
+            isClosed = true
+            closeHandle()
+        }
+    }
+
+    /// Blocks until every write and close queued so far has run (tests).
+    func waitUntilIdle() {
+        queue.sync {}
     }
 }
 

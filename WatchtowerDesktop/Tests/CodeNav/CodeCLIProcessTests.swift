@@ -34,6 +34,48 @@ final class CodeCLIProcessTests: XCTestCase {
         XCTAssertEqual(exit.failureMessage(command: "code index"), "oops")
     }
 
+    /// A line sent after `closeInput` never reaches the child; the ones
+    /// before it do, then EOF.
+    func testALineSentAfterCloseIsDropped() async throws {
+        let process = try shell("cat")
+        process.sendLine("one")
+        process.closeInput()
+        process.sendLine("two")
+        var out = Data()
+        for await chunk in process.output { out += chunk }
+        let exit = await process.exitStatus
+        XCTAssertEqual(String(bytes: out, encoding: .utf8), "one\n")
+        XCTAssertTrue(exit.succeeded)
+    }
+
+    /// Writes from many threads racing the close (as `--serve` requests do
+    /// with a terminate): every write runs before the close or not at all,
+    /// and the close runs once.
+    func testConcurrentWritesNeverFollowTheClose() async {
+        final class Events: @unchecked Sendable {
+            private let lock = NSLock()
+            private var list: [String] = []
+            func add(_ event: String) { lock.withLock { list.append(event) } }
+            var all: [String] { lock.withLock { list } }
+        }
+        for round in 0 ..< 50 {
+            let events = Events()
+            let channel = CodeCLIInputChannel(
+                write: { data in events.add(String(bytes: data, encoding: .utf8) ?? "?") },
+                close: { events.add("close") }
+            )
+            DispatchQueue.concurrentPerform(iterations: 40) { i in
+                if i == 20 { channel.close() }
+                channel.write(Data("w\(i)".utf8))
+                if i.isMultiple(of: 13) { channel.close() }
+            }
+            channel.waitUntilIdle()
+            let all = events.all
+            XCTAssertEqual(all.filter { $0 == "close" }.count, 1, "round \(round): one close")
+            XCTAssertEqual(all.last, "close", "round \(round): a write after the close: \(all)")
+        }
+    }
+
     func testTerminateKillsTheWholeGroupAndReaps() async throws {
         let pidFile = stub.directory.appendingPathComponent("child.pid")
         let process = try shell("sleep 30 & echo $! > '\(pidFile.path)'; wait")
