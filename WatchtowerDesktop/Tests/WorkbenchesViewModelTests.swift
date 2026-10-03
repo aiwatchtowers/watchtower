@@ -66,6 +66,22 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.badgeCount, 4)
     }
 
+    /// An ask whose session row was deleted (`session_id` set to NULL by the
+    /// foreign key) is still open: it still counts.
+    func testAnOpenAskWhoseSessionWasDeletedStillCounts() async throws {
+        try await pool.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "s", folderPath: "/tmp/acme")).id
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s)
+            try TerminalSessionQueries.delete(d, id: s)
+            let orphaned = try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM owner_asks WHERE session_id IS NULL")
+            XCTAssertEqual(orphaned, 1, "the delete nulls the ask's session")
+        }
+        let vm = makeVM()
+        await vm.reload()
+        XCTAssertEqual(vm.badgeCount, 1)
+    }
+
     /// The notification center's poll reloads the list, so an ask the agent
     /// files from another process lights the badge without a navigation, and
     /// the owner's answer clears it.
@@ -269,7 +285,9 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
     func testRevealSelectsTheProjectAndPane() {
         let vm = makeVM()
+        vm.selectedWorkbenchID = 4
         vm.layout.show(.files)
+        XCTAssertEqual(vm.layout.visiblePanes, [.files], "the reveal must move the pane")
         vm.reveal(WorkbenchRoute(projectID: 4, pane: .board, subjectID: 9))
         XCTAssertEqual(vm.selectedWorkbenchID, 4)
         XCTAssertEqual(vm.layout.visiblePanes, [.board])

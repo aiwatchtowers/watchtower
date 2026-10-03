@@ -27,6 +27,9 @@ final class WorkbenchDocumentsRemovedScanTests: XCTestCase {
             "WorkbenchDocumentsView", "WorkbenchDocumentsList", "WorkbenchDocumentThreadsPanel",
             "AddWorkbenchDocumentSheet", "WorkbenchDocumentViewModel", "WorkbenchDocumentGrouping"
         ]
+        // The document models and the attach envelope, as whole words (the
+        // names above all start with `WorkbenchDocument`).
+        let models = try NSRegularExpression(pattern: #"\bWorkbenchDocument(ListItem|Attached)?\b"#)
         let files = try swiftFiles(under: sources)
         XCTAssertFalse(files.isEmpty, "the scan must find the sources")
         for file in files {
@@ -34,6 +37,8 @@ final class WorkbenchDocumentsRemovedScanTests: XCTestCase {
             for name in removed {
                 XCTAssertFalse(text.contains(name), "\(relative(file)) still names \(name)")
             }
+            XCTAssertNil(models.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                         "\(relative(file)) still names a removed document model")
         }
     }
 
