@@ -40,6 +40,41 @@ package enum OwnerAskQueries {
         )
     }
 
+    /// One ask of `projectID` whatever its status; nil when there is none.
+    package static func ask(_ db: Database, id: Int64, projectID: Int64) throws -> OwnerAsk? {
+        try OwnerAsk.fetchOne(
+            db,
+            sql: "SELECT * FROM owner_asks WHERE id = ? AND project_id = ?",
+            arguments: [id, projectID]
+        )
+    }
+
+    /// How many answered, delivered and withdrawn asks each session of the
+    /// workbench has; the nil key counts the asks filed from outside the app.
+    package static func closedCounts(_ db: Database, projectID: Int64) throws -> [Int64?: Int] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT session_id, COUNT(*) FROM owner_asks WHERE project_id = ? AND status != 'open' GROUP BY session_id",
+            arguments: [projectID]
+        )
+        var counts: [Int64?: Int] = [:]
+        for row in rows { counts[row[0] as Int64?] = row[1] }
+        return counts
+    }
+
+    /// A superseded ask's id → the id of the round that replaced it (the ask
+    /// whose `previous_ask_id` names it).
+    package static func replacements(_ db: Database, projectID: Int64) throws -> [Int64: Int64] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT previous_ask_id, id FROM owner_asks WHERE project_id = ? AND previous_ask_id IS NOT NULL",
+            arguments: [projectID]
+        )
+        var replaced: [Int64: Int64] = [:]
+        for row in rows { replaced[row[0]] = row[1] }
+        return replaced
+    }
+
     /// A board target's asks, newest first, for its detail card. Read as
     /// list items, so one undecodable payload never hides the others.
     package static func targetAsks(_ db: Database, projectID: Int64, targetID: Int64) throws -> [OwnerAskListItem] {

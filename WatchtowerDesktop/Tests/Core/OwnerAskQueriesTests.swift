@@ -174,4 +174,44 @@ final class OwnerAskQueriesTests: XCTestCase {
         XCTAssertEqual(item("withdrawn", "superseded"), "Superseded")
         XCTAssertEqual(item("later", ""), "later", "a status this build does not know is shown as stored")
     }
+
+    func testOneAskByIDOfItsWorkbenchOnly() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let id = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "withdrawn", withdrawnReason: "agent")
+            XCTAssertEqual(try OwnerAskQueries.ask(d, id: id, projectID: p)?.status, .withdrawn, "closed asks are read too")
+            let foreign = try TestDatabase.insertWorkbench(d, name: "other", folder: "/tmp/other")
+            XCTAssertNil(try OwnerAskQueries.ask(d, id: id, projectID: foreign))
+            XCTAssertNil(try OwnerAskQueries.ask(d, id: id + 100, projectID: p))
+        }
+    }
+
+    func testClosedCountsPerSessionAndOutsideTheApp() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let s1 = try session(d, projectID: p)
+            let s2 = try session(d, projectID: p)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s1, status: "answered", answer: "{}")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s1, status: "withdrawn", withdrawnReason: "agent")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s1)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s2, status: "delivered", answer: "{}")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
+            let other = try TestDatabase.insertWorkbench(d, name: "other", folder: "/tmp/other")
+            try TestDatabase.insertOwnerAsk(d, projectID: other, status: "answered", answer: "{}")
+
+            let counts = try OwnerAskQueries.closedCounts(d, projectID: p)
+            XCTAssertEqual(counts, [s1: 2, s2: 1, nil: 1], "open asks are not counted; nil = outside the app")
+        }
+    }
+
+    func testReplacementsMapASupersededAskToItsNewRound() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let old = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "withdrawn", withdrawnReason: "superseded")
+            let new = try TestDatabase.insertOwnerAsk(d, projectID: p)
+            try d.execute(sql: "UPDATE owner_asks SET previous_ask_id = ? WHERE id = ?", arguments: [old, new])
+            try TestDatabase.insertOwnerAsk(d, projectID: p)
+            XCTAssertEqual(try OwnerAskQueries.replacements(d, projectID: p), [old: new])
+        }
+    }
 }

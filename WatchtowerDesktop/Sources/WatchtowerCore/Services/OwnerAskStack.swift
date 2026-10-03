@@ -30,6 +30,20 @@ package struct OwnerAskStack: Equatable, Sendable {
         asks.filter { $0.sessionID == sessionID }.count
     }
 
+    /// The 1-based place of `askID` in the stack; nil once it no longer waits.
+    package func position(of askID: Int64) -> Int? {
+        asks.firstIndex { $0.id == askID }.map { $0 + 1 }
+    }
+
+    /// The ask after `askID` ("k of N ›"), whichever session filed it; past
+    /// the last it wraps, and from an ask no longer waiting it is the oldest.
+    /// nil when no other ask waits.
+    package func next(after askID: Int64) -> OwnerAsk? {
+        guard let index = asks.firstIndex(where: { $0.id == askID }) else { return asks.first }
+        let next = asks[(index + 1) % asks.count]
+        return next.id == askID ? nil : next
+    }
+
     /// One group per session in the order of its oldest ask; the asks
     /// without a session last.
     package var groups: [Group] {
