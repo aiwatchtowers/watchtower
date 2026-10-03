@@ -29,21 +29,20 @@ final class WorkbenchCodeIndexTests: XCTestCase {
 
     /// Ruling R31: go to definition searches text only in a file whose
     /// language the index does not read.
-    func testTheLanguageOfAFileAsTheCLIReportedIt() {
+    func testTheDefinitionLanguageOfAFileAsTheCLIReportedIt() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines([file("a.swift"), file("run.pl", lang: "")], from: .fullRun)
-        XCTAssertEqual(index.language(of: "a.swift"), "swift")
-        XCTAssertEqual(index.language(of: "run.pl"), "", "a workbench file in a language the CLI does not index")
-        XCTAssertNil(index.language(of: "other.go"), "not (yet) in the index")
+        XCTAssertEqual(index.definitionLanguage(of: "a.swift"), "swift")
+        XCTAssertEqual(index.definitionLanguage(of: "run.pl"), "", "a workbench file in a language the CLI does not index")
+        XCTAssertNil(index.definitionLanguage(of: "other.go"), "not (yet) in the index")
         index.applyIndexLines([file("run.pl", lang: "perl")], from: .update)
-        XCTAssertEqual(index.language(of: "run.pl"), "perl", "an update replaces it")
+        XCTAssertEqual(index.definitionLanguage(of: "run.pl"), "perl", "an update replaces it")
         index.applyIndexLines([.deleted("run.pl")], from: .update)
-        XCTAssertNil(index.language(of: "run.pl"))
+        XCTAssertNil(index.definitionLanguage(of: "run.pl"))
     }
 
     /// Ruling R32: a file whose language holds no code definitions
-    /// (`"defs":false`) reads as unsupported for navigation, its language
-    /// as reported stays.
+    /// (`"defs":false`) reads as unsupported for navigation.
     func testTheDefinitionLanguageOfMarkupAndConfigIsUnsupported() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines([
@@ -53,7 +52,6 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.definitionLanguage(of: "a.swift"), "swift")
         XCTAssertEqual(index.definitionLanguage(of: "run.pl"), "")
         XCTAssertEqual(index.definitionLanguage(of: "README.md"), "", "markup: text search, like an unsupported language")
-        XCTAssertEqual(index.language(of: "README.md"), "markdown")
         XCTAssertNil(index.definitionLanguage(of: "other.go"), "not (yet) in the index")
         index.applyIndexLines([.file(CodeIndexFileResult(file: "README.md", lang: "markdown", symbols: []))], from: .update)
         XCTAssertEqual(index.definitionLanguage(of: "README.md"), "markdown", "an update replaces the flag")

@@ -78,12 +78,6 @@ package final class WorkbenchCodeIndex {
         }
     }
 
-    /// The language the CLI reported for `path` ("" = not one it indexes);
-    /// nil when the file is not in the index (yet).
-    package func language(of path: String) -> String? {
-        position[path].flatMap { entries[$0]?.lang }
-    }
-
     /// The language go to definition and the jump bar see in `path`: as
     /// reported, but "" for one whose files hold no code definitions
     /// (markup, styles, config — ruling R32), so navigation treats it as
