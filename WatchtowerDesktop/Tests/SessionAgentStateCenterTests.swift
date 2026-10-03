@@ -277,6 +277,32 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(11))
     }
 
+    /// A Restart between two polls, while another session keeps the loop
+    /// going: the previous run's state goes at once, not on the next tick.
+    func testARestartBetweenPollsDropsThePreviousRunsState() async throws {
+        let center = makeCenter(interval: .seconds(3600))
+        let first = try await session(title: "One")
+        let second = try await session(title: "Two")
+        terminals.start(first, fresh: true)
+        terminals.start(second, fresh: true)
+        try hookWrites(first.id, "waiting", at: 1)
+        try hookWrites(second.id, "working", at: 1)
+        // The loop's first poll is the only one within the test.
+        center.start()
+        await eventually("the first poll") { center.statuses[first.id]?.state == .waitingForOwner }
+        XCTAssertEqual(log.reads.count, 1)
+
+        processes.first?.exit(0)
+        terminals.now = { [started] in started.addingTimeInterval(10) }
+        terminals.start(first, fresh: false)
+
+        await eventually("the previous run's waiting is dropped without a poll") {
+            center.statuses[first.id] == nil
+        }
+        XCTAssertEqual(center.statuses[second.id]?.state, .working, "the other session keeps its state")
+        XCTAssertEqual(log.reads.count, 1, "no poll ran")
+    }
+
     func testExitDropsTheStatusWhileOtherSessionsRun() async throws {
         let center = makeCenter()
         let first = try await session(title: "One")

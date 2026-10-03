@@ -1129,6 +1129,27 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(later.id)], "a session missing from the last read is found too")
     }
 
+    /// The banner click goes through `reveal(_:)`: its `subjectId` reaches
+    /// the terminal reveal, so the waiting session is shown, not the latest.
+    func testTerminalRouteWithASubjectRevealsThatSession() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        let latest = try await liveSession(p, "latest")
+        await vm.open(latest)
+        let waiting = try await liveSession(p, "waiting")
+        await vm.open(waiting)
+        await vm.open(latest)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(latest.id)])
+
+        vm.reveal(WorkbenchRoute(projectID: p, pane: .terminal, subjectID: waiting.id))
+
+        let deadline = ContinuousClock.now + .seconds(3)
+        while vm.layout(projectID: p).visiblePanes != [.session(waiting.id)], ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(waiting.id)])
+    }
+
     /// A stale banner (the session stopped since it was posted) shows that
     /// session without starting it: a click never launches an agent.
     func testTerminalDeepLinkToAStoppedSessionStartsNothing() async throws {

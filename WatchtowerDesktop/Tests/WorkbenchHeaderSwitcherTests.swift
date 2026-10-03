@@ -359,9 +359,11 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
         // VoiceOver hears the state with the title, not as a separate element.
         let live = SessionSwitcherButton(title: "one", state: .running) {}
-        XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, Running"))
+        XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, running"))
         let idle = SessionSwitcherButton(title: "one", state: .notStarted) {}
-        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, Not running"))
+        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, not running"))
+        let waiting = SessionSwitcherButton(title: "one", state: .waitingForOwner) {}
+        XCTAssertNoThrow(try waiting.inspect().find(viewWithAccessibilityLabel: "Session one, waiting for you"))
     }
 
     func testASessionRowShowsItsBadgeCaptionAndShortcut() async throws {

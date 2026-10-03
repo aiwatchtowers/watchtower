@@ -141,10 +141,18 @@ final class SessionAgentStateCenter {
             pollTask?.cancel()
             pollTask = nil
             publish([:])
-        } else if pollTask == nil {
+            return
+        }
+        // A session that stopped or started again since the last poll loses
+        // its status now, not a tick later: a Restart never shows the
+        // previous run's state while other sessions keep the loop going.
+        let started = terminalCenter.startedAt
+        publish(statuses.filter { live.contains($0.key) && $0.value.isTrusted(startedAt: started[$0.key]) })
+        if pollTask == nil {
             pollTask = Task { [weak self, interval] in
                 while !Task.isCancelled {
-                    await self?.poll()
+                    guard let self else { return }
+                    await self.poll()
                     try? await Task.sleep(for: interval)
                 }
             }

@@ -98,6 +98,15 @@ package struct SessionAgentStatus: Equatable, Sendable {
         }
     }
 
+    /// Whether this status still holds for a run started at `startedAt`:
+    /// plain running always does, a trusted state only when it was written
+    /// during that run (decision 9 again, for a run that began after the read).
+    package func isTrusted(startedAt: Date?) -> Bool {
+        guard let at else { return true }
+        guard let startedAt, let stamp = Self.parseStamp(at) else { return false }
+        return stamp >= startedAt
+    }
+
     /// The statuses of the live sessions among `rows`, keyed by session id.
     /// A row that is not live is left out.
     package static func resolve(

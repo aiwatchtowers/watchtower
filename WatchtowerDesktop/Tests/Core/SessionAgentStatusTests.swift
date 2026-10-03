@@ -39,6 +39,17 @@ final class SessionAgentStatusTests: XCTestCase {
                        "a state stamped at the start instant counts")
     }
 
+    func testAStatusHoldsOnlyForTheRunItWasWrittenIn() {
+        func status(_ at: String?) -> SessionAgentStatus {
+            SessionAgentStatus(sessionID: 1, workbenchID: 2, workbenchName: "acme", title: "s",
+                               state: at == nil ? .running : .waitingForOwner, at: at)
+        }
+        XCTAssertTrue(status(stamp(1)).isTrusted(startedAt: started))
+        XCTAssertFalse(status(stamp(1)).isTrusted(startedAt: started.addingTimeInterval(10)), "a later run")
+        XCTAssertFalse(status(stamp(1)).isTrusted(startedAt: nil), "no known start")
+        XCTAssertTrue(status(nil).isTrusted(startedAt: started.addingTimeInterval(10)), "plain running always holds")
+    }
+
     func testNullStateIsPlainRunning() {
         XCTAssertEqual(effective(nil, at: nil, startedAt: started), .running)
         XCTAssertEqual(effective(nil, at: stamp(5), startedAt: started), .running)

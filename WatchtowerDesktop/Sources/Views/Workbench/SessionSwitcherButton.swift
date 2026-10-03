@@ -60,7 +60,7 @@ struct SessionSwitcherButton: View {
         }
         .buttonStyle(.borderless)
         .help("\(title ?? "No session") — Switch Session")
-        .accessibilityLabel(title.map { "Session \($0), \(state.label)" } ?? "No session")
+        .accessibilityLabel(title.map { "Session \($0), \(state.label.lowercased())" } ?? "No session")
         .accessibilityHint("Switch session")
     }
 }
