@@ -89,7 +89,9 @@ struct JiraConnectionDetail: View {
             }
         }
         .sheet(isPresented: $showAddJiraAccountSheet) {
-            AddJiraAccountView()
+            // Settings opened during onboarding: its finish starts the
+            // daemon, not this sheet.
+            AddJiraAccountView(daemonPolicy: appState.needsOnboarding ? .deferred : .restart)
                 .environment(appState)
                 .marksAccountSheet(appState)
         }

@@ -1584,8 +1584,8 @@ func (p *Pipeline) formatProfileContext() string {
 
 	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
 	// these ids against message text, which carries raw Slack ids regardless of
-	// how the id blob itself is namespaced. profile.Manager is a scalar column
-	// (not a JSON id array), so it is out of RawIDsJSON's scope and left as is.
+	// how the id blob itself is namespaced; the scalar manager id likewise
+	// (RawID).
 	var people strings.Builder
 	if profile.Reports != "" && profile.Reports != "[]" {
 		fmt.Fprintf(&people, "\nMY REPORTS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Reports)))
@@ -1595,7 +1595,7 @@ func (p *Pipeline) formatProfileContext() string {
 		fmt.Fprintf(&people, "\nMY PEERS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Peers)))
 	}
 	if profile.Manager != "" {
-		fmt.Fprintf(&people, "\nMY MANAGER (user_id): %s\n", sanitize(profile.Manager))
+		fmt.Fprintf(&people, "\nMY MANAGER (user_id): %s\n", sanitize(watchtowerslack.RawID(profile.Manager)))
 	}
 	if profile.StarredChannels != "" && profile.StarredChannels != "[]" {
 		fmt.Fprintf(&people, "\nSTARRED CHANNELS: %s — create more tracks from these channels, lower threshold for relevance\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredChannels)))

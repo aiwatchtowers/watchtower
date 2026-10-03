@@ -87,7 +87,9 @@ struct GoogleConnectionDetail: View {
             }
         }
         .sheet(isPresented: $showAddGoogleAccountSheet) {
-            AddGoogleAccountView()
+            // Settings opened during onboarding: its finish starts the
+            // daemon, not this sheet.
+            AddGoogleAccountView(daemonPolicy: appState.needsOnboarding ? .deferred : .restart)
                 .environment(appState)
                 .marksAccountSheet(appState)
         }

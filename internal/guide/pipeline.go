@@ -1079,7 +1079,8 @@ func (p *Pipeline) formatProfileContext() string {
 	}
 	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
 	// these ids against message text, which carries raw Slack ids regardless of
-	// how the id blob itself is namespaced.
+	// how the id blob itself is namespaced; the scalar manager id likewise
+	// (RawID).
 	var people strings.Builder
 	if p.profile.Reports != "" && p.profile.Reports != "[]" {
 		people.WriteString(fmt.Sprintf("\nVIEWER'S REPORTS: %s — coaching for managing these people\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Reports))))
@@ -1088,7 +1089,7 @@ func (p *Pipeline) formatProfileContext() string {
 		people.WriteString(fmt.Sprintf("\nVIEWER'S PEERS: %s — coaching for peer collaboration\n", sanitize(watchtowerslack.RawIDsJSON(p.profile.Peers))))
 	}
 	if p.profile.Manager != "" {
-		people.WriteString(fmt.Sprintf("\nVIEWER'S MANAGER: %s — coaching for managing up\n", sanitize(p.profile.Manager)))
+		people.WriteString(fmt.Sprintf("\nVIEWER'S MANAGER: %s — coaching for managing up\n", sanitize(watchtowerslack.RawID(p.profile.Manager))))
 	}
 	identity := profileIdentity(p.profile)
 	if identity == "" && people.Len() == 0 {

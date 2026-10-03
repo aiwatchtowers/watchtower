@@ -936,8 +936,24 @@ final class AppState {
             // The flag tells the next launch nothing is left to resume.
             if up {
                 UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+                daemonStartFailure = nil
+            } else {
+                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
             }
         }
+    }
+
+    /// The background sync did not come up after setup: shown over the tab
+    /// setup landed on, not only in the tray.
+    private(set) var daemonStartFailure: String?
+
+    func dismissDaemonStartFailure() {
+        daemonStartFailure = nil
+    }
+
+    static func daemonStartFailureText(_ detail: String?) -> String {
+        let reason = detail.map { ": \($0)" } ?? "."
+        return "The background sync did not start\(reason) Open Settings → System to retry."
     }
 
     // MARK: - Features for a source connected from Settings
@@ -970,6 +986,14 @@ final class AppState {
     /// feature offer closes only through its own.
     func settingsSheetDismissed(_ sheet: SettingsSheet) {
         if sheet == .aboutYou { showsLateAboutYou = false }
+    }
+
+    /// Waits for the account view models' own daemon restarts (an Add or
+    /// Remove in Settings) still in flight.
+    private func awaitAccountDaemonRestarts() async {
+        await slackAccountsViewModel?.daemonRestartTask?.value
+        await googleAccountsViewModel?.daemonRestartTask?.value
+        await jiraAccountsViewModel?.daemonRestartTask?.value
     }
 
     static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
@@ -1017,6 +1041,9 @@ final class AppState {
         }
         let ids = featureSuggestion.map(\.id)
         let daemon = daemonControl
+        // The connect that raised the offer may still be restarting the
+        // daemon itself: one restart at a time.
+        await awaitAccountDaemonRestarts()
         let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
         if result.busy {
             // Settings → Features is applying its own batch.
@@ -1211,16 +1238,26 @@ final class AppState {
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
         }
-        try await daemon.waitUntilStopped()
-
-        // 2. Wipe LLM-generated tables and the daemon's stamps.
-        try db.wipeLLMData()
-        if let workspaceDir {
-            try DaemonStampFiles.clear(in: workspaceDir)
+        var failure: Error?
+        do {
+            try await daemon.waitUntilStopped()
+            // 2. Wipe LLM-generated tables and the daemon's stamps.
+            try db.wipeLLMData()
+            if let workspaceDir {
+                try DaemonStampFiles.clear(in: workspaceDir)
+            }
+        } catch {
+            failure = error
         }
 
-        // 3. Restart: waits for the stopped daemon to be gone, then starts it.
-        try await daemon.restartWaiting()
+        // 3. Restart — also after a failure above, so the reset never leaves
+        // the app without a daemon; the first error is what is reported.
+        do {
+            try await daemon.restartWaiting()
+        } catch {
+            failure = failure ?? error
+        }
+        if let failure { throw failure }
         UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
     }
 

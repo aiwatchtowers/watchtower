@@ -137,6 +137,7 @@ struct OnboardingConnectStepView: View {
                 // v1: the first active account, whatever its status.
                 connected: activeSlackAccounts.first?.displayName,
                 available: appState.slackAccountsViewModel != nil,
+                error: appState.slackAccountsViewModel?.error,
                 connect: { sheet = .slack },
                 remove: activeSlackAccounts.first.map { account in
                     { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
@@ -151,6 +152,7 @@ struct OnboardingConnectStepView: View {
                 subtitle: Self.googleSubtitle(mail: mail, calendar: calendar),
                 connected: account?.displayName,
                 available: appState.googleAccountsViewModel != nil,
+                error: appState.googleAccountsViewModel?.error,
                 connect: { sheet = .google(mail: mail, calendar: calendar) },
                 remove: account.map { account in
                     { await appState.googleAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
@@ -164,6 +166,7 @@ struct OnboardingConnectStepView: View {
                 subtitle: "Issues and boards · for tasks",
                 connected: account?.displayName,
                 available: appState.jiraAccountsViewModel != nil,
+                error: appState.jiraAccountsViewModel?.error,
                 connect: { sheet = .jira },
                 remove: account.map { account in
                     { await appState.jiraAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
@@ -186,6 +189,7 @@ struct OnboardingConnectStepView: View {
         subtitle: String,
         connected: String?,
         available: Bool,
+        error: String?,
         connect: @escaping () -> Void,
         remove: (() async -> Void)?,
         showsRoster: Bool = false
@@ -199,6 +203,13 @@ struct OnboardingConnectStepView: View {
                 Text(title).fontWeight(.semibold)
                 Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 if showsRoster { rosterLine }
+                if let error {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
             }
             Spacer()
             if let connected {

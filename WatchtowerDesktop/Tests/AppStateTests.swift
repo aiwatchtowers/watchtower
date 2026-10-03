@@ -1016,6 +1016,9 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(daemon.starts, 1)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
+        XCTAssertNotNil(appState.daemonStartFailure, "the landing says the sync did not start")
+        appState.dismissDaemonStartFailure()
+        XCTAssertNil(appState.daemonStartFailure)
     }
 
     private func workspaceWithStamps() throws -> String {
@@ -1144,8 +1147,9 @@ final class AppStateTests: XCTestCase {
 
     // MARK: - Verify follow-ups 2
 
-    /// The daemon outlives the stop: nothing is wiped, the failure reaches
-    /// Settings, no restart.
+    /// The daemon outlives the stop: nothing is wiped and the failure
+    /// reaches Settings; a restart is still attempted so the reset never
+    /// leaves the app without a daemon.
     func testResetLLMDataWipesNothingWhenTheDaemonDoesNotStop() async throws {
         defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
@@ -1161,10 +1165,12 @@ final class AppStateTests: XCTestCase {
         do {
             try await appState.resetLLMData(workspaceDir: dir)
             XCTFail("a daemon that does not stop must stop the reset")
-        } catch {}
+        } catch {
+            XCTAssertEqual(error as? DaemonRestartError, .stopTimedOut(pid: 4242), "the first error is reported")
+        }
 
         XCTAssertEqual(daemon.stops, 1)
-        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertEqual(daemon.restarts, 1)
         XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
                        Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
         XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
@@ -1684,5 +1690,32 @@ final class AppStateTests: XCTestCase {
         await appState.acceptFeatureSuggestion()
         XCTAssertTrue(appState.featureSuggestion.isEmpty)
         XCTAssertNil(appState.featureSuggestionError)
+    }
+
+    /// The wipe fails after the stop: the daemon is still restarted and the
+    /// wipe's error, the first one, is what Settings shows — even when the
+    /// restart fails too.
+    func testResetLLMDataRestartsAfterAFailedWipe() async throws {
+        let dir = try workspaceWithStamps()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir)
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: dir)
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.restartError = DaemonRestartError.cliNotFound
+        appState.daemonControlOverride = daemon
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a failed wipe must reach Settings")
+        } catch {
+            XCTAssertNotEqual(error as? DaemonRestartError, .cliNotFound, "the wipe's error, not the restart's")
+        }
+
+        XCTAssertEqual(daemon.restarts, 1)
     }
 }
