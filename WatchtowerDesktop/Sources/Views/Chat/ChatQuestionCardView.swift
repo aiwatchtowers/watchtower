@@ -6,23 +6,40 @@ import WatchtowerCore
 /// mark) and a free "Other" answer. Send posts the answers as the owner's
 /// next message. Once that message exists the card is answered: it shows the
 /// choice read back from the message and takes no input.
+///
+/// An owner ask (spec 2026-10-03 Part 8) reuses the card with `draftPicks`:
+/// the picks are the ask's draft, and its answer bar sends them, so the card
+/// has no footer of its own.
 struct ChatQuestionCardView: View {
     let card: ChatQuestionCard
     /// The owner message that followed the reply, if any.
     let answerText: String?
     /// nil while the card cannot be answered (an older reply, a turn running).
     let onAnswer: ((String) -> Void)?
+    /// An owner ask's picks (`OwnerAskDrafts`, or a closed ask's answer)
+    /// instead of the card's own.
+    var draftPicks: Binding<[String: ChatQuestionAnswer.Entry]>?
+    /// With `draftPicks`: whether they take input (an open ask, no answer
+    /// being written).
+    var editable = true
 
     @State private var picks: [String: ChatQuestionAnswer.Entry] = [:]
 
-    private var answered: [String: ChatQuestionAnswer.Entry]? {
-        answerText.map { ChatQuestionAnswer.selections(in: $0, for: card) }
+    private var currentPicks: [String: ChatQuestionAnswer.Entry] {
+        draftPicks?.wrappedValue ?? picks
     }
 
-    private var interactive: Bool { answerText == nil && onAnswer != nil }
+    private var answered: [String: ChatQuestionAnswer.Entry]? {
+        guard draftPicks == nil else { return nil }
+        return answerText.map { ChatQuestionAnswer.selections(in: $0, for: card) }
+    }
+
+    private var interactive: Bool {
+        draftPicks == nil ? answerText == nil && onAnswer != nil : editable
+    }
 
     private var complete: Bool {
-        card.questions.allSatisfy { !(picks[$0.id] ?? .init()).isEmpty }
+        card.questions.allSatisfy { !(currentPicks[$0.id] ?? .init()).isEmpty }
     }
 
     var body: some View {
@@ -40,7 +57,7 @@ struct ChatQuestionCardView: View {
 
     @ViewBuilder
     private func questionView(_ question: ChatQuestion) -> some View {
-        let entry = answered?[question.id] ?? picks[question.id] ?? .init()
+        let entry = answered?[question.id] ?? currentPicks[question.id] ?? .init()
         VStack(alignment: .leading, spacing: 6) {
             Text(question.question)
                 .font(.callout.weight(.semibold))
@@ -101,7 +118,9 @@ struct ChatQuestionCardView: View {
 
     @ViewBuilder
     private var footer: some View {
-        if answerText != nil {
+        if draftPicks != nil {
+            EmptyView()
+        } else if answerText != nil {
             Label("Answered", systemImage: "checkmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -121,7 +140,7 @@ struct ChatQuestionCardView: View {
     }
 
     private func toggle(_ label: String, in question: ChatQuestion) {
-        var entry = picks[question.id] ?? .init()
+        var entry = currentPicks[question.id] ?? .init()
         if question.multi {
             if let index = entry.labels.firstIndex(of: label) {
                 entry.labels.remove(at: index)
@@ -132,17 +151,25 @@ struct ChatQuestionCardView: View {
             entry.labels = [label]
             entry.other = nil  // one answer per single-choice question
         }
-        picks[question.id] = entry
+        setPick(entry, for: question)
+    }
+
+    private func setPick(_ entry: ChatQuestionAnswer.Entry, for question: ChatQuestion) {
+        if let draftPicks {
+            draftPicks.wrappedValue[question.id] = entry
+        } else {
+            picks[question.id] = entry
+        }
     }
 
     private func otherBinding(_ question: ChatQuestion) -> Binding<String> {
         Binding(
-            get: { picks[question.id]?.other ?? "" },
+            get: { currentPicks[question.id]?.other ?? "" },
             set: { text in
-                var entry = picks[question.id] ?? .init()
+                var entry = currentPicks[question.id] ?? .init()
                 entry.other = text
                 if !question.multi && !text.isEmpty { entry.labels = [] }
-                picks[question.id] = entry
+                setPick(entry, for: question)
             }
         )
     }

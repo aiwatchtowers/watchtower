@@ -6,13 +6,17 @@ import SwiftUI
 /// edge line is the panel's own (`panelSurface()`), so the selected session
 /// row can cover it — and shows the workspace's backdrop behind it. `liveWidth` follows the
 /// drag; `width` (an `@AppStorage` value, so it survives a relaunch) is
-/// written once, when the drag ends.
+/// written once, when the drag ends. The ask drawer (spec 2026-10-03 Part 8)
+/// uses it on its leading edge: `range` its own, `growsLeftward` set.
 struct PanelResizeHandle: View {
     static let defaultWidth: Double = 260
     static let widthRange: ClosedRange<Double> = 200...480
 
     @Binding var width: Double
     @Binding var liveWidth: Double?
+    var range: ClosedRange<Double> = Self.widthRange
+    /// A panel on the trailing side widens as the pointer moves left.
+    var growsLeftward = false
     @State private var dragStart: Double?
     @State private var cursorPushed = false
 
@@ -35,9 +39,10 @@ struct PanelResizeHandle: View {
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
-                        let start = dragStart ?? Self.clamp(width)
+                        let start = dragStart ?? clamped(width)
                         dragStart = start
-                        liveWidth = Self.clamp(start + Double(value.translation.width))
+                        let delta = Double(value.translation.width)
+                        liveWidth = clamped(start + (growsLeftward ? -delta : delta))
                     }
                     .onEnded { _ in
                         if let liveWidth { width = liveWidth }
@@ -51,6 +56,10 @@ struct PanelResizeHandle: View {
                 dragStart = nil
             }
             .accessibilityHidden(true)
+    }
+
+    private func clamped(_ width: Double) -> Double {
+        min(max(width, range.lowerBound), range.upperBound)
     }
 
     /// Balanced with the hover push: hiding the panel under the pointer must

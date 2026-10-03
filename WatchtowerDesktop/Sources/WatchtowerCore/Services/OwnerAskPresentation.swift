@@ -90,17 +90,16 @@ package enum OwnerAskPresentation {
 
     /// A stored answer's question picks, as the question card shows them.
     package static func picks(from answer: OwnerAskAnswer) -> [String: ChatQuestionAnswer.Entry] {
-        Dictionary(answer.answers.map { ($0.id, .init(labels: $0.labels, other: $0.other.isEmpty ? nil : $0.other)) },
-                   uniquingKeysWith: { first, _ in first })
+        Dictionary(answer.answers.map { ($0.id, .init(labels: $0.labels, other: $0.other.isEmpty ? nil : $0.other)) }) { first, _ in first }
     }
 
     /// A stored answer's check marks.
     package static func marks(from answer: OwnerAskAnswer) -> [String: OwnerAskAnswer.CheckState] {
-        Dictionary(answer.checklist.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first })
+        Dictionary(answer.checklist.map { ($0.id, $0.state) }) { first, _ in first }
     }
 
     /// A stored answer's notes on check items, the empty ones left out.
     package static func notes(from answer: OwnerAskAnswer) -> [String: String] {
-        Dictionary(answer.checklist.filter { !$0.note.isEmpty }.map { ($0.id, $0.note) }, uniquingKeysWith: { first, _ in first })
+        Dictionary(answer.checklist.filter { !$0.note.isEmpty }.map { ($0.id, $0.note) }) { first, _ in first }
     }
 }

@@ -33,6 +33,22 @@ final class ChatQuestionCardViewTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(button: "Send answers"))
     }
 
+    func testAnOwnerAskCardWritesItsPicksToTheDraftAndHasNoSend() throws {
+        var stored: [String: ChatQuestionAnswer.Entry] = [:]
+        let picks = Binding(get: { stored }, set: { stored = $0 })
+        let view = ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil, draftPicks: picks)
+        XCTAssertThrowsError(try view.inspect().find(button: "Send answers"), "the ask's answer bar sends")
+        try view.inspect().find(button: "v0.10").tap()
+        XCTAssertEqual(stored, ["scope": .init(labels: ["v0.10"])])
+    }
+
+    func testAClosedOwnerAskCardTakesNoInput() throws {
+        let picks = Binding.constant(["scope": ChatQuestionAnswer.Entry(labels: ["v0.11"])])
+        let view = ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil, draftPicks: picks, editable: false)
+        XCTAssertTrue(try view.inspect().find(button: "v0.10").isDisabled())
+        XCTAssertThrowsError(try view.inspect().find(ViewType.TextField.self), "no Other field to type into")
+    }
+
     func testTheRowRendersTheCardInsteadOfTheBlock() throws {
         let json = #"{"questions": [{"question": "Which release?", "options": [{"label": "v0.11"}, {"label": "v0.10"}]}]}"#
         let body = AssistantMessageBody(text: "Two readings.\n```watchtower-question\n\(json)\n```",

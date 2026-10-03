@@ -12,9 +12,29 @@ struct WorkbenchSessionView: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
+        if let vm = appState.workbenchesViewModel {
+            // The drawer opens beside the terminal of the session that filed
+            // the ask (spec 2026-10-03 Part 8); the banner points at it.
+            let drawerAsk = vm.asks.drawerAsk(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
+            let waiting = vm.asks.stack(projectID: projectID).asks.filter { $0.sessionID == sessionID }
+            OwnerAskDrawerHost(vm: vm, ask: drawerAsk) {
+                VStack(spacing: 0) {
+                    if drawerAsk == nil, !waiting.isEmpty {
+                        OwnerAskBanner(asks: waiting) { ask in vm.asks.openDrawer(ask) }
+                        Divider()
+                    }
+                    pane
+                }
+            }
+        } else {
+            pane
+        }
+    }
+
+    private var pane: some View {
         let vm = appState.workbenchesViewModel
         let session = vm?.session(sessionID, projectID: projectID)
-        TerminalSessionPane(session: session, error: nil) {
+        return TerminalSessionPane(session: session, error: nil) {
             VStack(spacing: 8) {
                 if let session {
                     Text("\(session.title) is not running.")

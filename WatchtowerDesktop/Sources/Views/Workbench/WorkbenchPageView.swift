@@ -29,8 +29,12 @@ struct WorkbenchPageView: View {
                     .padding(8)
                 Divider()
             }
-            WorkspaceAreaView(vm: vm, project: project)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // An ask filed outside the app has no terminal to sit beside:
+            // its drawer takes the page's trailing edge.
+            OwnerAskDrawerHost(vm: vm, ask: vm.asks.drawerAsk(projectID: project.id).flatMap { $0.sessionID == nil ? $0 : nil }) {
+                WorkspaceAreaView(vm: vm, project: project)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
