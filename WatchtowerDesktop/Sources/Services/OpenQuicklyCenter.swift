@@ -71,7 +71,8 @@ final class OpenQuicklySession {
         boosts: CodeRankingBoosts,
         gitStatuses: [String: GitFileStatus] = [:],
         startSearch: @escaping CodeSearchStarter,
-        debounce: Duration = .milliseconds(120)
+        debounce: Duration = .milliseconds(120),
+        askAIEnabled: Bool = OpenQuicklyAskAIFeature.isEnabled
     ) {
         self.project = project
         self.index = index
@@ -79,7 +80,7 @@ final class OpenQuicklySession {
         self.gitStatuses = gitStatuses
         self.startSearch = startSearch
         self.debounce = debounce
-        model = OpenQuicklyModel(scope: scope)
+        model = OpenQuicklyModel(scope: scope, askAIEnabled: askAIEnabled)
         refreshIndexResults()
     }
 
@@ -264,13 +265,15 @@ final class OpenQuicklyCenter {
     private(set) var host: Host?
     private(set) var session: OpenQuicklySession?
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
-    /// ⌘↩ and the Ask AI row (spec §9.3; the answer is Task 12's).
+    /// ⌘↩ and the Ask AI row (spec §9.3; the answer is Task 12's), hidden
+    /// while `askAIEnabled` is off (ruling R35).
     @ObservationIgnored var onAskAI: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
     /// ⌥⌘↩ (spec §9.5; the hand-over is Task 13's).
     @ObservationIgnored var onHandToClaude: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
     @ObservationIgnored private let codeIndex: CodeIndexCenter
     @ObservationIgnored private let startSearch: CodeSearchStarter
     @ObservationIgnored private let presenter: OpenQuicklyPresenting
+    @ObservationIgnored private let askAIEnabled: Bool
 
     init(
         codeIndex: CodeIndexCenter,
@@ -278,11 +281,13 @@ final class OpenQuicklyCenter {
         presenter: OpenQuicklyPresenting? = nil,
         startSearch: @escaping CodeSearchStarter = { folder, options, onMatch, onDone in
             CodeSearchRun.start(folder: folder, options: options, onMatch: onMatch, onDone: onDone)
-        }
+        },
+        askAIEnabled: Bool = OpenQuicklyAskAIFeature.isEnabled
     ) {
         self.codeIndex = codeIndex
         self.presenter = presenter ?? OpenQuicklyPanelController()
         self.startSearch = startSearch
+        self.askAIEnabled = askAIEnabled
     }
 
     /// A workbench is on screen: the menu commands and double Shift work.
@@ -327,7 +332,7 @@ final class OpenQuicklyCenter {
         } ?? .none
         let session = OpenQuicklySession(
             project: project, index: codeIndex.index(for: project.id), scope: scope, boosts: boosts,
-            gitStatuses: files?.git(for: project).files ?? [:], startSearch: startSearch
+            gitStatuses: files?.git(for: project).files ?? [:], startSearch: startSearch, askAIEnabled: askAIEnabled
         )
         self.session = session
         presenter.presentPanel(session, center: self, over: host.window)

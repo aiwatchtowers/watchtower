@@ -115,7 +115,7 @@ struct OpenQuicklyView: View {
 
     private func footer(_ model: OpenQuicklyModel) -> some View {
         HStack(spacing: 8) {
-            Text("↩ Open · ⌥↩ Open Beside · ⌘↩ Ask AI")
+            Text(model.askAIEnabled ? "↩ Open · ⌥↩ Open Beside · ⌘↩ Ask AI" : "↩ Open · ⌥↩ Open Beside")
             Spacer(minLength: 8)
             if let status = statusText(model) {
                 Text(status)

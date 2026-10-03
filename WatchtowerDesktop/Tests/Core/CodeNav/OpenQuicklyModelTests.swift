@@ -3,7 +3,8 @@ import XCTest
 
 /// Open Quickly's sections, caps and selection (spec §8.1): All = Best match
 /// + Symbols (8) + Files (8) + Text (20, then "more…") and a last "Ask AI"
-/// row; a scope switch keeps the query; ↑/↓ stop at the ends.
+/// row (built with Ask AI on, as phase C will ship it; ruling R35 hides it
+/// until then); a scope switch keeps the query; ↑/↓ stop at the ends.
 final class OpenQuicklyModelTests: XCTestCase {
     private func file(_ path: String, score: Int = 10) -> CodeQuickResult {
         CodeQuickResult(item: .file(path: path), score: score, titleMatches: [], pathMatches: [])
@@ -19,7 +20,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     private func filledAllScope(query: String = "q") -> OpenQuicklyModel {
-        var model = OpenQuicklyModel()
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setQuery(query)
         model.setIndexResults(
             files: (0 ..< 12).map { file("f\($0).go", score: 50 - $0) },
@@ -46,8 +47,26 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(OpenQuicklyRow.askAI(query: "q").label, "✦ Ask AI: \u{201C}q\u{201D}")
     }
 
-    func testABetterFileIsTheBestMatch() {
+    /// Ruling R35: until phase C the ✦ Ask AI row and ⌘↩ / ⌥⌘↩ are absent.
+    func testAskAIIsHiddenByDefaultUntilPhaseC() {
+        XCTAssertFalse(OpenQuicklyAskAIFeature.isEnabled)
         var model = OpenQuicklyModel()
+        XCTAssertFalse(model.askAIEnabled)
+        model.setQuery("s")
+        model.setIndexResults(files: [file("a.go", score: 30)], symbols: [symbol("save", score: 40)])
+        XCTAssertEqual(model.sections.map(\.kind), [.bestMatch, .files])
+        XCTAssertFalse(model.rows.contains(.askAI(query: "s")))
+        model.move(.down)
+        model.move(.down)
+        XCTAssertEqual(model.selectedRow?.id, file("a.go").id, "the last row is the last file, no Ask AI below it")
+        XCTAssertEqual(model.activateSelection(option: false, command: true), .none, "⌘↩ does nothing")
+        XCTAssertEqual(model.activateSelection(option: true, command: true), .none, "⌥⌘↩ does nothing")
+        model.setQuery("nothing")
+        XCTAssertTrue(model.rows.isEmpty, "no results and no Ask AI row")
+    }
+
+    func testABetterFileIsTheBestMatch() {
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setQuery("cfb")
         model.setIndexResults(files: [file("CodeFileBuffer.swift", score: 90)], symbols: [symbol("cfb", score: 20)])
         XCTAssertEqual(model.sections.first?.rows.map(\.id), [file("CodeFileBuffer.swift").id])
@@ -55,7 +74,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     func testTwentyTextMatchesOrFewerHaveNoMoreRow() {
-        var model = OpenQuicklyModel()
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setQuery("q")
         model.appendTextMatches((1 ... 20).map(textMatch))
         XCTAssertFalse(model.rows.contains(.moreText(hidden: 0)))
@@ -87,7 +106,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     func testArrowsStopAtTheEnds() {
-        var model = OpenQuicklyModel()
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setQuery("q")
         model.setIndexResults(files: [file("a.go", score: 30), file("b.go", score: 20)], symbols: [])
         // Best match a.go, Files b.go, Ask AI.
@@ -116,7 +135,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     func testEmptyQueryListsFilesWithoutAskAI() {
-        var model = OpenQuicklyModel()
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setIndexResults(files: (0 ..< 10).map { file("f\($0).go") }, symbols: [])
         XCTAssertEqual(model.sections.map(\.kind), [.files])
         XCTAssertEqual(model.rows.count, 8)
@@ -125,7 +144,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     func testReturnOptionReturnAndCommandReturn() {
-        var model = OpenQuicklyModel()
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setQuery("s")
         model.setIndexResults(files: [], symbols: [symbol("save", score: 40)])
         let target = OpenQuicklyTarget(path: "src/save.swift", line: 3, col: 6)
@@ -166,7 +185,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     func testTextOutcome() {
-        var model = OpenQuicklyModel()
+        var model = OpenQuicklyModel(askAIEnabled: true)
         model.setQuery("q")
         XCTAssertEqual(model.textStatus, .searching)
         model.finishText(.finished(truncated: true))

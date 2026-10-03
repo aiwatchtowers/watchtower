@@ -112,6 +112,13 @@ package enum OpenQuicklyTextStatus: Equatable, Sendable {
     case failed(String)
 }
 
+/// Ruling R35: Open Quickly's ✦ Ask AI row, its "⌘↩ Ask AI" key hint and
+/// the ⌘↩ / ⌥⌘↩ commands stay hidden until their answers exist (phase C:
+/// Task 12 flips this, Task 13 adds the hand-over) — no dead control ships.
+package enum OpenQuicklyAskAIFeature {
+    package static let isEnabled = false
+}
+
 /// Open Quickly's state (spec §8.1), pure: the query and scope, the index's
 /// and `code search`'s answers, the sections built from them and the
 /// selected row. The panel's view model feeds it; the view draws it.
@@ -132,9 +139,12 @@ package struct OpenQuicklyModel: Equatable, Sendable {
     /// The arrows moved the selection since the query last changed: Space
     /// then means Quick Look, not a space in the query.
     package private(set) var navigatedSinceEdit = false
+    /// The ✦ Ask AI row and ⌘↩ / ⌥⌘↩ (ruling R35).
+    package let askAIEnabled: Bool
 
-    package init(scope: CodeSearchScope = .all) {
+    package init(scope: CodeSearchScope = .all, askAIEnabled: Bool = OpenQuicklyAskAIFeature.isEnabled) {
         self.scope = scope
+        self.askAIEnabled = askAIEnabled
     }
 
     package var trimmedQuery: String {
@@ -214,7 +224,7 @@ package struct OpenQuicklyModel: Equatable, Sendable {
             OpenQuicklySection(kind: .symbols, rows: rest(symbols)),
             OpenQuicklySection(kind: .files, rows: rest(files)),
             OpenQuicklySection(kind: .text, rows: text),
-            OpenQuicklySection(kind: .askAI, rows: [.askAI(query: trimmedQuery)])
+            OpenQuicklySection(kind: .askAI, rows: askAIEnabled ? [.askAI(query: trimmedQuery)] : [])
         ]
     }
 
@@ -261,11 +271,11 @@ package struct OpenQuicklyModel: Equatable, Sendable {
     // MARK: Keys
 
     /// Return on the selected row; `option` = ⌥↩, `command` = ⌘↩, both =
-    /// ⌥⌘↩. "more…" switches to the Text scope here and asks nothing of
-    /// the caller.
+    /// ⌥⌘↩ (nothing while Ask AI is hidden, ruling R35). "more…" switches
+    /// to the Text scope here and asks nothing of the caller.
     package mutating func activateSelection(option: Bool, command: Bool) -> OpenQuicklyCommand {
         if command {
-            guard !trimmedQuery.isEmpty else { return .none }
+            guard askAIEnabled, !trimmedQuery.isEmpty else { return .none }
             return option ? .handToClaude(trimmedQuery) : .askAI(trimmedQuery)
         }
         switch selectedRow {

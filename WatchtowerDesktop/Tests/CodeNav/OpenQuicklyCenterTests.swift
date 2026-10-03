@@ -47,9 +47,11 @@ final class OpenQuicklyCenterTests: XCTestCase {
 
     /// A center over an index with no CLI (its run fails at once); the
     /// index is filled by hand.
-    private func makeCenter() -> (OpenQuicklyCenter, WorkbenchesViewModel) {
+    private func makeCenter(askAIEnabled: Bool = OpenQuicklyAskAIFeature.isEnabled) -> (OpenQuicklyCenter, WorkbenchesViewModel) {
         let codeIndex = CodeIndexCenter { nil }
-        let center = OpenQuicklyCenter(codeIndex: codeIndex, presenter: presenter, startSearch: searches.start)
+        let center = OpenQuicklyCenter(
+            codeIndex: codeIndex, presenter: presenter, startSearch: searches.start, askAIEnabled: askAIEnabled
+        )
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         center.workbenches = vm
         let index = codeIndex.index(for: project.id)
@@ -185,8 +187,27 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: project.id), layout)
     }
 
-    func testAskAndHandOverChordsReachTheirHooksAndKeepThePanel() {
+    /// Ruling R35: the shipped center hides Ask AI — no row, and ⌘↩ / ⌥⌘↩
+    /// reach neither hook.
+    func testAskAIRowAndChordsAreAbsentUntilPhaseC() {
         let (center, _) = makeCenter()
+        var called: [String] = []
+        center.onAskAI = { query, _ in called.append("ask \(query)") }
+        center.onHandToClaude = { query, _ in called.append("hand \(query)") }
+        center.pageAppeared(project, window: nil)
+        center.present(scope: .all)
+        let session = center.session
+        session?.updateQuery("save")
+        XCTAssertEqual(session?.model.askAIEnabled, false)
+        XCTAssertFalse(session?.model.rows.contains(.askAI(query: "save")) ?? true)
+        center.perform(session?.activateSelection(option: false, command: true) ?? .none)
+        center.perform(session?.activateSelection(option: true, command: true) ?? .none)
+        XCTAssertEqual(called, [])
+        XCTAssertNotNil(center.session, "the panel stays")
+    }
+
+    func testAskAndHandOverChordsReachTheirHooksAndKeepThePanel() {
+        let (center, _) = makeCenter(askAIEnabled: true)
         var asked: [String] = []
         center.onAskAI = { query, project in
             XCTAssertEqual(project.id, 5)
