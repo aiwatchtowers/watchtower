@@ -107,6 +107,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	projectTools := []string{
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
+		"ask_owner", "get_ask", "list_asks", "withdraw_ask",
 	}
 	project := names("project")
 	for _, p := range projectTools {

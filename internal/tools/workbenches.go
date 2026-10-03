@@ -32,6 +32,8 @@ func WorkbenchTools(files workbenchfiles.Store) []*Tool {
 		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
 		NewCreateTargets(files), NewUpdateTarget(files),
 		NewListComments(), NewAddComment(), NewResolveComment(),
+		NewAskOwner(processTerminalSession), NewGetAsk(),
+		NewListAsks(processTerminalSession), NewWithdrawAsk(),
 	}
 }
 

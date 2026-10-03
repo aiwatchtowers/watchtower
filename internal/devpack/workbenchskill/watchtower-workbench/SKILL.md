@@ -24,6 +24,10 @@ At session start a hook prints the workbench brief: counts, the open part of the
 - `list_comments` — by `target_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
+- `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`). It returns at once with the ask id; never wait for the answer.
+- `get_ask` — one ask by `ask_id`; once answered, the answer as JSON and as text. Reading it marks the answer delivered.
+- `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
+- `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
 
 ## Setup
 

@@ -12,12 +12,14 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/terminal"
+	"watchtower/internal/tools"
 )
 
 // terminalSessionEnv names the terminal_sessions row a Desktop-launched
 // claude runs in; TerminalCenter sets it for a claude row's process only (a
-// dual path with Swift `TerminalLaunch.sessionRowEnv`).
-const terminalSessionEnv = "WATCHTOWER_TERMINAL_SESSION_ID"
+// dual path with Swift `TerminalLaunch.sessionRowEnv`). The ask tools read
+// the same variable.
+const terminalSessionEnv = tools.TerminalSessionEnv
 
 // sessionRecordBusyTimeout bounds the wait for the write lock: a daemon
 // holding it fails the record as one line instead of eating the hook's

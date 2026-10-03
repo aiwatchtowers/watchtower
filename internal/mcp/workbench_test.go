@@ -168,16 +168,16 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 }
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists only the
-// new names, `mcp --project N` only the old ones — ten workbench tools
+// new names, `mcp --project N` only the old ones — fourteen workbench tools
 // either way, with no description or input schema pointing at a tool the
 // session lacks.
-func TestWorkbenchMode_EachVocabularyListsTenToolsUnderItsOwnNames(t *testing.T) {
+func TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
 	for _, legacy := range []bool{false, true} {
 		listed := workbenchToolsListed(t, newBoundWorkbenchSession(t, database, pid, legacy))
-		if len(listed) != 10 {
-			t.Errorf("legacy=%v: want 10 workbench tools, got %d: %v", legacy, len(listed), listed)
+		if len(listed) != 14 {
+			t.Errorf("legacy=%v: want 14 workbench tools, got %d: %v", legacy, len(listed), listed)
 		}
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			want, unwanted := newName, oldName
@@ -202,6 +202,43 @@ func TestWorkbenchMode_EachVocabularyListsTenToolsUnderItsOwnNames(t *testing.T)
 		if !strings.Contains(listed[remove], want) {
 			t.Errorf("legacy=%v: %s's schema lacks %q: %s", legacy, remove, want, listed[remove])
 		}
+	}
+}
+
+// Spec 2026-10-03 §4: the ask tools have no legacy spelling — both
+// vocabularies serve them under the same names, and an ask filed through one
+// applies directly with its audit row.
+func TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies(t *testing.T) {
+	database := seedDB(t)
+	pid := seedMCPWorkbench(t, database)
+	for _, legacy := range []bool{false, true} {
+		cs := newBoundWorkbenchSession(t, database, pid, legacy)
+		listed := workbenchToolsListed(t, cs)
+		for _, name := range []string{"ask_owner", "get_ask", "list_asks", "withdraw_ask"} {
+			if _, ok := listed[name]; !ok {
+				t.Errorf("legacy=%v: %s is not listed", legacy, name)
+			}
+		}
+		res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "ask_owner",
+			Arguments: map[string]any{"kind": "check", "title": "Run it", "reason": "r",
+				"checklist": []any{map[string]any{"text": "Open the app"}}}})
+		if err != nil || res.IsError {
+			t.Fatalf("legacy=%v: ask_owner: %v %v", legacy, err, res)
+		}
+		var rc tools.Receipt
+		if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
+			t.Fatal(err)
+		}
+		if rc.Status != "applied" || rc.Tool != "ask_owner" {
+			t.Errorf("legacy=%v: want an applied ask_owner receipt, got %+v", legacy, rc)
+		}
+	}
+	asks, err := database.ListOwnerAsks(pid, db.OwnerAskFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(asks) != 2 {
+		t.Errorf("want 2 open asks, got %d", len(asks))
 	}
 }
 

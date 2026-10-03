@@ -21,7 +21,7 @@ const workbenchAgentLabel = "claude-code"
 // path may be absolute or relative to the folder, and the result is the
 // folder-relative, slash-separated path of the resolved file. It refuses a
 // path outside the folder (symlinks followed), a missing one, and anything
-// but a regular .md/.txt file.
+// but a regular .md/.markdown/.txt file.
 func ResolveWorkbenchDocumentPath(folder, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", &ValidationError{Msg: "a document path is required"}
@@ -60,8 +60,8 @@ func resolveDocumentFile(folder, candidate, rel string) (string, error) {
 
 func checkDocumentFile(rel, abs string) error {
 	ext := strings.ToLower(filepath.Ext(abs))
-	if ext != ".md" && ext != ".txt" {
-		return &ValidationError{Msg: fmt.Sprintf("%s is not a .md or .txt file", rel)}
+	if ext != ".md" && ext != ".markdown" && ext != ".txt" {
+		return &ValidationError{Msg: fmt.Sprintf("%s is not a .md, .markdown or .txt file", rel)}
 	}
 	st, err := os.Stat(abs)
 	if err != nil {
