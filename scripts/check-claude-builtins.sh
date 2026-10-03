@@ -12,12 +12,14 @@
 #      that run's approved built-ins (proves it honours --tools).
 #
 # The CLI has no offline tool listing, so each of the three launches is a
-# real `claude -p "ok"` run (model haiku, empty working directory, no user
-# settings, no MCP servers) read up to its stream-json init event and then
-# killed — it may still bill a few input tokens.
+# real `claude -p "ok"` run (model haiku, empty temp working directory, no
+# user settings, no MCP servers, --no-session-persistence) read up to its
+# stream-json init event and then killed — it may still bill a few input
+# tokens. The project directory the CLI creates for the temp cwd under
+# ~/.claude/projects is removed afterwards.
 #
 # Usage: scripts/check-claude-builtins.sh [--update]
-#   --update  append built-ins missing from the snapshot to it; then add
+#   --update  add built-ins missing from the snapshot to it (kept sorted); then add
 #             them to the deny list in internal/ai/client.go.
 set -euo pipefail
 

@@ -4,10 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -139,8 +139,8 @@ const liveCheckEnv = "WATCHTOWER_CHECK_CLAUDE_BUILTINS"
 
 // TestChatBuiltins_LiveCLI checks the locally installed claude CLI (opt-in,
 // never in CI): its full built-in set must be in the pinned snapshot ("update"
-// appends the missing names), and launched with each chat run's real argv it
-// must expose only that run's approved built-ins. The CLI has no offline tool
+// adds the missing names), and launched with each chat run's real argv it
+// must expose exactly that run's approved built-ins. The CLI has no offline tool
 // listing, so each launch is a real `claude -p` run read up to its init
 // event and then killed.
 func TestChatBuiltins_LiveCLI(t *testing.T) {
@@ -154,18 +154,16 @@ func TestChatBuiltins_LiveCLI(t *testing.T) {
 	all := builtinNames(liveInitTools(t, bin, []string{"-p", "ok", "--output-format", "stream-json", "--verbose",
 		"--model", "haiku", "--tools", "default", "--setting-sources", "project,local", "--strict-mcp-config"}))
 	require.NotEmpty(t, all, "the CLI reported no built-in tools")
+	known := knownBuiltins(t)
 	var missing []string
 	for _, n := range all {
-		if !slices.Contains(knownBuiltins(t), n) {
+		if !slices.Contains(known, n) {
 			missing = append(missing, n)
 		}
 	}
 	if len(missing) > 0 && mode == "update" {
-		f, err := os.OpenFile(builtinsSnapshot, os.O_APPEND|os.O_WRONLY, 0)
-		require.NoError(t, err)
-		_, err = f.WriteString(strings.Join(missing, "\n") + "\n")
-		require.NoError(t, errors.Join(err, f.Close()))
-		t.Logf("appended to %s: %v — add them to the deny list too", builtinsSnapshot, missing)
+		addToSnapshot(t, missing)
+		t.Logf("added to %s: %v — add them to the deny list too", builtinsSnapshot, missing)
 	} else {
 		assert.Empty(t, missing, "built-ins missing from %s (rerun with update, then extend the deny list)", builtinsSnapshot)
 	}
@@ -178,11 +176,30 @@ func TestChatBuiltins_LiveCLI(t *testing.T) {
 		setFlag(t, args, "--tools", r.tools)
 		setFlag(t, args, "--disallowedTools", r.deny)
 		exposed := builtinNames(liveInitTools(t, bin, args))
-		for _, n := range exposed {
-			assert.Contains(t, approvedChatBuiltins[run], n, "%s: the CLI exposes unapproved built-in %q", run, n)
-		}
+		// Two-way: an unapproved built-in exposed fails, and so does an
+		// approved one missing (a CLI dropping or renaming ToolSearch).
+		assert.ElementsMatch(t, approvedChatBuiltins[run], exposed, "%s: built-ins the CLI exposes", run)
 		t.Logf("%s exposes %v", run, exposed)
 	}
+}
+
+// addToSnapshot adds names to the snapshot file, keeping its header comment
+// and its names sorted.
+func addToSnapshot(t *testing.T, names []string) {
+	t.Helper()
+	raw, err := os.ReadFile(builtinsSnapshot)
+	require.NoError(t, err)
+	var header []string
+	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		if strings.HasPrefix(line, "#") {
+			header = append(header, line)
+		}
+	}
+	all := append(knownBuiltins(t), names...)
+	slices.Sort(all)
+	all = slices.Compact(all)
+	out := strings.Join(append(header, all...), "\n") + "\n"
+	require.NoError(t, os.WriteFile(builtinsSnapshot, []byte(out), 0o644))
 }
 
 // setFlag replaces the value following flag in args.
@@ -206,13 +223,17 @@ func builtinNames(tools []string) []string {
 
 // liveInitTools launches the CLI in an empty directory, returns the tool list
 // of its stream-json init event and kills the process group right after. The
-// group is killed and reaped on every path, timeout included.
+// group is killed and reaped on every path, timeout included. The launch
+// leaves no CLI state behind: --no-session-persistence writes no transcript,
+// and the per-cwd project directory the CLI still creates under
+// ~/.claude/projects is removed at cleanup.
 func liveInitTools(t *testing.T, bin string, args []string) []string {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(ctx, bin, append(slices.Clone(args), "--no-session-persistence")...)
 	cmd.Dir = t.TempDir()
+	removeCLIProjectDir(t, cmd.Dir)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.Stdin = strings.NewReader("")
@@ -243,4 +264,31 @@ func liveInitTools(t *testing.T, bin string, args []string) []string {
 	stderr, _ := os.ReadFile(errLog.Name())
 	t.Fatalf("no init event from %s %v (scan err %v); stderr: %s", bin, args, sc.Err(), stderr)
 	return nil
+}
+
+// nonProjectDirChars is what the CLI replaces with '-' when it names a cwd's
+// directory under ~/.claude/projects (/private/tmp/a_b/001 →
+// -private-tmp-a-b-001).
+var nonProjectDirChars = regexp.MustCompile(`[^A-Za-z0-9]`)
+
+// removeCLIProjectDir removes, at cleanup, the directory the CLI creates under
+// ~/.claude/projects for the temp cwd dir — named after both its symlinked and
+// its resolved path (macOS /var → /private/var). The names derive from the
+// test's own unique temp dir, so no other project's state is touched.
+func removeCLIProjectDir(t *testing.T, dir string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	paths := []string{dir}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+		paths = append(paths, resolved)
+	}
+	t.Cleanup(func() {
+		for _, p := range paths {
+			name := nonProjectDirChars.ReplaceAllString(p, "-")
+			if err := os.RemoveAll(filepath.Join(home, ".claude", "projects", name)); err != nil {
+				t.Logf("removing the CLI project dir for %s: %v", p, err)
+			}
+		}
+	})
 }

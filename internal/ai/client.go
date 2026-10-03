@@ -374,7 +374,7 @@ const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,
 	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool," +
 	"Agent,AskUserQuestion,EnterPlanMode,PowerShell,SendUserMessage,SubagentHandback,StructuredOutput," +
 	"Artifact,ArtifactCheck,ArtifactComments,ArtifactData,ConnectGitHub," +
-	"DesignSync,ReportFindings,ShareOnboardingGuide"
+	"DesignSync,ReportFindings,ShareOnboardingGuide,WaitForMcpServers"
 
 // AllowedTools builds the --allowedTools value: the built-in watchtower
 // server plus one mcp__<Name>__<tool> token per allowed external tool, in
