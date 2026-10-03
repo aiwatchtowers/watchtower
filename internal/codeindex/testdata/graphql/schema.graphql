@@ -1,0 +1,60 @@
+"""
+A value kept under a key.
+"""
+type Entry implements Node {
+  id: ID!
+  "The key it is stored under."
+  key: String!
+  value(format: String = "plain"): String
+}
+
+# Something with an id.
+interface Node {
+  id: ID!
+}
+
+"How an entry is drawn."
+enum Shape {
+  CIRCLE
+  SQUARE
+}
+
+input AddInput {
+  key: String!
+  value: String
+}
+
+union SearchResult = Entry | Store
+
+scalar Time
+
+"""Marks a field as internal."""
+directive @internal on FIELD_DEFINITION
+
+extend type Entry {
+  shape: Shape
+}
+
+type Query {
+  entry(id: ID!): Entry
+}
+
+# Loads one entry.
+query LoadEntry($id: ID!) {
+  entry(id: $id) {
+    ...EntryParts
+  }
+}
+
+mutation AddEntry($input: AddInput!) {
+  add(input: $input) { id }
+}
+
+fragment EntryParts on Entry {
+  key
+  value
+}
+
+schema {
+  query: Query
+}

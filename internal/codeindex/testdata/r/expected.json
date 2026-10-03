@@ -1,0 +1,62 @@
+[
+  {
+    "name": "double",
+    "kind": "function",
+    "path": "sample.R",
+    "line": 7,
+    "col": 1,
+    "end_line": 10,
+    "container": "",
+    "signature": "double <- function(n)",
+    "doc": "Doubles a number.",
+    "lang": "r"
+  },
+  {
+    "name": "helper",
+    "kind": "function",
+    "path": "sample.R",
+    "line": 13,
+    "col": 1,
+    "end_line": 13,
+    "container": "",
+    "signature": "helper = function(a, b) a + b",
+    "doc": "",
+    "lang": "r"
+  },
+  {
+    "name": "add_value",
+    "kind": "function",
+    "path": "sample.R",
+    "line": 16,
+    "col": 2,
+    "end_line": 19,
+    "container": "",
+    "signature": "\"add_value\" <- function(store, key, value)",
+    "doc": "Adds a value under a key.",
+    "lang": "r"
+  },
+  {
+    "name": "max_size",
+    "kind": "var",
+    "path": "sample.R",
+    "line": 21,
+    "col": 1,
+    "end_line": 21,
+    "container": "",
+    "signature": "max_size <- 64",
+    "doc": "",
+    "lang": "r"
+  },
+  {
+    "name": "stack",
+    "kind": "var",
+    "path": "sample.R",
+    "line": 23,
+    "col": 1,
+    "end_line": 25,
+    "container": "",
+    "signature": "stack <- list(",
+    "doc": "",
+    "lang": "r"
+  }
+]

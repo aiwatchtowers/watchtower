@@ -1,0 +1,28 @@
+# Service settings for the sample app.
+name: acme-service
+"quoted key": 1
+'it''s': 2
+url: http://example.com/a:b
+
+# The servers it listens on. One per line.
+servers:
+  - host: localhost
+    port: 8080
+  - host: example.com
+    port: 443
+notes: |
+  key: not a key
+  still: inside the block
+- stray item
+# A comment between keys is no doc after a blank line.
+
+retries: 3
+---
+# Second document.
+kind: Second
+metadata:
+  name: other
+--- |
+literal: a document that is one block scalar
+...
+après: 1

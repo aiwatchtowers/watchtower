@@ -159,7 +159,9 @@ GOOGLE_SECRET="${WATCHTOWER_GOOGLE_CLIENT_SECRET:-}"
 JIRA_ID="${WATCHTOWER_JIRA_CLIENT_ID:-}"
 JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
 MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
-GOARCH=arm64 CGO_ENABLED=1 go build \
+# -tags codegrammars: the code index's full grammar set (an untagged build
+# carries only Go, Swift and Python).
+GOARCH=arm64 CGO_ENABLED=1 go build -tags codegrammars \
     -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
     -o "$STAGE_DIR/watchtower" .
 echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
@@ -235,6 +237,12 @@ echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut
 # watchtower-ocr beside its own executable; CLIBinaryStore copies both).
 cp "$STAGE_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 cp "$OCR_HELPER" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
+
+# The licence notices of the third-party code compiled into the CLI (the
+# tree-sitter runtime and the code index's grammars): MIT, Apache-2.0 and
+# MPL-2.0 need them to reach whoever receives the binary. Guarded by
+# scripts/tests/test-build-app-notices.sh.
+cp "$PROJECT_ROOT/THIRD_PARTY_NOTICES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES.md"
 
 # Create Info.plist
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST

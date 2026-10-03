@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Counter",
+    "kind": "interface",
+    "path": "Counter.vue",
+    "line": 12,
+    "col": 11,
+    "end_line": 14,
+    "container": "",
+    "signature": "interface Counter",
+    "doc": "A counter's public shape.",
+    "lang": "vue"
+  },
+  {
+    "name": "count",
+    "kind": "field",
+    "path": "Counter.vue",
+    "line": 13,
+    "col": 3,
+    "end_line": 13,
+    "container": "Counter",
+    "signature": "count: number",
+    "doc": "",
+    "lang": "vue"
+  },
+  {
+    "name": "count",
+    "kind": "const",
+    "path": "Counter.vue",
+    "line": 16,
+    "col": 7,
+    "end_line": 16,
+    "container": "",
+    "signature": "const count = ref(0)",
+    "doc": "",
+    "lang": "vue"
+  },
+  {
+    "name": "increment",
+    "kind": "function",
+    "path": "Counter.vue",
+    "line": 19,
+    "col": 10,
+    "end_line": 21,
+    "container": "",
+    "signature": "function increment(): void",
+    "doc": "Adds one to the count.",
+    "lang": "vue"
+  },
+  {
+    "name": "Store",
+    "kind": "class",
+    "path": "Counter.vue",
+    "line": 23,
+    "col": 7,
+    "end_line": 25,
+    "container": "",
+    "signature": "class Store",
+    "doc": "",
+    "lang": "vue"
+  },
+  {
+    "name": "reset",
+    "kind": "method",
+    "path": "Counter.vue",
+    "line": 24,
+    "col": 3,
+    "end_line": 24,
+    "container": "Store",
+    "signature": "reset()",
+    "doc": "",
+    "lang": "vue"
+  }
+]

@@ -1,0 +1,110 @@
+[
+  {
+    "name": "Sample",
+    "kind": "module",
+    "path": "Sample.elm",
+    "line": 1,
+    "col": 8,
+    "end_line": 1,
+    "container": "",
+    "signature": "module Sample exposing (Shape(..), Store, add, empty, maxSize)",
+    "doc": "",
+    "lang": "elm"
+  },
+  {
+    "name": "maxSize",
+    "kind": "function",
+    "path": "Sample.elm",
+    "line": 10,
+    "col": 1,
+    "end_line": 11,
+    "container": "",
+    "signature": "maxSize",
+    "doc": "The largest size a store holds.",
+    "lang": "elm"
+  },
+  {
+    "name": "Store",
+    "kind": "type",
+    "path": "Sample.elm",
+    "line": 16,
+    "col": 12,
+    "end_line": 19,
+    "container": "",
+    "signature": "type alias Store",
+    "doc": "A key-value store.",
+    "lang": "elm"
+  },
+  {
+    "name": "Shape",
+    "kind": "enum",
+    "path": "Sample.elm",
+    "line": 24,
+    "col": 6,
+    "end_line": 26,
+    "container": "",
+    "signature": "type Shape",
+    "doc": "Shape of a value.",
+    "lang": "elm"
+  },
+  {
+    "name": "Circle",
+    "kind": "const",
+    "path": "Sample.elm",
+    "line": 25,
+    "col": 7,
+    "end_line": 25,
+    "container": "Shape",
+    "signature": "Circle",
+    "doc": "",
+    "lang": "elm"
+  },
+  {
+    "name": "Square",
+    "kind": "const",
+    "path": "Sample.elm",
+    "line": 26,
+    "col": 7,
+    "end_line": 26,
+    "container": "Shape",
+    "signature": "Square",
+    "doc": "",
+    "lang": "elm"
+  },
+  {
+    "name": "empty",
+    "kind": "function",
+    "path": "Sample.elm",
+    "line": 32,
+    "col": 1,
+    "end_line": 33,
+    "container": "",
+    "signature": "empty",
+    "doc": "Builds an empty store.",
+    "lang": "elm"
+  },
+  {
+    "name": "add",
+    "kind": "function",
+    "path": "Sample.elm",
+    "line": 38,
+    "col": 1,
+    "end_line": 43,
+    "container": "",
+    "signature": "add key value store",
+    "doc": "",
+    "lang": "elm"
+  },
+  {
+    "name": "send",
+    "kind": "function",
+    "path": "Sample.elm",
+    "line": 46,
+    "col": 6,
+    "end_line": 46,
+    "container": "",
+    "signature": "port send : String -> Cmd msg",
+    "doc": "",
+    "lang": "elm"
+  }
+]

@@ -1,0 +1,74 @@
+[
+  {
+    "name": "Options",
+    "kind": "interface",
+    "path": "Counter.svelte",
+    "line": 3,
+    "col": 20,
+    "end_line": 5,
+    "container": "",
+    "signature": "export interface Options",
+    "doc": "Options every counter takes.",
+    "lang": "svelte"
+  },
+  {
+    "name": "size",
+    "kind": "field",
+    "path": "Counter.svelte",
+    "line": 4,
+    "col": 5,
+    "end_line": 4,
+    "container": "Options",
+    "signature": "size: number",
+    "doc": "",
+    "lang": "svelte"
+  },
+  {
+    "name": "start",
+    "kind": "var",
+    "path": "Counter.svelte",
+    "line": 9,
+    "col": 14,
+    "end_line": 9,
+    "container": "",
+    "signature": "export let start = 0",
+    "doc": "",
+    "lang": "svelte"
+  },
+  {
+    "name": "step",
+    "kind": "function",
+    "path": "Counter.svelte",
+    "line": 12,
+    "col": 12,
+    "end_line": 14,
+    "container": "",
+    "signature": "function step(by: number): number",
+    "doc": "Moves the count by one step.",
+    "lang": "svelte"
+  },
+  {
+    "name": "Tally",
+    "kind": "class",
+    "path": "Counter.svelte",
+    "line": 16,
+    "col": 9,
+    "end_line": 18,
+    "container": "",
+    "signature": "class Tally",
+    "doc": "",
+    "lang": "svelte"
+  },
+  {
+    "name": "total",
+    "kind": "method",
+    "path": "Counter.svelte",
+    "line": 17,
+    "col": 5,
+    "end_line": 17,
+    "container": "Tally",
+    "signature": "total()",
+    "doc": "",
+    "lang": "svelte"
+  }
+]

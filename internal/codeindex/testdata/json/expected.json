@@ -1,0 +1,93 @@
+[
+  {
+    "name": "name",
+    "kind": "field",
+    "path": "package.json",
+    "line": 3,
+    "col": 4,
+    "end_line": 3,
+    "container": "",
+    "signature": "\"name\": \"sample\"",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  },
+  {
+    "name": "version",
+    "kind": "field",
+    "path": "package.json",
+    "line": 4,
+    "col": 4,
+    "end_line": 4,
+    "container": "",
+    "signature": "\"version\": \"1.0.0\"",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  },
+  {
+    "name": "scripts",
+    "kind": "field",
+    "path": "package.json",
+    "line": 7,
+    "col": 4,
+    "end_line": 10,
+    "container": "",
+    "signature": "\"scripts\":",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  },
+  {
+    "name": "tricky \"key\"",
+    "kind": "field",
+    "path": "package.json",
+    "line": 11,
+    "col": 4,
+    "end_line": 11,
+    "container": "",
+    "signature": "\"tricky \\\"key\\\"\": \"value with { and [\"",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  },
+  {
+    "name": "list",
+    "kind": "field",
+    "path": "package.json",
+    "line": 12,
+    "col": 4,
+    "end_line": 15,
+    "container": "",
+    "signature": "\"list\":",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  },
+  {
+    "name": "après",
+    "kind": "field",
+    "path": "package.json",
+    "line": 16,
+    "col": 4,
+    "end_line": 16,
+    "container": "",
+    "signature": "\"après\": null",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  },
+  {
+    "name": "last",
+    "kind": "field",
+    "path": "package.json",
+    "line": 17,
+    "col": 4,
+    "end_line": 19,
+    "container": "",
+    "signature": "\"last\":",
+    "doc": "",
+    "lang": "json",
+    "outline": true
+  }
+]

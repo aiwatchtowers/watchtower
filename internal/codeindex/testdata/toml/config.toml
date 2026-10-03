@@ -1,0 +1,33 @@
+# The package name.
+title = "sample"
+owner.name = "Example"
+owner.team = "core"
+multi = """
+fake = "not a key"
+[not.a.table]
+"""
+list = [
+  "a",
+  { inline = 1 },
+]
+"quoted key" = true
+
+# Server settings.
+[server]
+host = "localhost"
+port = 8080
+
+[server.tls]
+enabled = true
+
+[database]
+url = 'sqlite://x'
+
+[[products]]
+sku = 1
+
+[[products]]
+sku = 2
+
+[ "spaced key" ]
+x = 1
