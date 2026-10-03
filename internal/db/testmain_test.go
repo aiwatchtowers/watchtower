@@ -33,6 +33,10 @@ func TestMain(m *testing.M) {
 // them unseeded so goose migrates them from scratch.
 var freshMigrationPaths sync.Map
 
+// seededPaths holds every path seedFromTemplate wrote the template to, so
+// openMigratingFresh can prove its file was not one of them.
+var seededPaths sync.Map
+
 // seedFromTemplate writes the migrated template to the new file dbPath, at
 // the 0644 SQLite itself creates a file with under the usual umask, so Open's
 // permission tightening still has work to do.
@@ -48,7 +52,11 @@ func seedFromTemplate(dbPath string) error {
 		_ = f.Close()
 		return err
 	}
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
+	seededPaths.Store(dbPath, true)
+	return nil
 }
 
 // openMigratingFresh opens the new file dbPath through Open's real migration
@@ -57,7 +65,14 @@ func seedFromTemplate(dbPath string) error {
 func openMigratingFresh(t *testing.T, dbPath string) (*DB, error) {
 	t.Helper()
 	freshMigrationPaths.Store(dbPath, true)
-	return Open(dbPath)
+	d, err := Open(dbPath)
+	if _, seeded := seededPaths.Load(dbPath); seeded {
+		if d != nil {
+			_ = d.Close()
+		}
+		t.Fatalf("openMigratingFresh: %s was seeded from the template, so goose never migrated an empty file", dbPath)
+	}
+	return d, err
 }
 
 // openTestDB opens an isolated in-memory database for a test.
