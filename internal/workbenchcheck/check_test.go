@@ -542,6 +542,9 @@ func TestProj07_GitUnavailableIsANote(t *testing.T) {
 		if !slices.Contains(r.Notes, "git is not available (no Command Line Tools); branch checks skipped") {
 			t.Fatalf("network=%v: notes must say git is unavailable: %v", network, r.Notes)
 		}
+		if prNote := slices.Contains(r.Notes, "git is not available; pull request states not checked"); prNote != network {
+			t.Fatalf("network=%v: the pull request note must appear exactly when the network is on: %v", network, r.Notes)
+		}
 	}
 }
 
