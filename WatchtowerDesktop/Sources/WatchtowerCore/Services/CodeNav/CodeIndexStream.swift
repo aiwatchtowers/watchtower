@@ -4,18 +4,21 @@ import Foundation
 // `watchtower code search` (spec §5), decoded off the main actor as the
 // child's output arrives.
 
-/// One file of an index run. `lang` "" = a file the CLI does not index
-/// (an unsupported language; for a named path also a skipped one —
-/// binary, over 2 MB, git-ignored, a directory).
+/// One file of an index run. `lang` "" = a language the CLI does not
+/// index. `skipped` (ruling R21): a path asked for by name that is not a
+/// workbench file — git-ignored, binary, over 2 MB, outside the folder, a
+/// directory, unreadable.
 package struct CodeIndexFileResult: Equatable, Sendable {
     package let file: String
     package let lang: String
     package let symbols: [CodeSymbol]
+    package let skipped: Bool
 
-    package init(file: String, lang: String, symbols: [CodeSymbol]) {
+    package init(file: String, lang: String, symbols: [CodeSymbol], skipped: Bool = false) {
         self.file = file
         self.lang = lang
         self.symbols = symbols
+        self.skipped = skipped
     }
 }
 
@@ -47,7 +50,7 @@ package enum CodeIndexLine: Decodable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case done, files, symbols, ms, file, lang, deleted
+        case done, files, symbols, ms, file, lang, deleted, skipped
     }
 
     package init(from decoder: any Decoder) throws {
@@ -68,7 +71,9 @@ package enum CodeIndexLine: Decodable, Equatable, Sendable {
         self = try .file(CodeIndexFileResult(
             file: file,
             lang: c.decode(String.self, forKey: .lang),
-            symbols: c.decode([CodeSymbol].self, forKey: .symbols)
+            symbols: c.decode([CodeSymbol].self, forKey: .symbols),
+            // `skipped,omitempty` on the Go side: absent means false.
+            skipped: c.decodeIfPresent(Bool.self, forKey: .skipped) ?? false
         ))
     }
 }

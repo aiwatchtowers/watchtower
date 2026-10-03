@@ -41,6 +41,16 @@ final class CodeIndexStreamTests: XCTestCase {
         XCTAssertEqual(decoder.malformedCount, 3, "blank lines are not malformed")
     }
 
+    func testSkippedFlag() {
+        var decoder = CodeJSONLineDecoder<CodeIndexLine>()
+        let input = #"{"file":"dist/x.js","lang":"","symbols":[],"skipped":true}"# + "\n"
+            + #"{"file":"notes.txt","lang":"","symbols":[]}"# + "\n"
+        XCTAssertEqual(decoder.feed(Data(input.utf8)), [
+            .file(CodeIndexFileResult(file: "dist/x.js", lang: "", symbols: [], skipped: true)),
+            .file(CodeIndexFileResult(file: "notes.txt", lang: "", symbols: [], skipped: false))
+        ])
+    }
+
     func testDeletedLineAndUnterminatedTail() {
         var decoder = CodeJSONLineDecoder<CodeIndexLine>()
         XCTAssertEqual(decoder.feed(Data(#"{"file":"./gone.go","deleted":true}"#.utf8)), [])

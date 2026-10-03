@@ -184,6 +184,7 @@ func TestFileResult_JSON(t *testing.T) {
 	}{
 		{FileResult{File: "gone.go", Lang: "go", Deleted: true}, `{"file":"gone.go","deleted":true}`},
 		{FileResult{File: "notes.txt"}, `{"file":"notes.txt","lang":"","symbols":[]}`},
+		{FileResult{File: "dist/x.js", Skipped: true}, `{"file":"dist/x.js","lang":"","symbols":[],"skipped":true}`},
 		{FileResult{File: "a.md", Lang: "markdown", Symbols: []Symbol{{
 			Name: "Intro", Kind: KindModule, Path: "a.md", Line: 1, Col: 3, EndLine: 4, Signature: "# Intro", Lang: "markdown", Outline: true,
 		}}}, `{"file":"a.md","lang":"markdown","symbols":[{"name":"Intro","kind":"module","path":"a.md","line":1,"col":3,"end_line":4,"container":"","signature":"# Intro","doc":"","lang":"markdown","outline":true}]}`},
@@ -209,15 +210,21 @@ func TestRun_FilesDeletedAndUnsupported(t *testing.T) {
 	write(t, root, "notes.txt", []byte("plain text\n"))
 	write(t, root, "dir/keep.txt", []byte("x\n"))
 	write(t, root, "big.md", append([]byte("# Big\n"), bytes.Repeat([]byte("a"), codewalk.MaxIndexBytes)...))
-	got := collect(t, root, []string{"gone.go", "notes.txt", "dir", "big.md", "../outside.md"}, noGrammar(t))
+	write(t, root, "logo.bin", []byte("PNG\x00\x01binary"))
+	got := collect(t, root, []string{"gone.go", "notes.txt", "dir", "big.md", "../outside.md", "logo.bin"}, noGrammar(t))
 
-	if r := got["gone.go"]; !r.Deleted {
-		t.Errorf("gone.go = %+v, want deleted", r)
+	if r := got["gone.go"]; !r.Deleted || r.Skipped {
+		t.Errorf("gone.go = %+v, want deleted (not skipped)", r)
 	}
-	for _, f := range []string{"notes.txt", "dir", "big.md", "../outside.md"} {
+	// A readable file of a language the build cannot index is a workbench
+	// file: lang "" but not skipped (ruling R21).
+	if r := got["notes.txt"]; r.Deleted || r.Skipped || r.Lang != "" || len(r.Symbols) != 0 {
+		t.Errorf("notes.txt = %+v, want lang \"\", not skipped", r)
+	}
+	for _, f := range []string{"dir", "big.md", "../outside.md", "logo.bin"} {
 		r, ok := got[f]
-		if !ok || r.Deleted || r.Lang != "" || len(r.Symbols) != 0 {
-			t.Errorf("%s = %+v (emitted %v), want lang \"\" with no symbols", f, r, ok)
+		if !ok || r.Deleted || !r.Skipped || r.Lang != "" || len(r.Symbols) != 0 {
+			t.Errorf("%s = %+v (emitted %v), want skipped with no symbols", f, r, ok)
 		}
 	}
 }
@@ -377,7 +384,7 @@ func TestRun_ScanSkipsALeadingBOM(t *testing.T) {
 }
 
 // Paths named by --files or --serve are filtered by .gitignore like the
-// full run's list: an ignored file yields an empty result (lang ""), a
+// full run's list: an ignored file yields a skipped result, a
 // tracked file under an ignore rule and an untracked kept one are indexed.
 func TestRun_NamedPathsHonourGitignore(t *testing.T) {
 	bin, ok := gitbin.Locate()
@@ -404,11 +411,11 @@ func TestRun_NamedPathsHonourGitignore(t *testing.T) {
 
 	paths := []string{"dist/x.md", "dist/tracked.md", "docs/a.md"}
 	got := collect(t, root, paths, noGrammar(t))
-	if r := got["dist/x.md"]; r.Lang != "" || len(r.Symbols) != 0 || r.Deleted {
-		t.Errorf("ignored dist/x.md = %+v, want lang \"\" with no symbols", r)
+	if r := got["dist/x.md"]; r.Lang != "" || len(r.Symbols) != 0 || r.Deleted || !r.Skipped {
+		t.Errorf("ignored dist/x.md = %+v, want skipped with no symbols", r)
 	}
 	for _, p := range []string{"dist/tracked.md", "docs/a.md"} {
-		if r := got[p]; r.Lang != "markdown" || len(r.Symbols) != 1 {
+		if r := got[p]; r.Lang != "markdown" || len(r.Symbols) != 1 || r.Skipped {
 			t.Errorf("%s = %+v, want its heading", p, r)
 		}
 	}

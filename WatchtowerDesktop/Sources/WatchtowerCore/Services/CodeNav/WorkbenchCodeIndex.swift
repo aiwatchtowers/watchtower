@@ -1,14 +1,15 @@
 import Foundation
 import Observation
 
-/// Which kind of run a batch of index lines came from.
+/// Which kind of run a batch of index lines came from. Either way a file
+/// line is a workbench file (`lang` "" = a language the CLI does not index)
+/// unless it is `skipped` (ruling R21: ignored, binary, oversized, …), which
+/// takes the path out of the index like `deleted`.
 package enum CodeIndexRunKind: Sendable {
-    /// `code index --json` over the whole folder: every file it lists is a
-    /// file of the workbench, `lang` "" (an unsupported language) included.
+    /// `code index --json` over the whole folder: what it does not list is
+    /// dropped when it finishes.
     case fullRun
-    /// A `--serve` request for changed paths: a `lang` "" answer may also be
-    /// a git-ignored, binary or oversized path, so a path the index does not
-    /// hold yet is not added for it.
+    /// A `--serve` request for changed paths.
     case update
 }
 
@@ -85,9 +86,12 @@ package final class WorkbenchCodeIndex {
         for line in lines {
             switch line {
             case let .file(result):
+                guard !result.skipped else {
+                    gone.insert(result.file)
+                    continue
+                }
                 if kind == .fullRun { seenInFullRun?.insert(result.file) }
                 gone.remove(result.file)
-                guard position[result.file] != nil || kind == .fullRun || !result.lang.isEmpty else { continue }
                 upsert(result)
             case let .deleted(path):
                 gone.formUnion(subtree(path))

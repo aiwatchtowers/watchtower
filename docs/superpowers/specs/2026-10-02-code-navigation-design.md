@@ -204,7 +204,8 @@ search.
 - A `--files`/`--serve` path the full run would not list — a directory, binary,
   over 2 MB, outside the folder, or `.gitignore`d (one `git check-ignore
   --stdin` per batch, inside a repository) — yields `"lang":""` with no
-  symbols, not `deleted`.
+  symbols and `"skipped":true`, not `deleted` (R21: a readable file of an
+  unsupported language is `"lang":""` without `skipped`).
 - Every `--files`/`--serve` result (and its symbols' `path`) echoes the request
   path verbatim, deleted ones included (`./a.go` stays `./a.go`).
 - A file whose parse fails or panics, or whose language's query does not

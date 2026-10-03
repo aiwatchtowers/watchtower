@@ -6,7 +6,8 @@ import XCTest
 /// lists `STUB_FILES` (after `STUB_FULL_DELAY` seconds) or fails with
 /// `STUB_FAIL` on stderr; `code index --serve` answers each request line
 /// after `STUB_SERVE_DELAY` seconds with one symbol `r<N>` (N = request
-/// number) per path; `code search` prints one match then sleeps. Every
+/// number) per path — `dist/…` comes back skipped (git-ignored), `*.txt`
+/// as an unsupported language; `code search` prints one match then sleeps. Every
 /// start ("start <pid> <args>") and request ("request <N>\t<paths>") is
 /// logged, so a test counts runs and reaps every process group it saw.
 struct CodeCLIStub {
@@ -91,7 +92,11 @@ struct CodeCLIStub {
             printf 'request %s\t%s\n' "$n" "$line" >> "$STUB_LOG"
             sleep "${STUB_SERVE_DELAY:-0}"
             printf '%s\n' "$line" | tr '\t' '\n' | while IFS= read -r p; do
-                printf '{"file":"%s","lang":"swift","symbols":[{"name":"r%s","kind":"function","path":"%s",%s}]}\n' "$p" "$n" "$p" "$rest"
+                case "$p" in
+                dist/*) printf '{"file":"%s","lang":"","symbols":[],"skipped":true}\n' "$p" ;;
+                *.txt) printf '{"file":"%s","lang":"","symbols":[]}\n' "$p" ;;
+                *) printf '{"file":"%s","lang":"swift","symbols":[{"name":"r%s","kind":"function","path":"%s",%s}]}\n' "$p" "$n" "$p" "$rest" ;;
+                esac
             done
             echo '{"done":true,"files":1,"symbols":1,"ms":1}'
         done

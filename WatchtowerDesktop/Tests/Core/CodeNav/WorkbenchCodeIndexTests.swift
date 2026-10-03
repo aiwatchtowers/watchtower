@@ -43,17 +43,18 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.symbols(named: "L"), [])
     }
 
-    func testAnUpdateReplacesSymbolsAndSkipsNewUnindexablePaths() {
+    func testAnUpdateReplacesSymbolsAddsWorkbenchFilesAndDropsSkippedOnes() {
         let index = WorkbenchCodeIndex()
-        index.applyIndexLines([file("a.swift", [symbol("Old", .class, "a.swift")]), file("README", lang: "")], from: .fullRun)
+        index.applyIndexLines([file("a.swift", [symbol("Old", .class, "a.swift")]), file("dist/old.js", lang: "javascript")], from: .fullRun)
         index.applyIndexLines([
             file("a.swift", [symbol("New", .class, "a.swift")]),
-            file("bin/tool", lang: ""),
-            file("README", lang: "")
+            file("notes.txt", lang: ""),
+            .file(CodeIndexFileResult(file: "dist/x.js", lang: "", symbols: [], skipped: true)),
+            .file(CodeIndexFileResult(file: "dist/old.js", lang: "", symbols: [], skipped: true))
         ], from: .update)
         XCTAssertEqual(index.symbols(named: "Old"), [])
         XCTAssertEqual(index.symbols(named: "New").count, 1)
-        XCTAssertEqual(index.files, ["a.swift", "README"], "an ignored/binary path an update reports is not a new file")
+        XCTAssertEqual(index.files, ["a.swift", "notes.txt"], "a new unsupported file is listed; skipped paths are not, and leave if listed")
     }
 
     func testAFullRunPrunesWhatItNoLongerLists() {

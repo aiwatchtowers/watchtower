@@ -165,6 +165,22 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertTrue(applied)
     }
 
+    /// Ruling R21: a new file of an unsupported language joins the files,
+    /// a skipped (git-ignored) one does not, and a listed file that becomes
+    /// ignored leaves.
+    func testServeRepliesAddUnsupportedFilesAndDropSkippedOnes() async {
+        let center = makeCenter(["STUB_FILES": "one.swift dist/old.js"])
+        center.markShown(workbenchID: 7, folder: folder)
+        let index = center.index(for: 7)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        XCTAssertEqual(index.files, ["one.swift", "dist/old.js"])
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["notes.txt", "dist/x.js", "dist/old.js"]), workbenchID: 7)
+        let applied = await eventually { index.files == ["one.swift", "notes.txt"] }
+        XCTAssertTrue(applied, "files: \(index.files)")
+        XCTAssertEqual(index.state, .ready)
+    }
+
     func testRescanRunsAFullIndex() async {
         let center = makeCenter()
         center.markShown(workbenchID: 7, folder: folder)
