@@ -451,16 +451,18 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
 | page → Swift | `definition` | `{req, id, word, line, col, x, y}` — ⌘-click or `definitionAtCursor`; `req` a page counter; `x, y` the word's bottom left in page points, for the menu (R29) |
 | page → Swift | `cursor` | `{id, line, col}` — at most 10 a second, the last move always sent; `id` is the file now shown (set before the model, so the first message after a tab switch names it) |
 | page → Swift | `usages` | `{id, word, line, col}` — the word at the cursor, from `usagesAtCursor` or the context menu's "Show All Usages" |
-| page → Swift | `selection` | `{id, text, startLine, startCol, endLine, endCol}` (≤ 20 KB; empty = none) — phase C |
-| page → Swift | `askAI` | `{id}` (⌘I in the editor) — phase C |
+| page → Swift | `selection` | `{id, text, truncated, startLine, startCol, endLine, endCol}` (≤ 20 KB, `truncated` when cut; empty = none; ≤ 10 a second, the last always sent) — phase C |
+| page → Swift | `scroll` | `{id}` — the editor scrolled, hides the ✦ (≤ 10 a second) — phase C |
+| page → Swift | `askAI` | `{id}` (⌘I in the editor — consumed by the page, the context menu's "Ask AI", or `askAI()`), right after a `selection` with the current selection — phase C |
 | Swift → page | `definitionAtCursor()` → Bool | ⌃⌘J from the menu: posts `definition` for the word at the cursor; false = no word |
 | Swift → page | `definitionDone(req)` | the request is answered: its busy underline goes (an older `req` is ignored) |
 | Swift → page | `usagesAtCursor()` → Bool | ⇧⌘U from the menu: posts `usages` for the word at the cursor; false = no word |
 | Swift → page | `reveal({id, line, col})` | put the cursor on and scroll to; a file not on screen takes it when shown |
 | Swift → page | `focus()` | the keyboard into the editor |
-| Swift → page | `selectionRect()` → `{x, y, w, h}` | for anchoring the popover — phase C |
-| Swift → page | `proposeEdit({id, range, text})` / `clearProposal(id)` | inline diff decoration — phase C |
-| Swift → page | `applyEdit({id, range, text})` | one undoable edit; then the normal `text` message — phase C |
+| Swift → page | `askAI()` → Bool | ⌘I from the menu or the ✦ button: posts `selection` and `askAI`; false = no file — phase C |
+| Swift → page | `selectionRect()` → `{x, y, w, h}` \| null | for anchoring the ✦ and the popover (a caret's box when nothing is selected) — phase C |
+| Swift → page | `proposeEdit({id, range, text})` → Bool / `clearProposal(id)` | inline diff decoration — phase C |
+| Swift → page | `applyEdit({id, range, text, expected})` → `"applied"` \| `"changed"` \| `"missing"` | one undoable edit, only while `range` still holds `expected`; then the normal `text` message — phase C |
 
 ---
 
@@ -484,11 +486,23 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
     `DisallowedTools` stays hidden (`Edit`, `Write`, `Bash`, `WebFetch`,
     `WebSearch`, `Task`, …), and no watchtower write tools are mounted
     (`toolAccess` `.draftOnly`).
-  - Codex: `--cd DIR` with its read-only sandbox, same no-write tool set.
+  - Codex: `--cd DIR` with its read-only sandbox (its shell, its only file
+    reader, on; web search off), same no-write tool set.
   - Ollama: no file tools; the answer uses the first-turn context only, and the
     popover says so once ("this model cannot read other files").
   - Accepted (owner): these tools can read outside the folder; nothing can
     write or reach the network.
+- **Owner decision (2026-10-03, ruling R55; supersedes the deferral of
+  rulings R42/R44):** the reads above ship. An agent the owner runs on the
+  owner's own workbench folder is the owner's responsibility: the read tools
+  can read outside the folder and a read can raise a macOS privacy prompt
+  attributed to Watchtower (accepted), and in a folder Codex trusts its
+  `.codex/config.toml` applies. Claude also gets `--tools` allowing exactly
+  ToolSearch plus `Read`, `Grep`, `Glob`, `LS` for this run only, and
+  `--setting-sources ""` so the folder's hooks never run; Codex runs its
+  shell under `--sandbox read-only` with web search off. Without
+  `--read-folder` both argvs are byte-identical to before. The follow-up
+  spike #341 is dismissed.
 - Model (owner decision 3): the popover and the Questions tab carry the same
   provider/model picker as the main chat composer, preselected to the default
   tier; the choice is kept per conversation (`chat_conversations.provider`/
@@ -521,7 +535,8 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
 - ⌘↩ or the "✦ Ask AI" row: the query becomes a question with no selection
   context (the open file, if any, is named in the context); the answer renders
   as a card in the panel. ↩ follows up; a link click opens the file and closes
-  the panel.
+  the panel. Its `context_id` is the open file's `<wb>:<path>:<cursor line>`,
+  or `<wb>::0` with no file open (Task 12).
 
 ### 9.4 Questions tab (#272)
 
@@ -544,12 +559,19 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
   question, the answer's text and `path:line` references (never file bodies),
   prefixed by one line "From a Watchtower code question:".
 - Running session: typed into its PTY like Send comments, then Return — the
-  sheet's Send is the confirmation. New session: started with the text as its
+  sheet's Send is the confirmation — but Return only into a session waiting
+  at its prompt (agent state "waiting for you", re-read after the paste
+  pause, ruling R52); a busy session gets the paste alone and the owner
+  presses Return; a session asking for a permission cannot be picked. New
+  session: started with the text as its
   first prompt. The terminal pane opens beside the editor in a split
-  (`Placement.keeping`).
+  (`Placement.beside(.files)`, ruling R50: `keeping` would switch a single
+  Files pane away from the editor).
 - Terminal links: SwiftTerm's link detection extended with a `path:line(:col)`
   matcher resolved against the session's folder; ⌘-click opens it in Files.
-  Paths outside the folder are not links.
+  Paths outside the folder are not links, and are refused by their text
+  before any disk access (ruling R53); other links reach the system only
+  through the app-wide URL allowlist.
 
 ---
 

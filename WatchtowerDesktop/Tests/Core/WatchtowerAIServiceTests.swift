@@ -144,6 +144,32 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertFalse(args.contains("--allowed-tools"))
     }
 
+    /// A code question runs `ai query --read-folder DIR` (spec 2026-10-02
+    /// §9.1): the folder rides ahead of the `--` separator, with no tool mode.
+    func testBuildArgsReadFolderGoesBeforeTheSeparator() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "-what is this?", systemPrompt: "s", sessionID: nil, dbPath: "/tmp/w.db", model: nil,
+            provider: "codex", toolMode: nil, readFolder: "/work/acme"
+        )
+        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--db-path", "/tmp/w.db", "--provider", "codex",
+                              "--read-folder", "/work/acme", "--", "-what is this?"])
+        XCTAssertFalse(args.contains("--tools"))
+    }
+
+    /// Without a folder (every other chat) the argv is what it was.
+    func testBuildArgsWithoutReadFolderIsUnchanged() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: nil, sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
+            toolMode: nil
+        )
+        XCTAssertEqual(args, ["ai", "query", "--session-id", "sid", "--db-path", "/tmp/w.db", "--model", "m",
+                              "--provider", "claude", "--", "hi"])
+        XCTAssertEqual(WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: nil, sessionID: "sid", dbPath: "/tmp/w.db", model: "m", provider: "claude",
+            toolMode: nil, readFolder: ""
+        ), args)
+    }
+
     func testChatToolModeMainOmitsContext() {
         let mode = ChatToolMode(surface: "main", conversationID: 3, turnID: "x")
         XCTAssertEqual(mode.cliArgs, ["--tools", "chat", "--surface", "main", "--conversation", "3", "--turn", "x"])

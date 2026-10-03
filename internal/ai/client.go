@@ -151,6 +151,10 @@ type Client struct {
 	// file once the subprocess has been reaped (the mcpConfigTempPath
 	// lifecycle).
 	systemPromptTempPath string
+	// readFolder, when set (SetReadFolder), runs the CLI in that folder
+	// with its file-read tools allowed and unhidden and no settings files
+	// loaded. Empty = today's run in os.TempDir().
+	readFolder string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -160,6 +164,20 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // into the chat's mcp-config and tool allowlist alongside the built-in
 // watchtower server.
 func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServers = s }
+
+// SetReadFolder makes the run a read-only look at dir (`ai query
+// --read-folder`, the workbench code questions; owner decision 2026-10-03,
+// ruling R55): the CLI starts with cwd = dir, and Read, Grep, Glob and LS
+// are the only built-ins added to the --tools allowlist and taken off
+// --disallowedTools — every write, shell, web and task tool stays hidden.
+// The tools can read outside dir and a read can raise a macOS privacy
+// prompt (accepted by the owner, spec 2026-10-02 §9.1); nothing can write
+// or reach the network. Settings files are not loaded
+// (`--setting-sources ""`): a workbench folder carries
+// .claude/settings.local.json hooks that write session state and run the
+// board drift check, and a read run must start none of them. dir must
+// already be resolved to a workbench folder (cmd's resolveReadFolder).
+func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
 // ExternalServersForTest exposes the registered external MCP servers for
 // tests outside this package (e.g. cmd's chat-wiring tests) — the field
@@ -222,7 +240,8 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// named here (MCP tools are unaffected), so a built-in a future CLI
 		// release adds stays hidden by default instead of slipping past the
 		// deny list below. See ChatBuiltinTools.
-		"--tools", ChatBuiltinTools,
+		// A read-folder run adds the file reads (ReadFolderBuiltinTools).
+		"--tools", c.builtinTools(),
 		// Hide every built-in tool from the model outright, not just deny it:
 		// a tool that is merely denied still shows up in the model's tool list,
 		// so it tries the call, gets a silent headless rejection, and then asks
@@ -238,13 +257,14 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    and probing user folders can trigger TCC prompts (a project P0).
 		// The deny list is defence in depth behind --tools: it keeps every
 		// known built-in hidden even if a CLI release stopped honouring the
-		// allowlist.
-		"--disallowedTools", WithExternalDisallowed(DisallowedTools, c.externalServers),
+		// allowlist. A read-folder run unhides only the file reads.
+		"--disallowedTools", WithExternalDisallowed(c.disallowedTools(), c.externalServers),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
 		// Keychain-backed OAuth still works because we don't override CLAUDE_CONFIG_DIR.
-		"--setting-sources", "project,local",
+		// A read-folder run loads no settings file at all (see SetReadFolder).
+		"--setting-sources", c.settingSources(),
 		// Only the MCP servers named in --mcp-config (watchtower + the owner's
 		// Quick Connections): never the owner's claude.ai connectors or any
 		// other server the CLI would load on its own.
@@ -287,6 +307,44 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		args = append(args, promptArgs...)
 	}
 	return args, stdin, nil
+}
+
+// builtinTools is the --tools allowlist: ReadFolderBuiltinTools for a
+// read-folder run, ChatBuiltinTools otherwise.
+func (c *Client) builtinTools() string {
+	if c.readFolder != "" {
+		return ReadFolderBuiltinTools
+	}
+	return ChatBuiltinTools
+}
+
+// disallowedTools is the --disallowedTools base: ReadOnlyFolderDisallowedTools
+// for a read-folder run, DisallowedTools otherwise.
+func (c *Client) disallowedTools() string {
+	if c.readFolder != "" {
+		return ReadOnlyFolderDisallowedTools
+	}
+	return DisallowedTools
+}
+
+// settingSources is the --setting-sources value: none for a read-folder run
+// (the folder's own .claude settings carry hooks), project and local otherwise.
+func (c *Client) settingSources() string {
+	if c.readFolder != "" {
+		return ""
+	}
+	return "project,local"
+}
+
+// workDir is where the CLI runs: the read folder, or a TCC-neutral
+// directory so the Node-based CLI never inherits a parent CWD inside
+// ~/Documents or ~/Desktop (macOS Files & Folders prompts attributed to
+// Watchtower).
+func (c *Client) workDir() string {
+	if c.readFolder != "" {
+		return c.readFolder
+	}
+	return os.TempDir()
 }
 
 // systemPromptArgs passes the system prompt inline when it is small and as a
@@ -340,6 +398,26 @@ const ChatBuiltinTools = ToolSearchTool
 // --tools value: ChatBuiltinTools plus WebSearch, which that session alone
 // may use (see SessionDisallowedTools).
 const SessionBuiltinTools = ChatBuiltinTools + "," + WebSearchTool
+
+// fileReadTools are the built-ins a read-folder run allows and unhides.
+var fileReadTools = []string{"Read", "Grep", "Glob", "LS"}
+
+// ReadFolderBuiltinTools is the --tools value of a read-folder run (a
+// workbench code question, Client.SetReadFolder): ChatBuiltinTools plus the
+// four file reads.
+var ReadFolderBuiltinTools = ChatBuiltinTools + "," + strings.Join(fileReadTools, ",")
+
+// ReadOnlyFolderDisallowedTools is DisallowedTools minus Read, Grep, Glob
+// and LS: the hidden set of a read-folder run (Client.SetReadFolder).
+var ReadOnlyFolderDisallowedTools = withoutTools(DisallowedTools, fileReadTools)
+
+// withoutTools drops the named tools from a comma-separated tool list.
+func withoutTools(list string, drop []string) string {
+	kept := slices.DeleteFunc(strings.Split(list, ","), func(tool string) bool {
+		return slices.Contains(drop, tool)
+	})
+	return strings.Join(kept, ",")
+}
 
 // ToolSearchTool is Claude Code's built-in deferred-tool loader.
 const ToolSearchTool = "ToolSearch"
@@ -534,10 +612,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			return cmd.Process.Signal(os.Interrupt)
 		}
 		cmd.WaitDelay = 5 * time.Second
-		// Pin CWD to a TCC-neutral directory so the Node-based Claude CLI never
-		// inherits a parent CWD inside ~/Documents or ~/Desktop, which would
-		// trigger macOS Files & Folders prompts attributed to Watchtower.
-		cmd.Dir = os.TempDir()
+		cmd.Dir = c.workDir()
 		cmd.Env = append(os.Environ(),
 			"PATH="+claude.RichPATH(),
 		)
@@ -668,8 +743,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	// See Query() for rationale on cmd.Dir.
-	cmd.Dir = os.TempDir()
+	cmd.Dir = c.workDir()
 	cmd.Env = append(os.Environ(),
 		"PATH="+claude.RichPATH(),
 	)

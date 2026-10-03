@@ -449,6 +449,14 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.shift, .command])
                 .disabled(shown == nil)
+                // ⌘I typed in the editor never reaches here: the page
+                // consumes it and posts `askAI` itself.
+                Button("Ask AI") {
+                    let questions = appState.codeQuestionCenter
+                    if let shown { Task { await questions.askAIFromMenu(project: shown) } }
+                }
+                .keyboardShortcut("i", modifiers: .command)
+                .disabled(shown == nil)
                 Button("File Symbols…") { if let shown { navigation.showFileSymbols(project: shown) } }
                     .keyboardShortcut("6", modifiers: .control)
                     .disabled(shown == nil)

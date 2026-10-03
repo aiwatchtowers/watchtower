@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 
@@ -34,6 +36,7 @@ var (
 	aiFlagContextType       string
 	aiFlagContextID         string
 	aiFlagEvents            string
+	aiFlagReadFolder        string
 )
 
 var aiCmd = &cobra.Command{
@@ -97,6 +100,8 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagContextType, "context-type", "", "chat context type (e.g. target)")
 	aiQueryCmd.Flags().StringVar(&aiFlagContextID, "context-id", "", "chat context id")
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
+	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
+		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
 }
 
 // maxStdinSystemPrompt bounds --system-prompt-stdin; a chat prompt is tens of
@@ -156,11 +161,22 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		dbPath = cfg.DBPath()
 	}
 
+	readFolder, err := resolveReadFolder(dbPath)
+	if err != nil {
+		return err
+	}
+
 	aiClient, cleanup, err := newQueryClient(cfg, dbPath)
 	if err != nil {
 		return emitError(enc, fmt.Sprintf("preparing tools: %v", err))
 	}
 	defer cleanup()
+	if readFolder != "" {
+		// Ollama has no file tools: it answers from the prompt alone.
+		if c, ok := aiClient.(readFolderConfigurable); ok {
+			c.SetReadFolder(readFolder)
+		}
+	}
 
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
 	defer cancel()
@@ -376,6 +392,49 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 		}
 	}
 	_ = out.Emit(chat.Event{Type: chat.EventTurnDone, TurnID: turnID, Status: chat.StatusComplete, SessionID: sid})
+}
+
+// readFolderConfigurable is implemented by the CLI-backed providers (claude,
+// codex), whose own read tools a read-folder run unhides (spec 2026-10-02
+// §9.1, owner decision 1).
+type readFolderConfigurable interface{ SetReadFolder(dir string) }
+
+// resolveReadFolder resolves --read-folder to the folder of a workbench in
+// the database at dbPath: absolute, symlinks resolved, an existing directory
+// bound to a workbench (a subfolder is not). "" without the flag. Any
+// refusal is a usage error (exit 2), as is combining it with --tools: a
+// read-folder run mounts no write tool.
+func resolveReadFolder(dbPath string) (string, error) {
+	if aiFlagReadFolder == "" {
+		return "", nil
+	}
+	if aiFlagTools != "" {
+		return "", usageError("--read-folder runs without --tools")
+	}
+	abs, err := filepath.Abs(aiFlagReadFolder)
+	if err != nil {
+		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
+	}
+	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+		return "", usageError("--read-folder %s: not a directory", aiFlagReadFolder)
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return "", usageError("--read-folder: opening the database: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	wb, err := database.WorkbenchByFolder(resolved)
+	if err != nil {
+		if errors.Is(err, db.ErrWorkbenchNotFound) {
+			return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
+		}
+		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
+	}
+	return wb.FolderPath, nil
 }
 
 // mcpConfigurable is implemented by the CLI-backed providers (claude, codex)

@@ -30,9 +30,47 @@ package protocol AIServiceProtocol: Sendable {
         provider: String?,
         toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error>
+
+    /// The same run with `readFolder` set: `ai query --read-folder`, which
+    /// checks the folder is a workbench (spec 2026-10-02 §9.1). No provider
+    /// reads files in it yet (rulings R42/R44): Claude runs as without the
+    /// flag and Codex only turns web search off. Only `WatchtowerAIService`
+    /// runs it; a test double that does not model it falls back to the run
+    /// without a folder.
+    func stream(
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
 extension AIServiceProtocol {
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        stream(
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            sessionID: sessionID,
+            dbPath: dbPath,
+            model: model,
+            provider: provider,
+            toolMode: toolMode
+        )
+    }
+
     package func stream(
         prompt: String,
         systemPrompt: String?,

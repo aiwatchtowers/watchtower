@@ -11,6 +11,9 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         package let sessionID: String?
         package let dbPath: String?
         package let toolMode: ChatToolMode?
+        package let model: String?
+        package let provider: String?
+        package let readFolder: String?
     }
 
     private let lock = NSLock()
@@ -33,10 +36,25 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         provider: String?,
         toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
+        stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
+               model: model, provider: provider, toolMode: toolMode, readFolder: nil)
+    }
+
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
         let (stream, continuation) = AsyncThrowingStream<StreamEvent, Error>.makeStream()
         let index: Int = lock.withLock {
             _calls.append(Call(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID,
-                               dbPath: dbPath, toolMode: toolMode))
+                               dbPath: dbPath, toolMode: toolMode, model: model, provider: provider,
+                               readFolder: readFolder))
             _continuations.append(continuation)
             _terminated.append(false)
             return _continuations.count - 1

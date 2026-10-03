@@ -111,6 +111,9 @@ final class CodeFilesCenter {
     /// Usages and the Files pane's inspector (on `AppState`); the editor
     /// page reports its `usages` requests there.
     @ObservationIgnored weak var usages: CodeUsagesCenter?
+    /// Code questions at the selection (on `AppState`); the editor page
+    /// reports its `selection`, `scroll` and `askAI` there.
+    @ObservationIgnored weak var questions: CodeQuestionCenter?
 
     init(
         defaults: UserDefaults = .standard,

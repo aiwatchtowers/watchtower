@@ -8,7 +8,8 @@ import XCTest
 /// `STUB_FAIL` on stderr; `code index --serve` answers each request line
 /// after `STUB_SERVE_DELAY` seconds with one symbol `r<N>` (N = request
 /// number) per path — `dist/…` comes back skipped (git-ignored), `*.txt`
-/// as an unsupported language; `code search` prints one match then sleeps.
+/// as an unsupported language; `code search` prints one match then sleeps
+/// (or, with `STUB_SEARCH_DONE` set, its `done` line and exits).
 /// A `--rules` file whose first line starts with "invalid" is read once per
 /// process, as the CLI does: every done line of that process carries
 /// `rules_error` "<path>: invalid YAML". Every
@@ -102,6 +103,10 @@ struct CodeCLIStub {
     case "$*" in
     *"code search"*)
         echo '{"path":"a.swift","line":1,"col":1,"text":"hit","text_col":1,"before":[],"after":[]}'
+        if [ -n "$STUB_SEARCH_DONE" ]; then
+            echo '{"done":true,"files":1,"matches":1,"truncated":false}'
+            exit 0
+        fi
         sleep 30
         exit 0 ;;
     *--serve*)

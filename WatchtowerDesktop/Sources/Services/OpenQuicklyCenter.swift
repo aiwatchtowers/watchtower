@@ -52,6 +52,11 @@ final class OpenQuicklySession {
     private(set) var model: OpenQuicklyModel
     /// By `previewKey`.
     private(set) var previews: [String: OpenQuicklyFilePreview] = [:]
+    /// The answer card (spec §9.3): the code question ⌘↩ started; nil = the
+    /// results.
+    private(set) var answerConversationID: Int64?
+    /// Why the question could not start (the footer shows it).
+    private(set) var askError: String?
     @ObservationIgnored private let boosts: CodeRankingBoosts
     @ObservationIgnored private let startSearch: CodeSearchStarter
     @ObservationIgnored private let debounce: Duration
@@ -137,6 +142,17 @@ final class OpenQuicklySession {
         case .text:
             model.setIndexResults(files: [], symbols: [])
         }
+    }
+
+    /// The question's answer replaces the results; their search stops.
+    func showAnswer(conversationID: Int64) {
+        cancelTextSearch()
+        askError = nil
+        answerConversationID = conversationID
+    }
+
+    func showAskError(_ message: String) {
+        askError = message
     }
 
     /// The panel goes: the search in flight is killed, none starts again.
@@ -268,10 +284,10 @@ final class OpenQuicklyCenter {
     private(set) var hostWindowIsKey = false
     @ObservationIgnored private var keyObservers: [NSObjectProtocol] = []
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
-    /// ⌘↩ and the Ask AI row (spec §9.3; the answer is Task 12's), hidden
-    /// while `askAIEnabled` is off (ruling R35).
-    @ObservationIgnored var onAskAI: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
-    /// ⌥⌘↩ (spec §9.5; the hand-over is Task 13's).
+    /// ⌘↩ and the Ask AI row (spec §9.3) start their question here; the
+    /// panel's answer card shows its conversation.
+    @ObservationIgnored weak var questions: CodeQuestionCenter?
+    /// ⌥⌘↩ (spec §9.5; the hand-over is Task 13's, hidden until then).
     @ObservationIgnored var onHandToClaude: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
     @ObservationIgnored private let codeIndex: CodeIndexCenter
     @ObservationIgnored private let startSearch: CodeSearchStarter
@@ -378,6 +394,13 @@ final class OpenQuicklyCenter {
         session?.stop()
     }
 
+    /// A `path:line` link in the answer card: the file opens and the panel
+    /// closes; a link to nothing beeps and keeps it.
+    func openAnswerLink(_ url: URL) async {
+        guard let session, let questions else { return }
+        await questions.openLink(url, project: session.project) { dismiss(restoringFocus: false) }
+    }
+
     /// What a Return asked for.
     func perform(_ command: OpenQuicklyCommand) {
         guard let session else { return }
@@ -389,9 +412,19 @@ final class OpenQuicklyCenter {
             dismiss(restoringFocus: false)
             Task { await workbenches?.openFile(at: target, project: project, beside: beside) }
         case let .askAI(query):
-            onAskAI(query, session.project)
+            guard let questions else {
+                session.showAskError("Couldn't start the question.")
+                return
+            }
+            switch questions.askFromOpenQuickly(query, project: session.project) {
+            case let .started(conversationID): session.showAnswer(conversationID: conversationID)
+            case let .failed(message): session.showAskError(message)
+            }
         case let .handToClaude(query):
-            onHandToClaude(query, session.project)
+            // The hand-off sheet goes on the page: the panel closes first.
+            let project = session.project
+            dismiss(restoringFocus: false)
+            onHandToClaude(query, project)
         }
     }
 }

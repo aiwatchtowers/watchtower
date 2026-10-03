@@ -46,6 +46,21 @@ func mcpWorkDir(dbPath string, extra []string) (string, error) {
 	return tmpDir, nil
 }
 
+// mcpConfigOverrides mounts the same watchtower server as mcpWorkDir's
+// config.toml, as `-c` overrides — for a run whose working root is not a
+// temp dir (a read-folder run).
+func mcpConfigOverrides(dbPath string, extra []string) []string {
+	args := append([]string{"mcp", "--db-path", dbPath}, extra...)
+	quoted := make([]string, 0, len(args))
+	for _, a := range args {
+		quoted = append(quoted, strconv.Quote(a))
+	}
+	return []string{
+		"-c", "mcp_servers.watchtower.command=" + strconv.Quote(watchtowerBinary()),
+		"-c", "mcp_servers.watchtower.args=[" + strings.Join(quoted, ", ") + "]",
+	}
+}
+
 // watchtowerBinary is the path used to relaunch this binary as an MCP server.
 // In the desktop flow the running process IS the watchtower CLI (`ai query`),
 // so os.Executable() is the correct self-path; fall back to a bare "watchtower"
