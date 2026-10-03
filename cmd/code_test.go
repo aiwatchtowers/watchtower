@@ -444,3 +444,57 @@ func TestCodeSearch_SIGTERMMidRunExitsAtOnceWithNoDone(t *testing.T) {
 		t.Errorf("all %d matches were emitted: SIGTERM did not stop the run", total)
 	}
 }
+
+func TestCodeRules_ValidFileIndexesARuleLanguage(t *testing.T) {
+	root := t.TempDir()
+	writeCodeFile(t, root, "lib/util.tcl", "proc foo {a} {\n    return $a\n}\n")
+	rules := filepath.Join(t.TempDir(), "code-languages.yaml")
+	writeCodeFile(t, filepath.Dir(rules), filepath.Base(rules),
+		"tcl:\n  extensions: [.tcl]\n  definitions:\n    - {kind: function, pattern: '^proc\\s+(\\w+)'}\n")
+	p := startCLI(t, "code", "index", "--folder", root, "--json", "--rules", rules)
+	run := p.untilDone(t)
+	if code := exitCode(p.wait()); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	want := `{"file":"lib/util.tcl","lang":"tcl","symbols":[{"name":"foo","kind":"function","path":"lib/util.tcl","line":1,"col":6,"end_line":1,"container":"","signature":"proc foo {a} {","doc":"","lang":"tcl"}]}`
+	if len(run) != 2 || run[0] != want {
+		t.Errorf("stream = %v\nwant first line %s", run, want)
+	}
+	if strings.Contains(run[1], "rules_error") || p.stderr.Len() != 0 {
+		t.Errorf("a valid rules file reported an error: done %s, stderr %q", run[1], p.stderr.String())
+	}
+}
+
+func TestCodeRules_InvalidFileIsIgnoredAndReportedOnEveryDone(t *testing.T) {
+	root := t.TempDir()
+	writeCodeFile(t, root, "a.tcl", "proc foo {} {}\n")
+	rules := filepath.Join(t.TempDir(), "code-languages.yaml")
+	writeCodeFile(t, filepath.Dir(rules), filepath.Base(rules),
+		"tcl:\n  extensions: [.tcl]\n  definitions:\n    - {kind: function, pattern: '(proc'}\n")
+	p := startCLI(t, "code", "index", "--folder", root, "--serve", "--rules", rules)
+	for i := range 2 {
+		if _, err := io.WriteString(p.stdin, "a.tcl\n"); err != nil {
+			t.Fatal(err)
+		}
+		run := p.untilDone(t)
+		if len(run) != 2 || run[0] != `{"file":"a.tcl","lang":"","symbols":[]}` {
+			t.Errorf("run %d = %v, want a.tcl unindexed (no partial load)", i, run)
+		}
+		var done map[string]any
+		if err := json.Unmarshal([]byte(run[1]), &done); err != nil {
+			t.Fatal(err)
+		}
+		if msg, _ := done["rules_error"].(string); !strings.Contains(msg, "code-languages.yaml") || !strings.Contains(msg, "pattern") {
+			t.Errorf("run %d done = %s, want rules_error naming the file and the pattern", i, run[1])
+		}
+	}
+	if err := p.stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if code := exitCode(p.wait()); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if n := strings.Count(p.stderr.String(), "rules file ignored"); n != 1 {
+		t.Errorf("stderr reports the rules error %d times, want once: %q", n, p.stderr.String())
+	}
+}

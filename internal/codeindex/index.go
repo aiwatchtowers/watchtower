@@ -40,6 +40,17 @@ func DefaultWorkers() int {
 	return max(2, runtime.GOMAXPROCS(0)/2)
 }
 
+// Options configures a run.
+type Options struct {
+	Workers int
+	// Rules are the owner's regex languages (nil: none), used for a file
+	// the language table does not know.
+	Rules *Rules
+	// RulesErr is why the rules file was ignored; Stream reports it on
+	// every done line as rules_error.
+	RulesErr error
+}
+
 // Run indexes the folder at root and calls emit once per file, from one
 // goroutine, in completion order. paths nil indexes every file the walk
 // lists (skipping those over codewalk.MaxIndexBytes); otherwise exactly
@@ -49,9 +60,11 @@ func DefaultWorkers() int {
 // panics, or whose language's query does not compile, yields lang "" too,
 // with a note on stderr; the run goes on. An emit error stops the run
 // and is returned. A
-// cancelled ctx stops it between files with ctx's error.
-func Run(ctx context.Context, root string, paths []string, workers int, emit func(FileResult) error) (Summary, error) {
-	return run(ctx, root, paths, workers, newParser, emit)
+// cancelled ctx stops it between files with ctx's error. A file of no
+// built-in language is indexed by opts.Rules when one of its languages
+// claims it.
+func Run(ctx context.Context, root string, paths []string, opts Options, emit func(FileResult) error) (Summary, error) {
+	return run(ctx, root, paths, opts.Workers, opts.Rules, newParser, emit)
 }
 
 type job struct {
@@ -72,7 +85,7 @@ type outcome struct {
 // warnings receives the run's notes; the command's stderr.
 var warnings io.Writer = os.Stderr
 
-func run(ctx context.Context, root string, paths []string, workers int, mkParser func() parser, emit func(FileResult) error) (Summary, error) {
+func run(ctx context.Context, root string, paths []string, workers int, rules *Rules, mkParser func() parser, emit func(FileResult) error) (Summary, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	workers = max(1, workers)
@@ -87,7 +100,7 @@ func run(ctx context.Context, root string, paths []string, workers int, mkParser
 
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Go(func() { work(ctx, root, mkParser, jobs, results) })
+		wg.Go(func() { work(ctx, root, rules, mkParser, jobs, results) })
 	}
 	go func() {
 		wg.Wait()
@@ -127,11 +140,11 @@ func run(ctx context.Context, root string, paths []string, workers int, mkParser
 
 // work is one worker: it indexes jobs with a parser of its own until jobs
 // closes or ctx is cancelled.
-func work(ctx context.Context, root string, mkParser func() parser, jobs <-chan job, results chan<- outcome) {
+func work(ctx context.Context, root string, rules *Rules, mkParser func() parser, jobs <-chan job, results chan<- outcome) {
 	p := mkParser()
 	defer func() { p.close() }()
 	for j := range jobs {
-		o, panicked := indexFile(p, root, j)
+		o, panicked := indexFile(p, root, rules, j)
 		if panicked { // its state is unknown: start afresh
 			p.close()
 			p = mkParser()
@@ -185,8 +198,8 @@ func feed(ctx context.Context, root string, paths []string, jobs chan<- job) err
 // which the run drops; a path asked for by name always yields a result.
 // A parse that fails or panics stays local (spec §6.3): the file yields
 // lang "" and a note, and panicked tells the worker to replace p.
-func indexFile(p parser, root string, j job) (o outcome, panicked bool) {
-	res, err := indexSource(p, root, j)
+func indexFile(p parser, root string, rules *Rules, j job) (o outcome, panicked bool) {
+	res, err := indexSource(p, root, rules, j)
 	var qe *queryError
 	var pe *parsePanic
 	switch {
@@ -219,7 +232,7 @@ func (e *parsePanic) Error() string { return fmt.Sprintf("panic: %v", e.v) }
 // A path asked for by name is echoed as asked (`./a.go` stays `./a.go`),
 // in the result and its symbols, deleted or not: the caller keys by what
 // it sent (ruling R16).
-func indexSource(p parser, root string, j job) (FileResult, error) {
+func indexSource(p parser, root string, rules *Rules, j job) (FileResult, error) {
 	res := FileResult{File: j.rel}
 	rel := j.rel
 	if j.explicit {
@@ -242,6 +255,9 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 	}
 	l := langFor(rel, src[:min(len(src), 256)])
 	if l == nil {
+		if rl := rules.langFor(rel); rl != nil {
+			res.setSymbols(rl.id, rl.symbols(bytes.TrimPrefix(src, utf8BOM)))
+		}
 		return res, nil
 	}
 	syms, supported, err := symbolsOf(p, l, src)
@@ -251,13 +267,19 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 	if !supported {
 		return res, nil
 	}
-	res.Lang = l.id
+	res.setSymbols(l.id, syms)
 	res.NoDefinitions = !l.holdsDefinitions()
-	for i := range syms {
-		syms[i].Path, syms[i].Lang = res.File, l.id
-	}
-	res.Symbols = syms
 	return res, nil
+}
+
+// setSymbols records the file's language and its symbols, stamping each
+// with the file's path and the language.
+func (r *FileResult) setSymbols(lang string, syms []Symbol) {
+	r.Lang = lang
+	for i := range syms {
+		syms[i].Path, syms[i].Lang = r.File, lang
+	}
+	r.Symbols = syms
 }
 
 // utf8BOM is the byte order mark some editors write at a file's start.

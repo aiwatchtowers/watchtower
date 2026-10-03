@@ -329,6 +329,24 @@ Decisions from these numbers:
   `pattern` is RE2, group 1 = name. Invalid YAML or pattern → the file is
   ignored as a whole and the jump bar of an affected file says
   "Rules file: <error>", never a crash or a silent partial load.
+- As built (Go, `internal/codeindex/rules.go`): the file is
+  `~/Library/Application Support/Watchtower/code-languages.yaml`, or the one
+  `code index --rules PATH` names; a missing file is no rules. It is loaded
+  once per process (a `--serve` child picks up an edited file when the
+  Desktop restarts it). `kind` must be one of §6.1's; extensions match
+  case-insensitively (a missing leading dot is added), filenames exactly.
+  The whole file is rejected — invalid YAML, an unknown key, a kind outside
+  the set, a pattern that is not RE2 or has no group, a language with no
+  extensions/filenames or no definitions, an extension or filename claimed
+  by two languages. The error (naming the file) is printed once on stderr
+  and carried by every `done` line as `"rules_error"`; the Desktop prefixes
+  "Rules file: ". A rule language applies only to a file the language table
+  does not know (it never overrides a grammar or scanned language, even in
+  a build without that grammar). Each line is matched against each pattern
+  (first match per pattern per line): name = group 1, `line`/`end_line` =
+  that line, `col` = UTF-16 column of group 1, `signature` = the line
+  (whitespace collapsed, ≤ 200), no container, no doc. Such files carry
+  their rule language's id as `lang` and no `defs` (they hold definitions).
 - Heuristic for unsupported files (⌘-click only): lines matching
   `\b(func|function|def|fn|class|struct|interface|enum|type|proc|sub)\s+NAME\b`
   first, then every whole-word occurrence; the jump bar shows
