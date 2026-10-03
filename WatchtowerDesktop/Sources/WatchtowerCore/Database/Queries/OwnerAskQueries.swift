@@ -35,8 +35,8 @@ package struct OwnerAskRows: Equatable, Sendable {
         return "\(count) \(count == 1 ? "ask" : "asks") could not be read (\(ids))."
     }
 
-    static func fetch(_ db: Database, sql: String, arguments: StatementArguments) throws -> OwnerAskRows {
-        var out = OwnerAskRows()
+    static func fetch(_ db: Database, sql: String, arguments: StatementArguments) throws -> Self {
+        var out = Self()
         for row in try Row.fetchAll(db, sql: sql, arguments: arguments) {
             do {
                 out.asks.append(try OwnerAsk(row: row))
