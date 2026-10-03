@@ -1,0 +1,173 @@
+{
+  "session": {
+    "id": 1,
+    "title": "Session report",
+    "target_id": 314,
+    "kind": "claude",
+    "created_at": "2026-09-28T07:00:00Z",
+    "last_active_at": "2026-10-02T15:00:00Z",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-02T15:00:01.000Z",
+    "finished_at": "",
+    "finish_summary": ""
+  },
+  "progress": {
+    "done": 14,
+    "total": 15
+  },
+  "on_you": [],
+  "now": [
+    {
+      "id": 342,
+      "text": "Task C2",
+      "status": "blocked",
+      "branch": "feature/session-report-ui",
+      "since": "2026-10-02T15:00:00Z"
+    }
+  ],
+  "next": [],
+  "phases": [
+    {
+      "target_id": 320,
+      "text": "Phase A: data layer",
+      "done": 7,
+      "total": 7,
+      "started_at": "2026-09-29T09:01:00Z",
+      "finished_at": "2026-09-29T11:07:00Z",
+      "items": [
+        {
+          "id": 321,
+          "text": "Task A1",
+          "status": "done"
+        },
+        {
+          "id": 322,
+          "text": "Task A2",
+          "status": "done"
+        },
+        {
+          "id": 323,
+          "text": "Task A3",
+          "status": "done"
+        },
+        {
+          "id": 324,
+          "text": "Task A4",
+          "status": "done"
+        },
+        {
+          "id": 325,
+          "text": "Task A5",
+          "status": "done"
+        },
+        {
+          "id": 326,
+          "text": "Task A6",
+          "status": "done"
+        },
+        {
+          "id": 327,
+          "text": "Task A7",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "target_id": 330,
+      "text": "Phase B: report builder",
+      "done": 5,
+      "total": 5,
+      "started_at": "2026-09-30T09:01:00Z",
+      "finished_at": "2026-09-30T12:05:00Z",
+      "items": [
+        {
+          "id": 331,
+          "text": "Task B1",
+          "status": "done"
+        },
+        {
+          "id": 332,
+          "text": "Task B2",
+          "status": "done"
+        },
+        {
+          "id": 333,
+          "text": "Task B3",
+          "status": "done"
+        },
+        {
+          "id": 334,
+          "text": "Task B4",
+          "status": "done"
+        },
+        {
+          "id": 335,
+          "text": "Task B5",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "target_id": 340,
+      "text": "Phase C: desktop view",
+      "done": 1,
+      "total": 2,
+      "started_at": "2026-10-01T09:00:00Z",
+      "finished_at": "",
+      "items": [
+        {
+          "id": 342,
+          "text": "Task C2",
+          "status": "blocked"
+        },
+        {
+          "id": 341,
+          "text": "Task C1",
+          "status": "done"
+        }
+      ]
+    }
+  ],
+  "prs": [
+    {
+      "ref": "pr:147",
+      "pr_number": 147,
+      "title": "Session report",
+      "state": "open",
+      "additions": 1200,
+      "deletions": 80,
+      "merged_at": "",
+      "checked_at": "2026-10-02T15:05:00Z",
+      "targets": [
+        314
+      ]
+    },
+    {
+      "ref": "branch:feature/session-report",
+      "pr_number": null,
+      "title": "",
+      "state": "unknown",
+      "additions": null,
+      "deletions": null,
+      "merged_at": "",
+      "checked_at": "",
+      "targets": [
+        314
+      ]
+    },
+    {
+      "ref": "branch:feature/session-report-ui",
+      "pr_number": null,
+      "title": "",
+      "state": "unknown",
+      "additions": null,
+      "deletions": null,
+      "merged_at": "",
+      "checked_at": "",
+      "targets": [
+        342
+      ]
+    }
+  ],
+  "pr_note": "the folder is not a git work tree; branch and pull request states not checked"
+}

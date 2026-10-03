@@ -100,14 +100,10 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 	}
 }
 
-// Spec 2026-10-03 §6.1: asks replace documents in the skill, and the pack
-// marker moves to v2.
+// Spec 2026-10-03 §6.1: asks replace documents in the skill.
 func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v2\n") {
-		t.Fatalf("the skill must carry %s: v2", MarkerKey)
-	}
 	for _, gone := range []string{"attach_document", "document_id", "import-docs", "Documents for review", "Revising"} {
 		if strings.Contains(content, gone) {
 			t.Errorf("the skill still says %q", gone)
@@ -124,42 +120,68 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 	}
 }
 
-// DEV-04 across the v1 → v2 change: a v1 copy we wrote and the owner never
-// touched is upgraded; an edited one is kept, byte-identical, as drifted.
-func TestWorkbenchSkillV2_UpgradesAnUneditedV1AndKeepsAnEditedOne(t *testing.T) {
-	v1, err := os.ReadFile(filepath.Join("testdata", "watchtower-workbench-v1.md"))
-	if err != nil {
-		t.Fatal(err)
+// Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
+// finishing a session, and the pack marker moves to v3.
+func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
+	_, body := WorkbenchSkill()
+	content := string(body)
+	if !strings.Contains(content, "\n"+MarkerKey+": v3\n") {
+		t.Fatalf("the skill must carry %s: v3", MarkerKey)
 	}
-	sum := sha256.Sum256(v1)
-	v1Digest := hex.EncodeToString(sum[:])
-	if v1Digest == workbenchSkill().SHA256 {
-		t.Fatal("the shipped skill must differ from v1, or its digest never changes")
+	start := strings.Index(content, "## Finishing a session")
+	if start < 0 {
+		t.Fatal("the skill has no Finishing a session section")
 	}
-	for _, tc := range []struct {
-		name    string
-		content []byte
-		want    State
-	}{
-		{"unedited", v1, StateUpdated},
-		{"edited", append(append([]byte{}, v1...), "\nMy own note.\n"...), StateDrifted},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			folder := fakeRepo(t)
-			dir := filepath.Join(folder, ".claude", "skills", WorkbenchSkillName)
-			writeTestFile(t, filepath.Join(dir, "SKILL.md"), string(tc.content))
-			if err := writeShippedDigest(dir, v1Digest); err != nil {
-				t.Fatal(err)
-			}
-			rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
-			if err != nil || rep.Skill.State != tc.want {
-				t.Fatalf("skill %+v err=%v, want %s", rep.Skill, err, tc.want)
-			}
-			got := readTestFile(t, workbenchSkillFile(folder))
-			if want := map[State]string{StateUpdated: workbenchSkill().Content, StateDrifted: string(tc.content)}[tc.want]; got != want {
-				t.Fatalf("the skill on disk after a %s install is not what DEV-04 says", tc.want)
-			}
-		})
+	section := content[start:]
+	if next := strings.Index(section[1:], "\n## "); next >= 0 {
+		section = section[:next+1]
+	}
+	for _, want := range []string{"`finish_session`", `"session finished"`, "`ask #", "Do not call it after every task"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the Finishing a session section never says %q", want)
+		}
+	}
+}
+
+// DEV-04 across every previous version (v1 → v3, v2 → v3): a copy we wrote
+// and the owner never touched is upgraded; an edited one is kept,
+// byte-identical, as drifted.
+func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md"} {
+		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(prev)
+		prevDigest := hex.EncodeToString(sum[:])
+		if prevDigest == workbenchSkill().SHA256 {
+			t.Fatalf("the shipped skill must differ from %s, or its digest never changes", fixture)
+		}
+		for _, tc := range []struct {
+			name    string
+			content []byte
+			want    State
+		}{
+			{"unedited", prev, StateUpdated},
+			{"edited", append(append([]byte{}, prev...), "\nMy own note.\n"...), StateDrifted},
+		} {
+			t.Run(fixture+"/"+tc.name, func(t *testing.T) {
+				folder := fakeRepo(t)
+				dir := filepath.Join(folder, ".claude", "skills", WorkbenchSkillName)
+				writeTestFile(t, filepath.Join(dir, "SKILL.md"), string(tc.content))
+				if err := writeShippedDigest(dir, prevDigest); err != nil {
+					t.Fatal(err)
+				}
+				rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
+				if err != nil || rep.Skill.State != tc.want {
+					t.Fatalf("skill %+v err=%v, want %s", rep.Skill, err, tc.want)
+				}
+				got := readTestFile(t, workbenchSkillFile(folder))
+				if want := map[State]string{StateUpdated: workbenchSkill().Content, StateDrifted: string(tc.content)}[tc.want]; got != want {
+					t.Fatalf("the skill on disk after a %s install is not what DEV-04 says", tc.want)
+				}
+			})
+		}
 	}
 }
 
@@ -187,8 +209,17 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 	if f.missing {
 		return nil, fmt.Errorf("exec: %q: %w", name, exec.ErrNotFound)
 	}
+	isolated := len(args) >= 2 && args[0] == "--setting-sources" && args[1] == "project,local"
+	if isolated {
+		args = args[2:]
+	}
 	if name != "claude" || len(args) < 3 || args[0] != "mcp" {
 		return nil, fmt.Errorf("unexpected command %s %v", name, args)
+	}
+	// `mcp get` health-checks the server, loading settings on the way: it
+	// must skip the user-level ones (TCC isolation, board #200).
+	if args[1] == "get" && !isolated {
+		return nil, fmt.Errorf("mcp get without --setting-sources project,local: %v", args)
 	}
 	server := args[len(args)-1] // get NAME, remove --scope local NAME
 	if args[1] == "add" {

@@ -334,7 +334,7 @@ func writeStopAgentState(database *db.DB, rowID, workbenchID int64, sessionID st
 		return err
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, rowID, workbenchID, sessionID, state, onlyFrom, at)
+	return recordAgentState(database, rowID, workbenchID, sessionID, state, onlyFrom, nil, false, at)
 }
 
 // workbenchHasStateHooks reports whether workbench id's folder has its

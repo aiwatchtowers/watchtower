@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v2
+x-watchtower-pack: v3
 ---
 
 # Watchtower Workbench
@@ -28,6 +28,7 @@ At session start a hook prints the workbench brief: counts, the open part of the
 - `get_ask` — one ask by `ask_id`; once answered, the answer as JSON and as text. Reading it marks the answer delivered.
 - `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
 - `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
+- `finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines: what was done, the PRs, what is left) and an optional `target_id` (see "Finishing a session").
 
 ## Setup
 
@@ -72,6 +73,14 @@ When you are the controller executing a plan whose tasks are on the board:
 - **After the task's review passes:** `update_target` to `done` (status alone moves a leaf target's progress to 1.0), then one `add_comment` on the sub-target: a summary of one to three lines — what landed, the commit, anything the owner should know.
 - A task the review sends back goes back to `in_progress`; post no interim comments.
 - Never set the feature target's status yourself: it moves to `in_progress` with its first started sub-target and to `done` when every sub-target is done or dismissed (at least one done).
+
+## Finishing a session
+
+When the work this session was started for is done or handed to the owner — its tasks closed, the PR opened or merged, the remaining owner work filed as asks — call `finish_session`. The owner sees the session as finished, with your summary, in the Watchtower app.
+
+- **The summary** is 2–3 lines: what landed (tickets, PR numbers), what is left on the owner (`ask #…`), and anything risky.
+- **After the call**, write "session finished" in your final text: a check at the end of every turn sends a turn that reports the work complete without it back to you.
+- Do not call it after every task, nor while work in this session's scope is still in progress.
 
 ## Images
 

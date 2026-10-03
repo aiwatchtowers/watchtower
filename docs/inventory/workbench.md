@@ -8,7 +8,7 @@
 > `workbench_comments.go`, `workbench_board.go`, the `project_id` exclusions in
 > the targets readers, `internal/tools/workbench*.go`, `cmd/workbench*.go`,
 > `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`,
-> `internal/gitbin/`, `internal/workbenchgit/`, or
+> `internal/gitbin/`, `internal/workbenchgit/`, `internal/sessionreport/`, or
 > `WatchtowerDesktop/Sources/**/Workbench*`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
@@ -18,9 +18,12 @@ worked on by Claude Code through
 `watchtower mcp --workbench N` (DEV-06 in `dev-surface.md`), a workbench skill,
 a `SessionStart` hook (the brief), a `Stop` hook (the board drift check, PROJ-07),
 the session state hooks (PROJ-11) and the ask guard (a `Stop` prompt hook and a
-`PreToolUse` block of `AskUserQuestion`, PROJ-13). Design:
+`PreToolUse` block of `AskUserQuestion`, PROJ-13). Each Desktop terminal session
+has a report of its own work, and the agent marks it finished with
+`finish_session` (PROJ-14). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`; owner asks:
-`docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`.
+`docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`; session
+report and states: `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`.
 
 **Naming (2026-10-02):** this feature was called *Projects* until the
 Workbench rename (`docs/superpowers/specs/2026-10-02-workbench-rename-design.md`).
@@ -36,13 +39,16 @@ under `mcp --project N`) until the owner resyncs it; see
 `docs/features/workbench.md`, "Rename".
 
 **Module:** `internal/db/{workbenches,workbench_comments,workbench_board}.go` +
-`internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_asks,workbench_images,workbench_scope,workbench_names}.go` +
+`internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_asks,workbench_finish,workbench_images,workbench_scope,workbench_names}.go` +
 `internal/db/workbench_images.go` + `internal/workbenchfiles/` +
 `internal/asks/` + `internal/db/owner_asks.go` + `internal/db/migrations/00100_owner_asks.sql` + `internal/kb/{fileset,source_workbench}.go` +
 `cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_prompt.md` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
 `internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
+`internal/db/session_report.go` + `internal/db/migrations/00101_workbench_session_report.sql` +
+`internal/sessionreport/` + `cmd/workbench_session_report.go` +
 `WatchtowerDesktop/Sources/Views/Workbench/` + `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionReport,Services/SessionStatePresentation,Services/SessionSwitcherPresentation,Services/SessionReportPresentation}.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/OwnerAsk,Database/Queries/OwnerAskQueries,Services/OwnerAsk*}.swift` +
 `WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift`
 **Last full audit:** 2026-09-29
@@ -89,6 +95,8 @@ matched to `AskUserQuestion` (PROJ-13) — the local
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the workbench row, which removes every workbench target,
 source, owner ask, comment, target-image row and terminal session row
+— and with the sessions their target links (`terminal_session_targets`,
+since 2026-10-03), plus the workbench's PR cache (`workbench_pr_states`) —
 in the same transaction (`db.DeleteWorkbench`, `ON DELETE CASCADE` from `projects`)
 together with its folder files' search index entries (`kb_documents`/`kb_chunks`
 of source `project_doc` for that workbench, PROJ-08), and then removes
@@ -116,7 +124,7 @@ registered against a dead id — is worse than no workbench at all, and the owne
 must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
-- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives)
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
@@ -653,7 +661,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer Claude Code and never show a stale state
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, see the changelog)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse` and
@@ -664,22 +672,59 @@ write only workbench N's `claude` row whose stored `claude_session_id` equals
 the payload's `session_id` (a nested `claude -p` that inherited the variable
 never moves the row), never replace a newer state with an older one (an
 event time not later than the stored `agent_state_at` writes nothing), and
-never rewrite an unchanged state. The Desktop shows a stored state only for
-the process run it was written in (the row is live and `agent_state_at` is
-not earlier than that run's start, `SessionAgentStatus.effective`), and
-announces each transition into waiting/approval at most once
-(`SessionAgentNoticePolicy`), only while the app is inactive.
+never rewrite an unchanged state. The Desktop shows a stored hook state only
+for the process run it was written in (the row is live and `agent_state_at`
+is not earlier than that run's start, `SessionAgentStatus.effective`).
 
-**Why locked:** Owner decisions of board #312 (2026-10-03). A status hook that
-injected text into the agent, blocked a prompt, or showed "waiting" for a dead
-session would be worse than none.
+Since 2026-10-03 (the session report's state set, spec
+`2026-10-03-workbench-session-report-design.md` Part 4b): the stored
+`waiting` means the turn is over and shows **Stopped** (grey), never
+"waiting for you". "Waiting for you" (orange) comes only from an open ask of
+the session (`owner_asks.session_id`, `status = 'open'`) or a permission
+dialog (`approval`, **Needs approval**). A StopFailure stores `waiting` with
+`agent_failed_at` (= that write's `agent_state_at`) and `agent_error` (the
+payload's top-level `error`, one line, ≤ 60 runes; `''` when missing) and
+shows **Error** (red). `finish_session` stores `finished_at`/`finish_summary`
+and shows **Finished** (blue, orange while the session has open asks)
+whether or not the session runs. A write that changes the state into
+`working` (a UserPromptSubmit, or a PostToolUse out of waiting or approval:
+a turn the agent started itself is a new turn) clears `finished_at` and the
+error in the same statement (`finish_summary` is kept); a `working` over a
+stored `working` clears `finished_at` only for a UserPromptSubmit, never for
+a PostToolUse (that is `finish_session`'s own turn); an
+`approval` write and the SessionStart clear of a new run also clear the
+error, while a plain `waiting` (the `idle_prompt` notice, the Stop hook)
+over a failed one writes nothing, so the error stays until the owner acts;
+a StopFailure with another error replaces the stored one and its time.
+The order is: approval > error > working > finished > open ask > stopped >
+running > not started, the first match winning. The hook states (approval,
+error, working, stopped) stay run-scoped; finished and the open asks are
+not, so a session that is not live shows them as a ring in their colour.
+`SessionAgentNoticePolicy` announces each transition of a live session into
+needs approval, error, stopped or finished at most once, only while the app
+is inactive; waiting on an ask, or working with asks, gets no state notice
+(the ask's own notice announced it).
+
+**Why locked:** Owner decisions of board #312 (2026-10-03), and the states
+brainstorm of the session report (1a, 2a, 3a, 4: all). A status hook that
+injected text into the agent, blocked a prompt, or showed a state for a dead
+session would be worse than none; and "waiting for you" on every turn end
+cried wolf — the owner must be able to trust that orange means their move.
 
 **Test guards:**
 - `cmd/workbench_session_state_test.go::TestProj11_HookNeverWritesStdoutAndExitsZero`
 - `cmd/workbench_session_state_test.go::TestProj11_NestedSessionNeverMovesTheRow`
 - `internal/db/terminal_sessions_test.go::TestProj11_OlderEventNeverOverwritesANewerState`
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateFromAnEarlierRunIsIgnored`
-- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition`
+- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped")
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the eight kinds in the order above, live and not live)
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_TurnEndWithoutAskIsStoppedNotWaiting`
+- `internal/db/session_report_test.go::TestProj11_WorkingClearsFinishedAndError`
+- `internal/db/session_report_test.go::TestProj11_WorkingOverWorkingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_WorkingOverWorkingClearsFinished` (finish, an Esc interrupt and a new prompt: the UserPromptSubmit's `working` over `working` clears `finished_at`; a plain `working` repeat stays a no-op)
+- `internal/db/session_report_test.go::TestProj11_ToolRunWorkingOverWorkingKeepsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseOverWorkingKeepsFinished` (finish, then a PostToolUse `working` over `working`: still finished)
+- `internal/db/session_report_test.go::TestProj11_ToolRunOutOfWaitingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseIntoWorkingClearsFinished` (finish, then Stop (`waiting`) or a permission prompt (`approval`), then a main-thread PostToolUse `working`: cleared; the hook half also pins that a subagent's PostToolUse over `waiting` writes nothing and keeps `finished_at`)
+- `internal/db/session_report_test.go::TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (db half: a later plain `waiting` keeps the error, a StopFailure with another error replaces it at its own time, `working`/`approval` clear it)
+- `cmd/workbench_session_state_test.go::TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (hook half: the payload's `error` field, a repeated StopFailure keeps its time and another error replaces it, a missing or non-string one stored as `''`, clipped to 60 runes on one line)
 
 **Locked since:** 2026-10-03
 
@@ -726,7 +771,7 @@ carried over to asks.
 
 ## PROJ-13 — the ask guard never traps a turn
 
-**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; the pass clause reworded during implementation, see the changelog)
+**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; the pass clause reworded during implementation; amended 2026-10-03 with the `finish_session` reminder (prompt v2), see the changelog)
 
 **Observable:** The `Stop` prompt hook (`type: prompt`, `timeout: 30`,
 `internal/devpack/askguard_prompt.md`, pinned by a golden) tells the model to
@@ -735,7 +780,16 @@ return `{"ok": true}` when `stop_hook_active` is true, or when
 `ask #<number>` — Claude Code's Stop input has no `tool_calls`, and the skill
 has the agent name every ask it filed in its final text), or when the message
 asks the owner for nothing; it blocks only a message that clearly waits on
-the owner, and passes when unsure. The intent is one nudge per stop: the
+the owner, and passes when unsure. Since 2026-10-03 the prompt is v2 (spec
+`2026-10-03-workbench-session-report-design.md` Part 5): after the request
+check it also blocks, once, a message that reports the session's work
+complete and does not say it called `finish_session` (for example "session
+finished"); a progress report, a pause for an answer or a partial result is
+not complete, and the first failure is the one returned. The pass rules —
+`stop_hook_active`, when unsure — are unchanged. `integrate`/`resync` set
+every prompt entry carrying our marker, the v1 text or an edit of it, to v2
+(the PROJ-04 rule for our edited prompt; another workbench's marker is left
+as it is). The intent is one nudge per stop: the
 prompt tells the model to pass when `stop_hook_active` is set (pinned by the
 golden; the model's compliance is not something a test can check). The
 `PreToolUse` command hook (`workbench ask-guard --workbench N
@@ -753,12 +807,48 @@ precedent: a guard that could loop a turn, fail a turn, or block a tool
 because Watchtower is broken would be worse than none.
 
 **Test guards:**
-- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (the golden carries both pass clauses)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (the golden — the v2 text since 2026-10-03 — carries both pass clauses)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_V1PromptIsUpgradedToV2` (the v1 text and an edit of it both become v2; another workbench's v1 prompt stays; a second resync changes nothing)
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardFailurePrintsNothingAndExitsZero`
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardFinishesFastOnALockedDatabase`
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardWithNoDatabaseCreatesNothing`
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardNeverRunsAMigration`
 - supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench`, `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys`
+
+**Locked since:** 2026-10-03
+
+## PROJ-14 — a session report shows only that session's work, and only the session itself says it finished
+
+**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8)
+
+**Observable:** A `terminal_session_targets` link row comes only from that
+session's own workbench tools: `update_target`, `create_targets`,
+`add_comment` (a reply links its root's target), `ask_owner` and
+`finish_session` (its `target_id`) link after their own write succeeded, and
+only for the session `tools.terminalSessionOf` resolves from
+`WATCHTOWER_TERMINAL_SESSION_ID` — a row of the same workbench; no variable,
+an unknown id or another workbench's id links nothing. Read tools never
+link. A failed link is one stderr line plus `session_link_warning` in the
+result and never fails or undoes the tool. `finished_at` is written only by
+`finish_session` (refused with `finish_session needs a Watchtower terminal
+session`, before any row or audit row, when no session of the workbench
+resolves) and cleared only by a `working` state write (PROJ-11). The report
+(`internal/sessionreport` `Build`/`Summaries`, `workbench session-report`)
+reads the DB and the PR cache; its refresh writes only `workbench_pr_states`.
+It never writes a target, a status or a comment, so PROJ-07's drift check
+stays the only place that flags `merged_but_open`.
+
+**Why locked:** Owner decision (spec 2026-10-03, decision 4). A report that
+listed another session's work, or a session marked finished by anything but
+its own agent, would make the owner trust a summary that is not this
+session's; a report that wrote the board would move statuses behind the
+owner's and the agent's backs.
+
+**Test guards:**
+- `internal/tools/workbench_finish_test.go::TestProj14_OnlyOwnSessionWritesLink` (no variable, an unknown id, garbage, a negative id and another workbench's session: no link from any write tool)
+- `internal/tools/workbench_finish_test.go::TestProj14_FinishNeedsATerminalSession` (another workbench's session is never marked; no audit row, no link)
+- `internal/sessionreport/report_test.go::TestProj14_ReportNeverWritesTheBoard`
+- supporting: `internal/tools/workbench_finish_test.go` (`TestSessionLinks_EachWriteToolLinksItsTargets`, `TestSessionLinks_ReadToolsLinkNothing`, `TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns`, `TestSessionLinks_LegacyBindingLinksTheSame`)
 
 **Locked since:** 2026-10-03
 
@@ -826,12 +916,14 @@ because Watchtower is broken would be worse than none.
   it may miss a plain-text request (told to pass when unsure), and an agent
   that filed an ask without naming it gets one extra nudge (then
   the prompt tells it to pass on `stop_hook_active`). (b) After a stop the ask guard blocks, the
-  session's PROJ-11 state reads "waiting for you" (and may post its notice
-  while the app is inactive) for the whole nudged turn:
-  the drift `Stop` hook runs in parallel and records `waiting` whenever it
-  lets the turn end, and `PostToolUse` only clears "needs approval" — the
-  state is right again at the turn's next stop or the owner's next prompt
-  (owner asked on #323 whether to change PROJ-11). (c) A `claude` in an
+  session's PROJ-11 state reads Stopped (and may post its "stopped" notice
+  while the app is inactive) until the nudged turn's first tool result — or
+  Waiting for you once the nudged agent files the ask, Finished once it calls
+  `finish_session`: the drift `Stop` hook runs in parallel and records
+  `waiting` whenever it lets the turn end, and the next main-thread
+  `PostToolUse` records `working` (board #367). (Until 2026-10-03 this read
+  "waiting for you"; the session report's state set answered the owner's
+  #323 question.) (c) A `claude` in an
   external terminal files session-less asks, delivered by the brief only;
   a nested `claude -p` that inherited `WATCHTOWER_TERMINAL_SESSION_ID` files
   as its session. (d) Codex-run sessions get the ask tools but no hooks.
@@ -843,12 +935,29 @@ because Watchtower is broken would be worse than none.
   mtime gate is whole seconds, so an edit in the same second as its last
   render waits for the next change or an explicit trigger.
 
+- **Session agent state ordering and subagents (PROJ-11, board #367).**
+  (a) Events are ordered by when their hook process started (`hookNow` at
+  process start, in both the async `PostToolUse` hook and the sync `Stop`
+  hook), not by when the tool finished: a `PostToolUse` stamped before the
+  `Stop` writes nothing, but an async `PostToolUse` of the ended turn whose
+  process starts after the `Stop` hook's overwrites `waiting` with
+  `working` until the next stop (the Desktop then withdraws the "stopped"
+  notice; follow-up board #368). (b) A subagent's permission prompt (`Notification`) moves the
+  row from `waiting` to `approval`, and after the grant the subagent's
+  `PostToolUse` records `working` while the main turn is still stopped.
+  (c) A turn started without a prompt whose first tool fails stays
+  Stopped until a later tool succeeds: `PostToolUseFailure` is
+  not hooked. (d) Subagent detection relies solely on the `agent_id` field
+  of the hook input; an input without it is treated as the main thread's.
+
 ## Changelog
 
+- 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-session-report.md`). **Approved by the owner (the states brainstorm, asks #2 and #4):** migration `00101` adds `terminal_sessions.finished_at`/`finish_summary`/`agent_failed_at`/`agent_error`, `terminal_session_targets` and `workbench_pr_states`. **PROJ-11 amended** — the stored `waiting` now shows Stopped (grey), "waiting for you" comes only from an open ask or a permission dialog, a StopFailure records an error (red), `finish_session` marks Finished (blue; orange with open asks), any `working` write clears both; the state order is pinned. The existing guards that asserted `waiting` → "waiting for you" (orange) were rewritten to Stopped (grey) — the intended change, not a relaxation; the "a dead run's state never shows" assertions are unchanged (`testProj11_StateFromAnEarlierRunIsIgnored` gained an earlier run's error). New guards `testProj11_StateOrder`, `testProj11_TurnEndWithoutAskIsStoppedNotWaiting`, `TestProj11_WorkingClearsFinishedAndError` and `TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (db and hook halves). **PROJ-13 amended** — the ask guard prompt is v2 with the `finish_session` reminder; its pass rules are unchanged; new guard `TestProj13_V1PromptIsUpgradedToV2`. **PROJ-14 added** — a session report shows only that session's work, and only the session itself says it finished. **PROJ-02 strengthened** — the delete also removes the session link rows and the PR cache (`TestProj02_DeleteProjectLeavesNoRows` extended). **Implementation rulings (spec Revision 3):** (1) a plain `waiting` over a failed one is a no-op, so the error clears only on `working`, `approval` or the SessionStart clear (spec Part 4 said "every other write clears"); (2) the spec's "an owner-edited prompt is kept and reported `drifted`" would have contradicted PROJ-04, which sets our edited prompt back — every marker prompt, v1 or edited, becomes v2 and PROJ-04 is unchanged (the planned guard name `TestProj13_V1PromptIsUpgradedEditedIsKept` became `TestProj13_V1PromptIsUpgradedToV2`). The owner-asks v1 note (b) now reads Stopped. PROJ-01, 03–10 and 12 unchanged; DEV-06 lists `finish_session` (`dev-surface.md`).
 - 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-owner-asks.md`). **Approved by the owner (§9, 2026-10-03):** attached documents, document comments and the Desktop Documents pane are replaced by **owner asks** (`owner_asks`, migration `00100`, which also drops `project_documents` and the document columns of `project_comments`). **PROJ-03 amended** — the document view and its comment re-anchoring are gone (the guard `testProj03DesktopNeverWritesTheDocument` went with `WorkbenchDocumentViewModelTests.swift`); the contract is the Files pane rule plus "no workbench tool writes the folder" (`ask_owner` only reads `doc_path`), new guard `TestProj03_AskOwnerNeverWritesTheFolder`; the Files pane guards are unchanged. **PROJ-08 amended** — "attached documents" becomes every `.md`/`.markdown`/`.txt` file of the folder git does not ignore (or the walk keeps outside git), ≤ 2000 per workbench; visibility, privacy, symlink, caps and PROJ-02 deletion unchanged. (Beyond §9, see the rulings below: explicit triggers render every file gated by content hash (only the daemon is mtime-gated), a file that left the listing loses its entry, the installed skill directories are skipped, and a privacy-protected folder is indexed only by an explicit trigger (`resync`, `create`, `kb reindex`, `ask_owner`'s one file.) Guards renamed in place, assertions kept: `TestProj08_ProjectDocsOnlyInTheirOwnProjectSession` → `TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`, `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` → `TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`, `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` → `TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (its "a dry run indexes nothing" step went with `import-docs` and became "a daemon pass never reads a protected folder"). **PROJ-12 added** (the spec's "PROJ-11", renumbered — PROJ-11 is the session state hooks): an ask reaches its session as typed text, never submitted. **PROJ-13 added** (the spec's "PROJ-12"): the ask guard never traps a turn. **PROJ-02** — asks join the cascaded rows and both ask guard hooks the removal (its guards extended, none relaxed); `TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused` lost its document half with the table and is now `TestProj02_DeletedProjectAndCommentIDsAreNeverReused`. **Implementation rulings, pending owner confirmation:** (1) the PROJ-13 pass clause "tool_calls contains a call whose name ends with ask_owner" became "last_assistant_message says it filed an ask, e.g. names ask #<number>", since Claude Code's Stop input has no `tool_calls`; (2) the PROJ-08 extras in parentheses above; (3) **PROJ-04 reworded** (widened, no guard relaxed) — `Stop` now holds two entries of ours (the drift command and the ask guard prompt, recognised by its marker line) and `PreToolUse` is a newly owned event (matcher `AskUserQuestion`; malformed counts as a malformed file); new guards `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks`, `TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`; (4) `get_ask`'s unaudited `delivered` write, the AGENT-06 scope exception and DEV-06's ask session binding (`dev-surface.md`, `agent-actions.md`). The v1 note "Re-anchor hides an owner root" is retired with re-anchoring; owner-asks limits are added. PROJ-01, 05–07, 09–11 unchanged.
 - 2026-10-03 (code navigation phase C, Task 11, ruling R47): **PROJ-03 amendment (owner-approved 2026-10-03)** — the Files pane's editor may also write text the owner explicitly applies from a code-question suggestion (Apply), through the same base-revision and conflict path as the owner's typed edits (spec §9.2). Apply is refused while the buffer has a `CodeFileBuffer.Problem` or when the selected text changed since the question (`CodeQuestionCenterTests.testApplyRefusedWhileTheBufferIsInConflict`, `testApplyRefusedWhenTheSelectedTextChanged`; the editor bridge harness's `applyEdit` checks). No guard test changed.
 - 2026-10-03 (board #248, plan `docs/superpowers/plans/2026-10-02-workbench-git-branch.md` Task G1): **PROJ-07 amended** and **PROJ-10 approved**, both by the owner on 2026-10-03. `workbench check` now runs the git `internal/gitbin` locates (`ExecRunner` resolves `"git"` through `gitbin.Locate`; `insideRepository` is `gitbin.InsideRepository`) — never a PATH lookup on darwin, never the `/usr/bin/git` shim, closing the check's install-dialog hole; with no git found it runs no git and no gh (gh would run the shim itself), reports `git:false` and notes "git is not available (no Command Line Tools); branch checks skipped" (new guard `TestProj07_GitUnavailableIsANote`, offline and with network). The process runner of `internal/workbenchcheck` and `internal/workbenchgit` is consolidated into `gitbin.Exec`, so the check now also drops the inherited repository variables (`GIT_DIR`, `GIT_WORK_TREE`, …) and sets `GIT_EDITOR=true`, and `workbench git` now also sets `GH_PROMPT_DISABLED=1` (it runs no gh; harmless). This supersedes the 2026-10-02 (#233) entry's "PROJ-07 is unchanged: `workbench check` still runs `git` through PATH". PROJ-10 is now Enforced, locked 2026-10-03, wording unchanged. Every existing `TestProj07_*` and `TestProj10_*` guard runs unchanged.
 - 2026-10-03 (board #340): Stop state write gated on the state hooks — the Stop hook records `waiting` only when the workbench's folder has the session state hooks (`devpack.HasStateHooks`), so a folder not yet repaired no longer shows "waiting for you" after its first turn. The PROJ-07 note's state write is narrowed to those folders (it writes in fewer cases, never more); PROJ-07's stdout/exit contract, PROJ-11 and every guard are unchanged.
+- 2026-10-03 (board #367, owner approved): a main-thread `PostToolUse` records `working` from any state, not only from `approval` (a subagent's one, `agent_id` set, keeps the `approval`-only rule, so a subagent's tool result alone never ends the main turn's `waiting`; a subagent's permission prompt still can — see the v1 notes) — a turn started without a prompt (a teammate or background-task message, a wakeup) fires no `UserPromptSubmit`, so the stop's `waiting` stayed on screen while the agent worked. The older-event guard is unchanged: events are ordered by hook-process start time (`hookNow` at process start, in both the async `PostToolUse` hook and the sync `Stop` hook), so a `PostToolUse` whose process started before the `Stop` hook's writes nothing, but an async `PostToolUse` whose process starts after the `Stop` hook's can still overwrite `waiting` with `working` until the next stop (v1 note added); the owner-asks v1 note (b) is narrowed to "until the nudged turn's first tool result". PROJ-11's observable and every guard are unchanged.
 - 2026-10-03 (board #312, plan `docs/superpowers/plans/2026-10-03-session-agent-state.md`): **PROJ-11** added and **PROJ-04** reworded, both approved by the owner on 2026-10-03 — Claude Code sessions in the Desktop's workbench terminal show working / waiting for you / needs approval from new async `workbench session-state` hook entries (`UserPromptSubmit`, `Notification`, `PostToolUse`, `StopFailure`; migration `00098`) and the extended Stop hook, with a macOS notice while the app is inactive. PROJ-04 now says one entry of ours per event we own, with a malformed state event counting as a malformed file (widened, no guard relaxed; two new guards). **PROJ-02** strengthened — remove/delete also take the state entries away (its hook guards extended). **PROJ-07** gains a note on the Stop hook's state write; its stdout/exit contract and guards are unchanged.
 - 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.

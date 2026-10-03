@@ -290,6 +290,9 @@ final class AppState {
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
+    /// The session rows' report lines and the shown session's full report
+    /// (session report spec, Part 7), kept across navigation.
+    private(set) var sessionReportCenter: SessionReportCenter?
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
@@ -634,6 +637,8 @@ final class AppState {
                     // Best-effort: the removal may not finish before exit;
                     // the next launch removes what is left.
                     self?.sessionAgentStateCenter?.withdrawAllNotices()
+                    // A session-report child gets SIGTERM.
+                    self?.sessionReportCenter?.stop()
                 }
             }
         }
@@ -1751,16 +1756,24 @@ final class AppState {
                 && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
         }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
+        let reports = SessionReportCenter(runner: cliRunner ?? UnresolvedCLIRunner())
+        reports.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
+        reports.watchedWorkbenchID = { [weak vm] in vm?.selectedWorkbenchID }
+        reports.agentState = { [weak agentStates] id in agentStates?.statuses[id]?.state }
+        vm.sessionReports = reports
         workbenchesViewModel?.asks.stop()
         workbenchesViewModel = vm
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
         sessionAgentStateCenter = agentStates
+        sessionReportCenter?.stop()
+        sessionReportCenter = reports
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
         vm.asks.start()
         agentStates.start()
+        reports.start()
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

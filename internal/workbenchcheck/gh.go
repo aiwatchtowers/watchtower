@@ -30,21 +30,46 @@ type prChecker struct {
 
 func newPRChecker(ctx context.Context, o Options) *prChecker {
 	p := &prChecker{o: o, deadline: time.Now().Add(ghBudget)}
-	cctx, cancel := context.WithTimeout(ctx, ghCallTimeout)
-	defer cancel()
-	if _, _, err := o.Run(cctx, o.Folder, nil, "gh", "auth", "status"); err != nil {
-		switch {
-		case errors.Is(err, exec.ErrNotFound):
-			p.notes = append(p.notes, "gh CLI not found; pull request states not checked")
-		case cctx.Err() != nil:
-			p.notes = append(p.notes, "gh CLI did not answer in time; pull request states not checked")
-		default:
-			p.notes = append(p.notes, "gh CLI is not signed in or failed ("+clipNote(err.Error())+"); pull request states not checked")
-		}
+	if ok, note := GHStatus(ctx, o.Folder, o.Run); !ok {
+		p.notes = append(p.notes, note)
 		return p
 	}
 	p.available = true
 	return p
+}
+
+// GHStatus probes the gh CLI with `gh auth status` run in folder: ok when it
+// is installed and signed in, otherwise a note saying why pull request
+// states are not checked.
+func GHStatus(ctx context.Context, folder string, run Runner) (ok bool, note string) {
+	cctx, cancel := context.WithTimeout(ctx, ghCallTimeout)
+	defer cancel()
+	if _, _, err := run(cctx, folder, nil, "gh", "auth", "status"); err != nil {
+		switch {
+		case errors.Is(err, exec.ErrNotFound):
+			return false, "gh CLI not found; pull request states not checked"
+		case cctx.Err() != nil:
+			return false, "gh CLI did not answer in time; pull request states not checked"
+		default:
+			return false, "gh CLI is not signed in or failed (" + ClipNote(err.Error()) + "); pull request states not checked"
+		}
+	}
+	return true, ""
+}
+
+// errGHUnreadable: gh ran, but its output was not the JSON asked for.
+var errGHUnreadable = errors.New("unreadable gh output")
+
+// GHJSON runs gh with args in folder and decodes its JSON output into v.
+func GHJSON(ctx context.Context, folder string, run Runner, v any, args ...string) error {
+	out, _, err := run(ctx, folder, nil, "gh", args...)
+	if err != nil {
+		return err
+	}
+	if json.Unmarshal(out, v) != nil {
+		return errGHUnreadable
+	}
+	return nil
 }
 
 // state returns OPEN, MERGED or CLOSED for ref (a number, #number or URL),
@@ -62,15 +87,14 @@ func (p *prChecker) state(ctx context.Context, ref string) string {
 	}
 	cctx, cancel := context.WithTimeout(ctx, ghCallTimeout)
 	defer cancel()
-	out, _, err := p.o.Run(cctx, p.o.Folder, nil, "gh", "pr", "view", ref, "--json", "state")
-	if err != nil {
-		return p.skip(err.Error())
-	}
 	var v struct {
 		State string `json:"state"`
 	}
-	if err := json.Unmarshal(out, &v); err != nil || v.State == "" {
-		return p.skip("unreadable gh output")
+	if err := GHJSON(cctx, p.o.Folder, p.o.Run, &v, "pr", "view", ref, "--json", "state"); err != nil {
+		return p.skip(err.Error())
+	}
+	if v.State == "" {
+		return p.skip(errGHUnreadable.Error())
 	}
 	return strings.ToUpper(v.State)
 }
@@ -79,7 +103,7 @@ func (p *prChecker) state(ctx context.Context, ref string) string {
 // the count into a note and withholds PRChecked.
 func (p *prChecker) skip(why string) string {
 	if p.skipped == 0 {
-		p.firstErr = clipNote(why)
+		p.firstErr = ClipNote(why)
 	}
 	p.skipped++
 	return ""
@@ -93,7 +117,8 @@ func (p *prChecker) summary() string {
 	return fmt.Sprintf("the state of %d pull request(s) could not be read (%s)", p.skipped, p.firstErr)
 }
 
-func clipNote(s string) string {
+// ClipNote folds s onto one line of at most 160 runes, for a note.
+func ClipNote(s string) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > 160 {
 		return string(r[:159]) + "…"

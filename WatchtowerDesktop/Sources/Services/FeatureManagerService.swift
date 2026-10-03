@@ -413,8 +413,9 @@ extension FeatureManagerService {
 
 /// Always throws `.binaryNotFound` on `run(args:)` — the fallback the
 /// parameterless `FeatureManagerService()` convenience initializer uses only
-/// when `ProcessCLIRunner.makeDefault()` itself fails to resolve a binary.
-private struct UnresolvedCLIRunner: CLIRunnerProtocol {
+/// when `ProcessCLIRunner.makeDefault()` itself fails to resolve a binary,
+/// and so does `AppState`'s always-constructed `SessionReportCenter`.
+struct UnresolvedCLIRunner: CLIRunnerProtocol {
     func run(args: [String]) async throws -> Data {
         throw CLIRunnerError.binaryNotFound
     }

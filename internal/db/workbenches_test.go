@@ -171,7 +171,8 @@ func TestProjectSources_AddIsIdempotentAndRemoveIsScoped(t *testing.T) {
 
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
 // (docs/inventory/workbench.md): deleting a project leaves no project, target,
-// source, comment or ask row of it, and touches no other project.
+// source, comment, ask, session link or PR cache row of it, and touches no
+// other project.
 // Task 12 adds the folder half.
 func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	d := openTestDB(t)
@@ -203,6 +204,9 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	answered := mustInsertAsk(t, d, questionAsk(pid, "Done?"))
 	markAskAnswered(t, d, answered)
 	keepAsk := mustInsertAsk(t, d, questionAsk(keep, "Theirs"))
+	require.NoError(t, d.LinkSessionTarget(sid, parent))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
+	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: keep, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 	// The folder files' search index entries (PROJ-08), this project's and another's.
 	for _, doc := range []struct {
 		id  string
@@ -228,6 +232,8 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		`SELECT COUNT(*) FROM project_comments WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_target_images WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM owner_asks WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM workbench_pr_states WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM terminal_session_targets l JOIN targets t ON t.id = l.target_id WHERE t.project_id = ?`,
 	} {
 		var n int
 		require.NoError(t, d.QueryRow(q, pid).Scan(&n))
@@ -248,6 +254,12 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	assert.NoError(t, err, "another project's board is untouched")
 	_, err = d.GetOwnerAsk(keep, keepAsk)
 	assert.NoError(t, err, "another project's asks are untouched")
+	var keptPR int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM workbench_pr_states WHERE project_id = ?`, keep).Scan(&keptPR))
+	assert.Equal(t, 1, keptPR, "another project's PR cache is untouched")
+	var links int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_session_targets`).Scan(&links))
+	assert.Zero(t, links, "the deleted project's session links are gone")
 	var standalone int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
 	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")

@@ -4,11 +4,16 @@ import XCTest
 final class SessionSwitcherPresentationTests: XCTestCase {
     private let now = Date()
 
-    private func session(_ id: Int64, _ title: String = "Session", target: Int64? = nil, secondsAgo: TimeInterval = 60)
-        -> TerminalSession {
+    private func session(
+        _ id: Int64,
+        _ title: String = "Session",
+        target: Int64? = nil,
+        secondsAgo: TimeInterval = 60,
+        workbench: Int64? = 1
+    ) -> TerminalSession {
         let stamp = ISO8601DateFormatter().string(from: now.addingTimeInterval(-secondsAgo))
         return TerminalSession(
-            id: id, projectID: 1, kind: .claude, title: title, titleSource: .auto, targetID: target,
+            id: id, projectID: workbench, kind: .claude, title: title, titleSource: .auto, targetID: target,
             folderPath: "/tmp/acme", claudeSessionID: "uuid", createdAt: stamp, lastActiveAt: stamp
         )
     }
@@ -33,36 +38,59 @@ final class SessionSwitcherPresentationTests: XCTestCase {
 
     func testLiveSessionHasNoAgeCaption() {
         let result = rows([session(1, secondsAgo: 3 * 3600)], live: [1])
-        XCTAssertEqual(result[0].state, .running)
-        XCTAssertNil(result[0].caption)
+        XCTAssertEqual(result[0].state, .live(.running))
+        XCTAssertEqual(result[0].caption, "Running")
+        XCTAssertTrue(result[0].showsStateLabel)
+    }
+
+    /// A standalone terminal keeps its plain caption and no state label.
+    func testAStandaloneTerminalKeepsItsPlainCaption() {
+        let result = rows([session(1, workbench: nil), session(2, secondsAgo: 5 * 60 + 3, workbench: nil)], live: [1])
+        XCTAssertEqual(result.map(\.caption), [nil, "not started · 5m"])
+        XCTAssertEqual(result.map(\.showsStateLabel), [false, false])
     }
 
     func testLiveCaptionsNameTheAgentState() {
         let result = rows(
             [session(1, secondsAgo: 3600), session(2), session(3), session(4)],
             live: [1, 2, 3, 4],
-            statuses: [1: .working, 2: .waitingForOwner, 3: .needsApproval]
+            statuses: [1: .live(.working), 2: .live(.stopped), 3: .live(.needsApproval)]
         )
-        XCTAssertEqual(result.map(\.state), [.working, .waitingForOwner, .needsApproval, .running])
-        XCTAssertEqual(result.map(\.caption), ["working", "waiting for you", "needs approval", nil],
+        XCTAssertEqual(result.map(\.state), [.live(.working), .live(.stopped), .live(.needsApproval), .live(.running)])
+        XCTAssertEqual(result.map(\.caption), ["Working", "Stopped", "Needs approval", "Running"],
                        "a live session never carries an age caption")
-        XCTAssertTrue(result.allSatisfy(\.state.isLive))
+        XCTAssertTrue(result.allSatisfy(\.state.live))
     }
 
     func testAStatusOfASessionNoLongerLiveIsIgnored() {
-        let result = rows([session(1, secondsAgo: 5 * 60 + 3)], statuses: [1: .waitingForOwner])
+        let result = rows([session(1, secondsAgo: 5 * 60 + 3)], statuses: [1: .live(.stopped)])
         XCTAssertEqual(result[0].state, .notStarted)
-        XCTAssertFalse(result[0].state.isLive)
-        XCTAssertEqual(result[0].caption, "not started · 5m")
+        XCTAssertFalse(result[0].state.live)
+        XCTAssertEqual(result[0].caption, "Not running · 5m")
     }
 
     func testStatesKeepShortcutsAndMatching() {
-        let result = rows([session(1, "Board work"), session(2, "Other")], live: [1, 2], statuses: [2: .needsApproval])
+        let result = rows([session(1, "Board work"), session(2, "Other")], live: [1, 2], statuses: [2: .live(.needsApproval)])
         XCTAssertEqual(result.map(\.shortcut), [1, 2])
         let matched = SessionSwitcherPresentation.matching(result, query: "other")
         XCTAssertEqual(matched.map(\.id), [2])
-        XCTAssertEqual(matched.first?.state, .needsApproval)
+        XCTAssertEqual(matched.first?.state, .live(.needsApproval))
         XCTAssertEqual(matched.first?.shortcut, 2)
+    }
+
+    func testAClosedSessionKeepsItsFinishedOrAskState() {
+        let result = rows(
+            [session(1, secondsAgo: 60), session(2, secondsAgo: 60)],
+            statuses: [
+                1: SessionSwitcherPresentation.State(kind: .finished, live: false),
+                2: SessionSwitcherPresentation.State(kind: .waitingOnAsk, live: false, openAsks: 2, oldestAskID: 12)
+            ]
+        )
+        XCTAssertEqual(result.map(\.state.kind), [.finished, .waitingOnAsk])
+        XCTAssertEqual(result.map(\.caption), ["Finished", "Waiting for you · ask #12 · 2 asks"],
+                       "a closed session's state wins over the age")
+        let restarted = rows([session(1)], live: [1], statuses: [1: SessionSwitcherPresentation.State(kind: .finished, live: false)])
+        XCTAssertEqual(restarted[0].state, .live(.running), "a status read while not live is ignored once live")
     }
 
     func testNotStartedCaptionsCarryTheAge() {
@@ -71,7 +99,7 @@ final class SessionSwitcherPresentationTests: XCTestCase {
             session(2, secondsAgo: 3 * 3600 + 3),
             session(3, secondsAgo: 86_400 + 3)
         ])
-        XCTAssertEqual(result.map(\.caption), ["not started · 5m", "not started · 3h", "not started · 1d"])
+        XCTAssertEqual(result.map(\.caption), ["Not running · 5m", "Not running · 3h", "Not running · 1d"])
         XCTAssertEqual(result[0].state, .notStarted)
     }
 

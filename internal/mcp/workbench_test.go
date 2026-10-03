@@ -168,16 +168,16 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 }
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists only the
-// new names, `mcp --project N` only the old ones — fourteen workbench tools
+// new names, `mcp --project N` only the old ones — fifteen workbench tools
 // either way, with no description or input schema pointing at a tool the
 // session lacks.
-func TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames(t *testing.T) {
+func TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
 	for _, legacy := range []bool{false, true} {
 		listed := workbenchToolsListed(t, newBoundWorkbenchSession(t, database, pid, legacy))
-		if len(listed) != 14 {
-			t.Errorf("legacy=%v: want 14 workbench tools, got %d: %v", legacy, len(listed), listed)
+		if len(listed) != 15 {
+			t.Errorf("legacy=%v: want 15 workbench tools, got %d: %v", legacy, len(listed), listed)
 		}
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			want, unwanted := newName, oldName

@@ -93,6 +93,8 @@ final class OwnerAsksViewModel {
     /// An answer's line was typed or copied into `sessionID`: the page shows
     /// that terminal and moves the keyboard into it.
     @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
+    /// An answer was saved: the session states re-read their open asks.
+    @ObservationIgnored var onAnswered: (() async -> Void)?
     /// Seams for tests: the poll's wait and the activation notifications.
     @ObservationIgnored var pollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var notificationCenter: NotificationCenter = .default
@@ -374,6 +376,7 @@ final class OwnerAsksViewModel {
             onDelivered?(projectID, sessionID)
         }
         await load(projectID: projectID)
+        await onAnswered?()
         return delivery
     }
 }

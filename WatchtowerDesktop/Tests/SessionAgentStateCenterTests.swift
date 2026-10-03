@@ -48,6 +48,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
     private var notifier: RecordingSessionNotifier!
     private var defaults: UserDefaults!
     private var appActive = false
+    private var activations: NotificationCenter!
     private let started = Date(timeIntervalSince1970: 1_790_000_000)
 
     override func setUpWithError() throws {
@@ -60,6 +61,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         notifier = RecordingSessionNotifier()
         defaults = try XCTUnwrap(UserDefaults(suiteName: "SessionAgentStateCenterTests-\(UUID().uuidString)"))
         appActive = false
+        activations = NotificationCenter()
         terminals = TerminalCenter { [weak self] in
             let process = FakeTerminalSession(pid: 0)
             self?.processes.append(process)
@@ -82,11 +84,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let reader: SessionAgentStateCenter.Reader = { [pool, log] ids in
             try log?.record(ids)
             guard let pool else { return [] }
-            return try await pool.read { try TerminalSessionQueries.fetchAgentStates($0, ids: ids) }
+            return try await pool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: ids) }
         }
         let center = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, interval: interval, notifier: notifier, defaults: defaults,
-            read: reader
+            notificationCenter: activations, read: reader
         )
         center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
@@ -171,17 +173,77 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(notifier.withdrawAllCount, 2)
     }
 
-    func testNoLiveClaudeSessionReadsNothing() async throws {
+    /// The 1 s poll stays live-only: a live shell has no hooks to read.
+    func testNoLiveClaudeSessionStartsNoPoll() async throws {
         let center = makeCenter()
         center.start()
-        await center.poll()
         let shell = try await session(.shell)
         terminals.start(shell, fresh: true)
-        await center.poll()
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(log.reads, [], "a live shell has no hooks to read")
+        XCTAssertEqual(log.reads, [], "nothing is read without a trigger")
         XCTAssertFalse(center.isPolling)
         XCTAssertEqual(center.statuses, [:])
+    }
+
+    /// A closed session changes only through its asks or a finish, so app
+    /// activation, the tab appearing and an answer each read once — with no
+    /// session live and no loop.
+    func testActivationAndTheTabAppearingReadWithNoLiveSession() async throws {
+        let center = makeCenter()
+        center.start()
+        let row = try await session()
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET finished_at = '2026-10-03T12:00:00.000Z' WHERE id = ?",
+                           arguments: [row.id])
+        }
+        activations.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        await eventually("app activation reads") { log.reads == [[]] }
+        XCTAssertEqual(center.statuses[row.id]?.state, SessionSwitcherPresentation.State(kind: .finished, live: false),
+                       "a closed finished session: a blue ring")
+        XCTAssertFalse(center.isPolling, "a refresh starts no loop")
+
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults, terminalCenter: terminals,
+                                      agentStates: center)
+        await vm.tabAppeared()
+        await eventually("the Workbench tab appearing reads") { log.reads.count == 2 }
+        center.stop()
+        activations.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(log.reads.count, 2, "a stopped center no longer follows activation")
+    }
+
+    /// The owner answers a closed session's only ask: its orange ring turns
+    /// grey right away, with no session live to poll.
+    func testAClosedSessionsAskRingTurnsGreyWhenTheAskIsAnswered() async throws {
+        let center = makeCenter()
+        center.start()
+        let row = try await session()
+        let projectID = try XCTUnwrap(row.projectID)
+        let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+        let askID = try await pool.write { db in
+            try TestDatabase.insertOwnerAsk(db, projectID: projectID, sessionID: row.id, payload: questions)
+        }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults, terminalCenter: terminals,
+                                      agentStates: center)
+        await center.poll()
+        let waiting = vm.sessionState(row)
+        XCTAssertEqual(
+            waiting, SessionSwitcherPresentation.State(kind: .waitingOnAsk, live: false, openAsks: 1, oldestAskID: askID)
+        )
+        XCTAssertEqual(SessionStatePresentation.color(for: waiting), .orange)
+        XCTAssertTrue(SessionStatePresentation.isRing(waiting))
+        XCTAssertEqual(SessionStatePresentation.caption(for: waiting), "Waiting for you · ask #\(askID)")
+
+        await vm.asks.load(projectID: projectID)
+        let ask = try XCTUnwrap(vm.asks.openAsks[projectID]?.first { $0.id == askID })
+        vm.asks.drafts.update(askID) { $0.picks["a"] = .init(labels: ["Yes"]) }
+        let reads = log.reads.count
+        let delivery = await vm.asks.answer(ask)
+        XCTAssertEqual(delivery, .noSession)
+
+        XCTAssertEqual(log.reads.count, reads + 1, "the answer read the states once")
+        XCTAssertEqual(vm.sessionState(row), .notStarted, "a grey ring, without waiting for a poll")
+        XCTAssertFalse(center.isPolling)
     }
 
     func testPollStartsAndStopsWithLiveness() async throws {
@@ -204,15 +266,15 @@ final class SessionAgentStateCenterTests: XCTestCase {
         center.start()
         let row = try await session()
         terminals.start(row, fresh: true)
-        await eventually("the first poll ran") { center.statuses[row.id]?.state == .running }
+        await eventually("the first poll ran") { center.statuses[row.id]?.state == .live(.running) }
         try hookWrites(row.id, "waiting", at: 1)
-        await eventually("the waiting state shows", within: .seconds(1)) {
-            center.statuses[row.id]?.state == .waitingForOwner
+        await eventually("the turn end shows", within: .seconds(1)) {
+            center.statuses[row.id]?.state == .live(.stopped)
         }
         XCTAssertEqual(center.statuses[row.id]?.title, "Release work")
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
         try hookWrites(row.id, "approval", at: 2)
-        await eventually("approval shows") { center.statuses[row.id]?.state == .needsApproval }
+        await eventually("approval shows") { center.statuses[row.id]?.state == .live(.needsApproval) }
     }
 
     func testAnUnchangedReadDoesNotReassignStatuses() async throws {
@@ -221,7 +283,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         terminals.start(row, fresh: true)
         try hookWrites(row.id, "working", at: 1)
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .working)
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.working))
         var changed = false
         withObservationTracking { _ = center.statuses } onChange: { changed = true }
         await center.poll()
@@ -240,19 +302,19 @@ final class SessionAgentStateCenterTests: XCTestCase {
         terminals.start(row, fresh: true)
         try hookWrites(row.id, "waiting", at: 1)
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .waitingForOwner)
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
 
         processes.last?.exit(0)
         await center.poll()
-        XCTAssertNil(center.statuses[row.id], "an exited session has no status")
+        XCTAssertEqual(center.statuses[row.id]?.state, .notStarted, "an exited session's hook state is gone")
 
         terminals.now = { [started] in started.addingTimeInterval(10) }
         terminals.start(row, fresh: false)
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .running, "the earlier run's waiting is not trusted")
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.running), "the earlier run's waiting is not trusted")
         try hookWrites(row.id, "working", at: 11)
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .working)
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.working))
     }
 
     /// A relaunch whose first state equals the previous run's last one:
@@ -264,7 +326,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         terminals.start(row, fresh: true)
         XCTAssertTrue(try hookWrites(row.id, "waiting", at: 1))
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .waitingForOwner)
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
         processes.last?.exit(0)
 
         terminals.now = { [started] in started.addingTimeInterval(10) }
@@ -273,7 +335,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertTrue(try hookWrites(row.id, "waiting", at: 11), "the new run's waiting is not a repeat")
         XCTAssertFalse(try hookWrites(row.id, "working", at: 5), "a late hook of the previous run cannot land")
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .waitingForOwner)
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(11))
     }
 
@@ -289,7 +351,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         try hookWrites(second.id, "working", at: 1)
         // The loop's first poll is the only one within the test.
         center.start()
-        await eventually("the first poll") { center.statuses[first.id]?.state == .waitingForOwner }
+        await eventually("the first poll") { center.statuses[first.id]?.state == .live(.stopped) }
         XCTAssertEqual(log.reads.count, 1)
 
         processes.first?.exit(0)
@@ -297,13 +359,35 @@ final class SessionAgentStateCenterTests: XCTestCase {
         terminals.start(first, fresh: false)
 
         await eventually("the previous run's waiting is dropped without a poll") {
-            center.statuses[first.id] == nil
+            center.statuses[first.id]?.state == .live(.running)
         }
-        XCTAssertEqual(center.statuses[second.id]?.state, .working, "the other session keeps its state")
+        XCTAssertEqual(center.statuses[second.id]?.state, .live(.working), "the other session keeps its state")
         XCTAssertEqual(log.reads.count, 1, "no poll ran")
     }
 
-    func testExitDropsTheStatusWhileOtherSessionsRun() async throws {
+    /// An exit draws the finished session's blue ring at once, from the
+    /// last read: a closed session changes in no other way.
+    func testAnExitTurnsAFinishedDotIntoARingWithoutARead() async throws {
+        let center = makeCenter(interval: .seconds(3600))
+        let row = try await session()
+        terminals.start(row, fresh: true)
+        try hookWrites(row.id, "waiting", at: 1)
+        let finishedAt = stamp(0.5)
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET finished_at = ?, finish_summary = 'Done' WHERE id = ?",
+                           arguments: [finishedAt, row.id])
+        }
+        center.start()
+        await eventually("the first poll") { center.statuses[row.id]?.state == .live(.finished) }
+        processes.last?.exit(0)
+        await eventually("a blue ring without a read") {
+            center.statuses[row.id]?.state == SessionSwitcherPresentation.State(kind: .finished, live: false)
+        }
+        XCTAssertEqual(log.reads.count, 1)
+        XCTAssertFalse(center.isPolling)
+    }
+
+    func testExitTurnsTheStatusNotLiveWhileOtherSessionsRun() async throws {
         let center = makeCenter()
         let first = try await session(title: "One")
         let second = try await session(title: "Two")
@@ -315,8 +399,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(Set(center.statuses.keys), [first.id, second.id])
         processes.first?.exit(0)
         await center.poll()
-        XCTAssertEqual(Set(center.statuses.keys), [second.id])
-        XCTAssertEqual(log.reads.last, [second.id], "only live sessions are read")
+        XCTAssertEqual(center.statuses[first.id]?.state, .notStarted, "a closed workbench session keeps a status")
+        XCTAssertEqual(center.statuses[second.id]?.state, .live(.working))
+        XCTAssertEqual(log.reads.last, [second.id], "the live ids are what the read is given")
     }
 
     func testAReadFailureKeepsTheLastMapOfLiveSessions() async throws {
@@ -327,10 +412,10 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await center.poll()
         log.fail = true
         await center.poll()
-        XCTAssertEqual(center.statuses[row.id]?.state, .needsApproval, "a failed read keeps the last map")
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.needsApproval), "a failed read keeps the last map")
         processes.last?.exit(0)
         await center.poll()
-        XCTAssertNil(center.statuses[row.id])
+        XCTAssertEqual(center.statuses[row.id]?.state, .notStarted, "the last read, resolved for what is live now")
     }
 
     func testStartedAtIsSetOnStartAndReplacedOnRelaunch() async throws {
@@ -375,11 +460,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
         appState.selectedDestination = .inbox
         try hookWrites(row.id, "waiting", at: 1)
         await eventually("published with the Workbench tab not shown") {
-            center.statuses[row.id]?.state == .waitingForOwner
+            center.statuses[row.id]?.state == .live(.stopped)
         }
         XCTAssertEqual(sessionNotifier.posted.map(\.sessionID), [row.id], "announced with the tab not shown")
         appState.selectedDestination = .workbench
-        XCTAssertEqual(vm.sessionState(row), .waitingForOwner)
+        XCTAssertEqual(vm.sessionState(row), .live(.stopped))
     }
 
     // MARK: - Notices
@@ -393,7 +478,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await center.poll()
         await center.poll()
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work is waiting for you", body: "acme")])
+                                               title: "Release work stopped", body: "acme")])
         XCTAssertEqual(notifier.posted.first?.identifier, "workbench-session-\(row.id)")
         try hookWrites(row.id, "approval", at: 2)
         await center.poll()
@@ -459,38 +544,49 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         let id = session.id
         let status = SessionAgentStatus(sessionID: id, workbenchID: session.projectID, workbenchName: "acme",
-                                        title: session.title, state: .waitingForOwner, at: "t")
+                                        title: session.title, state: .live(.stopped), at: "t")
         let actions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in })
 
         let waiting = SessionSwitcherPresentation.rows([session], liveIDs: [id], statuses: [id: status], now: Date())[0]
         let live = TerminalSessionRow(row: waiting, actions: actions)
-        XCTAssertNoThrow(try live.inspect().find(text: "waiting for you"))
-        XCTAssertTrue(try live.inspect().find(text: "waiting for you").accessibilityHidden(),
-                      "VoiceOver hears the state once, from the dot")
+        let label = try live.inspect().find(SessionStateLabel.self)
+        XCTAssertNoThrow(try label.find(text: "Stopped"))
+        XCTAssertEqual(try label.find(ViewType.Image.self).actualImage().name(), "pause.fill")
+        XCTAssertEqual(try label.hStack().accessibilityLabel().string(), "Stopped", "the caption is read out")
         let dot = try live.inspect().find(SessionLiveDot.self)
-        XCTAssertEqual(try dot.actualView().state, .waitingForOwner)
-        XCTAssertEqual(try dot.find(ViewType.Image.self).foregroundStyleShapeStyle(Color.self), .orange)
-        XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Waiting for you"))
+        XCTAssertEqual(try dot.actualView().state, .live(.stopped))
+        XCTAssertEqual(try dot.find(ViewType.Image.self).foregroundStyleShapeStyle(Color.self), .secondary)
+        XCTAssertTrue(try dot.accessibilityHidden(), "VoiceOver hears the state once, from the label")
 
         let dead = SessionSwitcherPresentation.rows([session], liveIDs: [], statuses: [id: status], now: Date())[0]
         let idle = TerminalSessionRow(row: dead, actions: actions)
-        XCTAssertNoThrow(try idle.inspect().find(text: "not started · 5m"))
-        XCTAssertFalse(try idle.inspect().find(text: "not started · 5m").accessibilityHidden(), "the age is read")
-        XCTAssertThrowsError(try idle.inspect().find(text: "waiting for you"))
-        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running"))
+        XCTAssertNoThrow(try idle.inspect().find(text: "Not running · 5m"))
+        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running · 5m"), "the age is read")
+        XCTAssertThrowsError(try idle.inspect().find(text: "Stopped"))
+        XCTAssertThrowsError(try idle.inspect().find(SessionStateLabel.self).find(ViewType.Image.self), "no glyph")
     }
 
     func testTheDotColourAndLabelPerState() throws {
-        let expected: [(SessionSwitcherPresentation.State, Color, String)] = [
-            (.running, .green, "Running"),
-            (.working, .green, "Working"),
-            (.waitingForOwner, .orange, "Waiting for you"),
-            (.needsApproval, .orange, "Needs approval"),
-            (.notStarted, .secondary, "Not running")
+        let expected: [(SessionSwitcherPresentation.State, Color, String, String)] = [
+            (.live(.running), .green, "Running", "circle.fill"),
+            (.live(.working), .green, "Working", "circle.fill"),
+            (.live(.stopped), .secondary, "Stopped", "circle.fill"),
+            (.live(.waitingOnAsk, openAsks: 1), .orange, "Waiting for you", "circle.fill"),
+            (.live(.waitingOnAsk, openAsks: 2, oldestAskID: 12), .orange, "Waiting for you · ask #12 · 2 asks", "circle.fill"),
+            (SessionSwitcherPresentation.State(kind: .waitingOnAsk, live: false, openAsks: 1, oldestAskID: 3), .orange,
+             "Waiting for you · ask #3", "circle"),
+            (SessionSwitcherPresentation.State(kind: .finished, live: false, openAsks: 1), .orange,
+             "Finished · 1 ask open", "circle"),
+            (.live(.needsApproval), .orange, "Needs approval", "circle.fill"),
+            (.live(.failed, error: "rate_limit"), .red, "Error: rate limit", "circle.fill"),
+            (.live(.finished), .blue, "Finished", "circle.fill"),
+            (SessionSwitcherPresentation.State(kind: .finished, live: false), .blue, "Finished", "circle"),
+            (.notStarted, .secondary, "Not running", "circle")
         ]
-        for (state, color, label) in expected {
+        for (state, color, label, symbol) in expected {
             let image = try SessionLiveDot(state: state).inspect().find(ViewType.Image.self)
             XCTAssertEqual(try image.foregroundStyleShapeStyle(Color.self), color, "\(state)")
+            XCTAssertEqual(try image.actualImage().name(), symbol, "\(state)")
             XCTAssertNoThrow(try SessionLiveDot(state: state).inspect().find(viewWithAccessibilityLabel: label))
         }
     }

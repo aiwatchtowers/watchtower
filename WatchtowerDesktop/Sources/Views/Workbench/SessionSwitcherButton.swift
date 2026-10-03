@@ -37,7 +37,7 @@ struct SessionSwitcher: View {
 }
 
 /// The session switcher's button: the session's state dot, its title — "No
-/// session" when none is in focus — and a chevron.
+/// session" when none is in focus — its state label and a chevron.
 struct SessionSwitcherButton: View {
     let title: String?
     let state: SessionSwitcherPresentation.State
@@ -52,6 +52,7 @@ struct SessionSwitcherButton: View {
                     .foregroundStyle(title == nil ? .secondary : .primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                if title != nil { SessionStateLabel(state: state).fixedSize() }
                 Image(systemName: "chevron.down")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -60,7 +61,9 @@ struct SessionSwitcherButton: View {
         }
         .buttonStyle(.borderless)
         .help("\(title ?? "No session") — Switch Session")
-        .accessibilityLabel(title.map { "Session \($0), \(state.label.lowercased())" } ?? "No session")
+        .accessibilityLabel(title.map { "Session \($0), \(caption)" } ?? "No session")
         .accessibilityHint("Switch session")
     }
+
+    private var caption: String { SessionStatePresentation.caption(for: state).lowercased() }
 }

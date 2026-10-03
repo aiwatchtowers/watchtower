@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/terminal"
 )
@@ -67,19 +69,46 @@ func init() {
 	workbenchCmd.AddCommand(workbenchSessionStateCmd)
 }
 
+// agentErrorRunes caps the StopFailure error type a row stores.
+const agentErrorRunes = 60
+
 // sessionStateInput is the part of Claude Code's hook input the state hook
 // reads; every other field is ignored.
 type sessionStateInput struct {
 	HookEventName    string `json:"hook_event_name"`
 	SessionID        string `json:"session_id"`
 	NotificationType string `json:"notification_type"`
+	// AgentID is set when the hook fired inside a subagent.
+	AgentID string `json:"agent_id"`
+	// Error is a StopFailure's error type ("rate_limit", pinned by
+	// testdata/stopfailure_rate_limit.json). Raw, so a non-string value
+	// never fails the whole input.
+	Error json.RawMessage `json:"error"`
 }
 
-// agentStateFor maps a hook event to the state it records. onlyFrom, when
-// set, is the stored state the write requires: a PostToolUse means an
-// approved tool ran only after a permission prompt, so it clears "needs
-// approval" and never touches another state. ok is false for an event that
-// records nothing — an unknown event or notification type, or a missing one.
+// agentFailure is the failure a StopFailure records: its error type on one
+// line, clipped, or ” when the field is missing or not a string. nil for
+// every other event.
+func (in sessionStateInput) agentFailure() *db.AgentFailure {
+	if in.HookEventName != "StopFailure" {
+		return nil
+	}
+	var e string
+	if json.Unmarshal(in.Error, &e) != nil {
+		e = ""
+	}
+	return &db.AgentFailure{Error: briefClip(asks.OneLine(e), agentErrorRunes)}
+}
+
+// agentStateFor maps a hook event to the state it records. onlyFrom is the
+// stored state the write requires; agentStateFor always returns "" for it,
+// and recordHookAgentState sets it to approval for a subagent's PostToolUse.
+// A main-thread PostToolUse means a tool just ran: it clears "needs
+// approval" after a granted permission and "waiting" when a turn started
+// without a prompt (a teammate or background-task message, a wakeup fires
+// no UserPromptSubmit); one stamped before the stop's "waiting" is an older
+// event and writes nothing. ok is false for an event that records nothing —
+// an unknown event or notification type, or a missing one.
 func agentStateFor(event, notificationType string) (state, onlyFrom string, ok bool) {
 	switch event {
 	case "UserPromptSubmit":
@@ -87,7 +116,7 @@ func agentStateFor(event, notificationType string) (state, onlyFrom string, ok b
 	case "Stop", "StopFailure":
 		return agentStateWaiting, "", true
 	case "PostToolUse":
-		return agentStateWorking, agentStateApproval, true
+		return agentStateWorking, "", true
 	case "Notification":
 		switch notificationType {
 		case "permission_prompt", "elicitation_dialog":
@@ -144,6 +173,11 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	if !ok || in.SessionID == "" {
 		return nil
 	}
+	if in.AgentID != "" && in.HookEventName == "PostToolUse" {
+		// A background subagent works on after the main turn stopped to wait
+		// for the owner: its tool results clear only a granted permission.
+		onlyFrom = agentStateApproval
+	}
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
 	// so Claude Code never waits for it.
@@ -152,7 +186,8 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		return err
 	}
 	defer database.Close()
-	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, at)
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, in.agentFailure(),
+		in.HookEventName == "UserPromptSubmit", at)
 }
 
 // terminalSessionRowID is the terminal_sessions row the Desktop launched
@@ -175,9 +210,12 @@ func terminalSessionRowID() (id int64, ok bool, err error) {
 // `claude -p` the agent starts inherits the env var but has its own session
 // id, and must not move the row. Read first, so the common no-change case
 // (every PostToolUse of a working turn) never waits for the write lock; the
-// write repeats every guard, so a race with another hook stays correct. nil
-// when a guard holds the write back — a gone row is not an error.
-func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, state, onlyFrom string, at time.Time) error {
+// write repeats every guard, so a race with another hook stays correct.
+// failure is a StopFailure's error, nil for every other event; prompt says
+// the event is a UserPromptSubmit. nil when a guard holds the write back — a
+// gone row is not an error.
+func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, state, onlyFrom string,
+	failure *db.AgentFailure, prompt bool, at time.Time) error {
 	if !terminal.IsSessionID(sessionID) {
 		return fmt.Errorf("the hook input carries no session id (%q)", briefClip(sessionID, 40))
 	}
@@ -192,7 +230,7 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	switch {
 	case row.WorkbenchID.Int64 != workbenchID || row.Kind != "claude",
 		row.ClaudeSessionID.String != sessionID,
-		row.AgentState.String == state,
+		repeatsAgentState(row, state, failure, prompt),
 		onlyFrom != "" && row.AgentState.String != onlyFrom,
 		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt):
 		return nil
@@ -200,6 +238,21 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err = database.SetTerminalAgentState(rowID, workbenchID, sessionID, state, at, onlyFrom)
+	_, err = database.SetTerminalAgentState(rowID, workbenchID, sessionID, state, at, onlyFrom, failure, prompt)
 	return err
+}
+
+// repeatsAgentState says the write would change nothing the guarded UPDATE
+// lets through: a StopFailure with another error type is a change, and so is
+// a prompt's `working` on a finished row (it clears finished_at; a tool
+// run's `working` over `working` never does).
+func repeatsAgentState(row *db.TerminalSession, state string, failure *db.AgentFailure, prompt bool) bool {
+	switch {
+	case row.AgentState.String != state:
+		return false
+	case failure != nil:
+		return row.AgentFailure != nil && row.AgentFailure.Error == failure.Error
+	default:
+		return state != "working" || !row.Finished || !prompt
+	}
 }

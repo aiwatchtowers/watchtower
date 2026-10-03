@@ -368,6 +368,9 @@ CREATE INDEX idx_targets_status ON targets(status)
 index	idx_targets_updated
 CREATE INDEX idx_targets_updated ON targets(updated_at DESC)
 
+index	idx_terminal_session_targets_target
+CREATE INDEX idx_terminal_session_targets_target ON terminal_session_targets(target_id)
+
 index	idx_terminal_sessions_project
 CREATE INDEX idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at)
 
@@ -1994,6 +1997,15 @@ CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branc
 CHECK(status != 'in_review' OR project_id IS NOT NULL)
 )
 
+table	terminal_session_targets
+CREATE TABLE terminal_session_targets (
+session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+first_at TEXT NOT NULL,
+last_at TEXT NOT NULL,
+PRIMARY KEY (session_id, target_id)
+)
+
 table	terminal_sessions
 CREATE TABLE terminal_sessions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2006,7 +2018,7 @@ folder_path TEXT NOT NULL,
 claude_session_id TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 last_active_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-closed_at TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT,
+closed_at TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '',
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 )
@@ -2290,6 +2302,20 @@ entity_name TEXT NOT NULL DEFAULT '',
 priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('high', 'normal', 'low')),
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 PRIMARY KEY (entity_type, entity_id)
+)
+
+table	workbench_pr_states
+CREATE TABLE workbench_pr_states (
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+ref TEXT NOT NULL,
+state TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
+pr_number INTEGER,
+title TEXT NOT NULL DEFAULT '',
+additions INTEGER,
+deletions INTEGER,
+merged_at TEXT NOT NULL DEFAULT '',
+checked_at TEXT NOT NULL,
+PRIMARY KEY (project_id, ref)
 )
 
 table	workspace
@@ -3943,6 +3969,12 @@ END
 31	branch	TEXT	notnull=1	dflt=''	pk=0
 32	pr	TEXT	notnull=1	dflt=''	pk=0
 
+## terminal_session_targets
+0	session_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	target_id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	first_at	TEXT	notnull=1	dflt=NULL	pk=0
+3	last_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
@@ -3957,6 +3989,10 @@ END
 10	closed_at	TEXT	notnull=0	dflt=NULL	pk=0
 11	agent_state	TEXT	notnull=0	dflt=NULL	pk=0
 12	agent_state_at	TEXT	notnull=0	dflt=NULL	pk=0
+13	finished_at	TEXT	notnull=0	dflt=NULL	pk=0
+14	finish_summary	TEXT	notnull=1	dflt=''	pk=0
+15	agent_failed_at	TEXT	notnull=0	dflt=NULL	pk=0
+16	agent_error	TEXT	notnull=1	dflt=''	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=0	dflt=NULL	pk=1
@@ -4210,6 +4246,17 @@ END
 2	entity_name	TEXT	notnull=1	dflt=''	pk=0
 3	priority	TEXT	notnull=1	dflt='normal'	pk=0
 4	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## workbench_pr_states
+0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	ref	TEXT	notnull=1	dflt=NULL	pk=2
+2	state	TEXT	notnull=1	dflt=NULL	pk=0
+3	pr_number	INTEGER	notnull=0	dflt=NULL	pk=0
+4	title	TEXT	notnull=1	dflt=''	pk=0
+5	additions	INTEGER	notnull=0	dflt=NULL	pk=0
+6	deletions	INTEGER	notnull=0	dflt=NULL	pk=0
+7	merged_at	TEXT	notnull=1	dflt=''	pk=0
+8	checked_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## workspace
 0	id	TEXT	notnull=0	dflt=NULL	pk=1

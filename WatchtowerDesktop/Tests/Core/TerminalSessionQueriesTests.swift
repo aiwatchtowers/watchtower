@@ -135,22 +135,26 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
-    func testFetchAgentStatesReturnsOnlyTheAskedIDsWithTheWorkbenchName() throws {
+    func testFetchAgentStatesReadsEveryWorkbenchClaudeRowAndTheLiveOnes() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
             let project = try TestDatabase.insertWorkbench(db, name: "acme")
             let waiting = try TerminalSessionQueries.create(db, claude(project, "Waiting"))
             let fresh = try TerminalSessionQueries.create(db, claude(project, "Fresh"))
-            let other = try TerminalSessionQueries.create(db, claude(project, "Other"))
             let loose = try TerminalSessionQueries.create(db, claude(nil, "Loose"))
-            for id in [waiting.id, other.id] {
-                try db.execute(
-                    sql: "UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?",
-                    arguments: ["2026-10-03T12:34:56.789Z", id]
-                )
-            }
-            let rows = try TerminalSessionQueries.fetchAgentStates(db, ids: [waiting.id, fresh.id, loose.id])
-            XCTAssertEqual(rows.map(\.id), [waiting.id, fresh.id, loose.id], "only the asked ids")
+            let idleLoose = try TerminalSessionQueries.create(db, claude(nil, "Idle loose"))
+            let shell = try TerminalSessionQueries.create(db, .init(
+                projectID: project, kind: .shell, title: "Shell", folderPath: "/tmp/acme"
+            ))
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ? WHERE id = ?",
+                arguments: ["2026-10-03T12:34:56.789Z", waiting.id]
+            )
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [loose.id])
+            XCTAssertEqual(rows.map(\.id), [waiting.id, fresh.id, loose.id],
+                           "every workbench claude row, live or not, and the live standalone one")
+            XCTAssertFalse(rows.map(\.id).contains(idleLoose.id), "a standalone terminal not live is not read")
+            XCTAssertFalse(rows.map(\.id).contains(shell.id), "a shell has no agent")
             XCTAssertEqual(rows[0], SessionAgentStateRow(
                 id: waiting.id, projectID: project, title: "Waiting", agentState: "waiting",
                 agentStateAt: "2026-10-03T12:34:56.789Z", workbenchName: "acme"
@@ -160,7 +164,55 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertNil(rows[1].agentStateAt)
             XCTAssertNil(rows[1].stored)
             XCTAssertNil(rows[2].workbenchName, "a standalone terminal has no workbench")
-            XCTAssertEqual(try TerminalSessionQueries.fetchAgentStates(db, ids: []), [])
+            XCTAssertEqual(try TerminalSessionQueries.fetchAgentStates(db, liveIDs: []).map(\.id), [waiting.id, fresh.id])
+        }
+    }
+
+    func testFetchAgentStatesReadsFinishedTheErrorAndOpenAsks() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let done = try TerminalSessionQueries.create(db, claude(project, "Done"))
+            let failed = try TerminalSessionQueries.create(db, claude(project, "Failed"))
+            let other = try TerminalSessionQueries.create(db, claude(project, "Other"))
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET finished_at = '2026-10-03T12:00:00.000Z', finish_summary = 'Shipped'
+                    WHERE id = ?
+                    """,
+                arguments: [done.id]
+            )
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-10-03T12:01:00.000Z',
+                        agent_failed_at = '2026-10-03T12:01:00.000Z', agent_error = 'rate_limit'
+                    WHERE id = ?
+                    """,
+                arguments: [failed.id]
+            )
+            var askIDs: [String: [Int64]] = [:]
+            for status in ["answered", "open", "open", "withdrawn"] {
+                askIDs[status, default: []].append(try TestDatabase.insertOwnerAsk(
+                    db, projectID: project, sessionID: done.id, status: status,
+                    answer: status == "answered" ? "yes" : "", withdrawnReason: status == "withdrawn" ? "agent" : ""
+                ))
+            }
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: other.id)
+            try TestDatabase.insertOwnerAsk(db, projectID: project)
+
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            XCTAssertEqual(rows.map(\.id), [done.id, failed.id, other.id])
+            XCTAssertEqual(rows[0], SessionAgentStateRow(
+                id: done.id, projectID: project, title: "Done", agentState: nil, agentStateAt: nil,
+                workbenchName: "acme", finishedAt: "2026-10-03T12:00:00.000Z", finishSummary: "Shipped",
+                openAsks: 2, oldestOpenAskID: askIDs["open"]?.first
+            ), "only this session's open asks count; the oldest open one, not an older answered one")
+            XCTAssertNil(rows[1].oldestOpenAskID, "no open ask, no oldest")
+            XCTAssertEqual(rows[1].agentFailedAt, "2026-10-03T12:01:00.000Z")
+            XCTAssertEqual(rows[1].agentError, "rate_limit")
+            XCTAssertNil(rows[1].finishedAt)
+            XCTAssertEqual(rows[1].finishSummary, "")
+            XCTAssertEqual(rows[1].openAsks, 0)
         }
     }
 }

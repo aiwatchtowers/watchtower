@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"io"
 	"os"
@@ -84,7 +85,7 @@ func TestSessionState_AgentStateFor(t *testing.T) {
 		{"UserPromptSubmit", "", "working", "", true},
 		{"Stop", "", "waiting", "", true},
 		{"StopFailure", "", "waiting", "", true},
-		{"PostToolUse", "", "working", "approval", true},
+		{"PostToolUse", "", "working", "", true},
 		{"Notification", "permission_prompt", "approval", "", true},
 		{"Notification", "elicitation_dialog", "approval", "", true},
 		{"Notification", "idle_prompt", "waiting", "", true},
@@ -114,8 +115,9 @@ func TestSessionState_RecordsEachEvent(t *testing.T) {
 		{statePayload("Notification", briefLaunchID, "permission_prompt"), "approval"},
 		{statePayload("PostToolUse", briefLaunchID, ""), "working"},
 		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
-		{statePayload("PostToolUse", briefLaunchID, ""), "waiting"}, // only an approval clears
 		{statePayload("Notification", briefLaunchID, "auth_success"), "waiting"},
+		{statePayload("PostToolUse", briefLaunchID, ""), "working"}, // a turn started without a prompt
+		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
 		{statePayload("UserPromptSubmit", briefLaunchID, ""), "working"},
 		{statePayload("StopFailure", briefLaunchID, ""), "waiting"},
 		{statePayload("Notification", briefLaunchID, "elicitation_dialog"), "approval"},
@@ -149,6 +151,80 @@ func TestSessionState_LargePostToolUsePayloadClearsApproval(t *testing.T) {
 	assert.Empty(t, out)
 	assert.Empty(t, errOut)
 	assert.Equal(t, "working", storedAgentState(t, database, row))
+}
+
+// A turn the owner did not start (a teammate or background-task message, a
+// wakeup) fires no UserPromptSubmit: its first tool result turns a stored
+// "waiting" back to "working". A late PostToolUse stamped before the stop's
+// "waiting" still writes nothing (PROJ-11's older-event guard).
+func TestSessionState_ToolResultEndsWaitingOfASelfStartedTurn(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now()
+	orig := hookNow
+	t.Cleanup(func() { hookNow = orig })
+	at := func(sec int) { hookNow = func() time.Time { return base.Add(time.Duration(sec) * time.Second) } }
+	record := func(event string) {
+		t.Helper()
+		_, _, err := runSessionState(t, pid, strings.NewReader(statePayload(event, briefLaunchID, "")))
+		require.NoError(t, err)
+	}
+
+	at(2)
+	record("StopFailure")
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+	at(1)
+	record("PostToolUse")
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "a tool result older than the stop")
+	at(3)
+	record("PostToolUse")
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the self-started turn's first tool result")
+}
+
+// A background subagent's tool result never ends the main turn's "waiting"
+// (the agent asked the owner and stopped); it still clears a granted
+// permission.
+func TestSessionState_SubagentToolResultClearsOnlyApproval(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	subagent := `{"session_id":"` + briefLaunchID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3","agent_type":"general-purpose"}`
+
+	for _, step := range []struct {
+		payload, want string
+	}{
+		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
+		{subagent, "waiting"},
+		{statePayload("Notification", briefLaunchID, "permission_prompt"), "approval"},
+		{subagent, "working"},
+	} {
+		_, _, err := runSessionState(t, pid, strings.NewReader(step.payload))
+		require.NoError(t, err)
+		assert.Equal(t, step.want, storedAgentState(t, database, row), "after %s", step.payload)
+	}
+}
+
+// The subagent rule covers only PostToolUse: a subagent's permission prompt
+// (agent_id set) still records "needs approval", whether the main turn is
+// working or stopped and waiting.
+func TestSessionState_SubagentPermissionPromptRecordsApproval(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	prompt := `{"session_id":"` + briefLaunchID + `","hook_event_name":"Notification","notification_type":"permission_prompt","agent_id":"a1b2c3","agent_type":"general-purpose"}`
+
+	for _, step := range []struct {
+		payload, want string
+	}{
+		{statePayload("UserPromptSubmit", briefLaunchID, ""), "working"},
+		{prompt, "approval"},
+		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
+		{prompt, "approval"},
+	} {
+		_, _, err := runSessionState(t, pid, strings.NewReader(step.payload))
+		require.NoError(t, err)
+		assert.Equal(t, step.want, storedAgentState(t, database, row), "after %s", step.payload)
+	}
 }
 
 // An external terminal has no row: the hook neither reads stdin nor opens
@@ -189,7 +265,7 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 		{name: "repeat is a no-op", wantState: "working", setup: func(t *testing.T, database *db.DB, row int64) {
 			s, err := database.GetTerminalSession(row)
 			require.NoError(t, err)
-			_, err = database.SetTerminalAgentState(row, s.WorkbenchID.Int64, briefLaunchID, "working", time.Now().Add(-time.Hour), "")
+			_, err = database.SetTerminalAgentState(row, s.WorkbenchID.Int64, briefLaunchID, "working", time.Now().Add(-time.Hour), "", nil, false)
 			require.NoError(t, err)
 		}},
 		{name: "unknown flag", args: []string{"--future-flag"}, wantState: "working"},
@@ -502,4 +578,242 @@ func mustFolder(t *testing.T, database *db.DB, pid int64) string {
 	wb, err := database.GetWorkbench(pid)
 	require.NoError(t, err)
 	return wb.FolderPath
+}
+
+// stopFailureFixture is a StopFailure hook input captured from Claude Code
+// 2.1 (a turn against an API stub answering 429), with the paths and ids
+// replaced by test values: the error type is the top-level "error" string.
+func stopFailureFixture(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "stopfailure_rate_limit.json"))
+	require.NoError(t, err)
+	return string(raw)
+}
+
+// stopFailureWith is the fixture with its "error" field replaced by errJSON,
+// or removed when errJSON is empty.
+func stopFailureWith(t *testing.T, errJSON string) string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(stopFailureFixture(t)), &m))
+	delete(m, "error")
+	if errJSON != "" {
+		m["error"] = json.RawMessage(errJSON)
+	}
+	out, err := json.Marshal(m)
+	require.NoError(t, err)
+	return string(out)
+}
+
+func storedFailure(t *testing.T, database *db.DB, rowID int64) (failure *db.AgentFailure, stateAt string) {
+	t.Helper()
+	s, err := database.GetTerminalSession(rowID)
+	require.NoError(t, err)
+	if !s.AgentStateAt.IsZero() {
+		stateAt = s.AgentStateAt.UTC().Format("2006-01-02T15:04:05.000Z")
+	}
+	return s.AgentFailure, stateAt
+}
+
+// PROJ-11 (amended 2026-10-03), hook half: a StopFailure from working and
+// from waiting stores the payload's error type with agent_failed_at =
+// agent_state_at; a later plain waiting (idle_prompt ~60 s on, the Stop
+// hook) keeps it; a repeated StopFailure keeps its time and one with another
+// error replaces it; working and a permission prompt clear it; a missing or
+// non-string error field stores ”; a long one is clipped to 60 runes on
+// one line. The db half is in internal/db.
+func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
+	stopHookWaiting := func(t *testing.T, database *db.DB, pid, row int64) {
+		// The Stop hook's write (writeStopAgentState) after its settings check.
+		state, onlyFrom, _ := agentStateFor("Stop", "")
+		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, onlyFrom, nil, false, hookNow()))
+	}
+	hookEvent := func(event, notification string) func(*testing.T, *db.DB, int64, int64) {
+		return func(t *testing.T, _ *db.DB, pid, _ int64) {
+			_, _, err := runSessionState(t, pid, strings.NewReader(statePayload(event, briefLaunchID, notification)))
+			require.NoError(t, err)
+		}
+	}
+	for _, tc := range []struct {
+		name, from string
+		next       func(t *testing.T, database *db.DB, pid, row int64)
+		wantState  string
+		kept       bool
+	}{
+		{"from working, idle_prompt keeps it", "UserPromptSubmit", hookEvent("Notification", "idle_prompt"), "waiting", true},
+		{"from working, the Stop hook keeps it", "UserPromptSubmit", stopHookWaiting, "waiting", true},
+		{"from waiting, a prompt clears it", "idle_prompt", hookEvent("UserPromptSubmit", ""), "working", false},
+		{"from waiting, a permission prompt clears it", "idle_prompt", hookEvent("Notification", "permission_prompt"), "approval", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			stepClock(t)
+			first := statePayload("UserPromptSubmit", briefLaunchID, "")
+			if tc.from == "idle_prompt" {
+				first = statePayload("Notification", briefLaunchID, "idle_prompt")
+			}
+			_, _, err := runSessionState(t, pid, strings.NewReader(first))
+			require.NoError(t, err)
+
+			out, errOut, err := runSessionState(t, pid, strings.NewReader(stopFailureFixture(t)))
+			require.NoError(t, err)
+			assert.Empty(t, out)
+			assert.Empty(t, errOut)
+			assert.Equal(t, "waiting", storedAgentState(t, database, row))
+			failure, stateAt := storedFailure(t, database, row)
+			require.NotNil(t, failure, "the StopFailure stored no error")
+			want := db.AgentFailure{At: stateAt, Error: "rate_limit"}
+			assert.Equal(t, want, *failure)
+
+			tc.next(t, database, pid, row)
+			assert.Equal(t, tc.wantState, storedAgentState(t, database, row))
+			failure, afterAt := storedFailure(t, database, row)
+			if tc.kept {
+				require.NotNil(t, failure, "a plain waiting wiped the error")
+				assert.Equal(t, want, *failure)
+				assert.Equal(t, stateAt, afterAt, "a plain waiting moved the failed state's time")
+				return
+			}
+			assert.Nil(t, failure, "a real state change kept the error")
+		})
+	}
+
+	t.Run("a repeated StopFailure keeps its time, another error replaces it", func(t *testing.T) {
+		database, pid, row := briefSessionFixture(t)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		stepClock(t)
+		for _, payload := range []string{statePayload("UserPromptSubmit", briefLaunchID, ""),
+			stopFailureFixture(t)} {
+			_, _, err := runSessionState(t, pid, strings.NewReader(payload))
+			require.NoError(t, err)
+		}
+		first, firstAt := storedFailure(t, database, row)
+		require.NotNil(t, first)
+
+		_, _, err := runSessionState(t, pid, strings.NewReader(stopFailureFixture(t)))
+		require.NoError(t, err)
+		again, againAt := storedFailure(t, database, row)
+		require.NotNil(t, again)
+		assert.Equal(t, *first, *again, "a repeated StopFailure rewrote the error")
+		assert.Equal(t, firstAt, againAt, "a repeated StopFailure moved the time")
+
+		_, _, err = runSessionState(t, pid, strings.NewReader(stopFailureWith(t, `"overloaded"`)))
+		require.NoError(t, err)
+		assert.Equal(t, "waiting", storedAgentState(t, database, row))
+		other, otherAt := storedFailure(t, database, row)
+		require.NotNil(t, other)
+		assert.Equal(t, db.AgentFailure{At: otherAt, Error: "overloaded"}, *other)
+		assert.Greater(t, otherAt, firstAt, "another error kept the first failure's time")
+	})
+
+	for _, tc := range []struct {
+		name, errJSON, want string
+	}{
+		{"no error field", "", ""},
+		{"a non-string error field", `{"type":"rate_limit"}`, ""},
+		{"a null error field", `null`, ""},
+		{"a long error on two lines", `"` + strings.Repeat("é", 100) + `\n` + strings.Repeat("x", 100) + `"`,
+			strings.Repeat("é", 59) + "…"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			stepClock(t)
+			out, errOut, err := runSessionState(t, pid, strings.NewReader(stopFailureWith(t, tc.errJSON)))
+			require.NoError(t, err)
+			assert.Empty(t, out)
+			assert.Empty(t, errOut)
+			failure, _ := storedFailure(t, database, row)
+			require.NotNil(t, failure, "a StopFailure without a usable error type still flags the error")
+			assert.Equal(t, tc.want, failure.Error)
+			assert.LessOrEqual(t, len([]rune(failure.Error)), 60)
+		})
+	}
+}
+
+// PROJ-11, hook half: finish_session written mid-turn, an Esc interrupt (no
+// hook) and a new prompt — the prompt's `working` over the stored `working`
+// is not skipped by the read-first check while finished_at is set.
+func TestProj11_WorkingOverWorkingClearsFinished(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	prompt := statePayload("UserPromptSubmit", briefLaunchID, "")
+	_, _, err := runSessionState(t, pid, strings.NewReader(prompt))
+	require.NoError(t, err)
+	require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
+
+	_, _, err = runSessionState(t, pid, strings.NewReader(prompt))
+	require.NoError(t, err)
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+	var finished sql.NullString
+	var summary string
+	require.NoError(t, database.QueryRow(`SELECT finished_at, finish_summary FROM terminal_sessions WHERE id = ?`, row).
+		Scan(&finished, &summary))
+	assert.False(t, finished.Valid, "a new prompt over a finished working kept finished_at")
+	assert.Equal(t, "Done.", summary)
+}
+
+func storedFinishedAt(t *testing.T, database *db.DB, rowID int64) sql.NullString {
+	t.Helper()
+	var finished sql.NullString
+	require.NoError(t, database.QueryRow(`SELECT finished_at FROM terminal_sessions WHERE id = ?`, rowID).Scan(&finished))
+	return finished
+}
+
+// PROJ-11: a PostToolUse over a stored `working` never clears finished_at —
+// finish_session's own PostToolUse is part of the turn that finished. Pinned
+// at the hook and at its precheck with no onlyFrom (a main-thread
+// PostToolUse that records working from any state).
+func TestProj11_PostToolUseOverWorkingKeepsFinished(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+	require.NoError(t, err)
+	require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
+
+	_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("PostToolUse", briefLaunchID, "")))
+	require.NoError(t, err)
+	assert.True(t, storedFinishedAt(t, database, row).Valid, "finish_session's PostToolUse cleared finished_at")
+
+	require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, agentStateWorking, "", nil, false, hookNow()))
+	assert.True(t, storedFinishedAt(t, database, row).Valid, "a tool run's working over working cleared finished_at")
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+}
+
+// PROJ-11: a tool run that moves the state into `working` is a new turn and
+// clears finished_at: a main-thread PostToolUse out of approval or out of
+// waiting (after the Stop hook), through the hook. A subagent's PostToolUse
+// over waiting writes nothing and keeps finished_at.
+func TestProj11_PostToolUseIntoWorkingClearsFinished(t *testing.T) {
+	for _, from := range []string{"approval", "waiting"} {
+		database, pid, row := briefSessionFixture(t)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		stepClock(t)
+		_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+		require.NoError(t, err)
+		require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
+		if from == "approval" {
+			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("Notification", briefLaunchID, "permission_prompt")))
+			require.NoError(t, err)
+			require.Equal(t, "approval", storedAgentState(t, database, row))
+			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("PostToolUse", briefLaunchID, "")))
+			require.NoError(t, err)
+		} else {
+			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("Stop", briefLaunchID, "")))
+			require.NoError(t, err)
+			require.Equal(t, "waiting", storedAgentState(t, database, row))
+			subagent := `{"session_id":"` + briefLaunchID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3"}`
+			_, _, err = runSessionState(t, pid, strings.NewReader(subagent))
+			require.NoError(t, err)
+			require.Equal(t, "waiting", storedAgentState(t, database, row), "a subagent's tool result ended waiting")
+			require.True(t, storedFinishedAt(t, database, row).Valid, "a subagent's tool result cleared finished_at")
+			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("PostToolUse", briefLaunchID, "")))
+			require.NoError(t, err)
+		}
+		assert.Equal(t, "working", storedAgentState(t, database, row), from)
+		assert.False(t, storedFinishedAt(t, database, row).Valid, "a tool run out of %s kept finished_at", from)
+	}
 }

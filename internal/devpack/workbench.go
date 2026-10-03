@@ -517,9 +517,12 @@ func removeMCPRegistration(ctx context.Context, o WorkbenchInstallOptions, serve
 }
 
 // mcpRegistered asks `claude mcp get` in the folder: exit 0 means
-// registered, a non-zero exit means not registered.
+// registered, a non-zero exit means not registered. `mcp get` health-checks
+// the server, so it loads settings: --setting-sources project,local skips the
+// user-level ones (the TCC isolation of every claude run of ours) and still
+// sees the local-scope registration; "" would hide it.
 func mcpRegistered(ctx context.Context, o WorkbenchInstallOptions, server string) (bool, error) {
-	out, err := o.Run(ctx, o.Folder, "claude", "mcp", "get", server)
+	out, err := o.Run(ctx, o.Folder, "claude", "--setting-sources", "project,local", "mcp", "get", server)
 	switch {
 	case err == nil:
 		return true, nil

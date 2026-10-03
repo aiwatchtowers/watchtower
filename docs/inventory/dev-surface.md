@@ -265,14 +265,15 @@ does not exist or together with `--chat`, keeps the connection writable, and
 mounts the registry (`buildToolRegistry`) on the `project` surface (the
 stored surface value keeps its pre-rename spelling) with
 `tools.Binding{Surface: "project", WorkbenchID: N, DirectApply: true}`: the
-fourteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
-`workbench_docs.go`, and since 2026-10-03 the owner-ask tools `ask_owner`,
-`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`) plus every
+fifteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
+`workbench_docs.go`, since 2026-10-03 the owner-ask tools `ask_owner`,
+`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`, and
+`finish_session` in `workbench_finish.go`) plus every
 surface-less read tool and `get_action`; no other write tool is visible
 there. The legacy spelling `--project N` (a
 folder registered as `watchtower-project` before the 2026-10-02 rename and
 not yet resynced) is the same mode with `Binding.LegacyNames` set: the same
-fourteen tools (the four ask tools under the same names in both), the five renamed ones listed under their old names
+fifteen tools (the four ask tools and `finish_session` under the same names in both), the five renamed ones listed under their old names
 (`project_info`, `project_board`, `update_project`, `add_project_source`,
 `remove_project_source`; `tools.LegacyWorkbenchToolNames`), the audit row
 recording the canonical new name, and `Registry.Get` resolving both
@@ -295,7 +296,10 @@ spellings. Three rules keep it narrow:
    through `os.OpenRoot` on the folder; ≤ 2 MiB, valid UTF-8) and is only
    read, never written (PROJ-03). An ask's session is bound only when
    `WATCHTOWER_TERMINAL_SESSION_ID` names a `terminal_sessions` row of
-   workbench N, else it is filed session-less. `get_ask`/`list_asks`/
+   workbench N, else it is filed session-less; the same resolution picks the
+   session `finish_session` marks (none resolves → refused, nothing written)
+   and the session a write tool links its targets to (PROJ-14).
+   `get_ask`/`list_asks`/
    `withdraw_ask` see only workbench N's asks (another workbench's reads
    `no ask with id N`).
    `list_targets`/`get_target` see only
@@ -346,12 +350,13 @@ unreviewed write path into the owner's whole app — or off the machine.
 - `internal/tools/registry_approve_test.go::TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply` (one pending row bound to the workbench, never executed on propose even with a stale execute trust row; runs once after Approve), `TestDirectApply_ProposeOnlyToolStillNeedsTheSurface`; `internal/tools/slack_send_test.go::TestSendSlackMessage_ProjectSessionOnlyProposes`
 - `internal/tools/workbench_docs_test.go::TestDev06_DocumentPathStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself — the check `ask_owner`'s `doc_path` goes through); supporting: `TestAskOwner_ReviewRefusesAnyFileItMustNotRead`, `TestReadInsideFolder_RefusesASymlinkOutOfTheFolder`, `TestAskOwner_SessionBinding` (`internal/tools`)
 - `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the boundary with DEV-01)
-- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the legacy vocabulary: `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames`, `TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` (`internal/mcp`), `TestLegacyName_WriteRecordsTheCanonicalName`, `TestRegistryGet_ResolvesBothSpellings` (`internal/tools`).
+- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the legacy vocabulary: `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames`, `TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` (`internal/mcp`), `TestLegacyName_WriteRecordsTheCanonicalName`, `TestRegistryGet_ResolvesBothSpellings` (`internal/tools`).
 
 **Locked since:** 2026-09-29
 
 ## Changelog
 
+- 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; owner-approved via asks #2 and #4): DEV-06's workbench tool set grows from fourteen to **fifteen** — `finish_session` (a workbench write, applied directly and audited like the others; `summary` 1–600 runes in at most 4 lines, optional `target_id` of workbench N) marks the calling terminal session finished. Rule 1 names its session resolution: only a `terminal_sessions` row of workbench N named by `WATCHTOWER_TERMINAL_SESSION_ID`, else it is refused with `finish_session needs a Watchtower terminal session` before any row or audit row (PROJ-14 in `workbench.md`). `update_target`, `create_targets`, `add_comment` and `ask_owner` now also link their targets to that session, best-effort after their own write (PROJ-14). `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames` was renamed in place to `…FifteenTools…` (count only); no guard relaxed.
 - 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`). **Approved by the owner (spec Parts 4 and 9):** DEV-06's workbench tool set changes from eleven to **fourteen** — `attach_document` is removed (documents were replaced by asks; `list_comments`' `document_id` is refused with "documents were replaced by asks — use ask_owner (kind review)") and `ask_owner`, `get_ask`, `list_asks`, `withdraw_ask` are added under the same names in both vocabularies (no legacy spelling). Rule 1 now names asks instead of documents and restates the document-path rule for `ask_owner`'s `doc_path` (the check `TestDev06_AttachDocumentStaysInsideTheFolder` pinned for `attach_document`, now pinned on `ResolveWorkbenchDocumentPath` itself as `TestDev06_DocumentPathStaysInsideTheFolder`, which also accepts `.markdown`; the old guard's "a refused attach writes no audit row" assertion went with the tool, and `TestAskOwner_RefusesBadInputWithoutWriting` pins the same for asks). `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames` was renamed in place to `…FourteenTools…` (count only). No guard relaxed beyond the removed tool. **Implementation rulings, pending owner confirmation:** rule 2's exception for `get_ask`'s unaudited `delivered` write (with the matching AGENT-06 scope note in `agent-actions.md`), and rule 1's ask session binding (bound only when `WATCHTOWER_TERMINAL_SESSION_ID` names a row of workbench N, else session-less).
 
 - 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`): Projects is renamed **Workbench**. DEV-06 is reworded with the same meaning — `watchtower mcp --workbench N`, registered as `watchtower-workbench`, still exactly eleven tools on the `project` surface under `DirectApply`, scoped to one workbench; the hidden legacy `--project N` serves the same tools with the five renamed ones under their old names and records the canonical name in the audit row (new tests `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`). DEV-01's scope sentence names `--workbench` and `--project`. DEV-04 now names the workbench skill's embed (`workbenchskill/*/SKILL.md`) and the resync's removal of the legacy skill through the same marker/digest rule. DEV-05's amendment names the renamed hook commands and also lists the `Stop` hook installed since PROJ-07 (2026-10-01), which it had not named; a resync replacing our own legacy hook entry is still the explicit CLI/Desktop opt-in. Guard file paths updated; no guard test renamed or relaxed.

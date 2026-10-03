@@ -358,12 +358,31 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertNoThrow(try button.inspect().find(viewWithAccessibilityLabel: "No session"))
 
         // VoiceOver hears the state with the title, not as a separate element.
-        let live = SessionSwitcherButton(title: "one", state: .running) {}
+        let live = SessionSwitcherButton(title: "one", state: .live(.running)) {}
         XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, running"))
         let idle = SessionSwitcherButton(title: "one", state: .notStarted) {}
         XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, not running"))
-        let waiting = SessionSwitcherButton(title: "one", state: .waitingForOwner) {}
-        XCTAssertNoThrow(try waiting.inspect().find(viewWithAccessibilityLabel: "Session one, waiting for you"))
+        let stopped = SessionSwitcherButton(title: "one", state: .live(.stopped)) {}
+        XCTAssertNoThrow(try stopped.inspect().find(viewWithAccessibilityLabel: "Session one, stopped"))
+        XCTAssertThrowsError(try button.inspect().find(SessionStateLabel.self), "no session, no state")
+    }
+
+    /// The button shows the state's glyph and caption beside the title.
+    func testTheSessionButtonShowsTheStateLabel() throws {
+        let waiting = SessionSwitcherButton(title: "one", state: SessionSwitcherPresentation.State(
+            kind: .waitingOnAsk, live: false, openAsks: 1, oldestAskID: 12
+        )) {}
+        let label = try waiting.inspect().find(SessionStateLabel.self)
+        XCTAssertNoThrow(try label.find(text: "Waiting for you · ask #12"))
+        XCTAssertEqual(try label.find(ViewType.Image.self).actualImage().name(), "questionmark")
+        XCTAssertNoThrow(try waiting.inspect().find(viewWithAccessibilityLabel: "Session one, waiting for you · ask #12"))
+        let dot = try waiting.inspect().find(SessionLiveDot.self).find(ViewType.Image.self)
+        XCTAssertEqual(try dot.actualImage().name(), "circle", "closed: a ring")
+        XCTAssertEqual(try dot.foregroundStyleShapeStyle(Color.self), .orange)
+
+        let working = SessionSwitcherButton(title: "one", state: .live(.working, openAsks: 2, oldestAskID: 4)) {}
+        XCTAssertNoThrow(try working.inspect().find(SessionStateLabel.self).find(text: "2"), "the ask count by the glyph")
+        XCTAssertNoThrow(try working.inspect().find(SessionStateLabel.self).find(text: "Working · 2 asks open"))
     }
 
     func testASessionRowShowsItsBadgeCaptionAndShortcut() async throws {
@@ -383,7 +402,8 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
         let idle = SessionSwitcherRow(row: rows[1], isCurrent: false) {}
         XCTAssertNoThrow(try idle.inspect().find(text: "#\(target)"))
-        XCTAssertNoThrow(try idle.inspect().find(text: "not started · 1d"))
+        XCTAssertNoThrow(try idle.inspect().find(text: "Not running · 1d"))
+        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running · 1d"))
         XCTAssertNoThrow(try idle.inspect().find(text: "⌘2"))
     }
 

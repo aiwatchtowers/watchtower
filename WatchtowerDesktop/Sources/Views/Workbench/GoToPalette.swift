@@ -146,8 +146,8 @@ struct GoToPalette: View {
         }
     }
 
-    /// The page's sessions as the session switcher shows them (state
-    /// caption, `#id` badge), by id.
+    /// The page's sessions as the session switcher shows them (state,
+    /// `#id` badge), by id.
     private func currentSessionRows(now: Date) -> [Int64: SessionSwitcherPresentation.Row] {
         guard let projectID = vm.selectedWorkbenchID else { return [:] }
         let rows = SessionSwitcherPresentation.rows(
@@ -201,16 +201,8 @@ struct GoToPalette: View {
                 SessionLiveDot(state: row.state).frame(width: 12)
                 Text(row.session.title).font(.callout).lineLimit(1).truncationMode(.tail)
                 if let badge = row.badge { WorkbenchCapsuleBadge(text: badge) }
+                // The dot only (§4b): its label reads the state out.
                 Spacer(minLength: 4)
-                if let caption = row.caption {
-                    // A live caption repeats the dot's label for VoiceOver.
-                    Text(caption)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .accessibilityHidden(row.state.isLive)
-                }
             } else {
                 SessionLiveDot(state: vm.sessionState(session)).frame(width: 12)
                 Text(GoToPresentation.sessionTitle(session, workbench: workbench, currentWorkbenchID: vm.selectedWorkbenchID))
