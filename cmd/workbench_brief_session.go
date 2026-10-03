@@ -89,6 +89,12 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 		return err
 	}
 	defer database.Close()
+	return applySessionStart(database, rowID, workbenchID, hook.SessionID, switches, newRun)
+}
+
+// applySessionStart moves row rowID to conversation sessionID when the
+// source switched conversations, and clears its agent state on a new run.
+func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID string, switches, newRun bool) error {
 	// Read first: every relaunch resumes the stored id, and that common
 	// case must not wait for the write lock.
 	row, err := database.GetTerminalSession(rowID)
@@ -98,7 +104,7 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 	if err != nil {
 		return err
 	}
-	moveID := switches && row.ClaudeSessionID.String != hook.SessionID
+	moveID := switches && row.ClaudeSessionID.String != sessionID
 	clearState := newRun && row.AgentState.Valid
 	if !moveID && !clearState {
 		return nil
@@ -107,12 +113,12 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 		return err
 	}
 	if moveID {
-		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, hook.SessionID); err != nil {
+		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, sessionID); err != nil {
 			return err
 		}
 	}
 	if clearState {
-		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, hook.SessionID, hookNow()); err != nil {
+		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, sessionID, hookNow()); err != nil {
 			return fmt.Errorf("clearing the previous run's agent state: %w", err)
 		}
 	}

@@ -221,16 +221,7 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
 	if err != nil || id <= 0 {
-		switch {
-		case !in.StopHookActive:
-			lost := ""
-			if stopStateExpected(in.SessionID) {
-				lost = " and session state not recorded"
-			}
-			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: invalid %s %q\n", lost, workbenchFlagName(vocab.Legacy), rawID)
-		case stopStateExpected(in.SessionID):
-			fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid %s %q\n", workbenchFlagName(vocab.Legacy), rawID)
-		}
+		stopHookInvalidID(stderr, in, rawID, vocab)
 		return
 	}
 	// database is nil until opened; the state write opens its own then.
@@ -245,11 +236,7 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 		// which our deadline must never cut off part-way (Claude Code's hook
 		// timeout still bounds the whole run).
 		if _, database, err = openJiraCmdDB(); err != nil {
-			lost := ""
-			if stopStateExpected(in.SessionID) {
-				lost = " and session state not recorded"
-			}
-			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", lost, err)
+			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", stopStateLost(in.SessionID), err)
 			return
 		}
 		if blocked := stopHookDrift(ctx, stdout, stderr, database, id, vocab); blocked {
@@ -280,6 +267,28 @@ func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.D
 	}
 	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings, vocab)})
 	return true
+}
+
+// stopHookInvalidID reports a bad --workbench: the drift check it skips
+// (never on the continued turn, which checks nothing) and the state write it
+// loses in a Desktop terminal.
+func stopHookInvalidID(stderr io.Writer, in stopHookInput, rawID string, vocab vocabulary) {
+	flag := workbenchFlagName(vocab.Legacy)
+	switch {
+	case !in.StopHookActive:
+		fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: invalid %s %q\n", stopStateLost(in.SessionID), flag, rawID)
+	case stopStateExpected(in.SessionID):
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid %s %q\n", flag, rawID)
+	}
+}
+
+// stopStateLost is the drift-skipped line's suffix when the state write is
+// lost with it.
+func stopStateLost(sessionID string) string {
+	if stopStateExpected(sessionID) {
+		return " and session state not recorded"
+	}
+	return ""
 }
 
 // stopStateExpected: the Stop hook would record the session state (a
