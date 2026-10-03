@@ -50,9 +50,12 @@ final class OpenQuicklyPanelController: NSObject, OpenQuicklyPresenting, NSWindo
         self.panel = nil
         session = nil
         if Self.quickLookVisible { QLPreviewPanel.shared()?.orderOut(nil) }
+        let key = NSApp.keyWindow
         parent?.removeChildWindow(panel)
         panel.orderOut(nil)
-        parent?.makeKey()
+        if OpenQuicklyFocusPolicy.makesParentKey(restoringFocus: restoringFocus, keyWindowIsElsewhere: key != nil && key !== panel) {
+            parent?.makeKey()
+        }
         if restoringFocus { previous.restore() }
     }
 

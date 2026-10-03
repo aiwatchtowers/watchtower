@@ -28,6 +28,16 @@ package struct DoubleShiftDetector: Sendable {
     }
 }
 
+/// Where the keyboard goes as Open Quickly closes or loses the key window.
+package enum OpenQuicklyFocusPolicy {
+    /// The panel closed: the workbench window becomes key again for Esc and
+    /// an open, or when no other window took the keyboard — never over a
+    /// window the owner just clicked into.
+    package static func makesParentKey(restoringFocus: Bool, keyWindowIsElsewhere: Bool) -> Bool {
+        restoringFocus || !keyWindowIsElsewhere
+    }
+}
+
 /// The files a workbench opened most recently, newest first, the last 50
 /// (spec §7, ruling R22) — Open Quickly's "recently opened" boost.
 /// Persisted per workbench under `key(workbenchID:)`.

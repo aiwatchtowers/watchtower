@@ -34,6 +34,17 @@ final class OpenQuicklySupportTests: XCTestCase {
         XCTAssertEqual(fires, [false, true, false])
     }
 
+    // MARK: Focus when the panel closes
+
+    func testTheWorkbenchWindowTakesTheKeyboardBackOnlyWhenNothingElseHasIt() {
+        XCTAssertTrue(OpenQuicklyFocusPolicy.makesParentKey(restoringFocus: true, keyWindowIsElsewhere: false), "Esc")
+        XCTAssertTrue(OpenQuicklyFocusPolicy.makesParentKey(restoringFocus: false, keyWindowIsElsewhere: false), "an open: the panel was key")
+        XCTAssertFalse(
+            OpenQuicklyFocusPolicy.makesParentKey(restoringFocus: false, keyWindowIsElsewhere: true),
+            "a click into another window keeps that window key"
+        )
+    }
+
     // MARK: Recently opened
 
     func testRecentFilesMostRecentFirstWithoutDuplicatesCappedAt50() {
