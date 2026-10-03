@@ -1,10 +1,36 @@
+import AppKit
 import SwiftUI
 import WatchtowerCore
+
+/// Where the drawer host puts its content and its drawer. Expanding never
+/// resizes the content: it keeps the width it had beside the drawer and the
+/// drawer covers it, so a terminal's pty never gets a near-zero column
+/// count (the split view detaches a hidden terminal for the same reason).
+enum OwnerAskDrawerLayout {
+    /// The content never gets narrower than this beside the drawer.
+    static let minContentWidth: CGFloat = 200
+
+    struct Frames: Equatable {
+        /// The content's width, expanded or not.
+        let content: CGFloat
+        /// The drawer's leading edge and width.
+        let drawerX: CGFloat
+        let drawer: CGFloat
+    }
+
+    static func frames(total: CGFloat, drawerWidth: CGFloat, hasDrawer: Bool, expanded: Bool) -> Frames {
+        guard hasDrawer else { return Frames(content: total, drawerX: total, drawer: 0) }
+        let drawer = min(drawerWidth, max(0, total - minContentWidth))
+        let content = total - drawer
+        return expanded ? Frames(content: content, drawerX: 0, drawer: total) : Frames(content: content, drawerX: content, drawer: drawer)
+    }
+}
 
 /// Lays an ask drawer beside `content` (spec 2026-10-03 Part 8): a
 /// session's terminal, or the whole workspace for an ask filed outside the
 /// app. The drawer is resizable from its leading edge (its width kept by
-/// `OwnerAsksViewModel.drawerWidth`) and can take the whole width.
+/// `OwnerAsksViewModel.drawerWidth`) and can take the whole width, drawn
+/// over the content (`OwnerAskDrawerLayout`).
 struct OwnerAskDrawerHost<Content: View>: View {
     let vm: WorkbenchesViewModel
     /// The ask to show here; nil leaves `content` alone.
@@ -15,23 +41,27 @@ struct OwnerAskDrawerHost<Content: View>: View {
     var body: some View {
         let asks = vm.asks
         let expanded = ask != nil && asks.drawerExpanded
-        HStack(spacing: 0) {
-            // Hidden, never removed, while the drawer is expanded: the
-            // terminal host, the board and Monaco keep their identity and
-            // state (the split view's expanded-pane rule).
-            content()
-                .frame(width: expanded ? 0 : nil)
-                .frame(maxWidth: expanded ? 0 : .infinity, maxHeight: .infinity)
-                .clipped()
-                .opacity(expanded ? 0 : 1)
-                .disabled(expanded)
-                .allowsHitTesting(!expanded)
-                .accessibilityHidden(expanded)
-            if let ask {
-                if !expanded { Divider() }
-                OwnerAskDrawer(vm: vm, ask: ask)
-                    .frame(width: expanded ? nil : liveWidth ?? asks.drawerWidth)
-                    .frame(maxWidth: expanded ? .infinity : nil, maxHeight: .infinity)
+        GeometryReader { geometry in
+            let frames = OwnerAskDrawerLayout.frames(
+                total: geometry.size.width, drawerWidth: CGFloat(liveWidth ?? asks.drawerWidth),
+                hasDrawer: ask != nil, expanded: expanded
+            )
+            ZStack(alignment: .topLeading) {
+                // Hidden, never removed or resized, under an expanded drawer:
+                // the terminal host, the board and Monaco keep their identity,
+                // state and size.
+                content()
+                    .frame(width: frames.content, height: geometry.size.height)
+                    .opacity(expanded ? 0 : 1)
+                    .disabled(expanded)
+                    .allowsHitTesting(!expanded)
+                    .accessibilityHidden(expanded)
+                if let ask {
+                    HStack(spacing: 0) {
+                        if !expanded { Divider() }
+                        OwnerAskDrawer(vm: vm, ask: ask)
+                    }
+                    .frame(width: frames.drawer, height: geometry.size.height)
                     .overlay(alignment: .leading) {
                         if !expanded {
                             PanelResizeHandle(
@@ -42,6 +72,8 @@ struct OwnerAskDrawerHost<Content: View>: View {
                             )
                         }
                     }
+                    .offset(x: frames.drawerX)
+                }
             }
         }
     }
@@ -121,6 +153,9 @@ struct OwnerAskDrawer: View {
                 .help("Next ask")
             }
             Button {
+                // The terminal under an expanded drawer is hidden: it must
+                // not keep the keystrokes.
+                if !asks.drawerExpanded { NSApp.keyWindow?.makeFirstResponder(nil) }
                 asks.drawerExpanded.toggle()
             } label: {
                 Image(systemName: asks.drawerExpanded

@@ -39,6 +39,10 @@ final class OwnerAskAnswerTests: XCTestCase {
         XCTAssertThrowsError(try OwnerAskAnswer.decode(#"{"checklist":[{"id":"1","state":"fine"}]}"#))
     }
 
+    /// The one invalid fixture Swift refuses already at decode (its item
+    /// state is a typed enum).
+    private static let undecodableFixture = "invalid_unknown_state.json"
+
     /// The Swift twin of Go's reader: every valid fixture passes, every
     /// invalid one fails — on decode (an unknown state) or with Go's exact error.
     func testProblemMatchesGoOnEveryAnswersFixture() throws {
@@ -53,7 +57,10 @@ final class OwnerAskAnswerTests: XCTestCase {
                 let answer = try XCTUnwrap(decoded, file.name)
                 XCTAssertNil(answer.problem(kind: kind, payload: payload), file.name)
             } else if let answer = decoded {
+                XCTAssertNotEqual(file.name, Self.undecodableFixture, "it must fail at decode")
                 XCTAssertEqual(answer.problem(kind: kind, payload: payload)?.message, fixture["error"] as? String, file.name)
+            } else {
+                XCTAssertEqual(file.name, Self.undecodableFixture, "only an unknown state fails at decode")
             }
         }
     }
