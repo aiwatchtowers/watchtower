@@ -215,17 +215,22 @@ func (e *parsePanic) Error() string { return fmt.Sprintf("panic: %v", e.v) }
 
 // indexSource reads and parses one file; on a parse error the result is
 // the file with lang "" and no symbols.
+//
+// A path asked for by name is echoed as asked (`./a.go` stays `./a.go`),
+// in the result and its symbols, deleted or not: the caller keys by what
+// it sent (ruling R16).
 func indexSource(p parser, root string, j job) (FileResult, error) {
 	res := FileResult{File: j.rel}
+	rel := j.rel
 	if j.explicit {
 		f, deleted, ok := lookupNamed(root, j.rel)
 		if !ok || j.ignored {
 			res.Deleted = deleted
 			return res, nil
 		}
-		res.File = f.Rel
+		rel = f.Rel
 	}
-	src, deleted, ok := readSource(filepath.Join(root, filepath.FromSlash(res.File)))
+	src, deleted, ok := readSource(filepath.Join(root, filepath.FromSlash(rel)))
 	switch {
 	case !ok && !j.explicit:
 		return FileResult{}, nil
@@ -233,7 +238,7 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 		res.Deleted = deleted
 		return res, nil
 	}
-	l := langFor(res.File, src[:min(len(src), 256)])
+	l := langFor(rel, src[:min(len(src), 256)])
 	if l == nil {
 		return res, nil
 	}

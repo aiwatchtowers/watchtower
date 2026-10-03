@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -418,5 +419,28 @@ func TestRun_NamedPathsHonourGitignore(t *testing.T) {
 	}
 	if _, ok := full["dist/tracked.md"]; !ok {
 		t.Error("the full run missed a tracked file")
+	}
+}
+
+// A named path comes back exactly as it was asked for — in the result and
+// in its symbols, for a file and for a deleted path alike — however it is
+// spelled (ruling R16).
+func TestRun_NamedPathsEchoedVerbatim(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", []byte("# A\n"))
+	write(t, root, "docs/b.md", []byte("# B\n"))
+	paths := []string{"./a.md", "docs/../docs/b.md", "./gone.md", "a.md"}
+	got := collect(t, root, paths, noGrammar(t))
+	if len(got) != len(paths) {
+		t.Fatalf("results %v, want one per path asked", slices.Collect(maps.Keys(got)))
+	}
+	for _, p := range []string{"./a.md", "docs/../docs/b.md", "a.md"} {
+		r := got[p]
+		if r.Lang != "markdown" || len(r.Symbols) != 1 || r.Symbols[0].Path != p {
+			t.Errorf("%s = %+v, want its heading with path %q", p, r, p)
+		}
+	}
+	if r := got["./gone.md"]; !r.Deleted {
+		t.Errorf("./gone.md = %+v, want deleted", r)
 	}
 }

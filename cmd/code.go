@@ -43,7 +43,8 @@ index, {"file","deleted":true} for a --files path that is gone), then
 
 --files indexes only the paths given as arguments (relative to the folder); a
 path the full run would not list (.gitignore'd, binary, over 2 MB, outside the
-folder) comes back with "lang":"" and no symbols.
+folder) comes back with "lang":"" and no symbols. Each result echoes its path
+exactly as given.
 --serve stays up: each stdin line is one run over its tab-separated paths,
 answered with that run's lines and a done line; EOF exits 0.
 
