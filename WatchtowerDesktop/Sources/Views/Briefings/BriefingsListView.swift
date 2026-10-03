@@ -233,7 +233,6 @@ struct BriefingsListView: View {
     private func emptyList(_ vm: BriefingViewModel) -> some View {
         BriefingsEmptyState(
             owner: appState.owner,
-            processing: appState.backgroundTaskManager.hasActiveTasks,
             isGenerating: vm.isGenerating,
             generateError: vm.generateError,
             onGenerate: { Task { await vm.generateBriefing() } },
@@ -251,7 +250,6 @@ struct BriefingsListView: View {
 /// connect one instead of a Generate the CLI would refuse (OWNER-02).
 struct BriefingsEmptyState: View {
     let owner: Owner
-    let processing: Bool
     let isGenerating: Bool
     let generateError: String?
     let onGenerate: () -> Void
@@ -289,14 +287,8 @@ struct BriefingsEmptyState: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(processing || isGenerating)
-            .help(processing ? "Wait for data processing to complete" : "Generate a briefing now")
-
-            if processing {
-                Text("Data is still being processed...")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
+            .disabled(isGenerating)
+            .help("Generate a briefing now")
 
             if let generateError {
                 Text(generateError)

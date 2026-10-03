@@ -89,8 +89,11 @@ struct JiraConnectionDetail: View {
             }
         }
         .sheet(isPresented: $showAddJiraAccountSheet) {
-            AddJiraAccountView()
+            // Settings opened during onboarding: its finish starts the
+            // daemon, not this sheet.
+            AddJiraAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(jiraAccountPendingRemoval?.displayName ?? "this site")?",
@@ -102,7 +105,7 @@ struct JiraConnectionDetail: View {
         ) {
             Button("Remove Site", role: .destructive) {
                 if let account = jiraAccountPendingRemoval {
-                    Task { await appState.jiraAccountsViewModel?.remove(account) }
+                    Task { await appState.jiraAccountsViewModel?.remove(account, daemonPolicy: appState.accountDaemonPolicy) }
                 }
                 jiraAccountPendingRemoval = nil
             }

@@ -10,6 +10,7 @@
 
 Detailed per-feature notes — architecture, contracts, dual paths, v1 limits — live in docs/features/; read the relevant file before touching that area.
 
+- [Onboarding v2 — Goals → Connect → About you (2026-10-03, replaces the eight-step onboarding)](docs/features/onboarding-v2.md) — `OnboardingStateMachineV2` + legacy step migration, goal → feature mapping, sidebar visibility + "+ Connect…" row, OWNER-01 `OnboardingProfileWriter`, `workspace init` / `sync --users-only`, the single daemon start at finish, Run setup again, late About you and the related-features offer; walkthrough in `docs/onboarding-flow.md`.
 - [Attention detection — the inbox feeder (2026-09-14, replaces the Assistant Inbox + Dashboard)](docs/features/attention-detection.md) — `internal/inbox/` mechanical detector pipeline feeding Catch-Up, briefing and meeting prep; INBOX-02/05/09; what the 2026-09-14 demolition retired.
 - [Knowledge search (2026-09-26)](docs/features/knowledge-search.md) — `internal/kb/` FTS5 index, `phaseKnowledgeIndex` cursors, `search_knowledge` ranking and link rules; KB-01..03.
 - [Confluence knowledge connector (2026-09-26)](docs/features/confluence-knowledge-connector.md) — `ext_*` raw store, `internal/extsync` engine, `internal/confluence`, `internal/extract` helpers, `doclinks`/`linkscan`; EXT-01..04.

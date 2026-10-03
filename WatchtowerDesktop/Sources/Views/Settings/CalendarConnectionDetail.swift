@@ -73,6 +73,7 @@ struct CalendarConnectionDetail: View {
         .sheet(isPresented: $showAddCalendarAccountSheet) {
             AddCalendarAccountView()
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(calendarAccountPendingRemoval?.displayName ?? "this calendar")?",

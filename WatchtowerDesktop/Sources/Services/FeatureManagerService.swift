@@ -76,6 +76,11 @@ final class FeatureManagerService {
     /// together with their currently-enabled dependents. `apply()` passes
     /// `--with-dependents` for exactly these ids, then clears the set.
     var applyWithDependents: Set<String> = []
+    /// True for the whole of an `applySelection()` call.
+    private var isApplyingSelection = false
+    /// How many features the last `applySelection()` actually changed (0
+    /// when the selection matched the live state).
+    private(set) var lastSelectionChangeCount = 0
 
     /// Fires with the freshly computed `disabledFeatureIDs` after every
     /// successful `load()` — including the trailing reload inside a fully
@@ -162,7 +167,7 @@ final class FeatureManagerService {
     }
 
     /// Throws away every staged change, including any cascade consent
-    /// collected for them (the splash's "Keep everything on" exit). Clearing
+    /// collected for them (before onboarding or a feature suggestion stages its own). Clearing
     /// `pending` alone would leave an `applyWithDependents` entry standing for
     /// a disable that is no longer staged, ready to append `--with-dependents`
     /// to some later disable of the same id (FEAT-04 spirit: consent must not
@@ -285,32 +290,95 @@ final class FeatureManagerService {
     /// enabled out of band (the CLI, while this screen held a stale list)
     /// would silently drop the owner's newest reactions as commands.
     func enableNow(_ id: String, restart: @MainActor () async throws -> Void) async {
-        guard !isApplying else { return }
+        await enableNow([id], restart: restart)
+    }
+
+    /// `enableNow(_:restart:)` for several features: each one still disabled
+    /// is enabled in order (stopping at the first failure), then the daemon
+    /// restarts once if anything was enabled. Returns the ids it enabled,
+    /// whether the restart ran and succeeded, and whether it did nothing
+    /// because another apply was in flight; a failure is in `loadError`.
+    @discardableResult
+    func enableNow(
+        _ ids: [String],
+        restart: @MainActor () async throws -> Void
+    ) async -> (enabled: [String], restarted: Bool, busy: Bool) {
+        guard !isApplying else { return ([], false, true) }
         isApplying = true
         defer { isApplying = false }
 
         await load()
-        guard loadError == nil,
-              features.first(where: { $0.id == id })?.state == "disabled" else { return }
+        guard loadError == nil else { return ([], false, false) }
+        let toEnable = ids.filter { id in features.first { $0.id == id }?.state == "disabled" }
+        guard !toEnable.isEmpty else { return ([], false, false) }
 
         var failure: Error?
-        do {
-            try await applyOne(id: id, enabled: true, isFeature: true)
-            pending.removeValue(forKey: id)
-            applyWithDependents.remove(id)
+        var enabled: [String] = []
+        var restarted = false
+        for id in toEnable {
             do {
-                try await restart()
+                try await applyOne(id: id, enabled: true, isFeature: true)
+                pending.removeValue(forKey: id)
+                applyWithDependents.remove(id)
+                enabled.append(id)
             } catch {
                 failure = error
+                break
             }
-        } catch {
-            failure = error
+        }
+        if !enabled.isEmpty {
+            do {
+                try await restart()
+                restarted = true
+            } catch {
+                failure = failure ?? error
+            }
         }
 
         await load()
         if let failure {
             loadError = failure.localizedDescription
         }
+        return (enabled, restarted, false)
+    }
+
+    /// Onboarding's write path: makes exactly `enabled` on and the rest of
+    /// `managed` off, through the same `features enable`/`disable` calls as
+    /// `apply()` but never restarting the daemon — onboarding's completion
+    /// step is the only place it starts. Anything staged elsewhere is
+    /// discarded first, so only this decision is replayed.
+    ///
+    /// It re-reads the live state first and does nothing if that fails:
+    /// against an empty list `setPending` would stage every id, and
+    /// `features enable` on a feature that is already on still runs its
+    /// fast-forward hook (FEAT-03). Ids the CLI does not list, or lists as
+    /// core, are never staged.
+    ///
+    /// Returns true when every change landed (the live list was read and
+    /// nothing is left pending); false when the read or a write failed —
+    /// the reason is in `loadError`, the unwritten remainder in `pending` —
+    /// or when another call was still in flight.
+    @discardableResult
+    func applySelection(enabled: Set<String>, managed: Set<String>) async -> Bool {
+        // Covers the whole call, not just apply(): the leading load() is an
+        // await too, and a second call landing there would interleave its
+        // discardPending()/staging with this one's.
+        guard !isApplyingSelection, !isApplying else { return false }
+        isApplyingSelection = true
+        defer { isApplyingSelection = false }
+
+        lastSelectionChangeCount = 0
+        await load()
+        guard loadError == nil else { return false }
+
+        discardPending()
+        for feature in features where !feature.core && managed.contains(feature.id) {
+            setPending(feature.id, enabled: enabled.contains(feature.id))
+        }
+        let staged = pending.count
+        await apply {}
+        lastSelectionChangeCount = staged - pending.count
+        return loadError == nil && pending.isEmpty
     }
 
     private func applyOne(id: String, enabled: Bool, isFeature: Bool) async throws {

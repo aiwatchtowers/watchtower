@@ -84,3 +84,11 @@ func TestMentionTag(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestRawID(t *testing.T) {
+	for in, want := range map[string]string{"1:U456": "U456", "U456": "U456", "": "", "x:U1": "x:U1"} {
+		if got := RawID(in); got != want {
+			t.Errorf("RawID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

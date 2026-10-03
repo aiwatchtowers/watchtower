@@ -128,9 +128,6 @@ package enum Constants {
         version.hasPrefix("v") || version.hasPrefix("V") ? String(version.dropFirst()) : version
     }
 
-    /// UserDefaults key for tracking whether initial pipelines have completed.
-    package static let pipelinesCompletedKey = "pipelines_completed"
-
     package enum NotificationCategory {
         static let decision = "DECISION"
         static let dailySummary = "DAILY_SUMMARY"

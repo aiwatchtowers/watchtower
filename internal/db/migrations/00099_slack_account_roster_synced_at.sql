@@ -1,0 +1,12 @@
+-- +goose Up
+-- When this account's full workspace roster (users.list, every page) was last
+-- fetched; '' = never. The search sync refreshes the roster at most once a day
+-- and `sync --users-only` (the onboarding people picker) fetches it on demand:
+-- both read and stamp this one marker, so a users-only fetch is not repeated
+-- by the daemon's next cycle, across processes and restarts.
+-- Numbered after main's 00098: it was 00097 while the onboarding branch was
+-- open, and goose.Up refuses a lower version that lands after a higher one.
+ALTER TABLE slack_accounts ADD COLUMN roster_synced_at TEXT NOT NULL DEFAULT '';
+
+-- +goose Down
+ALTER TABLE slack_accounts DROP COLUMN roster_synced_at;

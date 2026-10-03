@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet for connecting a new Slack workspace, presented from Settings → Slack
 /// Workspaces. A workspace can have any number of Slack accounts side by side,
@@ -14,6 +15,14 @@ struct AddSlackAccountView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var vm: SlackAccountsViewModel? { appState.slackAccountsViewModel }
+
+    /// `.deferred` from onboarding: the connect must not restart the daemon
+    /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
+    let daemonPolicy: DaemonRestartPolicy
+
+    init(daemonPolicy: DaemonRestartPolicy = .restart) {
+        self.daemonPolicy = daemonPolicy
+    }
 
     @State private var label = ""
     /// Set when Cancel is tapped so the awaited `addAccount` (which returns with
@@ -77,7 +86,7 @@ struct AddSlackAccountView: View {
         cancelled = false
         let trimmed = label.trimmingCharacters(in: .whitespaces)
         Task {
-            await vm.addAccount(label: trimmed)
+            await vm.addAccount(label: trimmed, daemonPolicy: daemonPolicy)
             // addAccount is awaited: on success `error` is nil. A user Cancel
             // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss on
             // `cancelled` to keep the sheet open when the flow was cancelled.

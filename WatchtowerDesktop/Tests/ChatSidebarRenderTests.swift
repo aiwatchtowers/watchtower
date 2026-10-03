@@ -57,7 +57,7 @@ final class ChatSidebarRenderTests: XCTestCase {
     }
 
     private func split(_ chatVM: ChatViewModel, _ history: ChatHistoryViewModel) -> some View {
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = dbManager
         return ChatSplitView(chatVM: chatVM, historyVM: history)
             .environment(appState)

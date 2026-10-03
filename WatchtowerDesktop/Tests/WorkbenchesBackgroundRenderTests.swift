@@ -43,7 +43,7 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
         vm.drill(into: projectID)
         XCTAssertNil(vm.errorMessage)
         XCTAssertEqual(vm.selectedWorkbench?.id, projectID, "the page, not the empty state, is on screen")
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = manager
 
         for name in [NSAppearance.Name.darkAqua, .aqua] {
@@ -99,7 +99,7 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
         vm.layout = layout
         XCTAssertEqual(vm.drilledSessions.map(\.id), sessions.reversed().map(\.id))
         XCTAssertEqual(vm.panelSelection, .session(selected.id))
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = manager
 
         for name in [NSAppearance.Name.darkAqua, .aqua] {

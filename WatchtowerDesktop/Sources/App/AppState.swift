@@ -61,11 +61,22 @@ final class AppState {
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
 
-    /// Whether the user needs to complete the onboarding chat flow.
+    /// Whether onboarding (Goals → Connect → About you) is on screen.
     var needsOnboarding: Bool = false
 
     /// Persistent onboarding state machine — tracks which step the user is on across app restarts.
-    let onboarding = OnboardingStateMachine()
+    let onboarding: OnboardingStateMachineV2
+
+    /// Onboarding's Goals step (goals, feature selection, language, CLI
+    /// check), held here so it survives the Customize screen.
+    let onboardingGoals: OnboardingGoalsModel
+
+    /// Onboarding's background Slack roster load, started from Connect and
+    /// read by About you.
+    let peopleRoster: PeopleRosterLoad
+
+    /// Onboarding's About you answers, kept across Back and return.
+    let onboardingAboutYou = OnboardingAboutYouModel()
 
     /// Cache for custom workspace emoji images.
     let emojiImageCache = EmojiImageCache()
@@ -266,9 +277,6 @@ final class AppState {
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
-    /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
-    var analysisLegacyMode: Bool = false
-
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
 
@@ -313,10 +321,44 @@ final class AppState {
     /// dependency at all (it is backed entirely by the `watchtower features`
     /// CLI), so it can live as a plain, always-constructed `let` here and
     /// load independently of the DB-open Task in `initialize()`.
-    let featureManager = FeatureManagerService()
+    let featureManager: FeatureManagerService
 
-    /// Manages background pipeline tasks (digests, people) started after onboarding sync.
-    let backgroundTaskManager = BackgroundTaskManager()
+    /// `onboardingDefaults` backs the onboarding step and goals — tests pass
+    /// an isolated suite.
+    @ObservationIgnored private let onboardingDefaults: UserDefaults
+
+    /// Opens (and migrates) the workspace database.
+    @ObservationIgnored private let openDatabase: @Sendable () throws -> DatabaseManager
+
+    /// Test seams for the two steps of finishing onboarding that spawn CLI
+    /// children or ask macOS for permissions; nil runs the real thing
+    /// (`daemonManager`, `wireAppDatabase`'s body).
+    @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
+    @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+
+    /// `onboardingDefaults` backs the onboarding step and goals, `openDatabase`
+    /// the database open, `peopleRosterRun` the people load, `featureManager`
+    /// the Feature Manager — tests pass an isolated suite and fakes.
+    init(
+        onboardingDefaults: UserDefaults = .standard,
+        openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
+        peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
+        featureManager: FeatureManagerService? = nil,
+        onboardingGoals: OnboardingGoalsModel? = nil
+    ) {
+        let features = featureManager ?? FeatureManagerService()
+        self.featureManager = features
+        onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
+        self.onboardingDefaults = onboardingDefaults
+        self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
+        peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
+        self.openDatabase = openDatabase
+        // A daemon that came up after all (a later poll, a Settings start)
+        // takes the "did not start" banner with it.
+        daemonManager.onRunningChanged = { [weak self] running in
+            if running { self?.daemonStartFailure = nil }
+        }
+    }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
     func ensureChatViewModels() {
@@ -403,6 +445,10 @@ final class AppState {
     }
 
     private var isInitializing = false
+    /// `initialize()`'s launch work and its daemon (re)start — held so tests
+    /// can await them.
+    @ObservationIgnored private(set) var launchTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var ensureDaemonTask: Task<Void, Never>?
     private var terminateObserver: NSObjectProtocol?
 
     /// Brief-run chat VMs need the open DB; wired once it opens rather than
@@ -566,11 +612,12 @@ final class AppState {
                     self?.embeddedChatCenter.finishAllAsPartial()
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
+                    // Onboarding's people load: its child gets SIGTERM.
+                    self?.peopleRoster.stop()
                     // Best-effort: the removal may not finish before exit;
                     // the next launch removes what is left.
                     self?.sessionAgentStateCenter?.withdrawAllNotices()
                 }
-                self?.backgroundTaskManager.terminateProcessesSync()
             }
         }
         if embeddedChatSweep == nil {
@@ -595,7 +642,7 @@ final class AppState {
         meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
         dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
         installLifecycleHooks()
-        Task {
+        launchTask = Task {
             await syncCLIBinaryStore()
             // Only now resolve the CLI path and start polling: before the sync
             // the store copy may still be the stale one, and DaemonManager
@@ -604,60 +651,44 @@ final class AppState {
             do {
                 // Off the concurrency pool: the migrate child may run for up
                 // to 30 s (see ProcessPipes).
-                let opened = await ProcessPipes.offPool { Result { try DatabaseManager.migrateAndOpen() } }
+                let opened = await ProcessPipes.offPool { [openDatabase] in Result { try openDatabase() } }
                 let manager = try opened.get()
-                databaseManager = manager
-                embeddedChats.dbPool = manager.dbPool
-                errorMessage = nil
                 ambiguousWorkspaces = []
                 // Before the splash hides, so Day Plan / Briefings never flash
                 // the no-owner state on an install that has one.
-                await refreshOwner()
-                wireMeetingRecorderLoaders(dbPool: manager.dbPool)
-                wireTargetBriefCenter()
-                // Sync state machine with DB: if profile says done, mark complete
-                if onboarding.currentStep != .complete {
-                    let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)
-                    if !dbDone {
-                        onboarding.markComplete()
-                    } else {
-                        onboarding.skipCompleted()
-                    }
-                }
-                needsOnboarding = onboarding.currentStep != .complete
+                await wireOnboardingDatabase(manager)
+                await reconcileOnboarding(dbPool: manager.dbPool)
                 profileComplete = !needsOnboarding
-                analysisLegacyMode = ConfigService().analysisLegacyMode
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
-                // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
+                // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
                     await initSidebarCounts(dbPool: manager.dbPool)
                 }
                 isLoading = false
-                loadCustomEmoji(from: manager)
-                initFeatureViewModels(manager: manager)
-                // Resume pipelines if app was closed mid-generation
-                if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
-                    backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
-                } else if !needsOnboarding {
+                // During onboarding only the account view models run (above):
+                // the rest (watchers that ask for notification permission,
+                // meeting reminders, polling) waits for completeOnboarding().
+                if !needsOnboarding {
+                    wireAppDatabase(manager)
+                }
+                // The daemon's cycle generates everything itself: a launch
+                // needs nothing more than a running daemon.
+                if !needsOnboarding {
                     // Ensure a fresh daemon is running (rebuild-safe): stop any existing
                     // one (possibly from an older binary), then start the current binary.
                     ensureDaemonRunning()
                 }
             } catch {
-                print("[AppState] database open failed: \(error.localizedDescription)")
-                errorMessage = error.localizedDescription
-                databaseManager = nil
-                if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
-                    ambiguousWorkspaces = names
-                } else {
-                    ambiguousWorkspaces = []
-                }
-                // No DB available — if state machine not complete, onboarding needed
-                needsOnboarding = onboarding.currentStep != .complete
-                if needsOnboarding {
-                    onboarding.skipCompleted()
-                }
-                isLoading = false
+                await handleLaunchDatabaseFailure(error)
+            }
+            // Any launch that lands in onboarding (a fresh install, or one
+            // relaunched before finishing it) may let the transcription
+            // langset follow the Mac's languages; "Run setup again" from
+            // Settings does not, it never goes through here. An install that
+            // finished onboarding keeps the "ru,uk,en" default it has been
+            // transcribing with. Whisper's codes: it is the default engine.
+            if needsOnboarding {
+                TranscriptionLangsetSeed.seedIfUntouched(.standard, supported: WhisperKitEngine.languageCodes)
             }
         }
         // Check for updates now and every UpdateService.checkInterval while
@@ -707,30 +738,424 @@ final class AppState {
         }
     }
 
-    /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
-    private func checkNeedsOnboarding(dbPool: DatabasePool) async -> Bool {
+    @ObservationIgnored private var onboardingDatabaseOpen: Task<String?, Never>?
+
+    /// The completion sequence is running: every step's Continue is off, so
+    /// a second click cannot run it (or Goals' writes) again.
+    private(set) var isFinishingOnboarding = false
+    /// Why the last step exit failed (the database, the completion
+    /// sequence); cleared on the next exit and on Back.
+    private(set) var onboardingStepError: String?
+
+    func clearOnboardingStepError() {
+        onboardingStepError = nil
+    }
+
+    /// Moves past `step`: to the next step `route` runs — opening the
+    /// database first when that is Connect, whose account sheets need it —
+    /// or, when none is left, through `OnboardingCompletion.finish`, which
+    /// writes `onboarding_done` with About you's answers when given
+    /// (`OnboardingProfileWriter.done`), else alone (`.later`).
+    func leaveOnboardingStep(
+        _ step: OnboardingV2Step,
+        route: OnboardingRoute,
+        about: OnboardingAboutYou? = nil,
+        onRetry: () -> Void
+    ) async {
+        // Finishing, or finished: a late click must not run it again.
+        guard !isFinishingOnboarding, onboarding.currentStep != .complete else { return }
+        onboardingStepError = nil
+        let next = route.step(after: step)
+        if next == .connect, let failure = await openDatabaseForOnboarding() {
+            onboardingStepError = "Could not open the database: \(failure)"
+            return
+        }
+        guard next == .complete else {
+            onboarding.advance(route: route)
+            return
+        }
+        isFinishingOnboarding = true
+        defer { isFinishingOnboarding = false }
+        let isRerun = isOnboardingRerun
+        let finished = await OnboardingCompletion.finish(
+            markOnboardingDone: {
+                if let failure = await openDatabaseForOnboarding() {
+                    onboardingStepError = "Could not open the database: \(failure)"
+                    return false
+                }
+                guard let manager = databaseManager else { return false }
+                do {
+                    try await manager.dbPool.write { db in
+                        if let about {
+                            try OnboardingProfileWriter.done(db, about: about)
+                        } else {
+                            try OnboardingProfileWriter.later(db)
+                        }
+                    }
+                    return true
+                } catch {
+                    onboardingStepError = "Could not finish setup: \(error.localizedDescription)"
+                    return false
+                }
+            },
+            startDaemon: {
+                // One daemon start (or restart) instead of one-shot CLI
+                // generators racing its first cycle. In the background: a
+                // restart may wait up to a minute for the old daemon to die,
+                // and Continue must not. It starts only after the
+                // onboarding_done write above.
+                // A re-run that changed nothing needs no restart — only a
+                // daemon, if none runs.
+                bringUpDaemonInBackground(startOnly: isRerun && !rerunChangedSomething)
+                // The landing reads the sources the steps just connected.
+                await refreshConnectedSources()
+            },
+            completeOnboarding: {
+                completeOnboarding()
+                // Landing is for the first run; a re-run goes back to where
+                // the owner was.
+                if !isRerun { land(after: route) }
+            },
+            onRetry: onRetry
+        )
+        // About you was answered (or deferred) here: no later sheet.
+        if finished, step == .aboutYou {
+            markAboutYouShown()
+        }
+    }
+
+    /// Opens the database for onboarding's Connect step, whose account
+    /// sheets need the account view models — on a fresh install launch could
+    /// not open it (no workspace until Goals' Continue). Only what the steps
+    /// need (`wireOnboardingDatabase`); completion wires the rest. A no-op
+    /// when the database is open; concurrent calls share one open. Returns
+    /// the failure to show, nil on success.
+    func openDatabaseForOnboarding() async -> String? {
+        if databaseManager != nil { return nil }
+        if let onboardingDatabaseOpen { return await onboardingDatabaseOpen.value }
+        let open = Task<String?, Never> { [openDatabase] in
+            let opened = await ProcessPipes.offPool { Result { try openDatabase() } }
+            switch opened {
+            case .failure(let error):
+                return error.localizedDescription
+            case .success(let manager):
+                await wireOnboardingDatabase(manager)
+                return nil
+            }
+        }
+        onboardingDatabaseOpen = open
+        let failure = await open.value
+        onboardingDatabaseOpen = nil
+        return failure
+    }
+
+    /// `initialize()` when the database could not be opened: on a fresh
+    /// install (no workspace yet) that is onboarding's starting point.
+    func handleLaunchDatabaseFailure(_ error: Error) async {
+        print("[AppState] database open failed: \(error.localizedDescription)")
+        errorMessage = error.localizedDescription
+        databaseManager = nil
+        if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
+            ambiguousWorkspaces = names
+        } else {
+            ambiguousWorkspaces = []
+        }
+        // No DB available — if state machine not complete, onboarding needed
+        await reconcileOnboarding(dbPool: nil)
+        if needsOnboarding {
+            // Nothing is connected without a database; only the sidebar of
+            // a finished install keeps failing open.
+            featureVisibility.connectedSources = .none
+        }
+        isLoading = false
+    }
+
+    /// Launch-time onboarding state: the DB's `onboarding_done` wins over a
+    /// local step that is not complete (no UserDefaults — a new Mac, a wiped
+    /// defaults domain — must not re-run onboarding on a finished install);
+    /// then a resumed step the route now skips moves on. When nothing is
+    /// left after it, it goes back to Goals instead: settling straight into
+    /// `.complete` would skip the completion sequence (`onboarding_done`,
+    /// the pipelines), which Goals' Continue then runs. `dbPool` is nil when
+    /// the database could not be opened. Needs `refreshConnectedSources` to
+    /// have run: the route reads whether Slack is connected.
+    func reconcileOnboarding(dbPool: DatabasePool?) async {
+        // An unreadable profile skips onboarding for this launch only — not
+        // persisted, so the next launch checks again.
+        var skipThisLaunch = false
+        if let dbPool, onboarding.currentStep != .complete {
+            switch await checkProfileOnboarding(dbPool: dbPool) {
+            case .done: onboarding.goTo(.complete)
+            case .unreadable: skipThisLaunch = true
+            case .pending: break
+            }
+        }
+        let route = onboardingRoute
+        if onboarding.currentStep != .complete, route.skips(onboarding.currentStep),
+           route.step(after: onboarding.currentStep) == .complete {
+            onboarding.goTo(.purpose)
+        }
+        onboarding.settle(route: route)
+        needsOnboarding = !skipThisLaunch && onboarding.currentStep != .complete
+    }
+
+    /// The route onboarding follows: the goals of the last Continue and
+    /// whether a Slack account is connected.
+    var onboardingRoute: OnboardingRoute {
+        onboardingGoals.route(hasSlackAccount: onboardingHasSlackAccount)
+    }
+
+    /// Settings' account changes (Add, Remove, re-login) while onboarding is
+    /// on screen leave the daemon to its finish.
+    var accountDaemonPolicy: DaemonRestartPolicy {
+        needsOnboarding ? .deferred : .restart
+    }
+
+    /// Whether a Slack account is connected, for onboarding's decisions
+    /// (workspace init, the route). Never the sidebar's fail-open value:
+    /// with no database there is no account, whatever `connectedSources`
+    /// says.
+    var onboardingHasSlackAccount: Bool {
+        databaseManager != nil && featureVisibility.connectedSources.slack
+    }
+
+    private enum ProfileOnboarding {
+        /// Profile missing or onboarding_done == false.
+        case pending
+        case done
+        /// The read failed (logged).
+        case unreadable
+    }
+
+    private func checkProfileOnboarding(dbPool: DatabasePool) async -> ProfileOnboarding {
         do {
             return try await dbPool.read { db in
-                guard let profile = try ProfileQueries.fetchCurrentProfile(db) else {
-                    return true
-                }
-                return !profile.onboardingDone
+                guard let profile = try ProfileQueries.fetchCurrentProfile(db) else { return .pending }
+                return profile.onboardingDone ? .done : .pending
             }
         } catch {
-            return false // On error, don't block — skip onboarding
+            print("[AppState] onboarding check failed: \(error.localizedDescription)")
+            return .unreadable
+        }
+    }
+
+    /// Finish's daemon bring-up, held so tests can await it.
+    @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
+
+    /// Starts (or, with `startOnly` false, restarts) the daemon in the
+    /// background, after any earlier bring-up still running: two restarts
+    /// overlapping would read as a failed start.
+    private func bringUpDaemonInBackground(startOnly: Bool) {
+        let daemon = daemonControl
+        let previous = onboardingDaemonStart
+        onboardingDaemonStart = Task {
+            await previous?.value
+            let up = startOnly && daemon.daemonIsRunning()
+                ? true
+                : await OnboardingFinishPlan.bringUpDaemon(daemon)
+            if up {
+                daemonStartFailure = nil
+            } else {
+                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
+            }
+        }
+    }
+
+    /// The background sync did not come up after setup: shown over the tab
+    /// setup landed on, not only in the tray.
+    private(set) var daemonStartFailure: String?
+
+    func dismissDaemonStartFailure() {
+        daemonStartFailure = nil
+    }
+
+    static func daemonStartFailureText(_ detail: String?) -> String {
+        let reason = detail.map { ": \($0)." } ?? "."
+        return "The background sync did not start\(reason) Open Settings → System to retry."
+    }
+
+    // MARK: - Features for a source connected from Settings
+
+    /// What `refreshConnectedSources` last read; nil before the first read.
+    @ObservationIgnored private var lastReadConnectedSources: ConnectedSources?
+    /// The check a new source kicked off — held so tests can await it.
+    @ObservationIgnored private(set) var featureSuggestionCheck: Task<Void, Never>?
+
+    /// Features the goals of a just-connected source would turn on, off
+    /// now, waiting for the owner's yes.
+    private(set) var featureSuggestion: [FeatureInfo] = []
+    private(set) var isApplyingFeatureSuggestion = false
+    private(set) var featureSuggestionError: String?
+
+    /// The offer shows in Settings after the late About you sheet and once
+    /// no Add account sheet is up.
+    var showsFeatureSuggestion: Bool {
+        !featureSuggestion.isEmpty && !showsLateAboutYou && !lateAboutYouPending && !isAddingAccount
+    }
+
+    /// Settings' one sheet slot: About you always first, the feature offer
+    /// queued behind it.
+    var settingsSheet: SettingsSheet? {
+        if showsLateAboutYou { return .aboutYou }
+        return showsFeatureSuggestion ? .featureSuggestion : nil
+    }
+
+    /// The slot was closed from outside its buttons (Esc on About you); the
+    /// feature offer closes only through its own.
+    func settingsSheetDismissed(_ sheet: SettingsSheet) {
+        if sheet == .aboutYou { showsLateAboutYou = false }
+    }
+
+    /// Waits for the account view models' own daemon restarts (an Add or
+    /// Remove in Settings) still in flight.
+    private func awaitAccountDaemonRestarts() async {
+        await slackAccountsViewModel?.daemonRestartTask?.value
+        await googleAccountsViewModel?.daemonRestartTask?.value
+        await jiraAccountsViewModel?.daemonRestartTask?.value
+    }
+
+    static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
+    static let featureStagedInSettings =
+        "This feature has an unsaved change in Settings → Features — apply or discard it first"
+
+    /// Offered while an apply runs: merged once it is over.
+    @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
+
+    private func suggestFeatures(for goals: [OnboardingGoal]) async {
+        await featureManager.load()
+        if let error = featureManager.loadError {
+            print("[AppState] related features not offered, the feature list failed: \(error)")
+            return
+        }
+        let features = featureManager.features
+        let ids = SourceConnectPrompt.suggestedFeatureIDs(
+            for: goals,
+            disabled: featureManager.disabledFeatureIDs,
+            registryOrder: features.map(\.id)
+        )
+        let suggested = features.filter { ids.contains($0.id) }
+        guard !suggested.isEmpty else { return }
+        if isApplyingFeatureSuggestion {
+            deferredSuggestion = Self.union(deferredSuggestion, suggested)
+            return
+        }
+        featureSuggestionError = nil
+        featureSuggestion = Self.union(featureSuggestion, suggested)
+    }
+
+    private static func union(_ lhs: [FeatureInfo], _ rhs: [FeatureInfo]) -> [FeatureInfo] {
+        lhs + rhs.filter { new in !lhs.contains { $0.id == new.id } }
+    }
+
+    /// Yes: enables the offered features right away (`features enable`,
+    /// never through Settings → Features' staged changes) and restarts the
+    /// daemon once. After a failed restart a retry finds them already on
+    /// and only restarts.
+    func acceptFeatureSuggestion() async {
+        guard !featureSuggestion.isEmpty, !isApplyingFeatureSuggestion else { return }
+        isApplyingFeatureSuggestion = true
+        defer {
+            isApplyingFeatureSuggestion = false
+            featureSuggestion = Self.union(featureSuggestion, deferredSuggestion)
+            deferredSuggestion = []
+        }
+        let ids = featureSuggestion.map(\.id)
+        let daemon = daemonControl
+        // The connect that raised the offer may still be restarting the
+        // daemon itself: one restart at a time.
+        await awaitAccountDaemonRestarts()
+        let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        if result.busy {
+            // Settings → Features is applying its own batch.
+            featureSuggestionError = Self.featureChangesBusy
+            return
+        }
+        let stillOff = Set(ids).intersection(featureManager.disabledFeatureIDs)
+        if result.enabled.isEmpty, stillOff.isEmpty {
+            // Everything is on already (a retry after a failed restart): the
+            // daemon still has to pick it up.
+            do {
+                try await daemon.restartWaiting()
+                featureManager.loadError = nil
+            } catch {
+                featureSuggestionError = error.localizedDescription
+                return
+            }
+        } else if let error = featureManager.loadError {
+            // An enable or the restart failed: the offer stays, its retry
+            // enables what is still off and restarts.
+            featureSuggestionError = error
+            return
+        }
+        // What came on is done; what is still off stays offered.
+        featureSuggestion.removeAll { ids.contains($0.id) && !stillOff.contains($0.id) }
+        if !stillOff.isEmpty {
+            // Off only through a change staged in Settings → Features (on
+            // live, so `features enable` skips it), or nothing ran at all.
+            featureSuggestionError = stillOff.contains { featureManager.pending[$0] == false }
+                ? Self.featureStagedInSettings
+                : Self.featureChangesBusy
+            return
+        }
+        featureSuggestionError = nil
+    }
+
+    func declineFeatureSuggestion() {
+        featureSuggestion = []
+        featureSuggestionError = nil
+    }
+
+    /// The Slack, Google and Jira account ids when a re-run started: an
+    /// account added or removed meanwhile (the Connect sheets defer the
+    /// daemon restart to finish) counts as a change.
+    @ObservationIgnored private var rerunAccountsAtStart: [Int] = []
+
+    private var accountFingerprint: [Int] {
+        (slackAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (googleAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (jiraAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+    }
+
+    /// The re-run wrote something the daemon must pick up.
+    private var rerunChangedSomething: Bool {
+        onboardingGoals.wroteChanges || accountFingerprint != rerunAccountsAtStart
+    }
+
+    private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+
+    /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
+    private func land(after route: OnboardingRoute) {
+        let catchUpVisible = SidebarDestination.catchUp.isVisible(
+            disabledFeatures: featureVisibility.disabledFeatureIDs,
+            connected: featureVisibility.connectedSources
+        )
+        switch OnboardingFinishPlan.landing(goals: route.goals, catchUpVisible: catchUpVisible) {
+        case .catchUp: selectedDestination = .catchUp
+        case .workbench: selectedDestination = .workbench
+        case .chat: selectedDestination = .chat
         }
     }
 
     /// Called when onboarding flow completes successfully.
     func completeOnboarding() {
-        onboarding.markComplete()
+        isOnboardingRerun = false
+        onboarding.goTo(.complete)
         needsOnboarding = false
         profileComplete = true
+        if let manager = databaseManager {
+            wireAppDatabase(manager)
+        }
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
         if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
             Task { await initSidebarCounts(dbPool: pool) }
         }
+        // Sources onboarding connected (its account sheets may write through
+        // the CLI without a VM reload) must reach the sidebar now — as a new
+        // baseline: onboarding picked their features, so they raise no
+        // related-features offer.
+        lastReadConnectedSources = nil
+        connectedSourcesRefresh = Task { await refreshConnectedSources() }
     }
 
     /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
@@ -755,36 +1180,112 @@ final class AppState {
         sidebarCountsViewModel = countsVM
     }
 
-    /// Re-triggers the onboarding flow (from Settings).
-    /// Resets to the chat step since connect/settings/claude are already done.
-    func startOnboarding() {
-        onboarding.reset(to: .chat)
-        needsOnboarding = true
-        profileComplete = false
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
+    /// The onboarding on screen was started from Settings: it can be
+    /// cancelled back to the main window.
+    private(set) var isOnboardingRerun = false
+    /// Why the last "Run setup again" did not start, for both of its
+    /// buttons (Settings → Profile's line, the chat's alert).
+    private(set) var rerunError: String?
+    /// The re-run is reading the features and config.
+    private(set) var isPreparingRerun = false
+
+    func clearRerunError() {
+        rerunError = nil
     }
 
-    /// Wipe all LLM-generated data, stop daemon, and re-run post-onboarding pipelines.
-    func resetLLMData() async throws {
+    /// "Run setup again" (Settings → Profile, the chat's profile button):
+    /// reads what is in effect now — the feature set from the Feature
+    /// Manager, the assistant language from the config — and starts the
+    /// flow from it. Returns the failure to show instead of starting with a
+    /// guess (a reverted feature, the macOS language over the configured
+    /// one).
+    func rerunOnboarding(readConfig: @MainActor () -> ConfigService = { ConfigService() }) async {
+        guard !needsOnboarding, !isPreparingRerun else { return }
+        isPreparingRerun = true
+        defer { isPreparingRerun = false }
+        rerunError = nil
+        await featureManager.load()
+        if let error = featureManager.loadError {
+            rerunError = "Could not read the features: \(error)"
+            return
+        }
+        let config = readConfig()
+        if let error = config.parseError {
+            rerunError = "Could not read the config: \(error)"
+            return
+        }
+        let enabled = Set(featureManager.features.filter { $0.state == "enabled" }.map(\.id))
+        startOnboarding(enabledFeatureIDs: enabled, configuredLanguage: config.digestLanguage)
+    }
+
+    /// Re-triggers the onboarding flow back at Goals, seeded from
+    /// `enabledFeatureIDs` and `configuredLanguage` (absent: English, what
+    /// the pipelines use). Nothing is written until a step's Continue.
+    func startOnboarding(enabledFeatureIDs: Set<String>, configuredLanguage: String?) {
+        let language = configuredLanguage?.trimmingCharacters(in: .whitespaces) ?? ""
+        onboarding.reset()
+        onboardingGoals.seedForRerun(
+            enabledFeatureIDs: enabledFeatureIDs,
+            language: language.isEmpty ? AssistantLanguageCatalog.fallbackName : language
+        )
+        onboardingAboutYou.prepareForRerun()
+        onboardingStepError = nil
+        isOnboardingRerun = true
+        rerunAccountsAtStart = accountFingerprint
+        needsOnboarding = true
+        profileComplete = false
+    }
+
+    /// Cancel on a re-run: back to the main window, nothing more written.
+    /// What a step's Continue already wrote stays and reaches the daemon (a
+    /// restart in the background).
+    func cancelOnboardingRerun() {
+        guard isOnboardingRerun, !isFinishingOnboarding, !onboardingGoals.isContinuing else { return }
+        if rerunChangedSomething {
+            bringUpDaemonInBackground(startOnly: false)
+        }
+        isOnboardingRerun = false
+        onboarding.goTo(.complete)
+        onboardingStepError = nil
+        needsOnboarding = false
+        profileComplete = true
+    }
+
+    /// Wipe all LLM-generated data, stop the daemon, and start it again to
+    /// rebuild them: its stamps go too, so the first cycle regenerates
+    /// people cards and the briefing at once instead of on their cadence.
+    /// A failed restart is thrown for the Settings error line.
+    func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
 
-        // 1. Stop running pipelines (if any) — await ensures process exits and releases file locks
-        await backgroundTaskManager.stopAll()
-
-        // 2. Stop daemon
-        daemonManager.resolvePathIfNeeded()
-        if DaemonManager.checkDaemonRunning() {
-            await daemonManager.stopDaemon()
-            try? await Task.sleep(for: .milliseconds(500))
+        // 1. Stop the daemon so nothing writes while the tables are wiped —
+        // after a finish still bringing one up, and only once its process is
+        // really gone (a timeout wipes nothing).
+        await onboardingDaemonStart?.value
+        let daemon = daemonControl
+        if daemon.daemonIsRunning() {
+            await daemon.stopDaemonNow()
+        }
+        var failure: Error?
+        do {
+            try await daemon.waitUntilStopped()
+            // 2. Wipe LLM-generated tables and the daemon's stamps.
+            try db.wipeLLMData()
+            if let workspaceDir {
+                try DaemonStampFiles.clear(in: workspaceDir)
+            }
+        } catch {
+            failure = error
         }
 
-        // 3. Wipe LLM-generated tables
-        try db.wipeLLMData()
-
-        // 4. Reset pipelines flag and re-run
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
-        backgroundTaskManager.tasks.removeAll()
-        backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
+        // 3. Restart — also after a failure above, so the reset never leaves
+        // the app without a daemon; the first error is what is reported.
+        do {
+            try await daemon.restartWaiting()
+        } catch {
+            failure = failure ?? error
+        }
+        if let failure { throw failure }
     }
 
     /// Ensure the daemon is running against the current CLI binary.
@@ -792,14 +1293,52 @@ final class AppState {
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
     /// so UI quit/launch cycles the daemon lifecycle.
     private func ensureDaemonRunning() {
-        Task {
+        let daemon = daemonControl
+        ensureDaemonTask = Task {
             daemonManager.resolvePathIfNeeded()
-            if DaemonManager.checkDaemonRunning() {
-                await daemonManager.stopDaemon()
+            if daemon.daemonIsRunning() {
+                await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            await daemonManager.startDaemon()
+            _ = await daemon.startDetached()
         }
+    }
+
+    /// What onboarding's steps need once the database is open: the database
+    /// itself, the owner, the connected sources and the account view models
+    /// behind the Connect sheets. Nothing here asks macOS for anything.
+    private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
+        databaseManager = manager
+        errorMessage = nil
+        await refreshOwner()
+        await refreshConnectedSources()
+        guard slackAccountsViewModel == nil else { return }
+        initEmailAccounts(dbPool: manager.dbPool)
+        initCalendarAccounts(dbPool: manager.dbPool)
+        initGoogleAccounts(dbPool: manager.dbPool)
+        initSlackAccounts(dbPool: manager.dbPool)
+        initJiraAccounts(dbPool: manager.dbPool)
+    }
+
+    @ObservationIgnored private var appDatabaseWired = false
+
+    /// Mirrors Go's `DefaultInitialHistDays`.
+    static let defaultInitialHistoryDays = 2
+
+    /// The rest of the database wiring, once per process: on launch when no
+    /// onboarding is pending, else at its completion.
+    private func wireAppDatabase(_ manager: DatabaseManager) {
+        guard !appDatabaseWired else { return }
+        appDatabaseWired = true
+        if let override = wireAppDatabaseOverride {
+            override(manager)
+            return
+        }
+        embeddedChats.dbPool = manager.dbPool
+        wireMeetingRecorderLoaders(dbPool: manager.dbPool)
+        wireTargetBriefCenter()
+        loadCustomEmoji(from: manager)
+        initFeatureViewModels(manager: manager)
     }
 
     /// Builds every feature ViewModel and starts their sync-tolerant polling,
@@ -813,11 +1352,6 @@ final class AppState {
         initIdeas(dbManager: manager)
         initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
-        initEmailAccounts(dbPool: manager.dbPool)
-        initCalendarAccounts(dbPool: manager.dbPool)
-        initGoogleAccounts(dbPool: manager.dbPool)
-        initSlackAccounts(dbPool: manager.dbPool)
-        initJiraAccounts(dbPool: manager.dbPool)
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
@@ -888,21 +1422,145 @@ final class AppState {
 
     func initEmailAccounts(dbPool: DatabasePool) {
         let vm = EmailAccountsViewModel(dbPool: dbPool)
+        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
         vm.refresh()
         emailAccountsViewModel = vm
     }
 
     func initCalendarAccounts(dbPool: DatabasePool) {
         let vm = CalendarAccountsViewModel(dbPool: dbPool)
+        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
         vm.refresh()
         calendarAccountsViewModel = vm
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
         let vm = SlackAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
+        vm.onAccountsChanged = { [weak self, weak vm] in
+            if let vm { self?.slackAccountsDidChange(vm.accounts) }
+            await self?.accountsChanged()
+        }
         vm.refresh()
         slackAccountsViewModel = vm
+    }
+
+    /// The active Slack accounts at the last refresh; nil before the first.
+    @ObservationIgnored private var knownSlackAccountIDs: Set<Int>?
+
+    /// A Slack account that appeared since the last refresh starts the
+    /// people load — however its Add sheet was left (closed mid-sign-in, the
+    /// connect finishing afterwards, included) — and, outside onboarding,
+    /// offers About you once. The first refresh records what is already
+    /// there, and during onboarding an account already connected (a
+    /// relaunch mid-onboarding) resumes the load.
+    func slackAccountsDidChange(_ accounts: [SlackAccount]) {
+        let active = accounts.filter { $0.status != "removed" }.map(\.id)
+        defer { knownSlackAccountIDs = Set(active) }
+        guard let known = knownSlackAccountIDs else {
+            if needsOnboarding { resumePeopleRosterIfNeeded() }
+            return
+        }
+        guard let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
+        if needsOnboarding {
+            peopleRoster.start(accountID: added)
+        } else if known.isEmpty, lateAboutYouCheck == nil {
+            // The first Slack account after onboarding; a second workspace
+            // is not "connecting Slack".
+            lateAboutYouCheck = Task {
+                await offerLateAboutYou(accountID: added)
+                lateAboutYouCheck = nil
+            }
+        }
+    }
+
+    // MARK: - About you after a later Slack connect
+
+    /// UserDefaults key: About you was shown — the onboarding step left
+    /// through Done or Later, or the sheet after a later Slack connect. The
+    /// sheet is offered only while it is unset.
+    static let lateAboutYouShownKey = "about_you_after_slack_shown"
+
+    /// The sheet waits for Settings: set once the offer passed its checks,
+    /// turned into `showsLateAboutYou` by `presentLateAboutYouIfReady()`.
+    private(set) var lateAboutYouPending = false
+    /// The About you sheet over the Settings window.
+    var showsLateAboutYou = false
+    /// One of Settings' Add account sheets is up: the late About you sheet
+    /// and the feature suggestion wait for it.
+    var isAddingAccount = false {
+        didSet { presentLateAboutYouIfReady() }
+    }
+    private(set) var isSavingLateAboutYou = false
+    private(set) var lateAboutYouError: String?
+    /// The check `slackAccountsDidChange` kicked off — held so tests can
+    /// await it; a second one does not start while it runs.
+    @ObservationIgnored private(set) var lateAboutYouCheck: Task<Void, Never>?
+
+    private var lateAboutYouShown: Bool {
+        onboardingDefaults.bool(forKey: Self.lateAboutYouShownKey)
+    }
+
+    /// The first Slack account connected after onboarding (say a
+    /// Development-only setup, Slack added in Settings later): offer About
+    /// you once, unless it was shown or the profile already names people.
+    /// Only then does the people load start, for the pickers.
+    private func offerLateAboutYou(accountID: Int) async {
+        guard !lateAboutYouShown, let pool = databaseManager?.dbPool else { return }
+        do {
+            let answers = try await pool.read { db in try OnboardingProfileWriter.currentAnswers(db) }
+            guard answers.manager.isEmpty, answers.reports.isEmpty, answers.peers.isEmpty else { return }
+        } catch {
+            print("[AppState] About you check failed: \(error.localizedDescription)")
+            return
+        }
+        // Shown meanwhile (the onboarding step, another offer)?
+        guard !lateAboutYouShown else { return }
+        peopleRoster.start(accountID: accountID)
+        onboardingAboutYou.prepareForRerun()
+        lateAboutYouError = nil
+        lateAboutYouPending = true
+        presentLateAboutYouIfReady()
+    }
+
+    /// Shows the pending sheet unless the Add Slack sheet is still up (its
+    /// dismissal calls this again).
+    func presentLateAboutYouIfReady() {
+        guard lateAboutYouPending, !isAddingAccount else { return }
+        lateAboutYouPending = false
+        showsLateAboutYou = true
+    }
+
+    /// The sheet appeared: it counts as shown from now on.
+    func markAboutYouShown() {
+        onboardingDefaults.set(true, forKey: Self.lateAboutYouShownKey)
+    }
+
+    /// The sheet's Done (`about`) writes the answers — the profile alone, no
+    /// daemon, no onboarding state; the sheet stays up on a failure. Later
+    /// (nil) only closes it.
+    func finishLateAboutYou(_ about: OnboardingAboutYou?) async {
+        guard let about else {
+            showsLateAboutYou = false
+            return
+        }
+        guard !isSavingLateAboutYou, let pool = databaseManager?.dbPool else { return }
+        isSavingLateAboutYou = true
+        defer { isSavingLateAboutYou = false }
+        do {
+            try await pool.write { db in try OnboardingProfileWriter.done(db, about: about) }
+            lateAboutYouError = nil
+            showsLateAboutYou = false
+        } catch {
+            lateAboutYouError = "Could not save: \(error.localizedDescription)"
+        }
+    }
+
+    /// Connect or About you on a relaunch: the load did not survive the quit,
+    /// so an already connected Slack account starts it once.
+    func resumePeopleRosterIfNeeded() {
+        guard peopleRoster.state == .idle,
+              let account = slackAccountsViewModel?.accounts.first(where: { $0.status != "removed" }) else { return }
+        peopleRoster.start(accountID: account.id)
     }
 
     /// Re-consents one Slack account from a failed send's card ("sign in
@@ -923,7 +1581,7 @@ final class AppState {
 
     func initJiraAccounts(dbPool: DatabasePool) {
         let vm = JiraAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         jiraAccountsViewModel = vm
         // Pickers built over a previous pool would read a stale database.
@@ -1034,7 +1692,7 @@ final class AppState {
 
     func initGoogleAccounts(dbPool: DatabasePool) {
         let vm = GoogleAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         googleAccountsViewModel = vm
         // GoogleConnectFlow.shared is a singleton constructed before any
@@ -1043,6 +1701,51 @@ final class AppState {
         // sibling VM above gets its pool, so isConnected reads google_accounts
         // instead of staying permanently false.
         GoogleConnectFlow.shared.configure(dbPool: dbPool)
+    }
+
+    @ObservationIgnored private var connectedSourcesGeneration = 0
+    @ObservationIgnored private var appliedConnectedSourcesGeneration = 0
+    /// The refresh `completeOnboarding()` kicked off — held so tests can
+    /// await it.
+    @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
+
+    /// A Slack/Google/Jira account-list reload: re-resolves the owner
+    /// (OWNER-02) and the connected sources the sidebar gates on.
+    private func accountsChanged() async {
+        await refreshOwner()
+        await refreshConnectedSources()
+    }
+
+    /// Re-reads which sources are connected, so a tab whose source was just
+    /// connected (or removed) in Settings shows (or hides) at once. A failed
+    /// read keeps the last value (logged), like `refreshOwner()`.
+    ///
+    /// Reads run off the main actor and can finish out of order; each one
+    /// takes a generation number and writes only if no later-started read
+    /// has written yet, so an older read never overwrites a newer one.
+    func refreshConnectedSources() async {
+        guard let pool = databaseManager?.dbPool else { return }
+        connectedSourcesGeneration += 1
+        let wasOnboarding = needsOnboarding
+        let generation = connectedSourcesGeneration
+        do {
+            let sources = try await pool.read { db in try ConnectedSources.fetch(db) }
+            guard generation > appliedConnectedSourcesGeneration else { return }
+            appliedConnectedSourcesGeneration = generation
+            featureVisibility.connectedSources = sources
+            let previous = lastReadConnectedSources
+            lastReadConnectedSources = sources
+            // Onboarding's own connects (before or after the read) pick
+            // their features there.
+            if let previous, !wasOnboarding, !needsOnboarding {
+                let goals = SourceConnectPrompt.goals(newlyConnectedFrom: previous, to: sources)
+                if !goals.isEmpty {
+                    featureSuggestionCheck = Task { await suggestFeatures(for: goals) }
+                }
+            }
+        } catch {
+            print("[AppState] connected sources read failed, keeping the last value: \(error.localizedDescription)")
+        }
     }
 
     /// Re-resolves `owner` off the main thread. A failed read keeps the last

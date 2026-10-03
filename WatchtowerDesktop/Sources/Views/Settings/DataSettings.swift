@@ -134,11 +134,6 @@ struct DataSettings: View {
                     }
                 }
 
-                if appState.backgroundTaskManager.hasActiveTasks {
-                    Text("Running pipelines will be stopped before resetting.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
             }
             .padding(.vertical, 4)
         }

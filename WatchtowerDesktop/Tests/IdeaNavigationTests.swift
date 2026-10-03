@@ -41,7 +41,7 @@ final class IdeaNavigationTests: XCTestCase {
             (try TestDatabase.insertIdea(db, kind: "note", title: "A note", status: "rejected"),
              try TestDatabase.insertIdea(db, title: "Reacted idea", status: "active", source: "owner"))
         }
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.initIdeas(dbManager: dbManager)
         let vm = try XCTUnwrap(appState.ideasViewModel)
         hideEverything(vm, selecting: Int(visibleID))

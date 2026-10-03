@@ -197,3 +197,70 @@ final class GoogleAccountsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isConnecting)
     }
 }
+
+// MARK: - Daemon restart policy
+//
+// `/usr/bin/true` / `/usr/bin/false` stand in for the CLI: the VM's own
+// success/failure branch runs for real, only the daemon restart is faked.
+
+extension GoogleAccountsViewModelTests {
+    private func makeVM(cli: String) throws -> (GoogleAccountsViewModel, FakeDaemonRestarter, DatabasePool) {
+        let pool = try makePool()
+        let daemon = FakeDaemonRestarter()
+        return (GoogleAccountsViewModel(dbPool: pool, daemon: daemon) { cli }, daemon, pool)
+    }
+
+    private func add(_ vm: GoogleAccountsViewModel, daemonPolicy: DaemonRestartPolicy? = nil) async {
+        let started = if let daemonPolicy {
+            vm.addAccount(label: "", calendar: true, gmail: false, clientID: "", clientSecret: "", daemonPolicy: daemonPolicy)
+        } else {
+            vm.addAccount(label: "", calendar: true, gmail: false, clientID: "", clientSecret: "")
+        }
+        XCTAssertTrue(started)
+        await vm.addTask?.value
+    }
+
+    func testAddRestartsTheDaemonByDefault() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        await add(vm)
+        await vm.daemonRestartTask?.value
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    func testDeferredAddDoesNotRestartTheDaemon() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        await add(vm, daemonPolicy: .deferred)
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testRemoveRestartsTheDaemonByDefault() async throws {
+        let (vm, daemon, pool) = try makeVM(cli: "/usr/bin/true")
+        let id = try await pool.write { db in try TestDatabase.insertGoogleAccount(db, email: "me@example.com") }
+        let account = try fetchAccount(pool, id: id)
+        await vm.remove(account)
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    func testDeferredRemoveDoesNotRestartTheDaemon() async throws {
+        let (vm, daemon, pool) = try makeVM(cli: "/usr/bin/true")
+        let id = try await pool.write { db in try TestDatabase.insertGoogleAccount(db, email: "me@example.com") }
+        let account = try fetchAccount(pool, id: id)
+        await vm.remove(account, daemonPolicy: .deferred)
+        XCTAssertNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testFailedAddDoesNotRestartTheDaemon() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
+        await add(vm)
+        XCTAssertNotNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+}

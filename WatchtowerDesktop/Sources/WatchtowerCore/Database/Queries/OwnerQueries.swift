@@ -22,6 +22,15 @@ package enum OwnerQueries {
         let email: String
     }
 
+    /// The owner's own user in every Slack workspace (namespaced
+    /// ids, not just account #1's) — for people pickers that leave the owner
+    /// out. Not an owner identity: `resolve` stays the one source of that.
+    package static func ownSlackUserIDs(_ db: Database) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT current_user_id FROM slack_accounts WHERE current_user_id != ''
+            """)
+    }
+
     /// The one owner identity of this install: Slack account #1 → Google
     /// account #1 → Jira account #1. Every field is enriched from every
     /// source, independent of which rung produced `id`. No connected identity

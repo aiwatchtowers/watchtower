@@ -121,9 +121,9 @@ func TestBuildSystemPrompt_EmptyInputsGetDefaults(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_DefaultLanguage(t *testing.T) {
-	// Empty language must fall back to the shared default (currently "Russian").
+	// Empty language must fall back to the shared default (currently "English").
 	prompt := BuildSystemPrompt("test-ws", "test-ws", "T001", "schema", "")
-	assert.Contains(t, prompt, "Respond ONLY in Russian")
+	assert.Contains(t, prompt, "Respond ONLY in English")
 }
 
 func TestBuildSystemPrompt_EnglishLanguage(t *testing.T) {

@@ -1,8 +1,7 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// The onboarding steps' non-UI logic: the `claude_path` config edit, the
-/// `config set` sequence and the sync banner's progress/ETA math.
+/// The Goals step's `claude_path` config edit ("Set the path manually").
 final class OnboardingSetupTests: XCTestCase {
 
     // MARK: - claude_path
@@ -94,105 +93,5 @@ final class OnboardingSetupTests: XCTestCase {
         XCTAssertThrowsError(try OnboardingClaudePathConfig.save("/c", configPath: configPath))
         var isDirectory: ObjCBool = false
         XCTAssertTrue(FileManager.default.fileExists(atPath: configPath, isDirectory: &isDirectory) && isDirectory.boolValue)
-    }
-
-    // MARK: - config set
-
-    private actor Calls {
-        var argv: [[String]] = []
-        func record(_ arguments: [String]) { argv.append(arguments) }
-    }
-
-    func testApplyWritesEveryKeyInOrder() async {
-        let calls = Calls()
-        let failure = await OnboardingSettingsPlan.apply([("digest.language", "English"), ("sync.poll_interval", "15m")]) {
-            await calls.record($0)
-            return ProcessOutput(exitCode: 0, stdout: "", stderr: "")
-        }
-        XCTAssertNil(failure)
-        let argv = await calls.argv
-        XCTAssertEqual(argv, [["config", "set", "digest.language", "English"], ["config", "set", "sync.poll_interval", "15m"]])
-    }
-
-    func testApplyStopsAtTheFirstFailedKey() async {
-        let calls = Calls()
-        let failure = await OnboardingSettingsPlan.apply([("a", "1"), ("b", "2"), ("c", "3")]) { arguments in
-            await calls.record(arguments)
-            return ProcessOutput(exitCode: arguments[2] == "b" ? 1 : 0, stdout: "", stderr: "bad value")
-        }
-        XCTAssertEqual(failure, "Failed to set b: bad value")
-        let argv = await calls.argv
-        XCTAssertEqual(argv.map { $0[2] }, ["a", "b"], "nothing after the failure is written")
-    }
-
-    func testApplyFailureWithoutStderrStillSaysWhy() async {
-        let fromStdout = await OnboardingSettingsPlan.apply([("a", "1")]) { _ in
-            ProcessOutput(exitCode: 1, stdout: "unknown key\n", stderr: " ")
-        }
-        XCTAssertEqual(fromStdout, "Failed to set a: unknown key")
-        let silent = await OnboardingSettingsPlan.apply([("a", "1")]) { _ in
-            ProcessOutput(exitCode: 9, stdout: "", stderr: "")
-        }
-        XCTAssertEqual(silent, "Failed to set a: exit code 9")
-    }
-
-    // MARK: - Sync progress
-
-    private func progress(_ phase: String, done: Int = 0, total: Int = 0) throws -> SyncProgressData {
-        let counts: [String: Int] = switch phase {
-        case "Discovery": ["discovery_pages": done, "discovery_total_pages": total]
-        case "Messages": ["msg_channels_done": done, "msg_channels_total": total]
-        case "Users": ["user_profiles_done": done, "user_profiles_total": total]
-        case "Threads": ["threads_done": done, "threads_total": total]
-        default: [:]
-        }
-        var json: [String: Any] = ["phase": phase, "elapsed_sec": 0]
-        for key in [
-            "users_total", "users_done", "channels_total", "channels_done", "discovery_pages",
-            "discovery_total_pages", "discovery_channels", "discovery_users", "user_profiles_total",
-            "user_profiles_done", "msg_channels_total", "msg_channels_done", "messages_fetched"
-        ] {
-            json[key] = counts[key] ?? 0
-        }
-        if let threadsDone = counts["threads_done"] { json["threads_done"] = threadsDone }
-        if let threadsTotal = counts["threads_total"] { json["threads_total"] = threadsTotal }
-        return try JSONDecoder().decode(SyncProgressData.self, from: JSONSerialization.data(withJSONObject: json))
-    }
-
-    func testPhaseCountsReadThePhasesOwnCounters() throws {
-        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Discovery", done: 2, total: 5)) == (2, 5))
-        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Messages", done: 3, total: 9)) == (3, 9))
-        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Users", done: 4, total: 8)) == (4, 8))
-        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Threads", done: 1, total: 2)) == (1, 2))
-        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Finishing")) == (0, 0))
-    }
-
-    func testETAExtrapolatesThePhaseRateAndRestartsOnANewPhase() throws {
-        var eta = OnboardingSyncETA()
-        let start = Date()
-
-        eta.update(try progress("Messages", done: 0, total: 100), now: start)
-        XCTAssertNil(eta.etaSeconds, "a phase's first line only starts its clock")
-
-        eta.update(try progress("Messages", done: 10, total: 100), now: start.addingTimeInterval(1))
-        XCTAssertNil(eta.etaSeconds, "under two seconds in, the rate is not trusted")
-
-        eta.update(try progress("Messages", done: 25, total: 100), now: start.addingTimeInterval(10))
-        XCTAssertEqual(try XCTUnwrap(eta.etaSeconds), 30, accuracy: 0.001, "2.5/s with 75 left")
-
-        eta.update(try progress("Users", done: 50, total: 100), now: start.addingTimeInterval(11))
-        XCTAssertNil(eta.etaSeconds, "a new phase restarts the clock")
-
-        eta.update(try progress("Users", done: 0, total: 100), now: start.addingTimeInterval(20))
-        XCTAssertNil(eta.etaSeconds, "nothing done yet: no rate")
-    }
-
-    func testFormatting() {
-        XCTAssertEqual(OnboardingSyncETA.formatElapsed(42.9), "42s")
-        XCTAssertEqual(OnboardingSyncETA.formatElapsed(125), "2m 5s")
-        XCTAssertEqual(OnboardingSyncETA.formatETA(3), "< 5s")
-        XCTAssertEqual(OnboardingSyncETA.formatETA(45), "~45s")
-        XCTAssertEqual(OnboardingSyncETA.formatETA(120), "~2m")
-        XCTAssertEqual(OnboardingSyncETA.formatETA(150), "~2m 30s")
     }
 }

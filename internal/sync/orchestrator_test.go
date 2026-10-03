@@ -1244,9 +1244,10 @@ func TestSyncInboxReactionsScopedToOwnAccount(t *testing.T) {
 // pace — yet both ran on every 15-minute cycle: on a real install 158
 // channels with an unread digest back to March cost 158 Tier-3 calls
 // (~4 minutes) and the roster 17 pages, every cycle. The read state is now
-// refreshed at most once an hour and the roster once a day (per daemon
-// process; a restart refreshes both on its first run), while search.messages
-// still runs every cycle.
+// refreshed at most once an hour (per daemon process; a restart refreshes it
+// on its first run) and the roster once a day (stamped on the account row, so
+// `sync --users-only` counts too), while search.messages still runs every
+// cycle.
 func TestSearchSyncThrottlesReadStateAndRoster(t *testing.T) {
 	var infoCalls, listCalls, searchCalls atomic.Int32
 	mux := defaultMux()
