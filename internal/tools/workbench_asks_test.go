@@ -383,7 +383,12 @@ func TestListAsks_DefaultOrderAndFilters(t *testing.T) {
 
 	row := callReadIn(t, reg, fx.a, "list_asks", `{"status":"answered"}`)
 	assert.Contains(t, row, fmt.Sprintf(`"session_id":%d`, mine))
-	assert.Contains(t, row, `"answered_at":"`)
+	assert.Contains(t, row, `"answered_at":"2`)
+	// Every row carries both keys: session_id null when unbound, answered_at
+	// empty until answered.
+	unboundOpen := callReadIn(t, reg, fx.a, "list_asks", `{"status":"open"}`)
+	assert.Contains(t, unboundOpen, fmt.Sprintf(`{"ask_id":%d,"kind":"question","title":"Which store?","status":"open","session_id":null,`, open2))
+	assert.Contains(t, unboundOpen, `"answered_at":""`)
 
 	_, err := unbound.CallRead(context.Background(), "list_asks", json.RawMessage(`{"session":"mine"}`), directBinding(fx.a))
 	assert.Contains(t, refusal(t, err), "session")

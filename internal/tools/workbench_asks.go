@@ -383,9 +383,9 @@ type askRow struct {
 	Kind       string `json:"kind"`
 	Title      string `json:"title"`
 	Status     string `json:"status"`
-	SessionID  int64  `json:"session_id,omitempty"`
+	SessionID  *int64 `json:"session_id"` // null: an external terminal or a gone session
 	CreatedAt  string `json:"created_at"`
-	AnsweredAt string `json:"answered_at,omitempty"`
+	AnsweredAt string `json:"answered_at"` // "" until answered
 }
 
 // askStatuses maps list_asks' status argument to the statuses it lists.
@@ -438,8 +438,12 @@ func NewListAsks(sessionEnv func() string) *Tool {
 			}
 			rows := make([]askRow, 0, len(list))
 			for _, x := range list {
-				rows = append(rows, askRow{AskID: x.ID, Kind: x.Kind, Title: x.Title, Status: x.Status,
-					SessionID: x.SessionID.Int64, CreatedAt: x.CreatedAt, AnsweredAt: x.AnsweredAt})
+				row := askRow{AskID: x.ID, Kind: x.Kind, Title: x.Title, Status: x.Status,
+					CreatedAt: x.CreatedAt, AnsweredAt: x.AnsweredAt}
+				if x.SessionID.Valid {
+					row.SessionID = &x.SessionID.Int64
+				}
+				rows = append(rows, row)
 			}
 			return rows, nil
 		},
