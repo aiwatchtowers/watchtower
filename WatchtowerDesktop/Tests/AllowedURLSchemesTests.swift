@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -108,5 +109,26 @@ final class AllowedURLSchemesTests: XCTestCase {
         let links = stripped.runs.compactMap { $0.link?.absoluteString }
         XCTAssertEqual(links, ["https://example.com"])
         XCTAssertEqual(String(stripped.characters), "bad and good")
+    }
+
+    /// A code answer's `path:line` link is never handed to the system: not
+    /// by the app-wide gate, not by MemoryView's fallthrough (`permits`),
+    /// not by an artifact's open action, and not linked in other chats.
+    func testCodeLinksAreNeverPermitted() throws {
+        let link = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/App.swift", line: 3, col: nil)))
+        XCTAssertFalse(AllowedURLSchemes.permits(link))
+        var opened: [URL] = []
+        let outcome = ArtifactActionPerformer.perform(.open(link), pasteboard: NSPasteboard(name: .init("code-links-test"))) {
+            opened.append($0)
+            return true
+        }
+        XCTAssertFalse(outcome.opened)
+        XCTAssertTrue(opened.isEmpty)
+        let source = try AttributedString(markdown: "[a.go:3](\(link.absoluteString))",
+                                          options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
+        XCTAssertNil(AllowedURLSchemes.strippingDisallowedLinks(source).runs.first { $0.link != nil },
+                     "a chat outside the popover shows the text, not a link")
+        XCTAssertEqual(AllowedURLSchemes.strippingDisallowedLinks(source, renderOnly: [CodeLineLinks.scheme])
+            .runs.first { $0.link != nil }?.link, link, "the popover keeps it")
     }
 }

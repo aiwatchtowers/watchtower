@@ -381,6 +381,11 @@ struct WatchtowerApp: App {
                     ActivationPolicyDecision.becomeRegularAndActivate()
                     appState.openVoicesWindow?()
                 }
+                appState.updateService.presentUpdateWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openWindow(id: UpdateAvailableView.sceneID)
+                    return true
+                }
             }
             .onOpenURL { url in
                 // Handle watchtower-auth:// callback — just bring app to front
@@ -453,6 +458,14 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("u", modifiers: [.shift, .command])
                 .disabled(shown == nil)
+                // ⌘I typed in the editor never reaches here: the page
+                // consumes it and posts `askAI` itself.
+                Button("Ask AI") {
+                    let questions = appState.codeQuestionCenter
+                    if let shown { Task { await questions.askAIFromMenu(project: shown) } }
+                }
+                .keyboardShortcut("i", modifiers: .command)
+                .disabled(shown == nil)
                 Button("File Symbols…") { if let shown { navigation.showFileSymbols(project: shown) } }
                     .keyboardShortcut("6", modifiers: .control)
                     .disabled(shown == nil)
@@ -490,6 +503,12 @@ struct WatchtowerApp: App {
         }
         .defaultSize(width: 640, height: 720)
 
+        Window("Software Update", id: UpdateAvailableView.sceneID) {
+            UpdateAvailableView()
+                .environment(appState)
+        }
+        .windowResizability(.contentSize)
+
         Settings {
             SettingsView()
                 .environment(appState)
@@ -519,6 +538,11 @@ struct WatchtowerApp: App {
                     appState.voiceRegistryCenter.openWindow = {
                         ActivationPolicyDecision.becomeRegularAndActivate()
                         appState.openVoicesWindow?()
+                    }
+                    appState.updateService.presentUpdateWindow = {
+                        ActivationPolicyDecision.becomeRegularAndActivate()
+                        openWindow(id: UpdateAvailableView.sceneID)
+                        return true
                     }
                 }
         }

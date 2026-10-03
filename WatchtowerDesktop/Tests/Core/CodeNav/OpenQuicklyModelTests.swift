@@ -47,10 +47,20 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(OpenQuicklyRow.askAI(query: "q").label, "✦ Ask AI: \u{201C}q\u{201D}")
     }
 
-    /// Ruling R35: until phase C the ✦ Ask AI row and ⌘↩ / ⌥⌘↩ are absent.
-    func testAskAIIsHiddenByDefaultUntilPhaseC() {
-        XCTAssertFalse(OpenQuicklyAskAIFeature.isEnabled)
+    /// Phase C ships Ask AI (⌘↩) and the hand-over to Claude Code (⌥⌘↩,
+    /// spec §9.5) on.
+    func testAskAIAndTheHandOverShip() {
+        XCTAssertTrue(OpenQuicklyAskAIFeature.isEnabled)
+        XCTAssertTrue(OpenQuicklyAskAIFeature.handToClaudeEnabled)
         var model = OpenQuicklyModel()
+        model.setQuery("s")
+        XCTAssertEqual(model.activateSelection(option: false, command: true), .askAI("s"))
+        XCTAssertEqual(model.activateSelection(option: true, command: true), .handToClaude("s"))
+    }
+
+    /// Switched off, the ✦ Ask AI row and ⌘↩ / ⌥⌘↩ are absent.
+    func testAskAIHiddenWhenSwitchedOff() {
+        var model = OpenQuicklyModel(askAIEnabled: false)
         XCTAssertFalse(model.askAIEnabled)
         model.setQuery("s")
         model.setIndexResults(files: [file("a.go", score: 30)], symbols: [symbol("save", score: 40)])
@@ -144,7 +154,7 @@ final class OpenQuicklyModelTests: XCTestCase {
     }
 
     func testReturnOptionReturnAndCommandReturn() {
-        var model = OpenQuicklyModel(askAIEnabled: true)
+        var model = OpenQuicklyModel(askAIEnabled: true, handToClaudeEnabled: true)
         model.setQuery("s")
         model.setIndexResults(files: [], symbols: [symbol("save", score: 40)])
         let target = OpenQuicklyTarget(path: "src/save.swift", line: 3, col: 6)

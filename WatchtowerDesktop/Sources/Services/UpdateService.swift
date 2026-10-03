@@ -187,6 +187,7 @@ final class UpdateService {
             }
             state = .idle
             availableVersion = nil
+            availableNotes = ""
         case let .found(version, notes, downloadURL, gated):
             if case .available(let known, _, _) = previous, !Self.isNewer(version, than: known) {
                 state = previous
@@ -194,7 +195,7 @@ final class UpdateService {
             }
             gatedDownload = gated
             state = .available(version: version, notes: notes, downloadURL: downloadURL)
-            await noteAvailable(version: version)
+            await noteAvailable(version: version, notes: notes, background: background)
         case .failed(let message):
             NSLog("UpdateService: %@ update check failed: %@", background ? "background" : "manual", message)
             if case .available = previous {
@@ -285,6 +286,7 @@ final class UpdateService {
     nonisolated static let checkInterval: Duration = .seconds(6 * 60 * 60)
 
     private static let lastAnnouncedVersionKey = "lastAnnouncedUpdateVersion"
+    private static let lastPresentedVersionKey = "lastPresentedUpdateVersion"
 
     /// Where the announced-version memo lives. Instance property so tests can
     /// inject an isolated suite.
@@ -295,9 +297,18 @@ final class UpdateService {
     /// instead of posting.
     var announce: (String) async -> Bool = { await NotificationService.shared.sendUpdateAvailableNotification(version: $0) }
 
+    /// Opens the "update available" window (bringing the app out of the
+    /// tray) and reports whether it did. Nil until a scene wires it — a check
+    /// that lands before then presents nothing and retries on the next one.
+    var presentUpdateWindow: (() -> Bool)?
+
     /// Version of the update the last check found; nil when none. Survives
     /// `.downloading`/`.readyToInstall`, which carry no version of their own.
     private(set) var availableVersion: String?
+
+    /// Release notes (markdown) of `availableVersion`; empty when the channel
+    /// published none. Survives the download/install states like the version.
+    private(set) var availableNotes = ""
 
     /// The periodic-check loop; nil once it has ended. Readable so tests can
     /// await it.
@@ -344,15 +355,31 @@ final class UpdateService {
         version != lastAnnounced
     }
 
-    /// Record a found update and announce it once per version. The memo is
-    /// written only when the push was accepted, so a failed post is retried
-    /// on the next check instead of being marked as shown.
-    func noteAvailable(version: String) async {
+    /// Record a found update, present its window once per version and
+    /// announce it once per version. Each memo is written only when its
+    /// surface was actually shown, so a refused push or a window that could
+    /// not open yet is retried on the next check instead of being marked as
+    /// shown. A manual check only marks the window as seen: the user is
+    /// already looking at the update in Settings.
+    func noteAvailable(version: String, notes: String = "", background: Bool = true) async {
         availableVersion = version
+        availableNotes = notes
+        presentOncePerVersion(version, background: background)
         let last = defaults.string(forKey: Self.lastAnnouncedVersionKey)
         guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
         guard await announce(version) else { return }
         defaults.set(version, forKey: Self.lastAnnouncedVersionKey)
+    }
+
+    /// Never pops a window over a running capture or transcription — that
+    /// version is presented by the first check after it ends.
+    private func presentOncePerVersion(_ version: String, background: Bool) {
+        let last = defaults.string(forKey: Self.lastPresentedVersionKey)
+        guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
+        if background {
+            guard let present = presentUpdateWindow, !isBusy(), present() else { return }
+        }
+        defaults.set(version, forKey: Self.lastPresentedVersionKey)
     }
 
     // MARK: - Download
@@ -545,13 +572,27 @@ final class UpdateService {
         static var live: Self {
             Self(
                 spawn: { try UpdateService.spawnRelaunchWaiter(pid: $0, appPath: $1) },
-                requestQuit: { TrayAppDelegate.requestQuit() },
+                requestQuit: { UpdateService.performOnRunLoop { TrayAppDelegate.requestQuit() } },
                 sleep: { try? await Task.sleep(for: $0) }
             )
         }
     }
 
     var relaunchSteps: RelaunchSteps = .live
+
+    /// Runs `action` from the main run loop instead of the current main-queue
+    /// job. `relaunch()` runs inside a MainActor task, which is a main-queue
+    /// block; calling `NSApp.terminate` there makes `.terminateLater` spin a
+    /// nested run loop that never drains the main queue again — the quit
+    /// path's own `Task { … reply(true) }` and the `quitGrace` timer both wait
+    /// on it, so the app sat on "Restarting…" forever while Cmd+Q (a run-loop
+    /// event) still quit fine. A run-loop block is the same context Cmd+Q
+    /// runs in.
+    nonisolated static func performOnRunLoop(_ action: @escaping @MainActor () -> Void) {
+        RunLoop.main.perform {
+            MainActor.assumeIsolated { action() }
+        }
+    }
 
     /// The running app's bundle; nil outside a `.app` (e.g. `swift test`).
     var currentAppURL: () -> URL? = { UpdateService.currentAppBundleURL() }
@@ -796,7 +837,31 @@ final class UpdateService {
         // Bundle.main.bundleURL points to Watchtower.app/
         let bundleURL = Bundle.main.bundleURL
         guard bundleURL.pathExtension == "app" else { return nil }
-        return bundleURL
+        return originalURL(ofPossiblyTranslocated: bundleURL)
+    }
+
+    /// A quarantined app the Finder never moved runs from a read-only App
+    /// Translocation mount (/private/var/folders/…/AppTranslocation/…), where
+    /// the swap always fails. Install over (and relaunch from) the bundle the
+    /// user actually has instead; the new bundle carries no quarantine, so
+    /// that relaunch is no longer translocated. Falls back to `url` when the
+    /// original cannot be resolved.
+    private static func originalURL(ofPossiblyTranslocated url: URL) -> URL {
+        // SecTranslocate.h is public but not in the Security module map, so
+        // the two calls are looked up at run time.
+        typealias IsTranslocated = @convention(c) (CFURL, UnsafeMutablePointer<Bool>, UnsafeMutableRawPointer?) -> Bool
+        typealias OriginalPath = @convention(c) (CFURL, UnsafeMutableRawPointer?) -> Unmanaged<CFURL>?
+        guard let security = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY),
+              let isSym = dlsym(security, "SecTranslocateIsTranslocatedURL"),
+              let originalSym = dlsym(security, "SecTranslocateCreateOriginalPathForURL")
+        else { return url }
+        let isTranslocated = unsafeBitCast(isSym, to: IsTranslocated.self)
+        let originalPath = unsafeBitCast(originalSym, to: OriginalPath.self)
+        var translocated = false
+        guard isTranslocated(url as CFURL, &translocated, nil), translocated,
+              let original = originalPath(url as CFURL, nil)?.takeRetainedValue()
+        else { return url }
+        return original as URL
     }
 
     /// A Team ID usable in a designated requirement: exactly 10 alphanumeric

@@ -3,8 +3,12 @@ import Foundation
 /// How an embedded terminal starts (spec §6.2): the owner's own login shell,
 /// so `PATH` and `claude`'s auth are exactly theirs. A Claude session `exec`s
 /// `claude` in the folder with a session id the app chose, so it can be
-/// resumed later. The prompt, when present, is only ever one of the fixed
-/// constants below — never owner data on the command line.
+/// resumed later. A first prompt (a fixed constant below, or a code question
+/// handed over — spec 2026-10-02 §9.5) travels in `firstPromptEnv` and the
+/// command names only the variable, so no prompt text is ever parsed by the
+/// shell, and `env -u` drops the variable before `claude` runs, so its
+/// children never see it; `positionalPrompt` keeps a leading "-" from
+/// being read as a flag.
 package struct TerminalLaunch: Equatable, Sendable {
     package enum Mode: Equatable, Sendable {
         case newClaude(uuid: String, prompt: String?)
@@ -17,6 +21,8 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// the conversation's new id after `/clear` or a resume (Go
     /// `terminalSessionEnv`, a dual path).
     package static let sessionRowEnv = "WATCHTOWER_TERMINAL_SESSION_ID"
+    /// The first prompt of a new `claude` session.
+    package static let firstPromptEnv = "WATCHTOWER_FIRST_PROMPT"
 
     /// The first session of a new workbench. `vocabulary` picks the skill the
     /// folder has installed (spec 2026-10-02 §5.3).
@@ -39,7 +45,9 @@ package struct TerminalLaunch: Equatable, Sendable {
         let args: [String]
         switch mode {
         case let .newClaude(uuid, prompt):
-            args = ["-l", "-c", "exec claude --session-id \(uuid)" + (prompt.map { " '\($0)'" } ?? "")]
+            // `env -u` keeps the prompt out of everything Claude Code runs.
+            args = ["-l", "-c", prompt == nil ? "exec claude --session-id \(uuid)"
+                : "exec env -u \(firstPromptEnv) claude --session-id \(uuid) \"$\(firstPromptEnv)\""]
         case let .resumeClaude(uuid):
             args = ["-l", "-c", "exec claude --resume \(uuid)"]
         case .shell:
@@ -49,7 +57,16 @@ package struct TerminalLaunch: Equatable, Sendable {
         if let rowID, mode != .shell {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
         }
+        if case let .newClaude(_, prompt?) = mode {
+            launch.environment.append("\(firstPromptEnv)=\(positionalPrompt(prompt))")
+        }
         return launch
+    }
+
+    /// `claude`'s usage documents no `--` before the prompt, so a prompt
+    /// starting with "-" gets a leading space and is never read as a flag.
+    package static func positionalPrompt(_ prompt: String) -> String {
+        prompt.hasPrefix("-") ? " " + prompt : prompt
     }
 
     /// Lowercase canonical UUID only (same as Go's `uuidRe`): the id is

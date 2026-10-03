@@ -4,7 +4,8 @@
 # the way the Desktop's MonacoEditorView does (show / reload replace|force|
 # rebase / rename / close / takePending, edit revisions, reveal, go to
 # definition, usages and the cursor stream, Monaco's keybindings for the app's
-# navigation chords) and spot-checks the file associations and Monarch
+# navigation chords, the code question messages — selection, scroll, askAI,
+# selectionRect, proposeEdit/clearProposal, applyEdit) and spot-checks the file associations and Monarch
 # grammars of languages.js. Not part of any gate; run it after touching
 # CodeEditorWeb/ or bumping Monaco.
 #

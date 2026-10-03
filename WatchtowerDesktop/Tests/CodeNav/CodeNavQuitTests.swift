@@ -49,7 +49,7 @@ final class CodeNavQuitTests: XCTestCase {
     }
 
     func testQuitStopsTheSearchesOfOpenQuicklyDefinitionAndUsages() async {
-        let codeIndex = CodeIndexCenter { nil }
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let openQuickly = OpenQuicklyCenter(codeIndex: codeIndex, presenter: SilentPresenter(), startSearch: stubStarter())
         let navigation = CodeNavigationCenter(codeIndex: codeIndex, startSearch: stubStarter()) {}
         let usages = CodeUsagesCenter(startSearch: stubStarter()) {}
@@ -64,7 +64,8 @@ final class CodeNavQuitTests: XCTestCase {
         let started = await searchesStarted(3)
         XCTAssertTrue(started, "three searches running: \(stub.startedPIDs)")
 
-        AppState.stopCodeNavigationChildren(index: codeIndex, openQuickly: openQuickly, navigation: navigation, usages: usages)
+        AppState.stopCodeNavigationChildren(index: codeIndex, openQuickly: openQuickly, navigation: navigation, usages: usages,
+                                            questions: CodeQuestionCenter())
 
         await stub.assertAllGroupsReaped()
         await definition.value

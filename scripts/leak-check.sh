@@ -36,7 +36,10 @@
 #      identity, never as content.
 #
 # Not scanned (documented limitations): binary files (git prints no text diff
-# for them), and paths are not pattern-checked.
+# for them), and paths are not pattern-checked. Text is split into rows
+# byte-wise (awk and cut under LC_ALL=C) and made valid UTF-8 before the grep
+# layers (invalid bytes dropped), so a line that is not valid UTF-8 is still
+# scanned — never skipped as binary, never aborting the run.
 #
 # Hits are reported as `path:line: <rule>` (prefixed with the short commit sha
 # in range mode) and never echo the matched text or the denylist patterns —
@@ -127,7 +130,7 @@ HITS="$WORK/hits"
 # added line. Hunk counters (not the `+++` prefix) decide what is a header, so
 # an added line whose text itself starts with `++` is still content.
 extract_added() {
-    awk '
+    LC_ALL=C awk '
     function reset_hunk() { old_left = 0; new_left = 0 }
     BEGIN { path = ""; reset_hunk() }
     old_left > 0 || new_left > 0 {
@@ -165,7 +168,7 @@ extract_added() {
 # that added it. File headers are only recognised outside a hunk (`diff --cc`
 # can never start a content line, whose prefix columns are ` `/`+`/`-`).
 extract_added_cc() {
-    awk '
+    LC_ALL=C awk '
     /^diff --(cc|combined) / { in_hunk = 0; path = $0; sub(/^diff --(cc|combined) /, "", path); gsub(/^"|"$/, "", path); next }
     !in_hunk && /^\+\+\+ / {
         p = substr($0, 5); sub(/\t.*$/, "", p); gsub(/^"|"$/, "", p)
@@ -195,25 +198,32 @@ extract_added_cc() {
 scan_added() {
     local label="$1" extra="${2:-$NO_EXTRA_ALLOW}" added="$WORK/added" text="$WORK/text" allowed="$WORK/allowed" cand="$WORK/cand"
     [ -s "$added" ] || return 0
-    cut -f3- "$added" > "$text"
+    LC_ALL=C cut -f3- "$added" > "$WORK/text_raw" || fail "cut failed"
+    # grep treats a line that is not valid UTF-8 as binary and silently skips
+    # it, so the text is made valid first: invalid bytes are dropped, every
+    # line (and so every index) is kept. glibc's iconv exits 1 when -c dropped
+    # something; anything above that is a real failure.
+    local rc=0
+    iconv -f UTF-8 -t UTF-8 -c < "$WORK/text_raw" > "$text" || rc=$?
+    [ "$rc" -le 1 ] || fail "iconv failed (exit $rc)"
     safe_grep -n -F "$ALLOW_MARKER" "$text" > "$WORK/allow_raw"
-    cut -d: -f1 < "$WORK/allow_raw" > "$allowed"
+    LC_ALL=C cut -d: -f1 < "$WORK/allow_raw" > "$allowed"
     : > "$cand"
 
     # Each producer appends `<index into $text> <rule>`; the index maps back to
     # path:line through $added.
     if [ -s "$DENY_PATTERNS" ]; then
         safe_grep -n -i -E -f "$DENY_PATTERNS" "$text" > "$WORK/g_deny"
-        cut -d: -f1 < "$WORK/g_deny" | sed 's/$/ denylisted identifier/' >> "$cand"
+        LC_ALL=C cut -d: -f1 < "$WORK/g_deny" | sed 's/$/ denylisted identifier/' >> "$cand"
     fi
 
     safe_grep -n -E "$SLACK_ID_RE" "$text" > "$WORK/g_slack"
-    cut -d: -f1 < "$WORK/g_slack" | awk -v allowed="$allowed" '
+    LC_ALL=C cut -d: -f1 < "$WORK/g_slack" | LC_ALL=C awk -v allowed="$allowed" '
         BEGIN { while ((getline a < allowed) > 0) skip[a] = 1 }
         !($1 in skip) { print $1 " Slack id-shaped token" }' >> "$cand"
 
     safe_grep -n -o -E "$EMAIL_RE" "$text" > "$WORK/g_mail"
-    awk -F: -v legal="$LEGAL_CONTACTS" -v extra="$extra" -v allowed="$allowed" '
+    LC_ALL=C awk -F: -v legal="$LEGAL_CONTACTS" -v extra="$extra" -v allowed="$allowed" '
         BEGIN {
             while ((getline l < legal) > 0) ok_addr[l] = 1
             while ((getline l < extra) > 0) ok_addr[l] = 1
@@ -233,7 +243,7 @@ scan_added() {
         }' "$WORK/g_mail" >> "$cand"
 
     sort -t ' ' -k1,1n -k2 -u "$cand" > "$WORK/idx"
-    awk -F '\t' -v label="$label" '
+    LC_ALL=C awk -F '\t' -v label="$label" '
         NR == FNR { loc[FNR] = $1 ":" $2; next }
         {
             sp = index($0, " ")
@@ -280,10 +290,10 @@ case "$1" in
 
             # The message and the identities travel with the commit too.
             git_to "$WORK/msg" log -1 --format=%B "$c"
-            awk '{ printf "<commit message>\t%d\t%s\n", NR, $0 }' "$WORK/msg" > "$WORK/added"
+            LC_ALL=C awk '{ printf "<commit message>\t%d\t%s\n", NR, $0 }' "$WORK/msg" > "$WORK/added"
             scan_added "$label"
             git_to "$WORK/ident" log -1 --format='<author>%x09%an <%ae>%n<committer>%x09%cn <%ce>' "$c"
-            awk -F '\t' '{ printf "%s\t1\t%s\n", $1, $2 }' "$WORK/ident" > "$WORK/added"
+            LC_ALL=C awk -F '\t' '{ printf "%s\t1\t%s\n", $1, $2 }' "$WORK/ident" > "$WORK/added"
             scan_added "$label" "$KNOWN_AUTHORS"
         done < "$WORK/commits"
         ;;

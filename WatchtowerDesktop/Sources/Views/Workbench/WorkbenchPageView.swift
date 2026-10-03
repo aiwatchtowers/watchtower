@@ -38,6 +38,10 @@ struct WorkbenchPageView: View {
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
         .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
+        // Hand to Claude Code (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
+        .sheet(item: handoffRequest) { request in
+            HandToClaudeSheet(handoff: appState.codeHandoffCenter, request: request)
+        }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
         // The 5 s poll follows the asks from here; this is the first read.
@@ -76,6 +80,13 @@ struct WorkbenchPageView: View {
         } message: {
             Text(deleteSummaryError ?? "")
         }
+    }
+
+    private var handoffRequest: Binding<CodeHandoffRequest?> {
+        let handoff = appState.codeHandoffCenter
+        let workbenchID = project.id
+        return Binding(get: { handoff.requests[workbenchID] },
+                       set: { if $0 == nil { handoff.cancel(workbenchID: workbenchID) } })
     }
 
     /// One compact row (folder, install status, view controls, the "…"

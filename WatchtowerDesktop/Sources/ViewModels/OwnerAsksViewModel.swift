@@ -33,8 +33,9 @@ final class OwnerAsksViewModel {
         }
     }
 
+    /// `sentNote`/`copiedNote` are also the session pane's paste and clipboard
+    /// hints (`TerminalCenter.pasteHints`/`clipboardHints`).
     static let sentNote = "Pasted into Claude — press Return to send"
-    /// Also the session pane's clipboard hint (`TerminalCenter.clipboardHints`).
     static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
     static let withdrawnNote = "The agent withdrew this ask — your draft is kept"

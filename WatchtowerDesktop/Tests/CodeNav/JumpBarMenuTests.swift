@@ -161,7 +161,7 @@ final class JumpBarMenuTests: XCTestCase {
     // MARK: Controller and ⌃6
 
     private func makeController() -> (JumpBarController, WorkbenchesViewModel, () -> [(JumpBarMenu, NSView)]) {
-        codeIndex = CodeIndexCenter { nil }
+        codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let beep: @MainActor () -> Void = { [weak self] in self?.beeps += 1 }
         navigation = CodeNavigationCenter(codeIndex: codeIndex, beep: beep)
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)

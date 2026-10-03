@@ -132,6 +132,31 @@ package struct ChatPostTurnResult: Equatable, Sendable {
     }
 }
 
+/// How one turn's `ai query` runs, beyond its prompts. The default — all
+/// nil — is every surface's run before code questions: the provider and its
+/// strong-tier model from config, no folder.
+package struct ChatRunOptions: Equatable, Sendable {
+    /// `--provider`; nil = config's.
+    package var provider: String?
+    /// `--model`; nil = the provider's resolved strong-tier model.
+    package var model: String?
+    /// `--read-folder`: the workbench folder of a code question (spec
+    /// 2026-10-02 §9.1), checked by the CLI; no provider reads files in it
+    /// yet (rulings R42/R44).
+    package var readFolder: String?
+
+    package init(provider: String? = nil, model: String? = nil, readFolder: String? = nil) {
+        self.provider = provider
+        self.model = model
+        self.readFolder = readFolder
+    }
+
+    /// Only Claude resumes a session (`--session-id`); a conversation whose
+    /// owner switched to another provider sends that provider the system
+    /// prompt again rather than an id it cannot use.
+    package var resumesSession: Bool { provider == nil || provider == "claude" }
+}
+
 /// One embedded chat, as a value: how its prompts are built, what it may do
 /// and what happens after a reply. No state — every closure runs per turn.
 package struct ChatSurfaceSpec {
@@ -175,6 +200,9 @@ package struct ChatSurfaceSpec {
     package let mayContinue: @MainActor () -> Bool
     package let emptyHint: String
     package let starterPrompts: [ChatStarterPrompt]
+    /// Read when each turn starts, so a choice stored between turns (the
+    /// code question's model picker) applies to the next one.
+    package let runOptions: @MainActor () -> ChatRunOptions
 
     package init(
         key: EmbeddedChatKey,
@@ -186,7 +214,8 @@ package struct ChatSurfaceSpec {
         willSend: @escaping @MainActor (String) -> Bool = { _ in true },
         mayContinue: @escaping @MainActor () -> Bool = { true },
         emptyHint: String,
-        starterPrompts: [ChatStarterPrompt] = []
+        starterPrompts: [ChatStarterPrompt] = [],
+        runOptions: @escaping @MainActor () -> ChatRunOptions = { ChatRunOptions() }
     ) {
         self.key = key
         self.persistence = persistence
@@ -198,5 +227,6 @@ package struct ChatSurfaceSpec {
         self.mayContinue = mayContinue
         self.emptyHint = emptyHint
         self.starterPrompts = starterPrompts
+        self.runOptions = runOptions
     }
 }

@@ -24,22 +24,27 @@ func TestResolveModelsFor(t *testing.T) {
 		{
 			name:     "claude defaults are aliases",
 			cfg:      cfgWith("claude", "", "", ""),
-			provider: "claude", wantLight: "haiku", wantStrong: "sonnet",
+			provider: "claude", wantLight: "haiku", wantStrong: "opus",
 		},
 		{
 			name:     "config overrides win over defaults",
+			cfg:      cfgWith("claude", "", "sonnet", "sonnet"),
+			provider: "claude", wantLight: "sonnet", wantStrong: "sonnet",
+		},
+		{
+			name:     "pinned full claude ids resolve to their family alias",
 			cfg:      cfgWith("claude", "", "claude-haiku-4-5-20251001", "claude-opus-4-6"),
-			provider: "claude", wantLight: "claude-haiku-4-5-20251001", wantStrong: "claude-opus-4-6",
+			provider: "claude", wantLight: "haiku", wantStrong: "opus",
 		},
 		{
 			name:     "legacy ai.model fills strong only",
-			cfg:      cfgWith("claude", "claude-opus-4-6", "", ""),
-			provider: "claude", wantLight: "haiku", wantStrong: "claude-opus-4-6",
+			cfg:      cfgWith("claude", "claude-sonnet-4-5", "", ""),
+			provider: "claude", wantLight: "haiku", wantStrong: "sonnet",
 		},
 		{
 			name:     "legacy ai.model equal to the retired seeded default is unset",
 			cfg:      cfgWith("claude", config.DefaultAIModel, "", ""),
-			provider: "claude", wantLight: "haiku", wantStrong: "sonnet",
+			provider: "claude", wantLight: "haiku", wantStrong: "opus",
 		},
 		{
 			name:     "models.strong beats legacy ai.model",
@@ -47,14 +52,24 @@ func TestResolveModelsFor(t *testing.T) {
 			provider: "claude", wantLight: "haiku", wantStrong: "sonnet",
 		},
 		{
+			name:     "retired codex pins resolve to the tier defaults",
+			cfg:      cfgWith("codex", "", "gpt-5.4-mini", "gpt-5.5"),
+			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
+		},
+		{
+			name:     "current codex pins stay",
+			cfg:      cfgWith("codex", "", "gpt-6-luna", "gpt-6.1-sol"),
+			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6.1-sol",
+		},
+		{
 			name:     "codex defaults",
 			cfg:      cfgWith("codex", "", "", ""),
-			provider: "codex", wantLight: "gpt-5.4-mini", wantStrong: "gpt-5.4",
+			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "codex ignores carried-over claude seeded default",
 			cfg:      cfgWith("codex", config.DefaultAIModel, "", ""),
-			provider: "codex", wantLight: "gpt-5.4-mini", wantStrong: "gpt-5.4",
+			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "ollama single model configures both tiers",
@@ -69,7 +84,7 @@ func TestResolveModelsFor(t *testing.T) {
 		{
 			name:     "config overrides never leak into a non-active provider",
 			cfg:      cfgWith("claude", "", "claude-haiku-4-5-20251001", "claude-opus-4-6"),
-			provider: "codex", wantLight: "gpt-5.4-mini", wantStrong: "gpt-5.4",
+			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "legacy ai.model never leaks into a non-active provider",
@@ -84,7 +99,7 @@ func TestResolveModelsFor(t *testing.T) {
 		{
 			name:     "unknown provider resolves as claude",
 			cfg:      cfgWith("whatever", "", "", ""),
-			provider: "whatever", wantLight: "haiku", wantStrong: "sonnet",
+			provider: "whatever", wantLight: "haiku", wantStrong: "opus",
 		},
 	}
 

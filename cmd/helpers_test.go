@@ -154,8 +154,11 @@ func TestBuildDigestContext_PrefersDaily(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// A minute inside the 24 h window: buildDigestContext reads time.Now()
+	// again, and a second ticking over in between used to drop an
+	// exactly-24h-old digest out of the window (flaked on a loaded CI runner).
 	_, err = database.UpsertDigest(db.Digest{
-		PeriodFrom:   now - 86400,
+		PeriodFrom:   now - 86400 + 60,
 		PeriodTo:     now,
 		Type:         "daily",
 		Summary:      "daily rollup summary",

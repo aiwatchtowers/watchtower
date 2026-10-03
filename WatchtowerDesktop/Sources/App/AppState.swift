@@ -177,6 +177,11 @@ final class AppState {
     @ObservationIgnored private(set) lazy var codeNavigationCenter = CodeNavigationCenter(codeIndex: codeIndexCenter)
     /// Usages (⇧⌘U) and the Files pane's inspector, per workbench.
     let codeUsagesCenter = CodeUsagesCenter()
+    /// Code questions at the editor's selection (✦, ⌘I): the popover's
+    /// question per workbench; its conversation lives in `embeddedChatCenter`.
+    let codeQuestionCenter = CodeQuestionCenter()
+    /// Hand to Claude Code (⌥⌘↩): the hand-off sheet's request per workbench.
+    let codeHandoffCenter = CodeHandoffCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -643,21 +648,28 @@ final class AppState {
     }
 
     /// App quit: no `watchtower code …` child outlives the app — the index
-    /// children, and the searches of Open Quickly, go to definition and
-    /// Usages (ruling R34; each runs in a process group of its own).
+    /// children, and the searches of Open Quickly, go to definition, Usages
+    /// and "Where is it used?" (rulings R34, R45; each runs in a process
+    /// group of its own).
     private func stopCodeNavigationChildren() {
         Self.stopCodeNavigationChildren(
-            index: codeIndexCenter, openQuickly: openQuicklyCenter, navigation: codeNavigationCenter, usages: codeUsagesCenter
+            index: codeIndexCenter, openQuickly: openQuicklyCenter, navigation: codeNavigationCenter, usages: codeUsagesCenter,
+            questions: codeQuestionCenter
         )
     }
 
     static func stopCodeNavigationChildren(
-        index: CodeIndexCenter, openQuickly: OpenQuicklyCenter, navigation: CodeNavigationCenter, usages: CodeUsagesCenter
+        index: CodeIndexCenter,
+        openQuickly: OpenQuicklyCenter,
+        navigation: CodeNavigationCenter,
+        usages: CodeUsagesCenter,
+        questions: CodeQuestionCenter
     ) {
         index.stopAll()
         openQuickly.stopOpenQuicklySearch()
         navigation.stopDefinitionSearches()
         usages.stopUsagesSearches()
+        questions.stopQuestionSearches()
     }
 
     func initialize() {
@@ -1704,6 +1716,24 @@ final class AppState {
         codeUsagesCenter.navigation = codeNavigationCenter
         codeNavigationCenter.usages = codeUsagesCenter
         vm.codeFiles.usages = codeUsagesCenter
+        codeQuestionCenter.workbenches = vm
+        codeQuestionCenter.navigation = codeNavigationCenter
+        codeQuestionCenter.codeIndex = codeIndexCenter
+        codeQuestionCenter.embeddedChats = embeddedChatCenter
+        codeQuestionCenter.dbPool = dbPool
+        codeQuestionCenter.dictation = dictationCenter
+        codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }
+        codeQuestionCenter.usages = codeUsagesCenter
+        openQuicklyCenter.questions = codeQuestionCenter
+        vm.codeFiles.questions = codeQuestionCenter
+        codeHandoffCenter.workbenches = vm
+        codeHandoffCenter.terminalCenter = terminalCenter
+        codeHandoffCenter.dbPool = dbPool
+        codeQuestionCenter.handoff = codeHandoffCenter
+        openQuicklyCenter.onHandToClaude = { [weak self] query, project in
+            guard let self else { return }
+            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
+        }
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)

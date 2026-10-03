@@ -170,7 +170,7 @@ final class CodeUsagesCenterTests: XCTestCase {
     func testShowAllUsagesFromTheDefinitionMenuStartsTheSameSearch() async {
         let (center, vm) = makeCenter()
         let menu = PickingMenu()
-        let codeIndex = CodeIndexCenter { nil }
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let navigation = CodeNavigationCenter(codeIndex: codeIndex, menu: menu, startSearch: searches.start) {}
         navigation.workbenches = vm
         navigation.usages = center
@@ -258,7 +258,8 @@ final class CodeUsagesCenterTests: XCTestCase {
     }
 
     private func makeNavigation(vm: WorkbenchesViewModel, usages: CodeUsagesCenter) -> CodeNavigationCenter {
-        let navigation = CodeNavigationCenter(codeIndex: CodeIndexCenter { nil }, startSearch: searches.start) {}
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
+        let navigation = CodeNavigationCenter(codeIndex: codeIndex, startSearch: searches.start) {}
         navigation.workbenches = vm
         vm.codeFiles.navigation = navigation
         usages.navigation = navigation

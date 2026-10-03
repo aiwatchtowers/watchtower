@@ -70,15 +70,15 @@ func TestAIModels_JSONShape(t *testing.T) {
 	}
 	claude := parsed.Providers[byID["claude"]]
 	assert.Equal(t, "haiku", claude.ResolvedLight)
-	assert.Equal(t, "sonnet", claude.ResolvedStrong)
+	assert.Equal(t, "opus", claude.ResolvedStrong)
 	assert.Equal(t, "cli", claude.Kind)
 	// Known CLI aliases flow through `models` so the Desktop picker can
 	// suggest opus even though it is no tier's default.
 	assert.Equal(t, []string{"haiku", "sonnet", "opus"}, claude.Models)
 
 	codexP := parsed.Providers[byID["codex"]]
-	assert.Equal(t, "gpt-5.4-mini", codexP.ResolvedLight)
-	assert.Equal(t, "gpt-5.4", codexP.ResolvedStrong)
+	assert.Equal(t, "gpt-6-luna", codexP.ResolvedLight)
+	assert.Equal(t, "gpt-6-astra", codexP.ResolvedStrong)
 
 	// Ollama ships no default model: unconfigured resolves empty, and the
 	// live list flows through from the (stubbed) server.
@@ -146,7 +146,7 @@ func TestAIModels_HumanOutput(t *testing.T) {
 	assert.Contains(t, out, "* Claude (claude)")
 	assert.Contains(t, out, "(not set — pick a model", "empty ollama resolution renders a hint, not a blank")
 	assert.Contains(t, out, "light:  haiku")
-	assert.Contains(t, out, "strong: sonnet")
+	assert.Contains(t, out, "strong: opus")
 	assert.Contains(t, out, "Codex (codex)")
 	assert.Contains(t, out, "Ollama / Local (ollama)")
 }

@@ -7,7 +7,8 @@ import WatchtowerCore
 /// method at the cursor, each segment a menu of its neighbours; the file
 /// keeps its git mark and Saved/Edited state. At the end, muted: a
 /// go-to-definition miss for 2 s, else a failed index's message, or
-/// "Language X: text search" for a language the index does not read.
+/// "Language X: text search" for a language the index does not read, then
+/// "Rules file: <error>" while the owner's rules file is ignored.
 ///
 /// It is the only view reading the editor's cursor (up to 10 a second),
 /// so those updates re-render the bar and nothing else of the pane.
@@ -34,7 +35,7 @@ struct JumpBar: View {
                 segments(model)
             }
             Spacer(minLength: 8)
-            trailingNote(snapshot?.model.status)
+            trailingNote(snapshot?.model)
             Button {
                 NSWorkspace.shared.open(buffer.url)
             } label: {
@@ -126,21 +127,31 @@ struct JumpBar: View {
         JumpBarSaveState(hasError: buffer.problem != nil || buffer.saveError != nil, deletedOnDisk: buffer.deletedOnDisk, isDirty: buffer.isDirty)
     }
 
-    /// The 2 s go-to-definition notice wins over the status.
+    /// The 2 s go-to-definition notice wins over the status and the rules
+    /// file's note.
     @ViewBuilder
-    private func trailingNote(_ status: JumpBarStatus?) -> some View {
+    private func trailingNote(_ model: JumpBarModel?) -> some View {
         if let notice = files.navigation?.notice(for: project.id) {
             Label(notice, systemImage: "questionmark.circle")
                 .lineLimit(1)
                 .transition(.opacity)
                 .accessibilityAddTraits(.updatesFrequently)
-        } else if let status {
-            Text(status.text)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(.secondary)
-                .help(status.text)
+        } else {
+            if let status = model?.status {
+                mutedNote(status.text, help: status.text)
+            }
+            if let rules = model?.rulesNote {
+                mutedNote(rules.text, help: rules.help)
+            }
         }
+    }
+
+    private func mutedNote(_ text: String, help: String) -> some View {
+        Text(text)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .foregroundStyle(.secondary)
+            .help(help)
     }
 
     private func isFolder(_ segment: JumpBarSegment) -> Bool {

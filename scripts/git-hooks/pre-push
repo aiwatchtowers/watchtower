@@ -15,11 +15,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # Deleting a remote ref pushes no content.
     [ "$local_sha" = "$ZERO" ] && continue
 
-    if [ "$remote_sha" != "$ZERO" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    if [ "$remote_sha" != "$ZERO" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null \
+        && git merge-base --is-ancestor "$remote_sha" "$local_sha"; then
         base="$remote_sha"
     else
-        # A new branch (or a remote tip this clone has never fetched): scan what
-        # the branch adds on top of main.
+        # A new branch, a remote tip this clone has never fetched, or a force
+        # push after a rebase (the old tip is no ancestor, and "old..new" would
+        # rescan every main commit the rebase picked up): scan what the branch
+        # adds on top of main.
         base="$(git merge-base origin/main "$local_sha" 2>/dev/null || true)"
         if [ -z "$base" ]; then
             echo "pre-push: no merge-base with origin/main for $local_ref — run 'git fetch origin' and push again" >&2

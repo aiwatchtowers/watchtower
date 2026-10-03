@@ -7,7 +7,9 @@ import XCTest
 /// navigation and is released after 5 idle minutes; watcher batches are
 /// debounced into one `--serve` request, a batch during a run waits and
 /// merges (Review Focus 3); a rescan is a full run; a failing CLI shows its
-/// stderr. Every stub process group is reaped in tearDown.
+/// stderr; a change to the rules file (pinned to a temp file) restarts the
+/// `--serve` child and runs a full index. Every stub process group is
+/// reaped in tearDown.
 @MainActor
 final class CodeIndexCenterTests: XCTestCase {
     private final class TestClock {
@@ -16,6 +18,8 @@ final class CodeIndexCenterTests: XCTestCase {
 
     private var stub: CodeCLIStub!
     private var folder: URL!
+    /// The pinned rules file, outside the workbench folder.
+    private var rulesFile: URL!
     private var center: CodeIndexCenter?
     private let clock = TestClock()
 
@@ -27,6 +31,10 @@ final class CodeIndexCenterTests: XCTestCase {
         for path in ["lib/a.swift", "lib/sub/b.swift", "lib/node_modules/x.js"] {
             try "x\n".write(to: folder.appendingPathComponent(path), atomically: true, encoding: .utf8)
         }
+        let support = stub.directory.appendingPathComponent("support")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        rulesFile = support.appendingPathComponent("code-languages.yaml")
+        try "# no rules\n".write(to: rulesFile, atomically: true, encoding: .utf8)
     }
 
     override func tearDown() async throws {
@@ -36,11 +44,14 @@ final class CodeIndexCenterTests: XCTestCase {
         stub.remove()
     }
 
-    private func makeCenter(_ env: [String: String] = [:], executable: String? = nil) -> CodeIndexCenter {
+    private func makeCenter(
+        _ env: [String: String] = [:], executable: String? = nil, rulesDebounce: Duration = .milliseconds(500)
+    ) -> CodeIndexCenter {
         let path = executable ?? stub.executable.path
         let environment = stub.environment(["STUB_FILES": "one.swift two.swift"].merging(env) { $1 })
         let made = CodeIndexCenter(
-            resolveExecutable: { path }, environment: { environment }, clock: { [clock] in clock.now }
+            resolveExecutable: { path }, environment: { environment }, clock: { [clock] in clock.now }, rulesFile: rulesFile,
+            rulesDebounce: rulesDebounce
         )
         center = made
         return made
@@ -206,7 +217,7 @@ final class CodeIndexCenterTests: XCTestCase {
     }
 
     func testAMissingCLIFails() {
-        let center = CodeIndexCenter(resolveExecutable: { nil }, environment: { [:] })
+        let center = CodeIndexCenter(resolveExecutable: { nil }, environment: { [:] }, rulesFile: rulesFile)
         self.center = center
         center.markShown(workbenchID: 7, folder: folder)
         XCTAssertEqual(center.index(for: 7).state, .failed("The watchtower command-line tool was not found."))
@@ -233,6 +244,100 @@ final class CodeIndexCenterTests: XCTestCase {
         files.stopShowing(project)
         center.releaseIdleIndexes(now: clock.now + 300)
         XCTAssertFalse(center.index(for: 7) === index)
+    }
+
+    // MARK: Rules file (spec §6.5)
+
+    private func writeRules(_ text: String) throws {
+        try text.write(to: rulesFile, atomically: true, encoding: .utf8)
+    }
+
+    /// The CLI reads the rules once per process: an edit kills the
+    /// `--serve` child (the next update starts one reading the new file)
+    /// and reruns the full index; its done lines set and clear the error.
+    func testARulesFileChangeRestartsServeAndRunsAFullIndex() async throws {
+        try writeRules("invalid: [\n")
+        let center = makeCenter()
+        center.markShown(workbenchID: 7, folder: folder)
+        let index = center.index(for: 7)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        XCTAssertEqual(index.rulesError, rulesFile.path + ": invalid YAML")
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
+        let served = await eventually { index.symbols(in: "a.swift").map(\.name) == ["r1"] }
+        XCTAssertTrue(served)
+        XCTAssertEqual(stub.serveStarts.count, 1)
+        XCTAssertTrue(stub.serveStarts[0].contains("--rules \(rulesFile.path) --serve"), "pinned: \(stub.serveStarts)")
+        let oldServe = try XCTUnwrap(stub.serveStarts.first.flatMap { pid_t($0.split(separator: " ")[1]) })
+
+        try writeRules("# fixed\n")
+        let rerun = await eventually { self.stub.fullRuns == 2 && index.state == .ready }
+        XCTAssertTrue(rerun)
+        XCTAssertNil(index.rulesError, "the full run read the fixed file")
+        let killed = await eventually { killpg(oldServe, 0) != 0 }
+        XCTAssertTrue(killed, "the --serve child that read the old file is gone")
+        XCTAssertEqual(index.symbols(in: "a.swift"), [], "the full run's listing replaced the old answers")
+
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["b.swift"]), workbenchID: 7)
+        let again = await eventually { index.symbols(in: "b.swift").map(\.name) == ["r1"] }
+        XCTAssertTrue(again, "a new --serve child answers (its request 1)")
+        XCTAssertEqual(stub.serveStarts.count, 2)
+        XCTAssertNil(index.rulesError, "the new child read the fixed file")
+    }
+
+    /// Edits inside the debounce (1 s here, for margin) are one reload; a
+    /// hidden workbench waits for its next show.
+    func testRulesEditsAreDebouncedAndAHiddenWorkbenchReindexesWhenShown() async throws {
+        let center = makeCenter(rulesDebounce: .seconds(1))
+        center.markShown(workbenchID: 7, folder: folder)
+        center.markShown(workbenchID: 8, folder: folder)
+        let ready = await eventually { center.index(for: 7).state == .ready && center.index(for: 8).state == .ready }
+        XCTAssertTrue(ready)
+        XCTAssertEqual(stub.fullRuns, 2)
+        center.markHidden(workbenchID: 8)
+
+        try writeRules("# one\n")
+        try await Task.sleep(for: .milliseconds(200))
+        try writeRules("# two\n")
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(stub.fullRuns, 2, "still inside the 1 s window of the last edit")
+        let reloaded = await eventually { self.stub.fullRuns == 3 && center.index(for: 7).state == .ready }
+        XCTAssertTrue(reloaded)
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(stub.fullRuns, 3, "one reload for both edits, none for the hidden workbench")
+
+        center.markShown(workbenchID: 8, folder: folder)
+        let shown = await eventually { self.stub.fullRuns == 4 }
+        XCTAssertTrue(shown, "shown again: the full run that waited")
+    }
+
+    /// The app creates the rules folder when it starts watching, so a rules
+    /// file written after the first show (its folder missing then) is seen.
+    func testARulesFileCreatedInAFolderMissingAtTheFirstShowIsApplied() async throws {
+        let support = stub.directory.appendingPathComponent("not-yet/Watchtower")
+        rulesFile = support.appendingPathComponent("code-languages.yaml")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: support.path))
+        let center = makeCenter()
+        center.markShown(workbenchID: 7, folder: folder)
+        let ready = await eventually { center.index(for: 7).state == .ready }
+        XCTAssertTrue(ready)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: support.path), "the folder is created to be watched")
+        try writeRules("invalid: [\n")
+        let applied = await eventually { self.stub.fullRuns == 2 && center.index(for: 7).rulesError != nil }
+        XCTAssertTrue(applied, "full runs: \(stub.fullRuns)")
+    }
+
+    /// A full run in flight read the old rules: it is killed and run again.
+    func testARulesChangeDuringAFullRunRestartsIt() async throws {
+        let center = makeCenter(["STUB_FULL_DELAY": "30"])
+        center.markShown(workbenchID: 7, folder: folder)
+        let started = await eventually { self.stub.fullRuns == 1 }
+        XCTAssertTrue(started)
+        let first = try XCTUnwrap(stub.startedPIDs.first)
+        try writeRules("# changed\n")
+        let restarted = await eventually { self.stub.fullRuns == 2 && killpg(first, 0) != 0 }
+        XCTAssertTrue(restarted)
+        XCTAssertEqual(center.index(for: 7).state, .indexing(done: 0, total: 0))
     }
 
     func testPathExpansion() throws {

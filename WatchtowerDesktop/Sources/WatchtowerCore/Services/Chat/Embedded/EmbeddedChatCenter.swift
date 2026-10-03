@@ -83,6 +83,12 @@ package final class EmbeddedChatCenter {
         }
     }
 
+    /// One deleted conversation (a code question) stops without a word;
+    /// other conversations of its context keep their engines.
+    package func drop(_ key: EmbeddedChatKey) {
+        remove(key, quietly: true)
+    }
+
     /// A sheet or window that owns its chat closed.
     package func release(_ key: EmbeddedChatKey) {
         remove(key, quietly: false)

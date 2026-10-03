@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,7 +27,22 @@ type Client struct {
 	// stdinOnly routes the system prompt and user message through stdin only
 	// (see SetStdinOnly) — never through argv.
 	stdinOnly bool
+	// readFolder, when set (SetReadFolder), is the run's working root
+	// (`--cd`, and the process cwd) under the read-only sandbox. Empty =
+	// today's run in a temp dir holding the MCP config.
+	readFolder string
 }
+
+// SetReadFolder makes the run a read-only look at dir (`ai query
+// --read-folder`, the workbench code questions): codex works in dir
+// (`--cd`) under its read-only sandbox (`--sandbox read-only`, approvals
+// off), with its shell on — codex reads files only through it — and every
+// other local tool and web search off. The sandbox lets the shell read
+// outside dir (accepted by the owner, spec 2026-10-02 §9.1) but never write
+// or reach the network. The watchtower MCP server is mounted with -c
+// overrides, since dir — not a temp dir — is the working root. dir must
+// already be resolved to a workbench folder (cmd's resolveReadFolder).
+func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
 func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
@@ -105,7 +121,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string,
 	if c.stdinOnly || len(systemPrompt) > digest.StdinThreshold {
 		return c.buildStdinOnlyArgs(systemPrompt, userMessage, workDir)
 	}
-	args := execArgs(c.model)
+	args := c.execArgs()
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
@@ -123,12 +139,59 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string,
 // message, delimited by codexStdinContent) regardless of length or leading
 // characters.
 func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	args := execArgs(c.model)
+	args := c.execArgs()
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
 	args = append(args, "-")
 	return args, codexStdinContent(systemPrompt, userMessage)
+}
+
+// execArgs is the `codex exec` prefix: the shared execArgs, or for a
+// read-folder run the read-only sandbox with the shell on (SetReadFolder).
+func (c *Client) execArgs() []string {
+	if c.readFolder == "" {
+		return execArgs(c.model)
+	}
+	args := slices.Clone(execArgs(c.model))
+	for i, a := range args {
+		if a == "features.shell_tool=false" {
+			args[i] = "features.shell_tool=true"
+		}
+	}
+	args = append(args, "--sandbox", "read-only", "-c", `web_search="disabled"`)
+	if c.dbPath != "" {
+		args = append(args, mcpConfigOverrides(c.dbPath, c.mcpArgs)...)
+	}
+	return args
+}
+
+// workDir prepares where the run works: the read folder as is, or a temp
+// dir holding the MCP config when there is a database (removed by the
+// returned cleanup), or none.
+func (c *Client) workDir() (dir string, cleanup func(), err error) {
+	if c.readFolder != "" {
+		return c.readFolder, func() {}, nil
+	}
+	if c.dbPath == "" {
+		return "", func() {}, nil
+	}
+	tmpDir, err := mcpWorkDir(c.dbPath, c.mcpArgs)
+	if err != nil {
+		return "", func() {}, err
+	}
+	return tmpDir, func() { _ = os.RemoveAll(tmpDir) }, nil
+}
+
+// processDir is the subprocess cwd: the read folder, or a TCC-neutral
+// directory so the Node-based Codex CLI never inherits a parent CWD inside
+// ~/Documents or ~/Desktop (macOS Files & Folders prompts attributed to
+// Watchtower).
+func (c *Client) processDir() string {
+	if c.readFolder != "" {
+		return c.readFolder
+	}
+	return os.TempDir()
 }
 
 // Query sends a streaming request via the Codex CLI and returns channels
@@ -144,16 +207,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(sidCh)
 
 		// Set up MCP config if database path is provided.
-		var workDir string
-		if c.dbPath != "" {
-			tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
-			if mcpErr != nil {
-				errCh <- mcpErr
-				return
-			}
-			defer func() { _ = os.RemoveAll(tmpDir) }()
-			workDir = tmpDir
+		workDir, cleanup, mcpErr := c.workDir()
+		if mcpErr != nil {
+			errCh <- mcpErr
+			return
 		}
+		defer cleanup()
 
 		args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
 
@@ -165,10 +224,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			return cmd.Process.Signal(os.Interrupt)
 		}
 		cmd.WaitDelay = 5 * time.Second
-		// Pin CWD to a TCC-neutral directory so the Node-based Codex CLI never
-		// inherits a parent CWD inside ~/Documents or ~/Desktop, which would
-		// trigger macOS Files & Folders prompts attributed to Watchtower.
-		cmd.Dir = os.TempDir()
+		cmd.Dir = c.processDir()
 
 		// Build clean environment with enriched PATH.
 		var env []string
@@ -264,15 +320,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 // the full response text and token usage.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ string) (string, *ai.Usage, error) {
 	// Set up MCP config if database path is provided.
-	var workDir string
-	if c.dbPath != "" {
-		tmpDir, mcpErr := mcpWorkDir(c.dbPath, c.mcpArgs)
-		if mcpErr != nil {
-			return "", nil, mcpErr
-		}
-		defer func() { _ = os.RemoveAll(tmpDir) }()
-		workDir = tmpDir
+	workDir, cleanup, mcpErr := c.workDir()
+	if mcpErr != nil {
+		return "", nil, mcpErr
 	}
+	defer cleanup()
 
 	args, promptStdin := c.buildArgs(systemPrompt, userMessage, workDir)
 
@@ -284,8 +336,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	// See Query() for rationale on cmd.Dir.
-	cmd.Dir = os.TempDir()
+	cmd.Dir = c.processDir()
 
 	// Build clean environment with enriched PATH.
 	var env []string

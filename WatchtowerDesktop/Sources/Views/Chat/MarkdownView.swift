@@ -14,16 +14,22 @@ import WatchtowerCore
 /// longer shadowed.
 struct MarkdownView: View {
     let text: String
+    /// A code answer's `path:line` citations as links (`CodeLineLinks`);
+    /// set by the code question popover, whose own `openURL` opens them.
+    @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
-        MarkdownBlocksView(blocks: MarkdownDocument.parse(text))
+        MarkdownBlocksView(blocks: MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text))
             .textSelection(.enabled)
     }
 
     /// Inline render with disallowed-scheme links stripped (the gate every
-    /// markdown link passes).
-    static func inlineText(_ inlines: [MarkdownInline]) -> AttributedString {
-        AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines))
+    /// markdown link passes). `codeLinks` also keeps `watchtower-code`
+    /// links, which only the code question popover opens (render-only:
+    /// `AllowedURLSchemes.permits` never allows them).
+    static func inlineText(_ inlines: [MarkdownInline], codeLinks: Bool = false) -> AttributedString {
+        AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
+                                                   renderOnly: codeLinks ? [CodeLineLinks.scheme] : [])
     }
 }
 
@@ -41,6 +47,7 @@ struct MarkdownBlocksView: View {
 
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
+    @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
         switch block {
@@ -67,7 +74,7 @@ struct MarkdownBlockView: View {
     // fixedSize keeps long lines wrapping inside HStack rows (AppKit-backed
     // Text otherwise truncates to one line).
     private func inline(_ inlines: [MarkdownInline]) -> some View {
-        Text(MarkdownView.inlineText(inlines)).fixedSize(horizontal: false, vertical: true)
+        Text(MarkdownView.inlineText(inlines, codeLinks: codeLinks)).fixedSize(horizontal: false, vertical: true)
     }
 
     private static func headingFont(_ level: Int) -> Font {
@@ -109,13 +116,14 @@ struct MarkdownListView: View {
 
 struct MarkdownTableView: View {
     let table: MarkdownTable
+    @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
                 GridRow {
                     ForEach(table.header.indices, id: \.self) { column in
-                        Text(MarkdownView.inlineText(table.header[column]))
+                        Text(MarkdownView.inlineText(table.header[column], codeLinks: codeLinks))
                             .fontWeight(.semibold)
                             .gridColumnAlignment(alignment(column))
                     }
@@ -124,7 +132,7 @@ struct MarkdownTableView: View {
                 ForEach(table.rows.indices, id: \.self) { row in
                     GridRow {
                         ForEach(table.rows[row].indices, id: \.self) { column in
-                            Text(MarkdownView.inlineText(table.rows[row][column]))
+                            Text(MarkdownView.inlineText(table.rows[row][column], codeLinks: codeLinks))
                         }
                     }
                 }
@@ -141,5 +149,17 @@ struct MarkdownTableView: View {
         case .center: return .center
         case .trailing: return .trailing
         }
+    }
+}
+
+private struct MarkdownCodeLinksKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// Whether `MarkdownView` links `path:line` citations (code answers).
+    var markdownCodeLinks: Bool {
+        get { self[MarkdownCodeLinksKey.self] }
+        set { self[MarkdownCodeLinksKey.self] = newValue }
     }
 }

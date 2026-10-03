@@ -145,6 +145,22 @@ func (db *DB) GetWorkbench(id int64) (*Workbench, error) {
 	return p, nil
 }
 
+// WorkbenchByFolder returns the workbench bound to folder — an absolute,
+// symlink-resolved path (ResolveWorkbenchFolder's form), compared the way
+// CreateWorkbench does (case-insensitively: APFS) — or ErrWorkbenchNotFound.
+// A subfolder of a workbench folder is not that workbench.
+func (db *DB) WorkbenchByFolder(folder string) (*Workbench, error) {
+	p, err := scanWorkbench(db.QueryRow(`SELECT `+workbenchCols+` FROM projects
+		WHERE folder_path = ? COLLATE NOCASE ORDER BY id LIMIT 1`, folder))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%s: %w", folder, ErrWorkbenchNotFound)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("finding the workbench of %s: %w", folder, err)
+	}
+	return p, nil
+}
+
 // ListWorkbenches returns every workbench in id order.
 func (db *DB) ListWorkbenches() ([]Workbench, error) {
 	rows, err := db.Query(`SELECT ` + workbenchCols + ` FROM projects ORDER BY id`)

@@ -4,12 +4,44 @@ import XCTest
 final class TerminalLaunchTests: XCTestCase {
     private let uuid = "3f2a1b4c-0000-4000-8000-000000000001"
 
-    func testNewClaudeWithPromptQuotesPromptAndPassesSessionID() {
+    /// The prompt travels in the environment and the command names only the
+    /// variable, so no prompt text is ever parsed by the shell.
+    func testNewClaudeWithPromptPassesItThroughTheEnvironment() {
         let prompt = TerminalLaunch.workOnTargetPrompt(targetID: 42, vocabulary: .current)
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
-        let command = "exec claude --session-id \(uuid) 'Work on target #42 using the watchtower-workbench skill.'"
+        let command = "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\""
         XCTAssertEqual(l.args, ["-l", "-c", command])
+        XCTAssertEqual(l.environment, ["WATCHTOWER_FIRST_PROMPT=Work on target #42 using the watchtower-workbench skill."])
         XCTAssertEqual(l.currentDirectory, "/tmp/acme")
+    }
+
+    /// A hand-off (spec 2026-10-02 §9.5) is owner and model text: quotes,
+    /// `$(…)`, several lines. None of it reaches the shell command.
+    func testOwnerTextPromptNeverReachesTheShellCommand() {
+        let prompt = "From a Watchtower code question:\nIt's $(rm -rf ~) `x` \"y\"\n- z"
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt), rowID: 3)
+        let command = "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\""
+        XCTAssertEqual(l.args, ["-l", "-c", command])
+        XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=3", "WATCHTOWER_FIRST_PROMPT=\(prompt)"])
+    }
+
+    /// Ruling R54(a): the variable is dropped (`env -u`) before `claude`
+    /// runs, so nothing Claude Code starts inherits the prompt.
+    func testThePromptVariableDoesNotReachClaudesChildren() {
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "x"))
+        XCTAssertEqual(l.args.last?.hasPrefix("exec env -u WATCHTOWER_FIRST_PROMPT claude "), true)
+        let plain = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: nil))
+        XCTAssertFalse(plain.args.joined().contains("env -u"), "no prompt, no variable")
+    }
+
+    /// Ruling R54(b): `claude --help` documents no `--` before the prompt, so
+    /// a prompt starting with "-" is passed with a leading space — never a flag.
+    func testAPromptStartingWithADashIsNeverAFlag() {
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "--dangerously-skip-permissions"))
+        XCTAssertEqual(l.environment, ["WATCHTOWER_FIRST_PROMPT= --dangerously-skip-permissions"])
+        XCTAssertEqual(TerminalLaunch.positionalPrompt("-p x"), " -p x")
+        XCTAssertEqual(TerminalLaunch.positionalPrompt("From a Watchtower code question:"), "From a Watchtower code question:")
+        XCTAssertFalse(TerminalLaunch.positionalPrompt(HandoffText.header).hasPrefix("-"))
     }
 
     func testNewClaudeWithoutPrompt() {
@@ -43,7 +75,7 @@ final class TerminalLaunchTests: XCTestCase {
     func testFirstRunKeepsTheSetupPrompt() {
         let prompt = TerminalLaunch.firstRunPrompt(.current)
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
-        XCTAssertEqual(l.args.last?.hasSuffix("'\(prompt)'"), true)
+        XCTAssertEqual(l.environment, ["\(TerminalLaunch.firstPromptEnv)=\(prompt)"])
     }
 
     func testSessionIDValidation() {

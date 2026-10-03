@@ -248,6 +248,9 @@ final class WorkbenchesViewModel {
             titleService = { try await service.title(sessionID: $0) }
         }
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
+        terminalCenter?.onPathLink = { [weak self] workbenchID, location in
+            Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
+        }
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onDelivered = { [weak self] projectID, sessionID in

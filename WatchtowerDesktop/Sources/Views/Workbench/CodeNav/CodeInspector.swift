@@ -2,10 +2,11 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Files pane's inspector on the right (spec §2 decision 4): Usages
-/// (§8.3) and the code questions (§9.4, an empty state until they exist).
-/// The tab is per workbench and kept by `CodeUsagesCenter`.
+/// (§8.3) and the code questions (§9.4). The tab is per workbench and kept
+/// by `CodeUsagesCenter`.
 struct CodeInspector: View {
     let usages: CodeUsagesCenter
+    let questions: CodeQuestionCenter?
     let project: Workbench
 
     var body: some View {
@@ -27,7 +28,11 @@ struct CodeInspector: View {
             case .usages:
                 UsagesView(usages: usages, project: project)
             case .questions:
-                ContentUnavailableView("No questions yet", systemImage: "bubble.left.and.text.bubble.right")
+                if let questions {
+                    QuestionsView(questions: questions, project: project)
+                } else {
+                    ContentUnavailableView("No questions yet", systemImage: "bubble.left.and.text.bubble.right")
+                }
             }
         }
     }

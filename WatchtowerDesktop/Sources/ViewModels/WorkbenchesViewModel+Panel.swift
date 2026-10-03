@@ -271,6 +271,15 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: project.id)
     }
 
+    /// A ⌘-clicked `path:line` in a workbench session's terminal (spec
+    /// §9.5): the file in Files at the line, beside the terminal (⌥↩'s
+    /// placement). A workbench no longer listed opens nothing.
+    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64) async {
+        guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return }
+        let target = OpenQuicklyTarget(path: location.path, line: location.line, col: location.col)
+        await openFile(at: target, project: project, beside: true)
+    }
+
     /// Go to definition and back/forward (spec §8.2): `location` in the Files
     /// pane, the cursor on its line and column. A jump (`keepingTab`) opens
     /// a kept tab — keeping a preview tab it lands on; back/forward

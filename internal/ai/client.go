@@ -151,6 +151,10 @@ type Client struct {
 	// file once the subprocess has been reaped (the mcpConfigTempPath
 	// lifecycle).
 	systemPromptTempPath string
+	// readFolder, when set (SetReadFolder), runs the CLI in that folder
+	// with its file-read tools allowed and unhidden and no settings files
+	// loaded. Empty = today's run in os.TempDir().
+	readFolder string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -160,6 +164,20 @@ func (c *Client) SetMCPArgs(extra []string) { c.mcpArgs = extra }
 // into the chat's mcp-config and tool allowlist alongside the built-in
 // watchtower server.
 func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServers = s }
+
+// SetReadFolder makes the run a read-only look at dir (`ai query
+// --read-folder`, the workbench code questions; owner decision 2026-10-03,
+// ruling R55): the CLI starts with cwd = dir, and Read, Grep, Glob and LS
+// are the only built-ins added to the --tools allowlist and taken off
+// --disallowedTools — every write, shell, web and task tool stays hidden.
+// The tools can read outside dir and a read can raise a macOS privacy
+// prompt (accepted by the owner, spec 2026-10-02 §9.1); nothing can write
+// or reach the network. Settings files are not loaded
+// (`--setting-sources ""`): a workbench folder carries
+// .claude/settings.local.json hooks that write session state and run the
+// board drift check, and a read run must start none of them. dir must
+// already be resolved to a workbench folder (cmd's resolveReadFolder).
+func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
 // ExternalServersForTest exposes the registered external MCP servers for
 // tests outside this package (e.g. cmd's chat-wiring tests) — the field
@@ -218,6 +236,12 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
 		"--allowedTools", c.allowedToolsFlag(),
+		// Built-in allowlist: the model sees exactly the Claude Code built-ins
+		// named here (MCP tools are unaffected), so a built-in a future CLI
+		// release adds stays hidden by default instead of slipping past the
+		// deny list below. See ChatBuiltinTools.
+		// A read-folder run adds the file reads (ReadFolderBuiltinTools).
+		"--tools", c.builtinTools(),
 		// Hide every built-in tool from the model outright, not just deny it:
 		// a tool that is merely denied still shows up in the model's tool list,
 		// so it tries the call, gets a silent headless rejection, and then asks
@@ -231,12 +255,16 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    for prompt-injection payloads in synced content;
 		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
 		//    and probing user folders can trigger TCC prompts (a project P0).
-		"--disallowedTools", WithExternalDisallowed(DisallowedTools, c.externalServers),
+		// The deny list is defence in depth behind --tools: it keeps every
+		// known built-in hidden even if a CLI release stopped honouring the
+		// allowlist. A read-folder run unhides only the file reads.
+		"--disallowedTools", WithExternalDisallowed(c.disallowedTools(), c.externalServers),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
 		// Keychain-backed OAuth still works because we don't override CLAUDE_CONFIG_DIR.
-		"--setting-sources", "project,local",
+		// A read-folder run loads no settings file at all (see SetReadFolder).
+		"--setting-sources", c.settingSources(),
 		// Only the MCP servers named in --mcp-config (watchtower + the owner's
 		// Quick Connections): never the owner's claude.ai connectors or any
 		// other server the CLI would load on its own.
@@ -281,6 +309,44 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	return args, stdin, nil
 }
 
+// builtinTools is the --tools allowlist: ReadFolderBuiltinTools for a
+// read-folder run, ChatBuiltinTools otherwise.
+func (c *Client) builtinTools() string {
+	if c.readFolder != "" {
+		return ReadFolderBuiltinTools
+	}
+	return ChatBuiltinTools
+}
+
+// disallowedTools is the --disallowedTools base: ReadOnlyFolderDisallowedTools
+// for a read-folder run, DisallowedTools otherwise.
+func (c *Client) disallowedTools() string {
+	if c.readFolder != "" {
+		return ReadOnlyFolderDisallowedTools
+	}
+	return DisallowedTools
+}
+
+// settingSources is the --setting-sources value: none for a read-folder run
+// (the folder's own .claude settings carry hooks), project and local otherwise.
+func (c *Client) settingSources() string {
+	if c.readFolder != "" {
+		return ""
+	}
+	return "project,local"
+}
+
+// workDir is where the CLI runs: the read folder, or a TCC-neutral
+// directory so the Node-based CLI never inherits a parent CWD inside
+// ~/Documents or ~/Desktop (macOS Files & Folders prompts attributed to
+// Watchtower).
+func (c *Client) workDir() string {
+	if c.readFolder != "" {
+		return c.readFolder
+	}
+	return os.TempDir()
+}
+
 // systemPromptArgs passes the system prompt inline when it is small and as a
 // 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
 // that put their whole data payload in the system prompt (briefing, target
@@ -318,13 +384,54 @@ func writeMCPConfigTempFile(config string) (string, error) {
 	return fsutil.WritePrivateTemp("wt-mcp-*.json", config)
 }
 
+// ChatBuiltinTools is the --tools value of every chat run on the one-shot
+// client: the only Claude Code built-in it may see is ToolSearch, which loads
+// the deferred watchtower tool schemas. --tools is an allowlist over the
+// CLI's built-in set (MCP tools are not affected), so a built-in added by a
+// later CLI release is hidden by default — the deny list alone went stale
+// with every release (DesignSync, ReportFindings, ShareOnboardingGuide in
+// 2.1.288). Adding a name here exposes it to every chat: it must be approved
+// in TestChatBuiltins_OnlyApprovedNamesExposed first.
+const ChatBuiltinTools = ToolSearchTool
+
+// SessionBuiltinTools is the warm `ai session` (main chat, Claude backend)
+// --tools value: ChatBuiltinTools plus WebSearch, which that session alone
+// may use (see SessionDisallowedTools).
+const SessionBuiltinTools = ChatBuiltinTools + "," + WebSearchTool
+
+// fileReadTools are the built-ins a read-folder run allows and unhides.
+var fileReadTools = []string{"Read", "Grep", "Glob", "LS"}
+
+// ReadFolderBuiltinTools is the --tools value of a read-folder run (a
+// workbench code question, Client.SetReadFolder): ChatBuiltinTools plus the
+// four file reads.
+var ReadFolderBuiltinTools = ChatBuiltinTools + "," + strings.Join(fileReadTools, ",")
+
+// ReadOnlyFolderDisallowedTools is DisallowedTools minus Read, Grep, Glob
+// and LS: the hidden set of a read-folder run (Client.SetReadFolder).
+var ReadOnlyFolderDisallowedTools = withoutTools(DisallowedTools, fileReadTools)
+
+// withoutTools drops the named tools from a comma-separated tool list.
+func withoutTools(list string, drop []string) string {
+	kept := slices.DeleteFunc(strings.Split(list, ","), func(tool string) bool {
+		return slices.Contains(drop, tool)
+	})
+	return strings.Join(kept, ",")
+}
+
+// ToolSearchTool is Claude Code's built-in deferred-tool loader.
+const ToolSearchTool = "ToolSearch"
+
 // DisallowedTools hides every built-in Claude Code tool from the chat model
 // (see buildArgs for why each group is hidden). Shared by the one-shot client
-// and the warm `ai session` backend. The last two lines are the newer CLI
-// built-ins (scheduling/remote triggers, workflows, agent/task plumbing, MCP
-// resource readers that would bypass the Quick Connections allowlist) — an
-// unknown name is ignored by older CLIs. ToolSearch stays allowed: it loads
-// the deferred watchtower tool schemas.
+// and the warm `ai session` backend. It is defence in depth behind the
+// ChatBuiltinTools/SessionBuiltinTools allowlist: the lines after the first
+// three are the newer CLI built-ins (scheduling/remote triggers, workflows,
+// agent/task plumbing, MCP resource readers that would bypass the Quick
+// Connections allowlist, host-UI tools) — an unknown name is ignored by older
+// CLIs. TestChatBuiltins_DenyListCoversSnapshot keeps it in step with the
+// pinned CLI built-in snapshot. ToolSearch stays allowed: it loads the
+// deferred watchtower tool schemas.
 const DisallowedTools = sessionDisallowedTools + "," + WebSearchTool
 
 // SessionDisallowedTools is DisallowedTools minus WebSearch: the main chat's
@@ -342,7 +449,10 @@ const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,
 	"ExitPlanMode,SlashCommand,Skill," +
 	"CronCreate,CronDelete,CronList,RemoteTrigger,ScheduleWakeup,PushNotification,Workflow,Monitor," +
 	"EnterWorktree,ExitWorktree,ListAgents,SendMessage,TaskCreate,TaskGet,TaskList,TaskStop,TaskUpdate," +
-	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool"
+	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool," +
+	"Agent,AskUserQuestion,EnterPlanMode,PowerShell,SendUserMessage,SubagentHandback,StructuredOutput," +
+	"Artifact,ArtifactCheck,ArtifactComments,ArtifactData,ConnectGitHub," +
+	"DesignSync,ReportFindings,ShareOnboardingGuide,WaitForMcpServers"
 
 // AllowedTools builds the --allowedTools value: the built-in watchtower
 // server plus one mcp__<Name>__<tool> token per allowed external tool, in
@@ -502,10 +612,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			return cmd.Process.Signal(os.Interrupt)
 		}
 		cmd.WaitDelay = 5 * time.Second
-		// Pin CWD to a TCC-neutral directory so the Node-based Claude CLI never
-		// inherits a parent CWD inside ~/Documents or ~/Desktop, which would
-		// trigger macOS Files & Folders prompts attributed to Watchtower.
-		cmd.Dir = os.TempDir()
+		cmd.Dir = c.workDir()
 		cmd.Env = append(os.Environ(),
 			"PATH="+claude.RichPATH(),
 		)
@@ -636,8 +743,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	// See Query() for rationale on cmd.Dir.
-	cmd.Dir = os.TempDir()
+	cmd.Dir = c.workDir()
 	cmd.Env = append(os.Environ(),
 		"PATH="+claude.RichPATH(),
 	)

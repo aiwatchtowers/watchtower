@@ -36,7 +36,7 @@ func collect(t *testing.T, root string, paths []string, mk func() parser) map[st
 		mk = newParser
 	}
 	out := map[string]FileResult{}
-	sum, err := run(context.Background(), root, paths, 2, mk, func(r FileResult) error {
+	sum, err := run(context.Background(), root, paths, 2, nil, mk, func(r FileResult) error {
 		if _, dup := out[r.File]; dup {
 			t.Errorf("file %s emitted twice", r.File)
 		}
@@ -105,7 +105,7 @@ func TestRun_ParsePanicStaysLocal(t *testing.T) {
 		var made, closed atomic.Int32
 		mk := func() parser { made.Add(1); return boomParser{&closed} }
 		out := map[string]FileResult{}
-		sum, err := run(context.Background(), root, paths, 1, mk, func(r FileResult) error {
+		sum, err := run(context.Background(), root, paths, 1, nil, mk, func(r FileResult) error {
 			out[r.File] = r
 			return nil
 		})
@@ -280,7 +280,7 @@ func TestRun_EmitErrorStopsTheRun(t *testing.T) {
 	}
 	boom := errors.New("stdout closed")
 	calls := 0
-	_, err := Run(context.Background(), root, nil, 2, func(FileResult) error {
+	_, err := Run(context.Background(), root, nil, Options{Workers: 2}, func(FileResult) error {
 		calls++
 		return boom
 	})
@@ -294,14 +294,14 @@ func TestRun_CancelledContext(t *testing.T) {
 	write(t, root, "a.md", []byte("# H\n"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := Run(ctx, root, nil, 2, func(FileResult) error { return nil })
+	_, err := Run(ctx, root, nil, Options{Workers: 2}, func(FileResult) error { return nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
 
 func TestRun_UnreadableFolderIsAnError(t *testing.T) {
-	_, err := Run(context.Background(), filepath.Join(t.TempDir(), "missing"), nil, 2, func(FileResult) error { return nil })
+	_, err := Run(context.Background(), filepath.Join(t.TempDir(), "missing"), nil, Options{Workers: 2}, func(FileResult) error { return nil })
 	if err == nil {
 		t.Fatal("want an error for a missing folder")
 	}

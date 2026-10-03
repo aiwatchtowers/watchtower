@@ -5,16 +5,38 @@ import WatchtowerCore
 /// (All · Files · Symbols · Text), the results on the left with section
 /// headers, the preview on the right and the key hints. Keys (↑↓ ↩ ⌥↩ ⌘↩
 /// Esc Space) are the panel's (`OpenQuicklyPanelController`), so the field
-/// keeps the focus.
+/// keeps the focus. After ⌘↩ the answer card (spec §9.3) takes the panel.
 struct OpenQuicklyView: View {
     let session: OpenQuicklySession
+    let questions: CodeQuestionCenter?
     let onActivate: (_ option: Bool) -> Void
+    /// A `path:line` link in the answer.
+    let onAnswerLink: (URL) -> Void
+    /// The card is on screen: its follow-up field takes the keyboard.
+    let onAnswerShown: () -> Void
     @FocusState private var searchFocused: Bool
 
     var body: some View {
+        Group {
+            if let conversationID = session.answerConversationID, let questions,
+               let question = questions.questionRef(conversationID) {
+                OpenQuicklyAnswerCard(questions: questions, question: question, onLink: onAnswerLink)
+                    .onAppear(perform: onAnswerShown)
+            } else {
+                searchContent
+            }
+        }
+        .frame(width: OpenQuicklyPanelController.width)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Open Quickly")
+    }
+
+    private var searchContent: some View {
         let model = session.model
         let selectedID = model.selectedRow?.id
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             searchField
             Picker("Scope", selection: Binding(get: { session.model.scope }, set: { session.updateScope($0) })) {
                 Text("All").tag(CodeSearchScope.all)
@@ -37,14 +59,9 @@ struct OpenQuicklyView: View {
             Divider()
             footer(model)
         }
-        .frame(width: OpenQuicklyPanelController.width)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
         .onChange(of: session.index.files.count) { _, _ in session.refreshIndexResults() }
         .onChange(of: session.index.state) { _, _ in session.refreshIndexResults() }
         .onAppear { searchFocused = true }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Open Quickly")
     }
 
     private var searchField: some View {
@@ -136,6 +153,7 @@ struct OpenQuicklyView: View {
     /// The index's state (spec §7: its failure shows here) and the text
     /// search's.
     private func statusText(_ model: OpenQuicklyModel) -> String? {
+        if let askError = session.askError { return askError }
         switch session.index.state {
         case let .failed(message): return "Index: \(message)"
         case let .indexing(done, total): return total > 0 ? "Indexing \(done) of \(total) files…" : "Indexing…"
@@ -150,8 +168,57 @@ struct OpenQuicklyView: View {
     }
 
     private func statusIsError(_ model: OpenQuicklyModel) -> Bool {
+        if session.askError != nil { return true }
         if case .failed = session.index.state { return true }
         if case .failed = model.textStatus { return true }
         return false
+    }
+}
+
+/// The answer in Open Quickly (spec §9.3): "✦ AI answer" over the streamed
+/// conversation (`EmbeddedChatView` `.compact`, whose field follows up on
+/// ↩) and the key hint. A `path:line` link opens the file and closes the
+/// panel.
+struct OpenQuicklyAnswerCard: View {
+    let questions: CodeQuestionCenter
+    let question: CodeQuestionRef
+    let onLink: (URL) -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("✦ AI answer")
+                    .font(.headline)
+                Spacer(minLength: 8)
+                Text(QuestionsView.originLabel(question.origin))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            Divider()
+            if let engine = questions.engine(for: question), let chats = questions.embeddedChats {
+                EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…")
+                    .embeddedChatVisibility(engine.spec.key, in: chats)
+                    .frame(height: 380)
+            } else {
+                ContentUnavailableView("The answer can't be shown", systemImage: "exclamationmark.triangle")
+                    .frame(height: 380)
+            }
+            Divider()
+            HStack {
+                Text("↩ Follow up · click a link to open the file")
+                Spacer(minLength: 8)
+                Text("esc to close")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+        }
+        .environment(\.dictationCenter, questions.dictation)
+        .codeAnswerLinks(onLink)
     }
 }

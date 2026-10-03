@@ -88,6 +88,14 @@ struct CursorMessage: Equatable {
     let col: Int
 }
 
+/// `selection {id, text, truncated, startLine, startCol, endLine, endCol}`
+struct SelectionMessage: Equatable {
+    let id: String
+    let text: String
+    let truncated: Bool
+    let range: [Int]
+}
+
 @MainActor
 final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     let webView: WKWebView
@@ -96,6 +104,9 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var definitions: [DefinitionMessage] = []
     var cursors: [CursorMessage] = []
     var usages: [UsagesMessage] = []
+    var selections: [SelectionMessage] = []
+    var scrolls: [String] = []
+    var askAIs: [String] = []
     var errors: [String] = []
     var loadError: String?
 
@@ -148,6 +159,28 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             cursors.append(CursorMessage(id: id, line: line, col: col))
+        case "selection":
+            guard let id = body["id"] as? String, let text = body["text"] as? String,
+                  let truncated = body["truncated"] as? Bool,
+                  let startLine = body["startLine"] as? Int, let startCol = body["startCol"] as? Int,
+                  let endLine = body["endLine"] as? Int, let endCol = body["endCol"] as? Int else {
+                errors.append("malformed selection message: \(body)")
+                return
+            }
+            selections.append(SelectionMessage(id: id, text: text, truncated: truncated,
+                                               range: [startLine, startCol, endLine, endCol]))
+        case "scroll":
+            guard let id = body["id"] as? String else {
+                errors.append("malformed scroll message: \(body)")
+                return
+            }
+            scrolls.append(id)
+        case "askAI":
+            guard let id = body["id"] as? String else {
+                errors.append("malformed askAI message: \(body)")
+                return
+            }
+            askAIs.append(id)
         case "error":
             errors.append((body["message"] as? String) ?? "error without a message")
         default:
@@ -273,6 +306,24 @@ window.__h = {
     return svc._getResolver().getKeybindings().filter(function (it) { return it.resolvedKeybinding && it.command; })
       .map(function (it) { return it.resolvedKeybinding.getUserSettingsLabel() + "\t" + it.command; });
   },
+  select: function (l1, c1, l2, c2) {
+    monaco.editor.getEditors()[0].setSelection(new monaco.Range(l1, c1, l2, c2));
+    return true;
+  },
+  // Cmd+I typed into the editor's text area, as a keystroke reaches it.
+  cmdI: function () {
+    var e = monaco.editor.getEditors()[0];
+    e.focus();
+    var target = e.getContainerDomNode().querySelector('textarea') || document.activeElement;
+    var ev = new KeyboardEvent('keydown', { key: 'i', code: 'KeyI', keyCode: 73, metaKey: true, bubbles: true, cancelable: true });
+    target.dispatchEvent(ev);
+    return ev.defaultPrevented;
+  },
+  // The inline diff's new-text zones in the editor's DOM.
+  proposalZones: function () {
+    return Array.prototype.map.call(document.querySelectorAll('.wt-proposal-new'), function (n) { return n.textContent; });
+  },
+  undo: function (id) { var m = __h.model(id); if (!m) { return false; } m.undo(); return true; },
   onScreen: function () {
     var m = monaco.editor.getEditors()[0].getModel();
     return m ? m.uri.path.split("/")[1] : "";
@@ -822,6 +873,169 @@ func usagesChecks(_ page: Page) async {
     page.usages.removeAll()
 }
 
+/// Code questions (spec §9.2, §8.5): `selection` (cut at 20 KB) and
+/// `scroll` feed the ✦ button, ⌘I and the context menu's "Ask AI" post
+/// `askAI` after the current selection, `selectionRect` anchors the
+/// popover, `proposeEdit`/`clearProposal` draw and remove the inline diff,
+/// and `applyEdit` is one undoable edit followed by the usual `text`
+/// message — refused when the range no longer holds the question's text.
+@MainActor
+func questionChecks(_ page: Page) async {
+    let source = "func target() {}\nlet x = target()\nprint(x)\n"
+    await page.call("wt.show", ["id": "q", "path": "question.swift", "text": source, "rev": 1])
+    await pause(0.3)
+    page.selections.removeAll()
+    page.texts.removeAll()
+
+    // selection
+    _ = await page.eval("__h.select(2, 9, 2, 17)")
+    let selected = await wait(2) { page.selections.last?.text == "target()" }
+    check("selection: posts {id, text, truncated, range} for the selection",
+          selected && page.selections.last == SelectionMessage(id: "q", text: "target()", truncated: false, range: [2, 9, 2, 17]),
+          "\(page.selections)")
+    await pause(0.3)
+    _ = await page.eval("__h.select(3, 3, 3, 3)")
+    let caret = await wait(2) { page.selections.last?.text == "" }
+    check("selection: a caret posts empty text", caret && page.selections.last?.range == [3, 3, 3, 3], "\(page.selections)")
+
+    // ≤ 20 KB
+    let big = String(repeating: "abcdefghij", count: 2_100) + "\n"
+    await page.call("wt.show", ["id": "big", "path": "big.txt", "text": big, "rev": 1])
+    await pause(0.3)
+    _ = await page.eval("__h.select(1, 1, 1, 21001)")
+    let cut = await wait(2) { page.selections.last?.id == "big" && page.selections.last?.truncated == true }
+    check("selection: text over 20 KB is cut and marked truncated",
+          cut && page.selections.last?.text.utf16.count == 20_480 && page.selections.last?.range == [1, 1, 1, 21001],
+          page.selections.last.map { "\($0.text.utf16.count) \($0.truncated) \($0.range)" } ?? "none")
+    await page.call("wt.close", "big")
+
+    // scroll
+    let tall = (1...200).map { "line \($0)" }.joined(separator: "\n")
+    await page.call("wt.show", ["id": "tall", "path": "tall.txt", "text": tall, "rev": 1])
+    await pause(0.3)
+    page.scrolls.removeAll()
+    _ = await page.eval("monaco.editor.getEditors()[0].setScrollTop(400); true")
+    let scrolled = await wait(2) { page.scrolls.last == "tall" }
+    check("scroll: posts scroll {id}", scrolled, "\(page.scrolls)")
+    await page.call("wt.close", "tall")
+    await page.call("wt.show", ["id": "q", "path": "question.swift", "text": source, "rev": 1])
+    await pause(0.3)
+
+    // ⌘I and the context menu
+    _ = await page.eval("__h.select(2, 9, 2, 17)")
+    await pause(0.3)
+    page.selections.removeAll()
+    page.askAIs.removeAll()
+    let consumed = await page.eval("__h.cmdI()") as? Bool
+    let asked = await wait(2) { page.askAIs == ["q"] }
+    check("⌘I: posts askAI {id} and consumes the keystroke", asked && consumed == true,
+          "\(page.askAIs), consumed \(String(describing: consumed))")
+    check("⌘I: the current selection is posted first",
+          page.selections.last == SelectionMessage(id: "q", text: "target()", truncated: false, range: [2, 9, 2, 17]),
+          "\(page.selections)")
+    let label = await page.evalString(
+        "(function () { var a = monaco.editor.getEditors()[0].getAction('wt.askAI'); return a ? a.label : ''; })()"
+    )
+    check("context menu: the editor has an Ask AI action", label == "Ask AI", label ?? "")
+    _ = await page.eval("monaco.editor.getEditors()[0].getAction('wt.askAI').run(); true")
+    let fromMenu = await wait(2) { page.askAIs.count == 2 }
+    check("context menu: Ask AI posts askAI", fromMenu && page.askAIs.last == "q", "\(page.askAIs)")
+    let fromSwift = await page.eval("wt.askAI()") as? Bool
+    check("askAI(): posts askAI for the file on screen", fromSwift == true && page.askAIs.count == 3, "\(page.askAIs)")
+
+    // selectionRect
+    let rect = await page.eval("wt.selectionRect()") as? [String: Any]
+    let width = (rect?["w"] as? NSNumber)?.doubleValue ?? 0
+    let height = (rect?["h"] as? NSNumber)?.doubleValue ?? 0
+    check("selectionRect: a box with a size for the selection", width > 10 && height > 5, "\(String(describing: rect))")
+    _ = await page.eval("__h.select(1, 1, 3, 4)")
+    let multi = await page.eval("wt.selectionRect()") as? [String: Any]
+    let multiHeight = (multi?["h"] as? NSNumber)?.doubleValue ?? 0
+    check("selectionRect: a selection over three lines is three lines tall", multiHeight >= height * 2.5,
+          "\(String(describing: multi)) vs one line \(height)")
+    await page.call("wt.show", NSNull())
+    check("selectionRect: no file on screen → null", await page.eval("wt.selectionRect() === null") as? Bool == true)
+    check("askAI(): no file on screen → false", await page.eval("wt.askAI()") as? Bool == false)
+    await page.call("wt.show", ["id": "q", "path": "question.swift", "text": source, "rev": 1])
+    await pause(0.3)
+
+    // proposeEdit / clearProposal
+    let range: [String: Int] = ["startLine": 2, "startCol": 9, "endLine": 2, "endCol": 17]
+    let proposed = await page.eval("wt.proposeEdit(\(jsonArgument(["id": "q", "range": range, "text": "target(1)"])))") as? Bool
+    let struck = await page.eval("__h.decorations('wt-proposal-old')") as? [String]
+    check("proposeEdit: strikes the range through", proposed == true && struck == ["2:9-17"], "\(String(describing: struck))")
+    let zones = await page.eval("__h.proposalZones()") as? [String] ?? []
+    check("proposeEdit: shows the new text under it", zones == ["target(1)"], "\(zones)")
+    let unknown = await page.eval("wt.proposeEdit(\(jsonArgument(["id": "nope", "range": range, "text": "x"])))") as? Bool
+    check("proposeEdit: an unknown id → false", unknown == false)
+    await page.call("wt.proposeEdit", ["id": "q", "range": range, "text": "target(2)"])
+    let replacedStrike = await page.eval("__h.decorations('wt-proposal-old')") as? [String]
+    let replacedZones = await page.eval("__h.proposalZones()") as? [String]
+    check("proposeEdit: a newer proposal replaces the older",
+          replacedStrike == ["2:9-17"] && replacedZones == ["target(2)"],
+          "\(String(describing: replacedStrike)) \(String(describing: replacedZones))")
+    // A tab switch takes the zone with it and brings it back.
+    await page.call("wt.show", ["id": "other", "path": "other.swift", "text": "x\n", "rev": 1])
+    let awayZones = await page.eval("__h.proposalZones()") as? [String]
+    await page.call("wt.show", ["id": "q", "path": "question.swift", "text": source, "rev": 1])
+    let backZones = await page.eval("__h.proposalZones()") as? [String]
+    check("proposeEdit: the diff leaves with its file and comes back with it",
+          awayZones == [] && backZones == ["target(2)"], "\(String(describing: awayZones)) \(String(describing: backZones))")
+    await page.call("wt.close", "other")
+    await page.call("wt.clearProposal", "q")
+    let clearedStrike = await page.eval("__h.decorations('wt-proposal-old')") as? [String]
+    let clearedZones = await page.eval("__h.proposalZones()") as? [String]
+    check("clearProposal: the diff goes", clearedStrike == [] && clearedZones == [],
+          "\(String(describing: clearedStrike)) \(String(describing: clearedZones))")
+
+    // applyEdit
+    await page.call("wt.proposeEdit", ["id": "q", "range": range, "text": "target(3)"])
+    page.texts.removeAll()
+    let stale = await page.evalString(
+        "wt.applyEdit(\(jsonArgument(["id": "q", "range": range, "text": "target(3)", "expected": "other()"])))")
+    let staleValue = await page.evalString("__h.value('q')")
+    check("applyEdit: refused (changed) when the range no longer holds the question's text",
+          stale == "changed" && staleValue == source, stale ?? "nil")
+    let missing = await page.evalString(
+        "wt.applyEdit(\(jsonArgument(["id": "nope", "range": range, "text": "x", "expected": ""])))")
+    check("applyEdit: a file not open → missing", missing == "missing", missing ?? "nil")
+    let outside: [String: Int] = ["startLine": 9, "startCol": 1, "endLine": 9, "endCol": 1]
+    let outsideResult = await page.evalString(
+        "wt.applyEdit(\(jsonArgument(["id": "q", "range": outside, "text": "x", "expected": ""])))")
+    check("applyEdit: a range outside the file is refused", outsideResult == "changed", outsideResult ?? "nil")
+    let applied = await page.evalString(
+        "wt.applyEdit(\(jsonArgument(["id": "q", "range": range, "text": "target(3)", "expected": "target()"])))")
+    let changedSource = "func target() {}\nlet x = target(3)\nprint(x)\n"
+    let appliedValue = await page.evalString("__h.value('q')")
+    check("applyEdit: applies the change", applied == "applied" && appliedValue == changedSource, applied ?? "nil")
+    let appliedStrike = await page.eval("__h.decorations('wt-proposal-old')") as? [String]
+    let appliedZones = await page.eval("__h.proposalZones()") as? [String]
+    check("applyEdit: the diff goes", appliedStrike == [] && appliedZones == [],
+          "\(String(describing: appliedStrike)) \(String(describing: appliedZones))")
+    let sentAfterApply = await wait(3) { !page.texts.isEmpty }
+    check("applyEdit: then the usual text message",
+          sentAfterApply && page.texts.last?.id == "q" && page.texts.last?.text == changedSource && page.texts.last?.now == false,
+          "\(page.texts)")
+    _ = await page.eval("__h.undo('q')")
+    check("applyEdit: one undo takes the whole change back", await page.evalString("__h.value('q')") == source)
+    // A CRLF file: the question's text (CRLF from the page, or LF after a
+    // suggestion was applied) matches either way.
+    await page.call("wt.show", ["id": "crlf", "path": "win.swift", "text": "a()\r\nb()\r\nc()\r\n", "rev": 1])
+    let twoLines: [String: Int] = ["startLine": 1, "startCol": 1, "endLine": 2, "endCol": 4]
+    let crlf = await page.evalString(
+        "wt.applyEdit(\(jsonArgument(["id": "crlf", "range": twoLines, "text": "x()\ny()", "expected": "a()\nb()"])))")
+    let crlfValue = await page.evalString("__h.value('crlf')")
+    check("applyEdit: a CRLF file matches the question's text whatever its line breaks",
+          crlf == "applied" && crlfValue == "x()\r\ny()\r\nc()\r\n", "\(crlf ?? "nil") \(crlfValue ?? "nil")")
+    await page.call("wt.close", "crlf")
+    await page.call("wt.close", "q")
+    await pause(0.5)
+    page.texts.removeAll()
+    page.selections.removeAll()
+    page.scrolls.removeAll()
+    page.askAIs.removeAll()
+}
+
 // MARK: - Main
 
 @MainActor
@@ -839,6 +1053,7 @@ func run(root: URL) async -> Int32 {
     await protocolChecks(page)
     await navigationChecks(page)
     await usagesChecks(page)
+    await questionChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
 

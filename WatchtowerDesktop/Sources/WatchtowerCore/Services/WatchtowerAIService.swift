@@ -16,6 +16,20 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         provider: String?,
         toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
+        stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
+               model: model, provider: provider, toolMode: toolMode, readFolder: nil)
+    }
+
+    package func stream(
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
             continuation.onTermination = { @Sendable _ in
@@ -31,6 +45,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         model: model,
                         provider: provider,
                         toolMode: toolMode,
+                        readFolder: readFolder,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -93,6 +108,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// parsed by cobra as flags, not as the positional argument. This mirrors
     /// the Go-side cobra test added alongside it (`cmd/ai_test.go`) — the two
     /// orderings (flags, `--`, prompt) must match.
+    ///
+    /// `readFolder` adds `--read-folder DIR` (a workbench folder the CLI
+    /// resolves, or refuses with exit 2); it never comes with a tool mode —
+    /// the CLI refuses the pair.
     package static func buildArgs(
         prompt: String,
         systemPrompt: String?,
@@ -100,7 +119,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         dbPath: String?,
         model: String?,
         provider: String?,
-        toolMode: ChatToolMode?
+        toolMode: ChatToolMode?,
+        readFolder: String? = nil
     ) -> [String] {
         var args = ["ai", "query"]
 
@@ -123,6 +143,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         if let toolMode {
             args += toolMode.cliArgs
+        }
+        if let readFolder, !readFolder.isEmpty {
+            args += ["--read-folder", readFolder]
         }
         args += ["--", prompt]
         return args
@@ -158,6 +181,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
+        readFolder: String?,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -170,7 +194,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             dbPath: dbPath,
             model: model,
             provider: provider,
-            toolMode: toolMode
+            toolMode: toolMode,
+            readFolder: readFolder
         )
 
         let process = Process()

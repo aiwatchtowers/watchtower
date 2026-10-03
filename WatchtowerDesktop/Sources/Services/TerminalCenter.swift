@@ -20,6 +20,13 @@ protocol TerminalSessionProcess: AnyObject {
     /// Whether the program in the terminal enabled bracketed paste (DECSET
     /// 2004), so a paste arrives as text rather than as keystrokes.
     var bracketedPasteMode: Bool { get }
+    /// ⌘-click on `path:line(:col)` resolving inside `folder` calls `open`
+    /// instead of SwiftTerm's default handler (spec 2026-10-02 §9.5).
+    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void)
+}
+
+extension TerminalSessionProcess {
+    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
 }
 
 /// Process-group signalling seam, so tests never signal a real process.
@@ -57,6 +64,10 @@ final class TerminalCenter {
     /// Sessions whose last prompt went to the clipboard: the terminal pane
     /// shows the ⌘V hint until the owner dismisses it or the next delivery.
     private(set) var clipboardHints: Set<Int64> = []
+    /// Sessions holding a hand-off pasted but not submitted (ruling R52):
+    /// the terminal pane says to press Return until the owner dismisses it
+    /// or the next delivery.
+    private(set) var pasteHints: Set<Int64> = []
     /// Session ids the owner focused, most recent last, without duplicates —
     /// fed to `TerminalSessionPolicy.activeSession`.
     private(set) var focusOrder: [Int64] = []
@@ -79,6 +90,9 @@ final class TerminalCenter {
     /// Every process exit, after `states` records it (the VM's resume-failure
     /// check). One subscriber.
     @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
+    /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
+    /// inside its folder (`TerminalPathLinks`): workbench id, location.
+    @ObservationIgnored var onPathLink: ((Int64, TerminalPathLinks.Location) -> Void)?
     @ObservationIgnored private let signaller: ProcessGroupSignaller
 
     // A closure literal used as a default *argument* value does not inherit
@@ -195,22 +209,74 @@ final class TerminalCenter {
     /// session enabled that mode, otherwise the clipboard (the owner pastes
     /// with ⌘V). Typed digits or an Enter could answer a pending Claude Code
     /// permission prompt the owner has not seen. Never starts a session.
-    func sendPrompt(_ line: String, sessionID: Int64) -> PromptDelivery {
+    /// `keepingLineBreaks` keeps a multi-line text (a code question's
+    /// hand-off) as several lines inside the one paste.
+    func sendPrompt(_ line: String, sessionID: Int64, keepingLineBreaks: Bool = false) -> PromptDelivery {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return .noSession }
-        switch WorkbenchCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode) {
+        switch WorkbenchCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode,
+                                                      keepingLineBreaks: keepingLineBreaks) {
         case let .paste(bytes):
             clipboardHints.remove(sessionID)
+            pasteHints.remove(sessionID)
             process.sendInput(bytes)
             return .sent
         case let .clipboard(text):
             copyToClipboard(text)
+            pasteHints.remove(sessionID)
             clipboardHints.insert(sessionID)
             return .copied
         }
     }
 
+    /// The pause between a hand-off's paste and its Return, so the TUI has
+    /// taken the paste in before the key arrives.
+    static let submitDelay: Duration = .milliseconds(150)
+
+    /// How a hand-off reached the session.
+    enum HandoffDelivery: Equatable {
+        /// Pasted, then Return.
+        case submitted
+        /// Pasted; the owner presses Return (`pasteHints`).
+        case pasted
+        /// Bracketed paste was off: on the clipboard (`clipboardHints`).
+        case copied
+        case noSession
+    }
+
+    /// "Hand to Claude Code" (spec 2026-10-02 §9.5): `text` pasted like Send
+    /// comments (`sendPrompt`, line breaks kept). A Return follows only
+    /// while `canSubmit` holds — before the pause and again after it, the
+    /// caller re-reading the session's agent state (ruling R52: only a
+    /// session idle at its prompt; a Return could answer a permission
+    /// prompt that appeared meanwhile) — and only into the same running
+    /// process. Otherwise the paste waits for the owner's own Return.
+    /// `refresh` runs after the pause, before the second check (the caller
+    /// re-reads the agent state, which its poll may hold up to 1 s stale).
+    func submitPrompt(
+        _ text: String, sessionID: Int64, refresh: () async -> Void = {}, submitIf canSubmit: () -> Bool
+    ) async -> HandoffDelivery {
+        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: true) {
+        case .noSession: return .noSession
+        case .copied: return .copied
+        case .sent: break
+        }
+        guard let process = processes[sessionID] else { return .noSession }
+        if canSubmit() {
+            await signaller.sleep(Self.submitDelay)
+            await refresh()
+            guard states[sessionID] == .running, processes[sessionID] === process else { return .noSession }
+            if canSubmit() {
+                process.sendInput([0x0D])
+                return .submitted
+            }
+        }
+        pasteHints.insert(sessionID)
+        return .pasted
+    }
+
     func dismissClipboardHint(sessionID: Int64) {
         clipboardHints.remove(sessionID)
+        pasteHints.remove(sessionID)
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -261,6 +327,12 @@ final class TerminalCenter {
             self?.onSessionExit?(id, code)
         }
         processes[id] = process
+        if let workbenchID = session.projectID {
+            // ⌘-click on `path:line` in a workbench session opens Files.
+            process.setPathLinkHandler(folder: session.folderPath) { [weak self] location in
+                self?.onPathLink?(workbenchID, location)
+            }
+        }
         startedAt[id] = now()
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
@@ -397,6 +469,82 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         applyBackground()
     }
 
+    // MARK: path:line links (spec 2026-10-02 §9.5)
+
+    /// The workbench folder `path:line` links resolve in; nil = SwiftTerm's
+    /// own handling (a standalone terminal).
+    private(set) var pathLinkFolder: String?
+    /// The folder with symlinks resolved, read once (it is inside the
+    /// workbench): `TerminalPathLinks` refuses outside paths without
+    /// touching the disk (ruling R53).
+    private var pathLinkFolderRealPath: String?
+    private var openPathLink: ((TerminalPathLinks.Location) -> Void)?
+    private var openedLinkThisClick = false
+
+    func setPathLinks(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
+        pathLinkFolder = folder
+        pathLinkFolderRealPath = TerminalPathLinks.FileSystem.live.realPath(folder)
+        openPathLink = open
+    }
+
+    /// SwiftTerm's ⌘-click on a link it detected: a file of the folder
+    /// opens in Files, a web URL keeps SwiftTerm's handler, anything else
+    /// (a path or `file://` outside the folder, a missing file) is no link.
+    override func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
+        openedLinkThisClick = true
+        switch Self.linkAction(for: link, folder: pathLinkFolder, folderRealPath: pathLinkFolderRealPath) {
+        case let .open(location): openPathLink?(location)
+        case .systemHandler: super.requestOpenLink(source: source, link: link, params: params)
+        case .none: break
+        }
+    }
+
+    /// What a ⌘-clicked link does: in a workbench session a file of the
+    /// folder opens in Files (`TerminalPathLinks.action`); SwiftTerm's own
+    /// handler gets only a URL the app-wide allowlist permits
+    /// (`AllowedURLSchemes`: no `smb://`, `x-apple.systempreferences:`, …,
+    /// and in a standalone terminal no bare path either).
+    static func linkAction(for link: String, folder: String?, folderRealPath: String?) -> TerminalPathLinks.LinkAction {
+        if let folder {
+            let action = TerminalPathLinks.action(for: link, folder: folder, folderRealPath: folderRealPath)
+            guard action == .systemHandler else { return action }
+        }
+        guard let url = URL(string: link), AllowedURLSchemes.permits(url) else { return .none }
+        return .systemHandler
+    }
+
+    /// SwiftTerm detects no quoted path with a space (`"a b.txt":1`): a
+    /// ⌘-click it left alone is looked up here in the clicked line.
+    override func mouseUp(with event: NSEvent) {
+        openedLinkThisClick = false
+        super.mouseUp(with: event)
+        guard !openedLinkThisClick, event.modifierFlags.contains(.command), event.clickCount == 1, !selectionActive,
+              let folder = pathLinkFolder, let openPathLink, let cell = cell(at: event),
+              let line = getTerminal().getLine(row: cell.row)?.translateToString(trimRight: true),
+              let candidate = TerminalPathLinks.candidate(inLine: line, at: cell.col),
+              let location = TerminalPathLinks.resolve(candidate, folder: folder, folderRealPath: pathLinkFolderRealPath)
+        else { return }
+        openPathLink(location)
+    }
+
+    /// The visible row and column under the pointer, by SwiftTerm's own
+    /// cell size (the font's "W" advance on the pixel grid; the optimal
+    /// frame's height over the rows).
+    private func cell(at event: NSEvent) -> (row: Int, col: Int)? {
+        let terminal = getTerminal()
+        guard terminal.rows > 0, terminal.cols > 0 else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        let advance = font.advancement(forGlyph: font.glyph(withName: "W")).width
+        let cellWidth = max(1, (advance * scale).rounded() / scale)
+        let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
+        guard cellHeight > 0 else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let row = Int((frame.height - point.y) / cellHeight)
+        let col = Int(point.x / cellWidth)
+        guard (0..<terminal.rows).contains(row), (0..<terminal.cols).contains(col) else { return nil }
+        return (row, col)
+    }
+
     /// SwiftTerm's ⌘-hover link preview is the one text field it adds; it
     /// draws its text in the default background, invisible at opacity 0.
     override func didAddSubview(_ subview: NSView) {
@@ -457,6 +605,10 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     }
 
     var bracketedPasteMode: Bool { terminal.getTerminal().bracketedPasteMode }
+
+    func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
+        terminal.setPathLinks(folder: folder, open: open)
+    }
 
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}

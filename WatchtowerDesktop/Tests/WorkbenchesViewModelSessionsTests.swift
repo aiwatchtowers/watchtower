@@ -146,7 +146,9 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.count, 1, "the second call does not relaunch a running session")
         let uuid = try XCTUnwrap(row.claudeSessionID)
         XCTAssertEqual(launches.first?.args.last,
-                       "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))'")
+                       "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"")
+        XCTAssertEqual(launches.first?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
         XCTAssertEqual(center.focusOrder.last, row.id)
         XCTAssertEqual(vm.layout(projectID: p).primary, .session(row.id))
     }
@@ -166,12 +168,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         XCTAssertEqual(vm.vocabulary(projectID: p), .current, "unknown status: the new name")
         await vm.workOn(targetID: first, targetText: "One")
-        XCTAssertEqual(launches.last?.args.last?.hasSuffix("'Work on target #\(first) using the watchtower-workbench skill.'"), true)
+        XCTAssertEqual(launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=Work on target #\(first) using the watchtower-workbench skill.")
 
         await vm.refreshInstallStatus(projectID: p)
         XCTAssertEqual(vm.vocabulary(projectID: p), .legacy)
         await vm.workOn(targetID: second, targetText: "Two")
-        XCTAssertEqual(launches.last?.args.last?.hasSuffix("'Work on target #\(second) using the watchtower-project skill.'"), true)
+        XCTAssertEqual(launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=Work on target #\(second) using the watchtower-project skill.")
     }
 
     /// Board #160: `/clear` moved Claude Code to a new session id, which the
@@ -233,8 +235,10 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
         XCTAssertEqual(row.title, title.trimmingCharacters(in: .whitespacesAndNewlines))
         let uuid = try XCTUnwrap(row.claudeSessionID)
-        let command = "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))'"
+        let command = "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\""
         XCTAssertEqual(launches.map(\.args), [["-l", "-c", command]])
+        XCTAssertEqual(launches.first?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
     }
 
     /// The existing-session branch keeps the board in a split too, also

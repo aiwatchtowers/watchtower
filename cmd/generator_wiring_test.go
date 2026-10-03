@@ -193,11 +193,12 @@ ai:
 	require.Equal(t, "codex", cfg.AI.Provider)
 
 	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	assert.Equal(t, "gpt-5.4-mini", light, "override provider must get its own defaults")
-	assert.Equal(t, "gpt-5.4", strong, "a claude model must never leak into a codex session")
+	assert.Equal(t, "gpt-6-luna", light, "override provider must get its own defaults")
+	assert.Equal(t, "gpt-6-astra", strong, "a claude model must never leak into a codex session")
 
-	// The yaml provider keeps its configured models.
+	// The yaml provider keeps its configured models (pinned full ids resolve
+	// to their family alias).
 	light, strong = providers.ResolveModelsFor(cfg, "claude")
-	assert.Equal(t, "claude-haiku-4-5-20251001", light)
-	assert.Equal(t, "claude-opus-4-6", strong)
+	assert.Equal(t, "haiku", light)
+	assert.Equal(t, "opus", strong)
 }

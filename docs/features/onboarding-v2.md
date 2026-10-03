@@ -126,6 +126,8 @@ The AI interview and role questionnaire (`OnboardingChatViewModel`, its
 chat), the team form, the LLM profile generation, the Settings step, the
 feature splash, `OnboardingSettingsPlan`, `OnboardingSyncETA`, the
 post-onboarding pipeline burst (`BackgroundTaskManager`) and its sidebar
-progress, the legacy `OnboardingStateMachine`. Three OWNER-01 guards about
-the LLM-written context stay in `OnboardingChatViewModelOwnerTests.swift`
-over a test-only shim until the owner decides whether they move.
+progress, the legacy `OnboardingStateMachine`. All six onboarding OWNER-01
+guards run against `OnboardingProfileWriter` in
+`Tests/Core/OnboardingProfileWriterOwnerTests.swift`; the three that checked
+the LLM-written context now check the About-you answers the writer writes in
+the same row (owner-approved variant A, 2026-10-03).
