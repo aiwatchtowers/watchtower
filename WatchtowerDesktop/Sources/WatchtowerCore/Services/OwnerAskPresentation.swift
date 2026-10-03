@@ -27,15 +27,42 @@ package enum OwnerAskPresentation {
         }
     }
 
+    /// The buttons as the bar shows them for `draft`: a check's Send says
+    /// how many items are still unmarked (they go as skipped; it does not
+    /// block — spec 2026-10-03 Part 3).
+    package static func answerActions(for ask: OwnerAsk, draft: OwnerAskDraft) -> [AnswerAction] {
+        let actions = answerActions(for: ask.kind)
+        guard ask.kind == .check else { return actions }
+        let unmarked = ask.payload.checklist.filter { draft.checks[$0.id] == nil }.count
+        guard unmarked > 0 else { return actions }
+        return actions.map { AnswerAction(label: "\($0.label) (\(unmarked) unmarked)", verdict: $0.verdict, isPrimary: $0.isPrimary) }
+    }
+
     /// Whether `action` may answer `ask` from `draft` now: the ask still
-    /// open, no answer being written, every question picked and — with the
-    /// button's verdict — a review's verdict given. A check answers with
-    /// items left unmarked.
+    /// open, no answer being written, and — with the button's verdict — an
+    /// answer Go's reader takes (`OwnerAskDraft.problem`). A check answers
+    /// with items left unmarked.
     package static func canAnswer(_ ask: OwnerAsk, draft: OwnerAskDraft, with action: AnswerAction, answering: Bool) -> Bool {
         guard ask.isOpen, !answering else { return false }
         var draft = draft
         if let verdict = action.verdict { draft.verdict = verdict }
         return draft.isAnswerable(for: ask)
+    }
+
+    /// Why `action` cannot answer an open `ask` from `draft`, in the owner's
+    /// words; nil when it can (or the ask is closed).
+    package static func blocker(_ ask: OwnerAsk, draft: OwnerAskDraft, with action: AnswerAction) -> String? {
+        guard ask.isOpen else { return nil }
+        var draft = draft
+        if let verdict = action.verdict { draft.verdict = verdict }
+        guard let problem = draft.problem(for: ask) else { return nil }
+        switch problem {
+        case .brokenWithoutNote: return "Add a note to each broken item"
+        case .noteTooLong: return "Shorten the note to \(OwnerAskAnswerProblem.maxNoteRunes) characters"
+        case .questionUnanswered, .emptyQuestionAnswer: return "Answer every question"
+        case .verdictRequired: return "Choose Approve or Request changes"
+        default: return "This answer cannot be sent: \(problem.message)"
+        }
     }
 
     /// "1 ok · 1 broken · 1 unmarked": the marks of the payload's items,

@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The drawer's footer (spec 2026-10-03 Part 8). An open ask: Later (closes
 /// the drawer, the draft stays) and the kind's answer buttons — Request
-/// changes / Approve, Send, Answer — enabled per `OwnerAskPresentation.canAnswer`.
+/// changes / Approve, Send (naming the unmarked items), Answer — enabled per
+/// `OwnerAskPresentation.canAnswer`, with the reason when they are not.
 /// A closed ask: what became of it, and Discard draft while a draft is kept
 /// (an ask withdrawn under the owner's answer).
 struct OwnerAskAnswerBar: View {
@@ -14,9 +15,15 @@ struct OwnerAskAnswerBar: View {
     var body: some View {
         let draft = asks.drafts.draft(for: ask.id)
         let answering = asks.answering.contains(ask.id)
+        let actions = OwnerAskPresentation.answerActions(for: ask, draft: draft)
         VStack(alignment: .leading, spacing: 6) {
             if let error = asks.answerErrors[ask.id] {
                 Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+            }
+            // Why the primary button is off; a review's verdict comes with
+            // its button, so only what else is missing shows.
+            if let primary = actions.last, let blocker = OwnerAskPresentation.blocker(ask, draft: draft, with: primary) {
+                Text(blocker).font(.caption).foregroundStyle(.secondary)
             }
             HStack(spacing: 8) {
                 if ask.isOpen {
@@ -24,7 +31,7 @@ struct OwnerAskAnswerBar: View {
                         .help("Close; your draft is kept")
                     Spacer()
                     if answering { ProgressView().controlSize(.small) }
-                    ForEach(OwnerAskPresentation.answerActions(for: ask.kind), id: \.label) { action in
+                    ForEach(actions, id: \.verdict) { action in
                         answerButton(action, enabled: OwnerAskPresentation.canAnswer(ask, draft: draft, with: action, answering: answering))
                     }
                 } else {

@@ -39,15 +39,23 @@ package struct OwnerAskDraft: Equatable, Sendable {
             && Self.trimmed(note).isEmpty
     }
 
-    /// Every question has a pick and a review has a verdict; a check may
-    /// leave items unmarked (spec 2026-10-03 Part 8).
+    /// Whether Go's reader will take the answer this draft gives: every
+    /// question picked, a review's verdict, a note on each broken item, the
+    /// note within its bound. A check may leave items unmarked (they go as
+    /// skipped; spec 2026-10-03 Parts 3 and 8).
     package func isAnswerable(for ask: OwnerAsk) -> Bool {
-        let questionsPicked = ask.payload.questions.allSatisfy { !(picks[$0.id] ?? .init()).isEmpty }
-        return questionsPicked && (ask.kind != .review || verdict != nil)
+        problem(for: ask) == nil
+    }
+
+    /// The first thing Go's reader would refuse in the answer this draft
+    /// gives (`OwnerAskAnswer.problem`); nil when it can be sent.
+    package func problem(for ask: OwnerAsk) -> OwnerAskAnswerProblem? {
+        answer(for: ask).problem(kind: ask.kind, payload: ask.payload)
     }
 
     /// The answer as stored: questions and check items in the payload's
-    /// order, unmarked items `skipped`, empty comments dropped, text trimmed.
+    /// order, unmarked items `skipped`, empty comments (and any on a kind
+    /// other than a review) dropped, text trimmed.
     package func answer(for ask: OwnerAsk) -> OwnerAskAnswer {
         OwnerAskAnswer(
             verdict: ask.kind == .review ? verdict : nil,
@@ -58,7 +66,8 @@ package struct OwnerAskDraft: Equatable, Sendable {
             checklist: ask.payload.checklist.map { item in
                 .init(id: item.id, state: checks[item.id] ?? .skipped, note: Self.trimmed(checkNotes[item.id] ?? ""))
             },
-            comments: comments.compactMap { draft in
+            // Only a review has comments.
+            comments: ask.kind != .review ? [] : comments.compactMap { draft in
                 let body = Self.trimmed(draft.body)
                 return body.isEmpty ? nil : .init(anchor: draft.anchor, body: body)
             },

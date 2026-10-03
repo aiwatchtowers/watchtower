@@ -38,4 +38,37 @@ final class OwnerAskAnswerTests: XCTestCase {
         XCTAssertThrowsError(try OwnerAskAnswer.decode(#"{"verdict":"maybe"}"#))
         XCTAssertThrowsError(try OwnerAskAnswer.decode(#"{"checklist":[{"id":"1","state":"fine"}]}"#))
     }
+
+    /// The Swift twin of Go's reader: every valid fixture passes, every
+    /// invalid one fails — on decode (an unknown state) or with Go's exact error.
+    func testProblemMatchesGoOnEveryAnswersFixture() throws {
+        let files = try OwnerAskFixtures.files("answers")
+        XCTAssertGreaterThanOrEqual(files.count, 9)
+        for file in files {
+            let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: file.data) as? [String: Any], file.name)
+            let kind = try XCTUnwrap(OwnerAskKind(rawValue: fixture["kind"] as? String ?? ""), file.name)
+            let payload = try OwnerAskPayload.decode(OwnerAskFixtures.json(try XCTUnwrap(fixture["payload"])))
+            let decoded = try? OwnerAskAnswer.decode(OwnerAskFixtures.json(try XCTUnwrap(fixture["answer"])))
+            if file.name.hasPrefix("valid_") {
+                let answer = try XCTUnwrap(decoded, file.name)
+                XCTAssertNil(answer.problem(kind: kind, payload: payload), file.name)
+            } else if let answer = decoded {
+                XCTAssertEqual(answer.problem(kind: kind, payload: payload)?.message, fixture["error"] as? String, file.name)
+            }
+        }
+    }
+
+    func testProblemsGoAlsoRefuses() throws {
+        let check = OwnerAskPayload(checklist: [OwnerAskCheckItem(id: "1", text: "Launch")])
+        let broken = OwnerAskAnswer(checklist: [.init(id: "1", state: .broken, note: " ")])
+        XCTAssertEqual(broken.problem(kind: .check, payload: check), .brokenWithoutNote(index: 0))
+        let long = OwnerAskAnswer(checklist: [.init(id: "1", state: .ok)], note: String(repeating: "я", count: 4001))
+        XCTAssertEqual(long.problem(kind: .check, payload: check)?.message, "note: at most 4000 characters")
+        let atBound = OwnerAskAnswer(checklist: [.init(id: "1", state: .ok)], note: String(repeating: "я", count: 4000))
+        XCTAssertNil(atBound.problem(kind: .check, payload: check), "4000 runes, not bytes")
+        let verdict = OwnerAskAnswer(verdict: .approved, checklist: [.init(id: "1", state: .ok)])
+        XCTAssertEqual(verdict.problem(kind: .check, payload: check), .verdictNotAllowed)
+        let twice = OwnerAskAnswer(checklist: [.init(id: "1", state: .ok), .init(id: "1", state: .skipped)])
+        XCTAssertEqual(twice.problem(kind: .check, payload: check)?.message, #"checklist[1].id: item "1" marked twice"#)
+    }
 }

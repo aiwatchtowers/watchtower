@@ -103,4 +103,38 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(OwnerAskPresentation.marks(from: answer), ["1": .broken])
         XCTAssertEqual(OwnerAskPresentation.notes(from: answer), ["1": "crashes"])
     }
+
+    func testSendNamesTheUnmarkedItems() throws {
+        let ask = try ask(.check, checklist: #"[{"text":"Launch"},{"text":"Quit"},{"text":"Undo"}]"#)
+        var draft = OwnerAskDraft()
+        XCTAssertEqual(OwnerAskPresentation.answerActions(for: ask, draft: draft).map(\.label), ["Send (3 unmarked)"])
+        draft.checks["1"] = .ok
+        XCTAssertEqual(OwnerAskPresentation.answerActions(for: ask, draft: draft).map(\.label), ["Send (2 unmarked)"])
+        draft.checks["2"] = .skipped
+        draft.checks["3"] = .ok
+        XCTAssertEqual(OwnerAskPresentation.answerActions(for: ask, draft: draft).map(\.label), ["Send"])
+        let review = try self.ask(.review)
+        XCTAssertEqual(OwnerAskPresentation.answerActions(for: review, draft: draft).map(\.label), ["Request changes", "Approve"])
+    }
+
+    func testABrokenItemWithoutANoteBlocksSendAndSaysWhy() throws {
+        let ask = try ask(.check, checklist: #"[{"text":"Launch"},{"text":"Quit"}]"#)
+        let send = try XCTUnwrap(OwnerAskPresentation.answerActions(for: .check).first)
+        var draft = OwnerAskDraft()
+        draft.checks["1"] = .broken
+        XCTAssertFalse(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
+        XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: draft, with: send), "Add a note to each broken item")
+        draft.checkNotes["1"] = "crashes on launch"
+        XCTAssertTrue(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
+        XCTAssertNil(OwnerAskPresentation.blocker(ask, draft: draft, with: send))
+        draft.note = String(repeating: "x", count: 4001)
+        XCTAssertFalse(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
+        XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: draft, with: send), "Shorten the note to 4000 characters")
+    }
+
+    func testAnUnpickedQuestionSaysWhy() throws {
+        let ask = try ask(.question, questions: true)
+        let action = try XCTUnwrap(OwnerAskPresentation.answerActions(for: .question).first)
+        XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: OwnerAskDraft(), with: action), "Answer every question")
+    }
 }

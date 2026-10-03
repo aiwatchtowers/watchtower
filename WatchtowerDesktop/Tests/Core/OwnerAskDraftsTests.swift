@@ -86,4 +86,26 @@ final class OwnerAskDraftsTests: XCTestCase {
         draft.picks["b"] = .init(other: "Elsewhere")
         XCTAssertTrue(draft.isAnswerable(for: question))
     }
+
+    func testABrokenItemNeedsANoteAndTheNoteItsBound() throws {
+        let check = try ask("check", payload: Self.checklist)
+        var draft = OwnerAskDraft()
+        draft.checks["2"] = .broken
+        XCTAssertFalse(draft.isAnswerable(for: check), "Go refuses a broken item without a note")
+        XCTAssertEqual(draft.problem(for: check), .brokenWithoutNote(index: 1))
+        draft.checkNotes["2"] = "   "
+        XCTAssertFalse(draft.isAnswerable(for: check), "blank is no note")
+        draft.checkNotes["2"] = "Quit hangs"
+        XCTAssertTrue(draft.isAnswerable(for: check))
+        draft.note = String(repeating: "x", count: 4001)
+        XCTAssertEqual(draft.problem(for: check), .noteTooLong)
+    }
+
+    func testCommentsGoOnlyWithAReview() throws {
+        var draft = OwnerAskDraft()
+        draft.comments = [OwnerAskCommentDraft(anchor: CommentAnchor(quote: "q", prefix: "", suffix: "", heading: ""), body: "fix")]
+        let check = try ask("check", payload: Self.checklist)
+        XCTAssertTrue(draft.answer(for: check).comments.isEmpty)
+        XCTAssertTrue(draft.isAnswerable(for: check))
+    }
 }
