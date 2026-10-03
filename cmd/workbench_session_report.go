@@ -113,6 +113,16 @@ func sessionReport(ctx context.Context, database *db.DB, workbenchID, sessionID 
 // order: state and size, on you, now, pull requests, done, the agent's last
 // word.
 func printSessionReport(w io.Writer, r sessionreport.Report) {
+	printReportHeader(w, r)
+	printReportOnYou(w, r)
+	printReportNow(w, r)
+	printReportPRs(w, r)
+	printReportDone(w, r)
+	printReportLastWord(w, r.Session)
+}
+
+// printReportHeader prints the session's title line, state and size.
+func printReportHeader(w io.Writer, r sessionreport.Report) {
 	s := r.Session
 	head := fmt.Sprintf("Session %d", s.ID)
 	if s.Title != "" {
@@ -128,7 +138,10 @@ func printSessionReport(w io.Writer, r sessionreport.Report) {
 		fmt.Fprintf(w, "  branches: %s\n", strings.Join(br, ", "))
 	}
 	fmt.Fprintf(w, "  progress: %d / %d tasks\n", r.Progress.Done, r.Progress.Total)
+}
 
+// printReportOnYou prints the open asks waiting for the owner.
+func printReportOnYou(w io.Writer, r sessionreport.Report) {
 	fmt.Fprintln(w, "\nOn you")
 	if len(r.OnYou) == 0 {
 		fmt.Fprintln(w, "  Nothing — the agent is not waiting for you.")
@@ -136,7 +149,10 @@ func printSessionReport(w io.Writer, r sessionreport.Report) {
 	for _, a := range r.OnYou {
 		fmt.Fprintf(w, "  ask #%d [%s] %s (%s)\n", a.ID, a.Kind, a.Title, a.CreatedAt)
 	}
+}
 
+// printReportNow prints the items in progress.
+func printReportNow(w io.Writer, r sessionreport.Report) {
 	fmt.Fprintln(w, "\nNow")
 	if len(r.Now) == 0 {
 		fmt.Fprintln(w, "  (nothing in progress)")
@@ -151,7 +167,10 @@ func printSessionReport(w io.Writer, r sessionreport.Report) {
 		}
 		fmt.Fprintln(w, line)
 	}
+}
 
+// printReportPRs prints the session's pull requests and the refresh note.
+func printReportPRs(w io.Writer, r sessionreport.Report) {
 	fmt.Fprintln(w, "\nPull requests")
 	if len(r.PRs) == 0 {
 		fmt.Fprintln(w, "  (none)")
@@ -162,7 +181,10 @@ func printSessionReport(w io.Writer, r sessionreport.Report) {
 	if r.PRNote != "" {
 		fmt.Fprintf(w, "  note: %s\n", r.PRNote)
 	}
+}
 
+// printReportDone prints the phases with their spans, then what is next.
+func printReportDone(w io.Writer, r sessionreport.Report) {
 	fmt.Fprintln(w, "\nDone")
 	if len(r.Phases) == 0 {
 		fmt.Fprintln(w, "  (no phases)")
@@ -180,7 +202,10 @@ func printSessionReport(w io.Writer, r sessionreport.Report) {
 	for _, it := range r.Next {
 		fmt.Fprintf(w, "  Next: #%d %s\n", it.ID, it.Text)
 	}
+}
 
+// printReportLastWord prints the agent's finish summary, if it finished.
+func printReportLastWord(w io.Writer, s sessionreport.Session) {
 	fmt.Fprintln(w, "\nAgent's last word")
 	if s.FinishSummary == "" {
 		fmt.Fprintln(w, "  (the agent has not finished)")

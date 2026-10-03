@@ -45,6 +45,17 @@ func statusSpans(ctx context.Context, d *db.DB, projectID int64) (map[int64]span
 // only when it is a flat ticket: with sub-parents its phase would repeat the
 // report's progress, so its own leaves count in progress, now and next only.
 func (s scope) phases(spans map[int64]span) []Phase {
+	parents := s.phaseParents()
+	out := make([]Phase, 0, len(parents))
+	for _, p := range parents {
+		out = append(out, s.phaseOf(p, spans))
+	}
+	return out
+}
+
+// phaseParents is the distinct parents of the in-scope leaves, in board
+// order, minus the session's own target when it has sub-parents.
+func (s scope) phaseParents() []*boardEntry {
 	var parents []*boardEntry
 	for _, e := range s.leaves() {
 		if s.session != 0 && e.parent == s.session && s.b.hasSubParents(e.parent) {
@@ -55,30 +66,32 @@ func (s scope) phases(spans map[int64]span) []Phase {
 		}
 	}
 	slices.SortFunc(parents, func(a, b *boardEntry) int { return a.order - b.order })
-	out := make([]Phase, 0, len(parents))
-	for _, p := range parents {
-		ph := Phase{TargetID: p.id(), Text: p.target.Text, Items: []Item{}}
-		finished := ""
-		for _, l := range s.b.leavesUnder(p.id()) {
-			ph.Total++
-			if l.target.Status == "done" {
-				ph.Done++
-			}
-			sp := spans[l.id()]
-			if sp.started != "" && (ph.StartedAt == "" || sp.started < ph.StartedAt) {
-				ph.StartedAt = sp.started
-			}
-			finished = max(finished, sp.finished)
+	return parents
+}
+
+// phaseOf is parent p's Phase: its counted leaves' progress and span, and its
+// own leaf children as items.
+func (s scope) phaseOf(p *boardEntry, spans map[int64]span) Phase {
+	ph := Phase{TargetID: p.id(), Text: p.target.Text, Items: []Item{}}
+	finished := ""
+	for _, l := range s.b.leavesUnder(p.id()) {
+		ph.Total++
+		if l.target.Status == "done" {
+			ph.Done++
 		}
-		if ph.Total > 0 && ph.Done == ph.Total {
-			ph.FinishedAt = finished
+		sp := spans[l.id()]
+		if sp.started != "" && (ph.StartedAt == "" || sp.started < ph.StartedAt) {
+			ph.StartedAt = sp.started
 		}
-		for _, c := range p.children {
-			if e := s.b.byID[c]; e.leaf() && e.counted() {
-				ph.Items = append(ph.Items, itemOf(e))
-			}
-		}
-		out = append(out, ph)
+		finished = max(finished, sp.finished)
 	}
-	return out
+	if ph.Total > 0 && ph.Done == ph.Total {
+		ph.FinishedAt = finished
+	}
+	for _, c := range p.children {
+		if e := s.b.byID[c]; e.leaf() && e.counted() {
+			ph.Items = append(ph.Items, itemOf(e))
+		}
+	}
+	return ph
 }
