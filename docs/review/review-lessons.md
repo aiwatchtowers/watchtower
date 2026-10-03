@@ -1182,3 +1182,13 @@ Entry format:
 - weak-dimension: 7. The hosted A→B→A rounds use sessions that are already listed and running, so their awaits resolve FIFO and would likely pass on the pre-fix code. Only the two VM tests and the trailing C block distinguish. One lane (the prosecutor) caught this.
 - rule-gap (candidate, Swift): *a race fix guarded by an ordering token ships, per entry point that takes the token, a test where that entry point's own pre-ticket await is the slow one. A test whose racing operations all take the same fast path does not prove ordering.*
 - outcome: TBD
+
+## 2026-10-03 — fix/session-state-self-started-turn (PR #156, board #367: a main-thread `PostToolUse` records `working` from any state, not only from `approval`; a subagent's (`agent_id`) keeps the `approval`-only rule; PROJ-11 changelog, owner approval relayed by the controller; panel: prosecutor, codex, and 3 specialists, all five lanes ran; judge verified against fa95bbb6, no run; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, 4 lanes, not a blocker): removing `onlyFrom=approval` swaps a structural guarantee (a `PostToolUse` could never touch `waiting`) for a timestamp one: each hook process stamps `hookNow()` when it starts. A reorder needs the async `PostToolUse` process to start more than one model round-trip late, behind the sync Stop hook's start, so it is rare but not impossible on a swap-thrashed machine. The owner's AC ("a late PostToolUse does not override the Stop's waiting") holds for an event stamped earlier, and the test pins that. The inventory's "never" claims more than that. **When a fix removes a state-predicate guard and leans on an ordering guard, ask what the ordering key measures (process start, not event time) and write the residual as a v1 limit, not "never".** [6/7]
+- contested (kept minor, prosecutor + silent-failure): "a background subagent never ends the main turn's waiting" is false through the `approval` hop (a subagent permission prompt carries no agent check). The PR's own test encodes that path. Review-process rule 152 caught it again: the invariant reads a gate (the Notification path) that the fix did not touch. [6]
+- false-positive: none dismissed. code-reviewer's "confirm owner approval" was settled by the controller via the board. [8]
+- miss: none unique. codex raised only the race, and the race was the one finding all lanes agreed on.
+- weak-dimension: 7. The `HookEventName == "PostToolUse"` half of the subagent condition is unpinned: a mutation that drops it survives (test-analyzer).
+- rule-gap (candidate, dim 6): *an inventory changelog line that says "never"/"unchanged" about a guard the change weakens must name the residual window or carry a test that drives it.*
+- outcome: TBD
