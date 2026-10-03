@@ -53,6 +53,27 @@ extension WorkbenchesViewModel {
         terminalCenter?.liveIDs.contains(session.id) ?? false
     }
 
+    /// The live sessions' agent statuses, for `SessionSwitcherPresentation.rows`.
+    var sessionStatuses: [Int64: SessionAgentStatus] {
+        agentStates?.statuses ?? [:]
+    }
+
+    /// `sessions` (in the panel's order) as the panel and the switchers
+    /// show them: state, caption, `#id` badge.
+    func sessionRows(_ sessions: [TerminalSession]) -> [SessionSwitcherPresentation.Row] {
+        SessionSwitcherPresentation.rows(
+            sessions, liveIDs: terminalCenter?.liveIDs ?? [], statuses: sessionStatuses, now: now()
+        )
+    }
+
+    /// A session's dot: not started unless live, then what its workbench
+    /// hooks report (board #312).
+    func sessionState(_ session: TerminalSession) -> SessionSwitcherPresentation.State {
+        SessionSwitcherPresentation.state(
+            of: session.id, liveIDs: terminalCenter?.liveIDs ?? [], statuses: sessionStatuses
+        )
+    }
+
     /// A session pane's row; nil once the row is gone (the next load drops
     /// it from the layout).
     func session(_ id: Int64, projectID: Int64) -> TerminalSession? {

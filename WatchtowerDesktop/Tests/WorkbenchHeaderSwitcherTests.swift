@@ -349,7 +349,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
     func testTheSessionButtonSaysNoSessionWithoutOne() throws {
         var taps = 0
-        let button = SessionSwitcherButton(title: nil, isLive: false) { taps += 1 }
+        let button = SessionSwitcherButton(title: nil, state: .notStarted) { taps += 1 }
         XCTAssertNoThrow(try button.inspect().find(text: "No session"))
         XCTAssertThrowsError(try button.inspect().find(viewWithAccessibilityLabel: "Running"))
         try button.inspect().find(ViewType.Button.self).tap()
@@ -358,9 +358,9 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertNoThrow(try button.inspect().find(viewWithAccessibilityLabel: "No session"))
 
         // VoiceOver hears the state with the title, not as a separate element.
-        let live = SessionSwitcherButton(title: "one", isLive: true) {}
+        let live = SessionSwitcherButton(title: "one", state: .running) {}
         XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, running"))
-        let idle = SessionSwitcherButton(title: "one", isLive: false) {}
+        let idle = SessionSwitcherButton(title: "one", state: .notStarted) {}
         XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, not running"))
     }
 

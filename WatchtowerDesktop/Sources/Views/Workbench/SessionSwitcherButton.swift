@@ -11,7 +11,7 @@ struct SessionSwitcher: View {
 
     var body: some View {
         let session = vm.headerSession
-        SessionSwitcherButton(title: session?.title, isLive: session.map(vm.isLive) ?? false) {
+        SessionSwitcherButton(title: session?.title, state: session.map(vm.sessionState) ?? .notStarted) {
             showsPopover.toggle()
         }
         .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
@@ -36,18 +36,17 @@ struct SessionSwitcher: View {
     }
 }
 
-/// The session switcher's button: a green dot while the session runs (a
-/// hollow one otherwise), its title — "No session" when none is in focus —
-/// and a chevron.
+/// The session switcher's button: the session's state dot, its title — "No
+/// session" when none is in focus — and a chevron.
 struct SessionSwitcherButton: View {
     let title: String?
-    let isLive: Bool
+    let state: SessionSwitcherPresentation.State
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                if title != nil { SessionLiveDot(isLive: isLive) }
+                if title != nil { SessionLiveDot(state: state) }
                 Text(title ?? "No session")
                     .font(.headline)
                     .foregroundStyle(title == nil ? .secondary : .primary)
@@ -61,7 +60,7 @@ struct SessionSwitcherButton: View {
         }
         .buttonStyle(.borderless)
         .help("\(title ?? "No session") — Switch Session")
-        .accessibilityLabel(title.map { "Session \($0), \(isLive ? "running" : "not running")" } ?? "No session")
+        .accessibilityLabel(title.map { "Session \($0), \(SessionLiveDot.label(state).lowercased())" } ?? "No session")
         .accessibilityHint("Switch session")
     }
 }

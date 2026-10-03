@@ -73,6 +73,22 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// Board #312: a workbench installed before the session-state hooks is
+    /// offered Repair; an older CLI without the key has nothing to install.
+    func testMissingStateHooksNeedRepair() throws {
+        let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":false,"mcp":true}"#.utf8))
+        XCTAssertFalse(missing.stateHooks)
+        XCTAssertTrue(missing.needsRepair)
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true}"#.utf8))
+        XCTAssertFalse(present.needsRepair)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"stop_hook":true,"mcp":true}"#.utf8))
+        XCTAssertTrue(older.stateHooks)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await WorkbenchCLI(runner: runner).checkDrift(projectID: 4)

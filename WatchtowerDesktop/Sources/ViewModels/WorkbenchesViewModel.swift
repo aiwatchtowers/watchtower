@@ -127,6 +127,9 @@ final class WorkbenchesViewModel {
     /// The embedded terminals. AppState passes its own; nil (most tests) =
     /// nothing launches.
     let terminalCenter: TerminalCenter?
+    /// What the live sessions' agents are doing (board #312). AppState passes
+    /// its own; nil = plain running dots.
+    let agentStates: SessionAgentStateCenter?
     /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
     @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
@@ -285,12 +288,14 @@ final class WorkbenchesViewModel {
         dbPool: DatabasePool,
         cli: WorkbenchCLI?,
         defaults: UserDefaults = .standard,
-        terminalCenter: TerminalCenter? = nil
+        terminalCenter: TerminalCenter? = nil,
+        agentStates: SessionAgentStateCenter? = nil
     ) {
         self.dbPool = dbPool
         self.cli = cli
         self.defaults = defaults
         self.terminalCenter = terminalCenter
+        self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]

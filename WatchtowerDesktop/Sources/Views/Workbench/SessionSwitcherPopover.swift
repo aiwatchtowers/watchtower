@@ -54,11 +54,7 @@ struct SessionSwitcherPopover: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         let rows = SessionSwitcherPresentation.matching(
-            SessionSwitcherPresentation.rows(
-                vm.orderedSessions(projectID: project.id),
-                liveIDs: vm.terminalCenter?.liveIDs ?? [], statuses: [:], now: vm.now()
-            ),
-            query: query
+            vm.sessionRows(vm.orderedSessions(projectID: project.id)), query: query
         )
         if rows.isEmpty {
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -98,10 +94,9 @@ struct SessionSwitcherRow: View {
     let onSelect: () -> Void
 
     var body: some View {
-        let running = row.state == .running
         Button(action: onSelect) {
             HStack(spacing: 6) {
-                SessionLiveDot(isLive: running)
+                SessionLiveDot(state: row.state)
                     .frame(width: 12)
                 Text(row.session.title)
                     .font(.callout.weight(isCurrent ? .semibold : .regular))

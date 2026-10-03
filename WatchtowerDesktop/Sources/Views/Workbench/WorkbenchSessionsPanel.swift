@@ -29,9 +29,9 @@ struct WorkbenchSessionsPanel: View {
             // also reaches the row already highlighted but not running
             // (VoiceOver has the row's action).
             List {
-                ForEach(sessions) { session in
-                    TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
-                        .panelTab(isSelected: vm.panelSelection == .session(session.id))
+                ForEach(vm.sessionRows(sessions)) { row in
+                    TerminalSessionRow(row: row, actions: actions)
+                        .panelTab(isSelected: vm.panelSelection == .session(row.id))
                 }
                 .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
             }
@@ -69,21 +69,25 @@ struct SessionRowActions {
     let delete: (TerminalSession) -> Void
 }
 
-/// One terminal session in the panel: a dot when its process runs, and the
-/// target it works on.
+/// One terminal session in the panel: its state dot and caption ("waiting
+/// for you", "not started · 5m"), and the target it works on.
 struct TerminalSessionRow: View {
-    let session: TerminalSession
-    let isLive: Bool
+    let row: SessionSwitcherPresentation.Row
     let actions: SessionRowActions
+
+    private var session: TerminalSession { row.session }
 
     var body: some View {
         HStack(spacing: 6) {
-            SessionLiveDot(isLive: isLive)
+            SessionLiveDot(state: row.state)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title).lineLimit(1).truncationMode(.tail)
-                if let targetID = session.targetID {
-                    Text("#\(targetID)").font(.caption2).foregroundStyle(.secondary)
+                if let caption = row.caption {
+                    Text(caption).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+                if let badge = row.badge {
+                    Text(badge).font(.caption2).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)
@@ -94,7 +98,7 @@ struct TerminalSessionRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { actions.open(session) }
         .listRowSeparator(.hidden)
-        .help(isLive ? session.title : "Not running — click to start")
+        .help(row.state.isLive ? session.title : "Not running — click to start")
         .contextMenu {
             Button("Rename…") { actions.rename(session) }
             Divider()
@@ -103,16 +107,36 @@ struct TerminalSessionRow: View {
     }
 }
 
-/// A session's state dot: green while its process runs, hollow otherwise —
-/// the panel's rows and both session switchers draw the same one.
+/// A session's state dot: green while its process runs (working or not
+/// reported), orange while its agent waits for the owner or for approval,
+/// hollow when not running — the panel's rows, both session switchers and
+/// the go-to palette draw the same one.
 struct SessionLiveDot: View {
-    let isLive: Bool
+    let state: SessionSwitcherPresentation.State
 
     var body: some View {
-        Image(systemName: isLive ? "circle.fill" : "circle")
+        Image(systemName: state.isLive ? "circle.fill" : "circle")
             .font(.system(size: 7))
-            .foregroundStyle(isLive ? Color.green : Color.secondary)
-            .accessibilityLabel(isLive ? "Running" : "Not running")
+            .foregroundStyle(color)
+            .accessibilityLabel(Self.label(state))
+    }
+
+    private var color: Color {
+        switch state {
+        case .running, .working: .green
+        case .waitingForOwner, .needsApproval: .orange
+        case .notStarted: .secondary
+        }
+    }
+
+    static func label(_ state: SessionSwitcherPresentation.State) -> String {
+        switch state {
+        case .running: "Running"
+        case .working: "Working"
+        case .waitingForOwner: "Waiting for you"
+        case .needsApproval: "Needs approval"
+        case .notStarted: "Not running"
+        }
     }
 }
 
