@@ -106,7 +106,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	// workbench tool leaks onto another surface.
 	projectTools := []string{
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
-		"create_targets", "update_target", "attach_document", "list_comments", "add_comment", "resolve_comment",
+		"create_targets", "update_target", "list_comments", "add_comment", "resolve_comment",
 	}
 	project := names("project")
 	for _, p := range projectTools {

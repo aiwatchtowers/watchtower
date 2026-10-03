@@ -35,7 +35,7 @@ func decodeResync(t *testing.T, out string) workbenchResyncJSON {
 }
 
 // resyncFolder is a git repository holding a README and a spec (a bare
-// .git/info when no git is installed: the document listing then walks the
+// .git/info when no git is installed: the text-file listing then walks the
 // folder); the watchtower path recorded in hooks is stubbed
 // (looksLikeOurHook keys on the basename).
 func resyncFolder(t *testing.T) string {
@@ -86,13 +86,12 @@ func dumpRows(t *testing.T, d *db.DB, query string, args ...any) []string {
 func workbenchSnapshot(t *testing.T, d *db.DB, pid int64) map[string][]string {
 	t.Helper()
 	return map[string][]string{
-		"project":   dumpRows(t, d, `SELECT * FROM projects WHERE id = ?`, pid),
-		"targets":   dumpRows(t, d, `SELECT * FROM targets WHERE project_id = ? ORDER BY id`, pid),
-		"history":   dumpRows(t, d, `SELECT h.* FROM target_status_history h JOIN targets t ON t.id = h.target_id WHERE t.project_id = ? ORDER BY h.id`, pid),
-		"comments":  dumpRows(t, d, `SELECT * FROM project_comments WHERE project_id = ? ORDER BY id`, pid),
-		"sources":   dumpRows(t, d, `SELECT * FROM project_sources WHERE project_id = ? ORDER BY id`, pid),
-		"documents": dumpRows(t, d, `SELECT * FROM project_documents WHERE project_id = ? ORDER BY id`, pid),
-		"images":    dumpRows(t, d, `SELECT * FROM project_target_images WHERE project_id = ? ORDER BY id`, pid),
+		"project":  dumpRows(t, d, `SELECT * FROM projects WHERE id = ?`, pid),
+		"targets":  dumpRows(t, d, `SELECT * FROM targets WHERE project_id = ? ORDER BY id`, pid),
+		"history":  dumpRows(t, d, `SELECT h.* FROM target_status_history h JOIN targets t ON t.id = h.target_id WHERE t.project_id = ? ORDER BY h.id`, pid),
+		"comments": dumpRows(t, d, `SELECT * FROM project_comments WHERE project_id = ? ORDER BY id`, pid),
+		"sources":  dumpRows(t, d, `SELECT * FROM project_sources WHERE project_id = ? ORDER BY id`, pid),
+		"images":   dumpRows(t, d, `SELECT * FROM project_target_images WHERE project_id = ? ORDER BY id`, pid),
 	}
 }
 
@@ -104,7 +103,7 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	require.NoError(t, err)
 
 	// An existing project: an owner-edited description, a source, a board
-	// with statuses, a comment and an attached document.
+	// with statuses, an image and a comment.
 	require.NoError(t, database.UpdateWorkbenchDescription(pid, "Owner's own words."))
 	_, err = database.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: pid, Kind: "jira_project", Ref: "ACME"})
 	require.NoError(t, err)
@@ -117,29 +116,24 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	}))
 	_, err = database.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true}, Author: "owner", Body: "keep it small"})
 	require.NoError(t, err)
-	_, _, err = database.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: pid, RelPath: "README.md", Kind: "doc", Title: "Edited title"})
-	require.NoError(t, err)
 	before := workbenchSnapshot(t, database, pid)
 
 	out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	res := decodeResync(t, out)
-	assert.True(t, res.DocsOK, res.DocsError)
-	assert.Equal(t, []string{"docs/specs/a.md"}, res.Docs.Imported, "only the unattached spec is new")
-	assert.Equal(t, []string{"README.md"}, res.Docs.AlreadyAttached)
 	assert.True(t, res.IntegrationOK, res.IntegrationError)
 	assert.Equal(t, string(devpack.StateInstalled), res.Skill)
 	assert.True(t, res.HooksAdded)
 	assert.True(t, res.MCPRegistered)
 	assert.True(t, f.registered[fakeRegistration(folder, devpack.WorkbenchMCPServerName)])
 	assert.Empty(t, res.MCPCommand)
-	require.Len(t, res.Suggestions, 1)
-	assert.Contains(t, res.Suggestions[0], "1 new document(s)")
+	assert.Empty(t, res.Suggestions, "set up, with a source and a board: nothing to suggest")
 	assert.True(t, res.IndexOK, res.IndexError)
-	assert.Equal(t, 2, res.Indexed, "both attached documents are now searchable")
+	assert.Empty(t, res.IndexError)
+	assert.Equal(t, 2, res.Indexed, "both text files of the folder are now searchable")
 	hits, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{"spec"}, WorkbenchID: pid})
 	require.NoError(t, err)
-	require.Len(t, hits.Hits, 1, "the new spec is searchable from the project's session at once")
+	require.Len(t, hits.Hits, 1, "the spec is searchable from the project's session at once")
 	assert.Equal(t, kb.WorkbenchDocSource, hits.Hits[0].Source)
 
 	after := workbenchSnapshot(t, database, pid)
@@ -147,15 +141,13 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 		assert.Equal(t, before[table], after[table], "%s rows are untouched", table)
 	}
 	require.Len(t, after["images"], 1, "fixture: the snapshot covers an image row")
-	require.Len(t, after["documents"], 2)
-	assert.Equal(t, before["documents"][0], after["documents"][0], "the attached document is untouched")
-	assert.Contains(t, after["documents"][1], "docs/specs/a.md")
+	require.Len(t, after["comments"], 1, "fixture: the snapshot covers a comment row")
 
 	// A second run finds everything in place and changes nothing.
 	out, _, err = runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	res = decodeResync(t, out)
-	assert.Empty(t, res.Docs.Imported)
+	assert.True(t, res.IndexOK, res.IndexError)
 	assert.Equal(t, string(devpack.StateUnchanged), res.Skill)
 	assert.False(t, res.HooksAdded)
 	assert.Empty(t, res.Excluded)
@@ -227,8 +219,8 @@ func TestProjectResync_FailedStepIsReported(t *testing.T) {
 	out, _, err := runResync(t, id, "--json")
 	require.NoError(t, err)
 	res := decodeResync(t, out)
-	assert.True(t, res.DocsOK, "documents are attached even though the integration failed")
-	assert.Equal(t, []string{"README.md", "docs/specs/a.md"}, res.Docs.Imported)
+	assert.True(t, res.IndexOK, "the folder is indexed even though the integration failed: %s", res.IndexError)
+	assert.Equal(t, 2, res.Indexed)
 	assert.False(t, res.IntegrationOK)
 	assert.NotEmpty(t, res.IntegrationError)
 	assert.False(t, res.MCPRegistered)
@@ -250,32 +242,40 @@ func TestProjectResync_RequiresAProject(t *testing.T) {
 	require.ErrorContains(t, err, "workbench 99")
 }
 
-// An unreadable docs/ fails the import step; the install still runs and the
-// envelope carries the failure without a docs report.
-func TestProjectResync_FailedImportStillInstalls(t *testing.T) {
+// A git failure fails the index step — reported in index_error, never an
+// empty listing that would drop the folder's entries; the install still
+// runs and the resync is not failed by it in --json.
+func TestProjectResync_FailedIndexStillInstalls(t *testing.T) {
+	if _, ok := gitbin.Locate(); !ok {
+		t.Skip("no git installed: the listing walks the folder and cannot fail this way")
+	}
 	f := useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
 	folder := resyncFolder(t)
 	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
-	docs := filepath.Join(folder, "docs")
-	require.NoError(t, os.Chmod(docs, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(docs, 0o755) })
 	id := strconv.FormatInt(pid, 10)
-
 	out, _, err := runResync(t, id, "--json")
 	require.NoError(t, err)
-	assert.NotContains(t, out, `"docs":`, "no report for a failed import")
+	require.Equal(t, 2, decodeResync(t, out).Indexed, "fixture: the folder is indexed")
+
+	// A broken repository: git refuses every command in it.
+	require.NoError(t, os.WriteFile(filepath.Join(folder, ".git", "HEAD"), []byte("garbage\n"), 0o600))
+	out, _, err = runResync(t, id, "--json")
+	require.NoError(t, err)
 	res := decodeResync(t, out)
-	assert.False(t, res.DocsOK)
-	assert.NotEmpty(t, res.DocsError)
+	assert.False(t, res.IndexOK)
+	assert.NotEmpty(t, res.IndexError)
 	assert.True(t, res.IntegrationOK, res.IntegrationError)
 	assert.True(t, f.registered[fakeRegistration(folder, devpack.WorkbenchMCPServerName)])
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE source = ?`, kb.WorkbenchDocSource).Scan(&n))
+	assert.Equal(t, 2, n, "a failed listing keeps the folder's index entries")
 
 	out, _, err = runResync(t, id)
 	require.Error(t, err)
 	assert.Contains(t, out, "re-synced with errors")
-	assert.Contains(t, out, "Documents: FAILED")
+	assert.Contains(t, out, "Search index: FAILED")
 	assert.Contains(t, out, "retry: watchtower workbench resync "+id)
 }
 
@@ -293,7 +293,7 @@ func TestProjectResync_SuggestionsErrorIsReported(t *testing.T) {
 
 	res, err := resyncWorkbench(context.Background(), database, p, true)
 	require.Error(t, err)
-	assert.True(t, res.DocsOK)
+	assert.True(t, res.IndexOK, res.IndexError)
 	assert.True(t, res.IntegrationOK)
 	assert.Contains(t, res.SuggestionsError, "listing sources")
 	assert.True(t, res.failed())

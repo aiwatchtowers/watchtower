@@ -12,28 +12,16 @@ import (
 	"strings"
 
 	"watchtower/internal/db"
-	"watchtower/internal/kb"
 )
 
 // workbenchAgentLabel is the agent_label every agent comment carries.
 const workbenchAgentLabel = "claude-code"
 
-// resolveInsideFolder resolves rel against the workbench folder — symlinks
-// included — and returns the absolute path only when it stays inside the
-// folder and names an existing .md/.txt file. `../` and a symlink (file or
-// directory) pointing out of the folder are both refused.
-func resolveInsideFolder(folder, rel string) (string, error) {
-	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) {
-		return "", &ValidationError{Msg: "rel_path must be a path relative to the workbench folder"}
-	}
-	return resolveDocumentFile(folder, filepath.Join(folder, rel), rel)
-}
-
-// ResolveWorkbenchDocumentPath is attach_document's path check for the owner's
-// `workbench attach-doc`: path may be absolute or relative to the folder, and
-// the result is the folder-relative, slash-separated path of the resolved
-// file. The same refusals apply — outside the folder (symlinks followed),
-// missing, not a regular .md/.txt file.
+// ResolveWorkbenchDocumentPath checks a document path of the workbench folder:
+// path may be absolute or relative to the folder, and the result is the
+// folder-relative, slash-separated path of the resolved file. It refuses a
+// path outside the folder (symlinks followed), a missing one, and anything
+// but a regular .md/.txt file.
 func ResolveWorkbenchDocumentPath(folder, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", &ValidationError{Msg: "a document path is required"}
@@ -85,22 +73,6 @@ func checkDocumentFile(rel, abs string) error {
 	return nil
 }
 
-// documentInWorkbench loads a document and fails unless it belongs to projectID.
-func documentInWorkbench(d *db.DB, projectID, documentID int64) (*db.WorkbenchDocument, error) {
-	notHere := notInWorkbench("document", documentID)
-	if projectID <= 0 || documentID <= 0 {
-		return nil, notHere
-	}
-	doc, err := d.GetWorkbenchDocument(documentID)
-	if err != nil {
-		return nil, fmt.Errorf("loading document %d: %w", documentID, err)
-	}
-	if doc == nil || doc.WorkbenchID != projectID {
-		return nil, notHere
-	}
-	return doc, nil
-}
-
 // commentInWorkbench loads a comment and fails unless it belongs to projectID.
 func commentInWorkbench(d *db.DB, projectID, commentID int64) (*db.WorkbenchComment, error) {
 	notHere := notInWorkbench("comment", commentID)
@@ -117,154 +89,37 @@ func commentInWorkbench(d *db.DB, projectID, commentID int64) (*db.WorkbenchComm
 	return c, nil
 }
 
-// optionalTarget checks an optional target id against the workbench.
-func optionalTarget(d *db.DB, projectID, targetID int64) (sql.NullInt64, error) {
-	if targetID == 0 {
-		return sql.NullInt64{}, nil
-	}
-	if _, err := targetInWorkbench(d, projectID, targetID); err != nil {
-		return sql.NullInt64{}, err
-	}
-	return sql.NullInt64{Int64: targetID, Valid: true}, nil
-}
-
-// ---- attach_document ---------------------------------------------------
-
-type attachDocumentArgs struct {
-	RelPath  string `json:"rel_path" jsonschema:"path of the .md/.txt file relative to the workbench folder, e.g. docs/specs/x.md"`
-	Kind     string `json:"kind" jsonschema:"spec | plan | doc"`
-	Title    string `json:"title,omitempty" jsonschema:"display title; defaults to the file name"`
-	TargetID int64  `json:"target_id,omitempty" jsonschema:"the workbench target this document belongs to"`
-	Reason   string `json:"reason" jsonschema:"one sentence: what the document is, e.g. 'plan for feature X'"`
-}
-
-// NewAttachDocument attaches (or re-attaches, marking it revised) a file in
-// the workbench folder so the owner can review and comment on it.
-// NewAttachDocument builds attach_document; with indexDocs a successful
-// attach also re-indexes the workbench's documents (kb.IndexWorkbenchDocs), so
-// a revision is searchable from the workbench's sessions at once.
-func NewAttachDocument(indexDocs bool) *Tool {
-	return &Tool{
-		Name: "attach_document",
-		Description: "Attach a spec, plan or doc (a .md/.txt file inside the workbench folder) so the owner can " +
-			"review and comment on it in Watchtower. Attach again after revising it — that marks it revised. " +
-			"Applied immediately.",
-		InputSchema: mustSchema[attachDocumentArgs]("attach_document"),
-		Access:      AccessWrite,
-		Surfaces:    workbenchSurfaces,
-		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			var a attachDocumentArgs
-			if err := decodeStrict(raw, &a); err != nil {
-				return err
-			}
-			if a.Kind == "" {
-				return &ValidationError{Msg: "kind is required"}
-			}
-			return validateEnum("kind", a.Kind, "spec", "plan", "doc")
-		},
-		Scope: func(ctx context.Context, d *db.DB, raw json.RawMessage, b Binding) error {
-			var a attachDocumentArgs
-			if err := json.Unmarshal(raw, &a); err != nil {
-				return &ValidationError{Msg: "invalid arguments"}
-			}
-			_, _, err := resolveAttachment(ctx, d, b, a)
-			return err
-		},
-		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
-			var a attachDocumentArgs
-			if err := json.Unmarshal(call.Args, &a); err != nil {
-				return nil, fmt.Errorf("decoding attach_document args: %w", err)
-			}
-			out, err := attachDocument(ctx, d, call.Binding, a)
-			if err != nil || !indexDocs {
-				return out, err
-			}
-			// Best-effort: the attach itself is done and must not read as failed.
-			if _, _, ierr := kb.IndexWorkbenchDocs(ctx, d, call.Binding.WorkbenchID); ierr != nil {
-				out["index_warning"] = "the document is attached, but indexing it for search failed: " + ierr.Error()
-			}
-			return out, nil
-		},
-	}
-}
-
-// resolveAttachment returns the folder-relative clean path of the file and
-// the checked target link.
-func resolveAttachment(ctx context.Context, d *db.DB, b Binding, a attachDocumentArgs) (string, sql.NullInt64, error) {
-	p, err := workbenchOf(ctx, d, b)
-	if err != nil {
-		return "", sql.NullInt64{}, err
-	}
-	abs, err := resolveInsideFolder(p.FolderPath, a.RelPath)
-	if err != nil {
-		return "", sql.NullInt64{}, err
-	}
-	target, err := optionalTarget(d, p.ID, a.TargetID)
-	if err != nil {
-		return "", sql.NullInt64{}, err
-	}
-	rel, err := filepath.Rel(p.FolderPath, abs)
-	if err != nil {
-		return "", sql.NullInt64{}, fmt.Errorf("relativizing %s: %w", abs, err)
-	}
-	return filepath.ToSlash(rel), target, nil
-}
-
-func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentArgs) (map[string]any, error) {
-	rel, target, err := resolveAttachment(ctx, d, b, a)
-	if err != nil {
-		return nil, err
-	}
-	title := strings.TrimSpace(a.Title)
-	if title == "" {
-		title = strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
-	}
-	id, created, err := d.UpsertWorkbenchDocument(db.WorkbenchDocument{
-		WorkbenchID: b.WorkbenchID, TargetID: target, RelPath: rel, Kind: a.Kind, Title: title,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("attaching %s: %w", rel, err)
-	}
-	if !created {
-		// A re-attach may spell the path in another case: report the stored
-		// spelling, as the owner's attach-doc does. Cosmetic, so a failed
-		// read keeps the caller's spelling rather than failing a done attach.
-		if doc, err := d.GetWorkbenchDocument(id); err == nil && doc != nil {
-			rel = doc.RelPath
-		}
-	}
-	return map[string]any{"document_id": id, "rel_path": rel, "created": created}, nil
-}
-
 // ---- list_comments -----------------------------------------------------
 
 type listCommentsArgs struct {
-	TargetID    int64 `json:"target_id,omitempty" jsonschema:"comments on this workbench target"`
-	DocumentID  int64 `json:"document_id,omitempty" jsonschema:"comments on this attached document"`
-	NewForAgent *bool `json:"new_for_agent,omitempty" jsonschema:"only what is new for you (open owner comments, unanswered owner replies); default true when no id is given"`
+	TargetID int64 `json:"target_id,omitempty" jsonschema:"comments on this workbench target"`
+	// DocumentID stays in the schema only so a call that still sends it gets
+	// documentsReplaced rather than an unknown-property error.
+	DocumentID  *int64 `json:"document_id,omitempty" jsonschema:"removed: documents were replaced by asks; any value is refused"`
+	NewForAgent *bool  `json:"new_for_agent,omitempty" jsonschema:"only what is new for you (open owner comments, unanswered owner replies); default true when no id is given"`
 }
 
 type workbenchCommentView struct {
-	ID         int64  `json:"id"`
-	TargetID   int64  `json:"target_id,omitempty"`
-	DocumentID int64  `json:"document_id,omitempty"`
-	ParentID   int64  `json:"parent_id,omitempty"`
-	Author     string `json:"author"`
-	Body       string `json:"body"`
-	Status     string `json:"status"`
-	Quote      string `json:"anchor_quote,omitempty"`
-	Heading    string `json:"anchor_heading,omitempty"`
-	CreatedAt  string `json:"created_at"`
+	ID        int64  `json:"id"`
+	TargetID  int64  `json:"target_id,omitempty"`
+	ParentID  int64  `json:"parent_id,omitempty"`
+	Author    string `json:"author"`
+	Body      string `json:"body"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
 }
 
-// NewListComments lists workbench comments by target, by document, or — the
-// default — everything new for the agent.
+// documentsReplaced is list_comments' refusal of the document_id argument the
+// attached documents had (spec 2026-10-03 §4).
+const documentsReplaced = "documents were replaced by asks — use ask_owner (kind review)"
+
+// NewListComments lists workbench comments by target or — the default —
+// everything new for the agent.
 func NewListComments() *Tool {
 	return &Tool{
 		Name: "list_comments",
-		Description: "List comments on this workbench: on a target (target_id), on a document (document_id, " +
-			"with the quoted passage and its heading), or — by default — every owner comment new for you. " +
-			"Read a document's comments before revising it.",
+		Description: "List comments on this workbench: on a target (target_id) or — by default — every owner " +
+			"comment new for you.",
 		InputSchema: mustSchema[listCommentsArgs]("list_comments"),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
@@ -272,6 +127,9 @@ func NewListComments() *Tool {
 			var a listCommentsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
+			}
+			if a.DocumentID != nil {
+				return nil, &ValidationError{Msg: documentsReplaced}
 			}
 			f, err := commentFilter(ctx, d, call.Binding, a)
 			if err != nil {
@@ -291,18 +149,13 @@ func commentFilter(ctx context.Context, d *db.DB, b Binding, a listCommentsArgs)
 	if err != nil {
 		return db.WorkbenchCommentFilter{}, err
 	}
-	f := db.WorkbenchCommentFilter{WorkbenchID: p.ID, TargetID: a.TargetID, DocumentID: a.DocumentID}
-	f.NewForAgent = a.TargetID == 0 && a.DocumentID == 0
+	f := db.WorkbenchCommentFilter{WorkbenchID: p.ID, TargetID: a.TargetID}
+	f.NewForAgent = a.TargetID == 0
 	if a.NewForAgent != nil {
 		f.NewForAgent = *a.NewForAgent
 	}
 	if a.TargetID != 0 {
 		if _, err := targetInWorkbench(d, p.ID, a.TargetID); err != nil {
-			return f, err
-		}
-	}
-	if a.DocumentID != 0 {
-		if _, err := documentInWorkbench(d, p.ID, a.DocumentID); err != nil {
 			return f, err
 		}
 	}
@@ -313,9 +166,8 @@ func commentViews(comments []db.WorkbenchComment) []workbenchCommentView {
 	out := make([]workbenchCommentView, 0, len(comments))
 	for _, c := range comments {
 		out = append(out, workbenchCommentView{
-			ID: c.ID, TargetID: c.TargetID.Int64, DocumentID: c.DocumentID.Int64, ParentID: c.ParentID.Int64,
-			Author: c.Author, Body: c.Body, Status: c.Status,
-			Quote: c.AnchorQuote, Heading: c.AnchorHeading, CreatedAt: c.CreatedAt,
+			ID: c.ID, TargetID: c.TargetID.Int64, ParentID: c.ParentID.Int64,
+			Author: c.Author, Body: c.Body, Status: c.Status, CreatedAt: c.CreatedAt,
 		})
 	}
 	return out

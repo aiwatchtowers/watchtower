@@ -137,19 +137,24 @@ func indexAllWorkbenchDocs(ctx context.Context, d *db.DB) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("kb: listing projects: %w", err)
 	}
+	// One folder that cannot be listed (gone, a git failure) never stops the
+	// other workbenches; every failure is returned.
 	total := 0
+	var errs []error
 	for _, id := range ids {
 		pid, err := strconv.ParseInt(id, 10, 64)
 		if err != nil {
 			return total, fmt.Errorf("kb: project id %q: %w", id, err)
 		}
+		if cerr := ctx.Err(); cerr != nil {
+			errs = append(errs, cerr)
+			break
+		}
 		_, n, err := IndexWorkbenchDocs(ctx, d, pid)
 		total += n
-		if err != nil {
-			return total, err
-		}
+		errs = append(errs, err)
 	}
-	return total, nil
+	return total, errors.Join(errs...)
 }
 
 // selectSources builds fresh source instances (so per-run caches such as

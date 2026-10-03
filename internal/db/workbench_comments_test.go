@@ -25,20 +25,16 @@ func commentIDs(cs []WorkbenchComment) []int64 {
 func TestAddProjectComment_ReplyInheritsTheRootAndThreadsStayFlat(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
-	docID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/plan.md", Kind: "plan"})
-	require.NoError(t, err)
+	tid := insertWorkbenchTargetRow(t, d, pid, "feature")
 
-	root := addComment(t, d, WorkbenchComment{WorkbenchID: pid, DocumentID: nullID(docID), Author: "owner",
-		Body: "split this", AnchorQuote: "Task 3", AnchorHeading: "Tasks"})
+	root := addComment(t, d, WorkbenchComment{WorkbenchID: pid, TargetID: nullID(tid), Author: "owner", Body: "split this"})
 	reply := addComment(t, d, WorkbenchComment{WorkbenchID: pid, ParentID: nullID(root), Author: "agent", Body: "done"})
-	nested := addComment(t, d, WorkbenchComment{WorkbenchID: pid, ParentID: nullID(reply), Author: "owner",
-		Body: "thanks", AnchorQuote: "ignored on a reply"})
+	nested := addComment(t, d, WorkbenchComment{WorkbenchID: pid, ParentID: nullID(reply), Author: "owner", Body: "thanks"})
 
 	got, err := d.GetWorkbenchComment(nested)
 	require.NoError(t, err)
 	assert.Equal(t, nullID(root), got.ParentID, "a reply to a reply hangs off the thread root")
-	assert.Equal(t, nullID(docID), got.DocumentID, "a reply inherits the root's document")
-	assert.Empty(t, got.AnchorQuote, "only a root carries an anchor")
+	assert.Equal(t, nullID(tid), got.TargetID, "a reply inherits the root's target")
 	assert.Equal(t, "open", got.Status)
 }
 
@@ -47,17 +43,14 @@ func TestAddProjectComment_RefusesRefsOutsideTheProject(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	other := newTestWorkbench(t, d)
 	foreignTarget := insertWorkbenchTargetRow(t, d, other, "other board")
-	foreignDoc, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: other, RelPath: "a.md"})
-	require.NoError(t, err)
 	foreignRoot := addComment(t, d, WorkbenchComment{WorkbenchID: other, TargetID: nullID(foreignTarget), Author: "owner", Body: "x"})
 	personal, err := d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
 
 	for name, c := range map[string]WorkbenchComment{
-		"target of another project":   {WorkbenchID: pid, TargetID: nullID(foreignTarget), Author: "agent", Body: "x"},
-		"personal target":             {WorkbenchID: pid, TargetID: nullID(personal), Author: "agent", Body: "x"},
-		"document of another project": {WorkbenchID: pid, DocumentID: nullID(foreignDoc), Author: "agent", Body: "x"},
-		"thread of another project":   {WorkbenchID: pid, ParentID: nullID(foreignRoot), Author: "agent", Body: "x"},
+		"target of another project": {WorkbenchID: pid, TargetID: nullID(foreignTarget), Author: "agent", Body: "x"},
+		"personal target":           {WorkbenchID: pid, TargetID: nullID(personal), Author: "agent", Body: "x"},
+		"thread of another project": {WorkbenchID: pid, ParentID: nullID(foreignRoot), Author: "agent", Body: "x"},
 	} {
 		_, err := d.AddWorkbenchComment(c)
 		assert.ErrorIs(t, err, ErrNotInWorkbench, name)
@@ -65,7 +58,7 @@ func TestAddProjectComment_RefusesRefsOutsideTheProject(t *testing.T) {
 
 	tid := insertWorkbenchTargetRow(t, d, pid, "mine")
 	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, Author: "agent", Body: "x"})
-	assert.Error(t, err, "a comment needs a target, a document or a parent")
+	assert.Error(t, err, "a comment needs a target or a parent")
 	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: nullID(tid), Author: "bot", Body: "x"})
 	assert.Error(t, err, "unknown author")
 	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: nullID(tid), Author: "agent", Body: "  "})
@@ -78,8 +71,7 @@ func TestListProjectComments_NewForAgent(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	tid := insertWorkbenchTargetRow(t, d, pid, "feature")
-	docID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, RelPath: "docs/plan.md", Kind: "plan"})
-	require.NoError(t, err)
+	planID := insertWorkbenchTargetRow(t, d, pid, "plan")
 	onTarget := func(author, body string) WorkbenchComment {
 		return WorkbenchComment{WorkbenchID: pid, TargetID: nullID(tid), Author: author, Body: body}
 	}
@@ -92,7 +84,7 @@ func TestListProjectComments_NewForAgent(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchCommentStatus(resolvedRoot, "resolved"))
 	agentRoot := addComment(t, d, onTarget("agent", "C: agent asks"))
 	ownerAnswer := addComment(t, d, reply(agentRoot, "owner", "C1: owner answers"))
-	docRoot := addComment(t, d, WorkbenchComment{WorkbenchID: pid, DocumentID: nullID(docID), Author: "owner", Body: "D: on the plan"})
+	docRoot := addComment(t, d, WorkbenchComment{WorkbenchID: pid, TargetID: nullID(planID), Author: "owner", Body: "D: on the plan"})
 	addComment(t, d, reply(docRoot, "agent", "D1: agent replies"))
 	ownerFollowUp := addComment(t, d, reply(docRoot, "owner", "D2: owner follows up"))
 	secondRoot := addComment(t, d, onTarget("owner", "E: another open root"))
@@ -106,9 +98,9 @@ func TestListProjectComments_NewForAgent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []int64{openRoot, ownerAnswer, docRoot, ownerFollowUp, secondRoot}, commentIDs(got))
 
-	onDoc, err := d.ListWorkbenchComments(WorkbenchCommentFilter{WorkbenchID: pid, DocumentID: docID})
+	onPlan, err := d.ListWorkbenchComments(WorkbenchCommentFilter{WorkbenchID: pid, TargetID: planID})
 	require.NoError(t, err)
-	assert.Len(t, onDoc, 3, "the document filter returns the whole thread")
+	assert.Len(t, onPlan, 3, "the target filter returns the whole thread")
 }
 
 // TestAddProjectComment_OwnerReplyReopensAClosedThread: an owner reply under
@@ -160,12 +152,9 @@ func TestSetProjectCommentStatus_RootsOnly(t *testing.T) {
 	assert.Error(t, d.SetWorkbenchCommentStatus(root, "closed"), "unknown status")
 }
 
-func TestGetProjectCommentAndDocument_MissingIsNilNil(t *testing.T) {
+func TestGetProjectComment_MissingIsNilNil(t *testing.T) {
 	d := openTestDB(t)
 	c, err := d.GetWorkbenchComment(999)
 	require.NoError(t, err)
 	assert.Nil(t, c)
-	doc, err := d.GetWorkbenchDocument(999)
-	require.NoError(t, err)
-	assert.Nil(t, doc)
 }

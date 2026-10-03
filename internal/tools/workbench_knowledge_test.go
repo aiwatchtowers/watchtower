@@ -206,31 +206,6 @@ func TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench(t *testing.T) 
 	}
 }
 
-// attach_document re-indexes the project's documents (when knowledge search
-// is on), so an attached or revised document is searchable from the
-// project's session at once — protected folder or not.
-func TestAttachDocument_IndexesForTheProjectsSearch(t *testing.T) {
-	d := openDB(t)
-	reg := workbenchRegistry(t, d) // knowledge search on
-	require.NoError(t, reg.Register(NewSearchKnowledge()))
-	p := seedWorkbench(t, d, "alpha")
-	proj, err := d.GetWorkbench(p)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
-
-	out := mustApply(t, reg, p, "attach_document", `{"rel_path":"plan.md","kind":"plan","reason":"r"}`)
-	assert.NotContains(t, out, "index_warning")
-	res, err := searchIn(t, reg, p, `{"queries":["канареечн*"]}`)
-	require.NoError(t, err)
-	require.Len(t, res.Hits, 1)
-
-	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nСиний выкат\n"), 0o600))
-	mustApply(t, reg, p, "attach_document", `{"rel_path":"plan.md","kind":"plan","reason":"revised"}`)
-	res, err = searchIn(t, reg, p, `{"queries":["синий"]}`)
-	require.NoError(t, err)
-	assert.Len(t, res.Hits, 1, "the revision is searchable at once")
-}
-
 func TestSearchKnowledge_ProjectDocSourceOutsideAProjectSessionIsRefused(t *testing.T) {
 	d := openDB(t)
 	reg := knowledgeRegistry(t, d)

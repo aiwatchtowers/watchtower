@@ -106,10 +106,10 @@ func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	require.Len(t, opts, 1)
 
 	names, ls := localToolNames(t, database, opts)
-	for _, n := range []string{"workbench_info", "workbench_board", "create_targets", "attach_document", "get_action", "list_targets"} {
+	for _, n := range []string{"workbench_info", "workbench_board", "create_targets", "get_action", "list_targets"} {
 		assert.True(t, names[n], "project mode mounts %s", n)
 	}
-	for _, n := range []string{"create_target", "create_jira_issue", "connect_jira_board", "create_idea"} {
+	for _, n := range []string{"create_target", "create_jira_issue", "connect_jira_board", "create_idea", "attach_document"} {
 		assert.False(t, names[n], "project mode must not mount %s", n)
 	}
 
@@ -207,7 +207,7 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 
 // Spec 2026-10-02 §5.2: `mcp --project N` (a folder installed before the
 // rename) serves the renamed workbench tools under their old names only;
-// `mcp --workbench N` the new names only. Eleven workbench tools either way.
+// `mcp --workbench N` the new names only. Ten workbench tools either way.
 func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 	resetMCPFlags(t)
 	legacyFlag := mcpCmd.Flags().Lookup(legacyWorkbenchFlag)
@@ -234,7 +234,7 @@ func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 				workbenchTools++
 			}
 		}
-		assert.Equal(t, 11, workbenchTools, "legacy=%v", legacy)
+		assert.Equal(t, 10, workbenchTools, "legacy=%v", legacy)
 		assert.True(t, names["send_slack_message"] && names["get_writing_style"], "legacy=%v lists the Slack pair", legacy)
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)

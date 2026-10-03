@@ -13,13 +13,13 @@ import (
 )
 
 // Spec 2026-10-02 §5.2: the five renamed tools keep their old names as
-// aliases, and every one of them belongs to WorkbenchTools — DEV-06's eleven.
+// aliases, and every one of them belongs to WorkbenchTools — DEV-06's ten.
 func TestLegacyWorkbenchToolNames_CoverTheRenamedWorkbenchTools(t *testing.T) {
 	var names []string
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, false) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
 		names = append(names, tool.Name)
 	}
-	require.Len(t, names, 11)
+	require.Len(t, names, 10)
 	require.Len(t, LegacyWorkbenchToolNames, 5)
 	for newName, oldName := range LegacyWorkbenchToolNames {
 		assert.Contains(t, names, newName)
@@ -94,7 +94,7 @@ func TestBindingSpell_LegacySessionsReadTheOldNames(t *testing.T) {
 	// Every description of a workbench tool names only tools a legacy
 	// session lists once spelled.
 	legacy := Binding{LegacyNames: true}
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, false) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
 		for newName := range LegacyWorkbenchToolNames {
 			assert.NotContains(t, legacy.Spell(tool.Description), newName, tool.Name)
 		}

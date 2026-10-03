@@ -51,7 +51,7 @@ func TestWorkbenchSkill_NamesOnlyCurrentToolsAndServer(t *testing.T) {
 // of those, the workbench's own.
 func workbenchSessionTools() (session, workbench map[string]bool) {
 	session, workbench = map[string]bool{}, map[string]bool{}
-	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, false) {
+	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}) {
 		session[tool.Name], workbench[tool.Name] = true, true
 	}
 	for _, tool := range tools.ReadTools() {

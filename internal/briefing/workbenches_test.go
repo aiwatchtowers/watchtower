@@ -62,13 +62,6 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 		Author: "agent", Body: "Which currency list?",
 	})
 	require.NoError(t, err)
-	docID, _, err := d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: busy, RelPath: "docs/plan.md", Kind: "plan", Title: "Payments plan"})
-	require.NoError(t, err)
-	_, err = d.AddWorkbenchComment(db.WorkbenchComment{
-		WorkbenchID: busy, DocumentID: sql.NullInt64{Int64: docID, Valid: true},
-		Author: "owner", Body: "Split task 3", AnchorQuote: "Task 3",
-	})
-	require.NoError(t, err)
 
 	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
 	pipe.shown = newShownIDs()
@@ -82,7 +75,7 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	assert.Contains(t, ctx, "Done since the last briefing (1): Task 1: schema")
 	assert.NotContains(t, ctx, "Task 0: spike", "done before the window")
 	assert.Contains(t, ctx, "Unread agent comments: 1")
-	assert.Contains(t, ctx, "Documents with open owner comments (1): Payments plan")
+	assert.NotContains(t, ctx, "Documents", "attached documents are gone (spec 2026-10-03 §7)")
 	assert.NotContains(t, ctx, "quiet", "a project with no activity is omitted")
 	assert.True(t, pipe.shown.workbenches[busy])
 }

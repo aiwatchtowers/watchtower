@@ -12,20 +12,18 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/kb"
-	"watchtower/internal/workbenchdocs"
 )
 
 var workbenchResyncCmd = &cobra.Command{
 	Use:   "resync <id>",
 	Short: "Bring an existing workbench up to the current setup, adding only what is missing",
-	Long: "Additive only: attaches the folder's documents that are not attached yet (the\n" +
-		"`import-docs` rules) and re-installs the Claude Code integration — skill, hooks,\n" +
-		"exclude lines where missing or out of date, and a fresh MCP registration (the\n" +
+	Long: "Additive only: re-installs the Claude Code integration — skill, hooks, exclude\n" +
+		"lines where missing or out of date, and a fresh MCP registration (the\n" +
 		"`integrate claude-code --workbench` rules: a skill you edited is left alone), then\n" +
-		"re-indexes the attached documents for search from this workbench's sessions\n" +
-		"(skipped when knowledge search is off).\n" +
-		"Never deletes or changes targets, their statuses, comments, attached documents,\n" +
-		"sources or the description, and never creates targets: it prints suggestions for\n" +
+		"indexes the folder's .md/.markdown/.txt files for search from this workbench's\n" +
+		"sessions (skipped when knowledge search is off).\n" +
+		"Never deletes or changes targets, their statuses, comments, sources or the\n" +
+		"description, and never creates targets: it prints suggestions for\n" +
 		"you to take to the agent instead.\n" +
 		"Each step runs even when another failed. Without --json a failed step exits\n" +
 		"non-zero; --json always exits 0 once the workbench is found, its *_ok/*_error\n" +
@@ -45,10 +43,6 @@ func init() {
 type workbenchResyncJSON struct {
 	ID int64 `json:"id"`
 
-	DocsOK    bool                  `json:"docs_ok"`
-	DocsError string                `json:"docs_error"`
-	Docs      *workbenchdocs.Report `json:"docs,omitempty"`
-
 	IntegrationOK    bool     `json:"integration_ok"`
 	IntegrationError string   `json:"integration_error"`
 	Skill            string   `json:"skill"` // a devpack state: installed, updated, unchanged, drifted, foreign; "" = not installed
@@ -66,8 +60,8 @@ type workbenchResyncJSON struct {
 	LegacyHooksReplaced   bool   `json:"legacy_hooks_replaced"`
 	LegacyPermissionRules int    `json:"legacy_permission_rules"`
 
-	// The search index of the project's documents (PROJ-08: searchable from
-	// this project's sessions only). IndexSkipped: knowledge search is off.
+	// The search index of the folder's text files (PROJ-08: searchable from
+	// this workbench's sessions only). IndexSkipped: knowledge search is off.
 	IndexOK      bool   `json:"index_ok"`
 	IndexError   string `json:"index_error"`
 	Indexed      int    `json:"indexed"` // this project's index entries written or removed
@@ -81,7 +75,7 @@ type workbenchResyncJSON struct {
 }
 
 func (r workbenchResyncJSON) failed() bool {
-	return !r.DocsOK || !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != ""
+	return !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != ""
 }
 
 func runWorkbenchResync(cmd *cobra.Command, args []string) error {
@@ -110,19 +104,12 @@ func runWorkbenchResync(cmd *cobra.Command, args []string) error {
 	return stepErr
 }
 
-// resyncWorkbench runs the import, the folder install and the search re-index,
-// and collects the suggestions; the error
-// joins every failure (each also recorded in the result).
+// resyncWorkbench runs the folder install and the search index, and collects
+// the suggestions; the error joins every failure (each also recorded in the
+// result).
 func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, knowledgeEnabled bool) (workbenchResyncJSON, error) {
 	res := workbenchResyncJSON{ID: p.ID, Excluded: []string{}}
 	var errs []error
-
-	if rep, err := workbenchdocs.Import(database, p, false); err != nil {
-		res.DocsError = err.Error()
-		errs = append(errs, fmt.Errorf("attaching documents: %w", err))
-	} else {
-		res.DocsOK, res.Docs = true, &rep
-	}
 
 	if err := resyncIntegration(ctx, p, &res); err != nil {
 		res.IntegrationError, res.installErr = err.Error(), err
@@ -131,19 +118,19 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 		res.IntegrationOK = true
 	}
 
-	// After the import, so newly attached documents are searchable at once
-	// rather than after the daemon's next knowledge cycle.
+	// The folder's files are searchable at once rather than after the daemon's
+	// next knowledge cycle, which skips a privacy-protected folder entirely.
 	if !knowledgeEnabled {
 		res.IndexOK, res.IndexSkipped = true, true
 	} else if _, changed, err := kb.IndexWorkbenchDocs(ctx, database, p.ID); err != nil {
 		res.IndexError = err.Error()
-		errs = append(errs, fmt.Errorf("indexing documents for search: %w", err))
+		errs = append(errs, fmt.Errorf("indexing the folder for search: %w", err))
 	} else {
 		res.IndexOK, res.Indexed = true, changed
 	}
 
 	voc, toolsKnown := resyncVocabulary(res.install)
-	suggestions, err := resyncSuggestions(database, p, res.Docs, voc, toolsKnown)
+	suggestions, err := resyncSuggestions(database, p, voc, toolsKnown)
 	if note := legacyPermissionNote(res.install); note != "" {
 		suggestions = append(suggestions, note)
 	}
@@ -197,7 +184,7 @@ func resyncVocabulary(rep devpack.WorkbenchInstallReport) (voc vocabulary, tools
 // resyncSuggestions names what the owner may want the agent to do next, in
 // voc (toolsKnown false: without a tool name); resync itself never creates
 // targets (the agent proposes, the owner agrees).
-func resyncSuggestions(database *db.DB, p *db.Workbench, docs *workbenchdocs.Report, voc vocabulary, toolsKnown bool) ([]string, error) {
+func resyncSuggestions(database *db.DB, p *db.Workbench, voc vocabulary, toolsKnown bool) ([]string, error) {
 	out := []string{}
 	if strings.TrimSpace(p.Description) == "" {
 		out = append(out, "The workbench has no description yet: ask Claude Code to run the "+voc.SkillName+" skill's setup.")
@@ -218,11 +205,8 @@ func resyncSuggestions(database *db.DB, p *db.Workbench, docs *workbenchdocs.Rep
 	if err != nil {
 		return out, fmt.Errorf("reading the board: %w", err)
 	}
-	switch {
-	case len(board) == 0:
+	if len(board) == 0 {
 		out = append(out, "The board is empty: ask Claude Code to propose a first board — it creates targets only after you agree.")
-	case docs != nil && len(docs.Imported) > 0:
-		out = append(out, fmt.Sprintf("%d new document(s) were attached: ask Claude Code whether they hold open work the board is missing — it proposes targets, you decide.", len(docs.Imported)))
 	}
 	return out, nil
 }
@@ -233,17 +217,11 @@ func printResyncReport(w io.Writer, p *db.Workbench, res workbenchResyncJSON) {
 		outcome = "re-synced with errors"
 	}
 	fmt.Fprintf(w, "Workbench %d (%s) %s:\n", p.ID, p.FolderPath, outcome)
-	if res.DocsOK {
-		fmt.Fprint(w, "Documents: ")
-		printImportReport(w, *res.Docs)
-	} else {
-		fmt.Fprintf(w, "Documents: FAILED — %s (retry: watchtower workbench resync %d)\n", res.DocsError, p.ID)
-	}
 	switch {
 	case res.IndexSkipped:
 		fmt.Fprintln(w, "Search index: skipped (knowledge search is off)")
 	case res.IndexOK:
-		fmt.Fprintf(w, "Search index: %d document(s) (re)indexed, searchable from this workbench's sessions\n", res.Indexed)
+		fmt.Fprintf(w, "Search index: %d file(s) (re)indexed, searchable from this workbench's sessions\n", res.Indexed)
 	default:
 		fmt.Fprintf(w, "Search index: FAILED — %s (retry: watchtower workbench resync %d)\n", res.IndexError, p.ID)
 	}

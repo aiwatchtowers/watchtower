@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -45,7 +46,9 @@ type listTextFiles func(ctx context.Context, folder string) ([]workbenchdocs.Fil
 // background read there could raise a macOS privacy prompt attributed to
 // Watchtower. Those workbenches are indexed only on an explicit trigger —
 // IndexWorkbenchDocs — and Keys keeps what the trigger indexed. A listing
-// that fails (a git error) is logged and keeps the workbench's entries too.
+// that fails (a git error) is logged and keeps the workbench's entries too;
+// a folder that is gone (deleted or moved) keeps them without a log line, so
+// it does not log on every knowledge cycle.
 type workbenchDocSource struct {
 	list   listTextFiles
 	listed map[int64]listing
@@ -87,9 +90,12 @@ func listWorkbenchFolders(ctx context.Context, q Queryer) ([]workbenchFolder, er
 }
 
 // files is w's listing for this run, or nil when the daemon must not read
-// the folder (protected) or the listing failed (logged).
+// the folder (protected), the folder is gone, or the listing failed (logged).
 func (s *workbenchDocSource) files(ctx context.Context, w workbenchFolder) ([]workbenchdocs.File, bool) {
 	if privacyProtected(w.folder) {
+		return nil, false
+	}
+	if _, err := os.Stat(w.folder); errors.Is(err, fs.ErrNotExist) {
 		return nil, false
 	}
 	l, ok := s.listed[w.id]

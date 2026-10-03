@@ -333,6 +333,47 @@ func TestWorkbenchDoc_FailingGitKeepsTheEntries(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(logged.String(), "kb: listing"), "listed once per run: Changed and Keys share it")
 }
 
+// A workbench whose folder is gone (deleted or moved) is skipped quietly on
+// every daemon pass — no listing error logged cycle after cycle — and its
+// entries stay, as for any folder that cannot be listed now.
+func TestWorkbenchDoc_MissingFolderIsSkippedQuietly(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	folder := filepath.Join(t.TempDir(), "acme")
+	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
+	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	_, _, err := IndexWorkbenchDocs(ctx, d, 1)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(folder))
+
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	for range 2 {
+		_, err = Run(ctx, d, Options{Sources: []string{WorkbenchDocSource}, Now: time.Now()})
+		require.NoError(t, err)
+	}
+	assert.Empty(t, logged.String(), "a missing folder is not a listing error")
+	assert.Equal(t, []string{"wbdoc:1:plan.md"}, indexedIDs(t, d), "its entries stay")
+}
+
+// kb reindex indexes every workbench even when one folder cannot be listed:
+// the failure is returned, the other workbenches are still indexed.
+func TestIndexAllWorkbenchDocs_OneFailureDoesNotStopTheOthers(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'gone', ?)`, filepath.Join(t.TempDir(), "gone"))
+	other := t.TempDir()
+	writeWorkbenchFile(t, other, "b.md", "beta")
+	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (2, 'beta', ?)`, other)
+
+	n, err := indexAllWorkbenchDocs(ctx, d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "workbench 1")
+	assert.Equal(t, 1, n)
+	assert.Equal(t, []string{"wbdoc:2:b.md"}, indexedIDs(t, d))
+}
+
 // The daemon never reads a folder macOS guards (~/Documents and the like):
 // a background read could raise a privacy prompt. An explicit trigger
 // (IndexWorkbenchDocs) indexes it, and drops what the folder no longer has;

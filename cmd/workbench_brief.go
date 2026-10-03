@@ -8,7 +8,6 @@ import (
 	"math"
 	"os"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,7 +44,6 @@ const (
 
 var briefRules = []string{
 	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.",
-	"Before revising an attached document call list_comments(document_id); resolve each comment you addressed (resolve_comment), then attach_document again.",
 }
 
 var workbenchBriefCmd = &cobra.Command{
@@ -163,19 +161,11 @@ func briefFromDB(database *db.DB, p *db.Workbench, vocab vocabulary) string {
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
 	}
-	docs, err := database.ListWorkbenchDocuments(p.ID)
-	if err != nil {
-		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
-	}
-	byID := make(map[int64]db.WorkbenchDocument, len(docs))
-	for _, d := range docs {
-		byID[d.ID] = d
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), briefDriftBudget)
 	defer cancel()
 	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
-	return renderWorkbenchBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now, vocab)
+	return renderWorkbenchBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), now, vocab)
 }
 
 // briefRecent is the recent-in-workbench-sources input; nil when the
@@ -238,7 +228,7 @@ const briefLegacyLine = "This folder's Watchtower setup predates the Workbench r
 // and tools the folder's install knows; a legacy folder also gets
 // briefLegacyLine after the header when it fits. A drift check cut short
 // says so, so a partial check never reads as a clean board. Pure.
-func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, drift workbenchcheck.Report, recent *briefRecent, now time.Time, vocab vocabulary) string {
+func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, now time.Time, vocab vocabulary) string {
 	header := briefHeader(p, board, len(comments), vocab)
 	head := header
 	rules := strings.Join(briefRules, "\n")
@@ -247,7 +237,7 @@ func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.W
 		head += "\n" + section
 		budget -= utf8.RuneCountInString(section) + 1
 	}
-	commentLines := briefCommentLines(comments, docs, boardTitles(board))
+	commentLines := briefCommentLines(comments, boardTitles(board))
 	const commentsTitle = "New comments for you:"
 	// Without comments the section is still its "none." line; the tree
 	// leaves room for it.
@@ -449,9 +439,6 @@ func briefTargetLine(n db.BoardNode, depth int, now time.Time) string {
 	if n.NewForAgent > 0 {
 		line += fmt.Sprintf(" (%d new comments)", n.NewForAgent)
 	}
-	if len(n.Documents) > 0 {
-		line += fmt.Sprintf(" (%d docs)", len(n.Documents))
-	}
 	return indent + briefClip(line, briefLineChars-len(indent))
 }
 
@@ -468,36 +455,22 @@ func boardTitles(board []db.BoardNode) map[int64]string {
 	return titles
 }
 
-// briefCommentLines renders target comments first, then document comments.
-func briefCommentLines(comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, titles map[int64]string) []string {
-	ordered := append([]db.WorkbenchComment(nil), comments...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		return !ordered[i].DocumentID.Valid && ordered[j].DocumentID.Valid
-	})
-	lines := make([]string, 0, len(ordered))
-	for _, c := range ordered {
-		lines = append(lines, briefClip(briefCommentLine(c, docs, titles), briefLineChars))
+// briefCommentLines renders the comments in the order given.
+func briefCommentLines(comments []db.WorkbenchComment, titles map[int64]string) []string {
+	lines := make([]string, 0, len(comments))
+	for _, c := range comments {
+		lines = append(lines, briefClip(briefCommentLine(c, titles), briefLineChars))
 	}
 	return lines
 }
 
-func briefCommentLine(c db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, titles map[int64]string) string {
+func briefCommentLine(c db.WorkbenchComment, titles map[int64]string) string {
 	who := fmt.Sprintf("- comment #%d", c.ID)
 	if c.ParentID.Valid {
 		who += fmt.Sprintf(" (reply in thread #%d)", c.ParentID.Int64)
 	}
 	body := briefClip(c.Body, 160)
-	if !c.DocumentID.Valid {
-		return fmt.Sprintf("%s on target #%d %q: %s", who, c.TargetID.Int64, briefClip(titles[c.TargetID.Int64], 60), body)
-	}
-	where := docs[c.DocumentID.Int64].RelPath
-	if c.AnchorHeading != "" {
-		where += " § " + briefClip(c.AnchorHeading, 60)
-	}
-	if c.AnchorQuote != "" {
-		where += fmt.Sprintf(" on %q", briefClip(c.AnchorQuote, 80))
-	}
-	return fmt.Sprintf("%s on document #%d %s: %s", who, c.DocumentID.Int64, where, body)
+	return fmt.Sprintf("%s on target #%d %q: %s", who, c.TargetID.Int64, briefClip(titles[c.TargetID.Int64], 60), body)
 }
 
 // briefClip collapses whitespace to single spaces and cuts s to n runes.

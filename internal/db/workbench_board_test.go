@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
+func TestGetProjectBoard_TreeOrderAndCounts(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	var ids []int64
@@ -34,8 +34,6 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	require.NoError(t, err)
 	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: active, Author: "agent", Body: "which part?"})
 	require.NoError(t, err)
-	docID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, TargetID: active, RelPath: "docs/plan.md", Kind: "plan"})
-	require.NoError(t, err)
 
 	board, err := d.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
@@ -48,8 +46,6 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	assert.Equal(t, "child of active", board[0].Children[0].Target.Text)
 	assert.Equal(t, 1, board[0].NewForAgent, "the open owner root")
 	assert.Equal(t, 1, board[0].UnreadForOwner, "the unread agent comment")
-	require.Len(t, board[0].Documents, 1)
-	assert.Equal(t, docID, board[0].Documents[0].ID)
 	assert.Zero(t, board[1].NewForAgent)
 
 	empty, err := d.GetWorkbenchBoard(pid + 100)

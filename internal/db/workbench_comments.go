@@ -7,39 +7,33 @@ import (
 	"strings"
 )
 
-// WorkbenchComment is a comment on a workbench target or document, or a reply in
+// WorkbenchComment is a comment on a workbench target, or a reply in
 // a thread (ParentID = the thread root; threads are flat). Status is
 // meaningful on roots only; an agent comment is unread for the owner while
 // ReadAt is empty.
 type WorkbenchComment struct {
-	ID            int64
-	WorkbenchID   int64
-	TargetID      sql.NullInt64
-	DocumentID    sql.NullInt64
-	ParentID      sql.NullInt64
-	Author        string // owner | agent
-	AgentLabel    string
-	Body          string
-	AnchorQuote   string
-	AnchorPrefix  string
-	AnchorSuffix  string
-	AnchorHeading string
-	Status        string // open | resolved | outdated
-	CreatedAt     string
-	ReadAt        string
+	ID          int64
+	WorkbenchID int64
+	TargetID    sql.NullInt64
+	ParentID    sql.NullInt64
+	Author      string // owner | agent
+	AgentLabel  string
+	Body        string
+	Status      string // open | resolved | outdated
+	CreatedAt   string
+	ReadAt      string
 }
 
 // WorkbenchCommentFilter selects comments; a zero id matches any.
 type WorkbenchCommentFilter struct {
 	WorkbenchID int64
 	TargetID    int64
-	DocumentID  int64
 	// NewForAgent keeps only what the agent has not answered yet (spec §3).
 	NewForAgent bool
 }
 
-const workbenchCommentCols = `c.id, c.project_id, c.target_id, c.document_id, c.parent_id, c.author, c.agent_label,
-	c.body, c.anchor_quote, c.anchor_prefix, c.anchor_suffix, c.anchor_heading, c.status, c.created_at, c.read_at`
+const workbenchCommentCols = `c.id, c.project_id, c.target_id, c.parent_id, c.author, c.agent_label,
+	c.body, c.status, c.created_at, c.read_at`
 
 // newForAgentPredicate (over alias c): open owner roots, plus owner replies
 // in a still-open thread newer than its latest agent comment (the agent root
@@ -58,16 +52,16 @@ var workbenchCommentStatuses = map[string]bool{"open": true, "resolved": true, "
 
 func scanWorkbenchComment(row interface{ Scan(...any) error }) (*WorkbenchComment, error) {
 	var c WorkbenchComment
-	if err := row.Scan(&c.ID, &c.WorkbenchID, &c.TargetID, &c.DocumentID, &c.ParentID, &c.Author, &c.AgentLabel,
-		&c.Body, &c.AnchorQuote, &c.AnchorPrefix, &c.AnchorSuffix, &c.AnchorHeading, &c.Status, &c.CreatedAt, &c.ReadAt); err != nil {
+	if err := row.Scan(&c.ID, &c.WorkbenchID, &c.TargetID, &c.ParentID, &c.Author, &c.AgentLabel,
+		&c.Body, &c.Status, &c.CreatedAt, &c.ReadAt); err != nil {
 		return nil, err
 	}
 	return &c, nil
 }
 
 // AddWorkbenchComment stores c. A reply (ParentID set) is re-pointed at its
-// thread root and inherits the root's target/document; a root must name a
-// target or a document of the same workbench. Every reference is checked
+// thread root and inherits the root's target; a root must name a target of
+// the same workbench. Every reference is checked
 // against c.WorkbenchID (ErrNotInWorkbench).
 func (db *DB) AddWorkbenchComment(c WorkbenchComment) (int64, error) {
 	var id int64
@@ -115,18 +109,11 @@ func placeWorkbenchComment(q targetsQuerier, c WorkbenchComment) (WorkbenchComme
 	if c.ParentID.Valid {
 		return placeReply(q, c)
 	}
-	if !c.TargetID.Valid && !c.DocumentID.Valid {
-		return c, errors.New("a comment needs a target, a document or a parent")
+	if !c.TargetID.Valid {
+		return c, errors.New("a comment needs a target or a parent")
 	}
-	if c.TargetID.Valid {
-		if err := checkTargetInWorkbench(q, c.WorkbenchID, c.TargetID.Int64); err != nil {
-			return c, err
-		}
-	}
-	if c.DocumentID.Valid {
-		if err := checkDocumentInWorkbench(q, c.WorkbenchID, c.DocumentID.Int64); err != nil {
-			return c, err
-		}
+	if err := checkTargetInWorkbench(q, c.WorkbenchID, c.TargetID.Int64); err != nil {
+		return c, err
 	}
 	return c, nil
 }
@@ -147,18 +134,15 @@ func placeReply(q targetsQuerier, c WorkbenchComment) (WorkbenchComment, error) 
 		root = parent.ParentID.Int64
 	}
 	c.ParentID = sql.NullInt64{Int64: root, Valid: true}
-	c.TargetID, c.DocumentID = parent.TargetID, parent.DocumentID
-	c.AnchorQuote, c.AnchorPrefix, c.AnchorSuffix, c.AnchorHeading = "", "", "", ""
+	c.TargetID = parent.TargetID
 	return c, nil
 }
 
 func insertWorkbenchComment(tx *sql.Tx, c WorkbenchComment) (int64, error) {
 	res, err := tx.Exec(`INSERT INTO project_comments
-		(project_id, target_id, document_id, parent_id, author, agent_label, body,
-		 anchor_quote, anchor_prefix, anchor_suffix, anchor_heading)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.WorkbenchID, c.TargetID, c.DocumentID, c.ParentID, c.Author, c.AgentLabel, c.Body,
-		c.AnchorQuote, c.AnchorPrefix, c.AnchorSuffix, c.AnchorHeading)
+		(project_id, target_id, parent_id, author, agent_label, body)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		c.WorkbenchID, c.TargetID, c.ParentID, c.Author, c.AgentLabel, c.Body)
 	if err != nil {
 		return 0, fmt.Errorf("inserting comment: %w", err)
 	}
@@ -203,7 +187,7 @@ func workbenchCommentWhere(f WorkbenchCommentFilter) (string, []any) {
 	for _, scope := range []struct {
 		col string
 		id  int64
-	}{{"c.project_id", f.WorkbenchID}, {"c.target_id", f.TargetID}, {"c.document_id", f.DocumentID}} {
+	}{{"c.project_id", f.WorkbenchID}, {"c.target_id", f.TargetID}} {
 		if scope.id > 0 {
 			conds = append(conds, scope.col+" = ?")
 			args = append(args, scope.id)

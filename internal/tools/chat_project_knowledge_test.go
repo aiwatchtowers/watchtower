@@ -144,7 +144,7 @@ func TestSearchKnowledge_ChatProjectsAreIsolated(t *testing.T) {
 	require.ErrorAs(t, err, &ve)
 	assert.Equal(t, "this chat project has no usable Slack channel, Jira project or Confluence space source — the owner pins one in the project's settings, or search without workbench_scope", ve.Msg)
 
-	// A chat project grants no workbench's attached documents (PROJ-08).
+	// A chat project grants no workbench's folder files (PROJ-08).
 	_, err = searchInChatProject(t, reg, a, `{"queries":["x"],"sources":["project_doc"]}`)
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "only from that workbench's own session")
