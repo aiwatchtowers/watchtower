@@ -4,12 +4,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 
+// agentStateAtLayout is agent_state_at's fixed-width UTC form: string order
+// is time order, and the Desktop parses it pinned to UTC.
+const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
+
 // TerminalSession is the slice of a terminal_sessions row Go reads; the
-// Desktop owns every other column.
+// Desktop owns every other column but the agent state, which only the
+// workbench hooks write.
 type TerminalSession struct {
 	ID              int64
 	WorkbenchID     sql.NullInt64
@@ -18,18 +24,28 @@ type TerminalSession struct {
 	TitleSource     string
 	FolderPath      string
 	ClaudeSessionID sql.NullString
+	AgentState      sql.NullString
+	AgentStateAt    time.Time // zero when never reported
 }
 
 func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
-	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id
+	var stateAt sql.NullString
+	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
+		agent_state, agent_state_at
 		FROM terminal_sessions WHERE id = ?`, id).
-		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID)
+		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
+			&s.AgentState, &stateAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d: %w", id, err)
+	}
+	if stateAt.Valid {
+		if s.AgentStateAt, err = time.Parse(agentStateAtLayout, stateAt.String); err != nil {
+			return nil, fmt.Errorf("reading terminal session %d agent_state_at: %w", id, err)
+		}
 	}
 	return &s, nil
 }
@@ -65,6 +81,32 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d claude session id: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// SetTerminalAgentState records what workbench workbenchID's claude row id is
+// doing, reported by a Claude Code hook of conversation sessionID at at. It
+// writes only when the row still runs that conversation (a nested `claude -p`
+// that inherited the row's env has another id), the state changes (a repeat
+// keeps the transition time), at is later than the stored time (a late async
+// hook never overwrites a newer state) and, with onlyFrom set, the stored
+// state is onlyFrom. One guarded UPDATE, no transaction; false when a guard
+// held it back.
+func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string) (bool, error) {
+	stamp := at.UTC().Format(agentStateAtLayout)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND agent_state IS NOT ?
+		  AND (agent_state_at IS NULL OR agent_state_at < ?)
+		  AND (? = '' OR agent_state = ?)`,
+		state, stamp, id, workbenchID, sessionID, state, stamp, onlyFrom, onlyFrom)
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}
 	return n > 0, nil
 }

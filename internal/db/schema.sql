@@ -2235,6 +2235,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     closed_at         TEXT, -- legacy, unused since 2026-10-01 (no Close action): not a "session open" flag
+    agent_state       TEXT CHECK (agent_state IN ('working','waiting','approval')), -- written by the workbench hooks only; NULL = never reported
+    agent_state_at    TEXT, -- written by the workbench hooks only; UTC ms, e.g. 2026-10-03T12:34:56.789Z
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );
