@@ -440,4 +440,29 @@ final class OnboardingGoalsModelTests: XCTestCase {
         _ = await model.submit(hasSlackAccount: true)
         XCTAssertTrue(model.wroteChanges, "a language write counts")
     }
+
+    /// `workspace init` fills in Go's history default, so the depth is read
+    /// before it: a config that had none still gets the old onboarding's 3.
+    func testHistoryDepthIsReadBeforeWorkspaceInit() async {
+        spy.historyUnset = true
+        let spy = self.spy
+        let model = OnboardingGoalsModel(
+            defaults: defaults,
+            systemLanguage: "Russian",
+            checkCLI: { .ready(provider: "claude") },
+            actions: OnboardingGoalsActions(
+                initWorkspace: {
+                    spy.calls.append("workspace init")
+                    spy.historyUnset = false
+                },
+                setLanguage: { spy.calls.append("language \($0)") },
+                applyFeatures: { _ in (nil, false) },
+                historyDepthUnset: { spy.historyUnset },
+                setHistoryDepth: { spy.calls.append("history \($0)") }
+            )
+        )
+        await model.prepare(configuredLanguage: nil)
+        _ = await model.submit(hasSlackAccount: false)
+        XCTAssertEqual(spy.calls, ["workspace init", "history 3", "language Russian"])
+    }
 }

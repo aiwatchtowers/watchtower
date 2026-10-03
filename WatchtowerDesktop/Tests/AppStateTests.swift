@@ -1718,4 +1718,120 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(daemon.restarts, 1)
     }
+
+    // MARK: - Final review D
+
+    /// A Goals model whose Continue reports a feature change (`features`)
+    /// or writes a language, with a ready CLI.
+    private func changingGoals(_ spy: GoalsSpy, featuresChanged: Bool, defaults: UserDefaults) -> OnboardingGoalsModel {
+        OnboardingGoalsModel(
+            defaults: defaults,
+            systemLanguage: "English",
+            checkCLI: { .ready(provider: "claude") },
+            actions: OnboardingGoalsActions(
+                initWorkspace: { spy.calls.append("workspace init") },
+                setLanguage: { spy.calls.append("language \($0)") },
+                applyFeatures: { _ in
+                    spy.calls.append("features")
+                    return (nil, featuresChanged)
+                }
+            )
+        )
+    }
+
+    private func rerunAppState(_ spy: GoalsSpy, featuresChanged: Bool) throws -> (AppState, FakeDaemon) {
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open) {
+            self.changingGoals(spy, featuresChanged: featuresChanged, defaults: $0)
+        }
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: "English")
+        return (appState, daemon)
+    }
+
+    /// A re-run whose only change is a feature: finish restarts once.
+    func testRerunWithAFeatureChangeRestartsOnceOnFinish() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let (appState, daemon) = try rerunAppState(GoalsSpy(), featuresChanged: true)
+        let model = appState.onboardingGoals
+        model.selection.goals = [.development]
+        await model.prepare(configuredLanguage: nil)
+        let submitted = await model.submit(hasSlackAccount: false)
+        let route = try XCTUnwrap(submitted)
+
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(daemon.starts, 0)
+    }
+
+    /// A re-run whose only change is the language: Cancel restarts once.
+    func testRerunWithALanguageChangeRestartsOnceOnCancel() async throws {
+        let spy = GoalsSpy()
+        let (appState, daemon) = try rerunAppState(spy, featuresChanged: false)
+        let model = appState.onboardingGoals
+        await model.prepare(configuredLanguage: nil)
+        model.language = "Polish"
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertTrue(spy.calls.contains("language Polish"))
+
+        appState.cancelOnboardingRerun()
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(daemon.starts, 0)
+    }
+
+    /// The real onRetry (reinitializeAfterOnboarding) after a finish that
+    /// opened the database starts no second daemon.
+    func testFinishWithTheRealRetryStartsOneDaemon() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.purpose)
+
+        await appState.leaveOnboardingStep(
+            .purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false),
+            onRetry: appState.reinitializeAfterOnboarding
+        )
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.starts, 1)
+        XCTAssertEqual(daemon.restarts, 0)
+    }
+
+    /// Jira connected in onboarding's own Connect step: finishing raises no
+    /// related-features offer (onboarding picked those features).
+    func testFinishingAFirstRunThatConnectedJiraOffersNothing() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open, featuresRunner: runner)
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.connect)
+        _ = await appState.openDatabaseForOnboarding()
+        try await dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertJiraAccount(db)
+            _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com", gmailEnabled: true)
+        }
+        // No refresh before finish: its own reads must not count as new.
+
+        await appState.leaveOnboardingStep(.connect, route: OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)) {}
+        await appState.onboardingDaemonStart?.value
+        await appState.connectedSourcesRefresh?.value
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+    }
 }

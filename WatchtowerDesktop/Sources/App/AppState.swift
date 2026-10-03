@@ -1126,7 +1126,10 @@ final class AppState {
             Task { await initSidebarCounts(dbPool: pool) }
         }
         // Sources onboarding connected (its account sheets may write through
-        // the CLI without a VM reload) must reach the sidebar now.
+        // the CLI without a VM reload) must reach the sidebar now — as a new
+        // baseline: onboarding picked their features, so they raise no
+        // related-features offer.
+        lastReadConnectedSources = nil
         connectedSourcesRefresh = Task { await refreshConnectedSources() }
     }
 
