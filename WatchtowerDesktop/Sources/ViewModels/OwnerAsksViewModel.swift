@@ -50,6 +50,8 @@ final class OwnerAsksViewModel {
 
     /// Never written to the DB; answering is what persists a draft.
     let drafts = OwnerAskDrafts()
+    /// Review snapshots rendered for the drawer.
+    let reviewDocuments = OwnerAskReviewDocuments()
     /// Each workbench's open asks, oldest first, as last read.
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
     /// The last answer's outcome per ask id, until dismissed.
@@ -173,6 +175,13 @@ final class OwnerAsksViewModel {
         }
         await load(projectID: projectID)
         return openAsks[projectID]?.first { $0.id == askID } ?? found
+    }
+
+    /// The document snapshot of ask `askID` of the workbench, any status
+    /// (a review re-round's previous round, for its diff); nil when the ask
+    /// is gone.
+    func snapshot(askID: Int64, projectID: Int64) async throws -> String? {
+        try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID)?.docSnapshot }
     }
 
     /// A session's (nil: outside the app) answered, delivered and withdrawn

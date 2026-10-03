@@ -3,12 +3,13 @@ import WatchtowerCore
 
 /// The agent's short header of an ask (spec 2026-10-03 Part 8): what it is,
 /// where to look (`focus`), and on a later review round what changed since
-/// the last one. `showDiff`, when given, adds "Show diff"; `showFocus` makes
-/// a review's focus items jump to their place in the document.
+/// the last one. `showDiff`, when given, adds "Show diff"; `focusAction`
+/// gives a focus item a link to its place in the document — nil for one
+/// whose place is not in the snapshot, listed without a link.
 struct OwnerAskHeaderCard: View {
     let ask: OwnerAsk
     var showDiff: (() -> Void)?
-    var showFocus: ((OwnerAskFocus) -> Void)?
+    var focusAction: (OwnerAskFocus) -> (() -> Void)? = { _ in nil }
 
     var body: some View {
         if hasContent {
@@ -26,7 +27,7 @@ struct OwnerAskHeaderCard: View {
                         }
                     }
                 }
-                if !ask.changes.isEmpty {
+                if !ask.changes.isEmpty || showDiff != nil {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text(changesTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -35,9 +36,11 @@ struct OwnerAskHeaderCard: View {
                                 Button("Show diff", action: showDiff).controlSize(.small)
                             }
                         }
-                        Text(ask.changes)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
+                        if !ask.changes.isEmpty {
+                            Text(ask.changes)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             }
@@ -48,7 +51,7 @@ struct OwnerAskHeaderCard: View {
     }
 
     private var hasContent: Bool {
-        !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
+        !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty || showDiff != nil
     }
 
     private var changesTitle: String {
@@ -63,8 +66,8 @@ struct OwnerAskHeaderCard: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(item.text).fixedSize(horizontal: false, vertical: true)
                 if !place.isEmpty {
-                    if let showFocus {
-                        Button(place) { showFocus(item) }
+                    if let action = focusAction(item) {
+                        Button(place, action: action)
                             .buttonStyle(.link)
                             .font(.caption)
                             .lineLimit(1)

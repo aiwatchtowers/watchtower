@@ -33,6 +33,19 @@ final class OwnerAskDrawerLayoutTests: XCTestCase {
         }
     }
 
+    /// A session pane's host inside a covering page-level host: its own
+    /// drawer is beside (or absent), yet its terminal must stay unfocusable.
+    func testAnInnerHostNeverUncoversWhatAnOuterOneCovers() {
+        let beside = OwnerAskDrawerLayout.frames(total: 1200, drawerWidth: 440, hasDrawer: true, expanded: false)
+        let none = OwnerAskDrawerLayout.frames(total: 1200, drawerWidth: 440, hasDrawer: false, expanded: false)
+        let covering = OwnerAskDrawerLayout.frames(total: 1200, drawerWidth: 440, hasDrawer: true, expanded: true)
+        XCTAssertTrue(OwnerAskDrawerLayout.contentCovered(outer: true, by: beside))
+        XCTAssertTrue(OwnerAskDrawerLayout.contentCovered(outer: true, by: none))
+        XCTAssertTrue(OwnerAskDrawerLayout.contentCovered(outer: false, by: covering))
+        XCTAssertFalse(OwnerAskDrawerLayout.contentCovered(outer: false, by: beside))
+        XCTAssertFalse(OwnerAskDrawerLayout.contentCovered(outer: false, by: none))
+    }
+
     func testNoDrawerLeavesTheContentAlone() {
         let frames = OwnerAskDrawerLayout.frames(total: 800, drawerWidth: 440, hasDrawer: false, expanded: true)
         XCTAssertEqual(frames, .init(content: 800, drawerX: 800, drawer: 0, covers: false))

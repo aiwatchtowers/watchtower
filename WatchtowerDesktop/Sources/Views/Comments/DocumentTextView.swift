@@ -45,6 +45,12 @@ struct DocumentTextView: NSViewRepresentable {
     var onCommentRequest: (() -> Void)?
     /// Scrolls once per new target, after the text is applied.
     var scrollTarget: DocumentScrollTarget?
+    /// Ranges the caller lays views out against (an ask's margin comments
+    /// and focus bars): `trackedRects` gets each one's box in the visible
+    /// area (top-left origin, possibly scrolled out of it), in order — nil
+    /// for a range outside the text. Kept current on scroll and resize.
+    var trackedRanges: [NSRange] = []
+    var trackedRects: Binding<[CGRect?]> = .constant([])
     let onClick: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -83,6 +89,7 @@ struct DocumentTextView: NSViewRepresentable {
         Self.setInset(horizontalInset, on: textView)
         context.coordinator.apply(text, contentID: contentID, to: textView)
         context.coordinator.scroll(textView, to: scrollTarget)
+        context.coordinator.reportTrackedRects(textView)
     }
 
     /// A new inset re-wraps every line: the line the owner reads stays at
@@ -174,7 +181,35 @@ struct DocumentTextView: NSViewRepresentable {
         }
 
         @objc private func geometryDidChange() {
-            if let observedTextView { reportSelectionRect(observedTextView) }
+            guard let observedTextView else { return }
+            reportSelectionRect(observedTextView)
+            reportTrackedRects(observedTextView)
+        }
+
+        /// Reports only a change: a body pass with the same ranges and
+        /// geometry (a keystroke in a margin comment) sets no state.
+        func reportTrackedRects(_ textView: NSTextView) {
+            let ranges = parent.trackedRanges
+            guard !ranges.isEmpty || !parent.trackedRects.wrappedValue.isEmpty else { return }
+            let rects = Self.visibleRects(of: ranges, in: textView)
+            guard rects != parent.trackedRects.wrappedValue else { return }
+            DispatchQueue.main.async { [parent] in parent.trackedRects.wrappedValue = rects }
+        }
+
+        /// Each range's line box relative to the visible area, top-left
+        /// origin; nil for a range outside the text.
+        static func visibleRects(of ranges: [NSRange], in textView: NSTextView) -> [CGRect?] {
+            let length = textView.textStorage?.length ?? 0
+            guard let layout = textView.layoutManager, let container = textView.textContainer,
+                  let clip = textView.enclosingScrollView?.contentView else { return ranges.map { _ in nil } }
+            let origin = textView.textContainerOrigin
+            return ranges.map { range in
+                guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= length else { return nil }
+                let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+                let box = layout.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: origin.x, dy: origin.y)
+                let inClip = clip.convert(box, from: textView)
+                return inClip.offsetBy(dx: -clip.bounds.minX, dy: -clip.bounds.minY)
+            }
         }
 
         private func reportSelectionRect(_ textView: NSTextView) {

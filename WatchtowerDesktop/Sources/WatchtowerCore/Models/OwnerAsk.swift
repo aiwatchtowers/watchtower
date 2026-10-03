@@ -13,7 +13,7 @@ package enum OwnerAskStatus: String, Codable, CaseIterable, Sendable {
 
 /// One `focus` item: what the agent wants looked at, on a review optionally
 /// tied to a heading or a quoted passage of the snapshot.
-package struct OwnerAskFocus: Equatable, Sendable {
+package struct OwnerAskFocus: Hashable, Sendable {
     package let text: String
     package let heading: String
     package let quote: String

@@ -34,6 +34,14 @@ enum OwnerAskDrawerLayout {
             ? Frames(content: content, drawerX: 0, drawer: total, covers: true)
             : Frames(content: content, drawerX: content, drawer: drawer, covers: false)
     }
+
+    /// Whether the content is covered, for `askDrawerCovers`: by this
+    /// host's drawer, or by an outer host's (a session pane's host inside
+    /// the page-level one) — an inner host never uncovers what an outer one
+    /// covers.
+    static func contentCovered(outer: Bool, by frames: Frames) -> Bool {
+        outer || frames.covers
+    }
 }
 
 /// Lays an ask drawer beside `content` (spec 2026-10-03 Part 8): a
@@ -47,6 +55,7 @@ struct OwnerAskDrawerHost<Content: View>: View {
     let ask: OwnerAsk?
     @ViewBuilder let content: () -> Content
     @State private var liveWidth: Double?
+    @Environment(\.askDrawerCovers) private var outerCovers
 
     var body: some View {
         let asks = vm.asks
@@ -66,7 +75,7 @@ struct OwnerAskDrawerHost<Content: View>: View {
                     .disabled(expanded)
                     .allowsHitTesting(!expanded)
                     .accessibilityHidden(expanded)
-                    .environment(\.askDrawerCovers, expanded)
+                    .environment(\.askDrawerCovers, OwnerAskDrawerLayout.contentCovered(outer: outerCovers, by: frames))
                 if let ask {
                     HStack(spacing: 0) {
                         if !expanded { Divider() }
@@ -99,6 +108,9 @@ struct OwnerAskDrawerHost<Content: View>: View {
 struct OwnerAskDrawer: View {
     let vm: WorkbenchesViewModel
     let ask: OwnerAsk
+    @State private var scrollTarget: DocumentScrollTarget?
+    @State private var showingDiff = false
+    @State private var topHeight: CGFloat = 0
 
     private var asks: OwnerAsksViewModel { vm.asks }
 
@@ -110,26 +122,18 @@ struct OwnerAskDrawer: View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let notice = asks.notices[ask.id] {
-                        noticeRow(notice)
+            if ask.kind == .review {
+                reviewLayout
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        topSections
+                        kindBody
+                        noteView
                     }
-                    OwnerAskHeaderCard(ask: ask)
-                    if !ask.payload.questions.isEmpty {
-                        ChatQuestionCardView(
-                            card: ChatQuestionCard(questions: ask.payload.questions),
-                            answerText: nil,
-                            onAnswer: nil,
-                            draftPicks: picksBinding,
-                            editable: editable
-                        )
-                    }
-                    kindBody
-                    noteView
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(14)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             OwnerAskAnswerBar(
@@ -139,6 +143,71 @@ struct OwnerAskDrawer: View {
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
+        // "k of N ›" swaps the ask under the same drawer.
+        .onChange(of: ask.id) { _, _ in
+            scrollTarget = nil
+            showingDiff = false
+        }
+    }
+
+    /// The notice, the agent's header card and the question card.
+    @ViewBuilder
+    private var topSections: some View {
+        if let notice = asks.notices[ask.id] {
+            noticeRow(notice)
+        }
+        OwnerAskHeaderCard(
+            ask: ask,
+            showDiff: ask.kind == .review && ask.previousAskID != nil ? { showingDiff = true } : nil,
+            focusAction: focusAction
+        )
+        if !ask.payload.questions.isEmpty {
+            ChatQuestionCardView(
+                card: ChatQuestionCard(questions: ask.payload.questions),
+                answerText: nil,
+                onAnswer: nil,
+                draftPicks: picksBinding,
+                editable: editable
+            )
+        }
+    }
+
+    private var hasTopSections: Bool {
+        asks.notices[ask.id] != nil || !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
+            || ask.previousAskID != nil || !ask.payload.questions.isEmpty
+    }
+
+    /// A review's document scrolls by itself (a snapshot may be 2 MiB, too
+    /// much for a SwiftUI scroll view): the top sections scroll above it in
+    /// at most 40% of the height, the note sits below it.
+    private var reviewLayout: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                if hasTopSections {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) { topSections }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { topHeight = $0 })
+                    }
+                    .frame(height: min(topHeight, geometry.size.height * 0.4))
+                    Divider()
+                }
+                OwnerAskReviewBody(asks: asks, ask: ask, editable: editable, scrollTarget: scrollTarget)
+                if editable || !note.isEmpty {
+                    Divider()
+                    noteView.padding(.horizontal, 14).padding(.vertical, 8)
+                }
+            }
+        }
+    }
+
+    /// A review's focus item jumps to its place once the snapshot is
+    /// rendered; one not in it gets no link.
+    private func focusAction(_ focus: OwnerAskFocus) -> (() -> Void)? {
+        guard ask.kind == .review, let range = asks.reviewDocuments.range(of: focus, askID: ask.id) else { return nil }
+        return { scrollTarget = DocumentScrollTarget(offset: range.location) }
     }
 
     // MARK: - Header
@@ -219,7 +288,7 @@ struct OwnerAskDrawer: View {
     @ViewBuilder
     private var kindBody: some View {
         switch ask.kind {
-        case .review: reviewBody
+        case .review: EmptyView() // `reviewLayout`
         case .check:
             OwnerAskChecklistBody(
                 items: ask.payload.checklist,
@@ -230,19 +299,6 @@ struct OwnerAskDrawer: View {
                 setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } }
             )
         case .question: EmptyView()
-        }
-    }
-
-    /// The snapshot the agent asked about, as plain text.
-    private var reviewBody: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !ask.docPath.isEmpty {
-                Label(ask.docPath, systemImage: "doc.text").font(.caption).foregroundStyle(.secondary)
-            }
-            Text(ask.docSnapshot)
-                .font(.body)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

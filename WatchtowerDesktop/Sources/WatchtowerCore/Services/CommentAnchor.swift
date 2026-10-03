@@ -12,7 +12,7 @@ import Foundation
 /// `legacy(_:csv:)`); several candidates are ranked by how
 /// much of the stored prefix/suffix still surrounds them; no candidate — or
 /// several with none of the original context — is nil. Never fuzzy.
-package struct CommentAnchor: Equatable, Sendable {
+package struct CommentAnchor: Hashable, Sendable {
     package static let contextLength = 64
 
     package var quote: String
