@@ -1129,6 +1129,28 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(later.id)], "a session missing from the last read is found too")
     }
 
+    /// A stale banner (the session stopped since it was posted) shows that
+    /// session without starting it: a click never launches an agent.
+    func testTerminalDeepLinkToAStoppedSessionStartsNothing() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        let live = try await liveSession(p, "live")
+        await vm.open(live)
+        let stopped = try await liveSession(p, "stopped")
+        await vm.open(stopped)
+        processes.last?.exit(0)
+        await vm.open(live)
+        XCTAssertFalse(vm.sessionState(stopped).isLive)
+        let launchesBefore = launches.count
+
+        await vm.revealTerminal(projectID: p, sessionID: stopped.id)
+
+        XCTAssertEqual(vm.drilledWorkbenchID, p)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(stopped.id)])
+        XCTAssertEqual(launches.count, launchesBefore, "no claude --resume from a banner")
+        XCTAssertFalse(vm.sessionState(stopped).isLive)
+    }
+
     /// A subject that names no session of the workbench (deleted, or
     /// another workbench's) falls back to the live-else-latest one.
     func testTerminalDeepLinkWithAGoneSubjectFallsBack() async throws {

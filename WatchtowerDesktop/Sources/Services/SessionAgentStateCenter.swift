@@ -9,6 +9,7 @@ import WatchtowerCore
 protocol SessionAgentNotifying {
     func sendSessionAgentNotice(_ notice: SessionAgentNoticePolicy.Notice)
     func withdrawSessionAgentNotice(identifier: String)
+    func withdrawAllSessionAgentNotices()
 }
 
 extension NotificationService: SessionAgentNotifying {}
@@ -69,10 +70,17 @@ final class SessionAgentStateCenter {
     var isPolling: Bool { pollTask != nil }
 
     /// Follows the terminal center's live `claude` sessions from now on.
+    /// Banners a previous process left are removed: no session runs yet.
     func start() {
         guard !following else { return }
         following = true
+        notifier.withdrawAllSessionAgentNotices()
         followLiveness()
+    }
+
+    /// The app quits: every session stops with it, and so do their banners.
+    func withdrawAllNotices() {
+        notifier.withdrawAllSessionAgentNotices()
     }
 
     func stop() {

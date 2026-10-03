@@ -31,7 +31,17 @@ package struct SessionAgentNoticePolicy: Sendable {
         case withdraw(identifier: String)
     }
 
-    package static func identifier(sessionID: Int64) -> String { "workbench-session-\(sessionID)" }
+    package static func identifier(sessionID: Int64) -> String { identifierPrefix + String(sessionID) }
+
+    package static let identifierPrefix = "workbench-session-"
+
+    /// The session banners among `identifiers` — the ones a launch or a
+    /// quit removes (a banner outliving the process names a dead run).
+    package static func noticeIdentifiers(in identifiers: [String]) -> [String] {
+        identifiers.filter { id in
+            id.hasPrefix(identifierPrefix) && Int64(id.dropFirst(identifierPrefix.count)) != nil
+        }
+    }
 
     /// The waiting/approval transition each session last saw, by its stamp.
     private var seen: [Int64: String] = [:]

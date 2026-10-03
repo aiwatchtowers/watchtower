@@ -566,6 +566,9 @@ final class AppState {
                     self?.embeddedChatCenter.finishAllAsPartial()
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
+                    // Best-effort: the removal may not finish before exit;
+                    // the next launch removes what is left.
+                    self?.sessionAgentStateCenter?.withdrawAllNotices()
                 }
                 self?.backgroundTaskManager.terminateProcessesSync()
             }

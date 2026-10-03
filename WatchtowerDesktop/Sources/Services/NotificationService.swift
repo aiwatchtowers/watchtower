@@ -311,6 +311,17 @@ final class NotificationService: Sendable {
         ]
     }
 
+    /// Every delivered session banner goes — on launch and on quit, when
+    /// none can name a running session. Reads what was delivered; asks for
+    /// no authorization.
+    func withdrawAllSessionAgentNotices() {
+        let center = UNUserNotificationCenter.current()
+        center.getDeliveredNotifications { delivered in
+            let ids = SessionAgentNoticePolicy.noticeIdentifiers(in: delivered.map(\.request.identifier))
+            if !ids.isEmpty { center.removeDeliveredNotifications(withIdentifiers: ids) }
+        }
+    }
+
     /// The session is working again or stopped: its banner goes.
     func withdrawSessionAgentNotice(identifier: String) {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [identifier])

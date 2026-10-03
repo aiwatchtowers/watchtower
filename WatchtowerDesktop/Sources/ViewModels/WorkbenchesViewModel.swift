@@ -443,8 +443,10 @@ final class WorkbenchesViewModel {
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
     }
 
-    /// `sessionID` (a session notice's click, board #312) opens that session
-    /// of the workbench the way a panel row click does. Without one, or when
+    /// `sessionID` (a session notice's click, board #312) puts that session
+    /// of the workbench on screen: a live one the way a panel row click does,
+    /// one that stopped since the banner without starting it — a stale
+    /// banner never launches an agent; its pane offers Resume. Without one, or when
     /// it names no session of the workbench (deleted meanwhile), the live
     /// session, else the most recent one (its pane offers Resume) — read
     /// first, since a project just selected has no list yet.
@@ -455,12 +457,14 @@ final class WorkbenchesViewModel {
         if listed == nil || unlisted {
             guard await loadSessions(projectID: projectID) else { return }
         }
-        if let sessionID, let row = terminalSessions[projectID]?.first(where: { $0.id == sessionID }) {
+        let subject = sessionID.flatMap { id in terminalSessions[projectID]?.first { $0.id == id } }
+        if let subject, terminalCenter?.liveIDs.contains(subject.id) == true {
             drill(into: projectID)
-            await open(row, placement: .show)
+            await open(subject, placement: .show)
             return
         }
-        let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
+        if subject != nil { drill(into: projectID) }
+        let id = subject?.id ?? activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
         guard let id else { return }
         var updated = layout(projectID: projectID)
         updated.show(.session(id))

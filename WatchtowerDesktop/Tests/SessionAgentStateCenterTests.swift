@@ -23,13 +23,17 @@ private final class ReadLog: @unchecked Sendable {
     }
 }
 
+/// Records the session notices instead of posting them; AppState tests
+/// pass one to `initWorkbenches` so no test reaches `UNUserNotificationCenter`.
 @MainActor
-private final class RecordingSessionNotifier: SessionAgentNotifying {
+final class RecordingSessionNotifier: SessionAgentNotifying {
     private(set) var posted: [SessionAgentNoticePolicy.Notice] = []
     private(set) var withdrawn: [String] = []
+    private(set) var withdrawAllCount = 0
 
     func sendSessionAgentNotice(_ notice: SessionAgentNoticePolicy.Notice) { posted.append(notice) }
     func withdrawSessionAgentNotice(identifier: String) { withdrawn.append(identifier) }
+    func withdrawAllSessionAgentNotices() { withdrawAllCount += 1 }
 }
 
 @MainActor
@@ -154,6 +158,17 @@ final class SessionAgentStateCenterTests: XCTestCase {
             if ContinuousClock.now > deadline { return XCTFail("timed out: \(what)") }
             try? await Task.sleep(for: .milliseconds(10))
         }
+    }
+
+    /// Banners a previous process left name dead runs: removed on start
+    /// (once) and on quit.
+    func testStartAndQuitRemoveLeftoverBanners() {
+        let center = makeCenter()
+        center.start()
+        center.start()
+        XCTAssertEqual(notifier.withdrawAllCount, 1)
+        center.withdrawAllNotices()
+        XCTAssertEqual(notifier.withdrawAllCount, 2)
     }
 
     func testNoLiveClaudeSessionReadsNothing() async throws {

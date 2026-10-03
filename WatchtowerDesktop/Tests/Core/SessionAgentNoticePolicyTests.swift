@@ -80,6 +80,16 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         XCTAssertEqual(actions, [])
     }
 
+    func testLeftoverBannersAreOnlyOurSessionIdentifiers() {
+        let delivered = [
+            "workbench-session-12", "workbench-session-3", "workbench-session-", "workbench-session-x",
+            "workbench-question-12", "meeting-reminder-1", "voice-label-12"
+        ]
+        XCTAssertEqual(SessionAgentNoticePolicy.noticeIdentifiers(in: delivered),
+                       ["workbench-session-12", "workbench-session-3"])
+        XCTAssertEqual(SessionAgentNoticePolicy.identifier(sessionID: 12), "workbench-session-12")
+    }
+
     func testPlainRunningNeverNotifies() {
         var policy = SessionAgentNoticePolicy()
         XCTAssertEqual(policy.update(map(status(1, .running, at: nil)), canPost: true), [])
