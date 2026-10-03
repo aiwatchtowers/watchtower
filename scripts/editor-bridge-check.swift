@@ -73,6 +73,14 @@ struct DefinitionMessage: Equatable {
     let col: Int
 }
 
+/// `usages {id, word, line, col}`
+struct UsagesMessage: Equatable {
+    let id: String
+    let word: String
+    let line: Int
+    let col: Int
+}
+
 /// `cursor {id, line, col}`
 struct CursorMessage: Equatable {
     let id: String
@@ -87,6 +95,7 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var texts: [TextMessage] = []
     var definitions: [DefinitionMessage] = []
     var cursors: [CursorMessage] = []
+    var usages: [UsagesMessage] = []
     var errors: [String] = []
     var loadError: String?
 
@@ -126,6 +135,13 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             definitions.append(DefinitionMessage(req: req, id: id, word: word, line: line, col: col))
+        case "usages":
+            guard let id = body["id"] as? String, let word = body["word"] as? String,
+                  let line = body["line"] as? Int, let col = body["col"] as? Int else {
+                errors.append("malformed usages message: \(body)")
+                return
+            }
+            usages.append(UsagesMessage(id: id, word: word, line: line, col: col))
         case "cursor":
             guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int else {
                 errors.append("malformed cursor message: \(body)")
@@ -763,6 +779,41 @@ func navigationChecks(_ page: Page) async {
     page.cursors.removeAll()
 }
 
+/// Usages (spec §8.3): ⇧⌘U asks `usagesAtCursor`, the editor's context
+/// menu runs "Show All Usages"; both post `usages` for the word at the
+/// cursor, and nothing without a word.
+@MainActor
+func usagesChecks(_ page: Page) async {
+    let source = "func target() {}\nlet x = target()\n\n"
+    await page.call("wt.show", ["id": "u", "path": "usages.swift", "text": source, "rev": 1])
+    page.usages.removeAll()
+
+    await page.call("wt.reveal", ["id": "u", "line": 2, "col": 11])
+    let asked = await page.eval("wt.usagesAtCursor()") as? Bool
+    check("usagesAtCursor: posts usages {id, word, line, col} for the word at the cursor",
+          asked == true && page.usages == [UsagesMessage(id: "u", word: "target", line: 2, col: 11)], "\(page.usages)")
+    await page.call("wt.reveal", ["id": "u", "line": 3, "col": 1])
+    let noWord = await page.eval("wt.usagesAtCursor()") as? Bool
+    check("usagesAtCursor: no word at the cursor posts nothing and says so",
+          noWord == false && page.usages.count == 1, "\(String(describing: noWord)), \(page.usages)")
+
+    // The context menu's entry: an editor action in the navigation group.
+    let label = await page.evalString("""
+        (function () {
+          var a = monaco.editor.getEditors()[0].getAction("wt.showUsages");
+          return a ? a.label : "";
+        })()
+        """)
+    check("context menu: the editor has a Show All Usages action", label == "Show All Usages", label ?? "")
+    await page.call("wt.reveal", ["id": "u", "line": 1, "col": 7])
+    _ = await page.eval("monaco.editor.getEditors()[0].getAction('wt.showUsages').run(); true")
+    let posted = await wait(2) { page.usages.count == 2 }
+    check("context menu: Show All Usages posts usages for the word at the cursor",
+          posted && page.usages.last == UsagesMessage(id: "u", word: "target", line: 1, col: 7), "\(page.usages)")
+    await page.call("wt.close", "u")
+    page.usages.removeAll()
+}
+
 // MARK: - Main
 
 @MainActor
@@ -779,6 +830,7 @@ func run(root: URL) async -> Int32 {
 
     await protocolChecks(page)
     await navigationChecks(page)
+    await usagesChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
 

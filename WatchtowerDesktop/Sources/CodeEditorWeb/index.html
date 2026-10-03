@@ -32,6 +32,10 @@
                                                is answered: its busy
                                                underline goes; an older req
                                                is ignored
+    usagesAtCursor() → Bool                    Show All Usages (Shift+Cmd+U
+                                               from the menu): posts `usages`
+                                               for the word at the cursor;
+                                               false = no word
   page → Swift (webkit.messageHandlers.wt):
     ready
     text   {id, text, base, now, explicit}     300 ms after typing stops; at
@@ -46,6 +50,9 @@
     cursor {id, line, col}                     the cursor moved; at most 10 a
                                                second, the last move always
                                                sent
+    usages {id, word, line, col}               the word at the cursor, from
+                                               usagesAtCursor or the context
+                                               menu's "Show All Usages"
     error  {message}
 
   Monaco's own bindings for the app's navigation chords (spec §10) are
@@ -253,6 +260,25 @@
       }, 100);
     });
 
+    // Usages: the word at the cursor (a right-click moves the cursor there
+    // first). No keybinding: Shift+Cmd+U belongs to the app's menu, which
+    // asks usagesAtCursor.
+    function requestUsages() {
+      var model = editor.getModel();
+      var position = editor.getPosition();
+      var hit = model && current && position ? wordRange(model, position) : null;
+      if (!hit) { return false; }
+      post({ type: "usages", id: current, word: hit.word, line: position.lineNumber, col: position.column });
+      return true;
+    }
+    editor.addAction({
+      id: "wt.showUsages",
+      label: "Show All Usages",
+      contextMenuGroupId: "navigation",
+      contextMenuOrder: 1,
+      run: function () { requestUsages(); }
+    });
+
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
       if (current) { send(current, true, true); }
     });
@@ -332,7 +358,8 @@
       },
       definitionDone: function (req) {
         if (req === busy.req) { decorate(busy, null, null, ""); busy.req = 0; }
-      }
+      },
+      usagesAtCursor: function () { return requestUsages(); }
     };
     post({ type: "ready" });
   }, function (err) {
