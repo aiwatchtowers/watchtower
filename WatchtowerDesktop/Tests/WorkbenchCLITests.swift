@@ -89,6 +89,29 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(older.needsRepair)
     }
 
+    /// Owner asks (spec 2026-10-03 §6): a workbench missing either ask guard
+    /// hook is offered Repair; an older CLI without the keys has nothing to
+    /// install.
+    func testMissingAskGuardHooksNeedRepair() throws {
+        let base = #""skill":"unchanged","hook":true,"stop_hook":true,"state_hooks":true,"mcp":true"#
+        for (keys, guarded, blocked) in [
+            (#""ask_guard":false,"ask_tool_block":true"#, false, true),
+            (#""ask_guard":true,"ask_tool_block":false"#, true, false)
+        ] {
+            let missing = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base),\(keys)}".utf8))
+            XCTAssertEqual(missing.askGuard, guarded, keys)
+            XCTAssertEqual(missing.askToolBlock, blocked, keys)
+            XCTAssertTrue(missing.needsRepair, keys)
+        }
+        let present = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            "{\(base),\"ask_guard\":true,\"ask_tool_block\":true}".utf8))
+        XCTAssertFalse(present.needsRepair)
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data("{\(base)}".utf8))
+        XCTAssertTrue(older.askGuard)
+        XCTAssertTrue(older.askToolBlock)
+        XCTAssertFalse(older.needsRepair)
+    }
+
     func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await WorkbenchCLI(runner: runner).checkDrift(projectID: 4)

@@ -353,6 +353,12 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// `PostToolUse`, `StopFailure`, board #312): all of them present. A
     /// workbench installed before them lacks them until a Repair.
     let stateHooks: Bool
+    /// The ask guard (owner asks, spec 2026-10-03 §6): the Stop prompt hook
+    /// sending a plain-text request to `ask_owner`, and the PreToolUse hook
+    /// denying `AskUserQuestion`. A workbench installed before them lacks
+    /// them until a Repair.
+    let askGuard: Bool
+    let askToolBlock: Bool
     let mcp: Bool
     let claudeFound: Bool
     /// The folder was set up before the Workbench rename and still holds
@@ -373,6 +379,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case skill, hook, mcp, legacy
         case stopHook = "stop_hook"
         case stateHooks = "state_hooks"
+        case askGuard = "ask_guard"
+        case askToolBlock = "ask_tool_block"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
         case currentMCP = "current_mcp"
@@ -385,12 +393,15 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         hook: Bool,
         stopHook: Bool = true,
         stateHooks: Bool = true,
+        askGuard: Bool = true,
+        askToolBlock: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = ""
     ) {
-        self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks, mcp: mcp,
+        self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks,
+                  askGuard: askGuard, askToolBlock: askToolBlock, mcp: mcp,
                   claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp)
     }
 
@@ -399,6 +410,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         hook: Bool,
         stopHook: Bool = true,
         stateHooks: Bool = true,
+        askGuard: Bool = true,
+        askToolBlock: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
@@ -412,6 +425,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         self.hook = hook
         self.stopHook = stopHook
         self.stateHooks = stateHooks
+        self.askGuard = askGuard
+        self.askToolBlock = askToolBlock
         self.mcp = mcp
         self.claudeFound = claudeFound
     }
@@ -424,6 +439,9 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         stopHook = try c.decodeIfPresent(Bool.self, forKey: .stopHook) ?? true
         // Nor one without the session-state hooks.
         stateHooks = try c.decodeIfPresent(Bool.self, forKey: .stateHooks) ?? true
+        // Nor one without the ask guard.
+        askGuard = try c.decodeIfPresent(Bool.self, forKey: .askGuard) ?? true
+        askToolBlock = try c.decodeIfPresent(Bool.self, forKey: .askToolBlock) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
         // An older CLI without the key could always check the registration.
         claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
@@ -438,6 +456,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// MCP server is not repairable from here — see `manualMCPCommand`.
     var needsRepair: Bool {
         (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || !stateHooks
+            || !askGuard || !askToolBlock
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 
