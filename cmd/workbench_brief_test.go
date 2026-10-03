@@ -500,10 +500,10 @@ func TestRenderProjectBrief_AnsweredAsksAbsentCountOnlyAndError(t *testing.T) {
 	assert.Contains(t, out, "#3 [in_progress")
 }
 
-// An ask reaches its session through the brief (spec 2026-10-03 Part 5): on
+// PROJ-12 (brief part): an ask reaches its session through the brief: on
 // a board and comments far past the 4000-rune cap the answered asks still
 // show a row and the get_ask pointer, and the body stays within the cap.
-func TestRenderProjectBrief_AnsweredAskSurvivesAFullBoard(t *testing.T) {
+func TestProj12_AnsweredAskSurvivesAFullBoard(t *testing.T) {
 	long := strings.Repeat("Implement the next part of the plan ", 6)
 	var big []db.BoardNode
 	for id := 1; id <= 80; id++ {
