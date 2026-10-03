@@ -76,10 +76,13 @@ type sessionStateInput struct {
 }
 
 // agentStateFor maps a hook event to the state it records. onlyFrom, when
-// set, is the stored state the write requires: a PostToolUse means an
-// approved tool ran only after a permission prompt, so it clears "needs
-// approval" and never touches another state. ok is false for an event that
-// records nothing — an unknown event or notification type, or a missing one.
+// set, is the stored state the write requires (no event sets it today). A
+// PostToolUse means a tool just ran: it clears "needs approval" after a
+// granted permission and "waiting" when a turn started without a prompt (a
+// teammate or background-task message, a wakeup fires no UserPromptSubmit);
+// one stamped before the stop's "waiting" is an older event and writes
+// nothing. ok is false for an event that records nothing — an unknown event
+// or notification type, or a missing one.
 func agentStateFor(event, notificationType string) (state, onlyFrom string, ok bool) {
 	switch event {
 	case "UserPromptSubmit":
@@ -87,7 +90,7 @@ func agentStateFor(event, notificationType string) (state, onlyFrom string, ok b
 	case "Stop", "StopFailure":
 		return agentStateWaiting, "", true
 	case "PostToolUse":
-		return agentStateWorking, agentStateApproval, true
+		return agentStateWorking, "", true
 	case "Notification":
 		switch notificationType {
 		case "permission_prompt", "elicitation_dialog":

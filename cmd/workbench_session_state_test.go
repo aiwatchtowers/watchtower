@@ -84,7 +84,7 @@ func TestSessionState_AgentStateFor(t *testing.T) {
 		{"UserPromptSubmit", "", "working", "", true},
 		{"Stop", "", "waiting", "", true},
 		{"StopFailure", "", "waiting", "", true},
-		{"PostToolUse", "", "working", "approval", true},
+		{"PostToolUse", "", "working", "", true},
 		{"Notification", "permission_prompt", "approval", "", true},
 		{"Notification", "elicitation_dialog", "approval", "", true},
 		{"Notification", "idle_prompt", "waiting", "", true},
@@ -114,8 +114,9 @@ func TestSessionState_RecordsEachEvent(t *testing.T) {
 		{statePayload("Notification", briefLaunchID, "permission_prompt"), "approval"},
 		{statePayload("PostToolUse", briefLaunchID, ""), "working"},
 		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
-		{statePayload("PostToolUse", briefLaunchID, ""), "waiting"}, // only an approval clears
 		{statePayload("Notification", briefLaunchID, "auth_success"), "waiting"},
+		{statePayload("PostToolUse", briefLaunchID, ""), "working"}, // a turn started without a prompt
+		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
 		{statePayload("UserPromptSubmit", briefLaunchID, ""), "working"},
 		{statePayload("StopFailure", briefLaunchID, ""), "waiting"},
 		{statePayload("Notification", briefLaunchID, "elicitation_dialog"), "approval"},
@@ -149,6 +150,34 @@ func TestSessionState_LargePostToolUsePayloadClearsApproval(t *testing.T) {
 	assert.Empty(t, out)
 	assert.Empty(t, errOut)
 	assert.Equal(t, "working", storedAgentState(t, database, row))
+}
+
+// A turn the owner did not start (a teammate or background-task message, a
+// wakeup) fires no UserPromptSubmit: its first tool result turns a stored
+// "waiting" back to "working". A late PostToolUse stamped before the stop's
+// "waiting" still writes nothing (PROJ-11's older-event guard).
+func TestSessionState_ToolResultEndsWaitingOfASelfStartedTurn(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now()
+	orig := hookNow
+	t.Cleanup(func() { hookNow = orig })
+	at := func(sec int) { hookNow = func() time.Time { return base.Add(time.Duration(sec) * time.Second) } }
+	record := func(event string) {
+		t.Helper()
+		_, _, err := runSessionState(t, pid, strings.NewReader(statePayload(event, briefLaunchID, "")))
+		require.NoError(t, err)
+	}
+
+	at(2)
+	record("StopFailure")
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+	at(1)
+	record("PostToolUse")
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "a tool result older than the stop")
+	at(3)
+	record("PostToolUse")
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the self-started turn's first tool result")
 }
 
 // An external terminal has no row: the hook neither reads stdin nor opens
