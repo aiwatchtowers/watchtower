@@ -12,10 +12,10 @@ jobs:
   go-release-gate:
     name: Go Release Gate
     runs-on: ubuntu-latest
-    # Same budget as ci.yml's Go Test job: a hang must fail the gate, not run
-    # to GitHub's 6 h default. This job also runs the full-grammar code index
-    # suite (ci.yml's separate Code Index job, timeout 20), hence 75 not 60.
-    timeout-minutes: 75
+    # A hang must fail the gate, not run to GitHub's 6 h default. The step
+    # budgets (code index 20 + coverage 25 + race 40 = 85) plus ~10 for setup
+    # and build, so the job cap never cuts a step short of its own timeout.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
 
