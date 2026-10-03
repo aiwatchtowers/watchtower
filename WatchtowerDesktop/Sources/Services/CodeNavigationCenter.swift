@@ -53,8 +53,8 @@ final class CodeNavigationCenter {
     /// "No definition of `w`", shown above the editor for `noticeDuration`.
     private(set) var notices: [Int64: String] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
-    /// The menu's "Show All Usages…" (spec §8.3; the panel is Task 8's).
-    @ObservationIgnored var onShowUsages: @MainActor (_ word: String, _ project: Workbench) -> Void = { _, _ in }
+    /// The menu's "Show All Usages…" (spec §8.3).
+    @ObservationIgnored weak var usages: CodeUsagesCenter?
     @ObservationIgnored private let codeIndex: CodeIndexCenter
     @ObservationIgnored private let menu: DefinitionMenuPresenting
     @ObservationIgnored private let startSearch: CodeSearchStarter
@@ -152,7 +152,7 @@ final class CodeNavigationCenter {
             case let .choice(index) where choices.indices.contains(index):
                 jump(to: choices[index].target, from: request.origin, project: project)
             case .showAllUsages:
-                onShowUsages(request.word, project)
+                usages?.showUsages(of: request.word, project: project)
             case .choice, .dismissed:
                 break
             }

@@ -108,6 +108,9 @@ final class CodeFilesCenter {
     /// Go to definition and history (on `AppState`); the editor page
     /// reports its `definition` requests there.
     @ObservationIgnored weak var navigation: CodeNavigationCenter?
+    /// Usages and the Files pane's inspector (on `AppState`); the editor
+    /// page reports its `usages` requests there.
+    @ObservationIgnored weak var usages: CodeUsagesCenter?
 
     init(
         defaults: UserDefaults = .standard,

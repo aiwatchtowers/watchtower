@@ -114,13 +114,14 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertEqual(vm.codeFiles.tabs(for: project).tabs.first?.isPreview, false)
     }
 
-    func testShowAllUsagesFromTheMenuReachesTheUsagesHook() async {
+    func testShowAllUsagesFromTheMenuShowsTheUsagesOfTheWord() async {
         let (center, vm) = makeCenter(symbols: [saveInStore, saveInList])
-        var usages: [String] = []
-        center.onShowUsages = { word, _ in usages.append(word) }
+        let usages = CodeUsagesCenter(startSearch: searches.start) {}
+        center.usages = usages
         menu.answer = .showAllUsages
         await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), project: project, anchor: nil)
-        XCTAssertEqual(usages, ["save"])
+        XCTAssertEqual(usages.usages(for: project.id)?.word, "save")
+        XCTAssertEqual(searches.started.map(\.options.query), ["save"])
         XCTAssertNil(vm.codeFiles.reveals[project.id])
         XCTAssertFalse(center.canGoBack(workbenchID: project.id), "no jump, no history")
     }

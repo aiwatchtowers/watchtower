@@ -9,7 +9,8 @@ import WebKit
 /// the next single click); a double click, a double click on the tab or the
 /// first edit keeps it. Edits save themselves (`CodeFileBuffer`). The editor
 /// stays mounted while tabs are open, so every tab keeps its undo, cursor
-/// and scroll; loading and errors show over it.
+/// and scroll; loading and errors show over it. The inspector on the right
+/// (Usages, Questions) belongs to this pane only.
 struct CodeFilesPaneView: View {
     let files: CodeFilesCenter
     let project: Workbench
@@ -31,8 +32,13 @@ struct CodeFilesPaneView: View {
                 Text("Open a file from FILES in the side panel")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .topTrailing) { inspectorToggle.padding(.top, 6) }
             } else {
-                CodeTabStrip(files: files, project: project, tabs: tabs, git: git) { refusals = $0 }
+                HStack(spacing: 0) {
+                    CodeTabStrip(files: files, project: project, tabs: tabs, git: git) { refusals = $0 }
+                    inspectorToggle
+                }
+                .background(Color(nsColor: .windowBackgroundColor))
                 Divider()
                 if let active = tabs.active {
                     let buffer = files.buffer(for: project, relPath: active)
@@ -47,6 +53,12 @@ struct CodeFilesPaneView: View {
                 }
                 MonacoEditorView(files: files, project: project, tabs: tabs)
                     .overlay { activeOverlay(tabs) }
+            }
+        }
+        .inspector(isPresented: inspectorShown) {
+            if let usages = files.usages {
+                CodeInspector(usages: usages, project: project)
+                    .inspectorColumnWidth(min: 220, ideal: 300, max: 560)
             }
         }
         .task(id: project.id) { await files.show(project) }
@@ -66,6 +78,20 @@ struct CodeFilesPaneView: View {
             Button("Cancel", role: .cancel) { refusals = [] }
         } message: {
             Text(refusals.map { "\(Self.name($0.path)): \($0.reason)" }.joined(separator: "\n"))
+        }
+    }
+
+    private var inspectorShown: Binding<Bool> {
+        Binding(
+            get: { files.usages?.isInspectorShown(workbenchID: project.id) ?? false },
+            set: { files.usages?.setInspectorShown($0, workbenchID: project.id) }
+        )
+    }
+
+    @ViewBuilder
+    private var inspectorToggle: some View {
+        if let usages = files.usages {
+            CodeInspectorToggle(usages: usages, project: project)
         }
     }
 
@@ -369,6 +395,7 @@ struct MonacoEditorView: NSViewRepresentable {
         context.coordinator.webView = webView
         files.register(context.coordinator, for: project)
         files.navigation?.registerPage(context.coordinator, for: project.id)
+        files.usages?.registerPage(context.coordinator, for: project.id)
         webView.load(URLRequest(url: CodeEditorSchemeHandler.pageURL))
         return webView
     }
@@ -391,7 +418,8 @@ struct MonacoEditorView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeEditorBridge, CodeDefinitionPage {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeEditorBridge, CodeDefinitionPage,
+        CodeUsagesPage {
         struct BufferState: Equatable {
             let path: String
             let revision: Int
@@ -437,6 +465,13 @@ struct MonacoEditorView: NSViewRepresentable {
                 )
             case "definition":
                 definitionRequested(body)
+            case "usages":
+                // ⇧⌘U (usagesAtCursor) or the editor's context menu.
+                guard let word = body["word"] as? String else {
+                    NSLog("CodeFilesPane: a usages message without word was dropped")
+                    return
+                }
+                files.usages?.showUsages(of: word, project: project)
             case "cursor":
                 guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int,
                       let buffer = files.buffer(id: id) else { return }
@@ -544,6 +579,18 @@ struct MonacoEditorView: NSViewRepresentable {
             }
         }
 
+        // MARK: CodeUsagesPage
+
+        func requestUsagesAtCursor() async -> Bool {
+            guard ready, let webView else { return false }
+            do {
+                return try await webView.evaluateJavaScript("wt.usagesAtCursor()") as? Bool ?? false
+            } catch {
+                NSLog("CodeFilesPane: wt.usagesAtCursor failed: %@", error.localizedDescription)
+                return false
+            }
+        }
+
         // MARK: CodeEditorBridge
 
         func takePending() async -> [CodeEditorPendingEdit]? {
@@ -571,6 +618,7 @@ struct MonacoEditorView: NSViewRepresentable {
         func dismantle(_ webView: WKWebView) {
             files.unregister(self, for: project.id)
             files.navigation?.unregisterPage(self, for: project.id)
+            files.usages?.unregisterPage(self, for: project.id)
             let files = files
             let project = project
             let wasReady = ready

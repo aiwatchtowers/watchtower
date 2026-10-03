@@ -442,6 +442,12 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("j", modifiers: [.control, .command])
                 .disabled(shown == nil)
+                Button("Show All Usages") {
+                    let usages = appState.codeUsagesCenter
+                    if let shown { Task { await usages.showUsagesAtCursor(project: shown) } }
+                }
+                .keyboardShortcut("u", modifiers: [.shift, .command])
+                .disabled(shown == nil)
                 Button("Back") { if let shown { navigation.goBack(project: shown) } }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoBack(workbenchID: shown?.id))
