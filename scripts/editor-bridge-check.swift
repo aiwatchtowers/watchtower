@@ -686,16 +686,26 @@ func navigationChecks(_ page: Page) async {
           "\(page.definitions)")
     check("definitionAtCursor: the busy underline moves to the newer word",
           await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    // The cursor just after the name still names it, with that column (the
+    // heuristic leaves out the occurrence whose span holds it, ends included).
+    await page.call("wt.reveal", ["id": "n", "line": 1, "col": 12])
+    let atEnd = await page.eval("wt.definitionAtCursor()") as? Bool
+    let third = page.definitions.last
+    check("definitionAtCursor: the cursor right after the name asks for it, with the cursor column",
+          atEnd == true && page.definitions.count == 3 && third?.word == "target" && third?.col == 12, "\(page.definitions)")
     await page.call("wt.reveal", ["id": "n", "line": 3, "col": 1])
     let noWord = await page.eval("wt.definitionAtCursor()") as? Bool
     check("definitionAtCursor: no word at the cursor posts nothing and says so",
-          noWord == false && page.definitions.count == 2, "\(String(describing: noWord)), \(page.definitions)")
+          noWord == false && page.definitions.count == 3, "\(String(describing: noWord)), \(page.definitions)")
 
     // definitionDone: a stale reply is ignored
     await page.call("wt.definitionDone", first?.req ?? -1)
     check("definitionDone: a reply for an older req leaves the underline",
           await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
     await page.call("wt.definitionDone", second?.req ?? -1)
+    check("definitionDone: an older req than the latest still leaves it",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    await page.call("wt.definitionDone", third?.req ?? -1)
     check("definitionDone: the latest req clears the underline",
           await page.eval("__h.decorations('wt-def-busy')") as? [String] == [])
 

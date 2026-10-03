@@ -118,6 +118,27 @@ final class DefinitionCandidatesTests: XCTestCase {
         ])
     }
 
+    /// The page sends the click or cursor column; Monaco finds the word
+    /// with the column anywhere from its first character to just after its
+    /// last (⌃⌘J with the cursor right after the name).
+    func testTheClickedOccurrenceIsLeftOutWhereverInTheWordTheColumnIs() {
+        let matches = [match("a.pl", 3, col: 5, "  frob();"), match("b.pl", 9, col: 5, "sub frob {")]
+        for col in [5, 7, 9] {
+            let origin = CodeNavLocation(path: "a.pl", line: 3, col: col)
+            XCTAssertEqual(
+                DefinitionHeuristic.ranked(matches, word: "frob", origin: origin).map(\.path), ["b.pl"], "col \(col)"
+            )
+            XCTAssertEqual(
+                DefinitionHeuristic.outcome(for: matches, word: "frob", origin: origin),
+                .jump(CodeNavLocation(path: "b.pl", line: 9, col: 5)), "col \(col)"
+            )
+        }
+        for col in [4, 10] {
+            let origin = CodeNavLocation(path: "a.pl", line: 3, col: col)
+            XCTAssertEqual(DefinitionHeuristic.ranked(matches, word: "frob", origin: origin).count, 2, "col \(col) is outside the word")
+        }
+    }
+
     func testHeuristicOutcome() {
         let origin = CodeNavLocation(path: "a.pl", line: 1, col: 1)
         XCTAssertEqual(DefinitionHeuristic.outcome(for: [], word: "w", origin: origin), .notFound)

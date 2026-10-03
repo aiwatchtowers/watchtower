@@ -105,11 +105,14 @@ package enum DefinitionHeuristic {
         return regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
     }
 
+    /// The clicked occurrence is the match whose span holds `origin.col`
+    /// from its first character to just after its last: the page sends the
+    /// click or cursor column, and Monaco finds the word at either end.
     package static func ranked(_ matches: [CodeSearchMatch], word: String, origin: CodeNavLocation) -> [CodeSearchMatch] {
         let width = word.utf16.count
         return matches
             .filter { match in
-                !(match.path == origin.path && match.line == origin.line && (match.col..<match.col + max(width, 1)).contains(origin.col))
+                !(match.path == origin.path && match.line == origin.line && (match.col...match.col + width).contains(origin.col))
             }
             .enumerated()
             .map { offset, match in
