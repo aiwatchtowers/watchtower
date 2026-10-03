@@ -238,6 +238,10 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: Stop hook")
 		left = true
 	}
+	if st.StateHooks {
+		fmt.Fprintln(w, "  still present: session state hooks")
+		left = true
+	}
 	if st.CurrentMCP {
 		fmt.Fprintf(w, "  still registered: %s\n", devpack.WorkbenchMCPServerName)
 		left = true
@@ -279,6 +283,9 @@ type workbenchStatusJSON struct {
 	// but whose new registration is not (a resync whose `mcp add` failed)
 	// needs a Repair even though mcp reads true.
 	CurrentMCP bool `json:"current_mcp"`
+	// StateHooks: every session state hook (UserPromptSubmit, Notification,
+	// PostToolUse, StopFailure) is installed; false with one missing.
+	StateHooks bool `json:"state_hooks"`
 }
 
 // legacySkillState is a legacy skill's state on the wire: "" when there is
@@ -307,13 +314,14 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			Skill: string(st.Skill.State), SkillPath: st.Skill.Path,
 			Hook: st.Hook, StopHook: st.StopHook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
 			Legacy: st.Legacy, LegacySkill: legacySkillState(st.LegacySkill),
-			CurrentMCP: st.CurrentMCP,
+			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 		})
 	}
 	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)
 	fmt.Fprintf(w, "  skill    %s%s\n", st.Skill.State, skillStateNote(st.Skill.State))
 	fmt.Fprintf(w, "  hook     %v\n", st.Hook)
 	fmt.Fprintf(w, "  stop     %v\n", st.StopHook)
+	fmt.Fprintf(w, "  state    %v\n", st.StateHooks)
 	switch {
 	case !st.ClaudeFound:
 		fmt.Fprintln(w, "  mcp      unknown — claude CLI not found")
