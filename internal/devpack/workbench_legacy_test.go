@@ -140,6 +140,7 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		"Notification":     {state},
 		"PostToolUse":      {state},
 		"StopFailure":      {state},
+		"PreToolUse":       {WorkbenchAskGuardHookCommand(legacyBin, 7)},
 	}
 	if got := ourCommands(t, folder); !reflect.DeepEqual(got, want) {
 		t.Fatalf("our hooks = %q, want %q", got, want)
@@ -154,8 +155,11 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		}
 	}
 	afterHooks, beforeHooks := after["hooks"].(map[string]any), before["hooks"].(map[string]any)
-	if !reflect.DeepEqual(afterHooks["PreToolUse"], beforeHooks["PreToolUse"]) {
-		t.Fatalf("PROJ-04: the owner's PreToolUse hooks changed")
+	// The owner's PreToolUse group stays first and as it was; ours (the ask
+	// guard) is added after it.
+	afterPre, beforePre := afterHooks["PreToolUse"].([]any), beforeHooks["PreToolUse"].([]any)
+	if len(afterPre) != 2 || !reflect.DeepEqual(afterPre[0], beforePre[0]) {
+		t.Fatalf("PROJ-04: the owner's PreToolUse hooks changed: %#v", afterPre)
 	}
 	settings := readTestFile(t, settingsFile(folder))
 	for _, owner := range []string{"echo owner-start", "echo owner-stop", `"matcher": ""`} {
@@ -662,7 +666,8 @@ func TestInstallWorkbench_LegacyAndCurrentEntryCollapseToOne(t *testing.T) {
 		t.Fatalf("SessionStart entries of ours = %q, want exactly the new one", got)
 	}
 	raw := readTestFile(t, settingsFile(folder))
-	if !strings.Contains(raw, `"timeout": 10`) || strings.Contains(raw, `"timeout": 30`) {
+	starts := eventGroups(t, decodeSettings(t, folder), "SessionStart")
+	if len(starts) != 2 || starts[1].(map[string]any)["hooks"].([]any)[0].(map[string]any)["timeout"] != float64(10) {
 		t.Fatalf("the first entry keeps its timeout, the duplicate goes:\n%s", raw)
 	}
 	after := decodeSettings(t, folder)["hooks"].(map[string]any)["SessionStart"].([]any)[0]

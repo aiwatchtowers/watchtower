@@ -61,10 +61,12 @@ func TestInstallWorkbenchInstallsTheStateHooks(t *testing.T) {
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
 	}
-	// Stop keeps its one synchronous entry; the state is written by it.
-	stop := eventGroups(t, m, "Stop")[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-	if _, ok := stop["async"]; ok || len(eventGroups(t, m, "Stop")) != 1 {
-		t.Fatalf("the Stop entry must stay one synchronous entry: %#v", stop)
+	// Stop keeps its one synchronous drift entry, next to the ask guard's
+	// prompt hook; the state is written by the drift entry.
+	stopGroups := eventGroups(t, m, "Stop")
+	stop := stopGroups[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if _, ok := stop["async"]; ok || len(stopGroups) != 2 || countCommand(stopGroups, WorkbenchStopHookCommand(o.Bin, 7)) != 1 {
+		t.Fatalf("the Stop entry must stay one synchronous entry: %#v", stopGroups)
 	}
 	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil || !st.StateHooks {

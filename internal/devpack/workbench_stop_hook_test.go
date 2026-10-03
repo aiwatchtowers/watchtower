@@ -35,8 +35,9 @@ func TestInstallProjectInstallsTheStopHook(t *testing.T) {
 	}
 	groups := stopGroups(t, decodeSettings(t, folder))
 	cmd := WorkbenchStopHookCommand(o.Bin, 7)
-	if len(groups) != 1 || countCommand(groups, cmd) != 1 {
-		t.Fatalf("expected one Stop group running %q, got %#v", cmd, groups)
+	// The drift check and, in a group of its own, the ask guard's prompt hook.
+	if len(groups) != 2 || countCommand(groups, cmd) != 1 || len(promptHooks(groups)) != 1 {
+		t.Fatalf("expected one Stop group running %q and the ask guard, got %#v", cmd, groups)
 	}
 	h := groups[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
 	if h["timeout"] == nil {
@@ -65,7 +66,8 @@ func TestInstallProjectAddsTheStopHookToAnOldInstall(t *testing.T) {
 		t.Fatalf("changed=%v err=%v", rep.HookChanged, err)
 	}
 	m := decodeSettings(t, folder)
-	if len(sessionStartGroups(t, m)) != 1 || len(stopGroups(t, m)) != 1 {
+	stop := stopGroups(t, m)
+	if len(sessionStartGroups(t, m)) != 1 || countCommand(stop, WorkbenchStopHookCommand("/tmp/acme bin/watchtower", 7)) != 1 || len(promptHooks(stop)) != 1 {
 		t.Fatalf("expected one entry per event, got %#v", m["hooks"])
 	}
 }

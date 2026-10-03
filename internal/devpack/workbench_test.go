@@ -2,11 +2,14 @@ package devpack
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -71,27 +74,91 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 		"## Features, specs and plans",
 		"one sub-target per plan task",
 		"plan path plus the task number",
-		"## Documents for review",
-		"Every spec, plan and design you write",
-		"Pick the review target",
-		"`update_target` the review target to `blocked`",
+		"## Asking the owner",
+		"is an `ask_owner` call",
+		"never as a target comment",
+		"**When to ask:**",
+		"**What not to ask:**",
+		"`previous_ask_id` = the earlier ask and `changes`",
+		"If nothing can proceed, end the turn",
+		"call `get_ask N` first",
 		"It never means waiting for the owner",
 		"not in a chat artifact",
-		"When the owner says it is approved",
-		"## Revising a document",
-		"Before editing",
-		"the document is revised and ready for another look",
 		"## Running a plan",
 		"verbatim into the implementer's brief",
 		"After the task's review passes",
 		"## Blocked, or an owner decision is needed",
 		"continue with other work",
 		"## Comment discipline",
+		"Questions and decisions are asks, not comments.",
 		"no longer exists",
 	} {
 		if !strings.Contains(content, phrase) {
 			t.Fatalf("the skill is missing %q", phrase)
 		}
+	}
+}
+
+// Spec 2026-10-03 §6.1: asks replace documents in the skill, and the pack
+// marker moves to v2.
+func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
+	_, body := WorkbenchSkill()
+	content := string(body)
+	if !strings.Contains(content, "\n"+MarkerKey+": v2\n") {
+		t.Fatalf("the skill must carry %s: v2", MarkerKey)
+	}
+	for _, gone := range []string{"attach_document", "document_id", "import-docs", "Documents for review", "Revising"} {
+		if strings.Contains(content, gone) {
+			t.Errorf("the skill still says %q", gone)
+		}
+	}
+	for _, tool := range []string{"ask_owner", "get_ask", "list_asks", "withdraw_ask"} {
+		if !strings.Contains(content, "`"+tool+"`") {
+			t.Errorf("the skill never names %s", tool)
+		}
+	}
+	discipline := content[strings.Index(content, "## Comment discipline"):strings.Index(content, "## Board language")]
+	if strings.Contains(discipline, "**question**") {
+		t.Error("comment discipline must no longer list questions as a comment kind")
+	}
+}
+
+// DEV-04 across the v1 → v2 change: a v1 copy we wrote and the owner never
+// touched is upgraded; an edited one is kept, byte-identical, as drifted.
+func TestWorkbenchSkillV2_UpgradesAnUneditedV1AndKeepsAnEditedOne(t *testing.T) {
+	v1, err := os.ReadFile(filepath.Join("testdata", "watchtower-workbench-v1.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(v1)
+	v1Digest := hex.EncodeToString(sum[:])
+	if v1Digest == workbenchSkill().SHA256 {
+		t.Fatal("the shipped skill must differ from v1, or its digest never changes")
+	}
+	for _, tc := range []struct {
+		name    string
+		content []byte
+		want    State
+	}{
+		{"unedited", v1, StateUpdated},
+		{"edited", append(append([]byte{}, v1...), "\nMy own note.\n"...), StateDrifted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			folder := fakeRepo(t)
+			dir := filepath.Join(folder, ".claude", "skills", WorkbenchSkillName)
+			writeTestFile(t, filepath.Join(dir, "SKILL.md"), string(tc.content))
+			if err := writeShippedDigest(dir, v1Digest); err != nil {
+				t.Fatal(err)
+			}
+			rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
+			if err != nil || rep.Skill.State != tc.want {
+				t.Fatalf("skill %+v err=%v, want %s", rep.Skill, err, tc.want)
+			}
+			got := readTestFile(t, workbenchSkillFile(folder))
+			if want := map[State]string{StateUpdated: workbenchSkill().Content, StateDrifted: string(tc.content)}[tc.want]; got != want {
+				t.Fatalf("the skill on disk after a %s install is not what DEV-04 says", tc.want)
+			}
+		})
 	}
 }
 
@@ -316,7 +383,7 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.Hook || !st.StopHook || !st.StateHooks {
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.Hook || !st.StopHook || !st.StateHooks || !st.AskGuard || !st.AskToolBlock {
 		t.Fatalf("fixture: every hook must be installed before the removal: %+v err=%v", st, err)
 	}
 
@@ -392,7 +459,9 @@ func TestProj02_RemoveProjectLeavesGitStatusClean(t *testing.T) {
 
 func TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook(t *testing.T) {
 	folder := fakeRepo(t)
-	writeTestFile(t, settingsFile(folder), `{"model": "sonnet"}`)
+	const ownerPre = `[{"matcher": "AskUserQuestion", "hooks": [{"type": "command", "command": "echo owner-ask"}]}, {"matcher": "Bash", "hooks": [{"type": "prompt", "prompt": "Is this command safe? $ARGUMENTS"}]}]`
+	writeTestFile(t, settingsFile(folder), `{"model": "sonnet", "hooks": {"PreToolUse": `+ownerPre+`}}`)
+	wantHooks := decodeSettings(t, folder)["hooks"]
 	f := newFakeClaude()
 	o := workbenchOpts(folder, f)
 	if _, err := InstallWorkbench(context.Background(), o); err != nil {
@@ -402,8 +471,8 @@ func TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook(t *testing.T) {
 		t.Fatalf("remove: %v", err)
 	}
 	got := decodeSettings(t, folder)
-	if got["model"] != "sonnet" || got["hooks"] != nil {
-		t.Fatalf("expected exactly the owner's settings back, got %#v", got)
+	if got["model"] != "sonnet" || !reflect.DeepEqual(got["hooks"], wantHooks) {
+		t.Fatalf("expected exactly the owner's settings back — their PreToolUse entries included — got %#v", got)
 	}
 	// The owner's file survives, so its exclude line stays: removing it
 	// would suddenly surface the owner's own file in `git status`.
