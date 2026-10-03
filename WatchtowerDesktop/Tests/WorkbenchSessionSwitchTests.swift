@@ -28,6 +28,9 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         // pid 0: nothing here ever signals a real process group.
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
         appState.terminalCenter.transcriptExists = { _ in true }
+        // The VM keeps layouts in `UserDefaults.standard`: none left from
+        // an earlier run of this workbench id.
+        UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         appState.initWorkbenches(
             dbPool: pool, cliRunner: nil, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()
@@ -37,6 +40,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
     override func tearDown() async throws {
         appState.workbenchNotificationCenter?.stop()
         appState.sessionAgentStateCenter?.stop()
+        UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         try? FileManager.default.removeItem(at: folder)
         TestDatabase.cleanup(path: path)
         appState = nil
@@ -122,7 +126,83 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         await vm.showSession(id: b.id)
 
         XCTAssertEqual(onScreen(vm), .session(b.id))
+        XCTAssertEqual(vm.panelSelection, .session(b.id))
         XCTAssertEqual(appState.terminalCenter.focusOrder.last, b.id)
+    }
+
+    /// The click made last fails (its row was deleted elsewhere): its error
+    /// stays on the page — the slower, superseded click landing afterwards
+    /// neither clears it nor puts its own session on screen.
+    func testTheLatestSwitchsErrorSurvivesASupersededOne() async throws {
+        let shown = try await insertSession("shown")
+        let gone = try await insertSession("gone")
+        let vm = try await page(running: [shown])
+        try await pool.write { try TerminalSessionQueries.delete($0, id: gone.id) }
+        let slow = try await insertSession("slow") // not in the loaded list
+
+        let first = Task { await vm.showSession(id: slow.id) }
+        let second = Task { await vm.showSession(id: gone.id) }
+        _ = await (first.value, second.value)
+
+        XCTAssertNotNil(vm.sessionErrors[projectID], "the failed click says so")
+        XCTAssertEqual(onScreen(vm), .session(shown.id), "the superseded click moves nothing")
+    }
+
+    /// The superseded click fails, the latest one works: no banner about the
+    /// superseded one beside the session on screen.
+    func testASupersededSwitchsFailureShowsNoBanner() async throws {
+        let a = try await insertSession("a")
+        let b = try await insertSession("b")
+        let vm = try await page(running: [a])
+        let gone = try await insertSession("gone") // not listed: read first
+        try await pool.write { try TerminalSessionQueries.delete($0, id: gone.id) }
+
+        let first = Task { await vm.showSession(id: gone.id) }
+        let second = Task { await vm.showSession(id: b.id) }
+        _ = await (first.value, second.value)
+
+        XCTAssertEqual(onScreen(vm), .session(b.id))
+        XCTAssertNil(vm.sessionErrors[projectID])
+    }
+
+    /// A layout change of the owner's own (here the Board button) made while
+    /// a slower session switch is pending wins: the switch lands without
+    /// covering the Board, and its session still starts.
+    func testAViewButtonSupersedesAPendingSwitch() async throws {
+        let a = try await insertSession("a")
+        let vm = try await page(running: [a])
+        let project = try XCTUnwrap(vm.selectedWorkbench)
+        let slow = try await insertSession("slow")
+
+        let click = Task { await vm.showSession(id: slow.id) }
+        let board = Task { await vm.showView(.board, project: project) }
+        _ = await (click.value, board.value)
+
+        XCTAssertEqual(onScreen(vm), .board)
+        XCTAssertEqual(appState.terminalCenter.states[slow.id], .running)
+    }
+
+    /// Work on it reads the target first; a panel click made during that
+    /// read is the later one and wins. The work-on session is still created
+    /// and started — it shows in the panel, not on screen.
+    func testAClickDuringWorkOnsReadWins() async throws {
+        let a = try await insertSession("a")
+        let other = try await insertSession("other")
+        let vm = try await page(running: [other])
+        let projectID = projectID
+        let target = try await pool.write {
+            try TestDatabase.insertWorkbenchTarget($0, projectID: projectID, text: "Ship it")
+        }
+
+        let workOn = Task { await vm.workOn(targetID: target, targetText: "Ship it", projectID: projectID) }
+        let click = Task { await vm.showSession(id: a.id) }
+        _ = await (workOn.value, click.value)
+
+        XCTAssertEqual(onScreen(vm), .session(a.id))
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id)
+        let created = try await pool.read { try TerminalSessionQueries.fetchForTarget($0, targetID: target) }
+        XCTAssertEqual(created.count, 1)
+        XCTAssertEqual(created.first.flatMap { appState.terminalCenter.states[$0.id] }, .running)
     }
 
     // MARK: - On screen
@@ -130,7 +210,10 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
     /// The real workspace in a window: after every burst of fast switches —
     /// A → B → A, with and without the run loop turning between the clicks,
     /// and a switch to a session still resuming — the terminal in the window
-    /// is the one session the panel's tab marks, the one clicked last.
+    /// is the one session the panel's tab marks, the one clicked last. (The
+    /// rounds over listed, running sessions lost their last click only now
+    /// and then before the fix — the writes resumed out of order at times;
+    /// the VM tests above pin the ordering deterministically.)
     func testTheTerminalOnScreenIsTheSelectedSessionAfterFastSwitches() async throws {
         let a = try await insertSession("a")
         let b = try await insertSession("b")
@@ -142,7 +225,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         window.isReleasedWhenClosed = false
         window.contentView = host
         defer { window.close() }
-        settle()
+        settle(0.05)
 
         var sessionIDs = [a.id, b.id]
         func terminalsOnScreen() -> [Int64] {
@@ -150,6 +233,9 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         }
         func assertOnScreen(_ id: Int64, _ label: String) {
             XCTAssertEqual(vm.panelSelection, .session(id), "\(label): the tab")
+            // The hosts attach on SwiftUI's next pass: waited for, bounded.
+            let deadline = Date().addingTimeInterval(2)
+            while terminalsOnScreen() != [id], Date() < deadline { settle(0.01) }
             XCTAssertEqual(terminalsOnScreen(), [id], "\(label): the terminal")
         }
         assertOnScreen(b.id, "start")
@@ -161,10 +247,8 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
                 if (round + index).isMultiple(of: 2) { settle(0) }
             }
             for click in clicks { await click.value }
-            settle()
             assertOnScreen(a.id, "round \(round), A → B → A")
             await vm.showSession(id: b.id)
-            settle()
             assertOnScreen(b.id, "round \(round), back to B")
         }
 
@@ -175,15 +259,14 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         let toC = Task { await vm.showSession(id: c.id) }
         let toA = Task { await vm.showSession(id: a.id) }
         _ = await (toC.value, toA.value)
-        settle()
         assertOnScreen(a.id, "a switch away from a resuming session")
         await vm.showSession(id: c.id)
-        settle()
         assertOnScreen(c.id, "the resumed session")
     }
 
-    /// Lets SwiftUI apply the pending updates and the hosts' deferred work.
-    private func settle(_ seconds: TimeInterval = 0.05) {
+    /// Turns the run loop: SwiftUI applies pending updates, the hosts their
+    /// deferred work.
+    private func settle(_ seconds: TimeInterval) {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 }
