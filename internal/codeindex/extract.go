@@ -207,10 +207,6 @@ func assignContainers(spans []span) []Symbol {
 // end_line the line before the next heading of the same or a higher
 // level.
 func markdownHeadings(src []byte) []Symbol {
-	type heading struct {
-		sym   Symbol
-		level int
-	}
 	var out []heading
 	var fence string
 	lines := bytes.Split(src, []byte("\n"))
@@ -230,31 +226,53 @@ func markdownHeadings(src []byte) []Symbol {
 			fence = trimmed[:3]
 			continue
 		}
-		level := len(trimmed) - len(strings.TrimLeft(trimmed, "#"))
-		if level < 1 || level > 6 || (len(trimmed) > level && trimmed[level] != ' ' && trimmed[level] != '\t') {
-			continue
+		if h, ok := atxHeading(line, trimmed, i); ok {
+			out = append(out, h)
 		}
-		text := strings.TrimSpace(trimmed[level:])
-		if t := strings.TrimRight(text, "#"); t == "" || strings.HasSuffix(t, " ") {
-			text = strings.TrimSpace(t)
-		}
-		if text == "" {
-			continue
-		}
-		textAt := len(line) - len(strings.TrimLeft(line[strings.Index(line, "#")+level:], " \t"))
-		out = append(out, heading{level: level, sym: Symbol{
-			Name:      text,
-			Kind:      KindModule,
-			Line:      i + 1,
-			Col:       utf16Col([]byte(line), textAt),
-			Signature: clip(trimmed),
-			Outline:   true,
-		}})
 	}
 	last := len(lines)
 	if last > 0 && len(lines[last-1]) == 0 {
 		last-- // a trailing newline does not start another line
 	}
+	return nestHeadings(out, last)
+}
+
+// heading is one Markdown heading and its level (1–6).
+type heading struct {
+	sym   Symbol
+	level int
+}
+
+// atxHeading reads line i (trimmed: line without its indent) as an ATX
+// heading: `#`…`######`, a space or tab, its text, an optional closing
+// run of `#`; ok=false for any other line or an empty heading.
+func atxHeading(line, trimmed string, i int) (heading, bool) {
+	level := len(trimmed) - len(strings.TrimLeft(trimmed, "#"))
+	if level < 1 || level > 6 || (len(trimmed) > level && trimmed[level] != ' ' && trimmed[level] != '\t') {
+		return heading{}, false
+	}
+	text := strings.TrimSpace(trimmed[level:])
+	if t := strings.TrimRight(text, "#"); t == "" || strings.HasSuffix(t, " ") {
+		text = strings.TrimSpace(t)
+	}
+	if text == "" {
+		return heading{}, false
+	}
+	textAt := len(line) - len(strings.TrimLeft(line[strings.Index(line, "#")+level:], " \t"))
+	return heading{level: level, sym: Symbol{
+		Name:      text,
+		Kind:      KindModule,
+		Line:      i + 1,
+		Col:       utf16Col([]byte(line), textAt),
+		Signature: clip(trimmed),
+		Outline:   true,
+	}}, true
+}
+
+// nestHeadings sets each heading's end_line (the line before the next
+// heading of the same or a higher level, else last) and container (the
+// nearest heading above it of a higher level).
+func nestHeadings(out []heading, last int) []Symbol {
 	syms := make([]Symbol, len(out))
 	for i := range out {
 		end := last
