@@ -2,6 +2,7 @@ package workbenchcheck
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/gitbin"
 )
 
 // gitEnv isolates every git call of a test from the developer's own config.
@@ -501,5 +503,31 @@ func TestProj07_UnresolvableDefaultBranchIsANote(t *testing.T) {
 	}
 	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "default branch master could not be resolved") }) {
 		t.Fatalf("notes must say why the branch checks were skipped: %v", r.Notes)
+	}
+}
+
+// On a Mac without the developer tools the only git is the /usr/bin/git
+// shim, which pops the install dialog: the check locates git through
+// gitbin, runs none when there is none, and says so in a note.
+func TestProj07_GitUnavailableIsANote(t *testing.T) {
+	gitEnv(t)
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prev := locateGit
+	t.Cleanup(func() { locateGit = prev })
+	locateGit = func() (string, bool) { return "", false }
+
+	if out, code, err := ExecRunner(context.Background(), dir, nil, "git", "--version"); !errors.Is(err, gitbin.ErrUnavailable) || code != -1 || out != nil {
+		t.Fatalf("ExecRunner without git: out=%q code=%d err=%v", out, code, err)
+	}
+	board := []db.BoardNode{node(1, "in_progress", "merged", time.Hour), node(2, "done", "open", time.Hour)}
+	r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow})
+	if r.Git || r.Base != "" || len(r.Findings) != 0 || r.Incomplete {
+		t.Fatalf("no git: want git=false, no base, no findings, got %+v", r)
+	}
+	if !slices.Contains(r.Notes, "git is not available (no Command Line Tools); branch checks skipped") {
+		t.Fatalf("notes must say git is unavailable: %v", r.Notes)
 	}
 }
