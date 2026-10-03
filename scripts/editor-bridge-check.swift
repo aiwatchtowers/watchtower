@@ -63,11 +63,39 @@ struct TextMessage {
     let explicit: Bool
 }
 
+/// `definition {req, id, word, line, col, x, y}` — decoded as the
+/// Coordinator does.
+struct DefinitionMessage: Equatable {
+    let req: Int
+    let id: String
+    let word: String
+    let line: Int
+    let col: Int
+}
+
+/// `usages {id, word, line, col}`
+struct UsagesMessage: Equatable {
+    let id: String
+    let word: String
+    let line: Int
+    let col: Int
+}
+
+/// `cursor {id, line, col}`
+struct CursorMessage: Equatable {
+    let id: String
+    let line: Int
+    let col: Int
+}
+
 @MainActor
 final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     let webView: WKWebView
     var ready = false
     var texts: [TextMessage] = []
+    var definitions: [DefinitionMessage] = []
+    var cursors: [CursorMessage] = []
+    var usages: [UsagesMessage] = []
     var errors: [String] = []
     var loadError: String?
 
@@ -99,6 +127,27 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 id: id, text: text, base: base,
                 now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false
             ))
+        case "definition":
+            guard let req = body["req"] as? Int, let id = body["id"] as? String, let word = body["word"] as? String,
+                  let line = body["line"] as? Int, let col = body["col"] as? Int,
+                  body["x"] is Double || body["x"] is Int, body["y"] is Double || body["y"] is Int else {
+                errors.append("malformed definition message: \(body)")
+                return
+            }
+            definitions.append(DefinitionMessage(req: req, id: id, word: word, line: line, col: col))
+        case "usages":
+            guard let id = body["id"] as? String, let word = body["word"] as? String,
+                  let line = body["line"] as? Int, let col = body["col"] as? Int else {
+                errors.append("malformed usages message: \(body)")
+                return
+            }
+            usages.append(UsagesMessage(id: id, word: word, line: line, col: col))
+        case "cursor":
+            guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int else {
+                errors.append("malformed cursor message: \(body)")
+                return
+            }
+            cursors.append(CursorMessage(id: id, line: line, col: col))
         case "error":
             errors.append((body["message"] as? String) ?? "error without a message")
         default:
@@ -178,6 +227,52 @@ window.__h = {
   lang: function (id) { var m = __h.model(id); return m ? m.getLanguageId() : null; },
   eol: function (id) { var m = __h.model(id); return m ? m.getEOL() : null; },
   count: function () { return monaco.editor.getModels().length; },
+  cursor: function () {
+    var p = monaco.editor.getEditors()[0].getPosition();
+    return p ? p.lineNumber + ":" + p.column : "";
+  },
+  wordAtCursor: function () {
+    var e = monaco.editor.getEditors()[0];
+    var p = e.getPosition();
+    var w = p && e.getModel() ? e.getModel().getWordAtPosition(p) : null;
+    return w ? w.word : "";
+  },
+  // A mouse event at line:col of the editor, the way a real one reaches
+  // Monaco's view (pointerdown records the pointer, mousedown hit-tests).
+  mouse: function (types, line, col, meta) {
+    var e = monaco.editor.getEditors()[0];
+    e.layout();
+    var p = e.getScrolledVisiblePosition({ lineNumber: line, column: col });
+    if (!p) { return false; }
+    var rect = e.getDomNode().getBoundingClientRect();
+    var x = rect.left + p.left + 2, y = rect.top + p.top + p.height / 2;
+    var target = document.elementFromPoint(x, y) || e.getDomNode().querySelector(".view-lines");
+    types.forEach(function (type) {
+      var init = { clientX: x, clientY: y, metaKey: !!meta, button: 0, buttons: type.indexOf("up") >= 0 ? 0 : 1,
+        bubbles: true, cancelable: true, view: window, detail: 1 };
+      var ev = type.indexOf("pointer") === 0 ? new PointerEvent(type, Object.assign({ pointerId: 1, pointerType: "mouse", isPrimary: true }, init))
+        : new MouseEvent(type, init);
+      target.dispatchEvent(ev);
+    });
+    return true;
+  },
+  click: function (line, col, meta) { return __h.mouse(["pointerdown", "mousedown", "pointerup", "mouseup"], line, col, meta); },
+  hover: function (line, col, meta) { return __h.mouse(["mousemove"], line, col, meta); },
+  // Decorations of the model on screen carrying `cls` as their inline class.
+  decorations: function (cls) {
+    var m = monaco.editor.getEditors()[0].getModel();
+    if (!m) { return -1; }
+    return m.getAllDecorations().filter(function (d) { return d.options.inlineClassName === cls; })
+      .map(function (d) { return d.range.startLineNumber + ":" + d.range.startColumn + "-" + d.range.endColumn; });
+  },
+  // Every default keybinding of the editor as "chord<TAB>command", read off
+  // Monaco's keybinding service (internal; pinned with the Monaco version).
+  keybindings: function () {
+    var svc = monaco.editor.getEditors()[0]._standaloneKeybindingService;
+    if (!svc) { return null; }
+    return svc._getResolver().getKeybindings().filter(function (it) { return it.resolvedKeybinding && it.command; })
+      .map(function (it) { return it.resolvedKeybinding.getUserSettingsLabel() + "\t" + it.command; });
+  },
   onScreen: function () {
     var m = monaco.editor.getEditors()[0].getModel();
     return m ? m.uri.path.split("/")[1] : "";
@@ -398,6 +493,20 @@ func protocolChecks(_ page: Page) async {
     check("show: arbitrary text round-trips through the JSON-encoded call",
           await page.evalString("__h.value('c')") == tricky)
 
+    // reveal (Open Quickly): the cursor on line:col of the file on screen;
+    // a file off screen takes it when it is shown
+    await page.call("wt.reveal", ["id": "c", "line": 1, "col": 7])
+    check("reveal: puts the cursor on line:col", await page.evalString("__h.cursor()") == "1:7")
+    await page.call("wt.reveal", ["id": "c", "line": 99, "col": 99])
+    check("reveal: a line past the end lands on the last line", await page.evalString("__h.cursor()") == "2:1")
+    await page.call("wt.reveal", ["id": "a", "line": 2, "col": 3])
+    check("reveal: a file off screen stays off screen", await page.evalString("__h.onScreen()") == "c")
+    await page.call("wt.show", ["id": "a", "path": "build/Makefile", "text": "ignored\n", "rev": 6])
+    check("reveal: taken when the file is shown", await page.evalString("__h.cursor()") == "2:3")
+    await page.call("wt.reveal", ["id": "never-opened", "line": 1, "col": 1])
+    check("reveal: an unknown id is harmless", page.errors.isEmpty, "\(page.errors)")
+    await page.call("wt.show", ["id": "c", "path": "tricky.txt", "text": tricky, "rev": 1])
+
     // close
     _ = await page.eval("__h.type('b', 'e'); true")
     let countBeforeClose = await page.evalInt("__h.count()") ?? 0
@@ -540,6 +649,179 @@ func tokenChecks(_ page: Page) async {
     }
 }
 
+/// Go to definition, the cursor stream and the §10 chords (spec §8.2,
+/// §8.5, §10): ⌘-click and `definitionAtCursor` post `definition`, its busy
+/// underline clears on `definitionDone` of the latest request only, ⌘-hover
+/// underlines the word, `cursor` is throttled to 10 a second, `reveal`
+/// counts columns in UTF-16 past an emoji, and Monaco keeps none of the
+/// chords the app's menu owns.
+@MainActor
+func navigationChecks(_ page: Page) async {
+    // The §10 chords: Monaco's own bindings for them are removed (ruling R28),
+    // so a keystroke in the editor reaches the app's menu.
+    let bindings = await page.eval("__h.keybindings()") as? [String] ?? []
+    check("keybindings: the probe reads Monaco's bindings", bindings.count > 100 && bindings.contains("cmd+f\tactions.find"),
+          "\(bindings.count) bindings")
+    let chords = ["shift+cmd+o", "shift+cmd+f", "ctrl+cmd+j", "shift+cmd+u", "ctrl+6", "ctrl+cmd+left",
+                  "ctrl+cmd+right", "cmd+i", "alt+cmd+enter"]
+    for chord in chords {
+        let owners = bindings.filter { $0.hasPrefix(chord + "\t") }.map { String($0.dropFirst(chord.count + 1)) }
+        check("keybindings: Monaco binds nothing to \(chord)", owners.isEmpty, "still bound to \(owners)")
+    }
+    for kept in ["cmd+f\tactions.find", "cmd+z\tundo"] {
+        check("keybindings: \(kept.replacingOccurrences(of: "\t", with: " → ")) stays", bindings.contains(kept))
+    }
+
+    let source = "func target() {}\nlet x = target()\n\n"
+    await page.call("wt.show", ["id": "n", "path": "nav.swift", "text": source, "rev": 1])
+    page.definitions.removeAll()
+
+    // ⌘-click on a word
+    _ = await page.eval("__h.click(2, 11, true)")
+    let clicked = await wait(2) { !page.definitions.isEmpty }
+    let first = page.definitions.first
+    check("⌘-click: posts definition {req, id, word, line, col}",
+          clicked && first?.id == "n" && first?.word == "target" && first?.line == 2 && first?.col == 11,
+          "\(page.definitions)")
+    check("⌘-click: the word gets the busy underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["2:9-15"])
+    _ = await page.eval("__h.click(2, 3, false)")
+    await pause(0.1)
+    check("a plain click posts nothing", page.definitions.count == 1, "\(page.definitions)")
+    _ = await page.eval("__h.click(3, 1, true)")
+    await pause(0.1)
+    check("⌘-click off any word posts nothing", page.definitions.count == 1, "\(page.definitions)")
+
+    // ⌃⌘J from the menu: the word at the cursor
+    await page.call("wt.reveal", ["id": "n", "line": 1, "col": 7])
+    let asked = await page.eval("wt.definitionAtCursor()") as? Bool
+    let second = page.definitions.last
+    check("definitionAtCursor: posts the word at the cursor with the next req",
+          asked == true && page.definitions.count == 2 && second?.word == "target" && second?.line == 1 && second?.col == 7
+              && second.map { $0.req > first?.req ?? .max } == true,
+          "\(page.definitions)")
+    check("definitionAtCursor: the busy underline moves to the newer word",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    // The cursor just after the name still names it, with that column (the
+    // heuristic leaves out the occurrence whose span holds it, ends included).
+    await page.call("wt.reveal", ["id": "n", "line": 1, "col": 12])
+    let atEnd = await page.eval("wt.definitionAtCursor()") as? Bool
+    let third = page.definitions.last
+    check("definitionAtCursor: the cursor right after the name asks for it, with the cursor column",
+          atEnd == true && page.definitions.count == 3 && third?.word == "target" && third?.col == 12, "\(page.definitions)")
+    await page.call("wt.reveal", ["id": "n", "line": 3, "col": 1])
+    let noWord = await page.eval("wt.definitionAtCursor()") as? Bool
+    check("definitionAtCursor: no word at the cursor posts nothing and says so",
+          noWord == false && page.definitions.count == 3, "\(String(describing: noWord)), \(page.definitions)")
+
+    // definitionDone: a stale reply is ignored
+    await page.call("wt.definitionDone", first?.req ?? -1)
+    check("definitionDone: a reply for an older req leaves the underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    await page.call("wt.definitionDone", second?.req ?? -1)
+    check("definitionDone: an older req than the latest still leaves it",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    await page.call("wt.definitionDone", third?.req ?? -1)
+    check("definitionDone: the latest req clears the underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == [])
+
+    // ⌘-hover
+    _ = await page.eval("__h.hover(2, 11, true)")
+    check("⌘-hover: underlines the word under the mouse",
+          await page.eval("__h.decorations('wt-def-link')") as? [String] == ["2:9-15"])
+    _ = await page.eval("__h.hover(2, 11, false)")
+    check("hover without ⌘: no underline", await page.eval("__h.decorations('wt-def-link')") as? [String] == [])
+
+    // reveal past an emoji: columns are UTF-16 (the CLI's convention)
+    let emoji = "let s = \"\u{1F600}\u{1F600}\"; func name() {}\n"
+    await page.call("wt.show", ["id": "e", "path": "emoji.swift", "text": emoji, "rev": 1])
+    let nameCol = (emoji.components(separatedBy: "name").first?.utf16.count ?? 0) + 1
+    await page.call("wt.reveal", ["id": "e", "line": 1, "col": nameCol])
+    let emojiCursor = await page.evalString("__h.cursor()")
+    let emojiWord = await page.evalString("__h.wordAtCursor()")
+    check("reveal past an emoji: the cursor is on the name", emojiCursor == "1:\(nameCol)" && emojiWord == "name",
+          "\(emojiCursor ?? "") \(emojiWord ?? "") at col \(nameCol)")
+
+    // cursor, at most 10 a second, the last position always sent
+    await pause(0.3)
+    page.cursors.removeAll()
+    _ = await page.eval("""
+        (function () {
+          var e = monaco.editor.getEditors()[0];
+          for (var i = 1; i <= 30; i++) { e.setPosition({ lineNumber: 1, column: i }); }
+          return true;
+        })()
+        """)
+    check("cursor: a burst sends the first move at once", page.cursors.count == 1 && page.cursors.first?.col == 1,
+          "\(page.cursors)")
+    await pause(0.35)
+    check("cursor: a burst is throttled, its last position sent",
+          page.cursors.count == 2 && page.cursors.last == CursorMessage(id: "e", line: 1, col: 30), "\(page.cursors)")
+    // Steady moves driven from here (the page's own timers are throttled in
+    // a web view outside any window).
+    page.cursors.removeAll()
+    let started = Date()
+    var lastCol = 0
+    for step in 1...60 {
+        lastCol = 1 + step % 20
+        _ = await page.eval("monaco.editor.getEditors()[0].setPosition({ lineNumber: 1, column: \(lastCol) }); true")
+        await pause(0.01)
+    }
+    let span = Int(Date().timeIntervalSince(started) * 1000)
+    // Room for the trailing message even if the page's timer is throttled.
+    await pause(1.2)
+    let allowed = span / 100 + 2
+    check("cursor: steady moves send at most one message per 100 ms, the last position last",
+          page.cursors.count >= 2 && page.cursors.count <= allowed && page.cursors.last?.col == lastCol,
+          "\(page.cursors.count) messages over \(span) ms (allowed \(allowed)), last \(String(describing: page.cursors.last)) vs col \(lastCol)")
+    // A tab switch: the first cursor message names the file now shown, so
+    // the jump bar and the Back history see the new file at once.
+    await pause(0.35)
+    page.cursors.removeAll()
+    await page.call("wt.show", ["id": "n", "path": "nav.swift", "text": source, "rev": 1])
+    let switched = await wait(2) { !page.cursors.isEmpty }
+    check("cursor: the first message after a tab switch carries the new file's id",
+          switched && page.cursors.first?.id == "n", "\(page.cursors)")
+    await page.call("wt.close", "n")
+    await page.call("wt.close", "e")
+    page.cursors.removeAll()
+}
+
+/// Usages (spec §8.3): ⇧⌘U asks `usagesAtCursor`, the editor's context
+/// menu runs "Show All Usages"; both post `usages` for the word at the
+/// cursor, and nothing without a word.
+@MainActor
+func usagesChecks(_ page: Page) async {
+    let source = "func target() {}\nlet x = target()\n\n"
+    await page.call("wt.show", ["id": "u", "path": "usages.swift", "text": source, "rev": 1])
+    page.usages.removeAll()
+
+    await page.call("wt.reveal", ["id": "u", "line": 2, "col": 11])
+    let asked = await page.eval("wt.usagesAtCursor()") as? Bool
+    check("usagesAtCursor: posts usages {id, word, line, col} for the word at the cursor",
+          asked == true && page.usages == [UsagesMessage(id: "u", word: "target", line: 2, col: 11)], "\(page.usages)")
+    await page.call("wt.reveal", ["id": "u", "line": 3, "col": 1])
+    let noWord = await page.eval("wt.usagesAtCursor()") as? Bool
+    check("usagesAtCursor: no word at the cursor posts nothing and says so",
+          noWord == false && page.usages.count == 1, "\(String(describing: noWord)), \(page.usages)")
+
+    // The context menu's entry: an editor action in the navigation group.
+    let label = await page.evalString("""
+        (function () {
+          var a = monaco.editor.getEditors()[0].getAction("wt.showUsages");
+          return a ? a.label : "";
+        })()
+        """)
+    check("context menu: the editor has a Show All Usages action", label == "Show All Usages", label ?? "")
+    await page.call("wt.reveal", ["id": "u", "line": 1, "col": 7])
+    _ = await page.eval("monaco.editor.getEditors()[0].getAction('wt.showUsages').run(); true")
+    let posted = await wait(2) { page.usages.count == 2 }
+    check("context menu: Show All Usages posts usages for the word at the cursor",
+          posted && page.usages.last == UsagesMessage(id: "u", word: "target", line: 1, col: 7), "\(page.usages)")
+    await page.call("wt.close", "u")
+    page.usages.removeAll()
+}
+
 // MARK: - Main
 
 @MainActor
@@ -555,6 +837,8 @@ func run(root: URL) async -> Int32 {
     _ = await page.eval(helpers)
 
     await protocolChecks(page)
+    await navigationChecks(page)
+    await usagesChecks(page)
     await detectionChecks(page)
     await tokenChecks(page)
 

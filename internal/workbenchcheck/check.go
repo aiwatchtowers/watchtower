@@ -130,7 +130,12 @@ func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options
 	rep.Base = g.baseName()
 	rep.Notes = append(rep.Notes, g.notes...)
 	var pr *prChecker
-	if o.Network {
+	switch {
+	case o.Network && g.noGit:
+		// gh reads the repository by running git from its own PATH, which
+		// without the developer tools is the /usr/bin/git shim.
+		rep.Notes = append(rep.Notes, noGitPRNote)
+	case o.Network:
 		pr = newPRChecker(ctx, o)
 		rep.PRChecked = pr.available
 		rep.Notes = append(rep.Notes, pr.notes...)

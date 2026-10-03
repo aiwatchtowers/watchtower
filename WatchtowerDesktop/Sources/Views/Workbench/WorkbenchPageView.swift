@@ -36,6 +36,8 @@ struct WorkbenchPageView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        // Open Quickly works while this page is on screen (spec §2 decision 3).
+        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
         // The 5 s poll follows the asks from here; this is the first read.

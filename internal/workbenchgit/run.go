@@ -9,16 +9,12 @@
 package workbenchgit
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
-	"time"
 
 	"watchtower/internal/gitbin"
 	"watchtower/internal/workbenchcheck"
@@ -65,40 +61,19 @@ func (e *runError) Error() string {
 
 func (e *runError) Unwrap() error { return e.err }
 
-// repositoryEnv are the variables that point git at a repository other than
-// the one dir is in; an inherited one (a hook's or another tool's shell)
-// is dropped.
-var repositoryEnv = []string{
-	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
-}
-
-// execRunner runs a real process with git kept non-interactive: no
-// optional locks, no credential prompt, no editor, C locale, and no
-// inherited repository variables.
+// execRunner runs a real process through gitbin.Exec (non-interactive, no
+// inherited repository variables) and keeps git's stderr apart in a
+// runError.
 func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
-	c := exec.CommandContext(ctx, name, args...)
-	c.Dir = dir
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
-		key, _, _ := strings.Cut(kv, "=")
-		return slices.Contains(repositoryEnv, key)
-	})
-	c.Env = append(env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "LC_ALL=C")
-	c.WaitDelay = time.Second
-	if stdin != nil {
-		c.Stdin = bytes.NewReader(stdin)
-	}
-	var stdout, stderr bytes.Buffer
-	c.Stdout, c.Stderr = &stdout, &stderr
-	err := c.Run()
+	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, name, args...)
 	var exitErr *exec.ExitError
 	switch {
 	case err != nil && ctx.Err() != nil: // killed or never started: say why
-		return stdout.Bytes(), -1, &runError{args: args, err: ctx.Err()}
+		return stdout, -1, &runError{args: args, err: ctx.Err()}
 	case err == nil:
-		return stdout.Bytes(), 0, nil
+		return stdout, 0, nil
 	case errors.As(err, &exitErr):
-		return stdout.Bytes(), exitErr.ExitCode(), &runError{args: args, err: err, stderr: string(bytes.TrimSpace(stderr.Bytes()))}
+		return stdout, exitErr.ExitCode(), &runError{args: args, err: err, stderr: string(stderr)}
 	default:
 		return nil, -1, err
 	}

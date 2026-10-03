@@ -680,6 +680,11 @@ func WorkspaceDatabaseWarning(name string) string {
 // alphanumerics, hyphens, dots, or underscores.
 var ValidWorkspaceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
+// ErrNoWorkspace is wrapped by ValidateWorkspace's error when no workspace is
+// selected and none holds a database yet (a fresh install) — the one case
+// `workspace init` may resolve by creating a workspace.
+var ErrNoWorkspace = errors.New("no workspace with a database was found")
+
 // ValidateWorkspace checks that a workspace name is set and safe for use in
 // file paths. It does NOT require a Slack token or workspace config entry,
 // making it suitable for commands that only need database access.
@@ -694,7 +699,7 @@ func (c *Config) ValidateWorkspace() error {
 		// Zero candidates: usually a fresh install, with no workspace folder to
 		// name yet. 'config init' is deliberately not suggested: it rewrites
 		// config.yaml from scratch, and this error means one was already read.
-		return fmt.Errorf("active_workspace is required and no workspace with a database was found; connect Slack with 'watchtower auth login', or name a new workspace with 'watchtower config set active_workspace <name>' to start with Google or Jira")
+		return fmt.Errorf("active_workspace is required and %w; connect Slack with 'watchtower auth login', or create one with 'watchtower workspace init' to start with Google or Jira", ErrNoWorkspace)
 	}
 	if !ValidWorkspaceRe.MatchString(c.ActiveWorkspace) {
 		return fmt.Errorf("invalid workspace name %q: must contain only alphanumeric characters, hyphens, dots, and underscores", c.ActiveWorkspace)

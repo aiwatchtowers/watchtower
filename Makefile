@@ -86,7 +86,7 @@ test-swift:
 # ProcessPipes' own threads) hangs or times out here, as it did on the 3-core
 # CI runner. Runs after a test build (--skip-build); CI runs it in Swift Test.
 # A new suite that spawns a child process belongs in this list.
-STRICT_POOL_SUITES = ProcessPipes|CLIRunner|JiraBoardsCLITests|DaemonManager|UpdateService|FoundationChatSessionProcessTests
+STRICT_POOL_SUITES = ProcessPipes|CLIRunner|JiraBoardsCLITests|DaemonManager|UpdateService|FoundationChatSessionProcessTests|CodeCLIProcessTests|CodeIndexCenterTests|CodeNavRealCLITests|OpenQuicklyCenterTests|CodeUsagesCenterTests|CodeNavQuitTests
 test-swift-strict-pool:
 	cd WatchtowerDesktop && LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --skip-build --filter '$(STRICT_POOL_SUITES)'
 

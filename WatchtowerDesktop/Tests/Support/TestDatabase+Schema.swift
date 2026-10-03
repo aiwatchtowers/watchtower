@@ -814,7 +814,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',

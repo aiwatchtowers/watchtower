@@ -59,7 +59,7 @@ struct WorkbenchesView: View {
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
-        // ⌥⌘S, the title row's toggle, ⌘⇧O and the switchers' "Show
+        // ⌥⌘S, the title row's toggle, "All Workbenches" and the switchers' "Show
         // Sessions Panel" all slide the panel the same way.
         .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)
         // The workspace — title row, page header, the terminal (transparent
@@ -372,13 +372,10 @@ struct WorkbenchTitleRow: View {
         .background { shortcuts }
     }
 
-    /// ⌘⇧O (the workbench switcher shows it beside "All Workbenches"), ⌘T
-    /// and ⌘1…⌘9 (the session switcher shows them) as hidden buttons; the
-    /// session ones need a workbench page.
+    /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;
+    /// they need a workbench page. ⇧⌘O is Open Quickly's (ruling R26).
     private var shortcuts: some View {
         Group {
-            Button("", action: vm.showAllWorkbenches)
-                .keyboardShortcut("o", modifiers: [.command, .shift])
             Group {
                 Button("") { Task { await vm.newSessionOnPage() } }
                     .keyboardShortcut("t", modifiers: .command)

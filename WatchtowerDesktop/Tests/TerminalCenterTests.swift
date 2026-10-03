@@ -213,7 +213,7 @@ final class TerminalCenterTests: XCTestCase {
     /// hosts the session's NSView; tearing the host down leaves the process
     /// and its scrollback in the center, and coming back re-hosts the same one.
     func testSessionSurvivesTheViewGoingAwayAndIsReusedOnReturn() throws {
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.terminalCenter.makeProcess = { [weak self] in
             let session = FakeTerminalSession()
             self?.sessions.append(session)

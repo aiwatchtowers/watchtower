@@ -87,7 +87,7 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 	default:
 		b.WriteString("Owner: unknown — no Slack, Google or Jira identity is connected yet.\n")
 	}
-	b.WriteString("\n" + prompts.Directive(cfg.Digest.Language))
+	b.WriteString("\n" + prompts.ChatDirective(cfg.Digest.Language))
 	return b.String(), nil
 }
 

@@ -432,7 +432,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         let cli = ScriptedConfluenceCLI(pool: pool)
         cli.spacesJSON = Self.twoSpaces
         cli.armSelectGate()
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = manager
 
         var syncRequests = 0
@@ -458,7 +458,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
 
     func testAppStateVMsAreKeyedPerAccount() throws {
         let manager = try makeManager()
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.databaseManager = manager
         let cli = ScriptedConfluenceCLI(pool: manager.dbPool)
 

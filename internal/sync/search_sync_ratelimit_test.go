@@ -137,7 +137,9 @@ func TestSyncViaSearch_RateLimitedFirstPageDoesNotFallBackToFullSync(t *testing.
 	assert.True(t, ts.orch.SearchIncomplete(), "a rate-limited cycle reports its data as incomplete (INBOX-09)")
 
 	assert.True(t, ts.orch.readStateSyncedAt.IsZero(), "the read-state refresh must still be due next cycle")
-	assert.True(t, ts.orch.rosterSyncedAt.IsZero(), "the roster refresh must still be due next cycle")
+	rosterSyncedAt, err := ts.db.SlackRosterSyncedAt(ts.accountID)
+	require.NoError(t, err)
+	assert.True(t, rosterSyncedAt.IsZero(), "the roster refresh must still be due next cycle")
 
 	acct, err := ts.db.GetSlackAccount(ts.accountID)
 	require.NoError(t, err)

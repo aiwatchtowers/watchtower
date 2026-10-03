@@ -367,17 +367,17 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         let closed = try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: false) {}
             .inspect().findAll(ViewType.Button.self)
 
-        // The toggle, Go to…, ⌘⇧O, ⌘T and ⌘1…⌘9.
-        XCTAssertEqual(open.count, 4 + SessionSwitcherPresentation.maxShortcut)
+        // The toggle, Go to…, ⌘T and ⌘1…⌘9 (⇧⌘O is Open Quickly's, R26).
+        XCTAssertEqual(open.count, 3 + SessionSwitcherPresentation.maxShortcut)
         let goTo = { (button: InspectableView<ViewType.Button>) in
             (try? button.accessibilityLabel().string()) == "Go to…"
         }
         XCTAssertTrue(open.filter { !goTo($0) }.allSatisfy { $0.isDisabled() }, "nothing changes the page behind it")
         XCTAssertFalse(open.first(where: goTo)?.isDisabled() ?? true)
-        // Closed: the toggle and ⌘⇧O work; the session keys need a page.
+        // Closed: the toggle and Go to… work; the session keys need a page.
         let toggle = try XCTUnwrap(closed.first { (try? $0.accessibilityLabel().string()) == "Hide Sessions Panel" })
         XCTAssertFalse(toggle.isDisabled())
-        XCTAssertEqual(closed.filter { !$0.isDisabled() }.count, 3)
+        XCTAssertEqual(closed.filter { !$0.isDisabled() }.count, 2)
     }
 
     // MARK: - Failed reads

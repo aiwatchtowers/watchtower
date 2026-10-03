@@ -127,6 +127,10 @@ final class WorkbenchesViewModel {
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
+    /// Per workbench, the ticket of the session switch the owner asked for
+    /// last (`beginSwitch`); only that switch may still move the layout.
+    @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
+    @ObservationIgnored var switchSerial = 0
     @ObservationIgnored var titleTask: Task<Void, Never>?
     /// Standalone list reads started; only the latest one is applied.
     @ObservationIgnored var standaloneLoads = 0
@@ -389,6 +393,7 @@ final class WorkbenchesViewModel {
     /// session, else the most recent one (its pane offers Resume) — read
     /// first, since a project just selected has no list yet.
     func revealTerminal(projectID: Int64, sessionID: Int64? = nil) async {
+        let ticket = beginSwitch(projectID: projectID)
         // A session created since the last read is not in the list yet.
         let listed = terminalSessions[projectID]
         let unlisted = sessionID.map { id in !(listed ?? []).contains { $0.id == id } } ?? false
@@ -398,12 +403,12 @@ final class WorkbenchesViewModel {
         let subject = sessionID.flatMap { id in terminalSessions[projectID]?.first { $0.id == id } }
         if let subject, terminalCenter?.liveIDs.contains(subject.id) == true {
             drill(into: projectID)
-            await open(subject, placement: .show)
+            await open(subject, placement: .show, ticket: ticket)
             return
         }
         if subject != nil { drill(into: projectID) }
         let id = subject?.id ?? activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
-        guard let id else { return }
+        guard let id, isLatestSwitch(ticket, projectID: projectID) else { return }
         var updated = layout(projectID: projectID)
         updated.show(.session(id))
         setLayout(updated, projectID: projectID)

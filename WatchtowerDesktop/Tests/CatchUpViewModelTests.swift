@@ -83,7 +83,8 @@ final class CatchUpViewModelTests: XCTestCase {
         let vm = CatchUpViewModel(dbPool: pool)
         vm.startObserving()
 
-        await waitFor { vm.recaps.count == 2 }
+        // The selection lands a tick after the recaps.
+        await waitFor { vm.recaps.count == 2 && vm.selected != nil }
         XCTAssertEqual(vm.recaps.count, 2)
         XCTAssertEqual(vm.selected?.id, newest, "the newest recap is selected by default")
     }

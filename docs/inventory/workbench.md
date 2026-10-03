@@ -346,7 +346,15 @@ never starting with `-`; a branch is the plain local name — no `origin/` or
 [--json] [--stale-days D] [--no-network]` (`internal/workbenchcheck`,
 mechanical, no AI) reads the board and the workbench folder's git state and
 never writes — no DB row, no ref, no object, only read-only git subcommands,
-and no git process at all outside a repository. Kinds:
+and no git process at all outside a repository (`gitbin.InsideRepository`).
+git is the binary `internal/gitbin` locates (PROJ-10's lookup) — never a PATH
+lookup on darwin, never the `/usr/bin/git` xcrun shim — and runs with the
+inherited repository variables dropped (`gitbin.Exec`). With no git found the
+check runs no git, reports `git:false` with the note "git is not available
+(no Command Line Tools); branch checks skipped" and gives no branch finding;
+it runs no gh either (gh reads the repository through the git on its own
+PATH — the shim), noting "git is not available; pull request states not
+checked" — never an install dialog. Kinds:
 - `merged_but_open` — an open target's branch is in `origin/<default>` or
   `<default>`: a merge commit; a fast-forward (a local branch counts only if
   its reflog shows its tip committed on the branch, so a branch just cut,
@@ -386,11 +394,15 @@ failed or partial check is shown as such, never as "in step") — the Desktop de
 re-derives them (`WorkbenchDriftReport`). `integrate status --json` reports
 `stop_hook`, and a workbench without it is offered Repair.
 
-**Note (2026-10-03, PROJ-11):** when `WATCHTOWER_TERMINAL_SESSION_ID` is set,
-the Stop hook also records the session's agent state (`waiting`) after its
-drift decision — never when it blocks the stop, and also on the
-`stop_hook_active` path. The write runs after the drift output is encoded,
-under its own 1 s busy timeout, and its failure is one stderr line; stdout
+**Note (2026-10-03, PROJ-11):** when `WATCHTOWER_TERMINAL_SESSION_ID` is set
+and the workbench's folder has the session state hooks, the Stop hook also
+records the session's agent state (`waiting`) after its drift decision —
+never when it blocks the stop, and also on the `stop_hook_active` path. A
+folder without them (or with a malformed settings file) gets no write and
+no stderr line: nothing there records `working`, so a `waiting` would stick.
+The gate reads the settings file at each Stop, not the hook set the running
+session loaded. The write runs after the drift output is encoded, under its
+own 1 s busy timeout, and its failure is one stderr line; stdout
 (the block JSON or nothing) and exit 0 are unchanged in every case. Without
 the variable the hook does exactly what it did before (no DB open on the
 `stop_hook_active` path). The three guards below run unchanged.
@@ -407,7 +419,7 @@ timeout would be worse than none.
 - `cmd/workbench_check_test.go::TestProj07_StopHookFailuresAreSilent`
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
 - `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
-- `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
+- `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01
 
@@ -529,7 +541,7 @@ separation of boards.
 
 ## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
 
-**Status:** Proposed — pending owner approval (Go and Desktop; the rule lives in Go)
+**Status:** Enforced (Go and Desktop; the rule lives in Go; owner approved 2026-10-03)
 
 **Observable:** Branch switching from the Workbench header never loses work,
 never switches without the owner's confirmation, and never runs git where it
@@ -627,7 +639,7 @@ attributed to Watchtower.
   `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 
-**Locked since:** — (proposed 2026-10-02; not locked until the owner approves)
+**Locked since:** 2026-10-03 (proposed 2026-10-02)
 
 ## PROJ-11 — session state hooks never steer Claude Code and never show a stale state
 
@@ -824,6 +836,8 @@ because Watchtower is broken would be worse than none.
 ## Changelog
 
 - 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-owner-asks.md`). **Approved by the owner (§9, 2026-10-03):** attached documents, document comments and the Desktop Documents pane are replaced by **owner asks** (`owner_asks`, migration `00097`, which also drops `project_documents` and the document columns of `project_comments`). **PROJ-03 amended** — the document view and its comment re-anchoring are gone (the guard `testProj03DesktopNeverWritesTheDocument` went with `WorkbenchDocumentViewModelTests.swift`); the contract is the Files-editor rule plus "no workbench tool writes the folder" (`ask_owner` only reads `doc_path`), new guard `TestProj03_AskOwnerNeverWritesTheFolder`; the Files-editor guards are unchanged. **PROJ-08 amended** — "attached documents" becomes every `.md`/`.markdown`/`.txt` file of the folder git does not ignore (or the walk keeps outside git), ≤ 2000 per workbench; visibility, privacy, symlink, caps and PROJ-02 deletion unchanged. (Beyond §9, see the rulings below: explicit triggers render every file gated by content hash (only the daemon is mtime-gated), a file that left the listing loses its entry, the installed skill directories are skipped, and a privacy-protected folder is indexed only by an explicit trigger (`resync`, `create`, `kb reindex`, `ask_owner`'s one file.) Guards renamed in place, assertions kept: `TestProj08_ProjectDocsOnlyInTheirOwnProjectSession` → `TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`, `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` → `TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`, `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` → `TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (its "a dry run indexes nothing" step went with `import-docs` and became "a daemon pass never reads a protected folder"). **PROJ-12 added** (the spec's "PROJ-11", renumbered — PROJ-11 is the session state hooks): an ask reaches its session as typed text, never submitted. **PROJ-13 added** (the spec's "PROJ-12"): the ask guard never traps a turn. **PROJ-02** — asks join the cascaded rows and both ask guard hooks the removal (its guards extended, none relaxed); `TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused` lost its document half with the table and is now `TestProj02_DeletedProjectAndCommentIDsAreNeverReused`. **Implementation rulings, pending owner confirmation:** (1) the PROJ-13 pass clause "tool_calls contains a call whose name ends with ask_owner" became "last_assistant_message says it filed an ask, e.g. names ask #<number>", since Claude Code's Stop input has no `tool_calls`; (2) the PROJ-08 extras in parentheses above; (3) **PROJ-04 reworded** (widened, no guard relaxed) — `Stop` now holds two entries of ours (the drift command and the ask guard prompt, recognised by its marker line) and `PreToolUse` is a newly owned event (matcher `AskUserQuestion`; malformed counts as a malformed file); new guards `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks`, `TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`; (4) `get_ask`'s unaudited `delivered` write, the AGENT-06 scope exception and DEV-06's ask session binding (`dev-surface.md`, `agent-actions.md`). The v1 note "Re-anchor hides an owner root" is retired with re-anchoring; owner-asks limits are added. PROJ-01, 05–07, 09–11 unchanged.
+- 2026-10-03 (board #248, plan `docs/superpowers/plans/2026-10-02-workbench-git-branch.md` Task G1): **PROJ-07 amended** and **PROJ-10 approved**, both by the owner on 2026-10-03. `workbench check` now runs the git `internal/gitbin` locates (`ExecRunner` resolves `"git"` through `gitbin.Locate`; `insideRepository` is `gitbin.InsideRepository`) — never a PATH lookup on darwin, never the `/usr/bin/git` shim, closing the check's install-dialog hole; with no git found it runs no git and no gh (gh would run the shim itself), reports `git:false` and notes "git is not available (no Command Line Tools); branch checks skipped" (new guard `TestProj07_GitUnavailableIsANote`, offline and with network). The process runner of `internal/workbenchcheck` and `internal/workbenchgit` is consolidated into `gitbin.Exec`, so the check now also drops the inherited repository variables (`GIT_DIR`, `GIT_WORK_TREE`, …) and sets `GIT_EDITOR=true`, and `workbench git` now also sets `GH_PROMPT_DISABLED=1` (it runs no gh; harmless). This supersedes the 2026-10-02 (#233) entry's "PROJ-07 is unchanged: `workbench check` still runs `git` through PATH". PROJ-10 is now Enforced, locked 2026-10-03, wording unchanged. Every existing `TestProj07_*` and `TestProj10_*` guard runs unchanged.
+- 2026-10-03 (board #340): Stop state write gated on the state hooks — the Stop hook records `waiting` only when the workbench's folder has the session state hooks (`devpack.HasStateHooks`), so a folder not yet repaired no longer shows "waiting for you" after its first turn. The PROJ-07 note's state write is narrowed to those folders (it writes in fewer cases, never more); PROJ-07's stdout/exit contract, PROJ-11 and every guard are unchanged.
 - 2026-10-03 (board #312, plan `docs/superpowers/plans/2026-10-03-session-agent-state.md`): **PROJ-11** added and **PROJ-04** reworded, both approved by the owner on 2026-10-03 — Claude Code sessions in the Desktop's workbench terminal show working / waiting for you / needs approval from new async `workbench session-state` hook entries (`UserPromptSubmit`, `Notification`, `PostToolUse`, `StopFailure`; migration `00098`) and the extended Stop hook, with a macOS notice while the app is inactive. PROJ-04 now says one entry of ours per event we own, with a malformed state event counting as a malformed file (widened, no guard relaxed; two new guards). **PROJ-02** strengthened — remove/delete also take the state entries away (its hook guards extended). **PROJ-07** gains a note on the Stop hook's state write; its stdout/exit contract and guards are unchanged.
 - 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.

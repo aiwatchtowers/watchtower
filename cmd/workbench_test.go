@@ -38,12 +38,24 @@ func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err erro
 // run print usage, a leftover --project would collide with the next run's
 // --workbench. Flags no run set are left alone (flagConfig, for one, is
 // assigned by the tests, never parsed).
+//
+// A slice flag is restored through Replace: Set appends, and its "[]"
+// default text would parse as one "[]" element.
 func resetSetFlags(cmds ...*cobra.Command) {
 	reset := func(f *pflag.Flag) {
-		if f.Changed {
-			_ = f.Value.Set(f.DefValue)
-			f.Changed = false
+		if !f.Changed {
+			return
 		}
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			var def []string
+			if inner := strings.Trim(f.DefValue, "[]"); inner != "" {
+				def = strings.Split(inner, ",")
+			}
+			_ = sv.Replace(def)
+		} else {
+			_ = f.Value.Set(f.DefValue)
+		}
+		f.Changed = false
 	}
 	for _, c := range cmds {
 		c.Flags().VisitAll(reset)

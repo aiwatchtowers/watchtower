@@ -1411,13 +1411,13 @@ func TestLanguageInstruction(t *testing.T) {
 	gen := &mockGenerator{}
 
 	// languageInstruction now delegates to prompts.Directive — empty falls back
-	// to the configured default language (Russian).
+	// to the configured default language (English).
 	tests := []struct {
 		name     string
 		lang     string
 		expected string
 	}{
-		{"empty language", "", "Respond ONLY in Russian"},
+		{"empty language", "", "Respond ONLY in English"},
 		{"english", "English", "Respond ONLY in English"},
 		{"russian", "Russian", "Respond ONLY in Russian"},
 	}
@@ -3335,4 +3335,56 @@ func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
 	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
 	assert.Contains(t, err.Error(), "looks like plain text")
 	assert.Contains(t, err.Error(), "sha256:")
+}
+
+// A profile filled by the team form carries no CustomPromptContext; its
+// reports and role must still reach the prompt.
+func TestFormatProfileContext_NoCustomContext_RendersReportsAndRole(t *testing.T) {
+	p := &Pipeline{profile: &db.UserProfile{
+		Role:    "middle_management",
+		Team:    "Platform",
+		Reports: `["1:U20"]`,
+	}}
+
+	got := p.formatProfileContext()
+	assert.Contains(t, got, "=== USER PROFILE CONTEXT ===\nRole: middle_management\nTeam: Platform\n\nPERSONALIZATION RULES")
+	assert.Contains(t, got, `MY REPORTS: ["U20"]`)
+}
+
+func TestFormatProfileContext_NoCustomContext_ReportsOnly(t *testing.T) {
+	p := &Pipeline{profile: &db.UserProfile{Reports: `["U20"]`}}
+
+	got := p.formatProfileContext()
+	assert.Contains(t, got, "=== USER PROFILE CONTEXT ===\nPERSONALIZATION RULES")
+	assert.Contains(t, got, "MY REPORTS")
+}
+
+func TestFormatProfileContext_AllEmpty_NoBlock(t *testing.T) {
+	for name, profile := range map[string]*db.UserProfile{
+		"nil":         nil,
+		"zero":        {},
+		"empty lists": {Reports: "[]", StarredChannels: "[]", StarredPeople: "[]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &Pipeline{profile: profile}
+			assert.Equal(t, "", p.formatProfileContext())
+		})
+	}
+}
+
+// A legacy profile with CustomPromptContext renders byte-for-byte as before.
+func TestFormatProfileContext_LegacyCustomContext_Unchanged(t *testing.T) {
+	p := &Pipeline{profile: &db.UserProfile{
+		Role:                "middle_management",
+		Team:                "Platform",
+		CustomPromptContext: "I lead the platform team.",
+		Reports:             `["1:U20","1:U21"]`,
+		Peers:               `["1:U30"]`,
+		Manager:             "U40",
+		StarredChannels:     `["1:C1"]`,
+		StarredPeople:       `["1:U50"]`,
+	}}
+
+	want := "=== USER PROFILE CONTEXT ===\nI lead the platform team.\n\nPERSONALIZATION RULES:\n- Prioritize decisions and action items relevant to this user's role and responsibilities\n- Highlight topics that fall within the user's area of focus\n\nSTARRED CHANNELS: [\"C1\"] — provide more detail for these channels, lower threshold for including topics\n\nSTARRED PEOPLE: [\"U50\"] — highlight decisions and actions by these people\n\nMY REPORTS: [\"U20\",\"U21\"] — flag action items assigned to these people\n"
+	assert.Equal(t, want, p.formatProfileContext())
 }

@@ -20,6 +20,20 @@ protocol CodeEditorBridge: AnyObject {
     func takePending() async -> [CodeEditorPendingEdit]?
 }
 
+/// Where the Files pane puts the cursor once a file is on screen (Open
+/// Quickly, go to definition, back/forward): sent to the page as
+/// `reveal({id, line, col})` when the file is the one shown, then cleared.
+/// Either way the keyboard moves into the editor.
+struct CodeRevealRequest: Equatable {
+    let path: String
+    /// 1-based; nil = the cursor stays where the file had it.
+    let line: Int?
+    /// 1-based UTF-16 column.
+    let col: Int
+    /// Tells two requests for the same place apart.
+    let serial: Int
+}
+
 struct CodeEditorPendingEdit: Equatable {
     /// `CodeFileBuffer.id`
     let id: String
@@ -60,6 +74,14 @@ final class CodeFilesCenter {
     private(set) var watchErrors: [Int64: String] = [:]
     /// The editor page failed (load error, crash); shown over the pane.
     var editorErrors: [Int64: String] = [:]
+    /// Per workbench: where the cursor goes once the file is on screen.
+    private(set) var reveals: [Int64: CodeRevealRequest] = [:]
+    /// Per workbench: the editor's cursor as the page last reported it
+    /// (`cursor`, at most 10 a second) — back/forward and the jump bar.
+    private(set) var cursors: [Int64: CodeNavLocation] = [:]
+    @ObservationIgnored private var revealSerial = 0
+    /// Per workbench, loaded on first use (gone files pruned).
+    @ObservationIgnored private var recents: [Int64: CodeRecentFiles] = [:]
     @ObservationIgnored private var trees: [Int64: CodeFileTree] = [:]
     /// Per workbench and path: a workbench nested in another has its own
     /// buffer of a shared file (both guard their saves against the disk).
@@ -80,6 +102,15 @@ final class CodeFilesCenter {
     /// Off in tests, which feed `handle` themselves.
     @ObservationIgnored private let watchesFolders: Bool
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    /// The symbol index (on `AppState`), told when a workbench shows and
+    /// hides and fed this center's FSEvents batches — one stream per folder.
+    @ObservationIgnored weak var codeIndex: CodeIndexCenter?
+    /// Go to definition and history (on `AppState`); the editor page
+    /// reports its `definition` requests there.
+    @ObservationIgnored weak var navigation: CodeNavigationCenter?
+    /// Usages and the Files pane's inspector (on `AppState`); the editor
+    /// page reports its `usages` requests there.
+    @ObservationIgnored weak var usages: CodeUsagesCenter?
 
     init(
         defaults: UserDefaults = .standard,
@@ -123,6 +154,7 @@ final class CodeFilesCenter {
     /// `stopShowing` when that view goes.
     func startWatching(_ project: Workbench) {
         showing[project.id, default: 0] += 1
+        codeIndex?.markShown(workbenchID: project.id, folder: project.folderURL)
         let isNew = folders[project.id] != project.folderURL
         folders[project.id] = project.folderURL
         if watchesFolders, isNew || watchers[project.id] == nil {
@@ -143,6 +175,7 @@ final class CodeFilesCenter {
 
     func stopShowing(_ project: Workbench) {
         showing[project.id] = max(0, (showing[project.id] ?? 0) - 1)
+        codeIndex?.markHidden(workbenchID: project.id)
     }
 
     /// `startWatching` for as long as the calling task runs — a view's
@@ -158,6 +191,7 @@ final class CodeFilesCenter {
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, projectID: Int64) {
         guard folders[projectID] != nil else { return }
+        codeIndex?.applyWatcherBatch(batch, workbenchID: projectID)
         let tree = trees[projectID]
         if batch.mustRescan {
             tree?.reloadAll()
@@ -242,6 +276,7 @@ final class CodeFilesCenter {
     func open(_ path: String, project: Workbench, preview: Bool) {
         let before = tabsByWorkbench[project.id] ?? restoredTabs(project)
         mutateTabs(project) { $0.open(path, preview: preview) }
+        recordRecent(path, project: project)
         let after = tabsByWorkbench[project.id] ?? CodeTabs()
         for gone in before.paths where !after.contains(gone) {
             if let buffer = existingBuffer(project, gone), !buffer.isDirty, buffer.problem == nil {
@@ -252,6 +287,7 @@ final class CodeFilesCenter {
 
     func activate(_ path: String, project: Workbench) {
         mutateTabs(project) { $0.activate(path) }
+        if tabsByWorkbench[project.id]?.active == path { recordRecent(path, project: project) }
     }
 
     func pin(_ path: String, project: Workbench) {
@@ -298,6 +334,50 @@ final class CodeFilesCenter {
         } catch {
             NSLog("CodeFilesCenter: could not save the tabs of workbench %lld: %@", project.id, String(describing: error))
         }
+    }
+
+    // MARK: Recently opened and reveal
+
+    /// The files the Files pane opened most recently, newest first (the
+    /// last 50) — Open Quickly's "recently opened" boost (ruling R22).
+    /// Files gone from disk are dropped when the list is first read.
+    func recentFiles(for project: Workbench) -> [String] {
+        recentList(project).paths
+    }
+
+    private func recentList(_ project: Workbench) -> CodeRecentFiles {
+        if let list = recents[project.id] { return list }
+        var list = CodeRecentFiles(paths: defaults.stringArray(forKey: CodeRecentFiles.key(workbenchID: project.id)) ?? [])
+        list.prune { FileManager.default.fileExists(atPath: project.folderURL.appendingPathComponent($0).path) }
+        recents[project.id] = list
+        return list
+    }
+
+    private func recordRecent(_ path: String, project: Workbench) {
+        var list = recentList(project)
+        list.record(path)
+        recents[project.id] = list
+        defaults.set(list.paths, forKey: CodeRecentFiles.key(workbenchID: project.id))
+    }
+
+    /// The cursor goes to `line`:`col` of `path` (nil line: where it was)
+    /// and the keyboard into the editor once the Files pane shows it
+    /// (replacing any request not yet carried out).
+    func requestReveal(_ path: String, line: Int?, col: Int?, project: Workbench) {
+        revealSerial += 1
+        reveals[project.id] = CodeRevealRequest(
+            path: path, line: line.map { max(1, $0) }, col: max(1, col ?? 1), serial: revealSerial
+        )
+    }
+
+    /// The page's `cursor` message.
+    func cursorMoved(_ location: CodeNavLocation, workbenchID: Int64) {
+        if cursors[workbenchID] != location { cursors[workbenchID] = location }
+    }
+
+    /// The page was told: the request is done (a newer one stays).
+    func revealSent(_ request: CodeRevealRequest, workbenchID: Int64) {
+        if reveals[workbenchID] == request { reveals[workbenchID] = nil }
     }
 
     // MARK: Buffers

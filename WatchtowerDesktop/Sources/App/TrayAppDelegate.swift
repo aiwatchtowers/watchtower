@@ -9,7 +9,7 @@ enum ActivationPolicyDecision {
     }
 
     /// Windows that earn a Dock icon: the ones the user can bring to front
-    /// (main window, Settings, Pipeline Progress). Deliberately NOT
+    /// (main window, Settings, Logs, …). Deliberately NOT
     /// "main window only" — closing the main window while Settings is open
     /// must not strand a visible window in `.accessory`, where it has neither
     /// Dock icon nor menu bar. The MenuBarExtra's status-item window is
@@ -65,8 +65,8 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// content mounts, which is too late for `applicationDidFinishLaunching`
     /// (the login-launch close ran against an unnamed window and matched
     /// nothing). The autosave name stays as a second, mount-time signal.
-    /// Settings (`com_apple_SwiftUI_Settings_window`) and Pipeline Progress
-    /// (`progress-detail-…`) never match.
+    /// Settings (`com_apple_SwiftUI_Settings_window`) and the other windows
+    /// (`logs-…`, …) never match.
     static func isMainWindow(_ window: NSWindow) -> Bool {
         isMainWindowIdentifier(window.identifier?.rawValue)
             || window.frameAutosaveName == mainWindowAutosaveName

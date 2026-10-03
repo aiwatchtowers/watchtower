@@ -82,7 +82,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
 
     private func makeBriefingsEmpty(owner: Owner, onGenerate: @escaping () -> Void = {}) -> BriefingsEmptyState {
         BriefingsEmptyState(
-            owner: owner, processing: false, isGenerating: false, generateError: nil,
+            owner: owner, isGenerating: false, generateError: nil,
             onGenerate: onGenerate
         ) {}
     }

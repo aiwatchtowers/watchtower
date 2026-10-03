@@ -6,64 +6,64 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"watchtower/internal/gitbin"
 )
 
 // squashWindow is how many of the non-merge commits the default branch
 // gained since a branch forked a squash merge is looked for in (by patch id).
 const squashWindow = 200
 
-// ExecRunner runs a real process. The environment keeps git and gh
-// non-interactive and lock-free: the check only reads.
+// noGitNote is the check's note when no git binary exists outside the
+// macOS /usr/bin/git shim.
+const noGitNote = "git is not available (no Command Line Tools); branch checks skipped"
+
+// noGitPRNote: without git the pull request states are not read either.
+const noGitPRNote = "git is not available; pull request states not checked"
+
+// locateGit finds git; a variable so a test can take git away.
+var locateGit = gitbin.Locate
+
+// ExecRunner runs a real process through gitbin.Exec, which keeps git and gh
+// non-interactive and lock-free: the check only reads. "git" is the binary
+// gitbin locates — never a PATH lookup, never the /usr/bin/git shim, whose
+// install dialog would pop in the owner's face; with none found it runs
+// nothing and returns gitbin.ErrUnavailable.
 func ExecRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
-	c := exec.CommandContext(ctx, name, args...)
-	c.Dir = dir
-	c.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GH_PROMPT_DISABLED=1", "LC_ALL=C")
-	c.WaitDelay = time.Second
-	if stdin != nil {
-		c.Stdin = bytes.NewReader(stdin)
+	bin := name
+	if name == "git" {
+		located, ok := locateGit()
+		if !ok {
+			return nil, -1, gitbin.ErrUnavailable
+		}
+		bin = located
 	}
-	var stdout, stderr bytes.Buffer
-	c.Stdout, c.Stderr = &stdout, &stderr
-	err := c.Run()
+	stdout, stderr, err := gitbin.Exec(ctx, dir, stdin, bin, args...)
 	var exitErr *exec.ExitError
 	switch {
 	case err == nil:
-		return stdout.Bytes(), 0, nil
+		return stdout, 0, nil
 	case errors.As(err, &exitErr):
-		return stdout.Bytes(), exitErr.ExitCode(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, bytes.TrimSpace(stderr.Bytes()))
+		return stdout, exitErr.ExitCode(), fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, stderr)
 	default:
 		return nil, -1, err
 	}
 }
 
 // insideRepository reports whether dir or one of its parents holds a .git
-// entry (a directory, or a linked worktree's gitdir file).
-func insideRepository(dir string) bool {
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return false
-	}
-	for cur := abs; ; cur = filepath.Dir(cur) {
-		if _, err := os.Lstat(filepath.Join(cur, ".git")); err == nil {
-			return true
-		}
-		if filepath.Dir(cur) == cur {
-			return false
-		}
-	}
-}
+// entry (a directory, or a linked worktree's gitdir file); no process runs.
+func insideRepository(dir string) bool { return gitbin.InsideRepository(dir) }
 
 // gitState is what the check knows about the folder's repository.
 type gitState struct {
 	o           Options
 	workTree    bool
+	noGit       bool     // inside a repository, but no git binary was found
 	defaultName string   // e.g. "main"
 	bases       []string // resolved commits of origin/<default> and <default>, whichever exist
 	baseLabel   string   // e.g. "origin/main"
@@ -72,9 +72,9 @@ type gitState struct {
 
 func newGitState(ctx context.Context, o Options) *gitState {
 	g := &gitState{o: o}
-	// No git call at all unless the folder is inside a repository: on a Mac
-	// without the developer tools, /usr/bin/git itself would pop an install
-	// dialog in the owner's face.
+	// No git call at all unless the folder is inside a repository, so a
+	// plain folder never spawns git; inside one, ExecRunner runs the git
+	// gitbin located, never the /usr/bin/git shim's install dialog.
 	if !insideRepository(o.Folder) {
 		g.notes = append(g.notes, "the folder is not a git work tree; branch checks skipped")
 		return g
@@ -82,6 +82,11 @@ func newGitState(ctx context.Context, o Options) *gitState {
 	out, _, err := g.git(ctx, "rev-parse", "--is-inside-work-tree")
 	if ctx.Err() != nil {
 		return g // Check reports the deadline; no conclusion from a cut call
+	}
+	if errors.Is(err, gitbin.ErrUnavailable) {
+		g.noGit = true
+		g.notes = append(g.notes, noGitNote)
+		return g
 	}
 	if err != nil || strings.TrimSpace(out) != "true" {
 		g.notes = append(g.notes, "the folder is not a git work tree; branch checks skipped")

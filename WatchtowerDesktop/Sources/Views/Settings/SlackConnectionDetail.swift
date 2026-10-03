@@ -263,8 +263,11 @@ struct SlackConnectionDetail: View {
             }
         }
         .sheet(isPresented: $showAddSlackAccountSheet) {
-            AddSlackAccountView()
+            // Settings opened during onboarding: its finish starts the
+            // daemon, not this sheet.
+            AddSlackAccountView(daemonPolicy: appState.accountDaemonPolicy)
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(slackAccountPendingRemoval?.displayName ?? "this workspace")?",
@@ -276,7 +279,7 @@ struct SlackConnectionDetail: View {
         ) {
             Button("Remove Workspace", role: .destructive) {
                 if let account = slackAccountPendingRemoval {
-                    Task { await appState.slackAccountsViewModel?.remove(account) }
+                    Task { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: appState.accountDaemonPolicy) }
                 }
                 slackAccountPendingRemoval = nil
             }

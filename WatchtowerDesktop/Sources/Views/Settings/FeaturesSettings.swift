@@ -114,15 +114,6 @@ struct FeaturesSettings: View {
                 format: .number,
                 prompt: Text("5")
             )
-
-            TextField(
-                "Language",
-                text: Binding(
-                    get: { config.digestLanguage ?? "" },
-                    set: { config.digestLanguage = $0.isEmpty ? nil : $0 }
-                ),
-                prompt: Text("English")
-            )
         }
     }
 

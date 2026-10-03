@@ -33,7 +33,6 @@ struct WorkbenchSwitcherPopover: View {
                 HStack {
                     Label("All Workbenches", systemImage: "chevron.backward")
                     Spacer(minLength: 4)
-                    Text("⌘⇧O").foregroundStyle(.secondary)
                 }
                 .contentShape(Rectangle())
             }

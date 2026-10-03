@@ -428,15 +428,42 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("q", modifiers: .command)
             }
+            // Only while a workbench window is key (spec §10, ruling R36):
+            // `keyWorkbench` is the workbench on screen while its window (or
+            // its Open Quickly panel) is key. Inside Monaco these chords reach
+            // the menu because the page drops its own.
+            CommandMenu("Navigate") {
+                let navigation = appState.codeNavigationCenter
+                let shown = appState.openQuicklyCenter.keyWorkbench
+                Button("Open Quickly…") { appState.openQuicklyCenter.present(scope: .all) }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
+                    .disabled(shown == nil)
+                Button("Find in Workbench…") { appState.openQuicklyCenter.present(scope: .text) }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(shown == nil)
+                Divider()
+                Button("Go to Definition") {
+                    if let shown { Task { await navigation.goToDefinitionAtCursor(project: shown) } }
+                }
+                .keyboardShortcut("j", modifiers: [.control, .command])
+                .disabled(shown == nil)
+                Button("Show All Usages") {
+                    let usages = appState.codeUsagesCenter
+                    if let shown { Task { await usages.showUsagesAtCursor(project: shown) } }
+                }
+                .keyboardShortcut("u", modifiers: [.shift, .command])
+                .disabled(shown == nil)
+                Button("File Symbols…") { if let shown { navigation.showFileSymbols(project: shown) } }
+                    .keyboardShortcut("6", modifiers: .control)
+                    .disabled(shown == nil)
+                Button("Back") { if let shown { navigation.goBack(project: shown) } }
+                    .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
+                    .disabled(!navigation.canGoBack(workbenchID: shown?.id))
+                Button("Forward") { if let shown { navigation.goForward(project: shown) } }
+                    .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
+                    .disabled(!navigation.canGoForward(workbenchID: shown?.id))
+            }
         }
-
-        Window("Pipeline Progress", id: "progress-detail") {
-            ProgressDetailView()
-                .environment(appState)
-                .environment(\.openURL, AllowedURLSchemes.openURLAction)
-                .environment(\.dictationCenter, appState.dictationCenter)
-        }
-        .defaultSize(width: 600, height: 500)
 
         Window("Logs", id: "logs") {
             LogsSettings()
