@@ -343,18 +343,7 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	if ps.LegacySkill, err = statusLegacySkill(o.skillsDir()); err != nil {
 		errs = append(errs, err)
 	}
-	var startErr error
-	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.WorkbenchID); startErr != nil {
-		errs = append(errs, startErr)
-	}
-	if ps.StopHook, err = HasStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	if ps.StateHooks, err = HasStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	// Its only possible failure is the malformed file already reported above.
-	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
+	errs = append(errs, statusHooks(o, &ps)...)
 	ps.CurrentMCP, err = mcpRegistered(ctx, o, WorkbenchMCPServerName)
 	if err == nil {
 		ps.LegacyMCP, err = mcpRegistered(ctx, o, LegacyMCPServerName)
@@ -368,6 +357,25 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
 	return ps, errors.Join(errs...)
+}
+
+// statusHooks fills ps's hook fields; a malformed settings file is one
+// error, not one per event.
+func statusHooks(o WorkbenchInstallOptions, ps *WorkbenchStatus) []error {
+	var errs []error
+	var startErr, err error
+	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.WorkbenchID); startErr != nil {
+		errs = append(errs, startErr)
+	}
+	if ps.StopHook, err = HasStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if ps.StateHooks, err = HasStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	// Its only possible failure is the malformed file already reported above.
+	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
+	return errs
 }
 
 // statusLegacySkill is the pre-rename skill's state: StateUnchanged for our
