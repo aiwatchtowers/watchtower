@@ -205,6 +205,66 @@ final class CodeUsagesCenterTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: project.id).visiblePanes.contains(.files), true, "the Files pane is on screen")
     }
 
+    /// Ruling R33: a row click is a navigation jump — the cursor it left
+    /// goes on the pane's Back history, as a definition jump's does.
+    func testARowClickIsAJumpThatBackReturnsFrom() async throws {
+        let (center, vm) = makeCenter()
+        let navigation = makeNavigation(vm: vm, usages: center)
+        vm.codeFiles.open("src/store.swift", project: project, preview: false)
+        let before = CodeNavLocation(path: "src/store.swift", line: 5, col: 2)
+        vm.codeFiles.cursorMoved(before, workbenchID: project.id)
+        center.showUsages(of: "save", project: project)
+        searches.started[0].onMatch(hit("src/list.swift", 1, "save()", col: 1))
+        let row = try XCTUnwrap(center.usages(for: project.id)?.groups.first?.rows.first)
+        await center.openUsage(row, project: project)
+        XCTAssertTrue(navigation.canGoBack(workbenchID: project.id))
+        navigation.goBack(project: project)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "src/store.swift")
+        let reveal = vm.codeFiles.reveals[project.id]
+        XCTAssertEqual(reveal?.path, "src/store.swift")
+        XCTAssertEqual(reveal?.line, 5)
+        XCTAssertEqual(reveal?.col, 2)
+    }
+
+    func testRowClicksFromTheSamePlaceRecordItOnce() async throws {
+        let (center, vm) = makeCenter()
+        let navigation = makeNavigation(vm: vm, usages: center)
+        vm.codeFiles.open("src/list.swift", project: project, preview: false)
+        let place = CodeNavLocation(path: "src/list.swift", line: 1, col: 1)
+        let usage = CodeNavLocation(path: "src/list.swift", line: 3, col: 1)
+        vm.codeFiles.cursorMoved(place, workbenchID: project.id)
+        center.showUsages(of: "save", project: project)
+        searches.started[0].onMatch(hit("src/list.swift", 3, "save()", col: 1))
+        let row = try XCTUnwrap(center.usages(for: project.id)?.groups.first?.rows.first)
+        await center.openUsage(row, project: project)
+        // Back at the same place in the same file, the row again.
+        vm.codeFiles.cursorMoved(place, workbenchID: project.id)
+        await center.openUsage(row, project: project)
+        vm.codeFiles.cursorMoved(usage, workbenchID: project.id)
+        navigation.goBack(project: project)
+        XCTAssertEqual(vm.codeFiles.reveals[project.id]?.line, 1, "Back lands on the place the clicks left")
+        XCTAssertFalse(navigation.canGoBack(workbenchID: project.id), "one entry, not two")
+    }
+
+    func testARowClickWithNoKnownCursorRecordsNothing() async throws {
+        let (center, vm) = makeCenter()
+        let navigation = makeNavigation(vm: vm, usages: center)
+        center.showUsages(of: "save", project: project)
+        searches.started[0].onMatch(hit("src/list.swift", 1, "save()", col: 1))
+        let row = try XCTUnwrap(center.usages(for: project.id)?.groups.first?.rows.first)
+        await center.openUsage(row, project: project)
+        XCTAssertFalse(navigation.canGoBack(workbenchID: project.id))
+        XCTAssertEqual(vm.codeFiles.tabs(for: project).active, "src/list.swift", "the row still opens")
+    }
+
+    private func makeNavigation(vm: WorkbenchesViewModel, usages: CodeUsagesCenter) -> CodeNavigationCenter {
+        let navigation = CodeNavigationCenter(codeIndex: CodeIndexCenter { nil }, startSearch: searches.start) {}
+        navigation.workbenches = vm
+        vm.codeFiles.navigation = navigation
+        usages.navigation = navigation
+        return navigation
+    }
+
     // MARK: Inspector
 
     func testTheInspectorIsPerWorkbenchAndRemembersItsTab() {

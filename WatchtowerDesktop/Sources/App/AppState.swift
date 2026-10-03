@@ -1014,6 +1014,7 @@ final class AppState {
         codeNavigationCenter.workbenches = vm
         vm.codeFiles.navigation = codeNavigationCenter
         codeUsagesCenter.workbenches = vm
+        codeUsagesCenter.navigation = codeNavigationCenter
         codeNavigationCenter.usages = codeUsagesCenter
         vm.codeFiles.usages = codeUsagesCenter
         vm.closeTerminal = { [weak self] projectID in

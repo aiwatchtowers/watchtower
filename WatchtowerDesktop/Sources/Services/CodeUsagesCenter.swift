@@ -40,6 +40,8 @@ final class CodeUsagesCenter {
     private(set) var shownInspectors: Set<Int64> = []
     private(set) var inspectorTabs: [Int64: CodeInspectorTab] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
+    /// A row click is a jump: it goes on the pane's Back history (R33).
+    @ObservationIgnored weak var navigation: CodeNavigationCenter?
     @ObservationIgnored private let startSearch: CodeSearchStarter
     @ObservationIgnored private let beep: @MainActor () -> Void
     @ObservationIgnored private var pages: [Int64: WeakUsagesPage] = [:]
@@ -123,8 +125,10 @@ final class CodeUsagesCenter {
     }
 
     /// A row's click: the file in the Files pane (a preview tab, like Open
-    /// Quickly's ↩), the cursor on the name.
+    /// Quickly's ↩), the cursor on the name; where the cursor was goes on
+    /// Back (⌃⌘←), as for a definition jump (ruling R33).
     func openUsage(_ row: UsageRow, project: Workbench) async {
+        navigation?.recordJumpFromCurrentLocation(project: project)
         await workbenches?.openFile(at: row.target, project: project, beside: false)
     }
 

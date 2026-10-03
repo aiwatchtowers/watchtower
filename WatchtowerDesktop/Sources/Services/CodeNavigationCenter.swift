@@ -186,6 +186,14 @@ final class CodeNavigationCenter {
         return result
     }
 
+    /// A jump that is not a definition's (a Usages row, ruling R33): the
+    /// cursor of the file on screen goes on Back, as a definition jump's
+    /// origin does; nothing when the page has not reported it.
+    func recordJumpFromCurrentLocation(project: Workbench) {
+        guard let origin = currentLocation(project) else { return }
+        histories[project.id, default: CodeNavigationHistory()].recordJump(from: origin)
+    }
+
     private func jump(to target: CodeNavLocation, from origin: CodeNavLocation, project: Workbench) {
         histories[project.id, default: CodeNavigationHistory()].recordJump(from: origin)
         workbenches?.showLocation(target, project: project, keepingTab: true)
