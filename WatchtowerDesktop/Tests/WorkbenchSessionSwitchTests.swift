@@ -93,7 +93,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
 
         XCTAssertEqual(onScreen(vm), .session(a.id), "the session clicked last is on screen")
         XCTAssertEqual(vm.panelSelection, .session(a.id))
-        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id, "and is the one Send comments goes to")
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id, "and is the workbench's active session")
     }
 
     /// A → B → A while B resumes (not running, not yet in the list): A ends

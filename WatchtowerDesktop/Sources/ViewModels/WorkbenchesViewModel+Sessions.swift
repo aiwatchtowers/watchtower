@@ -20,8 +20,8 @@ extension WorkbenchesViewModel {
     enum Placement: Equatable {
         /// A panel click: `WorkspaceLayout.show`.
         case show
-        /// Without hiding this pane (Send comments / Open terminal from a
-        /// document): `WorkspaceLayout.reveal(_:keeping:)`.
+        /// Without hiding this pane (the Terminal toggle, Work on it):
+        /// `WorkspaceLayout.reveal(_:keeping:)`.
         case keeping(WorkspacePane)
         /// Into this pane's slot (a pane's own picker); a slot gone from
         /// the layout meanwhile falls back to `.show`.

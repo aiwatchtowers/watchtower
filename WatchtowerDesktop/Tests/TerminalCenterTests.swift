@@ -464,8 +464,8 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: 2))
     }
 
-    /// Send comments targets the most recently focused live claude session of
-    /// the project — never a shell, never another project's session.
+    /// The active session is the most recently focused live claude session
+    /// of the project — never a shell, never another project's session.
     func testActiveSessionIsTheLastFocusedLiveClaudeSessionOfTheProject() throws {
         let center = makeCenter()
         let a = try row(project: 1)
@@ -482,7 +482,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNil(center.activeSession(projectID: 3))
     }
 
-    // MARK: - Send comments (Task 26)
+    // MARK: - sendPrompt (an answer's line)
 
     func testARunningSessionGetsOneBracketedPasteWithNoEnter() throws {
         let center = makeCenter()

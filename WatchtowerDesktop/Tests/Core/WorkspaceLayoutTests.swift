@@ -161,7 +161,7 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.key(workbenchID: 12), "projects.layout.12")
     }
 
-    // MARK: - Pane pickers, close, Send comments, divider
+    // MARK: - Pane pickers, close, reveal keeping a pane, divider
 
     func testReplaceSwapsWhenThePaneIsInTheOtherSlot() {
         var l = split()

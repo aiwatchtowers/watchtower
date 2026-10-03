@@ -120,8 +120,8 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
-    /// Send comments: puts `pane` on screen without hiding `kept` (the pane
-    /// the owner sent from). Visible already → nothing moves; a split
+    /// The Terminal toggle and Work on it: puts `pane` on screen without
+    /// hiding `kept` (the pane the owner acted from). Visible already → nothing moves; a split
     /// replaces the other pane; a single pane switches to it.
     package mutating func reveal(_ pane: WorkspacePane, keeping kept: WorkspacePane) {
         if visiblePanes.contains(pane) { return }
