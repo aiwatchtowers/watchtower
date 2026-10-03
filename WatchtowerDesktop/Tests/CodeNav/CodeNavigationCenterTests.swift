@@ -52,7 +52,7 @@ final class CodeNavigationCenterTests: XCTestCase {
     private let loadInStore = CodeSymbol(name: "load", kind: .method, path: "src/store.swift", line: 30, col: 10, endLine: 32, container: "Store")
 
     private func makeCenter(symbols: [CodeSymbol]) -> (CodeNavigationCenter, WorkbenchesViewModel) {
-        let codeIndex = CodeIndexCenter { nil }
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         self.codeIndex = codeIndex
         let center = CodeNavigationCenter(
             codeIndex: codeIndex, menu: menu, startSearch: searches.start,

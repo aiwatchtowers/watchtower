@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import XCTest
+@testable import WatchtowerDesktop
 
 /// A fake `watchtower` for the code-navigation centers: `code index --json`
 /// lists `STUB_FILES` (after `STUB_FULL_DELAY` seconds) or fails with
@@ -131,4 +132,12 @@ struct CodeCLIStub {
     echo '{"done":true,"files":2,"symbols":2,"ms":1'"$rerr"'}'
     echo "full done" >> "$STUB_LOG"
     """#
+}
+
+extension CodeIndexCenter {
+    /// A rules file for tests that do not care about it: one temp folder per
+    /// test process, so a shown center never creates or watches the real
+    /// Application Support folder.
+    static let testRulesFile = FileManager.default.temporaryDirectory
+        .appendingPathComponent("code-rules-tests-\(ProcessInfo.processInfo.processIdentifier)/code-languages.yaml")
 }

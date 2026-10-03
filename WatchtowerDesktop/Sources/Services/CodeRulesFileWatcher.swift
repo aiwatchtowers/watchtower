@@ -38,8 +38,10 @@ final class CodeRulesFileWatcher {
 
     private let path: String
     private let onChange: @MainActor () -> Void
-    private var folderSource: DispatchSourceFileSystemObject?
-    private var fileSource: DispatchSourceFileSystemObject?
+    /// nonisolated(unsafe): touched on the main actor only, and by deinit,
+    /// which runs when nothing else holds the watcher.
+    nonisolated(unsafe) private var folderSource: DispatchSourceFileSystemObject?
+    nonisolated(unsafe) private var fileSource: DispatchSourceFileSystemObject?
     /// The file the file source is open on (nil = none: the file is missing).
     private var watchedFile: Fingerprint?
     private var fingerprint: Fingerprint?
@@ -61,6 +63,12 @@ final class CodeRulesFileWatcher {
         fingerprint = Fingerprint.of(path)
         armFileSource()
         source.resume()
+    }
+
+    /// A dropped watcher closes its descriptors too (the cancel handlers).
+    deinit {
+        folderSource?.cancel()
+        fileSource?.cancel()
     }
 
     func stop() {

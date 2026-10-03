@@ -44,11 +44,14 @@ final class CodeIndexCenterTests: XCTestCase {
         stub.remove()
     }
 
-    private func makeCenter(_ env: [String: String] = [:], executable: String? = nil) -> CodeIndexCenter {
+    private func makeCenter(
+        _ env: [String: String] = [:], executable: String? = nil, rulesDebounce: Duration = .milliseconds(500)
+    ) -> CodeIndexCenter {
         let path = executable ?? stub.executable.path
         let environment = stub.environment(["STUB_FILES": "one.swift two.swift"].merging(env) { $1 })
         let made = CodeIndexCenter(
-            resolveExecutable: { path }, environment: { environment }, clock: { [clock] in clock.now }, rulesFile: rulesFile
+            resolveExecutable: { path }, environment: { environment }, clock: { [clock] in clock.now }, rulesFile: rulesFile,
+            rulesDebounce: rulesDebounce
         )
         center = made
         return made
@@ -214,7 +217,7 @@ final class CodeIndexCenterTests: XCTestCase {
     }
 
     func testAMissingCLIFails() {
-        let center = CodeIndexCenter(resolveExecutable: { nil }, environment: { [:] })
+        let center = CodeIndexCenter(resolveExecutable: { nil }, environment: { [:] }, rulesFile: rulesFile)
         self.center = center
         center.markShown(workbenchID: 7, folder: folder)
         XCTAssertEqual(center.index(for: 7).state, .failed("The watchtower command-line tool was not found."))
@@ -282,10 +285,10 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertNil(index.rulesError, "the new child read the fixed file")
     }
 
-    /// Edits 500 ms apart at most are one reload; a hidden workbench waits
-    /// for its next show.
+    /// Edits inside the debounce (1 s here, for margin) are one reload; a
+    /// hidden workbench waits for its next show.
     func testRulesEditsAreDebouncedAndAHiddenWorkbenchReindexesWhenShown() async throws {
-        let center = makeCenter()
+        let center = makeCenter(rulesDebounce: .seconds(1))
         center.markShown(workbenchID: 7, folder: folder)
         center.markShown(workbenchID: 8, folder: folder)
         let ready = await eventually { center.index(for: 7).state == .ready && center.index(for: 8).state == .ready }
@@ -297,7 +300,7 @@ final class CodeIndexCenterTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         try writeRules("# two\n")
         try await Task.sleep(for: .milliseconds(350))
-        XCTAssertEqual(stub.fullRuns, 2, "still inside the 500 ms window of the last edit")
+        XCTAssertEqual(stub.fullRuns, 2, "still inside the 1 s window of the last edit")
         let reloaded = await eventually { self.stub.fullRuns == 3 && center.index(for: 7).state == .ready }
         XCTAssertTrue(reloaded)
         try await Task.sleep(for: .milliseconds(700))
@@ -306,6 +309,22 @@ final class CodeIndexCenterTests: XCTestCase {
         center.markShown(workbenchID: 8, folder: folder)
         let shown = await eventually { self.stub.fullRuns == 4 }
         XCTAssertTrue(shown, "shown again: the full run that waited")
+    }
+
+    /// The app creates the rules folder when it starts watching, so a rules
+    /// file written after the first show (its folder missing then) is seen.
+    func testARulesFileCreatedInAFolderMissingAtTheFirstShowIsApplied() async throws {
+        let support = stub.directory.appendingPathComponent("not-yet/Watchtower")
+        rulesFile = support.appendingPathComponent("code-languages.yaml")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: support.path))
+        let center = makeCenter()
+        center.markShown(workbenchID: 7, folder: folder)
+        let ready = await eventually { center.index(for: 7).state == .ready }
+        XCTAssertTrue(ready)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: support.path), "the folder is created to be watched")
+        try writeRules("invalid: [\n")
+        let applied = await eventually { self.stub.fullRuns == 2 && center.index(for: 7).rulesError != nil }
+        XCTAssertTrue(applied, "full runs: \(stub.fullRuns)")
     }
 
     /// A full run in flight read the old rules: it is killed and run again.

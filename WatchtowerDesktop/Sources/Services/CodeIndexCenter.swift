@@ -42,9 +42,12 @@ final class CodeIndexCenter {
     private let pinsRulesFile: Bool
     private let rulesDebounce: Duration
     private var rulesWatcher: CodeRulesFileWatcher?
+    /// The rules folder could not be created: said once, not on every show.
+    private var rulesFolderFailureLogged = false
     private var rulesDebounceTask: Task<Void, Never>?
 
-    /// Where `watchtower code index` reads the rules file from by default.
+    /// Where `watchtower code index` reads the rules file from by default —
+    /// must stay the path Go builds from `os.UserHomeDir()` ($HOME).
     static let defaultRulesFile = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Watchtower/code-languages.yaml")
 
@@ -167,11 +170,25 @@ final class CodeIndexCenter {
     /// exist yet: then the next show tries again.
     private func watchRulesFile() {
         guard rulesWatcher == nil else { return }
+        // The app owns the folder: created now, so a rules file written
+        // later is seen (a watcher started after it would take it as the
+        // baseline and never reindex).
+        let folder = rulesFile.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            if !rulesFolderFailureLogged {
+                rulesFolderFailureLogged = true
+                NSLog("CodeIndexCenter: cannot create %@ to watch the rules file: %@", folder.path, error.localizedDescription)
+            }
+            return
+        }
         rulesWatcher = CodeRulesFileWatcher(file: rulesFile) { [weak self] in
             self?.rulesFileChanged()
         }
-        if rulesWatcher == nil {
-            NSLog("CodeIndexCenter: cannot watch %@: its folder is missing", rulesFile.path)
+        if rulesWatcher == nil, !rulesFolderFailureLogged {
+            rulesFolderFailureLogged = true
+            NSLog("CodeIndexCenter: cannot watch the rules file folder %@", folder.path)
         }
     }
 

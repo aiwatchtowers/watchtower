@@ -49,7 +49,7 @@ final class CodeNavQuitTests: XCTestCase {
     }
 
     func testQuitStopsTheSearchesOfOpenQuicklyDefinitionAndUsages() async {
-        let codeIndex = CodeIndexCenter { nil }
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let openQuickly = OpenQuicklyCenter(codeIndex: codeIndex, presenter: SilentPresenter(), startSearch: stubStarter())
         let navigation = CodeNavigationCenter(codeIndex: codeIndex, startSearch: stubStarter()) {}
         let usages = CodeUsagesCenter(startSearch: stubStarter()) {}
