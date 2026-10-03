@@ -5,12 +5,16 @@ import XCTest
 
 /// End to end against the real Go CLI built from this checkout
 /// (`go build -o <tmp>/watchtower .`): a full index, a `--serve` update and
-/// a deletion through `CodeIndexCenter`, and a `CodeSearchRun`. Skipped
+/// a deletion through `CodeIndexCenter`, and a `CodeSearchRun`; the owner's
+/// rules file (pinned to a temp file) indexing a Tcl file, and its error
+/// once the file is broken. Skipped
 /// when no Go toolchain is installed.
 @MainActor
 final class CodeNavRealCLITests: XCTestCase {
     nonisolated(unsafe) private static var binary: Result<URL, Error>?
     private var folder: URL!
+    /// The pinned rules file, outside the workbench folder.
+    private var rulesFile: URL!
     private var center: CodeIndexCenter?
 
     private static var repoRoot: URL {
@@ -69,18 +73,23 @@ final class CodeNavRealCLITests: XCTestCase {
             .write(to: folder.appendingPathComponent("pkg/hello.go"), atomically: true, encoding: .utf8)
         try "def greet():\n    return Hello()\n".write(to: folder.appendingPathComponent("greet.py"), atomically: true, encoding: .utf8)
         try "notes\n".write(to: folder.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+        let support = FileManager.default.temporaryDirectory.appendingPathComponent("code-nav-rules-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        rulesFile = support.appendingPathComponent("code-languages.yaml")
+        try "".write(to: rulesFile, atomically: true, encoding: .utf8)
     }
 
     override func tearDown() async throws {
         center?.stopAll()
         center = nil
         try? FileManager.default.removeItem(at: folder)
+        try? FileManager.default.removeItem(at: rulesFile.deletingLastPathComponent())
     }
 
     func testIndexUpdateDeleteAndSearchWithTheRealCLI() async throws {
         let cli = try Self.builtCLI().path
         let env = ProcessInfo.processInfo.environment
-        let center = CodeIndexCenter(resolveExecutable: { cli }, environment: { env }, debounce: .milliseconds(50))
+        let center = CodeIndexCenter(resolveExecutable: { cli }, environment: { env }, debounce: .milliseconds(50), rulesFile: rulesFile)
         self.center = center
         center.markShown(workbenchID: 1, folder: folder)
         let index = center.index(for: 1)
@@ -115,5 +124,45 @@ final class CodeNavRealCLITests: XCTestCase {
         XCTAssertEqual(Set(matches.map(\.path)), ["pkg/hello.go"])
         XCTAssertEqual(matches.map(\.line).sorted(), [3, 4])
         withExtendedLifetime(run) {}
+    }
+
+    func testTheOwnerRulesIndexATclFileAndABrokenFileShowsItsError() async throws {
+        let cli = try Self.builtCLI().path
+        let env = ProcessInfo.processInfo.environment
+        try """
+        tcl:
+          extensions: [.tcl]
+          definitions:
+            - kind: function
+              pattern: '^\\s*proc\\s+(\\w+)'
+        """.write(to: rulesFile, atomically: true, encoding: .utf8)
+        try "proc foo {a b} {\n    return $a\n}\n".write(to: folder.appendingPathComponent("util.tcl"), atomically: true, encoding: .utf8)
+        let center = CodeIndexCenter(
+            resolveExecutable: { cli }, environment: { env }, debounce: .milliseconds(50), rulesFile: rulesFile, rulesDebounce: .milliseconds(50)
+        )
+        self.center = center
+        center.markShown(workbenchID: 1, folder: folder)
+        let index = center.index(for: 1)
+        let ready = await eventually { index.state == .ready || { if case .failed = index.state { true } else { false } }() }
+        XCTAssertTrue(ready)
+        XCTAssertEqual(index.state, .ready)
+        XCTAssertEqual(index.symbols(in: "util.tcl").map(\.name), ["foo"])
+        XCTAssertEqual(index.definitionLanguage(of: "util.tcl"), "tcl")
+        XCTAssertNil(index.rulesError)
+
+        try "tcl:\n  extensions: [.tcl]\n  definitions:\n    - kind: lambda\n      pattern: '(x)'\n"
+            .write(to: rulesFile, atomically: true, encoding: .utf8)
+        let broken = await eventually { index.rulesError != nil && index.state == .ready }
+        XCTAssertTrue(broken, "state: \(index.state)")
+        let error = try XCTUnwrap(index.rulesError)
+        XCTAssertTrue(error.hasPrefix(rulesFile.path + ": tcl"), error)
+        XCTAssertEqual(index.symbols(in: "util.tcl"), [], "the whole file is ignored")
+        XCTAssertEqual(index.definitionLanguage(of: "util.tcl"), "")
+        let bar = JumpBarModel(
+            path: "util.tcl", rootName: "acme", cursorLine: 1, symbols: [], language: index.definitionLanguage(of: "util.tcl"),
+            state: index.state, rulesError: index.rulesError
+        )
+        XCTAssertEqual(bar.status?.text, "Language TCL: text search")
+        XCTAssertTrue(bar.rulesNote?.text.hasPrefix("Rules file: tcl") == true, bar.rulesNote?.text ?? "no note")
     }
 }

@@ -48,7 +48,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
     /// A center over an index with no CLI (its run fails at once); the
     /// index is filled by hand.
     private func makeCenter(askAIEnabled: Bool = OpenQuicklyAskAIFeature.isEnabled) -> (OpenQuicklyCenter, WorkbenchesViewModel) {
-        let codeIndex = CodeIndexCenter { nil }
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let center = OpenQuicklyCenter(
             codeIndex: codeIndex, presenter: presenter, startSearch: searches.start, askAIEnabled: askAIEnabled
         )
@@ -144,7 +144,9 @@ final class OpenQuicklyCenterTests: XCTestCase {
         defer { stub.remove() }
         let clock = TestNow()
         let env = stub.environment(["STUB_FILES": "one.swift"])
-        let codeIndex = CodeIndexCenter(resolveExecutable: { stub.executable.path }, environment: { env }, clock: { clock.now })
+        let codeIndex = CodeIndexCenter(
+            resolveExecutable: { stub.executable.path }, environment: { env }, clock: { clock.now }, rulesFile: CodeIndexCenter.testRulesFile
+        )
         let center = OpenQuicklyCenter(codeIndex: codeIndex, presenter: presenter, startSearch: searches.start)
         center.pageAppeared(project, window: nil)
 
@@ -314,7 +316,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         defer { stub.remove() }
         let env = stub.environment()
         let center = OpenQuicklyCenter(
-            codeIndex: CodeIndexCenter { nil }, presenter: presenter
+            codeIndex: CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile), presenter: presenter
         ) { folder, options, onMatch, onDone in
             CodeSearchRun.start(
                 folder: folder, options: options, executable: stub.executable.path, environment: env,

@@ -87,6 +87,19 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertEqual(index.files, ["a.swift", "notes.txt"], "a new unsupported file is listed; skipped paths are not, and leave if listed")
     }
 
+    /// Spec §6.5: the rules file's error is the last done line's, from a
+    /// full run or an update alike; a line carrying none clears it.
+    func testTheRulesErrorFollowsTheLastDoneLine() {
+        let index = WorkbenchCodeIndex()
+        XCTAssertNil(index.rulesError)
+        index.applyIndexLines([file("a.swift"), .done(CodeIndexDone(files: 1, symbols: 0, ms: 1, rulesError: "bad YAML"))], from: .fullRun)
+        XCTAssertEqual(index.rulesError, "bad YAML")
+        index.applyIndexLines([file("a.swift")], from: .update)
+        XCTAssertEqual(index.rulesError, "bad YAML", "a batch without a done line keeps it")
+        index.applyIndexLines([.done(CodeIndexDone(files: 1, symbols: 0, ms: 1))], from: .update)
+        XCTAssertNil(index.rulesError, "the fixed file loaded")
+    }
+
     func testAFullRunPrunesWhatItNoLongerLists() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines([file("a.swift"), file("b.swift", [symbol("B", .class, "b.swift")])], from: .fullRun)

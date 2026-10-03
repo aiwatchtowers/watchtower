@@ -56,6 +56,9 @@ package final class WorkbenchCodeIndex {
     }
 
     package var state: CodeIndexState = .idle
+    /// Why the owner's rules file was ignored, as the last done line said
+    /// (spec §6.5); nil once a run loads it (or there is none).
+    package private(set) var rulesError: String?
     /// Every file, in the order the CLI first reported it.
     package private(set) var files: [String] = []
     /// By entry id (stable while the file stays).
@@ -108,8 +111,10 @@ package final class WorkbenchCodeIndex {
                 upsert(result)
             case let .deleted(path):
                 gone.formUnion(subtree(path))
-            case .done:
-                continue
+            case let .done(done):
+                // Every done line carries it: set only on a change, so views
+                // are not invalidated by each update.
+                if rulesError != done.rulesError { rulesError = done.rulesError }
             }
         }
         removeFiles(gone)

@@ -32,6 +32,21 @@ final class CodeIndexStreamTests: XCTestCase {
         XCTAssertEqual(decoder.malformedCount, 0)
     }
 
+    /// Spec §6.5: every done line carries `rules_error` while the owner's
+    /// rules file is ignored; absent (omitempty) or "" means none.
+    func testTheDoneLineCarriesTheRulesFileError() {
+        var decoder = CodeJSONLineDecoder<CodeIndexLine>()
+        let input = #"{"done":true,"files":2,"symbols":0,"ms":4,"rules_error":"/x/code-languages.yaml: tcl: no definitions"}"# + "\n"
+            + #"{"done":true,"files":2,"symbols":0,"ms":4}"# + "\n"
+            + #"{"done":true,"files":2,"symbols":0,"ms":4,"rules_error":""}"# + "\n"
+        XCTAssertEqual(decoder.feed(Data(input.utf8)), [
+            .done(CodeIndexDone(files: 2, symbols: 0, ms: 4, rulesError: "/x/code-languages.yaml: tcl: no definitions")),
+            .done(CodeIndexDone(files: 2, symbols: 0, ms: 4)),
+            .done(CodeIndexDone(files: 2, symbols: 0, ms: 4))
+        ])
+        XCTAssertEqual(decoder.malformedCount, 0)
+    }
+
     func testMalformedLinesAreSkippedAndCounted() {
         var decoder = CodeJSONLineDecoder<CodeIndexLine>()
         let input = "not json\n" + #"{"file":"a.go","lang":"go","symbols":[{"name":"x","kind":"lambda"}]}"# + "\n"
