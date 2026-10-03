@@ -515,20 +515,26 @@ func TestProj12_AnsweredAskSurvivesAFullBoard(t *testing.T) {
 			Author: "owner", Body: strings.Repeat("Please revise this. ", 10)})
 	}
 	var list []db.OwnerAsk
-	for i := int64(1); i <= 40; i++ {
+	for i := int64(1); i <= 100; i++ {
 		list = append(list, briefAnswered(100+i, "review", strings.Repeat("Ünïcödé review title ", 10), time.Hour))
 	}
-	for _, cs := range [][]db.WorkbenchComment{nil, comments} {
-		out := renderWorkbenchBrief(big, briefWorkbench(), cs, workbenchcheck.Report{}, briefRecentHits(8), &briefAsks{list: list, others: 3}, time.Now(), workbenchVocabulary)
+	// 10 and 100: the "… N more" count a row's marker reserves gains a digit.
+	for _, n := range []int{10, 40, 100} {
+		// The floor (what the brief sets aside before the board) holds a row.
+		floor, _ := briefAsksSection(&briefAsks{list: list[:n], others: 3}, 0, time.Now())
+		assert.Contains(t, floor, briefAsksTitle+"\n#101 review — ", "%d asks: the floor keeps a row", n)
+		for _, cs := range [][]db.WorkbenchComment{nil, comments} {
+			out := renderWorkbenchBrief(big, briefWorkbench(), cs, workbenchcheck.Report{}, briefRecentHits(8), &briefAsks{list: list[:n], others: 3}, time.Now(), workbenchVocabulary)
 
-		assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
-		assert.Contains(t, out, "more targets (workbench_board)", "the board is cut")
-		assert.Contains(t, out, "\n#101 review — ", "the oldest answer keeps its row")
-		assert.Contains(t, out, "→ get_ask 101\n")
-		assert.Contains(t, out, "more answered asks (list_asks)")
-		assert.Contains(t, out, "3 more answered for other sessions")
-		assert.NotContains(t, out, "Recent in workbench sources", "cut asks leave no room for recent documents")
-		assert.True(t, strings.HasSuffix(out, briefRules[0]))
+			assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars, "%d asks", n)
+			assert.Contains(t, out, "more targets (workbench_board)", "the board is cut")
+			assert.Contains(t, out, briefAsksTitle+"\n#101 review — ", "%d asks: the oldest answer keeps its row", n)
+			assert.Contains(t, out, "→ get_ask 101\n", "%d asks", n)
+			assert.Contains(t, out, "more answered asks (list_asks)", "%d asks", n)
+			assert.Contains(t, out, "3 more answered for other sessions", "%d asks", n)
+			assert.NotContains(t, out, "Recent in workbench sources", "cut asks leave no room for recent documents")
+			assert.True(t, strings.HasSuffix(out, briefRules[0]))
+		}
 	}
 
 	// Whatever the board, the body stays within the cap with asks shown.

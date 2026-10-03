@@ -52,12 +52,13 @@ var workbenchBriefCmd = &cobra.Command{
 	Short: "Print a workbench's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
 		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
-		"comments waiting for the agent, the owner's answers to its asks, recent threads, issues and pages from the workbench's\n" +
-		"sources when room is left, and the board rules. Always exits 0 — a hook must\n" +
-		"never break a session start, so any failure (workbench gone, folder moved, database\n" +
-		"unreadable) is one line. Inside a session the Desktop launched (" + terminalSessionEnv + "\n" +
-		"set) it also reads the hook's stdin payload and, after /clear, /compact, a resume or a fork,\n" +
-		"stores the conversation's session id on that terminal row.",
+		"comments waiting for the agent, the owner's answers to its asks, recent threads, issues\n" +
+		"and pages from the workbench's sources when room is left, and the board rules. Always\n" +
+		"exits 0 — a hook must never break a session start, so any failure (workbench gone,\n" +
+		"folder moved, database unreadable) is one line. Inside a session the Desktop launched\n" +
+		"(" + terminalSessionEnv + " set) it also reads the hook's stdin payload and, after\n" +
+		"/clear, /compact, a resume or a fork, stores the conversation's session id on that\n" +
+		"terminal row.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadWorkbenchBrief loads config itself.
@@ -252,9 +253,9 @@ const briefLegacyLine = "This folder's Watchtower setup predates the Workbench r
 // the open tree, the comments new for the agent, the answered asks (left out
 // when there are none; one row is reserved before the board is cut), recent
 // documents of the workbench's sources (recent nil = the workbench has none,
-// the section is left out), the rules — at most briefMaxChars runes. vocab names the skill
-// and tools the folder's install knows; a legacy folder also gets
-// briefLegacyLine after the header when it fits. A drift check cut short
+// the section is left out), the rules — at most briefMaxChars runes. vocab
+// names the skill and tools the folder's install knows; a legacy folder also
+// gets briefLegacyLine after the header when it fits. A drift check cut short
 // says so, so a partial check never reads as a clean board. Pure.
 func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary) string {
 	header := briefHeader(p, board, len(comments), vocab)
@@ -389,9 +390,11 @@ func briefAsksSection(a *briefAsks, limit int, now time.Time) (section string, w
 		lines = append(lines, briefAskLine(ask, now))
 	}
 	const what = "answered asks (list_asks)"
+	// Row 0 plus the marker fitBriefSection reserves while writing it (it
+	// counts all len(lines), one digit more at 10, 100, …).
 	floor := utf8.RuneCountInString(briefAsksTitle) + 1 + utf8.RuneCountInString(lines[0])
 	if len(lines) > 1 {
-		floor += utf8.RuneCountInString(fmt.Sprintf("\n… %d more %s", len(lines)-1, what))
+		floor += utf8.RuneCountInString(fmt.Sprintf("\n… %d more %s", len(lines), what))
 	}
 	out, shown := fitBriefSection(briefAsksTitle, lines, max(limit-utf8.RuneCountInString(tail), floor), what)
 	return out + tail, shown == len(lines)
@@ -405,6 +408,8 @@ func briefAskLine(a db.OwnerAsk, now time.Time) string {
 	if age := statusAge(a.AnsweredAt, now); age != "" {
 		answered += " " + age
 	}
+	// OneLine turns an ESC into a space but leaves its parameters ("[31m")
+	// visible on purpose, the DeliveryLine rule: inert text, never a sequence.
 	return fmt.Sprintf("#%d %s — %s (%s) → get_ask %d", a.ID, a.Kind, briefClip(asks.OneLine(a.Title), 120), answered, a.ID)
 }
 
