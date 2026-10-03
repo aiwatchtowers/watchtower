@@ -86,20 +86,23 @@ extension TestDatabase {
         _ db: Database,
         projectID: Int64,
         sessionID: Int64? = nil,
+        targetID: Int64? = nil,
         kind: String = "question",
         title: String = "Which way?",
         payload: String = "{}",
         docPath: String = "",
         status: String = "open",
         answer: String = "",
+        withdrawnReason: String = "",
         createdAt: String? = nil
     ) throws -> Int64 {
         try db.execute(
             sql: """
-                INSERT INTO owner_asks (project_id, session_id, kind, title, payload, doc_path, status, answer, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
+                INSERT INTO owner_asks (project_id, session_id, target_id, kind, title, payload, doc_path, status, answer,
+                                        withdrawn_reason, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
                 """,
-            arguments: [projectID, sessionID, kind, title, payload, docPath, status, answer, createdAt]
+            arguments: [projectID, sessionID, targetID, kind, title, payload, docPath, status, answer, withdrawnReason, createdAt]
         )
         return db.lastInsertedRowID
     }

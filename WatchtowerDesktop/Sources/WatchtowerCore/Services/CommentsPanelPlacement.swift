@@ -2,7 +2,7 @@ import CoreGraphics
 
 /// Where the artifact panel's comment list sits when it is open: beside the
 /// text when the panel is wide enough for both, otherwise below it — never
-/// on top of the text (#180). (Project documents have a resizable split.)
+/// on top of the text (#180).
 /// Pure.
 package enum CommentsPanelPlacement {
     package static let listWidth: CGFloat = 260

@@ -42,6 +42,48 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.badgeCount, 1, "one unread agent comment; a read one does not count")
     }
 
+    /// Spec 2026-10-03 Part 8: the badge is open asks plus unread agent
+    /// target comments, summed over the workbenches.
+    func testTheBadgeCountsOpenAsksPlusUnreadAgentComments() async throws {
+        let (p, other) = try await pool.write { d -> (Int64, Int64) in
+            let p = try TestDatabase.insertWorkbench(d)
+            let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: t)
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p)
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
+            for status in ["answered", "delivered", "withdrawn"] {
+                _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: status, answer: status == "withdrawn" ? "" : "{}")
+            }
+            let other = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: other)
+            return (p, other)
+        }
+        let vm = makeVM()
+        await vm.reload()
+        let summaries = Dictionary(uniqueKeysWithValues: vm.summaries.map { ($0.id, $0) })
+        XCTAssertEqual(summaries[p].map(vm.badgeCount(for:)), 3, "two open asks and one unread comment; closed asks never count")
+        XCTAssertEqual(summaries[other].map(vm.badgeCount(for:)), 1)
+        XCTAssertEqual(vm.badgeCount, 4)
+    }
+
+    /// The notification center's poll reloads the list, so an ask the agent
+    /// files from another process lights the badge without a navigation, and
+    /// the owner's answer clears it.
+    func testRefreshOnPollPicksUpAnAskAndItsAnswer() async throws {
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let vm = makeVM()
+        await vm.reload()
+        XCTAssertEqual(vm.badgeCount, 0)
+
+        let ask = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: p) }
+        await vm.refreshOnPoll()
+        XCTAssertEqual(vm.badgeCount, 1)
+
+        try await pool.write { try OwnerAskQueries.answer($0, askID: ask, projectID: p, with: OwnerAskAnswer()) }
+        await vm.refreshOnPoll()
+        XCTAssertEqual(vm.badgeCount, 0)
+    }
+
     func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [
@@ -227,9 +269,10 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
     func testRevealSelectsTheProjectAndPane() {
         let vm = makeVM()
-        vm.reveal(WorkbenchRoute(projectID: 4, pane: .documents, subjectID: 9))
+        vm.layout.show(.files)
+        vm.reveal(WorkbenchRoute(projectID: 4, pane: .board, subjectID: 9))
         XCTAssertEqual(vm.selectedWorkbenchID, 4)
-        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
     }
 
     /// House rule: an async operation started from a screen survives leaving

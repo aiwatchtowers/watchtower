@@ -40,6 +40,20 @@ package enum OwnerAskQueries {
         )
     }
 
+    /// A board target's asks, newest first, for its detail card. Read as
+    /// list items, so one undecodable payload never hides the others.
+    package static func targetAsks(_ db: Database, projectID: Int64, targetID: Int64) throws -> [OwnerAskListItem] {
+        try OwnerAskListItem.fetchAll(
+            db,
+            sql: """
+                SELECT id, title, status, withdrawn_reason FROM owner_asks
+                WHERE project_id = ? AND target_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+            arguments: [projectID, targetID]
+        )
+    }
+
     /// Answers an open ask of `projectID` in one guarded write. Zero rows
     /// changed — withdrawn, superseded or already answered meanwhile, or not
     /// this workbench's — throws `.notOpen` and writes nothing.

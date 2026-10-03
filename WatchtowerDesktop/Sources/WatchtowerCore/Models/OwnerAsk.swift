@@ -167,3 +167,30 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
 
     package var isOpen: Bool { status == .open }
 }
+
+/// An ask as a board target's detail card lists it: title and status only.
+package struct OwnerAskListItem: FetchableRecord, Identifiable, Equatable, Sendable {
+    package let id: Int64
+    package let title: String
+    package let status: String
+    package let withdrawnReason: String
+
+    package init(row: Row) {
+        id = row["id"]
+        title = row["title"] ?? ""
+        status = row["status"] ?? ""
+        withdrawnReason = row["withdrawn_reason"] ?? ""
+    }
+
+    /// The status as the card shows it; a withdrawn ask names why. A status
+    /// this build does not know is shown as stored.
+    package var statusLabel: String {
+        switch OwnerAskStatus(rawValue: status) {
+        case .open: "Open"
+        case .answered: "Answered"
+        case .delivered: "Delivered"
+        case .withdrawn: withdrawnReason == "superseded" ? "Superseded" : "Withdrawn"
+        case nil: status
+        }
+    }
+}

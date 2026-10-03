@@ -6,7 +6,7 @@ import WatchtowerCore
 /// in the app sidebar's style, then the project's sessions. The session on
 /// screen is a tab of the workspace: filled with its backdrop, it runs on
 /// into the page beside it (`panelTab(isSelected:)`, `panelSurface()`).
-/// Board and Documents are picked in a pane's own header (`WorkspacePaneView`).
+/// Board and Files are picked in a pane's own header (`WorkspacePaneView`).
 struct WorkbenchSessionsPanel: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench

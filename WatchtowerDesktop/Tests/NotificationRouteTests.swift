@@ -266,13 +266,34 @@ final class NotificationRouteTests: XCTestCase {
             let appState = AppState()
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier,
-                userInfo: ["type": "project", "projectId": Int64(3), "pane": "documents", "subjectId": Int64(8)],
+                userInfo: ["type": "project", "projectId": Int64(3), "pane": "board", "subjectId": Int64(8)],
                 appState: appState,
                 forwarded: forwarded
             )
             XCTAssertEqual(appState.selectedDestination, .workbench, "forwarded: \(forwarded)")
-            XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .documents, subjectID: 8))
+            XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .board, subjectID: 8))
         }
+    }
+
+    /// A push delivered before the Documents pane was removed (spec
+    /// 2026-10-03 Part 8) opens the board, without the document id as a
+    /// target id.
+    func testAPushNamingTheRemovedDocumentsPaneOpensTheBoard() {
+        let route = NotificationDelegate.workbenchRoute(
+            ["type": "project", "projectId": Int64(3), "pane": "documents", "subjectId": Int64(8)])
+        XCTAssertEqual(route, WorkbenchRoute(projectID: 3, pane: .board))
+    }
+
+    /// An ask's push carries the ask, through the forwarding bus too, so a
+    /// click can open it.
+    func testAnAskPushCarriesItsAskAcrossForwarding() async throws {
+        let info: [AnyHashable: Any] = ["type": "project", "projectId": Int64(3), "pane": "terminal",
+                                        "subjectId": Int64(12), "askId": Int64(40)]
+        let expected = WorkbenchRoute(projectID: 3, pane: .terminal, subjectID: 12, askID: 40)
+        XCTAssertEqual(NotificationDelegate.workbenchRoute(info), expected)
+        let json = try XCTUnwrap(NotificationForwarding.encode(actionID: UNNotificationDefaultActionIdentifier, userInfo: info))
+        let forwarded = try XCTUnwrap(NotificationForwarding.decode(json))
+        XCTAssertEqual(NotificationDelegate.workbenchRoute(forwarded.userInfo), expected)
     }
 
     /// A session notice (board #312) routes to the terminal pane with the
@@ -401,7 +422,7 @@ final class NotificationRouteTests: XCTestCase {
 
     /// The wire allowlist and what forwarded routing reads are one decision in two
     /// files. Every key here is a pure navigation argument (`digestId`/`ideaId`/
-    /// `transcriptID`/the project route triple) — widening either side without the
+    /// `transcriptID`/the project route) — widening either side without the
     /// other is the failure this pins — the payload must never regrow keys only an
     /// armed action would use.
     func testForwardedAllowlistMatchesWhatForwardedRoutingReads() {
@@ -410,7 +431,8 @@ final class NotificationRouteTests: XCTestCase {
             [
                 "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
                 NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
-                NotificationForwarding.workbenchSubjectIDKey, NotificationForwarding.workbenchPaneKey
+                NotificationForwarding.workbenchSubjectIDKey, NotificationForwarding.workbenchPaneKey,
+                NotificationForwarding.workbenchAskIDKey
             ]
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
@@ -419,6 +441,7 @@ final class NotificationRouteTests: XCTestCase {
         XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
         XCTAssertEqual(NotificationForwarding.workbenchSubjectIDKey, "subjectId")
         XCTAssertEqual(NotificationForwarding.workbenchPaneKey, "pane")
+        XCTAssertEqual(NotificationForwarding.workbenchAskIDKey, "askId")
     }
 
     /// The wire codec itself: a voice-label push's transcript id survives encode →

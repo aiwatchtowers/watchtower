@@ -28,7 +28,7 @@ struct WorkspaceAreaView: View {
     }
 }
 
-/// One pane: Board, Documents or a session's terminal. In a split it has a
+/// One pane: Board, Files or a session's terminal. In a split it has a
 /// slim header (its own picker, expand and close); a single pane has none —
 /// the page header's view buttons and the panel's session list cover it, so
 /// the terminal gets the height.
@@ -90,7 +90,6 @@ struct WorkspacePaneView: View {
     private var picker: some View {
         Menu {
             Button("Board") { show(.board) }.disabled(pane == .board)
-            Button("Documents") { show(.documents) }.disabled(pane == .documents)
             Button("Files") { show(.files) }.disabled(pane == .files)
             Divider()
             Section("Sessions") {
@@ -129,10 +128,6 @@ struct WorkspacePaneView: View {
         case .board:
             WorkbenchBoardView(projectID: project.id)
                 .id(project.id)
-        case .documents:
-            // Documents were replaced by owner asks; the pane itself goes
-            // with the layout's `.documents` case.
-            ContentUnavailableView("Documents were replaced by asks", systemImage: "doc.text")
         case let .session(id):
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
@@ -242,7 +237,6 @@ extension WorkspaceView {
         switch self {
         case .terminal: "Terminal"
         case .board: "Board"
-        case .documents: "Documents"
         case .files: "Files"
         }
     }
@@ -251,7 +245,6 @@ extension WorkspaceView {
         switch self {
         case .terminal: "terminal"
         case .board: "square.grid.2x2"
-        case .documents: "doc.text"
         case .files: "chevron.left.forwardslash.chevron.right"
         }
     }

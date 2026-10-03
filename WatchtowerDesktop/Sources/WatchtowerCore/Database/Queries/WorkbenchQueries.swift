@@ -51,12 +51,19 @@ package enum WorkbenchQueries {
             open[row["project_id"]] = row["open_count"]
             active[row["project_id"]] = row["active_count"]
         }
+        var asks: [Int64: Int] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT project_id, COUNT(*) AS n FROM owner_asks WHERE status = 'open' GROUP BY project_id
+            """) {
+            asks[row["project_id"]] = row["n"]
+        }
         return projects.map { project in
             WorkbenchSummary(
                 project: project,
                 openTargets: open[project.id] ?? 0,
                 inProgressTargets: active[project.id] ?? 0,
-                unreadAgentComments: unread[project.id] ?? 0
+                unreadAgentComments: unread[project.id] ?? 0,
+                openAsks: asks[project.id] ?? 0
             )
         }
     }

@@ -4,7 +4,7 @@ import SwiftUI
 extension NSColor {
     /// The detail backdrop `MainNavigationView` puts behind every tab — what
     /// the AI Chat conversation sits on, beside its lighter history panel.
-    /// The Workbench workspace (page header, terminal, Board, Documents) and
+    /// The Workbench workspace (page header, terminal, Board, Files) and
     /// the selected row of a tabbed panel (`PanelTab`) paint it too, so they
     /// read as AI Chat does and can never drift from it.
     static var detailBackground: NSColor { .controlBackgroundColor }
@@ -23,8 +23,8 @@ extension View {
         clearPlainList().panelBackground()
     }
 
-    /// `panelListStyle()` for a list inside the Projects workspace (Board,
-    /// Documents): the same plain list, over the detail backdrop.
+    /// `panelListStyle()` for a list inside the Projects workspace (the
+    /// Board): the same plain list, over the detail backdrop.
     func workspaceListStyle() -> some View {
         clearPlainList().detailBackground()
     }

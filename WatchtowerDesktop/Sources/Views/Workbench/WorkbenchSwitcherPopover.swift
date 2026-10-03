@@ -73,7 +73,7 @@ struct WorkbenchSwitcherPopover: View {
                             row: row,
                             isCurrent: row.id == currentID,
                             segments: WorkbenchSwitcherPresentation.stateSegments(
-                                summary: row, newComments: vm.badgeCount(for: row.summary),
+                                summary: row, newComments: row.summary.unreadAgentComments,
                                 liveCount: live, now: now
                             ),
                             isLive: live > 0

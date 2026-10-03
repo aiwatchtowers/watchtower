@@ -251,14 +251,14 @@ final class WorkbenchesViewModel {
         summaries.first { $0.id == selectedWorkbenchID }?.project
     }
 
-    /// Sidebar badge: unread agent comments.
+    /// Sidebar badge: open asks plus unread agent comments (spec 2026-10-03 Part 8).
     var badgeCount: Int {
         summaries.reduce(0) { $0 + badgeCount(for: $1) }
     }
 
-    /// A workbench row's blue badge: unread agent comments.
+    /// A workbench row's blue badge: open asks plus unread agent comments.
     func badgeCount(for summary: WorkbenchSummary) -> Int {
-        summary.unreadAgentComments
+        summary.openAsks + summary.unreadAgentComments
     }
 
     func reload() async {
@@ -324,8 +324,8 @@ final class WorkbenchesViewModel {
         return true
     }
 
-    /// The notification center's 30 s poll. The agent writes comments from
-    /// another process (DB only), so the list reloads.
+    /// The notification center's 30 s poll. The agent writes comments and
+    /// asks from another process (DB only), so the list — and the badge — reloads.
     func refreshOnPoll() async {
         await reload()
     }
@@ -335,12 +335,14 @@ final class WorkbenchesViewModel {
         return previous.filter { !now.contains($0) }
     }
 
-    /// A deep link puts its pane on screen the way a panel click does.
+    /// A deep link puts its pane on screen the way a panel click does. An
+    /// ask's notice (`route.askID`) lands on the session that filed it, or
+    /// the board for one filed outside the app; opening the ask itself is the
+    /// ask drawer's (spec 2026-10-03 Part 8), which reads `route.askID` here.
     func reveal(_ route: WorkbenchRoute) {
         selectedWorkbenchID = route.projectID
         switch route.pane {
         case .board: layout.show(.board)
-        case .documents: layout.show(.documents)
         case .terminal:
             let projectID = route.projectID
             let sessionID = route.subjectID
@@ -487,8 +489,8 @@ final class WorkbenchesViewModel {
         await refreshInstallStatus(projectID: projectID)
     }
 
-    /// Re-run setup (#91): `workbench resync` attaches the folder's new
-    /// documents and re-installs missing or outdated integration pieces, then
+    /// Re-run setup (#91): `workbench resync` re-indexes the folder's
+    /// documents for search and re-installs missing or outdated integration pieces, then
     /// the page reloads what it may have changed. Additive only — it never
     /// creates targets; the result's suggestions say what to ask the agent.
     func resync(projectID: Int64) async {

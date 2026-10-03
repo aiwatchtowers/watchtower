@@ -1,18 +1,17 @@
 import Foundation
 import GRDB
 
-/// The three panes of a project page (spec §6.1). Lives in Core because the
-/// notification policy deep-links into one.
+/// The panes a notification deep-links into (spec §6.1). Lives in Core
+/// because the notification policy names one. A push naming a pane that is
+/// gone (`documents`, spec 2026-10-03 Part 8) opens the board.
 package enum WorkbenchPane: String, CaseIterable, Codable, Sendable {
     case terminal
     case board
-    case documents
 
     package var title: String {
         switch self {
         case .terminal: "Terminal"
         case .board: "Board"
-        case .documents: "Documents"
         }
     }
 }
@@ -20,21 +19,23 @@ package enum WorkbenchPane: String, CaseIterable, Codable, Sendable {
 /// What an owner write touched, so the notification policy can tell the
 /// owner's own changes from an agent's (Task 18: owner writes never notify).
 package enum WorkbenchSubject: Hashable, Codable, Sendable {
-    case document(Int64)
     case target(Int64)
 }
 
 /// Where a notification click or an in-app link lands: a project, a pane and
-/// optionally the document (documents pane) or target (board pane) to open.
+/// optionally the target (board pane) or session (terminal pane) to open.
+/// `askID` names the owner ask a click opens (spec 2026-10-03 Part 8).
 package struct WorkbenchRoute: Equatable, Sendable {
     package let projectID: Int64
     package let pane: WorkbenchPane
     package let subjectID: Int64?
+    package let askID: Int64?
 
-    package init(projectID: Int64, pane: WorkbenchPane, subjectID: Int64? = nil) {
+    package init(projectID: Int64, pane: WorkbenchPane, subjectID: Int64? = nil, askID: Int64? = nil) {
         self.projectID = projectID
         self.pane = pane
         self.subjectID = subjectID
+        self.askID = askID
     }
 }
 
@@ -186,6 +187,16 @@ package struct WorkbenchSummary: Identifiable, Equatable, Sendable {
     package let openTargets: Int
     package let inProgressTargets: Int
     package let unreadAgentComments: Int
+    /// `owner_asks` rows still `open` (spec 2026-10-03 Part 8).
+    package let openAsks: Int
+
+    package init(project: Workbench, openTargets: Int, inProgressTargets: Int, unreadAgentComments: Int, openAsks: Int = 0) {
+        self.project = project
+        self.openTargets = openTargets
+        self.inProgressTargets = inProgressTargets
+        self.unreadAgentComments = unreadAgentComments
+        self.openAsks = openAsks
+    }
 
     package var id: Int64 { project.id }
 }

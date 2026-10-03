@@ -223,7 +223,7 @@ struct GoToPalette: View {
             Text(row.project.name).font(.callout).lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
             WorkbenchStateSegments(segments: WorkbenchSwitcherPresentation.stateSegments(
-                summary: row, newComments: vm.badgeCount(for: row.summary),
+                summary: row, newComments: row.summary.unreadAgentComments,
                 liveCount: vm.liveSessionCount(workbenchID: row.id), now: now
             ))
         }

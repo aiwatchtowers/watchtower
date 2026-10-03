@@ -139,7 +139,7 @@ struct WorkbenchPageView: View {
                 Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
             }
             .disabled(installing)
-            .help("Attach new documents and re-install what is missing. Never changes the board, comments or sources.")
+            .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
             Divider()
             Button(role: .destructive) {
                 confirmDelete()
@@ -223,7 +223,8 @@ struct WorkbenchPageView: View {
     private func repairHelp(_ status: WorkbenchInstallStatus) -> String {
         "Skill \(status.skillDisplay) · hook \(status.hook ? "on" : "missing") · "
             + "drift hook \(status.stopHook ? "on" : "missing") · "
-            + "state hooks \(status.stateHooks ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
+            + "state hooks \(status.stateHooks ? "on" : "missing") · "
+            + "ask guard \(status.askGuard && status.askToolBlock ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 
     /// Repair cannot register the MCP server without `claude`: a warning
@@ -250,7 +251,7 @@ struct WorkbenchPageView: View {
         .accessibilityLabel("Claude Code CLI not found")
     }
 
-    /// Terminal / Board / Documents: on = on screen. Turning one on shows it
+    /// Terminal / Board / Files: on = on screen. Turning one on shows it
     /// (beside the terminal in a split); turning it off closes that pane of
     /// a split. Split then puts two side by side.
     private var viewButtons: some View {
@@ -320,7 +321,6 @@ private extension WorkspaceView {
         switch self {
         case .terminal: "Show the terminal (in a split, beside the other pane)"
         case .board: "Show the Board (in a split, beside the terminal)"
-        case .documents: "Show the Documents (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         }
     }

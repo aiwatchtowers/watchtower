@@ -223,7 +223,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.layout.show(.documents)
+        vm.layout.show(.files)
         vm.layout.split(with: .board)
 
         await vm.workOn(targetID: target, targetText: title)
@@ -249,7 +249,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.layout.show(.documents)
+        vm.layout.show(.files)
         vm.layout.split(with: .board)
         vm.toggleExpand(.board, projectID: p)
 
@@ -617,7 +617,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
 
         vm.selectedWorkbenchID = a
-        vm.layout.split(with: .documents)
+        vm.layout.split(with: .files)
         vm.selectedWorkbenchID = b
         XCTAssertFalse(vm.layout.isSplit)
         vm.selectedWorkbenchID = a
@@ -625,7 +625,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         let relaunched = makeVM()
         relaunched.selectedWorkbenchID = a
-        XCTAssertEqual(relaunched.layout.visiblePanes, [.board, .documents])
+        XCTAssertEqual(relaunched.layout.visiblePanes, [.board, .files])
     }
 
     // MARK: - Left panel
@@ -660,7 +660,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.toggleExpand(.board, projectID: p)
         XCTAssertNil(vm.panelSelection, "the expanded board hides the session")
         vm.layout.unsplit()
-        vm.layout.show(.documents)
+        vm.layout.show(.files)
         XCTAssertNil(vm.panelSelection, "the panel lists sessions only")
     }
 
@@ -693,7 +693,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.layout.show(.documents)
+        vm.layout.show(.files)
 
         await vm.newSessionOnPage()
 
@@ -768,11 +768,6 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.primary, .session(failing.id), "the exited session keeps its pane")
         XCTAssertEqual(vm.panelSelection, .session(failing.id))
         XCTAssertEqual(vm.resumeFailed, [failing.id])
-
-        // Send comments pastes into the live one and puts it on screen.
-        vm.layout.show(.documents)
-        vm.showTerminal(sessionID: live.id, projectID: p)
-        XCTAssertEqual(vm.panelSelection, .session(live.id))
     }
 
     func testShowingAMissingSessionReportsIt() async throws {
@@ -865,7 +860,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
 
         vm.toggleSplit(projectID: p)
-        XCTAssertEqual(vm.layout.visiblePanes, [.board, .documents], "no live session: the other project view")
+        XCTAssertEqual(vm.layout.visiblePanes, [.board, .files], "no live session: the other project view")
         vm.toggleSplit(projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.board])
 
@@ -882,40 +877,19 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.count, 1, "splitting launches nothing")
     }
 
-    /// Send comments in a split: the session already beside the document
-    /// stays where it is; a split without it replaces the other pane, never
-    /// the document.
-    func testSendCommentsInASplitNeverHidesTheDocument() async throws {
-        let p = try await workbenchWithFolder()
-        let row = try await liveSession(p, "one")
-        let vm = makeVM()
-        await vm.reload()
-        vm.drill(into: p)
-        await vm.showSession(id: row.id)
-        vm.layout.split(with: .documents)
-        let before = vm.layout
-
-        vm.showTerminal(sessionID: row.id, projectID: p)
-        XCTAssertEqual(vm.layout, before, "already visible: no pane switch")
-
-        vm.layout.replace(.session(row.id), with: .board)
-        vm.showTerminal(sessionID: row.id, projectID: p)
-        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .documents])
-    }
-
-    func testOpenTerminalFromADocumentKeepsItInTheSplit() async throws {
+    func testOpenTerminalFromTheFilesPaneKeepsItInTheSplit() async throws {
         let p = try await workbenchWithFolder()
         let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
         let project = try XCTUnwrap(fetched)
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.layout.split(with: .documents)
+        vm.layout.split(with: .files)
 
-        await vm.openMostRecentSession(project: project, placement: .keeping(.documents))
+        await vm.openMostRecentSession(project: project, placement: .keeping(.files))
 
         let row = try XCTUnwrap(vm.sessions.first)
-        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .documents])
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .files])
     }
 
     func testPanePickerOpensASessionInThatPane() async throws {
@@ -926,15 +900,15 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.layout.split(with: .documents)
+        vm.layout.split(with: .files)
 
         await vm.showInPane(.board, item: .session(closed.id), projectID: p)
-        XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .documents], "the picked pane, not the secondary")
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .files], "the picked pane, not the secondary")
         XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive,
                       "a session closed by an older build resumes like any not running one")
         XCTAssertTrue(launches.last?.args.last?.contains("--resume") == true)
 
-        await vm.showInPane(.documents, item: .board, projectID: p)
+        await vm.showInPane(.files, item: .board, projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .board])
 
         await vm.newSession(inPane: .session(closed.id), projectID: p)
@@ -943,7 +917,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive, "replacing a pane keeps its process")
     }
 
-    /// The page header's buttons: Board / Documents swap the pane beside the
+    /// The page header's buttons: Board / Files swap the pane beside the
     /// terminal; Terminal brings back a session already in a slot, or resumes
     /// the most recent one next to the view on screen.
     func testHeaderViewButtonsKeepTheTerminalAndPickASession() async throws {
@@ -961,8 +935,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.count, 1, "it resumes")
 
         vm.toggleSplit(projectID: p)
-        await vm.showView(.documents, project: project)
-        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .documents])
+        await vm.showView(.files, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .files])
         await vm.showView(.board, project: project)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
 
@@ -1004,7 +978,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.layout.split(with: .documents)
+        vm.layout.split(with: .files)
 
         await vm.showView(.terminal, project: project)
 
@@ -1020,16 +994,16 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
         vm.toggleSplit(projectID: p)
 
-        vm.toggleExpand(.documents, projectID: p)
+        vm.toggleExpand(.files, projectID: p)
         vm.setDividerFraction(0.95, projectID: p)
         let relaunched = makeVM()
         relaunched.selectedWorkbenchID = p
-        XCTAssertEqual(relaunched.layout.visiblePanes, [.documents])
+        XCTAssertEqual(relaunched.layout.visiblePanes, [.files])
         XCTAssertEqual(relaunched.layout.dividerFraction, 0.8)
 
-        vm.toggleExpand(.documents, projectID: p)
+        vm.toggleExpand(.files, projectID: p)
         vm.closePane(.board, projectID: p)
-        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
+        XCTAssertEqual(vm.layout.visiblePanes, [.files])
     }
 
     /// A layout saved in an earlier run can name a session that is gone:
@@ -1038,13 +1012,13 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let p = try await workbenchWithFolder()
         var stale = WorkspaceLayout.default
         stale.show(.session(999))
-        stale.split(with: .documents)
+        stale.split(with: .files)
         defaults.set(try JSONEncoder().encode(stale), forKey: WorkspaceLayout.key(workbenchID: p))
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
         await vm.loadSessions(projectID: p)
-        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
+        XCTAssertEqual(vm.layout.visiblePanes, [.files])
     }
 
     /// Resume / Restart / Start fresh inside an expanded pane keep it expanded.
@@ -1075,7 +1049,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
 
-        await vm.showInPane(.documents, item: .session(row.id), projectID: p)
+        await vm.showInPane(.files, item: .session(row.id), projectID: p)
 
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id)])
     }

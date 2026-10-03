@@ -63,7 +63,7 @@ struct WorkbenchesView: View {
         // Sessions Panel" all slide the panel the same way.
         .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)
         // The workspace — title row, page header, the terminal (transparent
-        // under dark), Board and Documents — on the detail backdrop, as AI
+        // under dark), Board and Files — on the detail backdrop, as AI
         // Chat's conversation is; the panel paints its own lighter surface.
         .detailBackground()
         .overlay {

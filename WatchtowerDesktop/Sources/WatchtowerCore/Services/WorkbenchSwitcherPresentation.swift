@@ -50,7 +50,7 @@ package enum WorkbenchSwitcherPresentation {
     }
 
     /// The row's state, left to right, each only when non-zero: new
-    /// comments (`newComments` — the list row's badge number), blocked
+    /// comments (`newComments` — the unread agent comments), blocked
     /// targets; then, with a session running, the sessions with the live
     /// ones, else the age of the last session activity (or nothing).
     package static func stateSegments(

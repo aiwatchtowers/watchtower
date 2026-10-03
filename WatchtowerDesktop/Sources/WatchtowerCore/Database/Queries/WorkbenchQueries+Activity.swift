@@ -3,7 +3,8 @@ import GRDB
 
 extension WorkbenchQueries {
     /// What the notification policy compares between polls (spec §6.5).
-    /// `questions` = agent root comments on targets with id > the watermark.
+    /// `questions` = agent root comments on targets with id > the watermark;
+    /// `openAsks` = the workbench's `owner_asks` still `open`.
     package static func activitySnapshot(
         _ db: Database,
         project: Workbench,
@@ -28,6 +29,14 @@ extension WorkbenchQueries {
         for row in try Row.fetchAll(db, sql: "SELECT id, text, status FROM targets WHERE project_id = ?", arguments: [project.id]) {
             targets[row["id"]] = .init(title: row["text"], status: row["status"])
         }
+        // Read raw, not as `OwnerAsk`: one undecodable payload must not
+        // stop the workbench's notices.
+        var asks: [Int64: WorkbenchNotificationPolicy.OpenAsk] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT id, title, session_id FROM owner_asks WHERE project_id = ? AND status = 'open'
+            """, arguments: [project.id]) {
+            asks[row["id"]] = .init(title: row["title"], sessionID: row["session_id"])
+        }
         // Proposals the workbench session filed (`context_type='project'`, Go
         // `tools.WorkbenchContextType`) — only an External, propose-only tool
         // (a Slack send) stays pending there; the policy reads the new ones.
@@ -47,7 +56,7 @@ extension WorkbenchQueries {
         }
         return WorkbenchNotificationPolicy.Snapshot(
             projectID: project.id, projectName: project.name, lastAgentCommentID: last,
-            questions: questions, documents: [:], targets: targets, ownerTouched: [],
+            questions: questions, targets: targets, ownerTouched: [], openAsks: asks,
             lastActionID: lastAction, pendingActions: pending
         )
     }

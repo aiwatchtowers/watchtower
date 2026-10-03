@@ -138,4 +138,40 @@ final class OwnerAskQueriesTests: XCTestCase {
             XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).map(\.id), [open])
         }
     }
+
+    /// The board's detail card (spec 2026-10-03 Part 8): a target's asks of
+    /// every status, newest first; another target's or workbench's never.
+    func testTargetAsksListOneTargetsAsksNewestFirstWithTheirStatus() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
+            let otherTarget = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
+            let old = try TestDatabase.insertOwnerAsk(d, projectID: p, targetID: t, title: "Old", status: "withdrawn",
+                                                      withdrawnReason: "superseded", createdAt: stamp(minutesAgo: 3))
+            let answered = try TestDatabase.insertOwnerAsk(d, projectID: p, targetID: t, title: "Answered", status: "answered",
+                                                           answer: "{}", createdAt: stamp(minutesAgo: 2))
+            // Listed even when its payload would not decode as an `OwnerAsk`.
+            let open = try TestDatabase.insertOwnerAsk(d, projectID: p, targetID: t, title: "Open", payload: "not json",
+                                                       createdAt: stamp(minutesAgo: 1))
+            try TestDatabase.insertOwnerAsk(d, projectID: p, targetID: otherTarget)
+            try TestDatabase.insertOwnerAsk(d, projectID: p)
+
+            let asks = try OwnerAskQueries.targetAsks(d, projectID: p, targetID: t)
+            XCTAssertEqual(asks.map(\.id), [open, answered, old])
+            XCTAssertEqual(asks.map(\.statusLabel), ["Open", "Answered", "Superseded"])
+            XCTAssertEqual(asks.first?.title, "Open")
+            let foreign = try TestDatabase.insertWorkbench(d, name: "other", folder: "/tmp/other")
+            XCTAssertTrue(try OwnerAskQueries.targetAsks(d, projectID: foreign, targetID: t).isEmpty)
+        }
+    }
+
+    func testListItemStatusLabels() {
+        let item = { (status: String, reason: String) in
+            OwnerAskListItem(row: ["id": 1, "title": "t", "status": status, "withdrawn_reason": reason]).statusLabel
+        }
+        XCTAssertEqual(item("delivered", ""), "Delivered")
+        XCTAssertEqual(item("withdrawn", "agent"), "Withdrawn")
+        XCTAssertEqual(item("withdrawn", "superseded"), "Superseded")
+        XCTAssertEqual(item("later", ""), "later", "a status this build does not know is shown as stored")
+    }
 }

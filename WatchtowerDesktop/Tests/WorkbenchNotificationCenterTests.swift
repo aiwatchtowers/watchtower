@@ -130,6 +130,49 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         XCTAssertTrue(notifier.sent.isEmpty, "turning notifications back on never replays what happened while off")
     }
 
+    /// Spec 2026-10-03 Part 8: a new open ask is announced once, routed to
+    /// the session that filed it; the owner's answer is not announced.
+    func testANewAskIsAnnouncedOnceAndItsAnswerIsNot() async throws {
+        let center = makeCenter()
+        await center.poll()
+        let pid: Int64 = projectID
+        let (session, ask) = try await pool.write { d -> (Int64, Int64) in
+            let session = try TerminalSessionQueries.create(d, .init(projectID: pid, kind: .shell, title: "s", folderPath: "/tmp/acme")).id
+            return (session, try TestDatabase.insertOwnerAsk(d, projectID: pid, sessionID: session, title: "Review the plan"))
+        }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.map(\.title), ["Агент просит: Review the plan"])
+        XCTAssertEqual(notifier.sent.first?.route, WorkbenchRoute(projectID: projectID, pane: .terminal, subjectID: session, askID: ask))
+        await center.poll()
+        XCTAssertEqual(notifier.sent.count, 1, "still open: no repeat")
+
+        try await write { try OwnerAskQueries.answer($0, askID: ask, projectID: self.projectID, with: OwnerAskAnswer()) }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.count, 1, "the owner's own answer is not announced")
+    }
+
+    /// A workbench created in-app starts from an empty baseline, so an ask
+    /// the agent files during setup is announced (re-pins `seedBaseline`).
+    func testSeededBaselineReportsAnAskFiledRightAfterCreate() async throws {
+        let center = makeCenter()
+        let pid: Int64 = projectID
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: pid) }
+        center.seedBaseline(project: try XCTUnwrap(fetched))
+        try await write { _ = try TestDatabase.insertOwnerAsk($0, projectID: self.projectID, title: "Which stack?") }
+        await center.poll()
+        XCTAssertEqual(notifier.sent.map(\.title), ["Агент просит: Which stack?"])
+
+        // Without a seed, the first poll baselines silently.
+        notifier = RecordingWorkbenchNotifier()
+        let other = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p)
+            return p
+        }
+        await makeCenter().poll()
+        XCTAssertTrue(notifier.sent.isEmpty, "workbench \(other) was discovered, not created: no replay")
+    }
+
     func testPollReloadsTheProjectsList() async {
         let center = makeCenter()
         var reloaded = 0

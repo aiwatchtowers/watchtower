@@ -282,6 +282,7 @@ final class NotificationService: Sendable {
             "pane": notice.route.pane.rawValue
         ]
         if let subject = notice.route.subjectID { info["subjectId"] = subject }
+        if let ask = notice.route.askID { info[NotificationForwarding.workbenchAskIDKey] = ask }
         content.userInfo = info
         let request = UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)

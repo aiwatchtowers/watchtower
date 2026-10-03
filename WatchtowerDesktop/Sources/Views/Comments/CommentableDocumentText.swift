@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// `DocumentTextView` with Google-Docs-style commenting: selecting text shows
 /// a floating Comment button next to it (also "Comment…" in the context
-/// menu), which opens a composer right at the selection. Shared by the
-/// project Documents pane and the chat artifact panel.
+/// menu), which opens a composer right at the selection. Used by the chat
+/// artifact panel.
 ///
 /// The composer remembers the selection and `contentID` it opened on: if the
 /// text is re-rendered while it is open, saving is refused with the typed

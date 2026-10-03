@@ -187,6 +187,9 @@ final class WorkbenchQueriesTests: XCTestCase {
             _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "blocked")
             let done = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "done")
             _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: done)
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p)
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "withdrawn")
             let empty = try TestDatabase.insertWorkbench(d, name: "empty", folder: "/tmp/empty")
 
             let summaries = try WorkbenchQueries.summaries(d)
@@ -194,9 +197,11 @@ final class WorkbenchQueriesTests: XCTestCase {
             XCTAssertEqual(acme.openTargets, 2)
             XCTAssertEqual(acme.inProgressTargets, 1)
             XCTAssertEqual(acme.unreadAgentComments, 1)
+            XCTAssertEqual(acme.openAsks, 1, "open asks only")
             let none = try XCTUnwrap(summaries.first { $0.id == empty })
             XCTAssertEqual(none.openTargets, 0)
             XCTAssertEqual(none.unreadAgentComments, 0)
+            XCTAssertEqual(none.openAsks, 0)
         }
     }
 
@@ -244,6 +249,14 @@ final class WorkbenchQueriesTests: XCTestCase {
             let owner = try TestDatabase.insertWorkbenchComment(d, projectID: p, author: "owner", body: "mine", targetID: t)
             let reply = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: "a reply", targetID: t, parentID: owner)
             let fresh = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: "new?", targetID: t)
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "s", folderPath: "/tmp/acme")).id
+            let ask = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s, title: "Review the plan")
+            let outside = try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "{}")
+            let other = try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta")
+            _ = try TestDatabase.insertOwnerAsk(d, projectID: other)
+            // A payload `OwnerAsk` cannot decode never hides the notices.
+            let broken = try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Broken", payload: "not json")
             let project = try XCTUnwrap(WorkbenchQueries.fetch(d, id: p))
 
             let snap = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: old)
@@ -251,7 +264,11 @@ final class WorkbenchQueriesTests: XCTestCase {
             XCTAssertEqual(snap.questions.map(\.id), [fresh], "agent roots past the watermark; not owner comments, not replies (\(reply))")
             XCTAssertEqual(snap.questions.first?.targetTitle, "Task 1")
             XCTAssertEqual(snap.lastAgentCommentID, fresh)
-            XCTAssertTrue(snap.documents.isEmpty, "documents were replaced by asks")
+            XCTAssertEqual(snap.openAsks, [
+                ask: .init(title: "Review the plan", sessionID: s),
+                outside: .init(title: "Check the build"),
+                broken: .init(title: "Broken")
+            ], "this workbench's open asks only")
             XCTAssertEqual(snap.targets[t], .init(title: "Task 1", status: "in_progress"))
             XCTAssertTrue(snap.ownerTouched.isEmpty)
         }

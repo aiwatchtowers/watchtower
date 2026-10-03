@@ -532,7 +532,7 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchDriftReport.self, from: data)
     }
 
-    /// Re-run setup (#91): attaches new documents and re-installs missing or
+    /// Re-run setup (#91): re-indexes the folder for search and re-installs missing or
     /// outdated integration pieces — additive only, never creates targets.
     func resync(projectID: Int64) async throws -> WorkbenchResynced {
         let data = try await runner.run(args: ["workbench", "resync", String(projectID), "--json"])
