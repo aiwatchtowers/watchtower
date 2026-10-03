@@ -360,10 +360,12 @@ failed or partial check is shown as such, never as "in step") — the Desktop de
 re-derives them (`WorkbenchDriftReport`). `integrate status --json` reports
 `stop_hook`, and a workbench without it is offered Repair.
 
-**Note (2026-10-03, PROJ-11):** when `WATCHTOWER_TERMINAL_SESSION_ID` is set,
-the Stop hook also records the session's agent state (`waiting`) after its
-drift decision — never when it blocks the stop, and also on the
-`stop_hook_active` path. The write runs after the drift output is encoded,
+**Note (2026-10-03, PROJ-11):** when `WATCHTOWER_TERMINAL_SESSION_ID` is set
+and the workbench's folder has the session state hooks, the Stop hook also
+records the session's agent state (`waiting`) after its drift decision —
+never when it blocks the stop, and also on the `stop_hook_active` path. A
+folder without them (or with a malformed settings file) gets no write and
+no stderr line: nothing there records `working`, so a `waiting` would stick. The write runs after the drift output is encoded,
 under its own 1 s busy timeout, and its failure is one stderr line; stdout
 (the block JSON or nothing) and exit 0 are unchanged in every case. Without
 the variable the hook does exactly what it did before (no DB open on the
@@ -685,6 +687,7 @@ session would be worse than none.
 
 ## Changelog
 
+- 2026-10-03 (board #340): Stop state write gated on the state hooks — the Stop hook records `waiting` only when the workbench's folder has the session state hooks (`devpack.HasStateHooks`), so a folder not yet repaired no longer shows "waiting for you" after its first turn. Wording of the PROJ-07 note only; PROJ-07 and PROJ-11 contracts and guards unchanged.
 - 2026-10-03 (board #312, plan `docs/superpowers/plans/2026-10-03-session-agent-state.md`): **PROJ-11** added and **PROJ-04** reworded, both approved by the owner on 2026-10-03 — Claude Code sessions in the Desktop's workbench terminal show working / waiting for you / needs approval from new async `workbench session-state` hook entries (`UserPromptSubmit`, `Notification`, `PostToolUse`, `StopFailure`; migration `00098`) and the extended Stop hook, with a macOS notice while the app is inactive. PROJ-04 now says one entry of ours per event we own, with a malformed state event counting as a malformed file (widened, no guard relaxed; two new guards). **PROJ-02** strengthened — remove/delete also take the state entries away (its hook guards extended). **PROJ-07** gains a note on the Stop hook's state write; its stdout/exit contract and guards are unchanged.
 - 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.

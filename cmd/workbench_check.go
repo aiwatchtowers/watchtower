@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/workbenchcheck"
 )
 
@@ -194,9 +195,9 @@ type stopHookOutput struct {
 // chance to fix the board, never an endless loop. vocab names the skill the
 // folder's install has (the reason points the agent at it).
 //
-// In a Desktop terminal (the terminal env var set) the hook also records
-// "waiting" on the session's row whenever it lets the turn end: Claude Code
-// runs an event's hooks in parallel, so only the process that decides the
+// In a Desktop terminal (the terminal env var set) and a folder with the
+// session state hooks, the hook also records "waiting" on the session's row
+// whenever it lets the turn end: Claude Code runs an event's hooks in parallel, so only the process that decides the
 // block knows whether the turn really ended. That write comes after the
 // drift output, never changes stdout, and a failure is one stderr line.
 func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, rawID string, vocab vocabulary) {
@@ -307,20 +308,48 @@ func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, 
 	if !ok || (err == nil && sessionID == "") {
 		return
 	}
-	if err == nil && database == nil {
-		var opened *db.DB
-		if _, opened, err = openJiraCmdDB(); err == nil {
-			defer opened.Close()
-			database = opened
-		}
-	}
 	if err == nil {
-		state, onlyFrom, _ := agentStateFor("Stop", "")
-		err = recordAgentState(database, rowID, workbenchID, sessionID, state, onlyFrom, at)
+		err = writeStopAgentState(database, rowID, workbenchID, sessionID, at)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
 	}
+}
+
+// writeStopAgentState is recordStopAgentState's write, opening a handle when
+// database is nil. Only a folder with the session state hooks gets it:
+// without them nothing records "working", so "waiting" would stick after the
+// first turn until Repair (board #340).
+func writeStopAgentState(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time) error {
+	if database == nil {
+		_, opened, err := openJiraCmdDB()
+		if err != nil {
+			return err
+		}
+		defer opened.Close()
+		database = opened
+	}
+	if has, err := workbenchHasStateHooks(database, workbenchID); err != nil || !has {
+		return err
+	}
+	state, onlyFrom, _ := agentStateFor("Stop", "")
+	return recordAgentState(database, rowID, workbenchID, sessionID, state, onlyFrom, at)
+}
+
+// workbenchHasStateHooks reports whether workbench id's folder has its
+// session state hooks. A gone workbench has none, and so does a settings
+// file that cannot be read: that is a normal state the Desktop already
+// offers to repair, so the hook stays silent about it.
+func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
+	wb, err := database.GetWorkbench(id)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	has, _ := devpack.HasStateHooks(wb.FolderPath, id)
+	return has, nil
 }
 
 // readHookInput decodes a hook's JSON input from stdin, giving up at ctx's
