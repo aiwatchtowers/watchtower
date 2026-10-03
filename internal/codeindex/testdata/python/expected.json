@@ -1,0 +1,122 @@
+[
+  {
+    "name": "LIMIT",
+    "kind": "var",
+    "path": "sample.py",
+    "line": 5,
+    "col": 1,
+    "end_line": 5,
+    "container": "",
+    "signature": "LIMIT = 3",
+    "doc": "",
+    "lang": "python"
+  },
+  {
+    "name": "name",
+    "kind": "var",
+    "path": "sample.py",
+    "line": 6,
+    "col": 1,
+    "end_line": 6,
+    "container": "",
+    "signature": "name: str = \"box\"",
+    "doc": "",
+    "lang": "python"
+  },
+  {
+    "name": "top",
+    "kind": "function",
+    "path": "sample.py",
+    "line": 10,
+    "col": 5,
+    "end_line": 16,
+    "container": "",
+    "signature": "def top(a, b=1) -> int",
+    "doc": "Return the larger value.",
+    "lang": "python"
+  },
+  {
+    "name": "decorated",
+    "kind": "function",
+    "path": "sample.py",
+    "line": 20,
+    "col": 5,
+    "end_line": 21,
+    "container": "",
+    "signature": "@decorator def decorated()",
+    "doc": "Decorated function.",
+    "lang": "python"
+  },
+  {
+    "name": "Box",
+    "kind": "class",
+    "path": "sample.py",
+    "line": 24,
+    "col": 7,
+    "end_line": 40,
+    "container": "",
+    "signature": "class Box(Base)",
+    "doc": "A box that holds things.",
+    "lang": "python"
+  },
+  {
+    "name": "__init__",
+    "kind": "method",
+    "path": "sample.py",
+    "line": 29,
+    "col": 9,
+    "end_line": 30,
+    "container": "Box",
+    "signature": "def __init__(self, size)",
+    "doc": "",
+    "lang": "python"
+  },
+  {
+    "name": "area",
+    "kind": "method",
+    "path": "sample.py",
+    "line": 33,
+    "col": 9,
+    "end_line": 36,
+    "container": "Box",
+    "signature": "@property def area(self) -> int",
+    "doc": "The box's area, squared.",
+    "lang": "python"
+  },
+  {
+    "name": "Inner",
+    "kind": "class",
+    "path": "sample.py",
+    "line": 38,
+    "col": 11,
+    "end_line": 40,
+    "container": "Box",
+    "signature": "class Inner",
+    "doc": "",
+    "lang": "python"
+  },
+  {
+    "name": "method",
+    "kind": "method",
+    "path": "sample.py",
+    "line": 39,
+    "col": 13,
+    "end_line": 40,
+    "container": "Inner",
+    "signature": "def method(self)",
+    "doc": "",
+    "lang": "python"
+  },
+  {
+    "name": "fetch",
+    "kind": "function",
+    "path": "sample.py",
+    "line": 43,
+    "col": 11,
+    "end_line": 44,
+    "container": "",
+    "signature": "async def fetch(url)",
+    "doc": "",
+    "lang": "python"
+  }
+]

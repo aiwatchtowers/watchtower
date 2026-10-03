@@ -73,7 +73,7 @@ func ourCommands(t *testing.T, folder string) map[string][]string {
 	t.Helper()
 	out := map[string][]string{}
 	hooks, _ := decodeSettings(t, folder)["hooks"].(map[string]any)
-	for _, spec := range []hookSpec{sessionStartSpec, stopSpec} {
+	for _, spec := range ownedHookSpecs {
 		groups, _ := hooks[spec.event].([]any)
 		for _, g := range groups {
 			_, hs, _ := groupHooks(g)
@@ -126,14 +126,20 @@ func TestInstallWorkbench_MigratesALegacyFolder(t *testing.T) {
 	}
 }
 
-// assertLegacyHooksReplaced: the legacy hooks were replaced in place —
-// exactly one of ours per event, the new command, the owner's hooks and
-// keys as they were (before is the settings decoded before the install).
+// assertLegacyHooksReplaced: the legacy hooks were replaced in place and
+// the session state hooks (which have no legacy form) added — exactly one
+// of ours per event, the new command, the owner's hooks and keys as they
+// were (before is the settings decoded before the install).
 func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstallReport, before map[string]any) {
 	t.Helper()
+	state := WorkbenchSessionStateHookCommand(legacyBin, 7)
 	want := map[string][]string{
-		"SessionStart": {WorkbenchHookCommand(legacyBin, 7)},
-		"Stop":         {WorkbenchStopHookCommand(legacyBin, 7)},
+		"SessionStart":     {WorkbenchHookCommand(legacyBin, 7)},
+		"Stop":             {WorkbenchStopHookCommand(legacyBin, 7)},
+		"UserPromptSubmit": {state},
+		"Notification":     {state},
+		"PostToolUse":      {state},
+		"StopFailure":      {state},
 	}
 	if got := ourCommands(t, folder); !reflect.DeepEqual(got, want) {
 		t.Fatalf("our hooks = %q, want %q", got, want)
@@ -345,7 +351,7 @@ func TestProj02_RemoveLegacyFolderLeavesNothingInstalled(t *testing.T) {
 // installedSomething reports whether a status still shows any part of the
 // install, legacy or current.
 func installedSomething(st WorkbenchStatus) bool {
-	return st.Legacy || st.Hook || st.StopHook || st.MCP || st.LegacySkill.State != StateMissing
+	return st.Legacy || st.Hook || st.StopHook || st.StateHooks || st.MCP || st.LegacySkill.State != StateMissing
 }
 
 // newGitFolder returns a fresh folder and a git runner bound to it (no

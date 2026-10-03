@@ -56,6 +56,11 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
+	// The test binary as the real CLI (os.Args[1:] are its arguments), for
+	// tests that need a process: signals, stdin EOF, exit codes.
+	if os.Getenv(runCLIEnv) == "1" {
+		os.Exit(Execute())
+	}
 	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" || os.Getenv("GO_WANT_HELPER_PROCESS_DELAYED") == "1" {
 		os.Exit(m.Run())
 	}

@@ -113,6 +113,7 @@ type WorkbenchStatus struct {
 	Skill       SkillStatus
 	Hook        bool // the SessionStart hook (the brief)
 	StopHook    bool // the Stop hook (the board drift check, PROJ-07)
+	StateHooks  bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
 	MCP         bool // CurrentMCP || LegacyMCP
 	ClaudeFound bool
 
@@ -162,6 +163,12 @@ func WorkbenchStopHookCommand(bin string, workbenchID int64) string {
 	return stopSpec.command(bin, workbenchID)
 }
 
+// WorkbenchSessionStateHookCommand is the session state hooks' command line,
+// the same for every event it is installed under.
+func WorkbenchSessionStateHookCommand(bin string, workbenchID int64) string {
+	return stateHookSpecs[0].command(bin, workbenchID)
+}
+
 // WorkbenchMCPCommand is the registration the owner can run by hand when the
 // claude CLI is unavailable to us.
 func WorkbenchMCPCommand(o WorkbenchInstallOptions) string {
@@ -180,7 +187,7 @@ func mcpRemoveCommand(o WorkbenchInstallOptions, server string) string {
 
 // InstallWorkbench makes the folder ready for Claude Code: exclude lines
 // first (so nothing we write ever shows in git status), then the local MCP
-// registration, the skill and the SessionStart and Stop hooks. Every step
+// registration, the skill and the SessionStart, Stop and session state hooks. Every step
 // runs even when an earlier one failed; the failures come back joined.
 //
 // It is also the migration of a folder set up before the Workbench rename
@@ -276,7 +283,7 @@ func keptLegacySetup(regErr error) error {
 		regErr, LegacySkillName, WorkbenchMCPServerName)
 }
 
-// RemoveWorkbench undoes InstallWorkbench (PROJ-02): our two hooks, our
+// RemoveWorkbench undoes InstallWorkbench (PROJ-02): our hooks, our
 // un-edited skill, the MCP registration, and the exclude line of every path
 // that is gone — in both vocabularies, so a folder set up before the
 // Workbench rename and never resynced is cleaned up the same way. What the
@@ -296,6 +303,9 @@ func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 		errs = append(errs, startErr)
 	}
 	if _, err := RemoveStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if _, err := RemoveStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	for _, s := range []Skill{workbenchSkill(), legacySkill()} {
@@ -333,15 +343,7 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	if ps.LegacySkill, err = statusLegacySkill(o.skillsDir()); err != nil {
 		errs = append(errs, err)
 	}
-	var startErr error
-	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.WorkbenchID); startErr != nil {
-		errs = append(errs, startErr)
-	}
-	if ps.StopHook, err = HasStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
-		errs = append(errs, err)
-	}
-	// Its only possible failure is the malformed file already reported above.
-	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
+	errs = append(errs, statusHooks(o, &ps)...)
 	ps.CurrentMCP, err = mcpRegistered(ctx, o, WorkbenchMCPServerName)
 	if err == nil {
 		ps.LegacyMCP, err = mcpRegistered(ctx, o, LegacyMCPServerName)
@@ -355,6 +357,25 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
 	return ps, errors.Join(errs...)
+}
+
+// statusHooks fills ps's hook fields; a malformed settings file is one
+// error, not one per event.
+func statusHooks(o WorkbenchInstallOptions, ps *WorkbenchStatus) []error {
+	var errs []error
+	var startErr, err error
+	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.WorkbenchID); startErr != nil {
+		errs = append(errs, startErr)
+	}
+	if ps.StopHook, err = HasStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	if ps.StateHooks, err = HasStateHooks(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
+		errs = append(errs, err)
+	}
+	// Its only possible failure is the malformed file already reported above.
+	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
+	return errs
 }
 
 // statusLegacySkill is the pre-rename skill's state: StateUnchanged for our
@@ -392,16 +413,18 @@ func bothMalformed(first, second error) bool {
 	return errors.Is(first, ErrMalformedSettings) && errors.Is(second, ErrMalformedSettings)
 }
 
-// installWorkbenchHooks installs the SessionStart and Stop hooks; changed is
-// true when either was added or repaired. A malformed settings file is
-// reported once, by the first install, and the second is not attempted.
+// installWorkbenchHooks installs the SessionStart, Stop and session state
+// hooks; changed is true when any was added or repaired. A malformed
+// settings file is reported once, by the first install, and the others are
+// not attempted.
 func installWorkbenchHooks(o WorkbenchInstallOptions) (bool, error) {
 	started, err := InstallSessionStartHook(o.Folder, WorkbenchHookCommand(o.Bin, o.WorkbenchID), o.WorkbenchID)
 	if errors.Is(err, ErrMalformedSettings) {
 		return false, err
 	}
 	stopped, stopErr := InstallStopHook(o.Folder, WorkbenchStopHookCommand(o.Bin, o.WorkbenchID), o.WorkbenchID)
-	return started || stopped, errors.Join(err, stopErr)
+	stated, stateErr := InstallStateHooks(o.Folder, o.Bin, o.WorkbenchID)
+	return started || stopped || stated, errors.Join(err, stopErr, stateErr)
 }
 
 func (o WorkbenchInstallOptions) mcpAddArgs() []string {

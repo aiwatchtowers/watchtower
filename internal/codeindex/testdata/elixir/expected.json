@@ -1,0 +1,110 @@
+[
+  {
+    "name": "Acme.Store",
+    "kind": "module",
+    "path": "sample.ex",
+    "line": 2,
+    "col": 11,
+    "end_line": 36,
+    "container": "",
+    "signature": "defmodule Acme.Store",
+    "doc": "A key-value store.",
+    "lang": "elixir"
+  },
+  {
+    "name": "new",
+    "kind": "function",
+    "path": "sample.ex",
+    "line": 14,
+    "col": 7,
+    "end_line": 14,
+    "container": "Acme.Store",
+    "signature": "def new, do: %__MODULE__{}",
+    "doc": "Builds an empty store.",
+    "lang": "elixir"
+  },
+  {
+    "name": "add",
+    "kind": "function",
+    "path": "sample.ex",
+    "line": 20,
+    "col": 7,
+    "end_line": 23,
+    "container": "Acme.Store",
+    "signature": "def add(store, key, value) when is_map(store)",
+    "doc": "Adds a value under a key.",
+    "lang": "elixir"
+  },
+  {
+    "name": "size",
+    "kind": "function",
+    "path": "sample.ex",
+    "line": 26,
+    "col": 8,
+    "end_line": 26,
+    "container": "Acme.Store",
+    "signature": "defp size(store), do: map_size(store.entries)",
+    "doc": "",
+    "lang": "elixir"
+  },
+  {
+    "name": "twice",
+    "kind": "macro",
+    "path": "sample.ex",
+    "line": 28,
+    "col": 12,
+    "end_line": 30,
+    "container": "Acme.Store",
+    "signature": "defmacro twice(expr)",
+    "doc": "",
+    "lang": "elixir"
+  },
+  {
+    "name": "Inner",
+    "kind": "module",
+    "path": "sample.ex",
+    "line": 32,
+    "col": 13,
+    "end_line": 35,
+    "container": "Acme.Store",
+    "signature": "defmodule Inner",
+    "doc": "",
+    "lang": "elixir"
+  },
+  {
+    "name": "assist",
+    "kind": "function",
+    "path": "sample.ex",
+    "line": 34,
+    "col": 9,
+    "end_line": 34,
+    "container": "Inner",
+    "signature": "def assist, do: :ok",
+    "doc": "",
+    "lang": "elixir"
+  },
+  {
+    "name": "Acme.Storable",
+    "kind": "protocol",
+    "path": "sample.ex",
+    "line": 38,
+    "col": 13,
+    "end_line": 41,
+    "container": "",
+    "signature": "defprotocol Acme.Storable",
+    "doc": "",
+    "lang": "elixir"
+  },
+  {
+    "name": "key",
+    "kind": "function",
+    "path": "sample.ex",
+    "line": 40,
+    "col": 7,
+    "end_line": 40,
+    "container": "Acme.Storable",
+    "signature": "def key(value)",
+    "doc": "The key this value is stored under.",
+    "lang": "elixir"
+  }
+]

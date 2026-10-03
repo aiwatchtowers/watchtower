@@ -1,0 +1,86 @@
+[
+  {
+    "name": "region",
+    "kind": "var",
+    "path": "main.tf",
+    "line": 6,
+    "col": 11,
+    "end_line": 9,
+    "container": "",
+    "signature": "variable \"region\"",
+    "doc": "The region every resource lives in.",
+    "lang": "hcl"
+  },
+  {
+    "name": "name_prefix",
+    "kind": "var",
+    "path": "main.tf",
+    "line": 12,
+    "col": 3,
+    "end_line": 12,
+    "container": "",
+    "signature": "name_prefix = \"acme\"",
+    "doc": "",
+    "lang": "hcl"
+  },
+  {
+    "name": "tags",
+    "kind": "var",
+    "path": "main.tf",
+    "line": 13,
+    "col": 3,
+    "end_line": 13,
+    "container": "",
+    "signature": "tags = { team = \"platform\" }",
+    "doc": "",
+    "lang": "hcl"
+  },
+  {
+    "name": "aws_s3_bucket.artifacts",
+    "kind": "var",
+    "path": "main.tf",
+    "line": 17,
+    "col": 11,
+    "end_line": 23,
+    "container": "",
+    "signature": "resource \"aws_s3_bucket\" \"artifacts\"",
+    "doc": "The bucket that holds build artifacts.",
+    "lang": "hcl"
+  },
+  {
+    "name": "aws_caller_identity.current",
+    "kind": "var",
+    "path": "main.tf",
+    "line": 25,
+    "col": 7,
+    "end_line": 25,
+    "container": "",
+    "signature": "data \"aws_caller_identity\" \"current\"",
+    "doc": "",
+    "lang": "hcl"
+  },
+  {
+    "name": "network",
+    "kind": "module",
+    "path": "main.tf",
+    "line": 28,
+    "col": 9,
+    "end_line": 31,
+    "container": "",
+    "signature": "module \"network\"",
+    "doc": "The network module.",
+    "lang": "hcl"
+  },
+  {
+    "name": "bucket_arn",
+    "kind": "const",
+    "path": "main.tf",
+    "line": 33,
+    "col": 9,
+    "end_line": 35,
+    "container": "",
+    "signature": "output \"bucket_arn\"",
+    "doc": "",
+    "lang": "hcl"
+  }
+]

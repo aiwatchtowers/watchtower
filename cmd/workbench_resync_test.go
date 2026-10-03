@@ -156,6 +156,37 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.Equal(t, after, workbenchSnapshot(t, database, pid))
 }
 
+// A folder set up before the session state hooks existed (SessionStart and
+// Stop only) gets them on its next resync, reported as hooks_added; a second
+// resync adds nothing.
+func TestWorkbenchResync_AddsTheStateHooksToAnOlderInstall(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	database := writeActionsConfig(t)
+	folder := resyncFolder(t)
+	pid, err := database.CreateWorkbench("acme", folder)
+	require.NoError(t, err)
+	id := strconv.FormatInt(pid, 10)
+	_, _, err = runResync(t, id, "--json")
+	require.NoError(t, err)
+	changed, err := devpack.RemoveStateHooks(folder, pid)
+	require.NoError(t, err)
+	require.True(t, changed, "fixture: the state hooks were installed")
+	has, err := devpack.HasStateHooks(folder, pid)
+	require.NoError(t, err)
+	require.False(t, has)
+
+	out, _, err := runResync(t, id, "--json")
+	require.NoError(t, err)
+	assert.True(t, decodeResync(t, out).HooksAdded)
+	has, err = devpack.HasStateHooks(folder, pid)
+	require.NoError(t, err)
+	assert.True(t, has)
+
+	out, _, err = runResync(t, id, "--json")
+	require.NoError(t, err)
+	assert.False(t, decodeResync(t, out).HooksAdded)
+}
+
 func TestProjectResync_ReinstallsMissingPiecesAndKeepsAnEditedSkill(t *testing.T) {
 	useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)

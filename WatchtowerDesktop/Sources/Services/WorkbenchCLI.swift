@@ -349,6 +349,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// The Stop hook running the board drift check (PROJ-07). A workbench
     /// installed before it existed lacks it until a Repair.
     let stopHook: Bool
+    /// The session-state hooks (`UserPromptSubmit`, `Notification`,
+    /// `PostToolUse`, `StopFailure`, board #312): all of them present. A
+    /// workbench installed before them lacks them until a Repair.
+    let stateHooks: Bool
     let mcp: Bool
     let claudeFound: Bool
     /// The folder was set up before the Workbench rename and still holds
@@ -368,6 +372,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case skill, hook, mcp, legacy
         case stopHook = "stop_hook"
+        case stateHooks = "state_hooks"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
         case currentMCP = "current_mcp"
@@ -379,19 +384,21 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         skill: String,
         hook: Bool,
         stopHook: Bool = true,
+        stateHooks: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = ""
     ) {
-        self.init(skill: skill, hook: hook, stopHook: stopHook, mcp: mcp, claudeFound: claudeFound,
-                  legacy: legacy, legacySkill: legacySkill, currentMCP: mcp)
+        self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks, mcp: mcp,
+                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp)
     }
 
     init(
         skill: String,
         hook: Bool,
         stopHook: Bool = true,
+        stateHooks: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
@@ -404,6 +411,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         self.skill = skill
         self.hook = hook
         self.stopHook = stopHook
+        self.stateHooks = stateHooks
         self.mcp = mcp
         self.claudeFound = claudeFound
     }
@@ -414,6 +422,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         hook = try c.decode(Bool.self, forKey: .hook)
         // An older CLI has no Stop hook to install: nothing to repair.
         stopHook = try c.decodeIfPresent(Bool.self, forKey: .stopHook) ?? true
+        // Nor one without the session-state hooks.
+        stateHooks = try c.decodeIfPresent(Bool.self, forKey: .stateHooks) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
         // An older CLI without the key could always check the registration.
         claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
@@ -427,7 +437,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// Whether Repair can fix something. Without `claude` an unregistered
     /// MCP server is not repairable from here — see `manualMCPCommand`.
     var needsRepair: Bool {
-        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook
+        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || !stateHooks
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 

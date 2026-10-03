@@ -19,8 +19,13 @@ jobs:
         with:
           go-version: "1.25"
 
+      # -tags codegrammars: the release CLI carries the code index's full
+      # grammar set (scripts/build-app.sh builds it the same way).
       - name: Build
-        run: go build ./...
+        run: go build -tags codegrammars ./...
+
+      - name: Test (code index, full grammar set)
+        run: make test-codeindex-full
 
       # Same pairing as ci.yml's Go Test job: the shell suite over
       # scripts/build-app.sh runs first (seconds), then the coverage gate.
