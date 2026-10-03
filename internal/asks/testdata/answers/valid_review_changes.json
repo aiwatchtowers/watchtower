@@ -1,0 +1,24 @@
+{
+  "kind": "review",
+  "payload": {
+    "focus": [{"text": "Is the rollout order right?", "heading": "Rollout"}],
+    "questions": [
+      {"id": "1", "question": "Ship behind a flag?",
+       "options": [{"label": "Yes", "recommended": true}, {"label": "No"}]}
+    ],
+    "checklist": []
+  },
+  "answer": {
+    "answers": [{"id": "1", "labels": ["Yes"], "other": ""}],
+    "checklist": [],
+    "comments": [
+      {"quote": "migrate every row at once", "prefix": "Step 2: ", "suffix": ".", "heading": "Rollout",
+       "body": "Batch it — 500 rows per transaction."},
+      {"quote": "Owner sign-off\nis optional", "prefix": "", "suffix": "", "heading": "",
+       "body": "It is not optional."}
+    ],
+    "note": "Close, one more round.",
+    "verdict": "changes"
+  },
+  "canonical": "{\"answers\":[{\"id\":\"1\",\"labels\":[\"Yes\"],\"other\":\"\"}],\"checklist\":[],\"comments\":[{\"body\":\"Batch it — 500 rows per transaction.\",\"heading\":\"Rollout\",\"prefix\":\"Step 2: \",\"quote\":\"migrate every row at once\",\"suffix\":\".\"},{\"body\":\"It is not optional.\",\"heading\":\"\",\"prefix\":\"\",\"quote\":\"Owner sign-off\\nis optional\",\"suffix\":\"\"}],\"note\":\"Close, one more round.\",\"verdict\":\"changes\"}"
+}

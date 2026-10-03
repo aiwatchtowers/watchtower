@@ -1,0 +1,6 @@
+{
+  "kind": "check",
+  "payload": {"focus": [], "questions": [], "checklist": [{"id": "1", "text": "Launch"}, {"id": "2", "text": "Quit"}]},
+  "answer": {"answers": [], "checklist": [{"id": "1", "state": "ok", "note": ""}], "comments": [], "note": "", "verdict": ""},
+  "error": "checklist: item \"2\" has no state"
+}

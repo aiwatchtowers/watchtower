@@ -1,0 +1,15 @@
+Verdict: changes requested
+
+Answers:
+- Ship behind a flag? → Yes
+
+Comments:
+> migrate every row at once
+Under: Rollout
+Batch it — 500 rows per transaction.
+
+> Owner sign-off
+> is optional
+It is not optional.
+
+Note: Close, one more round.

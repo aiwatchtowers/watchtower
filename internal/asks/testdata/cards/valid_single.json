@@ -1,0 +1,7 @@
+{"questions": [
+  {"id": "scope", "question": "Which release should the summary cover?", "multi": false,
+   "options": [
+     {"label": "v0.11", "description": "The release being cut now", "recommended": true},
+     {"label": "v0.10", "description": "The last shipped release"}
+   ]}
+]}

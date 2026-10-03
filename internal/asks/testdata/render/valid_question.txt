@@ -1,0 +1,5 @@
+Answers:
+- Which release should the summary cover? → v0.11
+- Who is it for? → Engineering, Support / Other: the partner team
+
+Note: Keep it short.

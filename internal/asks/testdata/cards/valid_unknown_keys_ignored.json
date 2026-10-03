@@ -1,0 +1,4 @@
+{"version": 2, "questions": [
+  {"id": "tone", "question": "  Which tone?  ", "extra": {"nested": true},
+   "options": [{"label": " Formal ", "icon": "x"}, {"label": "Casual"}]}
+]}

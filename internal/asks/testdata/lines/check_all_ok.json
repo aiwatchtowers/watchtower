@@ -1,0 +1,6 @@
+{
+  "id": 40,
+  "kind": "check",
+  "answer": {"answers": [], "checklist": [{"id": "1", "state": "ok", "note": ""}], "comments": [], "note": "", "verdict": ""},
+  "line": "Ask #40 answered (check: 1 ok, 0 broken, 0 skipped) — read it with get_ask 40 using the watchtower-workbench skill."
+}

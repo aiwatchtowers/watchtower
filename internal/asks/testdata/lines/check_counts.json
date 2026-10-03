@@ -1,0 +1,15 @@
+{
+  "id": 3,
+  "kind": "check",
+  "answer": {
+    "answers": [],
+    "checklist": [
+      {"id": "1", "state": "ok", "note": ""},
+      {"id": "2", "state": "broken", "note": "crashes"},
+      {"id": "3", "state": "ok", "note": ""},
+      {"id": "4", "state": "skipped", "note": ""}
+    ],
+    "comments": [], "note": "", "verdict": ""
+  },
+  "line": "Ask #3 answered (check: 2 ok, 1 broken, 1 skipped) — read it with get_ask 3 using the watchtower-workbench skill."
+}

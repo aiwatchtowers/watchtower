@@ -1,0 +1,7 @@
+{"questions": [
+  {"question": "First?", "options": [{"label": "A"}, {"label": "B"}]},
+  {"question": "Second?", "multi": true,
+   "options": [{"label": "A"}, {"label": "B"}, {"label": "C"}, {"label": "D"}]},
+  {"id": "", "question": "Third (an empty id is its position)?", "options": [{"label": "Yes"}, {"label": "No"}]},
+  {"id": null, "question": "Fourth?", "options": [{"label": "Yes", "recommended": true}, {"label": "No"}]}
+]}
