@@ -12,7 +12,7 @@ import (
 func DeliveryLine(id int64, kind string, a Answer) string {
 	line := fmt.Sprintf("Ask #%d answered (%s: %s) — read it with get_ask %d using the watchtower-workbench skill.",
 		id, kind, short(kind, a), id)
-	return oneLine(line)
+	return OneLine(line)
 }
 
 func short(kind string, a Answer) string {
@@ -27,11 +27,11 @@ func short(kind string, a Answer) string {
 	return "answered"
 }
 
-// oneLine turns every control scalar and line break into a space, the
+// OneLine turns every control scalar and line break into a space, the
 // WorkbenchCommentPrompt rule (Swift's controlCharacters plus newlines:
 // Cc, Cf, Zl, Zp), so the typed line can neither submit early nor carry an
 // escape sequence.
-func oneLine(s string) string {
+func OneLine(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Zl, unicode.Zp) {
 			return ' '
