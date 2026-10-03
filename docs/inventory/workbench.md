@@ -849,7 +849,7 @@ because Watchtower is broken would be worse than none.
   `Stop` writes nothing, but an async `PostToolUse` of the ended turn whose
   process starts after the `Stop` hook's overwrites `waiting` with
   `working` until the next stop (the Desktop then withdraws the waiting
-  notice). (b) A subagent's permission prompt (`Notification`) moves the
+  notice; follow-up board #368). (b) A subagent's permission prompt (`Notification`) moves the
   row from `waiting` to `approval`, and after the grant the subagent's
   `PostToolUse` records `working` while the main turn is still stopped.
   (c) A turn started without a prompt whose first tool fails stays
