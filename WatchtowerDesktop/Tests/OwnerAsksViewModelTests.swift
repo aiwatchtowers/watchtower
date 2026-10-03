@@ -119,8 +119,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         vm.selectedWorkbenchID = p
 
         XCTAssertTrue(appState.workbenchesViewModel === vm, "the same AppState-owned VM, not a fresh one")
-        XCTAssertEqual(vm.asks.drafts.draft(for: askID).picks["a"], .init(labels: ["No"]))
-        XCTAssertEqual(vm.asks.drafts.draft(for: askID).note, "Keep the flag off")
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: askID).picks["a"], .init(labels: ["No"]))
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: askID).note, "Keep the flag off")
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
         vm.asks.stop()
     }
@@ -153,9 +153,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(vm.asks.drawerAskIDs[p], "the drawer closes: the terminal takes over")
         XCTAssertTrue(vm.layout(projectID: p).visiblePanes.contains(.session(s.id)), "the page shows the session")
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id), "the keyboard moves into it")
-        XCTAssertTrue(vm.asks.drafts.draft(for: askID).isEmpty, "the answer is written; the draft goes")
+        XCTAssertTrue(vm.asks.drafts.askDraft(for: askID).isEmpty, "the answer is written; the draft goes")
         XCTAssertEqual(vm.asks.openAsks[p], [], "the answered ask leaves the open list")
-        XCTAssertEqual(vm.asks.notices[askID]?.text, OwnerAsksViewModel.sentNote)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.sentNote)
     }
 
     /// PROJ-12 (spec 2026-10-03 Part 9, its "PROJ-11"): the answer is
@@ -195,7 +195,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertTrue(typed.isEmpty, "no keystrokes reach the terminal")
         XCTAssertEqual(copied.count, 1)
         XCTAssertTrue(center.clipboardHints.contains(s.id), "the session's pane shows the hint")
-        XCTAssertEqual(vm.asks.notices[askID]?.text, OwnerAsksViewModel.copiedNote)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.copiedNote)
         XCTAssertNil(vm.asks.drawerAskIDs[p])
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id))
     }
@@ -214,7 +214,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(stored.status, "answered")
         XCTAssertTrue(processes.isEmpty, "answering never starts a session")
         XCTAssertTrue(copied.isEmpty)
-        XCTAssertEqual(vm.asks.notices[askID]?.text, OwnerAsksViewModel.noSessionNote)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.noSessionNote)
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "nothing went to a terminal: the drawer stays")
         XCTAssertNil(center.keyboardFocusSerial(for: s.id))
     }
@@ -255,9 +255,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(stored.status, "withdrawn")
         XCTAssertEqual(stored.answer, "")
         XCTAssertTrue(typed.isEmpty)
-        XCTAssertEqual(vm.asks.drafts.draft(for: askID).note, "Ship it", "the draft is kept")
-        XCTAssertEqual(vm.asks.notices[askID], .withdrawn)
-        XCTAssertEqual(vm.asks.notices[askID]?.text, OwnerAsksViewModel.withdrawnNote)
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: askID).note, "Ship it", "the draft is kept")
+        XCTAssertEqual(vm.asks.answerNotices[askID], .withdrawn)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.withdrawnNote)
         XCTAssertEqual(vm.asks.openAsks[p], [], "the list catches up")
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
@@ -275,7 +275,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         XCTAssertEqual(results.compactMap { $0 }, [.sent], "one click answers, the other is refused")
         XCTAssertEqual(typed.count, 1)
-        XCTAssertEqual(vm.asks.notices[askID], .delivered(.sent), "the second click never reads as withdrawn")
+        XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.sent), "the second click never reads as withdrawn")
         XCTAssertTrue(vm.asks.answering.isEmpty)
     }
 

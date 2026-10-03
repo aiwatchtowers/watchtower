@@ -13,8 +13,8 @@ struct OwnerAskAnswerBar: View {
     let statusLine: String
 
     var body: some View {
-        let draft = asks.drafts.draft(for: ask.id)
-        let answering = asks.answering.contains(ask.id)
+        let draft = asks.drafts.askDraft(for: ask.id)
+        let answering = asks.isAnswering(ask.id)
         let actions = OwnerAskPresentation.answerActions(for: ask, draft: draft)
         VStack(alignment: .leading, spacing: 6) {
             if let error = asks.answerErrors[ask.id] {

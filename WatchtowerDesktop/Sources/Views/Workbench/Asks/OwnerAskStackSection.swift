@@ -78,10 +78,10 @@ private struct OwnerAskStackRow: View {
     var body: some View {
         Button(action: open) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: OwnerAskPresentation.kindIcon(ask.kind))
+                Image(systemName: OwnerAskPresentation.askKindIcon(ask.kind))
                     .foregroundStyle(Color.accentColor)
                     .frame(width: 16)
-                    .accessibilityLabel(OwnerAskPresentation.kindLabel(ask.kind))
+                    .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(ask.title).lineLimit(1).truncationMode(.tail)
                     Text(caption)

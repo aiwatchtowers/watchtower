@@ -31,7 +31,7 @@ final class OwnerAskDraftsTests: XCTestCase {
         XCTAssertEqual(drafts.count, 2)
         drafts.discard(7)
         XCTAssertEqual(drafts.count, 1)
-        XCTAssertTrue(drafts.draft(for: 7).isEmpty)
+        XCTAssertTrue(drafts.askDraft(for: 7).isEmpty)
     }
 
     func testAQuestionAnswerFollowsThePayloadOrderAndTrims() throws {

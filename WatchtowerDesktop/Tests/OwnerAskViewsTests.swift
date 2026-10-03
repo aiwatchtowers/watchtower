@@ -103,7 +103,7 @@ final class OwnerAskViewsTests: XCTestCase {
         await vm.asks.load(projectID: s.project)
         await vm.showAsk(s.firstAsk, projectID: s.project)
         let stack = vm.asks.stack(projectID: s.project)
-        XCTAssertEqual(stack.position(of: s.firstAsk).map { OwnerAskPresentation.positionLabel($0, of: stack.count) }, "1 of 2")
+        XCTAssertEqual(stack.askPosition(of: s.firstAsk).map { OwnerAskPresentation.positionLabel($0, of: stack.count) }, "1 of 2")
 
         await vm.showNextAsk(after: s.firstAsk, projectID: s.project)
 
@@ -158,7 +158,7 @@ final class OwnerAskViewsTests: XCTestCase {
 
         XCTAssertFalse(shows(vm, session: s.first, project: s.project))
         XCTAssertNil(vm.asks.drawerAskIDs[s.project], "no drawer, no highlighted row, for a session off screen")
-        XCTAssertEqual(vm.asks.drafts.draft(for: s.firstAsk).note, "half done", "the draft stays")
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: s.firstAsk).note, "half done", "the draft stays")
     }
 
     // MARK: - Closed and withdrawn asks
@@ -188,10 +188,10 @@ final class OwnerAskViewsTests: XCTestCase {
         await vm.showAsk(closed, projectID: s.project)
         let shown = try XCTUnwrap(vm.asks.drawerAsk(projectID: s.project))
         XCTAssertFalse(shown.isOpen, "read-only")
-        XCTAssertEqual(shown.answer.map(OwnerAskPresentation.picks(from:)), ["a": .init(labels: ["No"])])
+        XCTAssertEqual(shown.answer.map(OwnerAskPresentation.answerPicks(from:)), ["a": .init(labels: ["No"])])
         XCTAssertEqual(shown.answer?.note, "later")
         let action = try XCTUnwrap(OwnerAskPresentation.answerActions(for: shown.kind).first)
-        XCTAssertFalse(OwnerAskPresentation.canAnswer(shown, draft: vm.asks.drafts.draft(for: closed), with: action, answering: false),
+        XCTAssertFalse(OwnerAskPresentation.canAnswer(shown, draft: vm.asks.drafts.askDraft(for: closed), with: action, answering: false),
                        "a closed ask takes no answer")
     }
 
@@ -208,7 +208,7 @@ final class OwnerAskViewsTests: XCTestCase {
         let vm = makeVM()
         await vm.asks.loadClosed(projectID: s.project, sessionID: s.first)
         let list = try XCTUnwrap(vm.asks.closedLists[.init(projectID: s.project, sessionID: s.first)])
-        let lines = list.map { OwnerAskPresentation.statusLine($0, replacedBy: vm.asks.replacements[s.project]?[$0.id]) }
+        let lines = list.map { OwnerAskPresentation.askStatusLine($0, replacedBy: vm.asks.replacements[s.project]?[$0.id]) }
         XCTAssertEqual(Dictionary(uniqueKeysWithValues: zip(list.map(\.id), lines)),
                        [old: "replaced by #\(s.firstAsk)", agent: "withdrawn by the agent"])
     }
@@ -232,11 +232,11 @@ final class OwnerAskViewsTests: XCTestCase {
         let refused = await vm.asks.answer(ask)
         XCTAssertNil(refused)
 
-        XCTAssertEqual(vm.asks.notices[ask.id], .withdrawn)
+        XCTAssertEqual(vm.asks.answerNotices[ask.id], .withdrawn)
         let shown = try XCTUnwrap(vm.asks.drawerAsk(projectID: s.project), "the drawer still shows it")
         XCTAssertEqual(shown.status, .withdrawn)
-        XCTAssertEqual(OwnerAskPresentation.statusLine(shown, replacedBy: nil), "withdrawn by the agent")
-        XCTAssertEqual(vm.asks.drafts.draft(for: ask.id).note, "my reasons", "the draft is kept")
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(shown, replacedBy: nil), "withdrawn by the agent")
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: ask.id).note, "my reasons", "the draft is kept")
         XCTAssertEqual(vm.asks.drafts.count, 1)
 
         // "Discard draft"
@@ -267,7 +267,7 @@ final class OwnerAskViewsTests: XCTestCase {
 
         XCTAssertNil(vm.asks.drawerAsk(projectID: s.project))
         XCTAssertFalse(vm.asks.drawerExpanded)
-        XCTAssertEqual(vm.asks.drafts.draft(for: s.firstAsk).note, "half done")
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: s.firstAsk).note, "half done")
     }
 
     func testAnExpandedDrawerObscuresItsSessionsTerminal() async throws {
@@ -364,7 +364,7 @@ final class OwnerAskViewsTests: XCTestCase {
         await vm.asks.load(projectID: s.project)
         XCTAssertNil(vm.asks.loadErrors[s.project])
         XCTAssertNotNil(vm.asks.answerErrors[ask.id], "a good reload does not hide the failed answer")
-        XCTAssertFalse(vm.asks.drafts.draft(for: ask.id).isEmpty, "the draft is kept")
+        XCTAssertFalse(vm.asks.drafts.askDraft(for: ask.id).isEmpty, "the draft is kept")
 
         try await pool.write { try $0.execute(sql: "DROP TRIGGER no_answers") }
         let saved = await vm.asks.answer(ask)

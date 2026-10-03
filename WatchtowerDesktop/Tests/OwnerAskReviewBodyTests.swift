@@ -26,10 +26,10 @@ final class OwnerAskReviewBodyTests: XCTestCase {
         let documents = OwnerAskReviewDocuments()
         let review = try ask(1)
         XCTAssertNil(documents.range(of: OwnerAskFocus(text: "x", heading: "Rollout"), askID: 1), "nothing before the render")
-        await documents.prepare(review)
+        await documents.renderSnapshot(review)
         let doc = try XCTUnwrap(documents.rendered[1])
         XCTAssertEqual(doc, DocumentRendering.render(Self.snapshot))
-        await documents.prepare(review)
+        await documents.renderSnapshot(review)
         XCTAssertEqual(documents.rendered.count, 1)
 
         let heading = try XCTUnwrap(documents.range(of: OwnerAskFocus(text: "x", heading: "Rollout"), askID: 1))
@@ -47,8 +47,8 @@ final class OwnerAskReviewBodyTests: XCTestCase {
         let review = try ask(9, snapshot: snapshot)
         let fresh = OwnerAskReviewDocuments()
         let remembering = OwnerAskReviewDocuments()
-        await fresh.prepare(review)
-        await remembering.prepare(review)
+        await fresh.renderSnapshot(review)
+        await remembering.renderSnapshot(review)
         let doc = try XCTUnwrap(fresh.rendered[9])
         let text = doc.text as NSString
         let first = text.range(of: "the retry budget")
@@ -63,7 +63,7 @@ final class OwnerAskReviewBodyTests: XCTestCase {
     func testOnlyAFewRecentSnapshotsAreKept() async throws {
         let documents = OwnerAskReviewDocuments()
         for id in 1...Int64(OwnerAskReviewDocuments.limit + 1) {
-            await documents.prepare(try ask(id))
+            await documents.renderSnapshot(try ask(id))
         }
         XCTAssertEqual(documents.rendered.count, OwnerAskReviewDocuments.limit)
         XCTAssertNil(documents.rendered[1], "the oldest goes")

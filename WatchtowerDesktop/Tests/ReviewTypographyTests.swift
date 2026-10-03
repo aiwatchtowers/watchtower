@@ -35,7 +35,7 @@ final class ReviewTypographyTests: XCTestCase {
         (out.string as NSString).range(of: text).location
     }
 
-    private func font(_ text: String) -> NSFont? {
+    private func renderedFont(_ text: String) -> NSFont? {
         out.attribute(.font, at: location(text), effectiveRange: nil) as? NSFont
     }
 
@@ -49,16 +49,16 @@ final class ReviewTypographyTests: XCTestCase {
     }
 
     func testFontSizesPerStyle() {
-        XCTAssertEqual(font("Ship")?.pointSize, 14, "body")
-        XCTAssertEqual(font("Plan")?.pointSize, 22)
-        XCTAssertEqual(font("Rollout")?.pointSize, 17)
-        XCTAssertEqual(font("Risks")?.pointSize, 15)
-        XCTAssertTrue(font("let x")?.fontDescriptor.symbolicTraits.contains(.monoSpace) ?? false, "code is monospaced")
+        XCTAssertEqual(renderedFont("Ship")?.pointSize, 14, "body")
+        XCTAssertEqual(renderedFont("Plan")?.pointSize, 22)
+        XCTAssertEqual(renderedFont("Rollout")?.pointSize, 17)
+        XCTAssertEqual(renderedFont("Risks")?.pointSize, 15)
+        XCTAssertTrue(renderedFont("let x")?.fontDescriptor.symbolicTraits.contains(.monoSpace) ?? false, "code is monospaced")
     }
 
     func testBodyLinesAreOneAndAHalfHigh() throws {
         let body = try style("Ship")
-        XCTAssertEqual(lineHeight(body, try XCTUnwrap(font("Ship"))), 1.55, accuracy: 0.01)
+        XCTAssertEqual(lineHeight(body, try XCTUnwrap(renderedFont("Ship"))), 1.55, accuracy: 0.01)
         XCTAssertGreaterThan(body.paragraphSpacing, 0, "paragraphs breathe")
     }
 

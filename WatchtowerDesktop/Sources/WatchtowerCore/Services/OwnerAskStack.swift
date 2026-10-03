@@ -5,7 +5,7 @@ import Foundation
 /// outside the app (no session) as one group. Pure.
 package struct OwnerAskStack: Equatable, Sendable {
     /// The asks of one session, or of none (`sessionID` nil).
-    package struct Group: Identifiable, Equatable, Sendable {
+    package struct SessionGroup: Identifiable, Equatable, Sendable {
         package let sessionID: Int64?
         package let asks: [OwnerAsk]
 
@@ -31,7 +31,7 @@ package struct OwnerAskStack: Equatable, Sendable {
     }
 
     /// The 1-based place of `askID` in the stack; nil once it no longer waits.
-    package func position(of askID: Int64) -> Int? {
+    package func askPosition(of askID: Int64) -> Int? {
         asks.firstIndex { $0.id == askID }.map { $0 + 1 }
     }
 
@@ -46,7 +46,7 @@ package struct OwnerAskStack: Equatable, Sendable {
 
     /// One group per session in the order of its oldest ask; the asks
     /// without a session last.
-    package var groups: [Group] {
+    package var groups: [SessionGroup] {
         var order: [Int64] = []
         var bySession: [Int64: [OwnerAsk]] = [:]
         var outside: [OwnerAsk] = []
@@ -58,7 +58,7 @@ package struct OwnerAskStack: Equatable, Sendable {
             if bySession[session] == nil { order.append(session) }
             bySession[session, default: []].append(ask)
         }
-        let sessions = order.map { Group(sessionID: $0, asks: bySession[$0] ?? []) }
-        return outside.isEmpty ? sessions : sessions + [Group(sessionID: nil, asks: outside)]
+        let sessions = order.map { SessionGroup(sessionID: $0, asks: bySession[$0] ?? []) }
+        return outside.isEmpty ? sessions : sessions + [SessionGroup(sessionID: nil, asks: outside)]
     }
 }

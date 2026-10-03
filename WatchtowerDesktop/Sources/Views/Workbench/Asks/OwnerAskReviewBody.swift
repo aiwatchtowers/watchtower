@@ -48,7 +48,7 @@ struct OwnerAskReviewBody: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: ask.id) { await documents.prepare(ask) }
+        .task(id: ask.id) { await documents.renderSnapshot(ask) }
         // A selection belongs to one snapshot.
         .onChange(of: ask.id) { _, _ in
             selection = DocumentSelectionCarry.none
@@ -65,7 +65,7 @@ struct OwnerAskReviewBody: View {
                 (OwnerAskReviewText.anchor(of: comment), comment.body, "answer-\(index)", nil)
             }
         }
-        return asks.drafts.draft(for: ask.id).comments.map { ($0.anchor, $0.body, $0.id.uuidString, editable ? $0.id : nil) }
+        return asks.drafts.askDraft(for: ask.id).comments.map { ($0.anchor, $0.body, $0.id.uuidString, editable ? $0.id : nil) }
     }
 
     private func document(_ doc: RenderedDocument) -> some View {

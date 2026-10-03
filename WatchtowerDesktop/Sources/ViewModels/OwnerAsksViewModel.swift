@@ -16,7 +16,7 @@ import WatchtowerCore
 @Observable
 final class OwnerAsksViewModel {
     /// What the last answer to an ask came to, shown beside it.
-    enum Notice: Equatable {
+    enum AnswerNotice: Equatable {
         /// Written; the line went as `sendPrompt` says. An ask without a
         /// session counts as `.noSession`.
         case delivered(TerminalCenter.PromptDelivery)
@@ -57,7 +57,7 @@ final class OwnerAsksViewModel {
     /// Each workbench's open asks, oldest first, as last read.
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
     /// The last answer's outcome per ask id, until dismissed.
-    private(set) var notices: [Int64: Notice] = [:]
+    private(set) var answerNotices: [Int64: AnswerNotice] = [:]
     /// Why the last read of a workbench's asks failed; the next read clears it.
     private(set) var loadErrors: [Int64: String] = [:]
     /// Why the last answer to an ask failed, apart from the reads: a good
@@ -314,17 +314,22 @@ final class OwnerAsksViewModel {
     }
 
     func dismissNotice(askID: Int64) {
-        notices[askID] = nil
+        answerNotices[askID] = nil
     }
 
     // MARK: - Answering
+
+    /// An answer is being written for askID: its draft takes no edits.
+    func isAnswering(_ askID: Int64) -> Bool {
+        answering.contains(askID)
+    }
 
     /// Every draft edit of the views. Refused while the ask's answer is
     /// being written: the write took the draft as it was, and its success
     /// discards it, so a later edit would be lost.
     @discardableResult
     func editDraft(_ askID: Int64, _ change: (inout OwnerAskDraft) -> Void) -> Bool {
-        guard !answering.contains(askID) else { return false }
+        guard !isAnswering(askID) else { return false }
         drafts.update(askID, change)
         return true
     }
@@ -340,8 +345,8 @@ final class OwnerAsksViewModel {
     @discardableResult
     func answer(_ ask: OwnerAsk, verdict: OwnerAskAnswer.Verdict? = nil) async -> TerminalCenter.PromptDelivery? {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
-        let draft = drafts.draft(for: ask.id)
-        guard !answering.contains(ask.id), draft.isAnswerable(for: ask) else { return nil }
+        let draft = drafts.askDraft(for: ask.id)
+        guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
         answering.insert(ask.id)
         defer { answering.remove(ask.id) }
         let answer = draft.answer(for: ask)
@@ -351,7 +356,7 @@ final class OwnerAsksViewModel {
                 try OwnerAskQueries.answer(db, askID: askID, projectID: projectID, with: answer)
             }
         } catch AskAnswerError.notOpen {
-            notices[askID] = .withdrawn
+            answerNotices[askID] = .withdrawn
             await load(projectID: projectID)
             return nil
         } catch {
@@ -362,7 +367,7 @@ final class OwnerAsksViewModel {
         drafts.discard(askID)
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         let delivery = ask.sessionID.flatMap { terminalCenter?.sendPrompt(line, sessionID: $0) } ?? .noSession
-        notices[askID] = .delivered(delivery)
+        answerNotices[askID] = .delivered(delivery)
         if delivery != .noSession, let sessionID = ask.sessionID {
             if drawerAskIDs[projectID] == askID { closeDrawer(projectID: projectID) }
             onDelivered?(projectID, sessionID)

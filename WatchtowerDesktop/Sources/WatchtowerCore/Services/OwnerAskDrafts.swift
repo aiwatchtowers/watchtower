@@ -93,12 +93,12 @@ package final class OwnerAskDrafts {
     /// Asks with something the owner would lose.
     package var count: Int { byAsk.values.filter { !$0.isEmpty }.count }
 
-    package func draft(for askID: Int64) -> OwnerAskDraft {
+    package func askDraft(for askID: Int64) -> OwnerAskDraft {
         byAsk[askID] ?? OwnerAskDraft()
     }
 
     package func update(_ askID: Int64, _ change: (inout OwnerAskDraft) -> Void) {
-        var draft = draft(for: askID)
+        var draft = askDraft(for: askID)
         change(&draft)
         // Kept even while empty: a comment just anchored has no text yet.
         byAsk[askID] = draft

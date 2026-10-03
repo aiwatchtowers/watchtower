@@ -84,14 +84,14 @@ final class OwnerAskPresentationTests: XCTestCase {
     }
 
     func testStatusLineOfAClosedAsk() throws {
-        XCTAssertEqual(OwnerAskPresentation.statusLine(try ask(.question, status: "answered"), replacedBy: nil), "Answered")
-        XCTAssertEqual(OwnerAskPresentation.statusLine(try ask(.question, status: "delivered"), replacedBy: nil), "Delivered")
-        XCTAssertEqual(OwnerAskPresentation.statusLine(try ask(.question, status: "withdrawn", reason: "agent"), replacedBy: nil),
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(try ask(.question, status: "answered"), replacedBy: nil), "Answered")
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(try ask(.question, status: "delivered"), replacedBy: nil), "Delivered")
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(try ask(.question, status: "withdrawn", reason: "agent"), replacedBy: nil),
                        "withdrawn by the agent")
         let superseded = try ask(.review, status: "withdrawn", reason: "superseded")
-        XCTAssertEqual(OwnerAskPresentation.statusLine(superseded, replacedBy: 12), "replaced by #12")
-        XCTAssertEqual(OwnerAskPresentation.statusLine(superseded, replacedBy: nil), "replaced by a newer ask")
-        XCTAssertEqual(OwnerAskPresentation.statusLine(try ask(.question), replacedBy: nil), "Waiting for you")
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(superseded, replacedBy: 12), "replaced by #12")
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(superseded, replacedBy: nil), "replaced by a newer ask")
+        XCTAssertEqual(OwnerAskPresentation.askStatusLine(try ask(.question), replacedBy: nil), "Waiting for you")
     }
 
     func testAStoredAnswerReadsBackAsPicksAndMarks() {
@@ -99,9 +99,9 @@ final class OwnerAskPresentationTests: XCTestCase {
             answers: [.init(id: "a", labels: ["Yes"]), .init(id: "b", labels: [], other: "Later")],
             checklist: [.init(id: "1", state: .broken, note: "crashes")]
         )
-        XCTAssertEqual(OwnerAskPresentation.picks(from: answer), ["a": .init(labels: ["Yes"]), "b": .init(labels: [], other: "Later")])
-        XCTAssertEqual(OwnerAskPresentation.marks(from: answer), ["1": .broken])
-        XCTAssertEqual(OwnerAskPresentation.notes(from: answer), ["1": "crashes"])
+        XCTAssertEqual(OwnerAskPresentation.answerPicks(from: answer), ["a": .init(labels: ["Yes"]), "b": .init(labels: [], other: "Later")])
+        XCTAssertEqual(OwnerAskPresentation.answerMarks(from: answer), ["1": .broken])
+        XCTAssertEqual(OwnerAskPresentation.answerNotes(from: answer), ["1": "crashes"])
     }
 
     func testSendNamesTheUnmarkedItems() throws {

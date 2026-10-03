@@ -23,7 +23,7 @@ final class OwnerAskReviewDocuments {
     @ObservationIgnored private var focusRanges: [Int64: [OwnerAskFocus: NSRange]] = [:]
 
     /// Renders `ask`'s snapshot unless it already is (or is being).
-    func prepare(_ ask: OwnerAsk) async {
+    func renderSnapshot(_ ask: OwnerAsk) async {
         let id = ask.id
         if rendered[id] != nil {
             touch(id)

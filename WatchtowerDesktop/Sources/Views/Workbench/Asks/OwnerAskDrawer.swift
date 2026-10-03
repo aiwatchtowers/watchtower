@@ -44,16 +44,16 @@ enum OwnerAskDrawerLayout {
     }
 }
 
-/// Lays an ask drawer beside `content` (spec 2026-10-03 Part 8): a
+/// Lays an ask drawer beside `workspace` (spec 2026-10-03 Part 8): a
 /// session's terminal, or the whole workspace for an ask filed outside the
 /// app. The drawer is resizable from its leading edge (its width kept by
 /// `OwnerAsksViewModel.drawerWidth`) and can take the whole width, drawn
-/// over the content (`OwnerAskDrawerLayout`).
-struct OwnerAskDrawerHost<Content: View>: View {
+/// over the workspace (`OwnerAskDrawerLayout`).
+struct OwnerAskDrawerHost<Workspace: View>: View {
     let vm: WorkbenchesViewModel
-    /// The ask to show here; nil leaves `content` alone.
+    /// The ask to show here; nil leaves `workspace` alone.
     let ask: OwnerAsk?
-    @ViewBuilder let content: () -> Content
+    @ViewBuilder let workspace: () -> Workspace
     @State private var liveWidth: Double?
     @Environment(\.askDrawerCovers) private var outerCovers
 
@@ -69,7 +69,7 @@ struct OwnerAskDrawerHost<Content: View>: View {
                 // Hidden, never removed or resized, under an expanded drawer:
                 // the terminal host, the board and Monaco keep their identity,
                 // state and size.
-                content()
+                workspace()
                     .frame(width: frames.content, height: geometry.size.height)
                     .opacity(expanded ? 0 : 1)
                     .disabled(expanded)
@@ -116,7 +116,7 @@ struct OwnerAskDrawer: View {
 
     /// Input goes to the draft only while the ask is open and no answer is
     /// being written (`OwnerAsksViewModel.editDraft`).
-    private var editable: Bool { ask.isOpen && !asks.answering.contains(ask.id) }
+    private var editable: Bool { ask.isOpen && !asks.isAnswering(ask.id) }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -139,7 +139,7 @@ struct OwnerAskDrawer: View {
             OwnerAskAnswerBar(
                 asks: asks,
                 ask: ask,
-                statusLine: OwnerAskPresentation.statusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
+                statusLine: OwnerAskPresentation.askStatusLine(ask, replacedBy: asks.replacements[ask.projectID]?[ask.id])
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -154,7 +154,7 @@ struct OwnerAskDrawer: View {
     /// The notice, the agent's header card and the question card.
     @ViewBuilder
     private var topSections: some View {
-        if let notice = asks.notices[ask.id] {
+        if let notice = asks.answerNotices[ask.id] {
             noticeRow(notice)
         }
         OwnerAskHeaderCard(
@@ -174,7 +174,7 @@ struct OwnerAskDrawer: View {
     }
 
     private var hasTopSections: Bool {
-        asks.notices[ask.id] != nil || !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
+        asks.answerNotices[ask.id] != nil || !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
             || ask.previousAskID != nil || !ask.payload.questions.isEmpty
     }
 
@@ -215,15 +215,15 @@ struct OwnerAskDrawer: View {
     private var header: some View {
         let stack = asks.stack(projectID: ask.projectID)
         return HStack(spacing: 8) {
-            Image(systemName: OwnerAskPresentation.kindIcon(ask.kind))
+            Image(systemName: OwnerAskPresentation.askKindIcon(ask.kind))
                 .foregroundStyle(Color.accentColor)
-                .accessibilityLabel(OwnerAskPresentation.kindLabel(ask.kind))
+                .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
             VStack(alignment: .leading, spacing: 1) {
                 Text(ask.title).font(.headline).lineLimit(2)
                 Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
-            if let position = stack.position(of: ask.id), stack.count > 1 {
+            if let position = stack.askPosition(of: ask.id), stack.count > 1 {
                 Button {
                     Task { await vm.showNextAsk(after: ask.id, projectID: ask.projectID) }
                 } label: {
@@ -263,14 +263,14 @@ struct OwnerAskDrawer: View {
     /// Kind · #target · age.
     private var caption: String {
         let parts: [String?] = [
-            OwnerAskPresentation.kindLabel(ask.kind),
+            OwnerAskPresentation.askKindLabel(ask.kind),
             ask.targetID.map { "#\($0)" },
             TimeFormatting.shortAge(from: ask.createdAt, now: Date())
         ]
         return parts.compactMap(\.self).joined(separator: " · ")
     }
 
-    private func noticeRow(_ notice: OwnerAsksViewModel.Notice) -> some View {
+    private func noticeRow(_ notice: OwnerAsksViewModel.AnswerNotice) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: notice == .withdrawn ? "exclamationmark.triangle" : "checkmark.circle")
                 .foregroundStyle(notice == .withdrawn ? .orange : .green)
@@ -307,7 +307,7 @@ struct OwnerAskDrawer: View {
         if editable {
             TextField(
                 "Note for the agent (optional)",
-                text: Binding(get: { asks.drafts.draft(for: ask.id).note }, set: { text in asks.editDraft(ask.id) { $0.note = text } }),
+                text: Binding(get: { asks.drafts.askDraft(for: ask.id).note }, set: { text in asks.editDraft(ask.id) { $0.note = text } }),
                 axis: .vertical
             )
             .textFieldStyle(.roundedBorder)
@@ -323,21 +323,21 @@ struct OwnerAskDrawer: View {
     // MARK: - What the body shows: the draft, or a closed ask's answer
 
     private var picksBinding: Binding<[String: ChatQuestionAnswer.Entry]> {
-        if let answer = ask.answer { return .constant(OwnerAskPresentation.picks(from: answer)) }
+        if let answer = ask.answer { return .constant(OwnerAskPresentation.answerPicks(from: answer)) }
         let (asks, id) = (asks, ask.id)
-        return Binding(get: { asks.drafts.draft(for: id).picks }, set: { picks in asks.editDraft(id) { $0.picks = picks } })
+        return Binding(get: { asks.drafts.askDraft(for: id).picks }, set: { picks in asks.editDraft(id) { $0.picks = picks } })
     }
 
     private var marks: [String: OwnerAskAnswer.CheckState] {
-        ask.answer.map(OwnerAskPresentation.marks(from:)) ?? asks.drafts.draft(for: ask.id).checks
+        ask.answer.map(OwnerAskPresentation.answerMarks(from:)) ?? asks.drafts.askDraft(for: ask.id).checks
     }
 
     private var checkNotes: [String: String] {
-        ask.answer.map(OwnerAskPresentation.notes(from:)) ?? asks.drafts.draft(for: ask.id).checkNotes
+        ask.answer.map(OwnerAskPresentation.answerNotes(from:)) ?? asks.drafts.askDraft(for: ask.id).checkNotes
     }
 
     private var note: String {
-        ask.answer?.note ?? asks.drafts.draft(for: ask.id).note
+        ask.answer?.note ?? asks.drafts.askDraft(for: ask.id).note
     }
 }
 

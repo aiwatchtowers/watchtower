@@ -62,8 +62,8 @@ final class OwnerAskStackTests: XCTestCase {
             try ask(2, session: 8, minutesAgo: 2),
             try ask(3, session: nil, minutesAgo: 1)
         ])
-        XCTAssertEqual(stack.position(of: 2), 2)
-        XCTAssertNil(stack.position(of: 9), "an ask no longer waiting has no place")
+        XCTAssertEqual(stack.askPosition(of: 2), 2)
+        XCTAssertNil(stack.askPosition(of: 9), "an ask no longer waiting has no place")
         XCTAssertEqual(stack.next(after: 1)?.id, 2, "the next ask may be another session's")
         XCTAssertEqual(stack.next(after: 3)?.id, 1, "past the last it wraps")
         XCTAssertEqual(stack.next(after: 9)?.id, 1, "from an ask no longer waiting, the oldest")

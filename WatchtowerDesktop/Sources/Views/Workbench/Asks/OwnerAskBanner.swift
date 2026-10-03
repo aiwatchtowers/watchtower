@@ -12,9 +12,9 @@ struct OwnerAskBanner: View {
     var body: some View {
         if let first = asks.first {
             HStack(spacing: 8) {
-                Image(systemName: OwnerAskPresentation.kindIcon(first.kind))
+                Image(systemName: OwnerAskPresentation.askKindIcon(first.kind))
                     .foregroundStyle(Color.accentColor)
-                    .accessibilityLabel(OwnerAskPresentation.kindLabel(first.kind))
+                    .accessibilityLabel(OwnerAskPresentation.askKindLabel(first.kind))
                 Text("Agent asks: \(first.title)")
                     .lineLimit(1)
                     .truncationMode(.tail)

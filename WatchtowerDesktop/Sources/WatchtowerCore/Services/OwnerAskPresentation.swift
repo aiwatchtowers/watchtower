@@ -85,7 +85,7 @@ package enum OwnerAskPresentation {
 
     /// What became of an ask; a superseded one names the round that replaced
     /// it (`OwnerAskQueries.replacements`).
-    package static func statusLine(_ ask: OwnerAsk, replacedBy: Int64?) -> String {
+    package static func askStatusLine(_ ask: OwnerAsk, replacedBy: Int64?) -> String {
         switch ask.status {
         case .open: "Waiting for you"
         case .answered: "Answered"
@@ -99,7 +99,7 @@ package enum OwnerAskPresentation {
         }
     }
 
-    package static func kindIcon(_ kind: OwnerAskKind) -> String {
+    package static func askKindIcon(_ kind: OwnerAskKind) -> String {
         switch kind {
         case .review: "doc.text.magnifyingglass"
         case .check: "checklist"
@@ -107,7 +107,7 @@ package enum OwnerAskPresentation {
         }
     }
 
-    package static func kindLabel(_ kind: OwnerAskKind) -> String {
+    package static func askKindLabel(_ kind: OwnerAskKind) -> String {
         switch kind {
         case .review: "Review"
         case .check: "Check"
@@ -116,17 +116,17 @@ package enum OwnerAskPresentation {
     }
 
     /// A stored answer's question picks, as the question card shows them.
-    package static func picks(from answer: OwnerAskAnswer) -> [String: ChatQuestionAnswer.Entry] {
+    package static func answerPicks(from answer: OwnerAskAnswer) -> [String: ChatQuestionAnswer.Entry] {
         Dictionary(answer.answers.map { ($0.id, .init(labels: $0.labels, other: $0.other.isEmpty ? nil : $0.other)) }) { first, _ in first }
     }
 
     /// A stored answer's check marks.
-    package static func marks(from answer: OwnerAskAnswer) -> [String: OwnerAskAnswer.CheckState] {
+    package static func answerMarks(from answer: OwnerAskAnswer) -> [String: OwnerAskAnswer.CheckState] {
         Dictionary(answer.checklist.map { ($0.id, $0.state) }) { first, _ in first }
     }
 
     /// A stored answer's notes on check items, the empty ones left out.
-    package static func notes(from answer: OwnerAskAnswer) -> [String: String] {
+    package static func answerNotes(from answer: OwnerAskAnswer) -> [String: String] {
         Dictionary(answer.checklist.filter { !$0.note.isEmpty }.map { ($0.id, $0.note) }) { first, _ in first }
     }
 }

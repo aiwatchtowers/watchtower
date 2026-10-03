@@ -70,10 +70,10 @@ struct OwnerAskClosedList: View {
             Task { await vm.showAsk(ask.id, projectID: projectID) }
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: OwnerAskPresentation.kindIcon(ask.kind))
+                Image(systemName: OwnerAskPresentation.askKindIcon(ask.kind))
                     .foregroundStyle(.secondary)
                     .frame(width: 16)
-                    .accessibilityLabel(OwnerAskPresentation.kindLabel(ask.kind))
+                    .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(ask.title).lineLimit(1).truncationMode(.tail)
                     Text(caption(ask, replacedBy: replacedBy))
@@ -89,7 +89,7 @@ struct OwnerAskClosedList: View {
     }
 
     private func caption(_ ask: OwnerAsk, replacedBy: Int64?) -> String {
-        let status = OwnerAskPresentation.statusLine(ask, replacedBy: replacedBy)
+        let status = OwnerAskPresentation.askStatusLine(ask, replacedBy: replacedBy)
         let age = TimeFormatting.shortAge(from: ask.createdAt, now: Date())
         return [status, age].compactMap(\.self).joined(separator: " · ")
     }
