@@ -7,18 +7,22 @@ import Foundation
 /// One file of an index run. `lang` "" = a language the CLI does not
 /// index. `skipped` (ruling R21): a path asked for by name that is not a
 /// workbench file — git-ignored, binary, over 2 MB, outside the folder, a
-/// directory, unreadable.
+/// directory, unreadable. `holdsDefinitions` false (`"defs":false`,
+/// ruling R32): a language the CLI indexes without a grammar — markup,
+/// styles, config — whose entries are never code definitions.
 package struct CodeIndexFileResult: Equatable, Sendable {
     package let file: String
     package let lang: String
     package let symbols: [CodeSymbol]
     package let skipped: Bool
+    package let holdsDefinitions: Bool
 
-    package init(file: String, lang: String, symbols: [CodeSymbol], skipped: Bool = false) {
+    package init(file: String, lang: String, symbols: [CodeSymbol], skipped: Bool = false, holdsDefinitions: Bool = true) {
         self.file = file
         self.lang = lang
         self.symbols = symbols
         self.skipped = skipped
+        self.holdsDefinitions = holdsDefinitions
     }
 }
 
@@ -50,7 +54,7 @@ package enum CodeIndexLine: Decodable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case done, files, symbols, ms, file, lang, deleted, skipped
+        case done, files, symbols, ms, file, lang, deleted, skipped, defs
     }
 
     package init(from decoder: any Decoder) throws {
@@ -73,7 +77,9 @@ package enum CodeIndexLine: Decodable, Equatable, Sendable {
             lang: c.decode(String.self, forKey: .lang),
             symbols: c.decode([CodeSymbol].self, forKey: .symbols),
             // `skipped,omitempty` on the Go side: absent means false.
-            skipped: c.decodeIfPresent(Bool.self, forKey: .skipped) ?? false
+            skipped: c.decodeIfPresent(Bool.self, forKey: .skipped) ?? false,
+            // `defs` is only ever written as false: absent means true.
+            holdsDefinitions: c.decodeIfPresent(Bool.self, forKey: .defs) ?? true
         ))
     }
 }

@@ -51,6 +51,18 @@ final class CodeIndexStreamTests: XCTestCase {
         ])
     }
 
+    /// Ruling R32: `"defs":false` marks a language without code
+    /// definitions; absent means the file may hold some.
+    func testDefsFlag() {
+        var decoder = CodeJSONLineDecoder<CodeIndexLine>()
+        let input = #"{"file":"site.css","lang":"css","symbols":[],"defs":false}"# + "\n"
+            + #"{"file":"a.go","lang":"go","symbols":[]}"# + "\n"
+        XCTAssertEqual(decoder.feed(Data(input.utf8)), [
+            .file(CodeIndexFileResult(file: "site.css", lang: "css", symbols: [], holdsDefinitions: false)),
+            .file(CodeIndexFileResult(file: "a.go", lang: "go", symbols: [], holdsDefinitions: true))
+        ])
+    }
+
     func testDeletedLineAndUnterminatedTail() {
         var decoder = CodeJSONLineDecoder<CodeIndexLine>()
         XCTAssertEqual(decoder.feed(Data(#"{"file":"./gone.go","deleted":true}"#.utf8)), [])

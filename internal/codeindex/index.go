@@ -252,6 +252,7 @@ func indexSource(p parser, root string, j job) (FileResult, error) {
 		return res, nil
 	}
 	res.Lang = l.id
+	res.NoDefinitions = !l.holdsDefinitions()
 	for i := range syms {
 		syms[i].Path, syms[i].Lang = res.File, l.id
 	}

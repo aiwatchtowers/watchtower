@@ -62,6 +62,11 @@ type langSpec struct {
 	scripts bool
 }
 
+// holdsDefinitions reports whether the language's entries can be code
+// definitions: a language indexed by a scan instead of a grammar (markup,
+// styles, config: headings and keys at most) never holds one (ruling R32).
+func (l *langSpec) holdsDefinitions() bool { return l.scan == nil }
+
 // xmlTag is an XML doc comment's markup: `<summary>`, `<see cref="X"/>`.
 var xmlTag = regexp.MustCompile(`</?[A-Za-z][^>]*>`)
 

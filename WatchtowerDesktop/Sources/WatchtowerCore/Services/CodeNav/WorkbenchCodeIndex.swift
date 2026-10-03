@@ -24,6 +24,8 @@ package final class WorkbenchCodeIndex {
         let file: String
         /// As the CLI reported it; "" = a language it does not index.
         var lang: String
+        /// false = `"defs":false` (ruling R32).
+        var holdsDefinitions: Bool
         /// UTF-16 offset of the file name in the path.
         let nameStart: Int
         let nameSlot: Int
@@ -82,6 +84,15 @@ package final class WorkbenchCodeIndex {
         position[path].flatMap { entries[$0]?.lang }
     }
 
+    /// The language go to definition and the jump bar see in `path`: as
+    /// reported, but "" for one whose files hold no code definitions
+    /// (markup, styles, config — ruling R32), so navigation treats it as
+    /// unsupported; nil when the file is not in the index (yet).
+    package func definitionLanguage(of path: String) -> String? {
+        guard let entry = position[path].flatMap({ entries[$0] }) else { return nil }
+        return entry.holdsDefinitions ? entry.lang : ""
+    }
+
     /// The symbols of one file, by line.
     package func symbols(in path: String) -> [CodeSymbol] {
         position[path].flatMap { entries[$0]?.symbols } ?? []
@@ -136,6 +147,7 @@ package final class WorkbenchCodeIndex {
             entry.symbolSlots.filter { $0 >= 0 }.forEach { corpus.killSlot($0) }
             entry.symbols = symbols
             entry.lang = result.lang
+            entry.holdsDefinitions = result.holdsDefinitions
             entry.symbolSlots = symbolSlots(symbols, entry: id)
             entries[id] = entry
         } else {
@@ -146,7 +158,8 @@ package final class WorkbenchCodeIndex {
             let pathSlot = addSlot(result.file, tag: Tag.path, SlotOwner(entry: id, symbol: SlotOwner.pathSlot))
             position[result.file] = id
             entries[id] = Entry(
-                file: result.file, lang: result.lang, nameStart: result.file.utf16.count - name.utf16.count, nameSlot: nameSlot, pathSlot: pathSlot,
+                file: result.file, lang: result.lang, holdsDefinitions: result.holdsDefinitions,
+                nameStart: result.file.utf16.count - name.utf16.count, nameSlot: nameSlot, pathSlot: pathSlot,
                 symbols: symbols, symbolSlots: symbolSlots(symbols, entry: id)
             )
             files.append(result.file)
@@ -192,7 +205,7 @@ package final class WorkbenchCodeIndex {
             let nameSlot = addSlot(CodeRanking.fileName(path), tag: Tag.name, SlotOwner(entry: id, symbol: SlotOwner.nameSlot))
             let pathSlot = addSlot(path, tag: Tag.path, SlotOwner(entry: id, symbol: SlotOwner.pathSlot))
             entries[id] = Entry(
-                file: path, lang: old.lang, nameStart: old.nameStart, nameSlot: nameSlot, pathSlot: pathSlot,
+                file: path, lang: old.lang, holdsDefinitions: old.holdsDefinitions, nameStart: old.nameStart, nameSlot: nameSlot, pathSlot: pathSlot,
                 symbols: old.symbols, symbolSlots: symbolSlots(old.symbols, entry: id)
             )
         }

@@ -168,6 +168,19 @@ final class JumpBarMenuTests: XCTestCase {
         XCTAssertEqual(controller.snapshot()?.model.segments.last, .file(path: path), "a cursor in another file does not count")
     }
 
+    /// Ruling R32: a file whose language holds no code definitions says
+    /// "text search" like an unsupported one; a code file says nothing.
+    func testAMarkupFileSaysTextSearch() {
+        let (controller, vm, _) = makeController()
+        codeIndex.index(for: project.id).applyIndexLines(
+            [.file(CodeIndexFileResult(file: "site.css", lang: "css", symbols: [], holdsDefinitions: false))], from: .update
+        )
+        vm.codeFiles.open("site.css", project: project, preview: false)
+        XCTAssertEqual(controller.snapshot()?.model.status, .textSearch(language: "CSS"))
+        vm.codeFiles.open(path, project: project, preview: false)
+        XCTAssertNil(controller.snapshot()?.model.status)
+    }
+
     func testControlSixShowsTheLastSegmentsMenuWithTheFilter() throws {
         let (controller, vm, shown) = makeController()
         navigation.registerJumpBar(controller, for: project.id)

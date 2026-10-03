@@ -246,7 +246,7 @@ final class JumpBarController: FileSymbolsPresenting {
         let model = JumpBarModel(
             path: active, rootName: project.folderURL.lastPathComponent,
             cursorLine: cursor?.path == active ? cursor?.line : nil,
-            symbols: symbols, language: index?.language(of: active), state: index?.state ?? .idle
+            symbols: symbols, language: index?.definitionLanguage(of: active), state: index?.state ?? .idle
         )
         return Snapshot(model: model, symbols: symbols, files: index?.files ?? [])
     }

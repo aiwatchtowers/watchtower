@@ -75,11 +75,17 @@ type FileResult struct {
 	// directory or unreadable (ruling R21). A readable file of a language
 	// this build cannot index is not skipped: it has Lang "" only.
 	Skipped bool
+	// NoDefinitions: the file's language is indexed without a grammar
+	// (markup, styles and config — langSpec.holdsDefinitions), so its
+	// entries can never be code definitions; the Desktop treats it as
+	// unsupported for navigation (ruling R32).
+	NoDefinitions bool
 }
 
 // MarshalJSON writes {"file","lang","symbols"} — symbols always a list,
-// plus "skipped":true for a skipped path — or {"file","deleted":true} for
-// a deleted path (spec §6.2).
+// plus "skipped":true for a skipped path and "defs":false for a language
+// that holds no code definitions — or {"file","deleted":true} for a
+// deleted path (spec §6.2).
 func (r FileResult) MarshalJSON() ([]byte, error) {
 	if r.Deleted {
 		return json.Marshal(struct {
@@ -91,12 +97,17 @@ func (r FileResult) MarshalJSON() ([]byte, error) {
 	if syms == nil {
 		syms = []Symbol{}
 	}
+	var defs *bool
+	if r.NoDefinitions {
+		defs = new(bool)
+	}
 	return json.Marshal(struct {
 		File    string   `json:"file"`
 		Lang    string   `json:"lang"`
 		Symbols []Symbol `json:"symbols"`
 		Skipped bool     `json:"skipped,omitempty"`
-	}{r.File, r.Lang, syms, r.Skipped})
+		Defs    *bool    `json:"defs,omitempty"`
+	}{r.File, r.Lang, syms, r.Skipped, defs})
 }
 
 // Summary totals one run.

@@ -206,6 +206,12 @@ search.
   --stdin` per batch, inside a repository) — yields `"lang":""` with no
   symbols and `"skipped":true`, not `deleted` (R21: a readable file of an
   unsupported language is `"lang":""` without `skipped`).
+- A file of a language indexed without a grammar of its own — HTML, CSS, SCSS,
+  Dockerfile, Markdown, YAML, TOML, JSON (derived from the language table:
+  the languages indexed by a scan) — carries `"defs":false`: its entries are
+  never code definitions, so the Desktop treats it as unsupported for
+  navigation (the text-search heuristic on a miss, the jump bar's "Language X:
+  text search"; R32). Absent means the file may hold definitions.
 - Every `--files`/`--serve` result (and its symbols' `path`) echoes the request
   path verbatim, deleted ones included (`./a.go` stays `./a.go`).
 - A file whose parse fails or panics, or whose language's query does not

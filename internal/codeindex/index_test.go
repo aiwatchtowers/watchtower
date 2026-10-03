@@ -185,6 +185,7 @@ func TestFileResult_JSON(t *testing.T) {
 		{FileResult{File: "gone.go", Lang: "go", Deleted: true}, `{"file":"gone.go","deleted":true}`},
 		{FileResult{File: "notes.txt"}, `{"file":"notes.txt","lang":"","symbols":[]}`},
 		{FileResult{File: "dist/x.js", Skipped: true}, `{"file":"dist/x.js","lang":"","symbols":[],"skipped":true}`},
+		{FileResult{File: "a.css", Lang: "css", NoDefinitions: true}, `{"file":"a.css","lang":"css","symbols":[],"defs":false}`},
 		{FileResult{File: "a.md", Lang: "markdown", Symbols: []Symbol{{
 			Name: "Intro", Kind: KindModule, Path: "a.md", Line: 1, Col: 3, EndLine: 4, Signature: "# Intro", Lang: "markdown", Outline: true,
 		}}}, `{"file":"a.md","lang":"markdown","symbols":[{"name":"Intro","kind":"module","path":"a.md","line":1,"col":3,"end_line":4,"container":"","signature":"# Intro","doc":"","lang":"markdown","outline":true}]}`},
@@ -341,8 +342,44 @@ func TestRun_ScannedLanguagesNeedNoGrammar(t *testing.T) {
 		wantScanned(t, got[rel], rel, f[0])
 	}
 	data, err := json.Marshal(got["web/site.css"])
-	if err != nil || string(data) != `{"file":"web/site.css","lang":"css","symbols":[]}` {
+	if err != nil || string(data) != `{"file":"web/site.css","lang":"css","symbols":[],"defs":false}` {
 		t.Errorf("css json = %s (%v)", data, err)
+	}
+}
+
+// Ruling R32: the languages indexed by a scan (markup, styles, config) are
+// exactly the ones whose files report "defs":false; a grammar language's
+// file (and an unknown one) does not.
+func TestRun_DefsFalseForLanguagesWithoutDefinitions(t *testing.T) {
+	want := []string{"css", "dockerfile", "html", "json", "markdown", "scss", "toml", "yaml"}
+	var none []string
+	for i := range languages {
+		if !languages[i].holdsDefinitions() {
+			none = append(none, languages[i].id)
+		}
+	}
+	slices.Sort(none)
+	if !slices.Equal(none, want) {
+		t.Errorf("languages without definitions = %v, want %v", none, want)
+	}
+
+	root := t.TempDir()
+	write(t, root, "a.go", []byte("package a\n\nfunc F() {}\n"))
+	write(t, root, "a.md", []byte("# A\n"))
+	write(t, root, "notes.txt", []byte("plain\n"))
+	got := collect(t, root, nil, func() parser { return boomParser{closed: new(atomic.Int32)} })
+	if r := got["a.go"]; r.Lang != "go" || r.NoDefinitions {
+		t.Errorf("a.go = %+v, want lang go with definitions", r)
+	}
+	if r := got["a.md"]; r.Lang != "markdown" || !r.NoDefinitions {
+		t.Errorf("a.md = %+v, want lang markdown without definitions", r)
+	}
+	if r := got["notes.txt"]; r.Lang != "" || r.NoDefinitions {
+		t.Errorf("notes.txt = %+v, want lang \"\" and no defs flag", r)
+	}
+	data, err := json.Marshal(got["a.go"])
+	if err != nil || strings.Contains(string(data), "defs") {
+		t.Errorf("a.go json = %s (%v), want no defs field", data, err)
 	}
 }
 
@@ -354,8 +391,8 @@ func wantScanned(t *testing.T, r FileResult, rel, lang string) {
 	if lang == "yaml" || lang == "toml" || lang == "json" {
 		want = 1
 	}
-	if r.Lang != lang || len(r.Symbols) != want {
-		t.Errorf("%s = %+v, want lang %s with %d symbols", rel, r, lang, want)
+	if r.Lang != lang || len(r.Symbols) != want || !r.NoDefinitions {
+		t.Errorf("%s = %+v, want lang %s with %d symbols and no definitions", rel, r, lang, want)
 	}
 	for _, s := range r.Symbols {
 		if s.Name != "a" || !s.Outline || s.Lang != lang || s.Path != rel {

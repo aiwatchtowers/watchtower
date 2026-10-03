@@ -184,6 +184,20 @@ final class CodeNavigationCenterTests: XCTestCase {
         await task.value
     }
 
+    /// Ruling R32: markup and config (`"defs":false`) are unsupported for
+    /// navigation, so a miss there runs the text search.
+    func testAMissInAFileWithoutDefinitionsFallsBackToTheTextSearch() async {
+        let (center, _) = makeCenter(symbols: [])
+        codeIndex.index(for: project.id).applyIndexLines(
+            [.file(CodeIndexFileResult(file: "docs/guide.md", lang: "markdown", symbols: [], holdsDefinitions: false))], from: .update
+        )
+        let task = Task { await center.goToDefinition(request("frob", at: "docs/guide.md", 1, 1), project: project, anchor: nil) }
+        let started = await eventually { self.searches.started.count == 1 }
+        XCTAssertTrue(started, "markdown holds no definitions: the heuristic runs")
+        searches.started.first?.onDone(.finished(CodeSearchDone(files: 0, matches: 0, truncated: false)))
+        await task.value
+    }
+
     func testSeveralTextMatchesAskWithDefinitionLooksFirst() async {
         let (center, _) = makeCenter(symbols: [])
         menu.answer = .dismissed

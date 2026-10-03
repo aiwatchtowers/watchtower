@@ -41,6 +41,24 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         XCTAssertNil(index.language(of: "run.pl"))
     }
 
+    /// Ruling R32: a file whose language holds no code definitions
+    /// (`"defs":false`) reads as unsupported for navigation, its language
+    /// as reported stays.
+    func testTheDefinitionLanguageOfMarkupAndConfigIsUnsupported() {
+        let index = WorkbenchCodeIndex()
+        index.applyIndexLines([
+            file("a.swift"), file("run.pl", lang: ""),
+            .file(CodeIndexFileResult(file: "README.md", lang: "markdown", symbols: [], holdsDefinitions: false))
+        ], from: .fullRun)
+        XCTAssertEqual(index.definitionLanguage(of: "a.swift"), "swift")
+        XCTAssertEqual(index.definitionLanguage(of: "run.pl"), "")
+        XCTAssertEqual(index.definitionLanguage(of: "README.md"), "", "markup: text search, like an unsupported language")
+        XCTAssertEqual(index.language(of: "README.md"), "markdown")
+        XCTAssertNil(index.definitionLanguage(of: "other.go"), "not (yet) in the index")
+        index.applyIndexLines([.file(CodeIndexFileResult(file: "README.md", lang: "markdown", symbols: []))], from: .update)
+        XCTAssertEqual(index.definitionLanguage(of: "README.md"), "markdown", "an update replaces the flag")
+    }
+
     func testDeletedRemovesTheFileAndItsSubtree() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines([
