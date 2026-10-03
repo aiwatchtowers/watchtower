@@ -19,10 +19,16 @@ spec. Guards are changed only as §8 names them. Task 11 still waits for the own
 ## Review focus
 - A StopFailure right after a Stop already wrote `waiting` must still record the error (the relaxed "different state or
   failure flag" guard) — Task 1.
-- A session finished, then closed, then reopened by the owner without a prompt: still Finished (blue, filled again), not
-  Running — Task 7.
-- An ask answered from the drawer while its session is closed: the orange ring turns grey at once, not after a 1 s poll
-  that is not running — Task 9.
+- Restart vs a new message. A finished session is closed and later started again (the process relaunches with
+  `--resume`), but the owner has not typed anything yet: it stays Finished — the blue ring becomes a filled blue dot —
+  and does not fall back to Running just because a new process run began. As soon as the owner sends a message, it turns
+  green Working (the `working` write clears `finished_at`). Both halves are tested — Task 7 (the state order) and Task 1
+  (the clearing write).
+- Answering an ask of a closed session. The session is not running and has an open ask, so its dot is an orange ring
+  ("waiting for you"). The owner answers the ask in the drawer. Now nothing is waiting, so the dot must turn into a grey
+  ring ("not running") right away. The trap: the Desktop re-reads session states once a second only while some session
+  is running; with none running, nothing would re-read and the dot would stay orange until the next app activation. So
+  answering an ask triggers a re-read — Task 9.
 - An old saved layout and a Claude Code that sends no error type in StopFailure must not crash or blank a row — Tasks 7
   and 1.
 - Two notices for one event (the ask's own notice plus a state notice) — Task 9.
