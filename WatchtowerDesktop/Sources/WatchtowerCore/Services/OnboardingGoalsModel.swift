@@ -122,7 +122,7 @@ package final class OnboardingGoalsModel {
     /// once (a setup re-run keeps the owner's choice instead of the macOS
     /// default), and runs the CLI check once per setup run — Check again is
     /// the owner's way to repeat it.
-    package func prepare(configuredLanguage: String?) async {
+    package func prepareGoalsStep(configuredLanguage: String?) async {
         if !languagePrepared {
             languagePrepared = true
             if let configured = configuredLanguage?.trimmingCharacters(in: .whitespaces), !configured.isEmpty {
@@ -185,7 +185,7 @@ package final class OnboardingGoalsModel {
         languagePrepared = true
     }
 
-    package func toggle(_ goal: OnboardingGoal) {
+    package func toggleGoal(_ goal: OnboardingGoal) {
         if selection.goals.contains(goal) {
             selection.goals.remove(goal)
         } else {

@@ -1583,7 +1583,7 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(appState.featureVisibility.connectedSources, .none)
 
         let model = appState.onboardingGoals
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         let submitted = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount)
         let route = try XCTUnwrap(submitted)
         XCTAssertEqual(spy.calls.filter { $0 == "workspace init" }.count, 1)
@@ -1612,7 +1612,7 @@ final class AppStateTests: XCTestCase {
 
         let model = appState.onboardingGoals
         model.selection.goals = [.development]
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         let submitted = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount)
         let route = try XCTUnwrap(submitted)
         XCTAssertEqual(route.step(after: .purpose), .complete)
@@ -1716,7 +1716,7 @@ final class AppStateTests: XCTestCase {
         let (appState, daemon) = try rerunAppState(GoalsSpy(), featuresChanged: true)
         let model = appState.onboardingGoals
         model.selection.goals = [.development]
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         let submitted = await model.submit(hasSlackAccount: false)
         let route = try XCTUnwrap(submitted)
 
@@ -1732,7 +1732,7 @@ final class AppStateTests: XCTestCase {
         let spy = GoalsSpy()
         let (appState, daemon) = try rerunAppState(spy, featuresChanged: false)
         let model = appState.onboardingGoals
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         model.language = "Polish"
         _ = await model.submit(hasSlackAccount: true)
         XCTAssertTrue(spy.calls.contains("language Polish"))

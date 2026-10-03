@@ -67,7 +67,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
 
     private func readyModel() async -> OnboardingGoalsModel {
         let model = makeModel()
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         return model
     }
 
@@ -82,16 +82,16 @@ final class OnboardingGoalsModelTests: XCTestCase {
 
     func testConfiguredLanguageWinsOnceOverTheMacDefault() async {
         let model = makeModel()
-        await model.prepare(configuredLanguage: "Polish")
+        await model.prepareGoalsStep(configuredLanguage: "Polish")
         XCTAssertEqual(model.language, "Polish")
         model.language = "German"
-        await model.prepare(configuredLanguage: "Polish")
+        await model.prepareGoalsStep(configuredLanguage: "Polish")
         XCTAssertEqual(model.language, "German", "a re-appearing step must not undo the owner's pick")
     }
 
     func testBlankConfiguredLanguageKeepsTheMacDefault() async {
         let model = makeModel()
-        await model.prepare(configuredLanguage: "  ")
+        await model.prepareGoalsStep(configuredLanguage: "  ")
         XCTAssertEqual(model.language, "Russian")
     }
 
@@ -130,7 +130,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testPassedCheckIsNotRerunOnReappear() async {
         let model = await readyModel()
         spy.cliResult = .failed("would fail now")
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         XCTAssertEqual(model.cliCheck, .ready(provider: "claude"))
     }
 
@@ -190,7 +190,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testFailedFeatureApplyDoesNotAdvance() async {
         spy.featuresFailure = "features enable tracks: exit 1"
         let model = await readyModel()
-        model.toggle(.meetings)
+        model.toggleGoal(.meetings)
         let route = await model.submit(hasSlackAccount: true)
         XCTAssertNil(route)
         XCTAssertEqual(model.continueError, "features enable tracks: exit 1")
@@ -250,7 +250,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         var calls = 0
         private var waiting: [CheckedContinuation<OnboardingCLICheck, Never>] = []
 
-        func check() async -> OnboardingCLICheck {
+        func runCheck() async -> OnboardingCLICheck {
             calls += 1
             return await withCheckedContinuation { waiting.append($0) }
         }
@@ -270,10 +270,10 @@ final class OnboardingGoalsModelTests: XCTestCase {
     /// check runs joins it: one `ai test`.
     func testNoSecondCheckWhileOneIsInFlight() async {
         let gate = GatedCheck()
-        let model = makeModel { await gate.check() }
-        let first = Task { await model.prepare(configuredLanguage: nil) }
+        let model = makeModel { await gate.runCheck() }
+        let first = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
         await yieldALot()
-        let second = Task { await model.prepare(configuredLanguage: nil) }
+        let second = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
         let third = Task { await model.runCLICheck() }
         await yieldALot()
         XCTAssertEqual(gate.calls, 1)
@@ -294,8 +294,8 @@ final class OnboardingGoalsModelTests: XCTestCase {
             calls.value += 1
             return spy.cliResult
         }
-        await model.prepare(configuredLanguage: nil)
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         XCTAssertEqual(calls.value, 1)
         await model.runCLICheck()
         XCTAssertEqual(calls.value, 2)
@@ -310,12 +310,12 @@ final class OnboardingGoalsModelTests: XCTestCase {
     /// its result is dropped.
     func testStaleCheckResultIsDropped() async {
         let gate = GatedCheck()
-        let model = makeModel { await gate.check() }
-        let stale = Task { await model.prepare(configuredLanguage: nil) }
+        let model = makeModel { await gate.runCheck() }
+        let stale = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
         await yieldALot()
 
         model.prepareForRerun()
-        let fresh = Task { await model.prepare(configuredLanguage: nil) }
+        let fresh = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
         await yieldALot()
         XCTAssertEqual(gate.pending, 2)
 
@@ -329,10 +329,10 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testPrepareForRerunResetsTheTransientState() async {
         spy.featuresFailure = "boom"
         let model = await readyModel()
-        await model.prepare(configuredLanguage: "Polish")
+        await model.prepareGoalsStep(configuredLanguage: "Polish")
         _ = await model.submit(hasSlackAccount: true)
         model.isCustomizingFeatures = true
-        model.toggle(.meetings)
+        model.toggleGoal(.meetings)
 
         model.prepareForRerun()
 
@@ -340,7 +340,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertNil(model.continueError)
         XCTAssertFalse(model.isCustomizingFeatures)
         XCTAssertTrue(model.selection.goals.contains(.meetings), "the goals stay")
-        await model.prepare(configuredLanguage: "German")
+        await model.prepareGoalsStep(configuredLanguage: "German")
         XCTAssertEqual(model.language, "German", "the configured language is adopted again")
         XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")
     }
@@ -370,7 +370,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         let model = makeModel()
         let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
         model.seedForRerun(enabledFeatureIDs: enabled, language: "Polish")
-        await model.prepare(configuredLanguage: "German")
+        await model.prepareGoalsStep(configuredLanguage: "German")
         XCTAssertEqual(model.language, "Polish", "the seeded config language is kept")
 
         _ = await model.submit(hasSlackAccount: true)
@@ -382,7 +382,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testRerunWithANewLanguageWritesIt() async {
         let model = makeModel()
         model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         model.language = "German"
         _ = await model.submit(hasSlackAccount: true)
         XCTAssertEqual(spy.calls, ["language German", "features"])
@@ -424,7 +424,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testWroteChangesFollowsRealWrites() async {
         let model = makeModel()
         model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         _ = await model.submit(hasSlackAccount: true)
         XCTAssertFalse(model.wroteChanges, "no language change, no feature change")
 
@@ -435,7 +435,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
         XCTAssertFalse(model.wroteChanges, "a new run starts clean")
         spy.featuresChanged = false
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         model.language = "German"
         _ = await model.submit(hasSlackAccount: true)
         XCTAssertTrue(model.wroteChanges, "a language write counts")
@@ -461,7 +461,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
                 setHistoryDepth: { spy.calls.append("history \($0)") }
             )
         )
-        await model.prepare(configuredLanguage: nil)
+        await model.prepareGoalsStep(configuredLanguage: nil)
         _ = await model.submit(hasSlackAccount: false)
         XCTAssertEqual(spy.calls, ["workspace init", "history 3", "language Russian"])
     }
