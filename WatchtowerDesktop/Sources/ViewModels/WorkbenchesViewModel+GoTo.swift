@@ -72,10 +72,13 @@ extension WorkbenchesViewModel {
     /// placed, the focused session's terminal gets it back — when that
     /// workbench is still on screen with the session in a visible pane
     /// (`TerminalCenter.requestKeyboardFocus`; a terminal already attached
-    /// moves no focus by itself).
+    /// moves no focus by itself). A terminal under an expanded ask drawer
+    /// comes back first: the owner picked it, so the drawer collapses
+    /// beside it rather than the keyboard going into a hidden agent.
     private func focusTerminal(projectID: Int64) {
         guard selectedWorkbenchID == projectID, let id = terminalCenter?.focusOrder.last,
               layout(projectID: projectID).visiblePanes.contains(.session(id)) else { return }
+        if isObscured(sessionID: id, projectID: projectID) { asks.drawerExpanded = false }
         terminalCenter?.requestKeyboardFocus(id)
     }
 }

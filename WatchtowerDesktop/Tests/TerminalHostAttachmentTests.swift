@@ -91,5 +91,9 @@ final class TerminalHostAttachmentTests: XCTestCase {
         XCTAssertTrue(TerminalHostAttachment.needsFocus(attached: false, requested: 3, honoured: nil))
         XCTAssertTrue(TerminalHostAttachment.needsFocus(attached: false, requested: 3, honoured: 2))
         XCTAssertFalse(TerminalHostAttachment.needsFocus(attached: false, requested: 3, honoured: 3), "honoured once")
+        XCTAssertFalse(TerminalHostAttachment.needsFocus(attached: true, requested: nil, honoured: nil, obscured: true),
+                       "a fresh attach under an expanded ask drawer takes no focus")
+        XCTAssertFalse(TerminalHostAttachment.needsFocus(attached: false, requested: 4, honoured: 3, obscured: true),
+                       "nor does a request")
     }
 }

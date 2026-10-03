@@ -9,20 +9,30 @@ import WatchtowerCore
 enum OwnerAskDrawerLayout {
     /// The content never gets narrower than this beside the drawer.
     static let minContentWidth: CGFloat = 200
+    /// The drawer never gets narrower than its own minimum: a pane with no
+    /// room for both shows it covering, as expanded.
+    static let minDrawerWidth = CGFloat(OwnerAsksViewModel.drawerWidthRange.lowerBound)
 
     struct Frames: Equatable {
-        /// The content's width, expanded or not.
+        /// The content's width, covered or not.
         let content: CGFloat
         /// The drawer's leading edge and width.
         let drawerX: CGFloat
         let drawer: CGFloat
+        /// The drawer covers the content (expanded, or no room beside it):
+        /// the content is hidden and its terminal takes no focus.
+        let covers: Bool
     }
 
     static func frames(total: CGFloat, drawerWidth: CGFloat, hasDrawer: Bool, expanded: Bool) -> Frames {
-        guard hasDrawer else { return Frames(content: total, drawerX: total, drawer: 0) }
-        let drawer = min(drawerWidth, max(0, total - minContentWidth))
+        guard hasDrawer else { return Frames(content: total, drawerX: total, drawer: 0, covers: false) }
+        let room = total - minContentWidth
+        guard room >= minDrawerWidth else { return Frames(content: total, drawerX: 0, drawer: total, covers: true) }
+        let drawer = min(max(drawerWidth, minDrawerWidth), room)
         let content = total - drawer
-        return expanded ? Frames(content: content, drawerX: 0, drawer: total) : Frames(content: content, drawerX: content, drawer: drawer)
+        return expanded
+            ? Frames(content: content, drawerX: 0, drawer: total, covers: true)
+            : Frames(content: content, drawerX: content, drawer: drawer, covers: false)
     }
 }
 
@@ -40,12 +50,12 @@ struct OwnerAskDrawerHost<Content: View>: View {
 
     var body: some View {
         let asks = vm.asks
-        let expanded = ask != nil && asks.drawerExpanded
         GeometryReader { geometry in
             let frames = OwnerAskDrawerLayout.frames(
                 total: geometry.size.width, drawerWidth: CGFloat(liveWidth ?? asks.drawerWidth),
-                hasDrawer: ask != nil, expanded: expanded
+                hasDrawer: ask != nil, expanded: asks.drawerExpanded
             )
+            let expanded = frames.covers
             ZStack(alignment: .topLeading) {
                 // Hidden, never removed or resized, under an expanded drawer:
                 // the terminal host, the board and Monaco keep their identity,
@@ -56,6 +66,7 @@ struct OwnerAskDrawerHost<Content: View>: View {
                     .disabled(expanded)
                     .allowsHitTesting(!expanded)
                     .accessibilityHidden(expanded)
+                    .environment(\.askDrawerCovers, expanded)
                 if let ask {
                     HStack(spacing: 0) {
                         if !expanded { Divider() }
@@ -155,7 +166,10 @@ struct OwnerAskDrawer: View {
             Button {
                 // The terminal under an expanded drawer is hidden: it must
                 // not keep the keystrokes.
-                if !asks.drawerExpanded { NSApp.keyWindow?.makeFirstResponder(nil) }
+                // Only the terminal's focus goes; the note field keeps its caret.
+                if !asks.drawerExpanded, TerminalHostAttachment.terminalHasFocus(in: NSApp.keyWindow) {
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
                 asks.drawerExpanded.toggle()
             } label: {
                 Image(systemName: asks.drawerExpanded
@@ -269,4 +283,11 @@ struct OwnerAskDrawer: View {
     private var note: String {
         ask.answer?.note ?? asks.drafts.draft(for: ask.id).note
     }
+}
+
+extension EnvironmentValues {
+    /// Set by `OwnerAskDrawerHost` on its content while the drawer covers it
+    /// (expanded, or a pane too narrow for both): a terminal in it takes no
+    /// focus (`TerminalHostAttachment.needsFocus`).
+    @Entry var askDrawerCovers = false
 }

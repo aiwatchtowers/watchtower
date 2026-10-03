@@ -270,6 +270,51 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(vm.asks.drafts.draft(for: s.firstAsk).note, "half done")
     }
 
+    func testAnExpandedDrawerObscuresItsSessionsTerminal() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        await vm.showAsk(s.firstAsk, projectID: s.project)
+        XCTAssertFalse(vm.isObscured(sessionID: s.first, projectID: s.project), "beside the terminal, not over it")
+
+        vm.asks.drawerExpanded = true
+
+        XCTAssertTrue(vm.isObscured(sessionID: s.first, projectID: s.project))
+        XCTAssertFalse(vm.isObscured(sessionID: s.second, projectID: s.project), "another session's terminal is not under it")
+        vm.asks.closeDrawer(projectID: s.project)
+        XCTAssertFalse(vm.isObscured(sessionID: s.first, projectID: s.project))
+    }
+
+    func testAnExpandedOutsideTheAppDrawerObscuresEveryTerminalOfThePage() async throws {
+        let s = try await seed()
+        let outside = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: s.project, payload: Self.questions) }
+        let vm = makeVM()
+        await vm.showAsk(outside, projectID: s.project)
+        vm.asks.drawerExpanded = true
+        XCTAssertTrue(vm.isObscured(sessionID: s.first, projectID: s.project))
+        XCTAssertTrue(vm.isObscured(sessionID: s.second, projectID: s.project))
+    }
+
+    /// The go-to palette's choice: picking the session under an expanded
+    /// drawer collapses the drawer, then gives the terminal the keyboard.
+    func testGoToASessionUnderAnExpandedDrawerCollapsesItFirst() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: s.project)
+        await vm.showSession(id: s.first)
+        await vm.showAsk(s.firstAsk, projectID: s.project)
+        vm.asks.drawerExpanded = true
+        let session = try XCTUnwrap(vm.session(s.first, projectID: s.project))
+        let workbench = try XCTUnwrap(vm.selectedWorkbench)
+
+        await vm.goTo(.session(session, workbench: workbench))
+
+        XCTAssertFalse(vm.asks.drawerExpanded)
+        XCTAssertFalse(vm.isObscured(sessionID: s.first, projectID: s.project))
+        XCTAssertEqual(center.keyboardFocusRequest?.sessionID, s.first)
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk, "the drawer stays, beside the terminal")
+    }
+
     // MARK: - Answering
 
     func testDraftEditsAreRefusedWhileTheAnswerIsWritten() async throws {

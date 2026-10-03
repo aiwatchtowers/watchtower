@@ -24,6 +24,15 @@ extension WorkbenchesViewModel {
         return true
     }
 
+    /// Whether an expanded ask drawer covers `sessionID`'s terminal: its own
+    /// session's, or every terminal of the page for an ask filed outside the
+    /// app. A covered terminal never takes the keyboard (typing into an
+    /// agent the owner cannot see, then Return, would submit).
+    func isObscured(sessionID: Int64, projectID: Int64) -> Bool {
+        guard asks.drawerExpanded, let ask = asks.drawerAsk(projectID: projectID) else { return false }
+        return ask.sessionID == nil || ask.sessionID == sessionID
+    }
+
     /// The drawer's "k of N ›": the next ask of the stack, switching to its
     /// session when another one filed it.
     func showNextAsk(after askID: Int64, projectID: Int64) async {
