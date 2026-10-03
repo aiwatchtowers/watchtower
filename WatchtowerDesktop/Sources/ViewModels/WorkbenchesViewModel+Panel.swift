@@ -118,7 +118,7 @@ extension WorkbenchesViewModel {
         if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row) }
     }
 
-    /// The switcher's "All Workbenches" (⌘⇧O): back to level 1, the panel
+    /// The switcher's "All Workbenches": back to level 1, the panel
     /// shown if hidden; the page stays on screen.
     func showAllWorkbenches() {
         drilledWorkbenchID = nil
