@@ -91,6 +91,8 @@ package enum OpenQuicklyCommand: Equatable, Sendable {
     case open(OpenQuicklyTarget, beside: Bool)
     /// ⌘↩ or the Ask AI row (spec §9.3).
     case askAI(String)
+    /// ⌥⌘↩: hand the query to Claude Code (spec §9.5).
+    case handToClaude(String)
 }
 
 /// What Space does in the search field.
@@ -258,10 +260,14 @@ package struct OpenQuicklyModel: Equatable, Sendable {
 
     // MARK: Keys
 
-    /// Return on the selected row; `option` = ⌥↩, `command` = ⌘↩. "more…"
-    /// switches to the Text scope here and asks nothing of the caller.
+    /// Return on the selected row; `option` = ⌥↩, `command` = ⌘↩, both =
+    /// ⌥⌘↩. "more…" switches to the Text scope here and asks nothing of
+    /// the caller.
     package mutating func activateSelection(option: Bool, command: Bool) -> OpenQuicklyCommand {
-        if command { return trimmedQuery.isEmpty ? .none : .askAI(trimmedQuery) }
+        if command {
+            guard !trimmedQuery.isEmpty else { return .none }
+            return option ? .handToClaude(trimmedQuery) : .askAI(trimmedQuery)
+        }
         switch selectedRow {
         case let .askAI(query)?:
             return .askAI(query)

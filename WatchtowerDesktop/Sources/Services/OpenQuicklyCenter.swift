@@ -266,6 +266,8 @@ final class OpenQuicklyCenter {
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
     /// ⌘↩ and the Ask AI row (spec §9.3; the answer is Task 12's).
     @ObservationIgnored var onAskAI: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
+    /// ⌥⌘↩ (spec §9.5; the hand-over is Task 13's).
+    @ObservationIgnored var onHandToClaude: @MainActor (_ query: String, _ project: Workbench) -> Void = { _, _ in }
     @ObservationIgnored private let codeIndex: CodeIndexCenter
     @ObservationIgnored private let startSearch: CodeSearchStarter
     @ObservationIgnored private let presenter: OpenQuicklyPresenting
@@ -352,6 +354,8 @@ final class OpenQuicklyCenter {
             Task { await workbenches?.openFile(at: target, project: project, beside: beside) }
         case let .askAI(query):
             onAskAI(query, session.project)
+        case let .handToClaude(query):
+            onHandToClaude(query, session.project)
         }
     }
 }

@@ -185,7 +185,7 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: project.id), layout)
     }
 
-    func testCommandReturnAndTheAskRowReachTheAskHookAndKeepThePanel() {
+    func testAskAndHandOverChordsReachTheirHooksAndKeepThePanel() {
         let (center, _) = makeCenter()
         var asked: [String] = []
         center.onAskAI = { query, project in
@@ -200,6 +200,11 @@ final class OpenQuicklyCenterTests: XCTestCase {
         session?.select(OpenQuicklyRow.askAI(query: "why save").id)
         center.perform(session?.activateSelection(option: false, command: false) ?? .none)
         XCTAssertEqual(asked, ["why save", "why save"])
+        var handed: [String] = []
+        center.onHandToClaude = { query, _ in handed.append(query) }
+        center.perform(session?.activateSelection(option: true, command: true) ?? .none)
+        XCTAssertEqual(handed, ["why save"])
+        XCTAssertEqual(asked.count, 2, "⌥⌘↩ is not an ask")
         XCTAssertNotNil(center.session)
     }
 

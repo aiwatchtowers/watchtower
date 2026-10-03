@@ -132,12 +132,14 @@ final class OpenQuicklyModelTests: XCTestCase {
         XCTAssertEqual(model.activateSelection(option: false, command: false), .open(target, beside: false))
         XCTAssertEqual(model.activateSelection(option: true, command: false), .open(target, beside: true))
         XCTAssertEqual(model.activateSelection(option: false, command: true), .askAI("s"))
+        XCTAssertEqual(model.activateSelection(option: true, command: true), .handToClaude("s"), "⌥⌘↩ delegates, not asks")
         model.select(OpenQuicklyRow.askAI(query: "s").id)
         XCTAssertEqual(model.activateSelection(option: false, command: false), .askAI("s"))
 
         model.select(file("x").id)
         model.setQuery("")
         XCTAssertEqual(model.activateSelection(option: false, command: true), .none, "nothing to ask")
+        XCTAssertEqual(model.activateSelection(option: true, command: true), .none, "nothing to hand over")
     }
 
     func testTargets() {
