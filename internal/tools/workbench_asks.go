@@ -91,12 +91,7 @@ func readReviewDoc(folder, path string) (rel, text string, err error) {
 	if err != nil {
 		return "", "", fieldRefusal("doc_path", err)
 	}
-	f, err := os.Open(filepath.Join(folder, filepath.FromSlash(rel)))
-	if err != nil {
-		return "", "", &ValidationError{Msg: fmt.Sprintf("doc_path: cannot read %s: %v", rel, err)}
-	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, asks.MaxSnapshotBytes+1))
+	data, err := readInsideFolder(folder, rel, asks.MaxSnapshotBytes+1)
 	switch {
 	case err != nil:
 		return "", "", &ValidationError{Msg: fmt.Sprintf("doc_path: cannot read %s: %v", rel, err)}
@@ -106,6 +101,23 @@ func readReviewDoc(folder, path string) (rel, text string, err error) {
 		return "", "", &ValidationError{Msg: fmt.Sprintf("doc_path: %s is not valid UTF-8 text", rel)}
 	}
 	return rel, string(data), nil
+}
+
+// readInsideFolder reads at most limit bytes of folder/rel through an
+// os.Root on folder: a symlink swapped in after the path was resolved still
+// cannot lead the read out of the folder.
+func readInsideFolder(folder, rel string, limit int64) ([]byte, error) {
+	root, err := os.OpenRoot(folder)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.Open(filepath.FromSlash(rel))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit))
 }
 
 func nullID(id int64) sql.NullInt64 {

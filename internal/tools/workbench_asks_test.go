@@ -432,3 +432,21 @@ func TestAskTools_AreWorkbenchTools(t *testing.T) {
 	assert.Equal(t, AccessRead, access["list_asks"])
 	assert.NotContains(t, access, "attach_document")
 }
+
+// The review read goes through an os.Root on the folder: a file that became
+// a symlink out of the folder after ResolveWorkbenchDocumentPath checked it
+// is still refused (the swap is simulated by reading past the check).
+func TestReadInsideFolder_RefusesASymlinkOutOfTheFolder(t *testing.T) {
+	folder := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "real.md"), []byte("real"), 0o644))
+	require.NoError(t, os.Symlink(outside, filepath.Join(folder, "spec.md")))
+	require.NoError(t, os.Symlink("real.md", filepath.Join(folder, "inside.md")))
+
+	_, err := readInsideFolder(folder, "spec.md", 100)
+	require.Error(t, err)
+	data, err := readInsideFolder(folder, "inside.md", 100)
+	require.NoError(t, err, "a symlink inside the folder still reads")
+	assert.Equal(t, "real", string(data))
+}
