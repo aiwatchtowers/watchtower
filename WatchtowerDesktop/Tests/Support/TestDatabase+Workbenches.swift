@@ -58,46 +58,48 @@ extension TestDatabase {
     }
 
     @discardableResult
-    package static func insertWorkbenchDocument(
-        _ db: Database,
-        projectID: Int64,
-        relPath: String = "docs/plan.md",
-        kind: String = "plan",
-        title: String = "",
-        targetID: Int64? = nil,
-        updatedAt: String = "2026-09-29T10:00:00Z",
-        origin: String = "agent"
-    ) throws -> Int64 {
-        try db.execute(
-            sql: """
-                INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, updated_at, origin)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-            arguments: [projectID, targetID, relPath, kind, title, updatedAt, origin]
-        )
-        return db.lastInsertedRowID
-    }
-
-    @discardableResult
     package static func insertWorkbenchComment(
         _ db: Database,
         projectID: Int64,
         author: String = "agent",
         body: String = "Question?",
         targetID: Int64? = nil,
-        documentID: Int64? = nil,
         parentID: Int64? = nil,
         status: String = "open",
-        quote: String = "",
         readAt: String = ""
     ) throws -> Int64 {
         try db.execute(
             sql: """
-                INSERT INTO project_comments (project_id, target_id, document_id, parent_id,
-                    author, body, anchor_quote, status, read_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO project_comments (project_id, target_id, parent_id, author, body, status, read_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: [projectID, targetID, documentID, parentID, author, body, quote, status, readAt]
+            arguments: [projectID, targetID, parentID, author, body, status, readAt]
+        )
+        return db.lastInsertedRowID
+    }
+
+    /// An `owner_asks` row the way Go's `ask_owner` files it. A review needs a
+    /// `docPath`; an answered or delivered ask needs an `answer`. A nil
+    /// `createdAt` is the column default (now).
+    @discardableResult
+    package static func insertOwnerAsk(
+        _ db: Database,
+        projectID: Int64,
+        sessionID: Int64? = nil,
+        kind: String = "question",
+        title: String = "Which way?",
+        payload: String = "{}",
+        docPath: String = "",
+        status: String = "open",
+        answer: String = "",
+        createdAt: String? = nil
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO owner_asks (project_id, session_id, kind, title, payload, doc_path, status, answer, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ','now')))
+                """,
+            arguments: [projectID, sessionID, kind, title, payload, docPath, status, answer, createdAt]
         )
         return db.lastInsertedRowID
     }

@@ -138,20 +138,6 @@ struct WorkbenchDeleted: Decodable, Equatable {
     }
 }
 
-/// `watchtower workbench attach-doc N <path> --json` envelope (#80).
-/// `created == false` means the path was already attached (left untouched).
-struct WorkbenchDocumentAttached: Decodable, Equatable {
-    let documentID: Int64
-    let relPath: String
-    let created: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case documentID = "document_id"
-        case relPath = "rel_path"
-        case created
-    }
-}
-
 /// `watchtower workbench resync N --json` (#91): what Re-run Setup added. The
 /// command is additive — it never deletes or changes targets, comments,
 /// documents, sources or the description, and never creates targets;
@@ -537,18 +523,6 @@ struct WorkbenchCLI {
     func status(projectID: Int64) async throws -> WorkbenchInstallStatus {
         let data = try await runner.run(args: ["integrate", "status", "--workbench", String(projectID), "--json"])
         return try JSONDecoder().decode(WorkbenchInstallStatus.self, from: data)
-    }
-
-    /// Attaches a file inside the workbench folder as the owner's document. The
-    /// CLI owns the checks (inside the folder with symlinks resolved, a regular
-    /// .md/.txt file, the target on this board) — the attach_document rules.
-    /// `--` ends the flags, so no path can be read as one.
-    func attachDocument(projectID: Int64, path: String, kind: String, targetID: Int64?) async throws -> WorkbenchDocumentAttached {
-        var args = ["workbench", "attach-doc", "--kind", kind, "--json"]
-        if let targetID { args += ["--target", String(targetID)] }
-        args += ["--", String(projectID), path]
-        let data = try await runner.run(args: args)
-        return try JSONDecoder().decode(WorkbenchDocumentAttached.self, from: data)
     }
 
     /// The board drift check (PROJ-07), offline — no gh call, so it stays

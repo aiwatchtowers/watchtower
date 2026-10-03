@@ -38,7 +38,7 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
     }
 
     private func node(_ t: Target, _ children: [WorkbenchBoardNode] = []) -> WorkbenchBoardNode {
-        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, documents: [])
+        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0)
     }
 
     private func column(_ board: WorkbenchBoardKanban, _ status: String) -> WorkbenchBoardKanban.Column? {

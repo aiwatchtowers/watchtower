@@ -34,7 +34,7 @@ final class WorkbenchBoardOutlineTests: XCTestCase {
     }
 
     private func node(_ t: Target, _ children: [WorkbenchBoardNode] = []) -> WorkbenchBoardNode {
-        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, documents: [])
+        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0)
     }
 
     func testRowsFlattenDepthFirstWithDepth() throws {

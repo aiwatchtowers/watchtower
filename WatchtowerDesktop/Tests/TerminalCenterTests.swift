@@ -488,7 +488,7 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
-        let line = WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3, vocabulary: .current)
+        let line = OwnerAskPrompt.line(id: 7, kind: .question, answer: OwnerAskAnswer())
         XCTAssertEqual(center.sendPrompt(line, sessionID: s.id), .sent)
         XCTAssertEqual(sessions[0].inputs, [
             [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]

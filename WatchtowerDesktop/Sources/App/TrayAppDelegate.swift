@@ -214,12 +214,10 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let recording = AppState.shared.meetingRecorderCenter.isBusy
-        // Unsent document comments live in memory only; a quit drops them.
-        let unsentComments = AppState.shared.workbenchesViewModel?.commentDrafts.count ?? 0
         return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
-            hasBlockingWork: recording || unsentComments > 0,
-            confirmQuit: { Self.confirmQuitDuringWork(recording: recording, unsentComments: unsentComments) },
+            hasBlockingWork: recording,
+            confirmQuit: { Self.confirmQuitDuringRecording() },
             closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
             closeTerminals: { await AppState.shared.terminalCenter.closeAll() },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
@@ -280,20 +278,12 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func confirmQuitDuringWork(recording: Bool, unsentComments: Int) -> Bool {
+    private static func confirmQuitDuringRecording() -> Bool {
         let alert = NSAlert()
-        let drafts = unsentComments == 1 ? "1 unsent document comment" : "\(unsentComments) unsent document comments"
-        if recording {
-            alert.messageText = "A recording or transcription is in progress"
-            alert.informativeText = "Quitting stops the capture and drops any transcription still running. "
-                + "The audio recorded so far is kept and offered again on next launch."
-                + (unsentComments > 0 ? " Your \(drafts) will be lost." : "")
-        } else {
-            alert.messageText = "You have \(drafts)"
-            alert.informativeText = "Drafts are kept only while Watchtower runs. Send them from the workbench's "
-                + "Documents pane first, or quit and lose them."
-        }
-        alert.addButton(withTitle: recording ? "Stop & Quit" : "Quit")
+        alert.messageText = "A recording or transcription is in progress"
+        alert.informativeText = "Quitting stops the capture and drops any transcription still running. "
+            + "The audio recorded so far is kept and offered again on next launch."
+        alert.addButton(withTitle: "Stop & Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }

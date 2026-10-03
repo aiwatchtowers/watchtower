@@ -11,8 +11,8 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
     package var errorDescription: String? {
         switch self {
         case .emptyBody: "A comment needs some text."
-        case .noSubject: "A comment belongs to a target or a document."
-        case .wrongWorkbench: "That target or document belongs to another workbench."
+        case .noSubject: "A comment belongs to a target."
+        case .wrongWorkbench: "That target belongs to another workbench."
         case let .notARoot(id): "Comment \(id) is a reply; only a thread's first comment has a status."
         case let .invalidStatus(status): "Unknown comment status \u{201C}\(status)\u{201D}."
         }
@@ -20,7 +20,7 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
 }
 
 /// Projects (spec §3, §6). The Go CLI and the project MCP server write
-/// projects, sources, documents, targets and agent comments; the Desktop
+/// projects, sources, targets, asks and agent comments; the Desktop
 /// writes only owner comments, root statuses and `read_at` — directly, the
 /// targets dual-path precedent (Go twin: `internal/db/workbench_comments.go`,
 /// whose reply-inherits-root rule this file mirrors).
@@ -53,17 +53,12 @@ package enum WorkbenchQueries {
             open[row["project_id"]] = row["open_count"]
             active[row["project_id"]] = row["active_count"]
         }
-        var stamps: [Int64: [Int64: String]] = [:]
-        for row in try Row.fetchAll(db, sql: "SELECT id, project_id, updated_at FROM project_documents WHERE origin = 'agent'") {
-            stamps[row["project_id"], default: [:]][row["id"]] = row["updated_at"]
-        }
         return projects.map { project in
             WorkbenchSummary(
                 project: project,
                 openTargets: open[project.id] ?? 0,
                 inProgressTargets: active[project.id] ?? 0,
-                unreadAgentComments: unread[project.id] ?? 0,
-                documentStamps: stamps[project.id] ?? [:]
+                unreadAgentComments: unread[project.id] ?? 0
             )
         }
     }
@@ -95,43 +90,6 @@ package enum WorkbenchQueries {
         }
     }
 
-    // MARK: - Documents
-
-    package static func documents(_ db: Database, projectID: Int64) throws -> [WorkbenchDocument] {
-        try WorkbenchDocument.fetchAll(
-            db,
-            sql: "SELECT * FROM project_documents WHERE project_id = ? ORDER BY updated_at DESC, id DESC",
-            arguments: [projectID]
-        )
-    }
-
-    package static func document(_ db: Database, id: Int64) throws -> WorkbenchDocument? {
-        try WorkbenchDocument.fetchOne(db, sql: "SELECT * FROM project_documents WHERE id = ?", arguments: [id])
-    }
-
-    /// The Documents pane's list row: each document with its linked target's
-    /// title (if any) and its open owner-thread count.
-    package static func documentListItems(_ db: Database, projectID: Int64) throws -> [WorkbenchDocumentListItem] {
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT d.*, t.text AS target_title, t.status AS target_status,
-                   (SELECT COUNT(*) FROM project_comments c
-                    WHERE c.document_id = d.id AND c.parent_id IS NULL
-                      AND c.author = 'owner' AND c.status = 'open') AS open_comments
-            FROM project_documents d
-            LEFT JOIN targets t ON t.id = d.target_id
-            WHERE d.project_id = ?
-            ORDER BY d.updated_at DESC, d.id DESC
-            """, arguments: [projectID])
-        return rows.map { row in
-            WorkbenchDocumentListItem(
-                document: WorkbenchDocument(row: row),
-                targetTitle: row["target_title"],
-                openComments: row["open_comments"],
-                targetStatus: row["target_status"]
-            )
-        }
-    }
-
     // MARK: - Target images
 
     /// The images attached to a board target, oldest first.
@@ -145,14 +103,6 @@ package enum WorkbenchQueries {
 
     // MARK: - Comments
 
-    package static func comments(_ db: Database, documentID: Int64) throws -> [WorkbenchComment] {
-        try WorkbenchComment.fetchAll(
-            db,
-            sql: "SELECT * FROM project_comments WHERE document_id = ? ORDER BY created_at, id",
-            arguments: [documentID]
-        )
-    }
-
     package static func comments(_ db: Database, targetID: Int64) throws -> [WorkbenchComment] {
         try WorkbenchComment.fetchAll(
             db,
@@ -161,36 +111,21 @@ package enum WorkbenchQueries {
         )
     }
 
-    /// A new owner thread on a target or a document of `projectID`.
+    /// A new owner thread on a target of `projectID`.
     @discardableResult
-    package static func addOwnerComment(
-        _ db: Database,
-        projectID: Int64,
-        targetID: Int64?,
-        documentID: Int64?,
-        anchor: CommentAnchor?,
-        body: String
-    ) throws -> Int64 {
+    package static func addOwnerComment(_ db: Database, projectID: Int64, targetID: Int64?, body: String) throws -> Int64 {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw WorkbenchQueryError.emptyBody }
-        guard targetID != nil || documentID != nil else { throw WorkbenchQueryError.noSubject }
+        guard let targetID else { throw WorkbenchQueryError.noSubject }
         try requireInWorkbench(db, projectID: projectID, table: "targets", id: targetID)
-        try requireInWorkbench(db, projectID: projectID, table: "project_documents", id: documentID)
         try db.execute(
-            sql: """
-                INSERT INTO project_comments (project_id, target_id, document_id, author, body,
-                    anchor_quote, anchor_prefix, anchor_suffix, anchor_heading)
-                VALUES (?, ?, ?, 'owner', ?, ?, ?, ?, ?)
-                """,
-            arguments: [
-                projectID, targetID, documentID, text,
-                anchor?.quote ?? "", anchor?.prefix ?? "", anchor?.suffix ?? "", anchor?.heading ?? ""
-            ]
+            sql: "INSERT INTO project_comments (project_id, target_id, author, body) VALUES (?, ?, 'owner', ?)",
+            arguments: [projectID, targetID, text]
         )
         return db.lastInsertedRowID
     }
 
-    /// An owner reply. It inherits the root's project, target and document —
+    /// An owner reply. It inherits the root's project and target —
     /// the same rule as Go `AddProjectComment`. A reply to a `resolved` or
     /// `outdated` thread reopens its root in the same write: the agent's
     /// new-for-agent channels (`list_comments`, the brief, the board counts)
@@ -206,10 +141,10 @@ package enum WorkbenchQueries {
         ), root.isRoot else { throw WorkbenchQueryError.notARoot(rootID) }
         try db.execute(
             sql: """
-                INSERT INTO project_comments (project_id, target_id, document_id, parent_id, author, body)
-                VALUES (?, ?, ?, ?, 'owner', ?)
+                INSERT INTO project_comments (project_id, target_id, parent_id, author, body)
+                VALUES (?, ?, ?, 'owner', ?)
                 """,
-            arguments: [root.projectID, root.targetID, root.documentID, root.id, text]
+            arguments: [root.projectID, root.targetID, root.id, text]
         )
         let replyID = db.lastInsertedRowID
         if !root.isOpen {
@@ -227,22 +162,16 @@ package enum WorkbenchQueries {
         if db.changesCount == 0 { throw WorkbenchQueryError.notARoot(commentID) }
     }
 
-    /// Marks unread agent comments read. A nil target/document id widens the
-    /// scope; both nil = the whole project.
-    package static func markAgentCommentsRead(
-        _ db: Database,
-        projectID: Int64,
-        targetID: Int64?,
-        documentID: Int64?
-    ) throws {
+    /// Marks unread agent comments read. A nil target id widens the scope
+    /// to the whole project.
+    package static func markAgentCommentsRead(_ db: Database, projectID: Int64, targetID: Int64?) throws {
         try db.execute(
             sql: """
                 UPDATE project_comments SET read_at = \(now)
                 WHERE project_id = ? AND author = 'agent' AND read_at = ''
                   AND (? IS NULL OR target_id = ?)
-                  AND (? IS NULL OR document_id = ?)
                 """,
-            arguments: [projectID, targetID, targetID, documentID, documentID]
+            arguments: [projectID, targetID, targetID]
         )
     }
 
@@ -333,9 +262,6 @@ package enum WorkbenchQueries {
             db, sql: "SELECT * FROM targets WHERE project_id = ?", arguments: [projectID]
         )
         let counters = try boardCounters(db, projectID: projectID)
-        let docs = Dictionary(grouping: try documents(db, projectID: projectID).filter { $0.targetID != nil }) {
-            $0.targetID ?? 0
-        }
         let ids = Set(targets.map(\.id))
         let byParent = Dictionary(grouping: targets) { target in
             target.parentId.flatMap { ids.contains($0) ? $0 : nil } ?? 0
@@ -346,8 +272,7 @@ package enum WorkbenchQueries {
                 target: target,
                 children: WorkbenchBoardOrder.sorted(byParent[target.id] ?? []).map(node),
                 openComments: counters.open[key] ?? 0,
-                unreadForOwner: counters.unread[key] ?? 0,
-                documents: docs[key] ?? []
+                unreadForOwner: counters.unread[key] ?? 0
             )
         }
         return WorkbenchBoardOrder.sorted(byParent[0] ?? []).map(node)

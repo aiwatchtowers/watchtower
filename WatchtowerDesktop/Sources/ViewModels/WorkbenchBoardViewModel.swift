@@ -148,11 +148,6 @@ final class WorkbenchBoardViewModel {
                 """,
             arguments: [projectID]
         )
-        let docs = try Row.fetchOne(
-            db,
-            sql: "SELECT COUNT(*), MAX(updated_at) FROM project_documents WHERE project_id = ?",
-            arguments: [projectID]
-        )
         // Rows are only inserted and deleted, never updated: count + max id
         // changes with every attach and detach.
         let images = try Row.fetchOne(
@@ -160,7 +155,7 @@ final class WorkbenchBoardViewModel {
             sql: "SELECT COUNT(*), MAX(id) FROM project_target_images WHERE project_id = ?",
             arguments: [projectID]
         )
-        return [targets, comments, docs, images].map { $0?.description ?? "" }.joined(separator: "|")
+        return [targets, comments, images].map { $0?.description ?? "" }.joined(separator: "|")
     }
 
     // MARK: - Selection
@@ -173,9 +168,7 @@ final class WorkbenchBoardViewModel {
         do {
             let pid = projectID
             try dbPool.write { db in
-                try WorkbenchQueries.markAgentCommentsRead(
-                    db, projectID: pid, targetID: Int64(node.target.id), documentID: nil
-                )
+                try WorkbenchQueries.markAgentCommentsRead(db, projectID: pid, targetID: Int64(node.target.id))
             }
             load()
         } catch {
@@ -288,9 +281,7 @@ final class WorkbenchBoardViewModel {
         guard let id = selectedTargetID, !text.isEmpty else { return false }
         let pid = projectID
         return write("add the comment") { db in
-            _ = try WorkbenchQueries.addOwnerComment(
-                db, projectID: pid, targetID: Int64(id), documentID: nil, anchor: nil, body: text
-            )
+            _ = try WorkbenchQueries.addOwnerComment(db, projectID: pid, targetID: Int64(id), body: text)
         }
     }
 

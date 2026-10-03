@@ -18,7 +18,7 @@ final class GoToPaletteSelectionTests: XCTestCase {
     private var otherRow: WorkbenchSwitcherSummary {
         WorkbenchSwitcherSummary(
             summary: WorkbenchSummary(project: other, openTargets: 0, inProgressTargets: 0,
-                                      unreadAgentComments: 0, documentStamps: [:]),
+                                      unreadAgentComments: 0),
             blockedTargets: 0, sessionCount: 1, lastSessionActivity: ""
         )
     }

@@ -130,7 +130,9 @@ struct WorkspacePaneView: View {
             WorkbenchBoardView(projectID: project.id)
                 .id(project.id)
         case .documents:
-            WorkbenchDocumentsView(vm: vm)
+            // Documents were replaced by owner asks; the pane itself goes
+            // with the layout's `.documents` case.
+            ContentUnavailableView("Documents were replaced by asks", systemImage: "doc.text")
         case let .session(id):
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)

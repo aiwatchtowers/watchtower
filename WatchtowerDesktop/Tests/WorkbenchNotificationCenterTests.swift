@@ -32,7 +32,6 @@ final class WorkbenchPersistedKeysTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.key(workbenchID: 7), "projects.layout.7")
         XCTAssertEqual(TerminalSessionOrder.key(workbenchID: 7), "projects.sessionOrder.7")
         XCTAssertEqual(TerminalSessionOrder.key(workbenchID: nil), "projects.sessionOrder.standalone")
-        XCTAssertEqual(WorkbenchesViewModel.viewedDocumentsKey, "projects.viewedDocuments")
         XCTAssertEqual(WorkbenchNotificationCenter.enabledKey, "projects.notifications")
         XCTAssertEqual(WorkbenchNotificationCenter.snapshotKey(7), "projects.notificationSnapshot.7")
         XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
@@ -110,46 +109,6 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         try await write { _ = try TestDatabase.insertWorkbenchComment($0, projectID: self.projectID, author: "owner", targetID: self.targetID) }
         await center.poll()
         XCTAssertTrue(notifier.sent.isEmpty)
-    }
-
-    func testOwnerResolvingTheLastCommentDoesNotAnnounceAllAnswered() async throws {
-        var root: Int64 = 0
-        try await write { d in
-            let doc = try TestDatabase.insertWorkbenchDocument(d, projectID: self.projectID, title: "Plan")
-            root = try TestDatabase.insertWorkbenchComment(d, projectID: self.projectID, author: "owner", documentID: doc, quote: "x")
-        }
-        let center = makeCenter()
-        await center.poll()
-        let doc = try await pool.read { try Int64.fetchOne($0, sql: "SELECT id FROM project_documents") }
-        try await write { try WorkbenchQueries.setStatus($0, commentID: root, status: "resolved") }
-        center.recordOwnerWrite(projectID: projectID, subject: .document(try XCTUnwrap(doc)))
-        await center.poll()
-        XCTAssertTrue(notifier.sent.isEmpty)
-    }
-
-    func testAgentResolvingTheLastCommentAnnouncesAllAnswered() async throws {
-        var root: Int64 = 0
-        try await write { d in
-            let doc = try TestDatabase.insertWorkbenchDocument(d, projectID: self.projectID, title: "Plan")
-            root = try TestDatabase.insertWorkbenchComment(d, projectID: self.projectID, author: "owner", documentID: doc, quote: "x")
-        }
-        let center = makeCenter()
-        await center.poll()
-        try await write { try $0.execute(sql: "UPDATE project_comments SET status = 'resolved' WHERE id = ?", arguments: [root]) }
-        await center.poll()
-        XCTAssertEqual(notifier.sent.map(\.title), ["All comments on Plan answered"])
-        XCTAssertEqual(notifier.sent.first?.route.pane, .documents)
-    }
-
-    func testSeededBaselineReportsADocumentAttachedRightAfterCreate() async throws {
-        let center = makeCenter()
-        let pid = try XCTUnwrap(projectID)
-        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: pid) }
-        let project = try XCTUnwrap(fetched)
-        center.seedBaseline(project: project)
-        try await write { _ = try TestDatabase.insertWorkbenchDocument($0, projectID: self.projectID, title: "Spec") }
-        await center.poll()
-        XCTAssertEqual(notifier.sent.map(\.title), ["Spec ready for review"])
     }
 
     func testDisabledOrQuietHoursSendNothingButStillAdvanceTheWatermark() async throws {

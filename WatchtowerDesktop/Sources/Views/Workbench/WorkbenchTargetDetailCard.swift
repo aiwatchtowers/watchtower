@@ -179,21 +179,6 @@ struct WorkbenchTargetDetailCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            if !node.documents.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    WorkbenchDetailSectionHeader(title: "Documents", systemImage: "doc.text", count: node.documents.count)
-                    ForEach(node.documents, id: \.id) { doc in
-                        Label(doc.title.isEmpty ? doc.relPath : doc.title, systemImage: "doc.text")
-                            .font(.callout)
-                            .lineLimit(2)
-                            .help(doc.relPath)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-                    }
-                }
-            }
             if !vm.selectedImages.isEmpty {
                 WorkbenchTargetImagesSection(images: vm.selectedImages)
             }

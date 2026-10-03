@@ -14,7 +14,7 @@ final class GoToRankingTests: XCTestCase {
         let project = Workbench(row: ["id": id, "name": name, "folder_path": "/tmp/\(id)"])
         return WorkbenchSwitcherSummary(
             summary: WorkbenchSummary(project: project, openTargets: 0, inProgressTargets: 0,
-                                      unreadAgentComments: 0, documentStamps: [:]),
+                                      unreadAgentComments: 0),
             blockedTargets: 0,
             sessionCount: 0,
             lastSessionActivity: lastActivity

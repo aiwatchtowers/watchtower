@@ -146,18 +146,6 @@ final class WorkbenchCLITests: XCTestCase {
         )
     }
 
-    func testAttachDocumentEndsFlagsBeforeThePathAndDecodesTheEnvelope() async throws {
-        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":9,"rel_path":"docs/-x.md","created":true}"#.utf8))
-        let cli = WorkbenchCLI(runner: runner)
-        let attached = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/docs/-x.md", kind: "spec", targetID: 5)
-        XCTAssertEqual(attached, WorkbenchDocumentAttached(documentID: 9, relPath: "docs/-x.md", created: true))
-        _ = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/a.md", kind: "doc", targetID: nil)
-        XCTAssertEqual(runner.invocations, [
-            ["workbench", "attach-doc", "--kind", "spec", "--json", "--target", "5", "--", "3", "/tmp/acme/docs/-x.md"],
-            ["workbench", "attach-doc", "--kind", "doc", "--json", "--", "3", "/tmp/acme/a.md"]
-        ])
-    }
-
     func testNeedsRepairOnlyWhenSomethingIsMissing() {
         XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
         XCTAssertFalse(WorkbenchInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)
