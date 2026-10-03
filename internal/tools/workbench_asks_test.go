@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -454,4 +456,28 @@ func TestReadInsideFolder_RefusesASymlinkOutOfTheFolder(t *testing.T) {
 	data, err := readInsideFolder(folder, "inside.md", 100)
 	require.NoError(t, err, "a symlink inside the folder still reads")
 	assert.Equal(t, "real", string(data))
+}
+
+// A FIFO swapped in after checkDocumentFile passed must not block the read
+// (and with it the ask_owner call): the open is non-blocking and the opened
+// file must be regular.
+func TestReadInsideFolder_RefusesAFIFOWithoutBlocking(t *testing.T) {
+	folder := t.TempDir()
+	require.NoError(t, syscall.Mkfifo(filepath.Join(folder, "spec.md"), 0o600))
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := readInsideFolder(folder, "spec.md", 100)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, errNotRegularFile)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reading a FIFO blocked")
+	}
+
+	_, _, err := readReviewDoc(folder, "spec.md")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "doc_path: ")
 }

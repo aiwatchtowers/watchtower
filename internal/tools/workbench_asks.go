@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"watchtower/internal/asks"
@@ -93,6 +94,8 @@ func readReviewDoc(folder, path string) (rel, text string, err error) {
 	}
 	data, err := readInsideFolder(folder, rel, asks.MaxSnapshotBytes+1)
 	switch {
+	case errors.Is(err, errNotRegularFile):
+		return "", "", &ValidationError{Msg: fmt.Sprintf("doc_path: %s is not a regular file", rel)}
 	case err != nil:
 		return "", "", &ValidationError{Msg: fmt.Sprintf("doc_path: cannot read %s: %v", rel, err)}
 	case len(data) > asks.MaxSnapshotBytes:
@@ -103,20 +106,31 @@ func readReviewDoc(folder, path string) (rel, text string, err error) {
 	return rel, string(data), nil
 }
 
+var errNotRegularFile = errors.New("not a regular file")
+
 // readInsideFolder reads at most limit bytes of folder/rel through an
 // os.Root on folder: a symlink swapped in after the path was resolved still
-// cannot lead the read out of the folder.
+// cannot lead the read out of the folder. The open is non-blocking and the
+// opened file must be regular (errNotRegularFile), so a FIFO swapped in after
+// the check never blocks the call — the same rule as kb's readSetFile.
 func readInsideFolder(folder, rel string, limit int64) ([]byte, error) {
 	root, err := os.OpenRoot(folder)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = root.Close() }()
-	f, err := root.Open(filepath.FromSlash(rel))
+	f, err := root.OpenFile(filepath.FromSlash(rel), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errNotRegularFile
+	}
 	return io.ReadAll(io.LimitReader(f, limit))
 }
 
