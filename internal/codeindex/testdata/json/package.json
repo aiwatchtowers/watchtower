@@ -1,0 +1,21 @@
+{
+  // JSONC comments are skipped, "fake": 1
+  "name": "sample",
+  "version": "1.0.0",
+  /* a block
+     "hidden": true */
+  "scripts": {
+    "build": "tsc",
+    "nested": { "deep": [1, 2, "}"] }
+  },
+  "tricky \"key\"": "value with { and [",
+  "list": [
+    { "inner": 1 },
+    "x"
+  ],
+  "après": null,
+  "last": {
+    "a": 1
+  }
+}
+{"second": "record"}

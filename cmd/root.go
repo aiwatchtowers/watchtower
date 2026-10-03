@@ -74,6 +74,10 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 func Execute() int {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		var ec *exitCodeError
+		if errors.As(err, &ec) {
+			return ec.code
+		}
 		return 1
 	}
 	return 0
