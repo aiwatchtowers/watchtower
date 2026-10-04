@@ -4,69 +4,6 @@ import GRDB
 import Observation
 import WatchtowerCore
 
-/// The editor page's half of code questions (spec §9.2, §8.5): the Files
-/// pane's `MonacoEditorView.Coordinator`, a fake in tests.
-@MainActor
-protocol CodeQuestionPage: AnyObject {
-    /// `askAI()`: the page posts `selection`, then `askAI`, for the file on
-    /// screen; false = no file (or the page could not be asked).
-    func requestAskAI() async -> Bool
-    /// The selection's box (a caret's when empty) in the page's points, top
-    /// left origin; nil = no file on screen or scrolled away.
-    func selectionRect() async -> CGRect?
-    func proposeEdit(bufferID: String, range: CodeTextRange, text: String)
-    func clearProposal(bufferID: String)
-    func applyEdit(bufferID: String, range: CodeTextRange, text: String, expected: String) async -> CodeEditApplyResult
-    /// The question popover, pointing at `rect` (page points); false when
-    /// it could not be shown (the editor is in no window).
-    func presentQuestionPopover(at rect: CGRect) -> Bool
-    func closeQuestionPopover()
-}
-
-/// The popover's quick actions (spec §9.2): each sends a fixed prompt.
-enum CodeQuestionQuickAction: CaseIterable, Identifiable {
-    case explain
-    case findProblems
-    case whereUsed
-    case suggestChange
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .explain: "Explain"
-        case .findProblems: "Find problems"
-        case .whereUsed: "Where is it used?"
-        case .suggestChange: "Suggest a change"
-        }
-    }
-
-    var prompt: String {
-        switch self {
-        case .explain: "Explain what this code does."
-        case .findProblems: "Find problems in this code: bugs, unhandled cases and risky assumptions."
-        case .whereUsed: "Where is this used? Answer only from the usage locations attached to this question "
-            + "(Watchtower's search of the workbench), citing each as path:line; say so when none are attached."
-        case .suggestChange: "Suggest a change to this code."
-        }
-    }
-}
-
-/// A code question's conversation as every surface opens it: the popover,
-/// Open Quickly's answer card and the Questions tab.
-struct CodeQuestionRef {
-    let project: Workbench
-    let conversationID: Int64
-    /// What `context_id` names; `path` "" for Open Quickly with no file open.
-    let origin: CodeQuestionOrigin
-}
-
-/// What asking from Open Quickly did.
-enum CodeQuestionStart: Equatable {
-    case started(conversationID: Int64)
-    case failed(String)
-}
-
 /// Code questions (spec §9.2–§9.4), per workbench, on `AppState`: the ✦
 /// button's timing (`AskAIButtonSchedule`), the popover's question
 /// (`Session`) and its suggested change, Open Quickly's questions and the
@@ -148,12 +85,8 @@ final class CodeQuestionCenter {
     @ObservationIgnored private let sleep: (TimeInterval) async -> Void
     @ObservationIgnored private let beep: @MainActor () -> Void
     @ObservationIgnored private let defaultChoice: @MainActor () -> CodeQuestionSurface.ModelChoice
-    @ObservationIgnored private let startSearch: CodeSearchStarter
-    /// Per workbench: the "Where is it used?" search; a newer question's
-    /// generation drops an older search's callbacks.
-    @ObservationIgnored private var usageSearches: [Int64: CodeSearchCancelling] = [:]
-    @ObservationIgnored private var usageGenerations: [Int64: Int] = [:]
-    @ObservationIgnored private var nextUsageGeneration = 0
+    /// "Where is it used?"'s searches, per workbench.
+    @ObservationIgnored private let usageSearches: CodeQuestionUsageSearches
 
     init(
         clock: @escaping () -> Date = Date.init,
@@ -164,7 +97,7 @@ final class CodeQuestionCenter {
             CodeSearchRun.start(folder: folder, options: options, onMatch: onMatch, onDone: onDone)
         }
     ) {
-        self.startSearch = startSearch
+        usageSearches = CodeQuestionUsageSearches(startSearch: startSearch)
         self.clock = clock
         self.sleep = sleep
         self.beep = beep
@@ -347,37 +280,18 @@ final class CodeQuestionCenter {
             ask(prompt, workbenchID: workbenchID)
             return
         }
-        cancelUsageSearch(workbenchID)
-        nextUsageGeneration += 1
-        let generation = nextUsageGeneration
-        usageGenerations[workbenchID] = generation
         sessions[workbenchID]?.isSearchingUsages = true
-        var found: [CodeQuestionUsages.Location] = []
-        let options = CodeSearchOptions(query: name, word: true, caseSensitive: true,
-                                        max: CodeQuestionUsages.limit, context: 0)
-        usageSearches[workbenchID] = startSearch(session.project.folderURL, options, { [weak self] match in
-            guard self?.usageGenerations[workbenchID] == generation, found.count < CodeQuestionUsages.limit else { return }
-            found.append(CodeQuestionUsages.Location(path: match.path, line: match.line, text: match.text))
-        }, { [weak self] outcome in
-            guard let self, usageGenerations[workbenchID] == generation else { return }
-            usageGenerations[workbenchID] = nil
-            usageSearches[workbenchID] = nil
+        usageSearches.start(name: name, folder: session.project.folderURL, workbenchID: workbenchID) { [weak self] usages in
+            guard let self else { return }
             sessions[workbenchID]?.isSearchingUsages = false
             let before = attachedUsages(workbenchID: workbenchID)
-            switch outcome {
-            case let .finished(done):
-                let usages = CodeQuestionUsages(name: name, locations: found,
-                                                truncated: done.truncated || found.count >= CodeQuestionUsages.limit)
-                attachUsages(usages, pending: true, workbenchID: workbenchID)
-            case let .failed(message):
-                NSLog("CodeQuestionCenter: the usage search for a code question failed: %@", message)
-            }
+            if let usages { attachUsages(usages, pending: true, workbenchID: workbenchID) }
             // Not sent (a follow-up from the composer is running, say): the
             // usages go with it, so no unrelated turn carries them.
             if !ask(prompt, workbenchID: workbenchID) {
                 attachUsages(before.usages, pending: before.pending, workbenchID: workbenchID)
             }
-        })
+        }
     }
 
     private func attachedUsages(workbenchID: Int64) -> (usages: CodeQuestionUsages?, pending: Bool) {
@@ -400,15 +314,15 @@ final class CodeQuestionCenter {
     }
 
     private func cancelUsageSearch(_ workbenchID: Int64) {
-        usageGenerations[workbenchID] = nil
-        usageSearches.removeValue(forKey: workbenchID)?.cancel()
+        usageSearches.cancel(workbenchID)
         sessions[workbenchID]?.isSearchingUsages = false
     }
 
     /// App quit (ruling R34): every usage search is killed with its process
     /// group.
     func stopQuestionSearches() {
-        for workbenchID in Array(usageSearches.keys) { cancelUsageSearch(workbenchID) }
+        usageSearches.cancelAll()
+        for workbenchID in Array(sessions.keys) { sessions[workbenchID]?.isSearchingUsages = false }
     }
 
     /// The usages a resumed turn adds to its prompt, until a turn carrying
