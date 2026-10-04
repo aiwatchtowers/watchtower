@@ -128,7 +128,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
     // MARK: - Answering
 
-    func testAnsweringARunningSessionWritesThenPastesTheLineOnceAndFocusesTheTerminal() async throws {
+    func testAnsweringARunningSessionWritesThenSubmitsTheLineOnceAndFocusesTheTerminal() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
@@ -141,7 +141,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         let delivery = await vm.asks.answer(ask)
 
-        XCTAssertEqual(delivery, .sent)
+        XCTAssertEqual(delivery, .submitted)
         XCTAssertFalse(vm.asks.drawerExpanded, "closed through closeDrawer")
         let stored = try await status(askID)
         XCTAssertEqual(stored.status, "answered")
@@ -149,21 +149,23 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNotNil(stored.answeredAt.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"#, options: .regularExpression),
                         "answered_at is UTC yyyy-MM-ddTHH:mm:ssZ, got \(stored.answeredAt)")
         let line = OwnerAskPrompt.line(id: askID, kind: .question, answer: try OwnerAskAnswer.decode(stored.answer))
-        XCTAssertEqual(typed.count, 1, "exactly one paste")
+        XCTAssertEqual(typed.count, 2, "exactly one paste, then its Return")
         XCTAssertTrue(String(bytes: typed[0], encoding: .utf8)?.contains(line) == true)
+        XCTAssertEqual(typed[1], [0x0D])
         XCTAssertNil(vm.asks.drawerAskIDs[p], "the drawer closes: the terminal takes over")
         XCTAssertTrue(vm.layout(projectID: p).visiblePanes.contains(.session(s.id)), "the page shows the session")
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id), "the keyboard moves into it")
         XCTAssertTrue(vm.asks.drafts.askDraft(for: askID).isEmpty, "the answer is written; the draft goes")
         XCTAssertEqual(vm.asks.openAsks[p], [], "the answered ask leaves the open list")
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerTypedNote)
-        XCTAssertEqual(center.answerHints[s.id], .sent, "the pane says to press Return")
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
+        XCTAssertNil(center.answerHints[s.id], "nothing left for the owner to do")
     }
 
-    /// PROJ-12 (spec 2026-10-03 Part 9, its "PROJ-11"): the answer is
-    /// stored before anything is typed, and the typed line is never
-    /// followed by Enter.
-    func testProj12_TheAnswerIsStoredBeforeTheLineIsTypedAndNeverSubmitted() async throws {
+    /// PROJ-12 (spec 2026-10-03 Part 9, its "PROJ-11"; amended 2026-10-04,
+    /// board #379): the answer is stored before anything is typed, the line
+    /// is one bracketed paste with no line break or control character of its
+    /// own, and Return follows as a write of its own.
+    func testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         var statusWhenTyped: String?
@@ -177,9 +179,118 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await vm.asks.answer(ask)
 
         XCTAssertEqual(statusWhenTyped, "answered")
-        XCTAssertEqual(typed.count, 1)
-        XCTAssertFalse(typed[0].contains(0x0D), "the owner presses Return; Watchtower never does")
-        XCTAssertFalse(typed[0].contains(0x0A))
+        XCTAssertEqual(typed.count, 2)
+        let pasteStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]
+        let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+        XCTAssertEqual(Array(typed[0].prefix(6)), pasteStart)
+        XCTAssertEqual(Array(typed[0].suffix(6)), pasteEnd)
+        let body = typed[0].dropFirst(6).dropLast(6)
+        XCTAssertFalse(body.contains { $0 < 0x20 || $0 == 0x7F }, "one line: no CR, LF or other control byte inside the paste")
+        XCTAssertEqual(typed[1], [0x0D], "Return comes alone, after the paste")
+    }
+
+    /// PROJ-12 (amended 2026-10-04): while the session waits on a permission
+    /// prompt nothing is typed — a Return could confirm the prompt's
+    /// default. The line goes, pasted and submitted, once the prompt is
+    /// answered.
+    func testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var approval = true
+        vm.asks.needsApproval = { id in id == s.id && approval }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        vm.asks.openDrawer(askID: askID, projectID: p)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .held)
+        let stored = try await status(askID)
+        XCTAssertEqual(stored.status, "answered", "stored at once")
+        XCTAssertTrue(typed.isEmpty, "nothing reaches a permission prompt")
+        XCTAssertTrue(copied.isEmpty)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerHeldNote)
+        XCTAssertEqual(center.answerHints[s.id], .held)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "the terminal, where the prompt is answered, takes over")
+        XCTAssertNotNil(center.keyboardFocusSerial(for: s.id))
+
+        processes[0].onOwnerInput?()
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertTrue(typed.isEmpty, "still at the prompt: still held")
+        XCTAssertEqual(center.answerHints[s.id], .held, "the owner's input answers the prompt; the hint stays")
+
+        approval = false
+        await vm.asks.deliverHeldAnswers()
+
+        let line = OwnerAskPrompt.line(id: askID, kind: .question, answer: try OwnerAskAnswer.decode(stored.answer))
+        XCTAssertEqual(typed.count, 2)
+        XCTAssertTrue(String(bytes: typed[0], encoding: .utf8)?.contains(line) == true)
+        XCTAssertEqual(typed[1], [0x0D])
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
+        XCTAssertNil(center.answerHints[s.id])
+
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertEqual(typed.count, 2, "delivered once")
+    }
+
+    /// A held line never reaches a session that stopped, or a later run of
+    /// it (whose brief listed the answer): it goes nowhere and says so.
+    func testAHeldAnswerGoesNowhereOnceItsSessionStops() async throws {
+        try await assertHeldAnswerGoesNowhere(restart: false)
+    }
+
+    func testAHeldAnswerNeverReachesALaterRunOfItsSession() async throws {
+        try await assertHeldAnswerGoesNowhere(restart: true)
+    }
+
+    private func assertHeldAnswerGoesNowhere(restart: Bool) async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var approval = true
+        vm.asks.needsApproval = { _ in approval }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+        let delivery = await vm.asks.answer(ask)
+        XCTAssertEqual(delivery, .held)
+
+        processes[0].onExit?(0)
+        if restart {
+            center.now = { Date().addingTimeInterval(60) }
+            center.start(s, fresh: false)
+            XCTAssertEqual(center.states[s.id], .running)
+        }
+        approval = false
+        await vm.asks.deliverHeldAnswers()
+
+        XCTAssertTrue(typed.isEmpty)
+        XCTAssertTrue(copied.isEmpty)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.noSessionNote, "the brief lists it")
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// A permission prompt that appears during the pause between the paste
+    /// and Return stops the Return: the pane says to press it.
+    func testAPermissionPromptDuringThePauseLeavesTheLineTyped() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var refreshes = 0
+        vm.asks.refreshStates = { refreshes += 1 }
+        vm.asks.needsApproval = { _ in refreshes >= 2 }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(refreshes, 2, "read before the paste and after the pause")
+        XCTAssertEqual(typed.count, 1, "the paste, no Return")
+        XCTAssertEqual(center.answerHints[s.id], .typed)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerTypedNote)
+        processes[0].onOwnerInput?()
+        XCTAssertNil(center.answerHints[s.id], "the owner's next input")
     }
 
     func testCopiedShowsTheCopiedAnswerHint() async throws {
@@ -194,7 +305,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let delivery = await vm.asks.answer(ask)
 
         XCTAssertEqual(delivery, .copied)
-        XCTAssertTrue(typed.isEmpty, "no keystrokes reach the terminal")
+        XCTAssertTrue(typed.isEmpty, "no keystrokes, and no Return, reach the terminal")
         XCTAssertEqual(copied.count, 1)
         XCTAssertEqual(center.answerHints[s.id], .copied, "the session's pane says to paste, then press Return")
         XCTAssertFalse(center.clipboardHints.contains(s.id), "in place of the generic clipboard hint")
@@ -277,9 +388,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         async let second = vm.asks.answer(ask)
         let results = await [first, second]
 
-        XCTAssertEqual(results.compactMap { $0 }, [.sent], "one click answers, the other is refused")
-        XCTAssertEqual(typed.count, 1)
-        XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.sent), "the second click never reads as withdrawn")
+        XCTAssertEqual(results.compactMap { $0 }, [.submitted], "one click answers, the other is refused")
+        XCTAssertEqual(typed.count, 2, "one paste and its Return")
+        XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.submitted), "the second click never reads as withdrawn")
         XCTAssertTrue(vm.asks.answering.isEmpty)
     }
 
@@ -559,7 +670,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
 
-    func testAnAnsweredSessionsOtherAsksDoNotPopOverItsReturnHint() async throws {
+    func testAnAnsweredSessionsOtherAsksDoNotPopOverItsTerminal() async throws {
         let (p, s, askID) = try await seed()
         _ = try await fileAnotherAsk(project: p, sessionID: s.id)
         center.start(s, fresh: true)
@@ -573,7 +684,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await vm.asks.answer(ask)
 
         XCTAssertNil(vm.asks.drawerAskIDs[p], "the terminal takes over; the banner names the other ask")
-        XCTAssertEqual(center.answerHints[s.id], .sent)
+        XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.submitted))
     }
 
     func testAnAskFiledOutsideTheAppNeverOpensByItself() async throws {
@@ -585,25 +696,6 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await vm.asks.load(projectID: p)
 
         XCTAssertNil(vm.asks.drawerAskIDs[p])
-    }
-
-    // MARK: - The Return hint (board #364)
-
-    /// PROJ-12 stays: the hint only says to press Return; the owner's own
-    /// next input in the session takes it away.
-    func testTheReturnHintGoesWithTheOwnersNextInput() async throws {
-        let (p, s, askID) = try await seed()
-        center.start(s, fresh: true)
-        let vm = makeVM()
-        let ask = try await openAsk(vm, project: p, id: askID)
-        pick(vm, askID)
-        await vm.asks.answer(ask)
-        XCTAssertEqual(center.answerHints[s.id], .sent)
-        XCTAssertFalse(typed.joined().contains(0x0D), "still never submitted")
-
-        processes[0].onOwnerInput?()
-
-        XCTAssertNil(center.answerHints[s.id])
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {

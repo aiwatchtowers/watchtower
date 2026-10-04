@@ -146,8 +146,8 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             }
             switch state {
             case .running?:
-                if let session, let delivery = center.answerHints[session.id] {
-                    AnswerReturnHint(delivery: delivery) { center.dismissClipboardHint(sessionID: session.id) }
+                if let session, let hint = center.answerHints[session.id] {
+                    AnswerReturnHint(hint: hint) { center.dismissClipboardHint(sessionID: session.id) }
                     Divider()
                 } else if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
                     let copied = center.clipboardHints.contains(session.id)
@@ -196,22 +196,23 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     }
 }
 
-/// Over a terminal holding an ask's answer not sent yet (board #364): typed
-/// (press Return) or copied (paste, then Return). Prominent on purpose —
-/// Watchtower never presses Return itself (PROJ-12). Goes with the owner's
-/// next input in the session (`TerminalCenter.answerHints`) or Dismiss.
+/// Over a terminal holding an ask's answer not sent yet (boards #364,
+/// #379): typed (press Return — a permission prompt appeared before
+/// Watchtower's own Return), copied (paste, then Return) or held behind a
+/// permission prompt (it goes once the prompt is answered). Prominent on
+/// purpose. Goes with the owner's next input in the session (not a held
+/// one), the delivery, or Dismiss (`TerminalCenter.answerHints`).
 private struct AnswerReturnHint: View {
-    let delivery: TerminalCenter.PromptDelivery
+    let hint: TerminalCenter.AnswerHint
     let dismiss: () -> Void
 
     var body: some View {
-        let copied = delivery == .copied
         HStack(spacing: 8) {
-            Image(systemName: copied ? "doc.on.clipboard" : "return")
+            Image(systemName: symbol)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(Color.accentColor)
                 .accessibilityHidden(true)
-            Text(copied ? OwnerAsksViewModel.answerCopiedNote : OwnerAsksViewModel.answerTypedNote)
+            Text(text)
                 .font(.callout.weight(.semibold))
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
@@ -221,6 +222,22 @@ private struct AnswerReturnHint: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         .background(Color.accentColor.opacity(0.15))
+    }
+
+    private var symbol: String {
+        switch hint {
+        case .typed: "return"
+        case .copied: "doc.on.clipboard"
+        case .held: "hourglass"
+        }
+    }
+
+    private var text: String {
+        switch hint {
+        case .typed: OwnerAsksViewModel.answerTypedNote
+        case .copied: OwnerAsksViewModel.answerCopiedNote
+        case .held: OwnerAsksViewModel.answerHeldNote
+        }
     }
 }
 

@@ -15,18 +15,36 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class OwnerAsksViewModel {
+    /// Where a written answer's line went (PROJ-12, board #379).
+    enum Delivery: Equatable {
+        /// Pasted into the ask's session and submitted with Return.
+        case submitted
+        /// Pasted, but a permission prompt appeared during the pause before
+        /// Return: the owner presses it.
+        case typed
+        /// Bracketed paste was off: on the clipboard, nothing typed.
+        case copied
+        /// The session waits on a permission prompt: nothing typed yet; the
+        /// line goes once the prompt is answered (`deliverHeldAnswers`).
+        case held
+        /// No session, or not running: the session's next brief lists it.
+        case noSession
+    }
+
     /// What the last answer to an ask came to, shown beside it.
     enum AnswerNotice: Equatable {
-        /// Written; the line went as `sendPrompt` says. An ask without a
+        /// Written; the line went as the delivery says. An ask without a
         /// session counts as `.noSession`.
-        case delivered(TerminalCenter.PromptDelivery)
+        case delivered(Delivery)
         /// Not written: the ask was no longer open (withdrawn, superseded).
         case withdrawn
 
         var text: String {
             switch self {
-            case .delivered(.sent): OwnerAsksViewModel.answerTypedNote
+            case .delivered(.submitted): OwnerAsksViewModel.answerSentNote
+            case .delivered(.typed): OwnerAsksViewModel.answerTypedNote
             case .delivered(.copied): OwnerAsksViewModel.answerCopiedNote
+            case .delivered(.held): OwnerAsksViewModel.answerHeldNote
             case .delivered(.noSession): OwnerAsksViewModel.noSessionNote
             case .withdrawn: OwnerAsksViewModel.withdrawnNote
             }
@@ -37,9 +55,10 @@ final class OwnerAsksViewModel {
     /// hand-off (`TerminalCenter.pasteHints`/`clipboardHints`).
     nonisolated static let sentNote = "Pasted into Claude — press Return to send"
     nonisolated static let copiedNote = "Prompt copied — press ⌘V in the terminal"
-    /// An answer's line waits for the owner's Return (board #364): the
-    /// drawer's notice and the session pane's hint
-    /// (`TerminalCenter.answerHints`).
+    nonisolated static let answerSentNote = "Answer sent to Claude"
+    /// An answer's line not sent yet (boards #364, #379): the drawer's
+    /// notice and the session pane's hint (`TerminalCenter.answerHints`).
+    nonisolated static let answerHeldNote = "Answer saved — it goes to Claude after the permission prompt"
     nonisolated static let answerTypedNote = "Answer typed into the terminal — press Return to send"
     nonisolated static let answerCopiedNote = "Answer copied — paste it into the terminal and press Return"
     nonisolated static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
@@ -84,7 +103,8 @@ final class OwnerAsksViewModel {
     /// and a second click writes nothing.
     private(set) var answering: Set<Int64> = []
     /// The ask each workbench's drawer shows (nil = closed). An answer that
-    /// typed or copied its line closes it: the terminal takes over.
+    /// went to its session (sent, typed, copied or held) closes it: the
+    /// terminal takes over.
     private(set) var drawerAskIDs: [Int64: Int64] = [:]
     /// Per workbench, the open asks the owner closed a drawer on (Later, ×,
     /// an answer): the drawer does not open on them by itself again — only
@@ -104,14 +124,21 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var isTabOnScreen: () -> Bool = { false }
     /// The workbench on screen, whose asks the poll follows.
     @ObservationIgnored var watchedProjectID: () -> Int64? = { nil }
-    /// An answer's line was typed or copied into `sessionID`: the page shows
-    /// that terminal and moves the keyboard into it.
+    /// An answer's line went to `sessionID` (sent, typed, copied or held):
+    /// the page shows that terminal and moves the keyboard into it.
     @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
     /// A workbench's open asks were read: the page opens a new one's drawer
     /// if its session is on screen (`WorkbenchesViewModel.openNewAsk`).
     @ObservationIgnored var onLoaded: ((_ projectID: Int64) -> Void)?
     /// An answer was saved: the session states re-read their open asks.
     @ObservationIgnored var onAnswered: (() async -> Void)?
+    /// Whether a session's agent waits on a permission prompt (its
+    /// `SessionAgentStatus` is `needsApproval`): an answer's line is held,
+    /// never typed into the prompt.
+    @ObservationIgnored var needsApproval: (_ sessionID: Int64) -> Bool = { _ in false }
+    /// A fresh read of the session states, before a line goes and again
+    /// after the paste's pause (the poll may be up to 1 s stale).
+    @ObservationIgnored var refreshStates: () async -> Void = {}
     /// Seams for tests: the poll's wait and the activation notifications.
     @ObservationIgnored var pollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var notificationCenter: NotificationCenter = .default
@@ -120,6 +147,10 @@ final class OwnerAsksViewModel {
     private let terminalCenter: TerminalCenter?
     private let defaults: UserDefaults
     @ObservationIgnored private var fingerprints: [Int64: String] = [:]
+    /// Answers written while their session waited on a permission prompt,
+    /// by ask id. In memory only: after a quit the ask stays `answered` and
+    /// the session's next brief lists it.
+    @ObservationIgnored private var heldAnswers: [Int64: HeldAnswer] = [:]
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
@@ -374,16 +405,17 @@ final class OwnerAsksViewModel {
         return true
     }
 
-    /// Answers `ask` from its draft (spec 2026-10-03 Part 5, PROJ-12): one
-    /// guarded write, and only then exactly one `sendPrompt` of the
-    /// `OwnerAskPrompt` line to the ask's session — pasted, never submitted.
+    /// Answers `ask` from its draft (spec 2026-10-03 Part 5, PROJ-12 as
+    /// amended 2026-10-04): one guarded write, and only then the
+    /// `OwnerAskPrompt` line to the ask's session (`deliver`) — pasted and
+    /// submitted, or held while that session waits on a permission prompt.
     /// An ask without a session, or one not running, gets nothing typed: the
     /// brief delivers it. An ask the agent withdrew meanwhile writes nothing
     /// and keeps the draft. Returns the delivery, nil when nothing was written
     /// (an incomplete draft, an answer already running, a failure).
     /// A review's buttons pass their `verdict`, set on the draft first.
     @discardableResult
-    func answer(_ ask: OwnerAsk, verdict: OwnerAskAnswer.Verdict? = nil) async -> TerminalCenter.PromptDelivery? {
+    func answer(_ ask: OwnerAsk, verdict: OwnerAskAnswer.Verdict? = nil) async -> Delivery? {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
@@ -406,10 +438,17 @@ final class OwnerAsksViewModel {
         answerErrors[askID] = nil
         drafts.discard(askID)
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
-        let delivery = ask.sessionID.flatMap { terminalCenter?.sendPrompt(line, sessionID: $0) } ?? .noSession
+        var delivery = Delivery.noSession
+        if let sessionID = ask.sessionID {
+            delivery = await deliver(line, sessionID: sessionID)
+            if delivery == .held {
+                heldAnswers[askID] = HeldAnswer(sessionID: sessionID, line: line,
+                                                startedAt: terminalCenter?.startedAt[sessionID])
+            }
+        }
         answerNotices[askID] = .delivered(delivery)
         if delivery != .noSession, let sessionID = ask.sessionID {
-            terminalCenter?.showAnswerHint(delivery, sessionID: sessionID)
+            showHint(delivery, sessionID: sessionID)
             if drawerAskIDs[projectID] == askID { closeDrawer(projectID: projectID) }
             onDelivered?(projectID, sessionID)
         }
@@ -417,4 +456,70 @@ final class OwnerAsksViewModel {
         await onAnswered?()
         return delivery
     }
+
+    /// The session states changed (`SessionAgentStateCenter.onChange`):
+    /// each held answer whose session no longer waits on a permission
+    /// prompt goes now. One whose session stopped or started again meanwhile
+    /// goes nowhere — the session's brief lists it.
+    func deliverHeldAnswers() async {
+        for askID in heldAnswers.keys.sorted() {
+            guard let held = heldAnswers[askID], !needsApproval(held.sessionID) else { continue }
+            // Taken before any wait, so an overlapping call never sends it twice.
+            heldAnswers[askID] = nil
+            let sameRun = terminalCenter?.startedAt[held.sessionID] == held.startedAt
+            let delivery = sameRun ? await deliver(held.line, sessionID: held.sessionID) : .noSession
+            if delivery == .held {
+                heldAnswers[askID] = held
+                continue
+            }
+            answerNotices[askID] = .delivered(delivery)
+            showHint(delivery, sessionID: held.sessionID)
+        }
+    }
+
+    /// The line goes to a running session: held while it waits on a
+    /// permission prompt (a Return could confirm the prompt's default),
+    /// otherwise pasted and submitted after `TerminalCenter.submitDelay` —
+    /// unless a permission prompt appeared during the pause, when the paste
+    /// waits for the owner's Return. While the agent works, Claude Code
+    /// queues the submitted line for its next turn. Without bracketed
+    /// paste the line is copied, never typed.
+    private func deliver(_ line: String, sessionID: Int64) async -> Delivery {
+        guard let center = terminalCenter, center.liveIDs.contains(sessionID) else { return .noSession }
+        await refreshStates()
+        guard center.liveIDs.contains(sessionID) else { return .noSession }
+        if needsApproval(sessionID) { return .held }
+        let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
+                                               refresh: refreshStates) { [weak self] in
+            self?.needsApproval(sessionID) == false
+        }
+        switch result {
+        case .submitted: return .submitted
+        case .pasted: return .typed
+        case .copied: return .copied
+        case .noSession: return .noSession
+        }
+    }
+
+    /// The pane's hint for a line not sent yet. A submitted one needs none
+    /// (the paste already cleared the session's hints), and an undelivered
+    /// one has no running session to show it over.
+    private func showHint(_ delivery: Delivery, sessionID: Int64) {
+        let hint: TerminalCenter.AnswerHint? = switch delivery {
+        case .typed: .typed
+        case .copied: .copied
+        case .held: .held
+        case .submitted, .noSession: nil
+        }
+        if let hint { terminalCenter?.showAnswerHint(hint, sessionID: sessionID) }
+    }
+}
+
+/// An answer's line waiting for its session to leave a permission prompt.
+private struct HeldAnswer {
+    let sessionID: Int64
+    let line: String
+    /// The session's process run when the answer was written; a line never
+    /// goes into a later run (that run's brief listed the answer).
+    let startedAt: Date?
 }

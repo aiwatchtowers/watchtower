@@ -272,6 +272,13 @@ final class WorkbenchesViewModel {
         }
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
+        // An answer's line is held while its session waits on a permission
+        // prompt and goes once the states show it answered (PROJ-12).
+        asks.needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
+        asks.refreshStates = { [weak agentStates] in await agentStates?.poll() }
+        agentStates?.onChange = { [weak asks] in
+            Task { await asks?.deliverHeldAnswers() }
+        }
     }
 
     /// The Workbench tab appeared: the list reloads, and the sessions'

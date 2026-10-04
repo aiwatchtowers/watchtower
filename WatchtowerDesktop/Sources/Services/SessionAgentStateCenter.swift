@@ -51,6 +51,9 @@ final class SessionAgentStateCenter {
     /// Whether the app is frontmost, when a banner is not needed. Without an
     /// application object (a test host) nothing is posted.
     @ObservationIgnored var isAppActive: () -> Bool = { NSApp?.isActive ?? true }
+    /// Every change of `statuses`, after it is assigned (held ask answers
+    /// go once their session leaves a permission prompt). One subscriber.
+    @ObservationIgnored var onChange: (() -> Void)?
     @ObservationIgnored private let interval: Duration
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
@@ -154,6 +157,7 @@ final class SessionAgentStateCenter {
     private func publish(_ next: [Int64: SessionAgentStatus]) {
         guard next != statuses else { return }
         statuses = next
+        onChange?()
         let canPost = !isAppActive() && WorkbenchNotificationCenter.sending(defaults)
         for action in notices.update(next, canPost: canPost) {
             switch action {

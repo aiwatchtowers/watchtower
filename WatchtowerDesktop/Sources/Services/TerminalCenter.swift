@@ -72,12 +72,13 @@ final class TerminalCenter {
     /// the terminal pane says to press Return until the owner dismisses it
     /// or the next delivery.
     private(set) var pasteHints: Set<Int64> = []
-    /// Sessions holding an ask's answer typed or copied but not sent (board
-    /// #364): the pane says so prominently — over `clipboardHints` — until
+    /// Sessions holding an ask's answer not sent yet (board #364): typed but
+    /// not submitted, copied, or held behind a permission prompt (board
+    /// #379). The pane says so prominently — over `clipboardHints` — until
     /// the owner's next input in that session (a copied one's first input,
-    /// the paste, turns it into "press Return"), Dismiss, the next delivery
-    /// or the process's exit.
-    private(set) var answerHints: [Int64: PromptDelivery] = [:]
+    /// the paste, turns it into "press Return"; a held one stays, the input
+    /// answers the prompt), Dismiss, the next delivery or the process's exit.
+    private(set) var answerHints: [Int64: AnswerHint] = [:]
     /// Session ids the owner focused, most recent last, without duplicates —
     /// fed to `TerminalSessionPolicy.activeSession`.
     private(set) var focusOrder: [Int64] = []
@@ -214,8 +215,8 @@ final class TerminalCenter {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// Hands one prompt line to a running Claude Code session, NEVER
-    /// followed by Enter and never as keystrokes: a bracketed paste when the
+    /// Hands one prompt line to a running Claude Code session, never
+    /// followed by Enter (`submitPrompt` adds one) and never as keystrokes: a bracketed paste when the
     /// session enabled that mode, otherwise the clipboard (the owner pastes
     /// with ⌘V). Typed digits or an Enter could answer a pending Claude Code
     /// permission prompt the owner has not seen. Never starts a session.
@@ -254,19 +255,28 @@ final class TerminalCenter {
         case noSession
     }
 
-    /// "Hand to Claude Code" (spec 2026-10-02 §9.5): `text` pasted like Send
-    /// comments (`sendPrompt`, line breaks kept). A Return follows only
+    /// "Hand to Claude Code" (spec 2026-10-02 §9.5) and an ask's answer line
+    /// (PROJ-12, board #379): `text` pasted like Send comments (`sendPrompt`;
+    /// a hand-off keeps its line breaks, an answer line passes
+    /// `keepingLineBreaks: false`). A Return follows only
     /// while `canSubmit` holds — before the pause and again after it, the
     /// caller re-reading the session's agent state (ruling R52: only a
     /// session idle at its prompt; a Return could answer a permission
-    /// prompt that appeared meanwhile) — and only into the same running
-    /// process. Otherwise the paste waits for the owner's own Return.
+    /// prompt that appeared meanwhile; an answer: any state but a permission
+    /// prompt) — and only into the same running process, as a write of its
+    /// own after `submitDelay`: a CR read in one chunk with the paste could
+    /// be taken as part of it (a line break, not Enter). Otherwise the paste waits for the owner's own
+    /// Return.
     /// `refresh` runs after the pause, before the second check (the caller
     /// re-reads the agent state, which its poll may hold up to 1 s stale).
     func submitPrompt(
-        _ text: String, sessionID: Int64, refresh: () async -> Void = {}, submitIf canSubmit: () -> Bool
+        _ text: String,
+        sessionID: Int64,
+        keepingLineBreaks: Bool = true,
+        refresh: () async -> Void = {},
+        submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
-        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: true) {
+        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
         case .noSession: return .noSession
         case .copied: return .copied
         case .sent: break
@@ -291,24 +301,35 @@ final class TerminalCenter {
         answerHints[sessionID] = nil
     }
 
-    /// An ask's answer line went into a running session as `delivery`
-    /// (`.sent` typed, `.copied` on the clipboard): its pane shows the
-    /// Return hint in place of the clipboard one. Never types anything.
-    func showAnswerHint(_ delivery: PromptDelivery, sessionID: Int64) {
-        guard delivery != .noSession, states[sessionID] == .running else { return }
+    /// What the hint over a session holding an ask's answer says.
+    enum AnswerHint: Equatable {
+        /// Pasted, not submitted (a permission prompt appeared during the
+        /// pause): press Return.
+        case typed
+        /// On the clipboard: paste it, then press Return.
+        case copied
+        /// Held while the agent waits on a permission prompt; it goes once
+        /// the prompt is answered.
+        case held
+    }
+
+    /// An ask's answer line is waiting in or for a running session: its pane
+    /// shows `hint` in place of the clipboard one. Never types anything.
+    func showAnswerHint(_ hint: AnswerHint, sessionID: Int64) {
+        guard states[sessionID] == .running else { return }
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
-        answerHints[sessionID] = delivery
+        answerHints[sessionID] = hint
     }
 
     /// The owner typed or pasted into the session. A copied answer's hint
     /// turns into "press Return" (the paste was the first step); a typed
-    /// one has done its job.
+    /// one has done its job; a held one waits for its delivery.
     private func ownerInput(_ sessionID: Int64) {
         switch answerHints[sessionID] {
-        case nil: break
-        case .copied?: answerHints[sessionID] = .sent
-        default: answerHints[sessionID] = nil
+        case nil, .held?: break
+        case .copied?: answerHints[sessionID] = .typed
+        case .typed?: answerHints[sessionID] = nil
         }
     }
 

@@ -6,9 +6,10 @@ import (
 	"unicode"
 )
 
-// DeliveryLine is the one line the Desktop types into the ask's session
-// after the owner answers (spec Part 5) — the Go side of the Swift
-// OwnerAskPrompt, pinned by testdata/lines.
+// DeliveryLine is the one line the Desktop types into the ask's session,
+// then submits with a Return of its own, after the owner answers (spec
+// Part 5, PROJ-12) — the Go side of the Swift OwnerAskPrompt, pinned by
+// testdata/lines.
 func DeliveryLine(id int64, kind string, a Answer) string {
 	line := fmt.Sprintf("Ask #%d answered (%s: %s) — read it with get_ask %d using the watchtower-workbench skill.",
 		id, kind, short(kind, a), id)

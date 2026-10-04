@@ -742,9 +742,9 @@ cried wolf — the owner must be able to trust that orange means their move.
 
 **Locked since:** 2026-10-03
 
-## PROJ-12 — an ask reaches its session as typed text, never submitted
+## PROJ-12 — an ask's answer reaches its session submitted, never into a permission prompt
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog)
 
 **Observable:** When the owner answers an ask in the Desktop, the answer is
 stored first — one guarded `UPDATE owner_asks SET status='answered', answer,
@@ -754,32 +754,46 @@ the draft is kept) — and only then is anything typed. The typed text is
 exactly the fixed line `Ask #<id> answered (<kind>: <short>) — read it with
 get_ask <id> using the watchtower-workbench skill.` (Swift `OwnerAskPrompt`, a
 dual path with Go `asks.DeliveryLine` pinned by `internal/asks/testdata/lines`;
-every control character and newline becomes a space), sent once through
-`TerminalCenter.sendPrompt` to the ask's own session as a bracketed paste and
-never followed by Enter (without bracketed paste it is copied, not typed). An
-ask with no session, or whose session is not running, gets nothing typed: the
-session's next `workbench brief` lists it under "Answered asks for you" (its
-own session's, session-less and gone-session asks; the section keeps at least
-its first row at the 4000-rune cap and never marks anything delivered).
-`delivered` is set only by `get_ask` reading the answer (guarded `WHERE
-status='answered'`); a line the owner never submitted leaves the ask
-`answered`, so the next brief still lists it.
+every control character and newline becomes a space), sent to the ask's own
+running session through `TerminalCenter.submitPrompt` as one bracketed paste
+with no line break or control character inside it, followed after
+`submitDelay` (150 ms) by one Return written on its own — so Claude Code
+submits it (while the agent works, Claude Code queues it). Nothing is typed
+while that session's agent waits on a permission prompt (its
+`SessionAgentStatus` is `needsApproval`, PROJ-11, re-read right before the
+paste): the line is held in memory and goes, pasted and submitted, on the
+first read of the states that shows the prompt answered
+(`SessionAgentStateCenter.onChange` → `OwnerAsksViewModel.deliverHeldAnswers`);
+a held line whose session stopped or started a new run meanwhile goes
+nowhere. A permission prompt that appears during the pause stops the Return
+(the paste waits for the owner's Return). Without bracketed paste the line is
+copied, not typed, and no Return is sent. An ask with no session, or whose
+session is not running, gets nothing typed: the session's next `workbench
+brief` lists it under "Answered asks for you" (its own session's,
+session-less and gone-session asks; the section keeps at least its first row
+at the 4000-rune cap and never marks anything delivered). `delivered` is set
+only by `get_ask` reading the answer (guarded `WHERE status='answered'`); a
+line Claude Code never acted on (held when the app quit, copied and never
+pasted, typed and never submitted) leaves the ask `answered`, so the next
+brief still lists it.
 
-**Why locked:** Owner decision (spec 2026-10-03, decision 3). An
-auto-submitted Enter could confirm whatever Claude Code's TUI shows at that
-moment (a permission dialog's default, a half-typed prompt) without the owner
-seeing it, and a line typed before the answer is stored would send the agent
-to read an answer that is not there — the `WorkbenchCommentPrompt` rule
-carried over to asks.
+**Why locked:** Owner decisions (spec 2026-10-03, decision 3; board #379,
+2026-10-04). A Return typed while Claude Code's TUI shows a permission dialog
+could confirm its default without the owner seeing it — hence the hold, the
+re-read before the paste and after the pause, and no keystrokes without
+bracketed paste; a line with a line break of its own could submit early or
+split; and a line typed before the answer is stored would send the agent to
+read an answer that is not there — the `WorkbenchCommentPrompt` rule carried
+over to asks.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedAndNeverSubmitted` (a probed process reads the DB at input time; no CR/LF)
+- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after)
 - `internal/asks/line_test.go::TestDeliveryLineFixtures`, `internal/asks/line_test.go::TestDeliveryLineIsOneLine`
 - `WatchtowerDesktop/Tests/Core/OwnerAskPromptTests.swift` (`testTheLineMatchesEveryGoFixture`, `testTheLineIsOneLineWithNoControlCharacters`)
-- `WatchtowerDesktop/Tests/TerminalCenterTests.swift` (`testARunningSessionGetsOneBracketedPasteWithNoEnter`, `testWithoutBracketedPasteTheLineIsCopiedNotTyped`)
+- `WatchtowerDesktop/Tests/TerminalCenterTests.swift` (`testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn`, `testWithoutBracketedPasteTheLineIsCopiedNotTyped`, `testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted`)
 - `WatchtowerDesktop/Tests/Core/OwnerAskQueriesTests.swift` (`testAnsweringAnAskWithdrawnMeanwhileThrowsNotOpenAndWritesNothing`)
 - `cmd/workbench_brief_test.go::TestProj12_AnsweredAskSurvivesAFullBoard`
-- supporting: `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
+- supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
 
 **Locked since:** 2026-10-03
 
@@ -947,7 +961,14 @@ owner's and the agent's backs.
   lacks until Re-run Setup. (g) Without git installed, a folder inside a
   repository is listed by the walk, which knows no ignore rules; the daemon's
   mtime gate is whole seconds, so an edit in the same second as its last
-  render waits for the next change or an explicit trigger.
+  render waits for the next change or an explicit trigger. (h) Since
+  2026-10-04 (board #379) the answer's Return is held back only by a
+  permission prompt the hooks recorded (`approval`): a folder without the
+  session state hooks (not repaired yet), a prompt whose async hook write
+  has not landed by the re-read after the pause, or a TUI dialog the hooks do not report (not a permission prompt)
+  is not seen, and the Return goes there. The 150 ms pause between the
+  paste and the Return is a timing choice, checked by hand against Claude
+  Code, not by a test.
 
 - **Session agent state ordering and subagents (PROJ-11, board #367).**
   (a) Closed 2026-10-04 by board #368 (events of a turn are ordered by the
@@ -968,6 +989,7 @@ owner's and the agent's backs.
 
 ## Changelog
 
+- 2026-10-04 (board #379, owner-approved): **PROJ-12 amended** — the owner asked for the answer to an ask to go to the agent by itself after answering, instead of having to press Enter. The answer's line (still stored first, still one line) is now pasted and submitted: `TerminalCenter.submitPrompt` (`keepingLineBreaks: false`) writes the bracketed paste, then one Return on its own after `submitDelay`. The "Why locked" risk — a Return confirming a permission dialog's default — is met by the session agent state (PROJ-11): while the ask's session is `needsApproval` nothing is typed and the line is held in memory until a read of the states shows the prompt answered (a stopped or restarted session gets nothing; a quit leaves the ask `answered` for the brief); the state is re-read before the paste and after the pause, and a prompt that appears during the pause stops the Return. Without bracketed paste the line is still copied, never typed. The pane hint "press Return to send" (board #364) remains only for that pause race and the copied case; a held answer shows "Answer saved — it goes to Claude after the permission prompt", a submitted one "Answer sent to Claude". Guards renamed in place: `testProj12_TheAnswerIsStoredBeforeTheLineIsTypedAndNeverSubmitted` → `testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (stored-before-typed and the one-line, no-control-byte paste kept, Return now asserted as a write of its own), `TerminalCenterTests::testARunningSessionGetsOneBracketedPasteWithNoEnter` leaves the PROJ-12 list (it still pins `sendPrompt`, which a comment's Send uses) for `testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn`; new `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer`.
 - 2026-10-04 (polish wave, owner-approved default): PROJ-11's heading gains "(v1 limits below)" — "never show a stale state" holds outside the time-ordered leftovers listed under "Session agent state ordering and subagents" in "v1 limits and notes". Wording only; no contract semantics or guard tests changed.
 - 2026-10-04 (board #368, owner-approved target): **PROJ-11 amended** (strengthened) — a turn's Stop and its main-thread tool results are ordered by the turn, not by hook-process start time, closing v1 note (a) of "Session agent state ordering and subagents". Migration `00102` adds `terminal_sessions.agent_turn_end` (the transcript's size at the run's last Stop hook) and `agent_tool_run` (the stored state came from a main-thread `PostToolUse`), both Go-only. The Stop hook records the turn end before its drift check and with its `waiting`; a main-thread `PostToolUse` whose `tool_use_id` the transcript places before it writes nothing (`cmd/workbench_turn_order.go`, `toolCallTurn`); the Stop's `waiting` replaces a tool result's `working` stamped after it. Owner decision ask #20 unchanged: a subagent's tool result after a granted permission still records `working`, time-ordered. New guards `TestProj11_EndedTurnsToolResultNeverOverwritesTheStop` and `TestProj11_StopReplacesItsTurnsLateToolResult`; every existing guard runs unchanged (`TestProj11_OlderEventNeverOverwritesANewerState` holds for every write but the Stop's over a tool result's `working`). The note's narrower leftovers (unplaceable calls, StopFailure, `finished_at` in the Stop's first milliseconds) stay listed. PROJ-11's "never show a stale state" now holds outside those listed leftovers.
 - 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-session-report.md`). **Approved by the owner (the states brainstorm, asks #2 and #4):** migration `00101` adds `terminal_sessions.finished_at`/`finish_summary`/`agent_failed_at`/`agent_error`, `terminal_session_targets` and `workbench_pr_states`. **PROJ-11 amended** — the stored `waiting` now shows Stopped (grey), "waiting for you" comes only from an open ask or a permission dialog, a StopFailure records an error (red), `finish_session` marks Finished (blue; orange with open asks), any `working` write clears both; the state order is pinned. The existing guards that asserted `waiting` → "waiting for you" (orange) were rewritten to Stopped (grey) — the intended change, not a relaxation; the "a dead run's state never shows" assertions are unchanged (`testProj11_StateFromAnEarlierRunIsIgnored` gained an earlier run's error). New guards `testProj11_StateOrder`, `testProj11_TurnEndWithoutAskIsStoppedNotWaiting`, `TestProj11_WorkingClearsFinishedAndError` and `TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (db and hook halves). **PROJ-13 amended** — the ask guard prompt is v2 with the `finish_session` reminder; its pass rules are unchanged; new guard `TestProj13_V1PromptIsUpgradedToV2`. **PROJ-14 added** — a session report shows only that session's work, and only the session itself says it finished. **PROJ-02 strengthened** — the delete also removes the session link rows and the PR cache (`TestProj02_DeleteProjectLeavesNoRows` extended). **Implementation rulings (spec Revision 3):** (1) a plain `waiting` over a failed one is a no-op, so the error clears only on `working`, `approval` or the SessionStart clear (spec Part 4 said "every other write clears"); (2) the spec's "an owner-edited prompt is kept and reported `drifted`" would have contradicted PROJ-04, which sets our edited prompt back — every marker prompt, v1 or edited, becomes v2 and PROJ-04 is unchanged (the planned guard name `TestProj13_V1PromptIsUpgradedEditedIsKept` became `TestProj13_V1PromptIsUpgradedToV2`). The owner-asks v1 note (b) now reads Stopped. PROJ-01, 03–10 and 12 unchanged; DEV-06 lists `finish_session` (`dev-surface.md`).

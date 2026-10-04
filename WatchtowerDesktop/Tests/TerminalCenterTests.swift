@@ -491,7 +491,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNil(center.activeSession(projectID: 3))
     }
 
-    // MARK: - sendPrompt (an answer's line)
+    // MARK: - sendPrompt (a comment's Send)
 
     func testARunningSessionGetsOneBracketedPasteWithNoEnter() throws {
         let center = makeCenter()
@@ -502,8 +502,22 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(sessions[0].inputs, [
             [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
         ])
-        XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "the owner presses Return; Watchtower never does")
+        XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "sendPrompt never presses Return; submitPrompt does")
         XCTAssertFalse(center.clipboardHints.contains(s.id))
+    }
+
+    /// PROJ-12 (amended 2026-10-04, board #379): an answer's line is one
+    /// bracketed paste — a line break or control character is dropped — and
+    /// then one Return as a write of its own, after the pause.
+    func testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        let line = OwnerAskPrompt.line(id: 7, kind: .question, answer: OwnerAskAnswer())
+        let delivery = await center.submitPrompt(line + "\r\n\u{1B}more", sessionID: s.id, keepingLineBreaks: false) { true }
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes(line + "more"), [0x0D]])
+        XCTAssertEqual(slept, TerminalCenter.submitDelay)
     }
 
     /// Without bracketed paste nothing is typed — keystrokes could answer a
@@ -525,27 +539,27 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.clipboardHints.contains(s.id))
     }
 
-    // MARK: - An ask's Return hint (board #364)
+    // MARK: - An ask's answer hint (boards #364, #379)
 
     func testTheAnswerHintGoesWithTheOwnersInputDismissTheNextDeliveryOrTheExit() throws {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
 
-        center.showAnswerHint(.sent, sessionID: s.id)
-        XCTAssertEqual(center.answerHints[s.id], .sent)
+        center.showAnswerHint(.typed, sessionID: s.id)
+        XCTAssertEqual(center.answerHints[s.id], .typed)
         sessions[0].onOwnerInput?()
         XCTAssertNil(center.answerHints[s.id], "the owner's next input")
 
-        center.showAnswerHint(.sent, sessionID: s.id)
+        center.showAnswerHint(.typed, sessionID: s.id)
         center.dismissClipboardHint(sessionID: s.id)
         XCTAssertNil(center.answerHints[s.id], "Dismiss")
 
-        center.showAnswerHint(.sent, sessionID: s.id)
+        center.showAnswerHint(.typed, sessionID: s.id)
         XCTAssertEqual(center.sendPrompt("next", sessionID: s.id), .sent)
         XCTAssertNil(center.answerHints[s.id], "the next delivery")
 
-        center.showAnswerHint(.sent, sessionID: s.id)
+        center.showAnswerHint(.typed, sessionID: s.id)
         sessions[0].exit(0)
         XCTAssertNil(center.answerHints[s.id], "the process exit")
     }
@@ -559,18 +573,32 @@ final class TerminalCenterTests: XCTestCase {
         center.showAnswerHint(.copied, sessionID: s.id)
 
         sessions[0].onOwnerInput?()
-        XCTAssertEqual(center.answerHints[s.id], .sent)
+        XCTAssertEqual(center.answerHints[s.id], .typed)
         sessions[0].onOwnerInput?()
         XCTAssertNil(center.answerHints[s.id])
     }
 
-    /// The copied hint replaces the generic clipboard one; a line that went
-    /// nowhere, or a session not running, gets no hint.
+    /// A held answer's hint stays through the owner's input — that input
+    /// answers the permission prompt — until the line goes.
+    func testAHeldAnswerHintStaysThroughTheOwnersInputUntilTheDelivery() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        center.showAnswerHint(.held, sessionID: s.id)
+
+        sessions[0].onOwnerInput?()
+        XCTAssertEqual(center.answerHints[s.id], .held)
+        XCTAssertEqual(center.sendPrompt("x", sessionID: s.id), .sent)
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// The copied hint replaces the generic clipboard one; a session not
+    /// running gets no hint.
     func testTheAnswerHintReplacesTheClipboardHintAndNeedsARunningSession() throws {
         let center = makeCenter()
         center.copyToClipboard = { _ in }
         let s = try row()
-        center.showAnswerHint(.sent, sessionID: s.id)
+        center.showAnswerHint(.typed, sessionID: s.id)
         XCTAssertNil(center.answerHints[s.id], "not running")
 
         center.start(s, fresh: true)
@@ -581,7 +609,6 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.clipboardHints.contains(s.id))
 
         center.dismissClipboardHint(sessionID: s.id)
-        center.showAnswerHint(.noSession, sessionID: s.id)
         XCTAssertNil(center.answerHints[s.id])
     }
 
@@ -589,7 +616,7 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
-        center.showAnswerHint(.sent, sessionID: s.id)
+        center.showAnswerHint(.typed, sessionID: s.id)
 
         await center.close(sessionID: s.id)
 
