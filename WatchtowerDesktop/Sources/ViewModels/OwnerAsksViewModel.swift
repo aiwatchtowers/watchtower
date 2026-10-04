@@ -62,7 +62,7 @@ final class OwnerAsksViewModel {
     /// hand-off (`TerminalCenter.pasteHints`/`clipboardHints`).
     nonisolated static let sentNote = "Pasted into Claude — press Return to send"
     /// The paste hint when the line shares the prompt with other text not
-    /// sent — an answer left typed, a draft (`pasteHintsBesideText`).
+    /// sent — an answer left typed, a draft (`TerminalCenter.sharedPrompts`).
     nonisolated static let sentBesideTextNote = "Pasted into Claude next to text not sent yet — press Return to send them together"
     nonisolated static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     nonisolated static let answerSentNote = "Answer sent to Claude"
@@ -73,6 +73,10 @@ final class OwnerAsksViewModel {
         "Still waiting for the permission prompt — Dismiss to send the answer through the session's brief instead"
     nonisolated static let answerQueuedNote = "Answer saved — sending after the previous answer"
     nonisolated static let answerTypedNote = "Answer typed into the terminal — press Return to send"
+    /// `answerTypedNote` when the prompt holds other text not sent too, such
+    /// as a hand-off that crossed the answer (`TerminalCenter.sharedPrompts`).
+    nonisolated static let answerTypedBesideTextNote =
+        "Answer typed next to text not sent yet — press Return to send them together"
     nonisolated static let answerCopiedNote = "Answer copied — paste it into the terminal and press Return"
     nonisolated static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
     nonisolated static let withdrawnNote = "The agent withdrew this ask — your draft is kept"

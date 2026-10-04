@@ -147,7 +147,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             switch state {
             case .running?:
                 if let session, let hint = center.answerHints[session.id] {
-                    AnswerReturnHint(hint: hint) {
+                    AnswerReturnHint(hint: hint, shared: center.sharedPrompts.contains(session.id)) {
                         // A held answer's Dismiss cancels its typing: the brief lists it.
                         if hint.isHeld, let workbenches = vm {
                             workbenches.asks.cancelHeldAnswers(sessionID: session.id)
@@ -158,11 +158,9 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                     Divider()
                 } else if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
                     let copied = center.clipboardHints.contains(session.id)
-                    let note = copied ? OwnerAsksViewModel.copiedNote
-                        : center.pasteHintsBesideText.contains(session.id) ? OwnerAsksViewModel.sentBesideTextNote
-                        : OwnerAsksViewModel.sentNote
                     HStack {
-                        Label(note, systemImage: copied ? "doc.on.clipboard" : "checkmark")
+                        Label(pasteNote(copied: copied, shared: center.sharedPrompts.contains(session.id)),
+                              systemImage: copied ? "doc.on.clipboard" : "checkmark")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("Dismiss") { center.dismissClipboardHint(sessionID: session.id) }
@@ -196,6 +194,11 @@ private struct TerminalSessionPane<NotStarted: View>: View {
         }
     }
 
+    private func pasteNote(copied: Bool, shared: Bool) -> String {
+        if copied { return OwnerAsksViewModel.copiedNote }
+        return shared ? OwnerAsksViewModel.sentBesideTextNote : OwnerAsksViewModel.sentNote
+    }
+
     @ViewBuilder
     private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
@@ -212,9 +215,11 @@ private struct TerminalSessionPane<NotStarted: View>: View {
 /// the bar says it still waits) or queued behind another answer; Dismiss
 /// cancels a held one's delivery, the brief lists the answer. Prominent on
 /// purpose. Goes with the owner's next input in the session (not a held
-/// one), the delivery, or Dismiss (`TerminalCenter.answerHints`).
+/// one), the delivery, or Dismiss (`TerminalCenter.answerHints`). A typed
+/// one says when other text not sent shares its prompt (`shared`, board #380).
 private struct AnswerReturnHint: View {
     let hint: TerminalCenter.AnswerHint
+    let shared: Bool
     let dismiss: () -> Void
 
     var body: some View {
@@ -246,7 +251,7 @@ private struct AnswerReturnHint: View {
 
     private var text: String {
         switch hint {
-        case .typed: OwnerAsksViewModel.answerTypedNote
+        case .typed: shared ? OwnerAsksViewModel.answerTypedBesideTextNote : OwnerAsksViewModel.answerTypedNote
         case .copied: OwnerAsksViewModel.answerCopiedNote
         case .held: OwnerAsksViewModel.answerHeldNote
         case .stillHeld: OwnerAsksViewModel.answerStillHeldNote

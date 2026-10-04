@@ -189,7 +189,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertTrue(sent)
         XCTAssertEqual(processes[0].inputs, [bracketedPasteBytes(text)], "no 0x0D into a working session")
         XCTAssertTrue(terminals.pasteHints.contains(session.id))
-        XCTAssertFalse(terminals.pasteHintsBesideText.contains(session.id), "the prompt held nothing else")
+        XCTAssertFalse(terminals.sharedPrompts.contains(session.id), "the prompt held nothing else")
         XCTAssertNil(handoff.requests[project.id])
     }
 
@@ -332,7 +332,10 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertEqual(processes[0].inputs.last, bracketedPasteBytes(text))
         XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return over the answer")
         XCTAssertTrue(terminals.pasteHints.contains(session.id))
-        XCTAssertTrue(terminals.pasteHintsBesideText.contains(session.id), "the pane says both go on Return")
+        XCTAssertTrue(terminals.sharedPrompts.contains(session.id), "the pane says both go on Return")
+
+        processes[0].onOwnerInput?([0x0D])
+        XCTAssertFalse(terminals.sharedPrompts.contains(session.id), "the owner's Return sent them")
     }
 
     /// A hand-off sent while an answer waits out its pause before its
@@ -358,6 +361,8 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertEqual(processes[0].inputs.count, 2)
         XCTAssertEqual(processes[0].inputs.last, bracketedPasteBytes(text))
         XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return over the other line")
+        XCTAssertEqual(terminals.answerHints[session.id], .typed)
+        XCTAssertTrue(terminals.sharedPrompts.contains(session.id), "the typed bar says both go on Return")
     }
 
     /// The reverse: an answer delivered while a hand-off waits out its
@@ -383,6 +388,8 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertEqual(processes[0].inputs.count, 2)
         XCTAssertEqual(processes[0].inputs.first, bracketedPasteBytes(text))
         XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return over the other line")
+        XCTAssertEqual(terminals.answerHints[session.id], .typed)
+        XCTAssertTrue(terminals.sharedPrompts.contains(session.id), "the typed bar says both go on Return")
     }
 
     /// Ruling R54(d): Cancel during the pause stops the queued Return and
