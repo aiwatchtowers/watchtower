@@ -52,8 +52,12 @@ final class WorkbenchBoardViewModel {
         )
     }
 
-    /// The K of "Archive (K)": archived targets on this board.
-    var archivedCount: Int { WorkbenchBoardOutline.archivedCount(roots) }
+    /// The K of "Archive (K)": what the toggle adds in the current mode —
+    /// every archived target in the list, the archived leaf cards under the
+    /// parent filter in Kanban.
+    var archivedCount: Int {
+        mode == .kanban ? kanban.archivedCardCount : WorkbenchBoardOutline.archivedCount(roots)
+    }
 
     var selectedNode: WorkbenchBoardNode? {
         selectedTargetID.flatMap { WorkbenchBoardOutline.find($0, in: roots) }

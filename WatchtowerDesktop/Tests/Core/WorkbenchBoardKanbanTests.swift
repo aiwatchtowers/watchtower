@@ -308,6 +308,32 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(ids(on, "done"), [4])
     }
 
+    /// Kanban's "Archive (K)" counts the archived leaf cards under the
+    /// filter: never an archived group, never another root's leaves, and
+    /// the same whatever the toggles and the search.
+    func testArchivedCardCountIsTheArchivedLeavesUnderTheFilter() throws {
+        let roots = [
+            node(try target(1, "Live"), [node(try target(2)), node(try target(5, status: "done"), archived: true)]),
+            node(try target(3, "Gone", status: "done"), [
+                node(try target(4, status: "done"), archived: true),
+                node(try target(6, status: "dismissed"), archived: true)
+            ], archived: true)
+        ]
+        let all = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertEqual(all.archivedCardCount, 3, "#5, #4, #6, not the group #3")
+        let on = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, showArchived: true)
+        XCTAssertEqual(on.archivedCardCount, 3)
+        XCTAssertEqual(on.columns.flatMap(\.cards).filter(\.node.archived).count, 3, "the toggle adds exactly K cards")
+        let live = WorkbenchBoardKanban(roots, filterRootID: 1, showDone: false, showArchived: true, query: "zzz")
+        XCTAssertEqual(live.archivedCardCount, 1, "only #5 under the Live filter")
+    }
+
+    func testArchivedCardCountOnABoardWithoutArchive() throws {
+        let board = WorkbenchBoardKanban([node(try target(1))], filterRootID: nil, showDone: false)
+        XCTAssertEqual(board.archivedCardCount, 0)
+        XCTAssertEqual(WorkbenchBoardKanban([], filterRootID: nil, showDone: false).archivedCardCount, 0)
+    }
+
     // MARK: - Preferences
 
     func testPreferencesArePerProjectAndDefaultToListAndAll() throws {

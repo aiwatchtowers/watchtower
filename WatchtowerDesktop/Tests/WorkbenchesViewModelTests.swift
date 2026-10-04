@@ -42,8 +42,6 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.badgeCount, 1, "one unread agent comment; a read one does not count")
     }
 
-    /// Spec 2026-10-03 Part 8: the badge is open asks plus unread agent
-    /// target comments, summed over the workbenches.
     /// The header menu's "Archive Closed Targets After" (board #301): a write
     /// reloads the summaries (the menu's checkmark); a refused one says why
     /// for that workbench only and keeps the value.
@@ -67,6 +65,8 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.summaries.first?.project.archiveAfterDays, 0)
     }
 
+    /// Spec 2026-10-03 Part 8: the badge is open asks plus unread agent
+    /// target comments, summed over the workbenches.
     func testTheBadgeCountsOpenAsksPlusUnreadAgentComments() async throws {
         let (p, other) = try await pool.write { d -> (Int64, Int64) in
             let p = try TestDatabase.insertWorkbench(d)

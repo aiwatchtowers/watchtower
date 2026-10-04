@@ -61,8 +61,8 @@ struct WorkbenchBoardView: View {
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
         .onDisappear { viewModel?.stopPolling() }
         // The header's "Archive Closed Targets After" applies at once, not at
-        // the next poll (board #301).
-        .onChange(of: archiveAfterDays) { _, _ in viewModel?.refreshIfChanged() }
+        // the next poll (board #301); load() reports a failed read.
+        .onChange(of: archiveAfterDays) { _, _ in viewModel?.load() }
         .task(id: projectID) {
             await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }

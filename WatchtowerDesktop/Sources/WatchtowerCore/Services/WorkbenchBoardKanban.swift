@@ -50,6 +50,9 @@ package struct WorkbenchBoardKanban {
     /// The filter actually applied: nil (All) when the requested one is not
     /// among `filterOptions` (deleted, or no longer a parent).
     package let filterRootID: Int?
+    /// Archived leaves under the applied filter, whatever the toggles and
+    /// the search: the cards "Archive" adds, Kanban's "Archive (K)".
+    package let archivedCardCount: Int
 
     /// A non-empty `query` (`WorkbenchBoardSearch`) keeps the leaves it
     /// matches and the leaves under a parent it matches, and shows the done,
@@ -92,6 +95,7 @@ package struct WorkbenchBoardKanban {
         self.columns = columns
         self.filterOptions = options
         self.filterRootID = applied
+        self.archivedCardCount = Self.archivedLeafCount(scope)
     }
 
     /// Whether `id` is a card shown on this board. A drop accepts only these:
@@ -110,6 +114,12 @@ package struct WorkbenchBoardKanban {
         let kept = showDone ? recent : Array(recent.prefix(doneCap))
         let shown = (kept + cards.filter(\.node.archived)).sorted(by: byRecency)
         return Column(status: status, title: title, cards: shown, hiddenCount: recent.count - kept.count)
+    }
+
+    private static func archivedLeafCount(_ nodes: [WorkbenchBoardNode]) -> Int {
+        nodes.reduce(0) { count, n in
+            count + (n.children.isEmpty ? (n.archived ? 1 : 0) : archivedLeafCount(n.children))
+        }
     }
 
     private static func byRecency(_ lhs: Card, _ rhs: Card) -> Bool {

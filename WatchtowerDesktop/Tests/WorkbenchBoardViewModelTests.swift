@@ -629,6 +629,25 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(live), Int(old)])
     }
 
+    /// "Archive (K)" counts what the toggle adds: every archived target in
+    /// the list, only the archived leaf cards in Kanban.
+    func testTheArchiveCountFollowsTheMode() throws {
+        let pid = try dbManager.dbPool.write { db -> Int64 in
+            let pid = try Self.insertWorkbench(db)
+            let group = try Self.insertTarget(db, project: pid, text: "Old group", status: "done")
+            let child = try Self.insertTarget(db, project: pid, text: "Old task", parent: group, status: "done")
+            try Self.closeLongAgo(db, group)
+            try Self.closeLongAgo(db, child)
+            return pid
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.mode = .list
+        XCTAssertEqual(vm.archivedCount, 2, "the group and its task")
+        vm.mode = .kanban
+        XCTAssertEqual(vm.archivedCount, 1, "only the task is a card")
+    }
+
     func testTheArchiveSettingIsInTheFingerprint() throws {
         let pid = try dbManager.dbPool.write { db -> Int64 in
             let pid = try Self.insertWorkbench(db)
