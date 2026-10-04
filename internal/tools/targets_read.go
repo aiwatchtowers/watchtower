@@ -16,6 +16,9 @@ type listTargetsArgs struct {
 	Level     string `json:"level,omitempty" jsonschema:"filter by level: quarter|month|week|day|custom"`
 	Ownership string `json:"ownership,omitempty" jsonschema:"filter by ownership: mine|delegated|watching"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
+	// IncludeArchived has no effect outside a workbench session, which never
+	// sees workbench targets (PROJ-01).
+	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"workbench sessions: also list archived targets (closed longer than the workbench's archive period), with or without status"`
 }
 
 type getTargetArgs struct {
@@ -52,6 +55,9 @@ func NewListTargets() *Tool {
 				// 0 (every non-workbench session) excludes workbench targets
 				// (PROJ-01); a workbench session sees only its own board.
 				WorkbenchID: call.Binding.WorkbenchID,
+				// A workbench session leaves its archived targets out unless
+				// asked (PROJ-15).
+				IncludeArchived: a.IncludeArchived,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing targets: %w", err)
@@ -65,11 +71,13 @@ func NewListTargets() *Tool {
 }
 
 // workbenchTargetView is get_target's answer in a workbench session: the target
-// plus its newest status changes, oldest first, and its attached images.
+// plus its newest status changes, oldest first, its attached images and
+// whether it is archived (PROJ-15).
 type workbenchTargetView struct {
 	*db.Target
 	StatusHistory []db.TargetStatusChange   `json:"status_history"`
 	Images        []db.WorkbenchTargetImage `json:"images"`
+	Archived      bool                      `json:"archived"`
 }
 
 // NewGetTarget fetches one target by id, including sub-items, notes, and metadata.
@@ -78,7 +86,8 @@ func NewGetTarget() *Tool {
 		Name: "get_target",
 		Description: "Get a single target by id, including sub-items, notes, and metadata; a workbench " +
 			"target also carries its status_history (newest 50 changes, oldest first) and its attached images " +
-			"(id, file_name, mime, size, path of Watchtower's stored copy — read that path to look at one).",
+			"(id, file_name, mime, size, path of Watchtower's stored copy — read that path to look at one) and whether it is " +
+			"archived (reopen it with update_target to bring it back on the board).",
 		InputSchema: mustSchema[getTargetArgs]("get_target"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -102,16 +111,25 @@ func NewGetTarget() *Tool {
 			if call.Binding.WorkbenchID == 0 {
 				return target, nil
 			}
-			// A workbench target also carries its status history (PROJ-06).
-			history, err := d.GetTargetStatusHistory(int64(target.ID), db.MaxStatusHistory)
-			if err != nil {
-				return nil, err
-			}
-			images, err := d.ListWorkbenchTargetImages(int64(target.ID))
-			if err != nil {
-				return nil, err
-			}
-			return workbenchTargetView{Target: target, StatusHistory: history, Images: images}, nil
+			return workbenchTargetDetails(d, target)
 		},
 	}
+}
+
+// workbenchTargetDetails is get_target's answer for a workbench target: its
+// status history (PROJ-06), images and archive state (PROJ-15).
+func workbenchTargetDetails(d *db.DB, target *db.Target) (*workbenchTargetView, error) {
+	history, err := d.GetTargetStatusHistory(int64(target.ID), db.MaxStatusHistory)
+	if err != nil {
+		return nil, err
+	}
+	images, err := d.ListWorkbenchTargetImages(int64(target.ID))
+	if err != nil {
+		return nil, err
+	}
+	archived, err := d.IsWorkbenchTargetArchived(int64(target.ID))
+	if err != nil {
+		return nil, err
+	}
+	return &workbenchTargetView{Target: target, StatusHistory: history, Images: images, Archived: archived}, nil
 }

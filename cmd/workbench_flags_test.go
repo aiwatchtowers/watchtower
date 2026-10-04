@@ -79,7 +79,7 @@ func TestWorkbenchBrief_LegacyFlagGetsTheOldVocabularyAndTheResyncLine(t *testin
 func TestRenderWorkbenchBrief_LegacyLineFollowsTheHeader(t *testing.T) {
 	p := briefWorkbench()
 	out := renderWorkbenchBrief(nil, p, nil, workbenchcheck.Report{}, nil, nil, time.Now(), legacyWorkbenchVocabulary)
-	header := briefHeader(p, nil, 0, legacyWorkbenchVocabulary)
+	header := briefHeader(p, nil, 0, 0, legacyWorkbenchVocabulary)
 	assert.True(t, strings.HasPrefix(out, header+"\n"+briefLegacyLine+"\n"), out)
 	assert.Equal(t, 1, strings.Count(out, briefLegacyLine))
 }
