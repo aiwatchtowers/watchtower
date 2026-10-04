@@ -24,7 +24,7 @@ final class CalendarAccountsViewModelTests: XCTestCase {
 
     func testRefreshPopulatesAccountsFromDB() async throws {
         let pool = try makePool()
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertCalendarAccount(db, provider: "caldav", username: "me@icloud.com")
         }
         let vm = CalendarAccountsViewModel(dbPool: pool)

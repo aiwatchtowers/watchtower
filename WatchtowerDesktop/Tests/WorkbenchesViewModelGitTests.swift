@@ -930,10 +930,10 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         func release() { finish.release() }
 
         func run(args: [String]) async throws -> Data {
-            lock.lock()
-            recorded.append(args)
-            let first = recorded.count == 1
-            lock.unlock()
+            let first = lock.withLock {
+                recorded.append(args)
+                return recorded.count == 1
+            }
             guard first else { return stdout }
             started.release()
             await finish.wait()

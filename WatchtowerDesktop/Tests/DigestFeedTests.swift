@@ -212,7 +212,7 @@ final class DigestFeedTests: XCTestCase {
         vm.stopObserving()
         vm.stopObserving() // idempotent
 
-        try dbManager.dbPool.write { db in
+        _ = try dbManager.dbPool.write { db in
             try TestDatabase.insertStreamDigest(db)
         }
 
@@ -241,7 +241,7 @@ final class DigestFeedTests: XCTestCase {
         // has been open, never in the same instant it subscribes).
         try? await Task.sleep(for: .milliseconds(200))
 
-        try await dbManager.dbPool.write { db in
+        _ = try await dbManager.dbPool.write { db in
             try TestDatabase.insertStreamDigest(db)
         }
 

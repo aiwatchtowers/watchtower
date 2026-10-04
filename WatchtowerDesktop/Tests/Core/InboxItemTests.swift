@@ -43,7 +43,7 @@ final class InboxItemTests: XCTestCase {
         let db = try TestDatabase.create()
         // insertInboxItem writes item_class explicitly (default "actionable"), matching
         // the inbox_items column default in schema.sql.
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertInboxItem(db)
         }
         let item = try XCTUnwrap(db.read { db in
@@ -77,7 +77,7 @@ final class InboxItemTests: XCTestCase {
 
     func testMapsCardColumns() throws {
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertInboxItem(
                 db,
                 cardStatus: "ready",
@@ -98,7 +98,7 @@ final class InboxItemTests: XCTestCase {
 
     func testCardStatusDefaultsToNone() throws {
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertInboxItem(db)
         }
         let item = try XCTUnwrap(db.read { db in
@@ -110,7 +110,7 @@ final class InboxItemTests: XCTestCase {
 
     func testCardStatusFailedIsNotHasCard() throws {
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertInboxItem(db, cardStatus: "failed")
         }
         let item = try XCTUnwrap(db.read { db in
@@ -127,7 +127,7 @@ final class InboxItemTests: XCTestCase {
         // renders them since the inbox demolition; the predicates stay pinned because
         // the frozen card columns are still read back off historical rows.
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertInboxItem(
                 db,
                 cardStatus: "ready",
@@ -146,7 +146,7 @@ final class InboxItemTests: XCTestCase {
 
     func testCardPresentationPredicatesTrueWhenFieldsPresent() throws {
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertInboxItem(
                 db,
                 cardStatus: "ready",

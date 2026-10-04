@@ -50,8 +50,9 @@ final class DocumentFileWatcherTests: XCTestCase {
         // Re-arming after a rename is asynchronous (a retryInterval-paced open loop),
         // so poll-write until the newly-armed watcher observes one, bounded by the
         // expectation timeout below.
+        let url: URL = fileURL
         let timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { _ in
-            try? "again".write(to: self.fileURL, atomically: true, encoding: .utf8)
+            try? "again".write(to: url, atomically: true, encoding: .utf8)
         }
         wait(for: [secondFire], timeout: 5)
         timer.invalidate()
@@ -74,8 +75,9 @@ final class DocumentFileWatcherTests: XCTestCase {
         wait(for: [deleteFire], timeout: 5)
 
         try "recreated".write(to: fileURL, atomically: true, encoding: .utf8)
+        let url: URL = fileURL
         let timer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { _ in
-            try? "again".write(to: self.fileURL, atomically: true, encoding: .utf8)
+            try? "again".write(to: url, atomically: true, encoding: .utf8)
         }
         wait(for: [recreateFire], timeout: 5)
         timer.invalidate()

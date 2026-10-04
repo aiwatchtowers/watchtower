@@ -192,7 +192,7 @@ final class ConfluenceEditMemo {
     static let shared = ConfluenceEditMemo()
     static let capacity = 64
 
-    static let sampleBytes = 256
+    nonisolated static let sampleBytes = 256
 
     private struct Key: Hashable {
         let id: Int64

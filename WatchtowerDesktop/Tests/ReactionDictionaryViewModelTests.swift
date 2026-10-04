@@ -46,7 +46,7 @@ final class ReactionDictionaryViewModelTests: XCTestCase {
     func testSetEnabledAndDeleteReloadTheList() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertReactionCommandMapping(db, emoji: "eyes", tool: "create_track")
         }
         let vm = ReactionDictionaryViewModel(dbPool: pool)

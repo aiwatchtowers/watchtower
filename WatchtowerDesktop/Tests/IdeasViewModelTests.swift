@@ -354,7 +354,7 @@ final class IdeasViewModelTests: XCTestCase {
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
         XCTAssertTrue(vm.reviewItems.isEmpty)
 
-        try await dbManager.dbPool.write { db in
+        _ = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, title: "Mined idea", status: "proposed")
         }
 
@@ -386,7 +386,7 @@ final class IdeasViewModelTests: XCTestCase {
     func testStartBackfillFailureStillReloadsList() async throws {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
-        try await dbManager.dbPool.write { db in
+        _ = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, title: "Committed before the failure", status: "proposed")
         }
 
@@ -398,7 +398,7 @@ final class IdeasViewModelTests: XCTestCase {
     func testStartBackfillMalformedOutputStillReloadsList() async throws {
         let runner = FakeCLIRunner(stdout: Data("not json at all".utf8))
         let vm = IdeasViewModel(dbManager: dbManager, cliRunner: runner)
-        try await dbManager.dbPool.write { db in
+        _ = try await dbManager.dbPool.write { db in
             try TestDatabase.insertIdea(db, title: "Committed before the parse failure", status: "proposed")
         }
 

@@ -29,11 +29,11 @@ private final class GateDownloader: @unchecked Sendable {
 
     func call(providerID: String, modelName: String, progress: @escaping @Sendable (Double) -> Void) async throws {
         let k = key(providerID, modelName)
-        lock.lock()
-        callCount += 1
-        calledModels.append(modelName)
-        calledProviders.append(providerID)
-        lock.unlock()
+        lock.withLock {
+            callCount += 1
+            calledModels.append(modelName)
+            calledProviders.append(providerID)
+        }
         enteredContinuation.yield(modelName)
         progress(0.5)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

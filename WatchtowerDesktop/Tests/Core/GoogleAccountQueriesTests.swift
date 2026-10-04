@@ -36,7 +36,7 @@ final class GoogleAccountQueriesTests: XCTestCase {
 
     func testFetchAllDecodesAllFields() throws {
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertGoogleAccount(
                 db, email: "me@gmail.com", label: "Personal", clientID: "custom-client",
                 calendarEnabled: true, gmailEnabled: false, status: "error", error: "token revoked"
@@ -84,13 +84,13 @@ final class GoogleAccountQueriesTests: XCTestCase {
 
     func testHasConnectedCalendarAccountTrueOnlyForEnabledAndOK() throws {
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             // calendar_enabled but status is error — must not count.
             try TestDatabase.insertGoogleAccount(db, email: "broken@gmail.com", calendarEnabled: true, status: "error")
         }
         XCTAssertFalse(try pool.read { db in try GoogleAccountQueries.hasConnectedCalendarAccount(db) })
 
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertGoogleAccount(db, email: "ok@gmail.com", calendarEnabled: true, status: "ok")
         }
         XCTAssertTrue(try pool.read { db in try GoogleAccountQueries.hasConnectedCalendarAccount(db) })
@@ -98,13 +98,13 @@ final class GoogleAccountQueriesTests: XCTestCase {
 
     func testHasConnectedGmailAccountIndependentOfCalendar() throws {
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             // Calendar-only account, healthy — must not count for Gmail.
             try TestDatabase.insertGoogleAccount(db, email: "cal-only@gmail.com", calendarEnabled: true, gmailEnabled: false, status: "ok")
         }
         XCTAssertFalse(try pool.read { db in try GoogleAccountQueries.hasConnectedGmailAccount(db) })
 
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertGoogleAccount(db, email: "gmail-only@gmail.com", calendarEnabled: false, gmailEnabled: true, status: "ok")
         }
         XCTAssertTrue(try pool.read { db in try GoogleAccountQueries.hasConnectedGmailAccount(db) })

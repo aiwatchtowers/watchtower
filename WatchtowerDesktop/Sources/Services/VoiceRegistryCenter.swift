@@ -366,11 +366,11 @@ final class VoiceRegistryCenter {
     func catchUp(voiceRecognition: Bool = true) async {
         guard let dbPool else { return }
         do {
-            try await dbPool.write { db in try VoiceLabelQueueQueries.skipTasksWithoutAudio(db) }
+            _ = try await dbPool.write { db in try VoiceLabelQueueQueries.skipTasksWithoutAudio(db) }
             if voiceRecognition {
                 try await VoiceRetroRelabeler.run(in: dbPool)
             }
-            try await dbPool.write { db in try VoiceLabelQueueQueries.closeResolvedTasks(db) }
+            _ = try await dbPool.write { db in try VoiceLabelQueueQueries.closeResolvedTasks(db) }
         } catch {
             lastError = error.localizedDescription
         }

@@ -538,7 +538,7 @@ final class VoiceRegistryCenterTests: XCTestCase {
         let audio = try TestFixtures.tempAudioFile()
         defer { try? FileManager.default.removeItem(at: audio) }
 
-        let t1 = try await pool.write { db -> Int64 in
+        _ = try await pool.write { db -> Int64 in
             let attendeesJSON = #"[{"email":"zoe@example.com","display_name":"Zoe","response_status":"accepted","slack_user_id":""},"# +
                 #"{"email":"bob@example.com","display_name":"Bob","response_status":"accepted","slack_user_id":""}]"#
             try TestDatabase.insertCalendarEvent(

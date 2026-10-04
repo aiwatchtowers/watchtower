@@ -86,7 +86,7 @@ package final class PeopleRosterLoad {
         let runGeneration = generation
         self.accountID = accountID
         state = .loading(fetched: 0, saved: 0)
-        task = Task { [run] in
+        task = Task { [weak self, run] in
             var lastTotal = 0
             var lastError: String?
             let decoder = JSONDecoder()
@@ -100,7 +100,7 @@ package final class PeopleRosterLoad {
                 lastTotal = progress.userProfilesTotal
                 state = .loading(fetched: progress.userProfilesTotal, saved: progress.userProfilesDone)
             }
-            guard runGeneration == generation else { return }
+            guard let self, runGeneration == generation else { return }
             if result.exitCode == 0 {
                 state = .done(count: lastTotal)
             } else {

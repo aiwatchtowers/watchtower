@@ -34,7 +34,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
     private var center: TerminalCenter!
     private var copied: [String] = []
 
-    private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+    nonisolated private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()

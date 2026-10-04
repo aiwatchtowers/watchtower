@@ -666,9 +666,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     @MainActor
     func testFilteredConversations() {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        vm.createConversation()
+        _ = vm.createConversation()
         vm.updateTitle(vm.conversations[0].id, title: "Slack discussion")
-        vm.createConversation()
+        _ = vm.createConversation()
         vm.updateTitle(vm.conversations[0].id, title: "Meeting notes")
 
         vm.searchText = "slack"
@@ -679,8 +679,8 @@ final class ChatHistoryViewModelTests: XCTestCase {
     @MainActor
     func testFilteredConversationsEmptySearch() {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        vm.createConversation()
-        vm.createConversation()
+        _ = vm.createConversation()
+        _ = vm.createConversation()
 
         vm.searchText = ""
         XCTAssertEqual(vm.filteredConversations.count, 2)

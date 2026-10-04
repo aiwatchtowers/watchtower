@@ -34,9 +34,7 @@ final class HeldCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     func run(args: [String]) async throws -> Data {
-        lock.lock()
-        recorded.append(args)
-        lock.unlock()
+        lock.withLock { recorded.append(args) }
         started.release()
         await finish.wait()
         if let error { throw error }

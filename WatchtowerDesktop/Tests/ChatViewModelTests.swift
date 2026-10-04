@@ -1508,7 +1508,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         let vm = makeViewModel()
         vm.draftStarted()
         let draftID = try XCTUnwrap(vm.conversationID)
-        try await dbManager.dbPool.write {
+        _ = try await dbManager.dbPool.write {
             try TestDatabase.insertChatMessage($0, conversationID: draftID, role: "user", text: "x")
         }
         vm.select(conversationID: other)

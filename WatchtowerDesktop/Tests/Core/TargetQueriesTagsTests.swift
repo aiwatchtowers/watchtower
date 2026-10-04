@@ -126,7 +126,7 @@ final class TargetQueriesTagsTests: XCTestCase {
             try db.execute(sql: #"UPDATE targets SET tags = '["a","b"]' WHERE id = ?"#, arguments: [id])
         }
 
-        try queue.write { db in
+        _ = try queue.write { db in
             try TargetQueries.addTag(db, id: id, tag: "c")
         }
 
@@ -158,7 +158,7 @@ final class TargetQueriesTagsTests: XCTestCase {
             try db.execute(sql: "UPDATE targets SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?", arguments: [id])
         }
 
-        try queue.write { db in
+        _ = try queue.write { db in
             try TargetQueries.addTag(db, id: id, tag: "ops")
         }
 
@@ -209,7 +209,7 @@ final class TargetQueriesTagsTests: XCTestCase {
             try self.createTarget(db, text: "target", tags: #"["ops"]"#)
         }
 
-        try queue.write { db in
+        _ = try queue.write { db in
             try TargetQueries.removeTag(db, id: id, tag: "ops")
         }
 

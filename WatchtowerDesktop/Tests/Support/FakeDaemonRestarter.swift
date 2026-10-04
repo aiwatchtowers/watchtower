@@ -10,14 +10,10 @@ package final class FakeDaemonRestarter: DaemonRestarting, @unchecked Sendable {
     package init() {}
 
     package var restartCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return calls
+        lock.withLock { calls }
     }
 
     package func restartLogging() async {
-        lock.lock()
-        calls += 1
-        lock.unlock()
+        lock.withLock { calls += 1 }
     }
 }

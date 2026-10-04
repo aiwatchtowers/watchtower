@@ -57,7 +57,7 @@ final class AgentActionQueriesTests: XCTestCase {
     /// excluded forever by every subsequent (later) floor.
     func testFetchDecidedAfterIncludesASameSecondRow() throws {
         let queue = try TestDatabase.create()
-        try queue.write { db in
+        _ = try queue.write { db in
             try TestDatabase.insertAgentAction(db, status: "applied", appliedAt: "2026-09-04T10:00:00Z")
         }
         let rows = try queue.read { db in

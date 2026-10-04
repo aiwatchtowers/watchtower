@@ -40,7 +40,7 @@ final class WorkbenchSessionReportViewTests: XCTestCase {
     private var terminals: TerminalCenter!
     private var centers: [SessionReportCenter] = []
 
-    private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+    nonisolated private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
     private static let repository = URL(string: "https://github.com/acme/app/pull/147")
 
     override func setUpWithError() throws {

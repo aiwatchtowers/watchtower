@@ -472,7 +472,9 @@ extension WorkbenchesViewModel {
         if let center = terminalCenter {
             let mode = center.start(row, fresh: fresh, prompt: prompt)
             switch mode {
-            case .resumeClaude?, .newClaude? where !fresh:
+            case .resumeClaude?:
+                resumeStarts[row.id] = now()
+            case .newClaude? where !fresh:
                 // A relaunch of the stored id: a missed transcript makes it a
                 // `--session-id` of an id Claude Code already used, which it
                 // refuses at once — only Start fresh (a new id) gets out.

@@ -51,7 +51,7 @@ struct DigestWatcherTests {
 
         let pool = try makePool()
         // Seed an existing ledger decision so max id is non-zero.
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Ship it")
         }
 
@@ -104,7 +104,7 @@ struct DigestWatcherTests {
     func pollDoesNotDuplicateNotification() throws {
         resetDefaults()
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Adopt the new vendor")
         }
 
@@ -177,7 +177,7 @@ struct DigestWatcherTests {
         #expect(UserDefaults.standard.object(forKey: "notifyDecisions") == nil)
 
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertIdea(db, kind: "decision", title: "Adopt the new vendor")
         }
 

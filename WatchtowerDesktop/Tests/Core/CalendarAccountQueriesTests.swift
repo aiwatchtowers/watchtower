@@ -42,7 +42,7 @@ final class CalendarAccountQueriesTests: XCTestCase {
 
     func testFetchAllDecodesAllFields() throws {
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertCalendarAccount(
                 db, provider: "caldav", username: "me@icloud.com",
                 url: "https://caldav.icloud.com", label: "Personal",

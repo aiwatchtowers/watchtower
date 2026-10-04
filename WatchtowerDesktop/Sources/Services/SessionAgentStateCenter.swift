@@ -32,7 +32,7 @@ extension NotificationService: SessionAgentNotifying {}
 @MainActor
 @Observable
 final class SessionAgentStateCenter {
-    static let pollInterval: Duration = .seconds(1)
+    nonisolated static let pollInterval: Duration = .seconds(1)
 
     /// Keyed by `terminal_sessions.id`: every workbench `claude` session,
     /// live or not, and the live standalone `claude` terminals.

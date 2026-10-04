@@ -30,7 +30,7 @@ final class AgentActionFeedTests: XCTestCase {
         XCTAssertTrue(feed.cards(forTurn: "zzz").isEmpty)
         XCTAssertEqual(feed.pendingCount, 1)
 
-        try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "a2") }
+        _ = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "a2") }
         await waitForRows(feed, count: 2)
         XCTAssertEqual(feed.rows.count, 2)
         feed.stop()
@@ -39,7 +39,7 @@ final class AgentActionFeedTests: XCTestCase {
     func testApproveRunsCLIWithJSONAndTracksInFlight() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in try TestDatabase.insertAgentAction(db) }
+        _ = try await pool.write { db in try TestDatabase.insertAgentAction(db) }
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":"","action":{"id":1,"status":"applied"}}"#.utf8))
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
         feed.start(conversationID: 1)
@@ -61,7 +61,7 @@ final class AgentActionFeedTests: XCTestCase {
     func testApproveWithPatchPassesTheEdits() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in try TestDatabase.insertAgentAction(db) }
+        _ = try await pool.write { db in try TestDatabase.insertAgentAction(db) }
         let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
         feed.start(conversationID: 1)
@@ -75,7 +75,7 @@ final class AgentActionFeedTests: XCTestCase {
     func testApproveSurfacesExecutionErrorFromEnvelope() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in try TestDatabase.insertAgentAction(db) }
+        _ = try await pool.write { db in try TestDatabase.insertAgentAction(db) }
         let json = #"{"ok":true,"applied_ok":false,"error":"issuetype: invalid","action":{"id":1,"status":"failed"}}"#
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
@@ -162,13 +162,13 @@ final class AgentActionFeedTests: XCTestCase {
         // Seed through the app's own pool and wait for it: the observation is
         // then provably live, so what follows measures the observation, not a
         // race with its first fetch.
-        try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "seed") }
+        _ = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "seed") }
         let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner())
         feed.start(conversationID: 1)
         await waitForRows(feed, count: 1)
 
         let otherPool = try DatabasePool(path: path)
-        try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "cli") }
+        _ = try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "cli") }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(feed.rows.map(\.turnID), ["seed"], "ValueObservation cannot see another connection's write")
 
@@ -207,13 +207,13 @@ final class AgentActionFeedTests: XCTestCase {
     func testPollSurfacesRowsWrittenByAnotherConnection() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "seed") }
+        _ = try await pool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "seed") }
         let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(), pollInterval: .milliseconds(50))
         feed.start(conversationID: 1)
         await waitForRows(feed, count: 1)
 
         let otherPool = try DatabasePool(path: path)
-        try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "mcp") }
+        _ = try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "mcp") }
         for _ in 0..<60 where feed.rows.count < 2 {
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -221,7 +221,7 @@ final class AgentActionFeedTests: XCTestCase {
 
         feed.stop()
         XCTAssertTrue(feed.rows.isEmpty)
-        try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "after-stop") }
+        _ = try await otherPool.write { db in try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "after-stop") }
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertTrue(feed.rows.isEmpty, "stop() must cancel the poll")
     }
@@ -281,7 +281,7 @@ final class AgentActionFeedTests: XCTestCase {
     func testReadFailureIsReportedInsteadOfLookingLikeNothingHappened() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, conversationID: 1, turnID: "a",
                                                status: "applied", appliedAt: "2026-09-04T10:05:00Z")
         }

@@ -15,7 +15,7 @@ final class OwnerAskViewsTests: XCTestCase {
     private var center: TerminalCenter!
     private var started = 0
 
-    private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+    nonisolated private static let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
@@ -176,7 +176,7 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(vm.asks.closedCounts[s.project]?[s.first], 1, "the session row's \"1 closed\"")
         XCTAssertNil(vm.asks.closedCounts[s.project]?[s.second])
 
-        try await pool.write {
+        _ = try await pool.write {
             try TestDatabase.insertOwnerAsk($0, projectID: s.project, sessionID: s.first, status: "withdrawn", withdrawnReason: "agent")
         }
         await vm.asks.loadClosed(projectID: s.project, sessionID: s.first)

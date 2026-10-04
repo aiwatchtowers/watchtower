@@ -460,10 +460,10 @@ final class ScriptedCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     func run(args: [String]) async throws -> Data {
-        lock.lock()
-        recorded.append(args)
-        let next = results.count > 1 ? results.removeFirst() : results[0]
-        lock.unlock()
+        let next = lock.withLock {
+            recorded.append(args)
+            return results.count > 1 ? results.removeFirst() : results[0]
+        }
         return try next.get()
     }
 }

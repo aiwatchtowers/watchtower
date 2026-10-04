@@ -554,7 +554,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedImages, [], "another target's image never shows")
 
         let foreign = try DatabasePool(path: dbPath)
-        try foreign.write { db in
+        _ = try foreign.write { db in
             try TestDatabase.insertWorkbenchTargetImage(db, projectID: pid, targetID: tid, fileName: "shot.png", sha256: "s")
         }
         XCTAssertTrue(vm.refreshIfChanged(), "an attach from the agent's process changes the fingerprint")

@@ -15,7 +15,7 @@ final class AgentActionDestinationTests: XCTestCase {
         contextID: String = ""
     ) throws -> AgentAction {
         let queue = try TestDatabase.create()
-        try queue.write { db in
+        _ = try queue.write { db in
             try TestDatabase.insertAgentAction(
                 db, tool: tool, contextType: contextType, contextID: contextID,
                 status: status, resultJSON: resultJSON
