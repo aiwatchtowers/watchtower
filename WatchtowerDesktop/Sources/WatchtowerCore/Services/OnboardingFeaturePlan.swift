@@ -72,10 +72,11 @@ package enum OnboardingFeaturePlan {
     /// 2026-10-04, #378).
     package static let establishedDefaultOffFeatureIDs: Set<String> = ["memory"]
 
-    /// The Customize screen's "Experimental" rows: the features that ship
-    /// off by default, minus `establishedDefaultOffFeatureIDs`.
-    package static func experimentalFeatureIDs(defaultOff: Set<String>) -> Set<String> {
-        defaultOff.subtracting(establishedDefaultOffFeatureIDs)
+    /// The Customize screen's "Experimental" rows: the features `disabled`
+    /// in `features` (the registry's `id`/`state` pairs), minus
+    /// `establishedDefaultOffFeatureIDs`.
+    package static func experimentalFeatureIDs(_ features: [(id: String, state: String)]) -> Set<String> {
+        Set(features.filter { $0.state == "disabled" }.map(\.id)).subtracting(establishedDefaultOffFeatureIDs)
     }
 }
 

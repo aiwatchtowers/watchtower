@@ -118,9 +118,13 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     /// without the "Experimental" tag; other default-off features keep it
     /// (#378).
     func testMemoryIsNeverTaggedExperimental() {
-        XCTAssertEqual(Plan.experimentalFeatureIDs(defaultOff: ["memory", "next-step", "ideas"]),
-                       ["next-step", "ideas"])
-        XCTAssertEqual(Plan.experimentalFeatureIDs(defaultOff: []), [])
+        let features = [
+            (id: "memory", state: "disabled"), (id: "next-step", state: "disabled"),
+            (id: "ideas", state: "disabled"), (id: "slack-digests", state: "enabled")
+        ]
+        XCTAssertEqual(Plan.experimentalFeatureIDs(features), ["next-step", "ideas"])
+        XCTAssertEqual(Plan.experimentalFeatureIDs([(id: "memory", state: "disabled")]), [])
+        XCTAssertEqual(Plan.experimentalFeatureIDs([]), [])
         XCTAssertTrue(Plan.establishedDefaultOffFeatureIDs.isSubset(of: Plan.customizableFeatureIDs),
                       "an exempted id the Customize screen never shows")
     }

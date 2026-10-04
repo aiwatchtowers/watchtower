@@ -14,8 +14,8 @@ struct FeatureCustomizeView: View {
 
     @Environment(AppState.self) private var appState
     /// Which rows carry the "Experimental" tag, snapshotted at the first
-    /// successful load. See `isExperimental`.
-    @State private var experimentalIDs: Set<String> = []
+    /// successful load (nil until then). See `isExperimental`.
+    @State private var experimentalIDs: Set<String>?
 
     private var service: FeatureManagerService { appState.featureManager }
 
@@ -181,21 +181,19 @@ struct FeatureCustomizeView: View {
 
     /// Fills the snapshot from the first load that actually returned
     /// features; later loads leave it alone. An unsuccessful load leaves it
-    /// empty, so the next successful one still gets to fill it.
+    /// nil, so the next successful one still gets to fill it. Memory is
+    /// never tagged (`OnboardingFeaturePlan.experimentalFeatureIDs`).
     private func captureExperimentalIDs() {
-        guard experimentalIDs.isEmpty, !service.features.isEmpty else { return }
-        experimentalIDs = OnboardingFeaturePlan.experimentalFeatureIDs(
-            defaultOff: Set(service.features.filter { $0.state == "disabled" }.map(\.id))
-        )
+        guard experimentalIDs == nil, !service.features.isEmpty else { return }
+        experimentalIDs = OnboardingFeaturePlan.experimentalFeatureIDs(service.features.map { ($0.id, $0.state) })
     }
 
     /// Read from a snapshot taken at the first successful load, not from the
-    /// live `state`: the tag means "this ships off by default" (Memory
-    /// excepted, `OnboardingFeaturePlan.experimentalFeatureIDs`), not "is
+    /// live `state`: the tag means "this ships off by default", not "is
     /// currently off" — a later reload (Goals' Continue applying the
     /// selection) reports what the owner switched off as `disabled` too.
     private func isExperimental(_ feature: FeatureInfo) -> Bool {
-        experimentalIDs.contains(feature.id)
+        experimentalIDs?.contains(feature.id) ?? false
     }
 
     private var experimentalTag: some View {
