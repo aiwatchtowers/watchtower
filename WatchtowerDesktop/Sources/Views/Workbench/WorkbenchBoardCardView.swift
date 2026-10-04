@@ -15,6 +15,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
     @State private var hovering = false
+    @State private var chevronHovering = false
 
     private var target: Target { row.node.target }
     private var card: WorkbenchBoardCard { WorkbenchBoardCard(row.node) }
@@ -22,7 +23,6 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
     var body: some View {
         let card = card
         HStack(alignment: .top, spacing: 8) {
-            chevron
             Image(systemName: target.statusIcon)
                 .foregroundStyle(WorkbenchBoardColors.status(target.statusColor))
             VStack(alignment: .leading, spacing: 5) {
@@ -50,9 +50,11 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             Spacer(minLength: 4)
             trailing(hovering)
         }
-        .padding(.horizontal, 10)
+        .padding(.leading, WorkbenchBoardChevron.zoneWidth)
+        .padding(.trailing, 10)
         .padding(.vertical, 8)
         .background(background)
+        .overlay(alignment: .leading) { chevron }
         .overlay(
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(isSelected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isSelected ? 1.5 : 0.5)
@@ -63,19 +65,30 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
         .onHover { hovering = $0 }
     }
 
+    /// A parent's collapse control is the card's whole left strip (board
+    /// #370): a click anywhere in it folds the sub-tasks and never reaches the
+    /// list's selection, which opens the card. A leaf keeps the strip empty so
+    /// titles line up.
     @ViewBuilder
     private var chevron: some View {
         if row.hasChildren {
             Button(action: onToggle) {
                 Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12, height: 16)
+                    .foregroundStyle(chevronHovering ? Color.primary : Color.secondary)
+                    .frame(width: WorkbenchBoardChevron.zoneWidth, height: 16)
+                    .padding(.top, 8)
+                    .frame(minHeight: WorkbenchBoardChevron.zoneWidth, maxHeight: .infinity, alignment: .top)
+                    .background(
+                        UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 8)
+                            .fill(chevronHovering ? Color.primary.opacity(0.08) : Color.clear)
+                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { chevronHovering = $0 }
             .help(isCollapsed ? "Show sub-tasks" : "Hide sub-tasks")
-        } else {
-            Color.clear.frame(width: 12, height: 16)
+            .accessibilityIdentifier(WorkbenchBoardChevron.accessibilityID)
         }
     }
 
@@ -142,6 +155,13 @@ extension WorkbenchBoardCardView where Trailing == EmptyView {
             EmptyView()
         }
     }
+}
+
+/// The board card's collapse strip: wide enough to hit without aiming
+/// (board #370), and findable by tests.
+enum WorkbenchBoardChevron {
+    static let zoneWidth: CGFloat = 28
+    static let accessibilityID = "workbench-board-card-chevron"
 }
 
 /// A small tinted capsule: a card's priority or status, and the detail card's
