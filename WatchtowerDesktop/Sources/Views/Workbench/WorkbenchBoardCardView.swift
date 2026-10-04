@@ -87,7 +87,10 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             }
             .buttonStyle(.plain)
             .onHover { chevronHovering = $0 }
+            .onDisappear { chevronHovering = false }
             .help(isCollapsed ? "Show sub-tasks" : "Hide sub-tasks")
+            .accessibilityLabel(isCollapsed ? "Show sub-tasks" : "Hide sub-tasks")
+            .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
             .accessibilityIdentifier(WorkbenchBoardChevron.accessibilityID)
         }
     }

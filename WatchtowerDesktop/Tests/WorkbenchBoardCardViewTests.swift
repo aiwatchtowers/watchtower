@@ -48,12 +48,14 @@ final class WorkbenchBoardCardViewTests: XCTestCase {
             .find(viewWithAccessibilityIdentifier: WorkbenchBoardChevron.accessibilityID)
             .button()
         let zone = try button.labelView().image()
-        XCTAssertGreaterThanOrEqual(WorkbenchBoardChevron.zoneWidth, 28)
-        XCTAssertEqual(try zone.fixedWidth(), WorkbenchBoardChevron.zoneWidth)
+        XCTAssertGreaterThanOrEqual(try zone.fixedWidth(), 28)
         let frame = try zone.flexFrame()
         XCTAssertGreaterThanOrEqual(frame.minHeight, 28)
         XCTAssertEqual(frame.maxHeight, .infinity, "the zone spans the card's whole height")
         XCTAssertNoThrow(try zone.contentShape(Rectangle.self), "the whole zone is hittable, not just the glyph")
+
+        XCTAssertEqual(try button.accessibilityLabel().string(), "Show sub-tasks")
+        XCTAssertEqual(try button.accessibilityValue().string(), "Collapsed")
 
         try button.tap()
         XCTAssertEqual(toggles, 1)
