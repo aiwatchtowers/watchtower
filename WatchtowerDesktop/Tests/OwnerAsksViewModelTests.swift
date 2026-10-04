@@ -386,12 +386,25 @@ final class OwnerAsksViewModelTests: XCTestCase {
         }
     }
 
+    /// `sessionID`'s pane on screen, measured by its view with room for the
+    /// drawer beside the terminal (`WorkbenchSessionView`'s geometry hook).
+    private func showPane(_ vm: WorkbenchesViewModel, _ sessionID: Int64, project: Int64) {
+        vm.layout.show(.session(sessionID))
+        vm.sessionPaneMeasured(sessionID, projectID: project, fits: true)
+    }
+
+    /// The board on screen; the session pane's view goes (`onDisappear`).
+    private func showBoard(_ vm: WorkbenchesViewModel, leaving sessionID: Int64) {
+        vm.layout.show(.board)
+        vm.asks.setRoomBeside(false, sessionID: sessionID)
+    }
+
     func testANewAskOpensItsDrawerWhenItsSessionIsOnScreenWithoutTakingTheKeyboard() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
         vm.asks.drawerExpanded = true
 
         await vm.asks.load(projectID: p)
@@ -410,7 +423,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await vm.asks.load(projectID: p)
         XCTAssertNil(vm.asks.drawerAskIDs[p], "its session is not on screen")
 
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
 
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
@@ -423,6 +436,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         var onScreen = WorkspaceLayout.default
         onScreen.show(.session(s.id))
         vm.setLayout(onScreen, projectID: p)
+        vm.asks.setRoomBeside(true, sessionID: s.id)
         vm.selectedWorkbenchID = other
 
         await vm.asks.load(projectID: p)
@@ -442,33 +456,39 @@ final class OwnerAsksViewModelTests: XCTestCase {
         }
         let vm = makeVM()
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
-        vm.layout.split(with: .session(second.id))
+        vm.layout.show(.session(second.id))
+        vm.layout.split(with: .session(s.id))
+        vm.sessionPaneMeasured(second.id, projectID: p, fits: true)
+        vm.sessionPaneMeasured(s.id, projectID: p, fits: true)
         await vm.asks.load(projectID: p)
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        vm.asks.drawerExpanded = true
 
+        // Without the guard the drawer would be opened again, collapsed.
         _ = try await fileAnotherAsk(project: p, sessionID: second.id)
         await vm.asks.refreshIfChanged(projectID: p)
 
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        XCTAssertTrue(vm.asks.drawerExpanded, "the open drawer is left as the owner set it")
     }
 
-    /// A pane too narrow for the drawer beside its terminal would be covered
-    /// while it may hold the keyboard: its ask waits behind the banner until
-    /// the pane widens.
-    func testANarrowPaneOpensNothingUntilItWidens() async throws {
+    /// A pane too narrow for the drawer beside its terminal — or not
+    /// measured yet — would be covered while it may hold the keyboard: its
+    /// ask waits behind the banner until the pane measures itself with room.
+    func testAPaneOpensNothingUntilItIsMeasuredWithRoom() async throws {
         let (p, s, askID) = try await seed()
         let vm = makeVM()
         vm.selectedWorkbenchID = p
         vm.layout.show(.session(s.id))
-        vm.asks.setRoomBeside(false, sessionID: s.id)
-
         await vm.asks.load(projectID: p)
-        XCTAssertNil(vm.asks.drawerAskIDs[p])
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "not measured yet")
 
-        vm.asks.setRoomBeside(true, sessionID: s.id)
-        vm.openNewAsk(projectID: p)
-        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        vm.sessionPaneMeasured(s.id, projectID: p, fits: false)
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "too narrow")
+
+        vm.sessionPaneMeasured(s.id, projectID: p, fits: true)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "it widened")
         XCTAssertFalse(OwnerAskDrawerLayout.fitsBeside(total: 519))
         XCTAssertTrue(OwnerAskDrawerLayout.fitsBeside(total: 520))
     }
@@ -489,7 +509,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         vm.asks.openDrawer(closed)
 
         vm.asks.closeDrawer(projectID: p)
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
 
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
@@ -501,7 +521,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         let vm = makeVM()
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
         await vm.asks.load(projectID: p)
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
 
@@ -509,8 +529,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let unchanged = await vm.asks.refreshIfChanged(projectID: p)
         XCTAssertFalse(unchanged)
         await vm.asks.load(projectID: p)
-        vm.layout.show(.board)
-        vm.layout.show(.session(s.id))
+        showBoard(vm, leaving: s.id)
+        showPane(vm, s.id, project: p)
         XCTAssertNil(vm.asks.drawerAskIDs[p], "a closed drawer never re-opens by itself")
 
         let newer = try await fileAnotherAsk(project: p, sessionID: s.id)
@@ -527,14 +547,14 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, askID) = try await seed()
         let vm = makeVM()
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
         await vm.asks.load(projectID: p)
 
-        vm.layout.show(.board)
+        showBoard(vm, leaving: s.id)
         XCTAssertNil(vm.asks.drawerAskIDs[p])
         vm.selectedWorkbenchID = nil
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
 
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
@@ -545,7 +565,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         center.start(s, fresh: true)
         let vm = makeVM()
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
         let ask = try await openAsk(vm, project: p, id: askID)
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
         pick(vm, askID)
@@ -560,7 +580,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let (p, s, _) = try await seed(session: false)
         let vm = makeVM()
         vm.selectedWorkbenchID = p
-        vm.layout.show(.session(s.id))
+        showPane(vm, s.id, project: p)
 
         await vm.asks.load(projectID: p)
 

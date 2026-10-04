@@ -155,6 +155,7 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk)
 
         await vm.revealTerminal(projectID: s.project, sessionID: s.second)
+        vm.sessionPaneMeasured(s.second, projectID: s.project, fits: true)
 
         XCTAssertFalse(shows(vm, session: s.first, project: s.project))
         XCTAssertNotEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk, "no drawer, no highlighted row, for a session off screen")

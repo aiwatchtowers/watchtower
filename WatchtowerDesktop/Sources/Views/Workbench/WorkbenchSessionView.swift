@@ -26,13 +26,23 @@ struct WorkbenchSessionView: View {
                     pane
                 }
             }
-            .onGeometryChange(for: Bool.self, of: { OwnerAskDrawerLayout.fitsBeside(total: $0.size.width) }, action: { fits in
-                vm.asks.setRoomBeside(fits, sessionID: sessionID)
-                if fits { vm.openNewAsk(projectID: projectID) }
+            // Where a new ask may open by itself (board #364). Keyed by the
+            // session too: SwiftUI may reuse this view for another session.
+            .onGeometryChange(for: PaneRoom.self, of: { [sessionID] in
+                PaneRoom(sessionID: sessionID, fits: OwnerAskDrawerLayout.fitsBeside(total: $0.size.width))
+            }, action: { room in
+                vm.sessionPaneMeasured(room.sessionID, projectID: projectID, fits: room.fits)
             })
+            .onDisappear { vm.asks.setRoomBeside(false, sessionID: sessionID) }
         } else {
             pane
         }
+    }
+
+    /// What the pane last measured, for `sessionPaneMeasured`.
+    private struct PaneRoom: Equatable {
+        let sessionID: Int64
+        let fits: Bool
     }
 
     private var pane: some View {

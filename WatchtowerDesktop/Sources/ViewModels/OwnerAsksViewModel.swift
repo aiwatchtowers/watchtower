@@ -90,11 +90,11 @@ final class OwnerAsksViewModel {
     /// an answer): the drawer does not open on them by itself again — only
     /// a new ask opens it (board #364). Pruned to the open asks on each read.
     private(set) var dismissedAskIDs: [Int64: Set<Int64>] = [:]
-    /// Session panes too narrow for a drawer beside the terminal
-    /// (`OwnerAskDrawerLayout.fitsBeside`), as their views last measured:
-    /// a drawer there would cover a terminal that may hold the keyboard, so
-    /// none opens by itself.
-    @ObservationIgnored private(set) var crampedSessions: Set<Int64> = []
+    /// Session panes on screen with room for a drawer beside the terminal
+    /// (`OwnerAskDrawerLayout.fitsBeside`), as their views measured them.
+    /// A drawer opens by itself only there: elsewhere — too narrow, or not
+    /// measured yet — it would cover a terminal that may hold the keyboard.
+    @ObservationIgnored private(set) var roomySessions: Set<Int64> = []
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
     /// The drawer's width, kept across launches under `drawerWidthKey`.
@@ -339,9 +339,9 @@ final class OwnerAsksViewModel {
         return openAsks[projectID]?.first { $0.id == id } ?? shownAsks[id]
     }
 
-    /// A session pane measured itself: whether a drawer fits beside its terminal.
+    /// A session pane measured itself (false also when it leaves the screen).
     func setRoomBeside(_ fits: Bool, sessionID: Int64) {
-        if fits { crampedSessions.remove(sessionID) } else { crampedSessions.insert(sessionID) }
+        if fits { roomySessions.insert(sessionID) } else { roomySessions.remove(sessionID) }
     }
 
     func setDrawerWidth(_ width: Double) {
