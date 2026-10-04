@@ -550,6 +550,20 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNil(center.answerHints[s.id], "the process exit")
     }
 
+    /// A copied answer's hint walks the owner through it: the paste turns
+    /// it into "press Return", the next input clears it.
+    func testACopiedAnswerHintTurnsIntoPressReturnOnThePaste() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        center.showAnswerHint(.copied, sessionID: s.id)
+
+        sessions[0].onOwnerInput?()
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+        sessions[0].onOwnerInput?()
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
     /// The copied hint replaces the generic clipboard one; a line that went
     /// nowhere, or a session not running, gets no hint.
     func testTheAnswerHintReplacesTheClipboardHintAndNeedsARunningSession() throws {

@@ -26,6 +26,10 @@ struct WorkbenchSessionView: View {
                     pane
                 }
             }
+            .onGeometryChange(for: Bool.self, of: { OwnerAskDrawerLayout.fitsBeside(total: $0.size.width) }, action: { fits in
+                vm.asks.setRoomBeside(fits, sessionID: sessionID)
+                if fits { vm.openNewAsk(projectID: projectID) }
+            })
         } else {
             pane
         }

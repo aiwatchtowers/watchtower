@@ -27,13 +27,14 @@ extension WorkbenchesViewModel {
     /// Opens the drawer by itself (board #364) on the oldest open ask of a
     /// session on the selected workbench's screen, when that session holds
     /// an ask the owner has not closed a drawer on — after each read of the
-    /// asks and each layout change. Never over a drawer already open, never
-    /// expanded (the terminal stays visible and keeps the keyboard), and
-    /// never moves the keyboard.
+    /// asks, each layout change and a session pane widening. Never over a
+    /// drawer already open, never expanded and never in a pane too narrow
+    /// for it beside the terminal (the terminal stays visible and keeps the
+    /// keyboard), and never moves the keyboard.
     func openNewAsk(projectID: Int64) {
         guard selectedWorkbenchID == projectID, asks.drawerAskIDs[projectID] == nil else { return }
         let onScreen = Set(layout(projectID: projectID).visiblePanes.compactMap { pane -> Int64? in
-            if case let .session(id) = pane { return id }
+            if case let .session(id) = pane, !asks.crampedSessions.contains(id) { return id }
             return nil
         })
         guard let ask = asks.stack(projectID: projectID).askToOpen(

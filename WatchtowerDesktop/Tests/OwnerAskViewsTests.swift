@@ -144,10 +144,10 @@ final class OwnerAskViewsTests: XCTestCase {
         vm.reveal(WorkbenchRoute(projectID: s.project, pane: .terminal, subjectID: s.second, askID: s.secondAsk + 100))
 
         await waitUntil { self.shows(vm, session: s.second, project: s.project) }
-        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+        XCTAssertNotEqual(vm.asks.drawerAskIDs[s.project], s.secondAsk + 100, "no drawer on an ask that is gone")
     }
 
-    func testTheDrawerClosesWhenItsSessionLeavesTheScreen() async throws {
+    func testTheDrawerLeavesWithItsSessionAndTheNextSessionsAskOpens() async throws {
         let s = try await seed()
         let vm = makeVM()
         await vm.showAsk(s.firstAsk, projectID: s.project)

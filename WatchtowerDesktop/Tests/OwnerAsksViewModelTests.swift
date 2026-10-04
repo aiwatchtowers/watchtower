@@ -182,7 +182,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertFalse(typed[0].contains(0x0A))
     }
 
-    func testCopiedShowsTheClipboardHint() async throws {
+    func testCopiedShowsTheCopiedAnswerHint() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         processes[0].bracketedPasteMode = false
@@ -392,6 +392,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let vm = makeVM()
         vm.selectedWorkbenchID = p
         vm.layout.show(.session(s.id))
+        vm.asks.drawerExpanded = true
 
         await vm.asks.load(projectID: p)
 
@@ -414,17 +415,83 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
 
-    func testAnotherWorkbenchsAskNeverOpensOnTheSelectedOne() async throws {
-        let (p, s, _) = try await seed()
+    func testAnAskOfAWorkbenchNotOnScreenOpensWhenTheOwnerSwitchesBack() async throws {
+        let (p, s, askID) = try await seed()
+        let otherFolder = folder.appendingPathComponent("other").path
+        let other = try await pool.write { try TestDatabase.insertWorkbench($0, folder: otherFolder) }
         let vm = makeVM()
         var onScreen = WorkspaceLayout.default
         onScreen.show(.session(s.id))
         vm.setLayout(onScreen, projectID: p)
-        vm.selectedWorkbenchID = nil
+        vm.selectedWorkbenchID = other
 
         await vm.asks.load(projectID: p)
-
         XCTAssertNil(vm.asks.drawerAskIDs[p], "a workbench not on screen opens nothing")
+
+        vm.selectedWorkbenchID = p
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    /// Another session's new ask never replaces the drawer the owner has open.
+    func testANewAskNeverReplacesAnOpenDrawer() async throws {
+        let (p, s, askID) = try await seed()
+        let acme = folder.path
+        let second = try await pool.write { d in
+            try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "zsh 2", folderPath: acme))
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+        vm.layout.split(with: .session(second.id))
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+
+        _ = try await fileAnotherAsk(project: p, sessionID: second.id)
+        await vm.asks.refreshIfChanged(projectID: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    /// A pane too narrow for the drawer beside its terminal would be covered
+    /// while it may hold the keyboard: its ask waits behind the banner until
+    /// the pane widens.
+    func testANarrowPaneOpensNothingUntilItWidens() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+        vm.asks.setRoomBeside(false, sessionID: s.id)
+
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+
+        vm.asks.setRoomBeside(true, sessionID: s.id)
+        vm.openNewAsk(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        XCTAssertFalse(OwnerAskDrawerLayout.fitsBeside(total: 519))
+        XCTAssertTrue(OwnerAskDrawerLayout.fitsBeside(total: 520))
+    }
+
+    /// Closing a closed ask looked at from a closed list dismisses nothing.
+    func testClosingAClosedAskLeavesTheOpenOnesNew() async throws {
+        let (p, s, askID) = try await seed()
+        let answered = try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions, status: "answered",
+                                        answer: #"{"verdict":"","answers":[{"id":"a","labels":["No"],"other":""}],"checklist":[],"comments":[],"note":""}"#)
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.board)
+        await vm.asks.load(projectID: p)
+        let looked = await vm.asks.lookUp(askID: answered, projectID: p)
+        let closed = try XCTUnwrap(looked)
+        vm.asks.openDrawer(closed)
+
+        vm.asks.closeDrawer(projectID: p)
+        vm.layout.show(.session(s.id))
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
     }
 
     /// Later/× close the drawer for good: the next poll leaves it closed,

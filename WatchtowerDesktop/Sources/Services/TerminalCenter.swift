@@ -74,8 +74,9 @@ final class TerminalCenter {
     private(set) var pasteHints: Set<Int64> = []
     /// Sessions holding an ask's answer typed or copied but not sent (board
     /// #364): the pane says so prominently — over `clipboardHints` — until
-    /// the owner's next input in that session, Dismiss, the next delivery or
-    /// the process's exit.
+    /// the owner's next input in that session (a copied one's first input,
+    /// the paste, turns it into "press Return"), Dismiss, the next delivery
+    /// or the process's exit.
     private(set) var answerHints: [Int64: PromptDelivery] = [:]
     /// Session ids the owner focused, most recent last, without duplicates —
     /// fed to `TerminalSessionPolicy.activeSession`.
@@ -300,9 +301,15 @@ final class TerminalCenter {
         answerHints[sessionID] = delivery
     }
 
-    /// The owner typed or pasted into the session: an answer hint has done its job.
+    /// The owner typed or pasted into the session. A copied answer's hint
+    /// turns into "press Return" (the paste was the first step); a typed
+    /// one has done its job.
     private func ownerInput(_ sessionID: Int64) {
-        if answerHints[sessionID] != nil { answerHints[sessionID] = nil }
+        switch answerHints[sessionID] {
+        case nil: break
+        case .copied?: answerHints[sessionID] = .sent
+        default: answerHints[sessionID] = nil
+        }
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -514,8 +521,10 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         send(data: bytes[...])
     }
 
-    /// The terminal's own replies (focus and mouse reports, device
-    /// attributes) reach the process through here, then `send(source:data:)`.
+    /// The terminal's own replies reach the process through here, then
+    /// `send(source:data:)`: focus reports, device attributes and mouse
+    /// reports — so an owner's click in a mouse-reporting program is
+    /// deliberately not counted as input; only keystrokes and pastes are.
     override func send(source: Terminal, data: ArraySlice<UInt8>) {
         forwardingAppInput = true
         defer { forwardingAppInput = false }
