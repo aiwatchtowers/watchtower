@@ -328,6 +328,23 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(live.archivedCardCount, 1, "only #5 under the Live filter")
     }
 
+    /// A remembered filter on an archived root shows All while "Archive"
+    /// is off, but K already counts that root only: what turning it on adds.
+    func testArchivedCardCountFollowsARememberedArchivedRootFilter() throws {
+        let roots = [
+            node(try target(1, "Live"), [node(try target(2)), node(try target(5, status: "done"), archived: true)]),
+            node(try target(3, "Gone", status: "done"), [
+                node(try target(4, status: "done"), archived: true),
+                node(try target(6, status: "dismissed"), archived: true)
+            ], archived: true)
+        ]
+        let off = WorkbenchBoardKanban(roots, filterRootID: 3, showDone: false)
+        XCTAssertNil(off.filterRootID, "precondition: the filter shows All while the archive is hidden")
+        XCTAssertEqual(off.archivedCardCount, 2, "#4 and #6, not #5 under another root")
+        let on = WorkbenchBoardKanban(roots, filterRootID: 3, showDone: false, showArchived: true)
+        XCTAssertEqual(on.columns.flatMap(\.cards).filter(\.node.archived).count, off.archivedCardCount)
+    }
+
     func testArchivedCardCountOnABoardWithoutArchive() throws {
         let board = WorkbenchBoardKanban([node(try target(1))], filterRootID: nil, showDone: false)
         XCTAssertEqual(board.archivedCardCount, 0)

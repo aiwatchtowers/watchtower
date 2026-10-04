@@ -50,8 +50,9 @@ package struct WorkbenchBoardKanban {
     /// The filter actually applied: nil (All) when the requested one is not
     /// among `filterOptions` (deleted, or no longer a parent).
     package let filterRootID: Int?
-    /// Archived leaves under the applied filter, whatever the toggles and
-    /// the search: the cards "Archive" adds, Kanban's "Archive (K)".
+    /// Archived leaves under the filter "Archive" on would apply, whatever
+    /// the toggles and the search: the cards "Archive" adds, Kanban's
+    /// "Archive (K)".
     package let archivedCardCount: Int
 
     /// A non-empty `query` (`WorkbenchBoardSearch`) keeps the leaves it
@@ -69,11 +70,9 @@ package struct WorkbenchBoardKanban {
         let search = WorkbenchBoardSearch(query)
         let showDone = showDone || search != nil
         let showArchived = showArchived || search != nil
-        let options = roots.filter { !$0.children.isEmpty && (showArchived || !$0.archived) }.map {
-            FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
-        }
-        let applied = filterRootID.flatMap { id in options.contains { $0.id == id } ? id : nil }
-        let scope = applied.map { id in roots.filter { $0.target.id == id } } ?? roots
+        let options = Self.filterOptions(roots, showArchived: showArchived)
+        let applied = Self.applied(filterRootID, among: options)
+        let scope = Self.scope(roots, applied)
 
         var collected: [Card] = []
         Self.collectLeaves(scope, chain: [], search: search, ancestorMatched: false, into: &collected)
@@ -95,7 +94,10 @@ package struct WorkbenchBoardKanban {
         self.columns = columns
         self.filterOptions = options
         self.filterRootID = applied
-        self.archivedCardCount = Self.archivedLeafCount(scope)
+        // Counted over what "Archive" on shows: a remembered filter on an
+        // archived root applies only then.
+        let archiveScope = Self.scope(roots, Self.applied(filterRootID, among: Self.filterOptions(roots, showArchived: true)))
+        self.archivedCardCount = Self.archivedLeafCount(archiveScope)
     }
 
     /// Whether `id` is a card shown on this board. A drop accepts only these:
@@ -114,6 +116,20 @@ package struct WorkbenchBoardKanban {
         let kept = showDone ? recent : Array(recent.prefix(doneCap))
         let shown = (kept + cards.filter(\.node.archived)).sorted(by: byRecency)
         return Column(status: status, title: title, cards: shown, hiddenCount: recent.count - kept.count)
+    }
+
+    private static func filterOptions(_ roots: [WorkbenchBoardNode], showArchived: Bool) -> [FilterOption] {
+        roots.filter { !$0.children.isEmpty && (showArchived || !$0.archived) }.map {
+            FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
+        }
+    }
+
+    private static func applied(_ filterRootID: Int?, among options: [FilterOption]) -> Int? {
+        filterRootID.flatMap { id in options.contains { $0.id == id } ? id : nil }
+    }
+
+    private static func scope(_ roots: [WorkbenchBoardNode], _ applied: Int?) -> [WorkbenchBoardNode] {
+        applied.map { id in roots.filter { $0.target.id == id } } ?? roots
     }
 
     private static func archivedLeafCount(_ nodes: [WorkbenchBoardNode]) -> Int {
