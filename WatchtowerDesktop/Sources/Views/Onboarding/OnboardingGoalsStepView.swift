@@ -71,6 +71,8 @@ struct OnboardingGoalsStepView: View {
                 customizeLine
             }
 
+            AssistantLanguageRow(selection: $model.language)
+
             if case .failed(let reason) = model.cliCheck {
                 cliRequiredBox(reason)
             }
@@ -84,11 +86,8 @@ struct OnboardingGoalsStepView: View {
                     .textSelection(.enabled)
             }
 
-            HStack(alignment: .bottom) {
-                VStack(alignment: .leading, spacing: 6) {
-                    AssistantLanguageLine(selection: $model.language)
-                    cliStatusLine
-                }
+            HStack(alignment: .center) {
+                cliStatusLine
                 Spacer()
                 if cliFailed {
                     Text("Continue unlocks once the CLI is found")
@@ -106,13 +105,13 @@ struct OnboardingGoalsStepView: View {
                     }
                 } label: {
                     if model.isContinuing {
-                        ProgressView().controlSize(.small).frame(minWidth: 80)
+                        ProgressView().controlSize(.small).frame(minWidth: 120)
                     } else {
-                        Text("Continue").frame(minWidth: 80)
+                        Text("Continue").fontWeight(.semibold).frame(minWidth: 120)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .onboardingPrimaryButton()
+                .keyboardShortcut(.defaultAction)
                 .disabled(!model.canContinue || appState.isFinishingOnboarding)
             }
         }

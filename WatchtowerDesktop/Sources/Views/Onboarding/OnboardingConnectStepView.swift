@@ -101,10 +101,10 @@ struct OnboardingConnectStepView: View {
                         isContinuing = false
                     }
                 } label: {
-                    Text("Continue").frame(minWidth: 80)
+                    Text("Continue").fontWeight(.semibold).frame(minWidth: 120)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .onboardingPrimaryButton()
+                .keyboardShortcut(.defaultAction)
                 .disabled(isContinuing || appState.isFinishingOnboarding)
             }
         }

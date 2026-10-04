@@ -75,6 +75,15 @@ struct OnboardingV2View: View {
     }
 }
 
+extension View {
+    /// The forward button of an onboarding step: large and filled with the
+    /// system accent; `.disabled` dims it.
+    func onboardingPrimaryButton() -> some View {
+        buttonStyle(.borderedProminent)
+            .controlSize(.large)
+    }
+}
+
 /// Goals · Connect · About you, the steps the route skips left out; every
 /// step up to the current one is lit.
 struct OnboardingStepIndicator: View {

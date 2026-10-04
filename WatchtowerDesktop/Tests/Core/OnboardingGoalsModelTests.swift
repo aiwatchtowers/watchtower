@@ -379,6 +379,27 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs, enabled)
     }
 
+    /// An install onboarded before Memory joined Work communication (#375)
+    /// has the default goals' features on and Memory off. Its re-run reads
+    /// as customized and Continue keeps Memory off; Reset turns it on.
+    func testRerunFromBeforeMemoryJoinedKeepsItOffUntilReset() async {
+        let goals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .development]
+        defaults.set(goals.map(\.rawValue).sorted(), forKey: OnboardingGoalsModel.goalsKey)
+        let model = makeModel()
+        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: goals).subtracting(["memory"])
+        model.seedForRerun(enabledFeatureIDs: enabled, language: "Polish")
+        await model.prepareGoalsStep(configuredLanguage: "Polish")
+        XCTAssertEqual(model.selection.goals, goals)
+        XCTAssertTrue(model.selection.isCustomized)
+
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs, enabled)
+
+        model.selection.resetToGoals()
+        XCTAssertTrue(model.selection.isEnabled("memory"))
+        XCTAssertFalse(model.selection.isCustomized)
+    }
+
     func testRerunWithANewLanguageWritesIt() async {
         let model = makeModel()
         model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
@@ -411,12 +432,26 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testHandToggledSetIsCustomized() {
         var enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
         enabled.remove("ideas")
-        enabled.insert("memory")
+        enabled.remove("memory")
         enabled.insert("not-managed")
         let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.development])
         XCTAssertTrue(seeded.isCustomized)
         XCTAssertTrue(seeded.goals.contains(.workCommunication), "the goals the set overlaps most, not the saved ones")
         XCTAssertEqual(seeded.enabledFeatureIDs, enabled.subtracting(["not-managed"]))
+    }
+
+    /// Among goals that overlap a hand-toggled set equally, the one that
+    /// would turn on the fewest features beyond it wins over the saved
+    /// goals: Briefing and Stream digests on alone read as Meetings + Tasks
+    /// & Jira, not Work communication + Tasks & Jira.
+    func testFewestExtrasBeatTheSavedGoals() {
+        let enabled = OnboardingFeaturePlan.alwaysOnFeatureIDs.union(["briefing", "stream-digests"])
+        let seeded = OnboardingFeatureSelection.current(
+            enabledIDs: enabled, savedGoals: [.workCommunication, .tasksAndJira]
+        )
+        XCTAssertTrue(seeded.isCustomized)
+        XCTAssertEqual(seeded.goals, [.meetings, .tasksAndJira])
+        XCTAssertEqual(seeded.enabledFeatureIDs, enabled)
     }
 
     // MARK: - What a Continue wrote
