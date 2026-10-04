@@ -275,6 +275,12 @@ final class WorkbenchesViewModel {
         // An answer's line is held while its session waits on a permission
         // prompt and goes once the states show it answered (PROJ-12).
         asks.needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
+        // Its Return only into a session whose hooks reported this run.
+        asks.hasHookState = { [weak agentStates] id in agentStates?.statuses[id]?.at != nil }
+        // Keys typed into a permission dialog leave no draft in the prompt.
+        terminalCenter?.inputAnswersDialog = { [weak agentStates] id in
+            agentStates?.statuses[id]?.state.kind == .needsApproval
+        }
         asks.refreshStates = { [weak agentStates] in await agentStates?.poll() }
         agentStates?.onChange = { [weak asks] in
             Task { await asks?.deliverHeldAnswers() }

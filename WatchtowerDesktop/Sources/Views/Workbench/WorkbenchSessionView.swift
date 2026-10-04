@@ -147,7 +147,14 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             switch state {
             case .running?:
                 if let session, let hint = center.answerHints[session.id] {
-                    AnswerReturnHint(hint: hint) { center.dismissClipboardHint(sessionID: session.id) }
+                    AnswerReturnHint(hint: hint) {
+                        // A held answer's Dismiss cancels its typing: the brief lists it.
+                        if hint == .held, let workbenches = vm {
+                            workbenches.asks.cancelHeldAnswers(sessionID: session.id)
+                        } else {
+                            center.dismissClipboardHint(sessionID: session.id)
+                        }
+                    }
                     Divider()
                 } else if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
                     let copied = center.clipboardHints.contains(session.id)
@@ -199,9 +206,10 @@ private struct TerminalSessionPane<NotStarted: View>: View {
 /// Over a terminal holding an ask's answer not sent yet (boards #364,
 /// #379): typed (press Return — a permission prompt appeared before
 /// Watchtower's own Return), copied (paste, then Return) or held behind a
-/// permission prompt (it goes once the prompt is answered). Prominent on
-/// purpose. Goes with the owner's next input in the session (not a held
-/// one), the delivery, or Dismiss (`TerminalCenter.answerHints`).
+/// permission prompt (it goes once the prompt is resolved; Dismiss cancels
+/// that, the brief lists the answer). Prominent on purpose. Goes with the
+/// owner's next input in the session (not a held one), the delivery, or
+/// Dismiss (`TerminalCenter.answerHints`).
 private struct AnswerReturnHint: View {
     let hint: TerminalCenter.AnswerHint
     let dismiss: () -> Void
@@ -218,6 +226,7 @@ private struct AnswerReturnHint: View {
             Spacer(minLength: 8)
             Button("Dismiss", action: dismiss)
                 .controlSize(.small)
+                .help(hint == .held ? "Don't send it — the agent gets it in the session's next brief" : "")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

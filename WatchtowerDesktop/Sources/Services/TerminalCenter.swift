@@ -20,10 +20,10 @@ protocol TerminalSessionProcess: AnyObject {
     /// Whether the program in the terminal enabled bracketed paste (DECSET
     /// 2004), so a paste arrives as text rather than as keystrokes.
     var bracketedPasteMode: Bool { get }
-    /// The owner's own input reached the session (a keystroke, a paste) —
-    /// never `sendInput` or the terminal's replies (focus and mouse
-    /// reports). Main thread.
-    var onOwnerInput: (() -> Void)? { get set }
+    /// The owner's own input reached the session (a keystroke, a paste),
+    /// with its bytes — never `sendInput` or the terminal's replies (focus
+    /// and mouse reports). Main thread.
+    var onOwnerInput: (([UInt8]) -> Void)? { get set }
     /// ⌘-click on `path:line(:col)` resolving inside `folder` calls `open`
     /// instead of SwiftTerm's default handler (spec 2026-10-02 §9.5).
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void)
@@ -79,6 +79,15 @@ final class TerminalCenter {
     /// the paste, turns it into "press Return"; a held one stays, the input
     /// answers the prompt), Dismiss, the next delivery or the process's exit.
     private(set) var answerHints: [Int64: AnswerHint] = [:]
+    /// Sessions whose owner typed since their last Return (board #379): a
+    /// Return now would submit that half-typed text with ours, so
+    /// `submitPrompt` only pastes. Input while `inputAnswersDialog` holds
+    /// goes to Claude Code's permission dialog, not to its prompt, and does
+    /// not count.
+    @ObservationIgnored private(set) var ownerDrafts: Set<Int64> = []
+    /// Whether the session's agent shows a permission dialog right now (its
+    /// agent status is `needsApproval`). Set by `WorkbenchesViewModel`.
+    @ObservationIgnored var inputAnswersDialog: (_ sessionID: Int64) -> Bool = { _ in false }
     /// Session ids the owner focused, most recent last, without duplicates —
     /// fed to `TerminalSessionPolicy.activeSession`.
     private(set) var focusOrder: [Int64] = []
@@ -201,7 +210,8 @@ final class TerminalCenter {
     }
 
     enum PromptDelivery: Equatable {
-        /// Pasted into Claude Code's input; the owner presses Return.
+        /// Pasted into Claude Code's input, no Return (`submitPrompt`
+        /// decides whether one follows).
         case sent
         /// Bracketed paste was off: the line is on the clipboard instead.
         case copied
@@ -215,10 +225,10 @@ final class TerminalCenter {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// Hands one prompt line to a running Claude Code session, never
-    /// followed by Enter (`submitPrompt` adds one) and never as keystrokes: a bracketed paste when the
-    /// session enabled that mode, otherwise the clipboard (the owner pastes
-    /// with ⌘V). Typed digits or an Enter could answer a pending Claude Code
+    /// The paste step of `submitPrompt`: one prompt text into a running
+    /// Claude Code session, never followed by Enter and never as
+    /// keystrokes — a bracketed paste when the session enabled that mode,
+    /// otherwise the clipboard (the owner pastes with ⌘V). Typed digits or an Enter could answer a pending Claude Code
     /// permission prompt the owner has not seen. Never starts a session.
     /// `keepingLineBreaks` keeps a multi-line text (a code question's
     /// hand-off) as several lines inside the one paste.
@@ -243,6 +253,10 @@ final class TerminalCenter {
     /// The pause between a hand-off's paste and its Return, so the TUI has
     /// taken the paste in before the key arrives.
     static let submitDelay: Duration = .milliseconds(150)
+    /// The same pause for an ask's answer (board #379): longer, since an
+    /// answer is not urgent and the re-read after it then also sees a
+    /// permission prompt whose async hook landed a little late.
+    static let answerSubmitDelay: Duration = .milliseconds(500)
 
     /// How a hand-off reached the session.
     enum HandoffDelivery: Equatable {
@@ -256,23 +270,25 @@ final class TerminalCenter {
     }
 
     /// "Hand to Claude Code" (spec 2026-10-02 §9.5) and an ask's answer line
-    /// (PROJ-12, board #379): `text` pasted like Send comments (`sendPrompt`;
-    /// a hand-off keeps its line breaks, an answer line passes
-    /// `keepingLineBreaks: false`). A Return follows only
-    /// while `canSubmit` holds — before the pause and again after it, the
-    /// caller re-reading the session's agent state (ruling R52: only a
-    /// session idle at its prompt; a Return could answer a permission
-    /// prompt that appeared meanwhile; an answer: any state but a permission
-    /// prompt) — and only into the same running process, as a write of its
-    /// own after `submitDelay`: a CR read in one chunk with the paste could
-    /// be taken as part of it (a line break, not Enter). Otherwise the paste waits for the owner's own
-    /// Return.
+    /// (PROJ-12, board #379): `text` pasted (`sendPrompt`; a hand-off keeps
+    /// its line breaks, an answer line passes `keepingLineBreaks: false`).
+    /// A Return follows only while `canSubmit` holds and the owner has no
+    /// half-typed text in the session (`ownerDrafts`) — both checked before
+    /// the pause and again after it, the caller re-reading the session's
+    /// agent state (ruling R52: a hand-off only into a session idle at its
+    /// prompt; an answer only into a session whose hooks reported a state
+    /// this run that is not a permission prompt; a Return could answer a
+    /// prompt that appeared meanwhile) — and only into the same running
+    /// process, as a write of its own after `delay`: a CR read in one chunk
+    /// with the paste could be taken as part of it (a line break, not
+    /// Enter). Otherwise the paste waits for the owner's own Return.
     /// `refresh` runs after the pause, before the second check (the caller
     /// re-reads the agent state, which its poll may hold up to 1 s stale).
     func submitPrompt(
         _ text: String,
         sessionID: Int64,
         keepingLineBreaks: Bool = true,
+        delay: Duration = submitDelay,
         refresh: () async -> Void = {},
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
@@ -282,11 +298,11 @@ final class TerminalCenter {
         case .sent: break
         }
         guard let process = processes[sessionID] else { return .noSession }
-        if canSubmit() {
-            await signaller.sleep(Self.submitDelay)
+        if canSubmit(), !ownerDrafts.contains(sessionID) {
+            await signaller.sleep(delay)
             await refresh()
             guard states[sessionID] == .running, processes[sessionID] === process else { return .noSession }
-            if canSubmit() {
+            if canSubmit(), !ownerDrafts.contains(sessionID) {
                 process.sendInput([0x0D])
                 return .submitted
             }
@@ -322,10 +338,19 @@ final class TerminalCenter {
         answerHints[sessionID] = hint
     }
 
-    /// The owner typed or pasted into the session. A copied answer's hint
-    /// turns into "press Return" (the paste was the first step); a typed
-    /// one has done its job; a held one waits for its delivery.
-    private func ownerInput(_ sessionID: Int64) {
+    /// The owner typed or pasted into the session. Unless it answers a
+    /// permission dialog, it leaves a draft in Claude Code's prompt until it
+    /// ends with a Return (`ownerDrafts`). A copied answer's hint turns into
+    /// "press Return" (the paste was the first step); a typed one has done
+    /// its job; a held one waits for its delivery.
+    private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
+        if !inputAnswersDialog(sessionID) {
+            if let last = bytes.last, last == 0x0D || last == 0x0A {
+                ownerDrafts.remove(sessionID)
+            } else if !bytes.isEmpty {
+                ownerDrafts.insert(sessionID)
+            }
+        }
         switch answerHints[sessionID] {
         case nil, .held?: break
         case .copied?: answerHints[sessionID] = .typed
@@ -381,7 +406,7 @@ final class TerminalCenter {
             self?.answerHints[id] = nil
             self?.onSessionExit?(id, code)
         }
-        process.onOwnerInput = { [weak self] in self?.ownerInput(id) }
+        process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
         processes[id] = process
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files.
@@ -390,6 +415,7 @@ final class TerminalCenter {
             }
         }
         startedAt[id] = now()
+        ownerDrafts.remove(id)
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
         return mode
@@ -431,6 +457,7 @@ final class TerminalCenter {
         states[sessionID] = nil
         rows[sessionID] = nil
         startedAt[sessionID] = nil
+        ownerDrafts.remove(sessionID)
         clipboardHints.remove(sessionID)
         answerHints[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }
@@ -530,7 +557,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     // MARK: Owner input (board #364)
 
     /// `TerminalSessionProcess.onOwnerInput`.
-    var onOwnerInput: (() -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)?
     /// Set while bytes that are not the owner's pass through `send(source:data:)`.
     private var forwardingAppInput = false
 
@@ -554,7 +581,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     /// Every byte for the process: keystrokes and pastes are the owner's.
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if !forwardingAppInput { onOwnerInput?() }
+        if !forwardingAppInput { onOwnerInput?(Array(data)) }
         super.send(source: source, data: data)
     }
 
@@ -659,7 +686,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerminalViewDelegate {
     private let terminal: PalettedTerminalView
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (() -> Void)? {
+    var onOwnerInput: (([UInt8]) -> Void)? {
         get { terminal.onOwnerInput }
         set { terminal.onOwnerInput = newValue }
     }

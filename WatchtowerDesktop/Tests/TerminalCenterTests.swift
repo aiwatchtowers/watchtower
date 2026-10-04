@@ -10,7 +10,7 @@ final class FakeTerminalSession: TerminalSessionProcess {
     let view = NSView()
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
-    var onOwnerInput: (() -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)?
     private(set) var launches: [TerminalLaunch] = []
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []
@@ -40,6 +40,8 @@ final class TerminalCenterTests: XCTestCase {
     private var sessions: [FakeTerminalSession] = []
     private var signals: [(pid_t, Int32)] = []
     private var slept: Duration = .zero
+    /// What the first session had received when each pause began.
+    private var inputsAtSleep: [[[UInt8]]] = []
     private var alive = true
     private var exitOnHangup = true
     private var nextPid: pid_t = 4242
@@ -53,6 +55,7 @@ final class TerminalCenterTests: XCTestCase {
         sessions = []
         signals = []
         slept = .zero
+        inputsAtSleep = []
         alive = true
         exitOnHangup = true
         nextPid = 4242
@@ -107,7 +110,11 @@ final class TerminalCenterTests: XCTestCase {
                     if sig == SIGKILL { self.alive = false }
                 },
                 isAlive: { [weak self] _ in self?.alive ?? false },
-                sleep: { [weak self] step in self?.slept += step }
+                sleep: { [weak self] step in
+                    guard let self else { return }
+                    slept += step
+                    inputsAtSleep.append(sessions.first?.inputs ?? [])
+                }
             )
         )
         center.shell = { "/bin/zsh" }
@@ -491,7 +498,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertNil(center.activeSession(projectID: 3))
     }
 
-    // MARK: - sendPrompt (a comment's Send)
+    // MARK: - sendPrompt (the paste step of submitPrompt)
 
     func testARunningSessionGetsOneBracketedPasteWithNoEnter() throws {
         let center = makeCenter()
@@ -502,7 +509,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(sessions[0].inputs, [
             [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
         ])
-        XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "sendPrompt never presses Return; submitPrompt does")
+        XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "the paste step never presses Return; submitPrompt decides")
         XCTAssertFalse(center.clipboardHints.contains(s.id))
     }
 
@@ -514,10 +521,39 @@ final class TerminalCenterTests: XCTestCase {
         let s = try row()
         center.start(s, fresh: true)
         let line = OwnerAskPrompt.line(id: 7, kind: .question, answer: OwnerAskAnswer())
-        let delivery = await center.submitPrompt(line + "\r\n\u{1B}more", sessionID: s.id, keepingLineBreaks: false) { true }
+        let delivery = await center.submitPrompt(line + "\r\n\u{1B}more", sessionID: s.id, keepingLineBreaks: false,
+                                                 delay: TerminalCenter.answerSubmitDelay) { true }
         XCTAssertEqual(delivery, .submitted)
         XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes(line + "more"), [0x0D]])
-        XCTAssertEqual(slept, TerminalCenter.submitDelay)
+        XCTAssertEqual(slept, TerminalCenter.answerSubmitDelay, "an answer's longer pause")
+        XCTAssertEqual(inputsAtSleep, [[bracketedPasteBytes(line + "more")]], "the Return comes strictly after the pause")
+    }
+
+    /// Board #379: the owner's text typed since their last Return is a
+    /// draft a Return would submit, so `submitPrompt` only pastes over it;
+    /// keys answering a permission dialog are not a draft; a restart clears it.
+    func testOverTheOwnersDraftSubmitPromptOnlyPastes() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        sessions[0].onOwnerInput?(Array("half".utf8))
+        let overDraft = await center.submitPrompt("x", sessionID: s.id) { true }
+        XCTAssertEqual(overDraft, .pasted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")])
+        XCTAssertEqual(slept, .zero, "no pause: no Return to wait for")
+
+        sessions[0].onOwnerInput?(Array("more\r".utf8))
+        center.inputAnswersDialog = { _ in true }
+        sessions[0].onOwnerInput?(Array("2".utf8))
+        center.inputAnswersDialog = { _ in false }
+        let clean = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertEqual(clean, .submitted)
+
+        sessions[0].onOwnerInput?(Array("z".utf8))
+        sessions[0].exit(0)
+        center.start(s, fresh: false)
+        let restarted = await center.submitPrompt("w", sessionID: s.id) { true }
+        XCTAssertEqual(restarted, .submitted, "a new run starts with an empty prompt")
     }
 
     /// Without bracketed paste nothing is typed — keystrokes could answer a
@@ -548,7 +584,7 @@ final class TerminalCenterTests: XCTestCase {
 
         center.showAnswerHint(.typed, sessionID: s.id)
         XCTAssertEqual(center.answerHints[s.id], .typed)
-        sessions[0].onOwnerInput?()
+        sessions[0].onOwnerInput?(Array("y".utf8))
         XCTAssertNil(center.answerHints[s.id], "the owner's next input")
 
         center.showAnswerHint(.typed, sessionID: s.id)
@@ -572,9 +608,9 @@ final class TerminalCenterTests: XCTestCase {
         center.start(s, fresh: true)
         center.showAnswerHint(.copied, sessionID: s.id)
 
-        sessions[0].onOwnerInput?()
+        sessions[0].onOwnerInput?(Array("y".utf8))
         XCTAssertEqual(center.answerHints[s.id], .typed)
-        sessions[0].onOwnerInput?()
+        sessions[0].onOwnerInput?(Array("y".utf8))
         XCTAssertNil(center.answerHints[s.id])
     }
 
@@ -586,7 +622,7 @@ final class TerminalCenterTests: XCTestCase {
         center.start(s, fresh: true)
         center.showAnswerHint(.held, sessionID: s.id)
 
-        sessions[0].onOwnerInput?()
+        sessions[0].onOwnerInput?(Array("y".utf8))
         XCTAssertEqual(center.answerHints[s.id], .held)
         XCTAssertEqual(center.sendPrompt("x", sessionID: s.id), .sent)
         XCTAssertNil(center.answerHints[s.id])
