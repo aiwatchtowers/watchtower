@@ -80,6 +80,26 @@ func TestBuildBoardView_IncludeClosedListsThemBriefly(t *testing.T) {
 		"a closed target with nothing open: title, status and since only")
 }
 
+// A closed group with an archived child: include_closed carries the archived
+// count on the group, and the default counts the group apart from its
+// archived child.
+func TestBuildBoardView_ClosedGroupWithAnArchivedChild(t *testing.T) {
+	board := []db.BoardNode{boardNode(7, "dismissed", boardNode(8, "done"), archivedNode(9, "done"))}
+
+	v := buildBoardView(9, board, workbenchBoardArgs{IncludeClosed: true})
+	require.Equal(t, []int{7}, viewIDs(v.Targets))
+	assert.Equal(t, []int{8}, viewIDs(v.Targets[0].Children))
+	assert.Equal(t, 1, v.Targets[0].ArchivedChildren)
+	raw, err := json.Marshal(v.Targets[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"archived_children":1`)
+
+	v = buildBoardView(9, board, workbenchBoardArgs{})
+	assert.Empty(t, v.Targets)
+	assert.Equal(t, 2, v.Closed, "#7 and #8, not the archived #9")
+	assert.Equal(t, 1, v.Archived, "#9")
+}
+
 func TestBuildBoardView_IncludeArchivedListsEverything(t *testing.T) {
 	v := buildBoardView(9, mixedBoard(), workbenchBoardArgs{IncludeArchived: true})
 

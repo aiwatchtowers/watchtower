@@ -184,6 +184,36 @@ func TestProj15_ReopenRestores(t *testing.T) {
 	assert.Equal(t, [3]string{"done", "todo", "agent"}, transitions(rows)[before])
 }
 
+// Reopen then close again: the new close starts the archive period over, and
+// only the newest close counts once it ages past it.
+func TestProj15_ReopenAndRecloseStartsThePeriodOver(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	leaf := closedLeaf(t, d, pid, "done", 30*oneDay)
+	requireArchived(t, d, pid, map[int64]bool{leaf: true})
+
+	setStatusRaw(t, d, leaf, "todo")
+	requireArchived(t, d, pid, map[int64]bool{leaf: false})
+	setStatusRaw(t, d, leaf, "done")
+	requireArchived(t, d, pid, map[int64]bool{leaf: false})
+
+	// Reopened 20 days ago, closed again 5 days ago: the newest close decides.
+	dateChange(t, d, leaf, 1, 20*oneDay)
+	dateChange(t, d, leaf, 0, 5*oneDay)
+	requireArchived(t, d, pid, map[int64]bool{leaf: false})
+	dateChange(t, d, leaf, 0, 14*oneDay+time.Minute)
+	requireArchived(t, d, pid, map[int64]bool{leaf: true})
+}
+
+// dateChange dates target id's status change nth from the newest (0 = the
+// newest) age ago.
+func dateChange(t *testing.T, d *DB, id int64, nth int, age time.Duration) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE target_status_history SET changed_at = ? WHERE id =
+		(SELECT id FROM target_status_history WHERE target_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?)`, isoAgo(age), id, nth)
+	require.NoError(t, err)
+}
+
 // archivedGroup seeds a group whose only child is done, both closed 30 days ago.
 func archivedGroup(t *testing.T, d *DB, pid int64) (group, child int64) {
 	t.Helper()
