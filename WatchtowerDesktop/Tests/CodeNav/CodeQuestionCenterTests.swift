@@ -834,6 +834,30 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertEqual(left, 0)
     }
 
+    /// The tab's list follows the database while it shows: a question
+    /// asked and one deleted reach it with no reload; a hidden tab's list
+    /// stays as it was.
+    func testTheShownListFollowsQuestionsAskedAndDeleted() async throws {
+        let (center, _, _) = makeCenter()
+        let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
+        let empty = await eventually { center.questionLists[project.id] == [] }
+        XCTAssertTrue(empty)
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["First?"] }
+        XCTAssertTrue(listed)
+        await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
+        try await pool.write { db in _ = try CodeQuestionList.delete(db, conversationID: first) }
+        let gone = await eventually { center.questionLists[project.id] == [] }
+        XCTAssertTrue(gone, "a delete reaches the list too")
+
+        watching.cancel()
+        await watching.value
+        guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        XCTAssertEqual(center.questionLists[project.id], [], "a list no tab shows is not followed")
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+    }
+
     /// A question reopened after a restart (no context in memory) rebuilds
     /// its context from the file around its line (ruling R41).
     func testAReopenedQuestionRebuildsItsContextFromTheFile() async throws {

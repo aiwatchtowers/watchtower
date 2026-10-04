@@ -320,7 +320,6 @@ final class CodeQuestionCenter {
             return false
         }
         sessions[workbenchID]?.notice = nil
-        refreshQuestionList(workbenchID: workbenchID)
         return true
     }
 
@@ -504,12 +503,11 @@ final class CodeQuestionCenter {
     // MARK: Suggested change
 
     /// The one turn-finished handler of a code question's engine: a
-    /// completed turn has carried the attached usages; the list shows the
-    /// new state; a completed answer with a `wt-edit` block shows its change
-    /// as an inline diff over what the popover's question was about.
+    /// completed turn has carried the attached usages; a completed answer
+    /// with a `wt-edit` block shows its change as an inline diff over what
+    /// the popover's question was about.
     private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome, conversationID: Int64) {
         guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
-        refreshQuestionList(workbenchID: workbenchID)
         guard case let .completed(_, result) = outcome else { return }
         pendingUsageTurns.remove(conversationID)
         guard let session = sessions[workbenchID], session.conversationID == conversationID,
@@ -632,7 +630,6 @@ final class CodeQuestionCenter {
             discardConversation(conversation)
             return .failed("Couldn't send the question.")
         }
-        refreshQuestionList(workbenchID: project.id)
         return .started(conversationID: conversationID)
     }
 
@@ -664,7 +661,27 @@ final class CodeQuestionCenter {
 
     // MARK: Questions tab (spec §9.4)
 
-    /// Reads the workbench's questions, newest first.
+    /// The Questions tab while it shows (the view's task): the list follows
+    /// every write to the questions — one asked, a turn streamed, a delete —
+    /// through a GRDB observation. Every code question write is the app's
+    /// own, so the observation sees them all.
+    func observeQuestionList(workbenchID: Int64) async {
+        guard let dbPool else { return }
+        let observation = ValueObservation.tracking { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
+            .removeDuplicates()
+        do {
+            for try await items in observation.values(in: dbPool) {
+                questionLists[workbenchID] = items
+                questionListErrors[workbenchID] = nil
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            NSLog("CodeQuestionCenter: watching the code questions: %@", error.localizedDescription)
+            questionListErrors[workbenchID] = "Couldn't read the questions: \(error.localizedDescription)"
+        }
+    }
+
+    /// Reads the workbench's questions, newest first, once.
     func reloadQuestionList(workbenchID: Int64) {
         guard let dbPool else { return }
         do {
@@ -674,12 +691,6 @@ final class CodeQuestionCenter {
             NSLog("CodeQuestionCenter: reading the code questions: %@", error.localizedDescription)
             questionListErrors[workbenchID] = "Couldn't read the questions: \(error.localizedDescription)"
         }
-    }
-
-    /// A list the tab has shown follows new questions and turns.
-    private func refreshQuestionList(workbenchID: Int64) {
-        guard questionLists[workbenchID] != nil else { return }
-        reloadQuestionList(workbenchID: workbenchID)
     }
 
     /// A row's click: the conversation in the inspector. A question reopened
@@ -696,7 +707,6 @@ final class CodeQuestionCenter {
     /// Back to the list.
     func closeInspectorQuestion(workbenchID: Int64) {
         inspectorQuestions[workbenchID] = nil
-        refreshQuestionList(workbenchID: workbenchID)
     }
 
     /// Pin to inspector: the popover's conversation moves to the Questions
