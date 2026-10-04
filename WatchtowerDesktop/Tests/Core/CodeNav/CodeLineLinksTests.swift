@@ -34,6 +34,16 @@ final class CodeLineLinksTests: XCTestCase {
         XCTAssertEqual(CodeLineLinks.linkified(text), text)
     }
 
+    /// A citation inside an existing link's text — plain or as code — is
+    /// not linked again (no link within a link); one after it still is.
+    func testACitationInsideAnExistingLinkIsLeftAlone() {
+        let text = "See [the loader in main.go:3](https://example.com/x) or [`Sources/App.swift:12`](https://example.com)"
+        XCTAssertEqual(CodeLineLinks.linkified(text), text)
+        XCTAssertEqual(CodeLineLinks.linkified("[docs](https://example.com) then main.go:3"),
+                       "[docs](https://example.com) then [main.go:3](\(url("main.go", 3)))")
+        XCTAssertEqual(CodeLineLinks.linkified("![shot of a.swift:2](img.png)"), "![shot of a.swift:2](img.png)")
+    }
+
     func testANameWithoutExtensionOrFolderIsNoCitation() {
         XCTAssertEqual(CodeLineLinks.linkified("at line:3 and time 10:30"), "at line:3 and time 10:30")
     }

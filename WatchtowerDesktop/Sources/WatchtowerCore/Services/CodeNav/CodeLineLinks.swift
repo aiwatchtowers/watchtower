@@ -18,6 +18,9 @@ package enum CodeLineLinks {
     /// a mail address or an existing link.
     private static let bareCitation = try! NSRegularExpression(
         pattern: #"(?<![\w/.:@\[-])(?<!\]\()("# + path + ")" + suffix + #"(?![\w/])"#)
+    /// An existing markdown link (or image): its text and target stay as
+    /// written, so no citation inside becomes a link within a link.
+    private static let existingLink = try! NSRegularExpression(pattern: #"!?\[[^\]\n]*\]\([^)\n]*\)"#)
     // swiftlint:enable force_try
 
     /// `markdown` with its citations linked.
@@ -68,12 +71,21 @@ package enum CodeLineLinks {
 
     // MARK: - One line
 
-    /// Code spans and prose of one line, each linked its own way.
+    /// Code spans and prose of one line, each linked its own way; an
+    /// existing link is copied as it is.
     private static func linkifiedLine(_ line: String) -> String {
+        let links = existingLink.matches(in: line, range: NSRange(line.startIndex..., in: line))
+            .compactMap { Range($0.range, in: line) }
         var out = ""
         var prose = ""
         var index = line.startIndex
         while index < line.endIndex {
+            if let link = links.first(where: { $0.lowerBound == index }) {
+                out += linkedProse(prose) + line[link]
+                prose = ""
+                index = link.upperBound
+                continue
+            }
             guard line[index] == "`" else {
                 prose.append(line[index])
                 index = line.index(after: index)
