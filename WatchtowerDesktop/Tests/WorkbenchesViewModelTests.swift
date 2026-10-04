@@ -59,7 +59,8 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
         await vm.setArchiveAfterDays(400, projectID: p)
         XCTAssertNotNil(vm.archiveSettingErrors[p], "the CHECK refuses it")
-        XCTAssertEqual(try await pool.read { try WorkbenchQueries.fetch($0, id: p)?.archiveAfterDays }, 30)
+        let stored = try await pool.read { try WorkbenchQueries.fetch($0, id: p)?.archiveAfterDays }
+        XCTAssertEqual(stored, 30)
 
         await vm.setArchiveAfterDays(0, projectID: p)
         XCTAssertNil(vm.archiveSettingErrors[p], "the next write clears the error")
