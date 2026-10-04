@@ -13,6 +13,8 @@ ALTER TABLE projects ADD COLUMN archive_after_days INTEGER NOT NULL DEFAULT 14
 -- board are done or dismissed, and the newest close time among them is more
 -- than archive_after_days days old. A target's close time is its latest
 -- target_status_history.changed_at, else its updated_at (no history).
+-- A close time that does not parse keeps the target and every ancestor on
+-- the board, so an archived node's whole subtree is always archived.
 --
 -- node: each target's own openness and close time, computed once.
 -- up: every (ancestor, descendant) pair on one board, walked upwards from
@@ -37,6 +39,7 @@ SELECT up.ancestor AS target_id,
        up.project_id AS project_id,
        CASE WHEN p.archive_after_days > 0
              AND MAX(up.open) = 0
+             AND COUNT(*) = COUNT(julianday(up.closed_at))
              AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
             THEN 1 ELSE 0 END AS archived
 FROM up

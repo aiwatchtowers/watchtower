@@ -327,6 +327,21 @@ func TestProj15_CloseTimeFallsBackToUpdatedAt(t *testing.T) {
 	requireArchived(t, d, pid, map[int64]bool{leaf: false})
 }
 
+// A close time that does not parse keeps the target and every ancestor on
+// the board: an archived node's whole subtree is always archived.
+func TestProj15_UnparseableCloseTimeKeepsTheChain(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	parent, child := archivedGroup(t, d, pid)
+
+	_, err := d.Exec(`DELETE FROM target_status_history WHERE target_id = ?`, child)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE targets SET updated_at = '' WHERE id = ?`, child)
+	require.NoError(t, err)
+
+	requireArchived(t, d, pid, map[int64]bool{parent: false, child: false})
+}
+
 func archNode(id int, archived bool, children ...BoardNode) BoardNode {
 	return BoardNode{Target: Target{ID: id}, Archived: archived, Children: children}
 }

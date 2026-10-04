@@ -2166,8 +2166,9 @@ CREATE TABLE IF NOT EXISTS projects (
 -- iff its workbench's archive_after_days > 0, the target and every descendant
 -- on the same board are done/dismissed, and the newest close time among them
 -- (latest target_status_history.changed_at, else updated_at) is older than
--- archive_after_days days. Computed on every read; nothing is stored, so a
--- reopened target is back at once.
+-- archive_after_days days; a close time that does not parse keeps the chain
+-- on the board. Computed on every read; nothing is stored, so a reopened
+-- target is back at once.
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2188,6 +2189,7 @@ SELECT up.ancestor AS target_id,
        up.project_id AS project_id,
        CASE WHEN p.archive_after_days > 0
              AND MAX(up.open) = 0
+             AND COUNT(*) = COUNT(julianday(up.closed_at))
              AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
             THEN 1 ELSE 0 END AS archived
 FROM up

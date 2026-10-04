@@ -1585,6 +1585,7 @@ SELECT up.ancestor AS target_id,
        up.project_id AS project_id,
        CASE WHEN p.archive_after_days > 0
              AND MAX(up.open) = 0
+             AND COUNT(*) = COUNT(julianday(up.closed_at))
              AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
             THEN 1 ELSE 0 END AS archived
 FROM up
