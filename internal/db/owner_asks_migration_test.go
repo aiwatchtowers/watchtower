@@ -14,6 +14,7 @@ import (
 // under them, project_documents and the documents' index entries (FTS included)
 // are gone; a deleted comment's id is never handed out again.
 func TestMigration00100_DropsDocumentsAndTheirComments(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 99)
 	_, err := raw.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`)
 	require.NoError(t, err)
@@ -109,6 +110,7 @@ func TestMigration00100_DropsDocumentsAndTheirComments(t *testing.T) {
 // project_documents and the old project_comments shape (target comments keep
 // their rows) and drops owner_asks; Up again applies cleanly.
 func TestMigration00100_DownUpIsClean(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "owner-asks-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()

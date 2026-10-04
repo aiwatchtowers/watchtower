@@ -48,6 +48,7 @@ func TestMigration00053_SchemaShape(t *testing.T) {
 // migration: the decision flips to 'active' with a refreshed updated_at,
 // the idea is untouched, and the new columns exist.
 func TestMigration00053_FlipsProposedDecisionsToActive(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -117,6 +118,7 @@ func TestMigration00053_FlipsProposedDecisionsToActive(t *testing.T) {
 // TestMigration00053DownDropsMarkerColumns: Down removes the two read-marker
 // columns but deliberately does not (cannot) revert the status flip.
 func TestMigration00053DownDropsMarkerColumns(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)

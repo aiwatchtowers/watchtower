@@ -15,6 +15,7 @@ import (
 // issues all carry the value, and one only missing it on deleted issues,
 // keep theirs.
 func TestMigration00090_ResetsWatermarksForMissingStatusCategoryDate(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 89)
 	_, err := raw.Exec(`INSERT INTO jira_accounts (id, cloud_id) VALUES (1, 'c1')`)
 	require.NoError(t, err)

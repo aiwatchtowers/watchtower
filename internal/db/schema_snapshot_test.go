@@ -26,10 +26,11 @@ var updateGolden = flag.Bool("update", false, "update schema golden file")
 //
 //	go test ./internal/db/ -run TestSchemaGolden -update
 func TestSchemaGolden(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "snapshot.db")
 
-	db, err := Open(dbPath)
+	db, err := openMigratingFresh(t, dbPath)
 	require.NoError(t, err)
 	defer db.Close()
 

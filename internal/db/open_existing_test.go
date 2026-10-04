@@ -39,8 +39,17 @@ func TestOpenExisting_ReadsAndRefusesWrites(t *testing.T) {
 	assert.Error(t, err, "a write must be refused")
 }
 
-// Another process holding the database exclusively: the read fails after
-// the busy timeout, never Open's 5 s.
+// Another process holding the database exclusively: the read waits for the
+// lock, then fails within the busy timeout, never Open's 5 s.
+//
+// The lower bound is a quarter of the timeout, not all of it: on Linux the
+// driver sleeps between lock retries with a raw nanosleep syscall, which any
+// signal reaching the sleeping thread cuts short with EINTR (never
+// restarted), and SQLite's busy handler counts each sleep at its nominal
+// length. So the total wait lands below busy_timeout now and then (measured
+// under -race in a linux container: 35 of 400 runs under 200 ms, the
+// shortest 144 ms). An immediate failure, with no wait at all, takes about
+// 1 ms.
 func TestOpenExisting_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	holder, err := Open(path)
@@ -59,7 +68,7 @@ func TestOpenExisting_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 	require.Error(t, err, "the read must fail while the database is locked")
 	assert.Contains(t, err.Error(), "SQLITE_BUSY")
 	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond, "it waited for the lock")
+	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond, "it waited for the lock")
 	assert.Less(t, elapsed, 2*time.Second)
 }
 

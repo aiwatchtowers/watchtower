@@ -116,6 +116,7 @@ func TestUpsertJiraSlackLink_MentionStaysIdempotent(t *testing.T) {
 }
 
 func TestMigration00067DownUpCycle(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "jira-slack-link-identity-cycle.db")
 	d, err := Open(path)
 	require.NoError(t, err)
@@ -186,6 +187,7 @@ func TestUpsertJiraSlackLink_UnknownLinkTypeIsRefused(t *testing.T) {
 // must dedupe such a pair rather than abort — an aborted migration means goose
 // fails, db.Open errors, and neither the daemon nor the Desktop starts.
 func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "jira-slack-link-legacy.db")
 	d, err := Open(path)
 	require.NoError(t, err)

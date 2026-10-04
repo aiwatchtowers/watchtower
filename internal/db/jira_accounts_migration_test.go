@@ -78,6 +78,7 @@ func TestMigration00049_FreshDBHasNoSeedRow(t *testing.T) {
 // account_id = 1, and the unscoped tables (jira_user_map, jira_slack_links)
 // untouched.
 func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -177,6 +178,7 @@ func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
 // without the NOT EXISTS guard the seed INSERT fires a second time and mints
 // an empty ghost account that `jira accounts` then lists as a real site.
 func TestMigration00049_SeedIsIdempotent(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -244,6 +246,7 @@ func extractStatement(t *testing.T, sqlText, marker, source string) string {
 // with account #1's rows and the restored workspace watermark, then re-applies
 // Up and asserts re-scoping — the migration must round-trip.
 func TestMigration00049DownUpCycle(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -301,6 +304,7 @@ func TestMigration00049DownUpCycle(t *testing.T) {
 // genuinely multi-account install can only keep account #1 and MUST drop the
 // rest rather than silently merging two sites' issues under one bare key.
 func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -356,6 +360,7 @@ func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
 // #1 — otherwise those rows dangle and the next `jira add` mints id 1 and
 // silently adopts another site's fields.
 func TestMigration00049_SeedsAccountForNonIssueJiraData(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)

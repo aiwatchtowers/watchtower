@@ -18,6 +18,7 @@ import (
 // mention, a live prompt) pin the UPDATEs and the DELETE to their scope
 // instead of letting a blanket rewrite pass.
 func TestMigration00070_FreezesSituationsAndDropsDeadTables(t *testing.T) {
+	t.Parallel()
 	raw := openMigratedTo(t, 69)
 
 	exec := func(query string, args ...any) {

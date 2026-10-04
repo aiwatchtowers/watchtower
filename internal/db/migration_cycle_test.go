@@ -17,6 +17,7 @@ import (
 // test for (00014's Down once failed on tables 00070 had already dropped).
 // No version is hard-coded: the pass covers whatever migrations are embedded.
 func TestMigrationsDownAllUpAllRoundTrip(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "down-all-up-all.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)

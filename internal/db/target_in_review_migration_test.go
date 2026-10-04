@@ -23,6 +23,7 @@ func countTargetTriggers(t *testing.T, raw *sql.DB) int {
 // existing project target, and the rollup still works afterwards — with an
 // in_review child counting as started.
 func TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 85)
 	_, err := raw.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`)
 	require.NoError(t, err)
@@ -91,6 +92,7 @@ func TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup(t *testing.T) {
 // falls back to in_progress, the history and actor column go, 00085's
 // triggers are back, and a re-Up restores everything.
 func TestMigration00086_DownRestoresThe00085Schema(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 86)
 	_, err := raw.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme')`)
 	require.NoError(t, err)

@@ -22,7 +22,8 @@ var desktopTestSchemaPath = filepath.Join("..", "..", "WatchtowerDesktop", "Test
 //
 //	go test ./internal/db/ -run TestDesktopTestSchema -update
 func TestDesktopTestSchema(t *testing.T) {
-	d, err := Open(filepath.Join(t.TempDir(), "desktop.db"))
+	t.Parallel()
+	d, err := openMigratingFresh(t, filepath.Join(t.TempDir(), "desktop.db"))
 	require.NoError(t, err)
 	defer d.Close()
 

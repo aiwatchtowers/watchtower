@@ -540,6 +540,7 @@ func TestMigration00039MemoryRetrieveShadow(t *testing.T) {
 // an unchanged file, so a hash-match skip would leave it at ”/0 forever.
 // Non-belief nodes keep their hash (their columns are always the ”/0 default).
 func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "belief-hash.db")
 	d, err := Open(path)
 	if err != nil {
@@ -582,6 +583,7 @@ func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
 // ALTER-added columns and the dispute-flags table (precedent: 00017/00018's
 // Down), so a down;up cycle is clean.
 func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
+	t.Parallel()
 	d := openAfterMigrationCycle(t, 19)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_chat_turn_floor = 0`); err != nil {
@@ -654,6 +656,7 @@ func TestMigration00042MemoryPhase5Slice1(t *testing.T) {
 // ALTER-added columns and the memory_engagement table (precedent: 00017-19's
 // Down), so a down;up cycle is clean.
 func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
+	t.Parallel()
 	d := openAfterMigrationCycle(t, 42)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_last_interaction_id = 0`); err != nil {
@@ -704,6 +707,7 @@ func TestMigration00033MemoryPhase5Slice2(t *testing.T) {
 // ALTER-added column (precedent: 00017-19, 00042's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
+	t.Parallel()
 	d := openAfterMigrationCycle(t, 33)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
@@ -748,6 +752,7 @@ func TestMigration00044ConferenceURL(t *testing.T) {
 // ALTER-added column (precedent: 00033/00042's Down), so a down;up cycle is
 // clean.
 func TestMigration00044ConferenceURLDownUpCycle(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "conference-url-cycle.db")
 	d, err := Open(path)
 	if err != nil {
@@ -825,6 +830,7 @@ func TestMigration00034MemoryDigestCompare(t *testing.T) {
 // additive CREATE TABLEs (precedent: 00017-19, 00042/00033's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
+	t.Parallel()
 	d := openAfterMigrationCycle(t, 34)
 
 	assertTableExists(t, d, "memory_provenance")
@@ -1293,6 +1299,7 @@ func TestTranscriptsFTSIndexesAndTracksRows(t *testing.T) {
 // transcripts BEFORE the migration, so it cannot catch a wrong column order
 // or a wrong predicate in the backfill SELECT.
 func TestTranscriptsFTSBackfillIndexesPreExistingTranscripts(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcripts-fts-backfill.db")
 	d, err := Open(path)
 	require.NoError(t, err)

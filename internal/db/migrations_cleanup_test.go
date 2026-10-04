@@ -19,6 +19,7 @@ import (
 // target link, rows that would violate the CHECK (no target) or the UNIQUE
 // index (clean duplicate exists) are deleted, and healthy refs are untouched.
 func TestMigration00007CleansMalformedExternalRefs(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)

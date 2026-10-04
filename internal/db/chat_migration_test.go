@@ -74,6 +74,7 @@ func columnNames(t *testing.T, raw *sql.DB, table string) map[string]bool {
 }
 
 func TestMigration00076_AdoptsLegacyChatTables(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		ddl        []string
@@ -166,6 +167,7 @@ func TestMigration00076_AdoptsLegacyChatTables(t *testing.T) {
 // roll back through 00076, so its Down must be real and must never drop the
 // adopted rows (the app created them, not this migration).
 func TestMigration00076_DownUpKeepsMessages(t *testing.T) {
+	t.Parallel()
 	d, err := Open(filepath.Join(t.TempDir(), "chat-cycle.db"))
 	require.NoError(t, err)
 	defer d.Close()

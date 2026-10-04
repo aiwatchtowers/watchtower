@@ -82,6 +82,7 @@ func TestMigration00043_FreshDBHasNoSeedRow(t *testing.T) {
 // inbox_learned_rules channel ids rewritten to the account-scoped
 // 'gmail:1:<thread>' form.
 func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -189,6 +190,7 @@ func assertUpgradedSingleAccountFixture(t *testing.T, raw *sql.DB) {
 // recreates calendar_auth_state but must reseed its default row exactly like
 // it already does for gmail_auth_state — asserted directly below.
 func TestMigration00043DownUpCycle(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "google-accounts-cycle.db")
 	d, err := Open(path)
 	if err != nil {

@@ -324,8 +324,10 @@ func TestCodeIndex_SIGTERMWhileIdleExitsAtOnce(t *testing.T) {
 		if code := exitCode(err); code != 0 {
 			t.Fatalf("exit code = %d, want 0", code)
 		}
-		if elapsed := time.Since(sent); elapsed > 50*time.Millisecond {
-			t.Errorf("exited %v after SIGTERM, want ≤ 50ms", elapsed)
+		// Same bound as TestCodeSearch_SIGTERMMidRunExitsAtOnceWithNoDone: a
+		// "stops promptly" check, not a latency benchmark.
+		if elapsed := time.Since(sent); elapsed > 500*time.Millisecond {
+			t.Errorf("exited %v after SIGTERM, want ≤ 500ms", elapsed)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("still running 5s after SIGTERM (blocked on stdin)")

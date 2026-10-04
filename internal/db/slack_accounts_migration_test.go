@@ -59,6 +59,7 @@ func TestMigration00048_FreshDBHasNoSeedRow(t *testing.T) {
 // derived id column rewritten to the "1:<rawID>" namespaced form, and the
 // unrelated Gmail-scoped inbox row left untouched by the "1:" rewrite.
 func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -174,6 +175,7 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 // join silently returns zero rows for every message synced before the
 // upgrade — full-text search over all pre-migration history breaks.
 func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -221,6 +223,7 @@ func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
 // rule gets the "1:" prefix — the Gmail/Jira rules must stay exactly as they
 // were, or a previously-taught mute/boost preference silently stops matching.
 func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -284,6 +287,7 @@ func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
 // existing test exercised 00048's own Down path with a plain (non-gmail)
 // scope_key. Then re-applies Up and asserts re-namespacing.
 func TestMigration00048DownUpCycle(t *testing.T) {
+	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)

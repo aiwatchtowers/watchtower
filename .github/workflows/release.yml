@@ -12,6 +12,10 @@ jobs:
   go-release-gate:
     name: Go Release Gate
     runs-on: ubuntu-latest
+    # A hang must fail the gate, not run to GitHub's 6 h default. The step
+    # budgets (code index 20 + coverage 25 + race 40 = 85) plus ~10 for setup
+    # and build, so the job cap never cuts a step short of its own timeout.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +29,7 @@ jobs:
         run: go build -tags codegrammars ./...
 
       - name: Test (code index, full grammar set)
+        timeout-minutes: 20
         run: make test-codeindex-full
 
       # Same pairing as ci.yml's Go Test job: the shell suite over
@@ -33,27 +38,48 @@ jobs:
         run: make test-scripts
 
       - name: Test + coverage gate
+        timeout-minutes: 25
         run: make test-cover
 
       - name: Test (race, library packages)
         # Same scope as the main-branch race pass in ci.yml: cmd is CLI glue
         # whose concurrency lives in internal/*, already covered here.
+        # -timeout is per package; the step budget stays above it.
+        timeout-minutes: 40
         run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
 
+  # Mirrors ci.yml's swift-test job — keep the two in step (runner, Xcode,
+  # Go, cache, steps, timeouts). The release gate drifted once: it stayed on
+  # macos-15 + Xcode 26.3 after ci.yml moved, and v0.14.0's cold SPM resolve
+  # failed on mlx-swift's swift-tools-version 6.3.
   swift-test:
     name: Swift Test
-    runs-on: macos-15
+    # macos-26: its image carries Xcode 26.4+ (Swift 6.3). The pinned mlx-swift
+    # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
+    # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load.
+    runs-on: macos-26
+    # A hang must fail the job, not run to GitHub's 6 h default. Measured
+    # ~8 min in ci.yml, up to ~12; the margin is for a cold SPM cache.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: WatchtowerDesktop
     steps:
       - uses: actions/checkout@v4
 
-      # Same as ci.yml: the default Xcode 16.4 toolchain predates the macOS 26
-      # SDK that AppleProvider.swift's Speech declarations weak-link against.
+      # The image's default toolchain may predate the macOS 26 SDK that
+      # AppleProvider.swift's Speech declarations weak-link against, and the
+      # Swift 6.3 toolchain is what mlx-swift's manifest needs.
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "26.3"
+          xcode-version: "26.4.1"
+
+      # CodeNavRealCLITests builds the CLI from this checkout (go build .):
+      # the Go the other jobs use (go.mod needs 1.25), so the suite runs here
+      # instead of skipping or failing.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
 
       - name: Cache SPM build
         uses: actions/cache@v4
@@ -62,5 +88,16 @@ jobs:
           key: ${{ runner.os }}-spm-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}
           restore-keys: ${{ runner.os }}-spm-
 
+      - name: Build
+        run: swift build
+
       - name: Test
+        timeout-minutes: 20
         run: swift test
+
+      # The process-spawning suites again on a one-thread concurrency pool,
+      # so blocking I/O that slips back onto pool threads fails here.
+      - name: Test (strict concurrency pool)
+        timeout-minutes: 10
+        working-directory: .
+        run: make test-swift-strict-pool

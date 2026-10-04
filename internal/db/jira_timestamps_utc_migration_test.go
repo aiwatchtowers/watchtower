@@ -20,6 +20,7 @@ func jiraWire(t time.Time, zone *time.Location) string {
 // RFC3339 whole seconds; values already in that form, values without a zone,
 // unparseable values and non-Jira rows are left alone.
 func TestMigration00092_RewritesJiraTimestampsToUTC(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 91)
 	now := time.Now().UTC().Truncate(time.Second)
 	msk := time.FixedZone("", 3*3600)

@@ -13,6 +13,7 @@ import (
 // written before the rollup existed gets every project parent re-derived
 // once, deepest first, and personal targets stay as they were.
 func TestMigration00085_RecomputesExistingBoards(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 82)
 	_, err := raw.Exec(`INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme'), (2, 'other', '/tmp/other')`)
 	require.NoError(t, err)
@@ -83,6 +84,7 @@ func TestMigration00085_RecomputesExistingBoards(t *testing.T) {
 
 // TestMigration00085_DownDropsTheTriggers: Down is real, and re-Up restores.
 func TestMigration00085_DownDropsTheTriggers(t *testing.T) {
+	t.Parallel()
 	raw := rawDBAt(t, 85)
 	countTriggers := func(db *sql.DB) int {
 		var n int
