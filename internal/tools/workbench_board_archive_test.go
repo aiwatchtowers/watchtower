@@ -163,6 +163,23 @@ func TestListTargets_ArchivedOnlyWithIncludeArchived(t *testing.T) {
 	assert.NotContains(t, plain, "Old feature", "outside a workbench session nothing changes (PROJ-01)")
 }
 
+func TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets(t *testing.T) {
+	fx := newArchiveFixture(t)
+
+	def := callReadIn(t, fx.reg, fx.a, "list_targets", `{}`)
+	assert.Contains(t, def, "Open alpha task")
+	for _, title := range []string{"Old feature", "Old task", "Old alpha task"} {
+		assert.NotContains(t, def, title, "the default still hides archived targets")
+	}
+	all := callReadIn(t, fx.reg, fx.a, "list_targets", `{"include_archived":true}`)
+	for _, title := range []string{"Open alpha task", "Old feature", "Old task", "Old alpha task"} {
+		assert.Contains(t, all, title)
+	}
+
+	plain := callReadString(t, fx.reg, "list_targets", `{"include_archived":true}`)
+	assert.NotContains(t, plain, "Old feature", "outside a workbench session nothing changes (PROJ-01)")
+}
+
 func TestGetTarget_FindsAnArchivedTargetAndSaysSo(t *testing.T) {
 	fx := newArchiveFixture(t)
 

@@ -18,7 +18,7 @@ type listTargetsArgs struct {
 	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 	// IncludeArchived has no effect outside a workbench session, which never
 	// sees workbench targets (PROJ-01).
-	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"workbench sessions: also list archived targets (closed longer than the workbench's archive period), with or without status"`
+	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"workbench sessions: also list archived targets (closed longer than the workbench's archive period); without status it lists every target, open, closed and archived"`
 }
 
 type getTargetArgs struct {
@@ -29,8 +29,9 @@ type getTargetArgs struct {
 // priority, level, or ownership.
 func NewListTargets() *Tool {
 	return &Tool{
-		Name:        "list_targets",
-		Description: "List the user's personal action items (targets), optionally filtered by status, priority, level, or ownership.",
+		Name: "list_targets",
+		Description: "List the user's personal action items (targets), optionally filtered by status, priority, level, or ownership; " +
+			"in a workbench session archived targets are left out unless include_archived.",
 		InputSchema: mustSchema[listTargetsArgs]("list_targets"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -51,7 +52,10 @@ func NewListTargets() *Tool {
 				Limit: listLimit(a.Limit),
 				// GetTargets excludes done/dismissed unless IncludeDone is set;
 				// without this, filtering by status=done/dismissed returns [].
-				IncludeDone: a.Status == "done" || a.Status == "dismissed",
+				// Every archived target is closed, so include_archived with no
+				// status lists the closed ones too, or it would find nothing.
+				IncludeDone: a.Status == "done" || a.Status == "dismissed" ||
+					(a.IncludeArchived && a.Status == "" && call.Binding.WorkbenchID != 0),
 				// 0 (every non-workbench session) excludes workbench targets
 				// (PROJ-01); a workbench session sees only its own board.
 				WorkbenchID: call.Binding.WorkbenchID,
