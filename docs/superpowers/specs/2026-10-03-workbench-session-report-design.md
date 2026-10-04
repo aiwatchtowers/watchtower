@@ -43,6 +43,12 @@ apart (4: all).
   Owner-confirmed (ask #18). The PROJ-13 guard is `TestProj13_V1PromptIsUpgradedToV2`.
 - **Part 6 — phases.** The session's own target is a phase only when it is flat (leaves only). With sub-parents, its
   phase would repeat the report's X/Y, so its direct leaves count in `progress`, `now` and `next` only.
+- **Part 6 — untouched groups (amendment 2026-10-04, board #393).** Creating a target or moving it under a group links
+  it, so a group the session only filed showed under "Done" as 0/N with a dashed circle. A parent is a phase only when
+  at least one of its in-scope leaves moved past todo (its status is neither todo nor snoozed, or it ever went to
+  `in_progress` or `done`); otherwise its first todo leaves show in `next` only (capped at 3). v1 limit: the history is
+  the leaf's whole history, not this session's, so a group that only received a leaf finished earlier by another
+  session still reads as a phase with that work.
 - **Part 6 — API.** PR-cache refs are strings (`pr:<n>` | `branch:<name>`): `SessionRefs(ctx, d, projectID, sessionID)
   ([]string, error)` and `Refresh(ctx, d, projectID, refs []string, RefreshOptions{Network, Budget, Now})
   RefreshResult`.
@@ -368,7 +374,7 @@ Otherwise return {"ok": true}. When unsure, return {"ok": true}.
 | `on_you` | this session's asks with status `open`: `id`, `kind`, `title`, `target_id`, `created_at`. Session-less asks never appear here |
 | `now` | in-scope leaves `in_progress`/`in_review`/`blocked`: `id`, `text`, `status`, `branch`, `since` (from the latest `target_status_history` row) |
 | `next` | the first 3 `todo` leaves in board order |
-| `phases` | one per parent of in-scope leaves, in board order (the session's own target only when it is flat, Revision 3): `target_id`, `text`, `done`, `total` (all its non-dismissed leaf descendants, not only touched ones), `started_at` (earliest move to `in_progress` among them), `finished_at` (latest move to `done`, only when all done), `items` (the leaves, with status) |
+| `phases` | one per parent of in-scope leaves that moved past todo (a leaf neither todo nor snoozed, or with an `in_progress`/`done` history row; amendment 2026-10-04, board #393), in board order (the session's own target only when it is flat, Revision 3): `target_id`, `text`, `done`, `total` (all its non-dismissed leaf descendants, not only touched ones), `started_at` (earliest move to `in_progress` among them), `finished_at` (latest move to `done`, only when all done), `items` (the leaves, with status) |
 | `prs` | the distinct PR refs and branches of in-scope targets: `ref`, `pr_number`, `title`, `state`, `additions`, `deletions`, `merged_at`, `checked_at`, `targets` (ids). A branch whose PR is known merges into that PR's entry |
 | `pr_note` | why PR state may be incomplete (gh missing, no network, budget hit), or empty |
 
