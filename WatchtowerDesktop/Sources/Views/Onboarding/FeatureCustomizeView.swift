@@ -184,11 +184,14 @@ struct FeatureCustomizeView: View {
     /// empty, so the next successful one still gets to fill it.
     private func captureExperimentalIDs() {
         guard experimentalIDs.isEmpty, !service.features.isEmpty else { return }
-        experimentalIDs = Set(service.features.filter { $0.state == "disabled" }.map(\.id))
+        experimentalIDs = OnboardingFeaturePlan.experimentalFeatureIDs(
+            defaultOff: Set(service.features.filter { $0.state == "disabled" }.map(\.id))
+        )
     }
 
     /// Read from a snapshot taken at the first successful load, not from the
-    /// live `state`: the tag means "this ships off by default", not "is
+    /// live `state`: the tag means "this ships off by default" (Memory
+    /// excepted, `OnboardingFeaturePlan.experimentalFeatureIDs`), not "is
     /// currently off" — a later reload (Goals' Continue applying the
     /// selection) reports what the owner switched off as `disabled` too.
     private func isExperimental(_ feature: FeatureInfo) -> Bool {

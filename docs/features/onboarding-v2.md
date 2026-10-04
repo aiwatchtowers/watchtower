@@ -43,6 +43,9 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   on the Customize screen (`FeatureCustomizeView`), then stays frozen until
   "Reset to goals". It is applied by `FeatureManagerService.applySelection`
   (only real changes are written; no daemon restart).
+- The Customize screen tags a feature "Experimental" when it ships off by
+  default (snapshotted at the screen's first load), except Memory —
+  `OnboardingFeaturePlan.establishedDefaultOffFeatureIDs` (#378).
 
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
