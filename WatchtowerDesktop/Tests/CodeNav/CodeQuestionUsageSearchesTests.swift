@@ -21,9 +21,9 @@ final class CodeQuestionUsageSearchesTests: XCTestCase {
     private var started: [Started] = []
 
     private func makeSearches() -> CodeQuestionUsageSearches {
-        CodeQuestionUsageSearches { [unowned self] _, options, onMatch, onDone in
+        CodeQuestionUsageSearches { [weak self] _, options, onMatch, onDone in
             let handle = Handle()
-            started.append(Started(options: options, handle: handle, onMatch: onMatch, onDone: onDone))
+            self?.started.append(Started(options: options, handle: handle, onMatch: onMatch, onDone: onDone))
             return handle
         }
     }

@@ -18,8 +18,9 @@ package enum EmbeddedChatReplay {
     /// empty ones are skipped; a reply stopped early says so. A trailing
     /// owner message nothing answered is the one a Retry sends again, so it
     /// is left out too.
-    package static func block(messages: [ChatMessageRecord], before turnID: String,
-                              capCharacters: Int = capCharacters) -> String? {
+    package static func block(
+        messages: [ChatMessageRecord], before turnID: String, capCharacters: Int = capCharacters
+    ) -> String? {
         var entries: [(role: String, text: String)] = []
         for message in messages where message.turnID.isEmpty || message.turnID != turnID {
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)

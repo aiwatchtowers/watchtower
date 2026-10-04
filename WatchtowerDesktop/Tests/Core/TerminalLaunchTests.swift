@@ -71,7 +71,7 @@ final class TerminalLaunchTests: XCTestCase {
         process.standardOutput = out
         try process.run()
         process.waitUntilExit()
-        let printed = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let printed = String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
         XCTAssertEqual(printed, "3\n\(prompt)\n0\n", "--session-id, the id, then the prompt whole; the variable dropped")
     }
 

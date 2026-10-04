@@ -840,20 +840,20 @@ final class CodeQuestionCenterTests: XCTestCase {
     func testTheShownListFollowsQuestionsAskedAndDeleted() async throws {
         let (center, _, _) = makeCenter()
         let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
-        let empty = await eventually { center.questionLists[project.id] == [] }
+        let empty = await eventually { center.questionLists[project.id]?.isEmpty == true }
         XCTAssertTrue(empty)
         guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
         let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["First?"] }
         XCTAssertTrue(listed)
         await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
         try await pool.write { db in _ = try CodeQuestionList.delete(db, conversationID: first) }
-        let gone = await eventually { center.questionLists[project.id] == [] }
+        let gone = await eventually { center.questionLists[project.id]?.isEmpty == true }
         XCTAssertTrue(gone, "a delete reaches the list too")
 
         watching.cancel()
         await watching.value
         guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
-        XCTAssertEqual(center.questionLists[project.id], [], "a list no tab shows is not followed")
+        XCTAssertEqual(center.questionLists[project.id]?.isEmpty, true, "a list no tab shows is not followed")
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
     }
