@@ -246,6 +246,58 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertFalse(center.isPolling)
     }
 
+    /// PROJ-12 (amended 2026-10-04, board #379), wired through the
+    /// stored states: an answer to a session at a permission prompt is held,
+    /// and goes — pasted, then Return — on the read that shows the prompt
+    /// answered.
+    func testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered() async throws {
+        let center = makeCenter(interval: .seconds(60))
+        center.start()
+        let row = try await session()
+        let projectID = try XCTUnwrap(row.projectID)
+        let questions = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+        let askID = try await pool.write { db in
+            try TestDatabase.insertOwnerAsk(db, projectID: projectID, sessionID: row.id, payload: questions)
+        }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults, terminalCenter: terminals,
+                                      agentStates: center)
+        terminals.start(row, fresh: true)
+        let process = try XCTUnwrap(processes.last)
+        try hookWrites(row.id, "approval", at: 1)
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state.kind, .needsApproval)
+
+        await vm.asks.load(projectID: projectID)
+        let ask = try XCTUnwrap(vm.asks.openAsks[projectID]?.first { $0.id == askID })
+        vm.asks.drafts.update(askID) { $0.picks["a"] = .init(labels: ["Yes"]) }
+        let delivery = await vm.asks.answer(ask)
+        XCTAssertEqual(delivery, .held)
+        XCTAssertTrue(process.inputs.isEmpty)
+
+        try hookWrites(row.id, "working", at: 2)
+        await center.poll()
+
+        await eventually("the held line goes") { process.inputs.count == 2 }
+        XCTAssertEqual(process.inputs.last, [0x0D])
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
+    }
+
+    /// `onChange` fires on a change of the statuses only.
+    func testOnChangeFiresOnlyWhenTheStatusesChange() async throws {
+        let center = makeCenter(interval: .seconds(60))
+        var changes = 0
+        center.onChange = { changes += 1 }
+        let row = try await session()
+        await center.poll()
+        XCTAssertEqual(changes, 1, "the first read")
+        await center.poll()
+        XCTAssertEqual(changes, 1, "an unchanged read")
+        terminals.start(row, fresh: true)
+        try hookWrites(row.id, "working", at: 1)
+        await center.poll()
+        XCTAssertEqual(changes, 2)
+    }
+
     func testPollStartsAndStopsWithLiveness() async throws {
         let center = makeCenter()
         center.start()
