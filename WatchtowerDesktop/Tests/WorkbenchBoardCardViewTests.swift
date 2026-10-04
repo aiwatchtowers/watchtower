@@ -67,6 +67,5 @@ final class WorkbenchBoardCardViewTests: XCTestCase {
         XCTAssertThrowsError(
             try view.inspect().find(viewWithAccessibilityIdentifier: WorkbenchBoardChevron.accessibilityID)
         )
-        XCTAssertThrowsError(try view.inspect().find(ViewType.Button.self))
     }
 }

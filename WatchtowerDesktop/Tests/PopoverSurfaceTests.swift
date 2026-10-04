@@ -12,12 +12,17 @@ final class PopoverSurfaceTests: XCTestCase {
         .appendingPathComponent("Sources")
 
     /// Every SwiftUI popover's content wears `popoverSurface()`: a file with
-    /// N `.popover(` calls applies it at least N times.
+    /// N `.popover(` calls applies it at least N times, comment lines aside
+    /// (a mention in a comment neither presents nor surfaces one). A count
+    /// per file, so a tripwire: it cannot pair each call with its content.
     func testEveryPopoverAppliesTheSharedSurface() throws {
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: Self.sources, includingPropertiesForKeys: nil))
         var popovers = 0
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
+                .components(separatedBy: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+                .joined(separator: "\n")
             let presented = text.components(separatedBy: ".popover(").count - 1
             let surfaced = text.components(separatedBy: ".popoverSurface()").count - 1
             popovers += presented
