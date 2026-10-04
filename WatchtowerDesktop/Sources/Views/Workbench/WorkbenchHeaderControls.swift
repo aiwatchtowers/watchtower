@@ -102,6 +102,7 @@ struct WorkbenchHeaderControls: View {
             }
             .disabled(installing)
             .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
+            archiveMenu
             Divider()
             Button(role: .destructive) {
                 onDelete()
@@ -117,6 +118,28 @@ struct WorkbenchHeaderControls: View {
         .fixedSize()
         .help("Workbench actions")
         .accessibilityLabel("Workbench actions")
+    }
+}
+
+private extension WorkbenchHeaderControls {
+    /// "Archive Closed Targets After ▸ Never / 3 / … / 90 days" (board #301):
+    /// a closed target leaves the board after that long; the board's
+    /// "Archive" toggle shows it again. Applies at once, both ways.
+    var archiveMenu: some View {
+        Menu {
+            ForEach(Workbench.archiveAfterDaysChoices, id: \.self) { days in
+                Toggle(Workbench.archiveAfterDaysLabel(days), isOn: Binding(
+                    get: { project.archiveAfterDays == days },
+                    set: { on in
+                        guard on else { return }
+                        Task { await vm.setArchiveAfterDays(days, projectID: project.id) }
+                    }
+                ))
+            }
+        } label: {
+            Label("Archive Closed Targets After", systemImage: "archivebox")
+        }
+        .help("How long a done or dismissed target stays on the board before it is archived")
     }
 }
 

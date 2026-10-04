@@ -60,9 +60,16 @@ struct WorkbenchBoardView: View {
         // A target id in the Session view opens its card here.
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
         .onDisappear { viewModel?.stopPolling() }
+        // The header's "Archive Closed Targets After" applies at once, not at
+        // the next poll (board #301).
+        .onChange(of: archiveAfterDays) { _, _ in viewModel?.refreshIfChanged() }
         .task(id: projectID) {
             await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }
+    }
+
+    private var archiveAfterDays: Int? {
+        appState.workbenchesViewModel?.summaries.first { $0.id == projectID }?.project.archiveAfterDays
     }
 
     private func takeFocus() {
@@ -144,6 +151,10 @@ struct WorkbenchBoardView: View {
             Toggle("Show done", isOn: Binding(get: { vm.showDone }, set: { vm.showDone = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
+            Toggle("Archive (\(vm.archivedCount))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+                .help("Show the targets closed longer than the workbench's archive setting (… menu). Reopen one to bring it back.")
         }
     }
 

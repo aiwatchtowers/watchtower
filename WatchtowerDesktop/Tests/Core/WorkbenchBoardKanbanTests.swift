@@ -37,8 +37,8 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         }
     }
 
-    private func node(_ t: Target, _ children: [WorkbenchBoardNode] = []) -> WorkbenchBoardNode {
-        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0)
+    private func node(_ t: Target, _ children: [WorkbenchBoardNode] = [], archived: Bool = false) -> WorkbenchBoardNode {
+        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, archived: archived)
     }
 
     private func column(_ board: WorkbenchBoardKanban, _ status: String) -> WorkbenchBoardKanban.Column? {
@@ -249,6 +249,63 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
             XCTAssertNil(board.filterRootID, "filter \(stale) is not an option")
             XCTAssertEqual(ids(board, "todo"), [2, 3])
         }
+    }
+
+    // MARK: - Archive (board #301)
+
+    /// 12 live done leaves (101 oldest), live dismissed 200, archived done
+    /// 300–302 and archived dismissed 400 — the archived ones older still.
+    private func archiveRoots() throws -> [WorkbenchBoardNode] {
+        var roots = try (0..<12).map { i in
+            node(try target(101 + i, status: "done", updatedAt: String(format: "2026-09-29T10:%02d:00Z", i)))
+        }
+        roots.append(node(try target(200, status: "dismissed")))
+        roots += try (0..<3).map { i in
+            node(try target(300 + i, "Old", status: "done", updatedAt: "2026-08-0\(i + 1)T10:00:00Z"), archived: true)
+        }
+        roots.append(node(try target(400, "Old", status: "dismissed", updatedAt: "2026-08-01T10:00:00Z"), archived: true))
+        return roots
+    }
+
+    func testArchivedLeavesAreCardsOnlyWithTheToggle() throws {
+        let roots = try archiveRoots()
+        let off = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: true)
+        XCTAssertEqual(ids(off, "done"), Array((101...112).reversed()))
+        XCTAssertEqual(ids(off, "dismissed"), [200])
+        XCTAssertFalse(off.showsCard(300))
+
+        let on = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: true, showArchived: true)
+        XCTAssertEqual(ids(on, "done"), Array((101...112).reversed()) + [302, 301, 300])
+        XCTAssertEqual(ids(on, "dismissed"), [200, 400])
+    }
+
+    func testArchivedDoneCardsAreNeverCappedAndDismissedHoldsOnlyArchivedWithoutShowDone() throws {
+        let board = WorkbenchBoardKanban(try archiveRoots(), filterRootID: nil, showDone: false, showArchived: true)
+        let done = try XCTUnwrap(column(board, "done"))
+        XCTAssertEqual(done.cards.map(\.id), Array((103...112).reversed()) + [302, 301, 300],
+                       "the cap trims live done cards only")
+        XCTAssertEqual(done.hiddenCount, 2)
+        XCTAssertEqual(ids(board, "dismissed"), [400], "a live dismissed card still waits for Show done")
+    }
+
+    func testSearchShowsArchivedLeaves() throws {
+        let board = WorkbenchBoardKanban(try archiveRoots(), filterRootID: nil, showDone: false, query: "old")
+        XCTAssertEqual(ids(board, "done"), [302, 301, 300])
+        XCTAssertEqual(ids(board, "dismissed"), [400])
+    }
+
+    func testAnArchivedRootIsAFilterOptionOnlyWithTheToggle() throws {
+        let roots = [
+            node(try target(1, "Live"), [node(try target(2))]),
+            node(try target(3, "Gone", status: "done"), [node(try target(4, status: "done"), archived: true)], archived: true)
+        ]
+        let off = WorkbenchBoardKanban(roots, filterRootID: 3, showDone: false)
+        XCTAssertEqual(off.filterOptions.map(\.id), [1])
+        XCTAssertNil(off.filterRootID, "a filter on an archived group shows All while the archive is hidden")
+        let on = WorkbenchBoardKanban(roots, filterRootID: 3, showDone: false, showArchived: true)
+        XCTAssertEqual(on.filterOptions.map(\.id), [1, 3])
+        XCTAssertEqual(on.filterRootID, 3)
+        XCTAssertEqual(ids(on, "done"), [4])
     }
 
     // MARK: - Preferences

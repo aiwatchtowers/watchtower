@@ -15,6 +15,9 @@ final class WorkbenchBoardViewModel {
     private(set) var roots: [WorkbenchBoardNode] = []
     var collapsed: Set<Int> = []
     var showDone = false
+    /// The toolbar's "Archive (K)" (board #301): archived targets back on
+    /// the board, dimmed. Session-only like `showDone`.
+    var showArchived = false
     /// The board's search field (board #207; `WorkbenchBoardSearch`): view
     /// state, not remembered.
     var searchText = ""
@@ -38,12 +41,19 @@ final class WorkbenchBoardViewModel {
     }
 
     var kanban: WorkbenchBoardKanban {
-        WorkbenchBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone, query: searchText)
+        WorkbenchBoardKanban(
+            roots, filterRootID: kanbanFilterRootID, showDone: showDone, showArchived: showArchived, query: searchText
+        )
     }
 
     var rows: [WorkbenchBoardRow] {
-        WorkbenchBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone, query: searchText)
+        WorkbenchBoardOutline.rows(
+            roots, collapsed: collapsed, showDone: showDone, showArchived: showArchived, query: searchText
+        )
     }
+
+    /// The K of "Archive (K)": archived targets on this board.
+    var archivedCount: Int { WorkbenchBoardOutline.archivedCount(roots) }
 
     var selectedNode: WorkbenchBoardNode? {
         selectedTargetID.flatMap { WorkbenchBoardOutline.find($0, in: roots) }
@@ -137,7 +147,9 @@ final class WorkbenchBoardViewModel {
 
     /// Counts plus the latest timestamps of everything the board renders. Any
     /// agent write (a new target, a status move, a comment, a resolve, a read
-    /// mark) changes at least one of them.
+    /// mark) changes at least one of them. The archive setting is in it too, so
+    /// a change applies at once; a target that merely ages into the archive
+    /// leaves at the next reload (spec 2026-10-04 decision 10, v1 limit).
     nonisolated private static func fingerprint(_ db: Database, projectID: Int64) throws -> String {
         let targets = try Row.fetchOne(
             db,
@@ -171,7 +183,10 @@ final class WorkbenchBoardViewModel {
                 """,
             arguments: [projectID]
         )
-        return [targets, comments, images, asks].map { $0?.description ?? "" }.joined(separator: "|")
+        let archive = try Row.fetchOne(
+            db, sql: "SELECT archive_after_days FROM projects WHERE id = ?", arguments: [projectID]
+        )
+        return [targets, comments, images, asks, archive].map { $0?.description ?? "" }.joined(separator: "|")
     }
 
     // MARK: - Selection

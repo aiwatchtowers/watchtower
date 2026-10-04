@@ -123,6 +123,13 @@ struct WorkbenchPageView: View {
                     .lineLimit(1)
                     .help(installError)
             }
+            if let archiveError = vm.archiveSettingErrors[project.id] {
+                Text(archiveError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .help(archiveError)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)

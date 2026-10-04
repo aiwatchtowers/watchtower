@@ -48,6 +48,10 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
     package let description: String
     package let createdAt: String
     package let updatedAt: String
+    /// Days a closed target waits before the board archives it; 0 = never
+    /// (board #301, migration 00103). The owner's setting, written only by
+    /// `WorkbenchQueries.setArchiveAfterDays`.
+    package let archiveAfterDays: Int
 
     package init(row: Row) {
         id = row["id"]
@@ -56,9 +60,20 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
         description = row["description"] ?? ""
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        archiveAfterDays = row["archive_after_days"] ?? Self.defaultArchiveAfterDays
     }
 
     package var folderURL: URL { URL(fileURLWithPath: folderPath, isDirectory: true) }
+
+    /// The column's default.
+    package static let defaultArchiveAfterDays = 14
+    /// The header menu's "Archive Closed Targets After" choices (owner
+    /// decision B); 0 = Never.
+    package static let archiveAfterDaysChoices = [0, 3, 7, 14, 30, 90]
+
+    package static func archiveAfterDaysLabel(_ days: Int) -> String {
+        days == 0 ? "Never" : "\(days) days"
+    }
 }
 
 /// A `project_target_images` row (migration 00088): an image the agent
@@ -177,6 +192,9 @@ package struct WorkbenchBoardNode: Identifiable, Equatable {
     package let openComments: Int
     /// Agent comments on this target the owner has not seen.
     package let unreadForOwner: Int
+    /// In the board archive (board #301): the `workbench_target_archive`
+    /// view's verdict. An archived node's whole subtree is archived too.
+    package var archived = false
 
     package var id: Int { target.id }
 }
