@@ -86,6 +86,23 @@ func TestBuild_FinishedSessionWithOneBlockedLeaf(t *testing.T) {
 	assert.Empty(t, r.OnYou)
 }
 
+// The report reads the full board: work the session closed stays in it once
+// the board archives it (PROJ-15).
+func TestBuild_KeepsArchivedTargetsTheSessionClosed(t *testing.T) {
+	d := loadFixture(t, "board_314.sql")
+	require.NoError(t, d.SetWorkbenchArchiveDays(1, 3))
+	archived, err := d.IsWorkbenchTargetArchived(321)
+	require.NoError(t, err)
+	require.True(t, archived, "precondition: phase A's tasks closed more than 3 days ago are archived")
+
+	r := build(t, d, 1)
+	assert.Equal(t, Progress{Done: 14, Total: 15}, r.Progress)
+	a := phaseByID(t, r.Phases, 320)
+	assert.Equal(t, 7, a.Done)
+	assert.Equal(t, 7, a.Total)
+	assert.Contains(t, itemIDs(a.Items), int64(321))
+}
+
 func TestBuild_SessionTargetIsAPhaseOnlyWhenFlat(t *testing.T) {
 	d := loadFixture(t, "board_314.sql")
 	r := build(t, d, 1)

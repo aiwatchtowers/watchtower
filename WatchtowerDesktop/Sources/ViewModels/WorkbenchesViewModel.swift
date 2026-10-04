@@ -51,6 +51,9 @@ final class WorkbenchesViewModel {
     private(set) var resyncResults: [Int64: WorkbenchResynced] = [:]
     private(set) var resyncErrors: [Int64: String] = [:]
     var errorMessage: String?
+    /// Why the last "Archive Closed Targets After" write failed, per
+    /// workbench; the next successful write clears it.
+    private(set) var archiveSettingErrors: [Int64: String] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// Why installing or repairing a project's install failed. It explains
     /// the Repair button, so it stays until a status read finds nothing to
@@ -607,6 +610,20 @@ final class WorkbenchesViewModel {
     /// remove/add, the settings merge); never two at once for one project.
     func isInstalling(projectID: Int64) -> Bool {
         repairing.contains(projectID) || resyncing.contains(projectID)
+    }
+
+    /// The header menu's "Archive Closed Targets After" (board #301). The
+    /// board picks the change up through its fingerprint; the reload refreshes
+    /// the menu's checkmark.
+    func setArchiveAfterDays(_ days: Int, projectID: Int64) async {
+        do {
+            try await dbPool.write { try WorkbenchQueries.setArchiveAfterDays($0, projectID: projectID, days: days) }
+            archiveSettingErrors[projectID] = nil
+        } catch {
+            archiveSettingErrors[projectID] = "Could not change the archive setting: \(error.localizedDescription)"
+            return
+        }
+        await reload()
     }
 
     func dismissResync(projectID: Int64) {

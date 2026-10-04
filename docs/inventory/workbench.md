@@ -23,7 +23,8 @@ has a report of its own work, and the agent marks it finished with
 `finish_session` (PROJ-14). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`; owner asks:
 `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`; session
-report and states: `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`.
+report and states: `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; board
+archive: `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md`.
 
 **Naming (2026-10-02):** this feature was called *Projects* until the
 Workbench rename (`docs/superpowers/specs/2026-10-02-workbench-rename-design.md`).
@@ -45,6 +46,7 @@ under `mcp --project N`) until the owner resyncs it; see
 `cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_prompt.md` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
 `internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
 `internal/db/session_report.go` + `internal/db/migrations/00101_workbench_session_report.sql` +
+`internal/db/workbench_archive_reads.go` + `internal/db/migrations/00103_workbench_board_archive.sql` + `internal/tools/workbench_board.go` +
 `internal/sessionreport/` + `cmd/workbench_session_report.go` +
 `WatchtowerDesktop/Sources/Views/Workbench/` + `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift` +
@@ -914,6 +916,50 @@ owner's and the agent's backs.
 
 **Locked since:** 2026-10-03
 
+## PROJ-15 — an archived workbench target is hidden, never lost
+
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3)
+
+**Observable:** A workbench target is archived iff its workbench's
+`projects.archive_after_days` (migration `00103`, default 14, `CHECK` 0..365,
+0 = never) is above 0, it and every descendant on the same board are `done`
+or `dismissed`, and the newest close time among them (a target's latest
+`target_status_history.changed_at`, else its `updated_at`) is more than
+`archive_after_days` days old. The rule lives only in the SQLite view
+`workbench_target_archive`, read by Go (`GetWorkbenchBoard`,
+`IsWorkbenchTargetArchived`, `GetTargets` in a workbench session) and the
+Desktop (`WorkbenchQueries.board`) alike. Archiving writes nothing — no
+target, status, `updated_at` or history row, on any read. Every archived
+target is still found by id (`get_target`, which answers `archived: true`)
+and by search (the Desktop board search always matches archived targets;
+`include_archived` on `workbench_board` and `list_targets`, `workbench board
+--archived`). Reopening restores it: any open status write (the Desktop, or
+`update_target`), an open sub-target created under an archived group, or
+open work re-parented under one (PROJ-09) takes it out of the archive on the
+next read, with the status change recorded like any other (PROJ-06). A group
+is archived only whole: a target with an open descendant, or whose subtree
+closed last less than `archive_after_days` days ago, is never archived, and an
+archived target's whole subtree is archived. The drift check never skips an
+archived target: `workbench check`, the brief's drift section and the Desktop
+banner read the full board, so a `done_but_unmerged` finding on an archived
+target is reported exactly as on a visible one (PROJ-07 unchanged in
+wording).
+
+**Why locked:** Owner request (board target #301, ask #33). A long board
+must get short without losing anything: work that vanished, could not be
+looked up again, came back only through a special action, broke a group
+apart or hid a branch that never merged would make the board lie in the
+other direction.
+
+**Test guards:**
+- `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_UnparseableCloseTimeKeepsTheChain`, `TestProj15_ReopenAndRecloseStartsThePeriodOver`, `TestProj15_LargeBoardReadIsFast`
+- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork`
+- `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
+- `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift::testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardOutlineTests.swift::testSearchAlwaysMatchesArchivedTargets`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift::testSearchShowsArchivedLeaves`, `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne`
+- supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`)
+
+**Locked since:** 2026-10-04
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -1036,9 +1082,26 @@ owner's and the agent's backs.
   not hooked. (d) Subagent detection relies solely on the `agent_id` field
   of the hook input; an input without it is treated as the main thread's.
 
+- **Board archive (PROJ-15).** SQLite cannot push a `project_id` filter
+  into the recursive, grouped view, so every board read, `get_target` and
+  session `list_targets` computes the archive over all workbench targets in
+  the database, every workbench's (about 3 µs per target — fine at today's
+  sizes; a 2000-target board is pinned by `TestProj15_LargeBoardReadIsFast`). Nothing is stored, so the Desktop
+  board notices a target ageing into the archive only at its next reload
+  (any board change, Refresh, reopening the pane), not at the exact minute.
+  Restore is reopening: there is no Unarchive action (owner decision D),
+  since a target taken out of the archive but still closed for longer than
+  the setting would be archived again on the next read. The setting is the
+  owner's (Desktop menu); the agent cannot change it. A close time that does
+  not parse as a date (every writer stores ISO-8601 UTC, so none is known)
+  keeps its target and every ancestor out of the archive, so an archived
+  target's whole subtree stays archived (guard
+  `TestProj15_UnparseableCloseTimeKeepsTheChain`).
+
 ## Changelog
 
-- 2026-10-04 (board #361, code navigation tails): **PROJ-02 strengthened** — the delete also removes the workbench's code questions (they quote the folder's code and no surface listed them once the workbench was gone); `TestProj02_DeleteProjectLeavesNoRows` extended, none relaxed. Migration `00103` removes the ones earlier deletes left behind (ids are never reused, so a missing workbench id is a deleted one).
+- 2026-10-04 (board #361, code navigation tails): **PROJ-02 strengthened** — the delete also removes the workbench's code questions (they quote the folder's code and no surface listed them once the workbench was gone); `TestProj02_DeleteProjectLeavesNoRows` extended, none relaxed. Migration `00104` removes the ones earlier deletes left behind (ids are never reused, so a missing workbench id is a deleted one).
+- 2026-10-04 (board #301, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md`): **PROJ-15 added** — approved by the owner on 2026-10-04 (ask #33, owner decision C, the spec §3 wording): an archived workbench target is hidden, never lost. Migration `00103` adds `projects.archive_after_days` and the view `workbench_target_archive`; display readers prune archived subtrees (`db.WithoutArchived`), while the drift check, `workbench_info`'s status counts, the session report and the briefing keep the full board. Owner decision A: `workbench_board` by default lists open work and the closed targets above it, counting the rest (`closed_children`/`closed`, `archived_children`/`archived`), with `include_closed`/`include_archived` to list them. **PROJ-07** unchanged in wording and guards; its "the brief and the Desktop show every finding" now explicitly includes findings on archived targets (new guard `TestProj15_DriftStillSeesArchivedUnmergedWork`). PROJ-05, PROJ-06 (archiving writes no status and no history row; a restore is an ordinary status write), PROJ-01 and PROJ-09 unchanged; every existing guard runs unchanged. v1 note "Board archive" added.
 - 2026-10-04 (PR #163 review round, controller decisions): **PROJ-12 tightened** to hold as written; heading and the "two answers never share a prompt" wording unchanged, no guard relaxed. A line the app pasted without its Return (an answer left typed, a hand-off left pasted) now counts as a draft in the session's prompt (`TerminalCenter.ownerDrafts` → `promptDrafts`), cleared by the owner's submitting Return or the process's start or close, never by keys into a permission dialog — before this, the next answer was submitted with it. A submitting Return is input ending in a plain CR not after `\` or ESC (`TerminalCenter.isSubmit`): Claude Code's line-break keys (`\` then Return, Option+Return, Ctrl+J, Shift+Return sequences) leave the draft. A Return needs both state reads to have succeeded (`SessionAgentStateCenter.poll` returns `Bool`; `refreshStates` and `submitPrompt`'s `refresh` too), and a failed read before the paste holds the answer until a read succeeds (`SessionAgentStateCenter.onRead`); a hand-off reads no state before its paste, so only its read after the pause gates its Return. The `\` rule skips escape sequences and paste brackets (`TerminalCenter.endsAfterBackslash`). A queued answer later held by a permission prompt is told by its own notice, so it gets the held bar and its minute's wait even when the earlier answer ended typed. A held answer is never sent on a timer; after `stillHeldAfter` (60 s) its bar reads "Still waiting for the permission prompt — Dismiss to send the answer through the session's brief instead". A line held only behind another answer to the same session is `queued`, with the note "Answer saved — sending after the previous answer". A key into a permission dialog no longer clears a typed answer's "press Return" bar. Limit (h) rewritten. New guards listed under PROJ-12; `testAPermissionPromptDuringThePauseLeavesTheLineTyped` strengthened (it now asserts the bar stays through a dialog key and a second answer is only pasted).
 - 2026-10-04 (board #379, owner-approved): **PROJ-12 amended** — the owner asked for the answer to an ask to go to the agent by itself after answering, instead of having to press Enter. The answer's line (still stored first, still one line) is now pasted and submitted: `TerminalCenter.submitPrompt` (`keepingLineBreaks: false`) writes the bracketed paste, then one Return on its own after `answerSubmitDelay` (500 ms). The "Why locked" risk — a Return confirming a permission dialog's default — is met by the session agent state (PROJ-11): while the ask's session is `needsApproval` nothing is typed and the line is held in memory until a read of the states shows the prompt answered (a stopped or restarted session gets nothing; a quit leaves the ask `answered` for the brief); the state is re-read before the paste and after the pause, and a prompt that appears during the pause stops the Return. Without bracketed paste the line is still copied, never typed. The pane hint "press Return to send" (board #364) remains only for that pause race and the copied case; a held answer shows "Answer saved — it goes to Claude once the permission prompt is resolved", a submitted one "Answer sent to Claude". Guards renamed in place: `testProj12_TheAnswerIsStoredBeforeTheLineIsTypedAndNeverSubmitted` → `testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (stored-before-typed and the one-line, no-control-byte paste kept, Return now asserted as a write of its own), `TerminalCenterTests::testARunningSessionGetsOneBracketedPasteWithNoEnter` leaves the PROJ-12 list (it now pins only `sendPrompt`, the paste step of `submitPrompt`, which has no other caller) for `testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn`; new `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer`. Review round (same day, controller decisions): no Return over the owner's half-typed text (`TerminalCenter.ownerDrafts`, fed by `onOwnerInput` now carrying the bytes; the "half-typed prompt" risk is back in "Why locked"; this also covers a hand-off's Return), a Return only into a session whose hooks wrote a state this run, one delivery per session at a time, a 500 ms pause for answers (`answerSubmitDelay`; hand-offs keep 150 ms), and the held bar's Dismiss cancels the delivery (the brief lists the answer); new guards `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted`, `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted`; limit (h) rewritten.
 - 2026-10-04 (polish wave, owner-approved default): PROJ-11's heading gains "(v1 limits below)" — "never show a stale state" holds outside the time-ordered leftovers listed under "Session agent state ordering and subagents" in "v1 limits and notes". Wording only; no contract semantics or guard tests changed.

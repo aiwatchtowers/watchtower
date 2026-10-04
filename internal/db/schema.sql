@@ -2158,8 +2158,43 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    board_language TEXT NOT NULL DEFAULT '' -- unused: the board always follows the session language (00087, retired by board item #153)
+    board_language TEXT NOT NULL DEFAULT '', -- unused: the board always follows the session language (00087, retired by board item #153)
+    archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365) -- closed targets older than this leave the board; 0 = never (00103)
 );
+
+-- Board archive (00103, PROJ-15): one row per workbench target; archived = 1
+-- iff its workbench's archive_after_days > 0, the target and every descendant
+-- on the same board are done/dismissed, and the newest close time among them
+-- (latest target_status_history.changed_at, else updated_at) is older than
+-- archive_after_days days; a close time that does not parse keeps the chain
+-- on the board. Computed on every read; nothing is stored, so a reopened
+-- target is back at once.
+CREATE VIEW IF NOT EXISTS workbench_target_archive AS
+WITH RECURSIVE
+    node(id, parent_id, project_id, open, closed_at) AS (
+        SELECT t.id, t.parent_id, t.project_id,
+               t.status NOT IN ('done', 'dismissed'),
+               COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
+                        t.updated_at)
+        FROM targets t
+        WHERE t.project_id IS NOT NULL
+    ),
+    up(ancestor, parent_id, project_id, open, closed_at) AS (
+        SELECT id, parent_id, project_id, open, closed_at FROM node
+        UNION
+        SELECT a.id, a.parent_id, up.project_id, up.open, up.closed_at
+        FROM up JOIN targets a ON a.id = up.parent_id AND a.project_id = up.project_id
+    )
+SELECT up.ancestor AS target_id,
+       up.project_id AS project_id,
+       CASE WHEN p.archive_after_days > 0
+             AND MAX(up.open) = 0
+             AND COUNT(*) = COUNT(julianday(up.closed_at))
+             AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
+            THEN 1 ELSE 0 END AS archived
+FROM up
+JOIN projects p ON p.id = up.project_id
+GROUP BY up.ancestor;
 
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

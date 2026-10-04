@@ -59,7 +59,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(isSelected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isSelected ? 1.5 : 0.5)
         )
-        .opacity(card.isClosed && !isSelected ? 0.6 : 1)
+        .opacity(dimming)
         .padding(.leading, CGFloat(min(row.depth, 6)) * 18)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -95,6 +95,14 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
         }
     }
 
+    /// Closed cards fade; archived ones (board #301) fade further. The
+    /// selected card is never dimmed.
+    private var dimming: Double {
+        if isSelected { return 1 }
+        if row.node.archived { return 0.45 }
+        return card.isClosed ? 0.6 : 1
+    }
+
     private var background: some View {
         let fill: Color = if isSelected {
             Color.accentColor.opacity(0.12)
@@ -121,6 +129,10 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
                 text: WorkbenchBoardCard.statusLabel(target.status),
                 color: WorkbenchBoardColors.status(target.statusColor)
             )
+            if row.node.archived {
+                WorkbenchBoardChip(text: "Archived", color: .secondary)
+                    .help("Archived: closed longer than the workbench's archive setting. Reopen it to bring it back.")
+            }
             if let children = card.children {
                 counter("\(children.done)/\(children.total)", systemImage: "checklist", help: "Sub-tasks done")
             }

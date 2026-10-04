@@ -20,6 +20,9 @@ type Workbench struct {
 	Description string
 	CreatedAt   string
 	UpdatedAt   string
+	// ArchiveAfterDays: closed targets older than this many days leave the
+	// board (workbench_target_archive, PROJ-15); 0 = never. Default 14.
+	ArchiveAfterDays int
 }
 
 // WorkbenchSource is a source the workbench's docs name (a channel, a Jira
@@ -44,7 +47,7 @@ var workbenchSourceKinds = map[string]bool{"slack_channel": true, "jira_project"
 
 // workbenchCols leaves out board_language (00087): the board always follows the
 // session language (board item #153), so the column is kept but never read.
-const workbenchCols = `id, name, folder_path, description, created_at, updated_at`
+const workbenchCols = `id, name, folder_path, description, created_at, updated_at, archive_after_days`
 
 // WithTx runs fn in one transaction, committing when it returns nil. fn must
 // use only the *sql.Tx it is given: the pool holds a single connection, so a
@@ -127,7 +130,7 @@ func (db *DB) CreateWorkbench(name, folder string) (int64, error) {
 
 func scanWorkbench(row interface{ Scan(...any) error }) (*Workbench, error) {
 	var p Workbench
-	if err := row.Scan(&p.ID, &p.Name, &p.FolderPath, &p.Description, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.FolderPath, &p.Description, &p.CreatedAt, &p.UpdatedAt, &p.ArchiveAfterDays); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -189,6 +192,20 @@ func (db *DB) UpdateWorkbenchDescription(id int64, description string) error {
 	return requireAffected(res, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound))
 }
 
+// SetWorkbenchArchiveDays sets after how many days closed targets of
+// workbench projectID are archived (0 = never). It is the Go writer for
+// tests and tooling; the only production writer is the Desktop's
+// WorkbenchQueries.setArchiveAfterDays (WatchtowerCore, via GRDB). The
+// column's CHECK (0...365) is the rule both share.
+func (db *DB) SetWorkbenchArchiveDays(projectID int64, days int) error {
+	res, err := db.Exec(`UPDATE projects SET archive_after_days = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, days, projectID)
+	if err != nil {
+		return fmt.Errorf("setting workbench %d archive days to %d: %w", projectID, days, err)
+	}
+	return requireAffected(res, fmt.Errorf("workbench %d: %w", projectID, ErrWorkbenchNotFound))
+}
+
 // DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
 // sources and comments, and its folder files' search index entries
 // (kb source project_doc, PROJ-08) and its code questions go in the same
@@ -215,7 +232,7 @@ func (db *DB) DeleteWorkbench(id int64) error {
 // `code_question` whose `context_id` starts with `<id>:` — the prefix matched
 // exactly, so workbench 1 never takes 10's. Their messages, steps and search
 // rows go by cascade and the FTS triggers; the questions quote the folder's
-// code, so none may outlive the workbench (migration 00103 removed the ones
+// code, so none may outlive the workbench (migration 00104 removed the ones
 // earlier deletes left behind).
 func deleteWorkbenchCodeQuestions(tx *sql.Tx, projectID int64) error {
 	prefix := strconv.FormatInt(projectID, 10) + ":"

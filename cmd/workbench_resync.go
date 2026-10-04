@@ -201,6 +201,7 @@ func resyncSuggestions(database *db.DB, p *db.Workbench, voc vocabulary, toolsKn
 		out = append(out, "The workbench has no sources: ask Claude Code to add the Slack channels, Jira projects and Confluence spaces its docs name"+
 			tool+" — search and the session brief then prefer them.")
 	}
+	// The full board: one whose targets are all archived is not empty.
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return out, fmt.Errorf("reading the board: %w", err)

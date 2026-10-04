@@ -9,12 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration00103_RemovesOrphanCodeQuestions: code questions of a
+// TestMigration00104_RemovesOrphanCodeQuestions: code questions of a
 // workbench that no longer exists go with their messages; a live
 // workbench's, a main-chat row and a malformed context id stay.
-func TestMigration00103_RemovesOrphanCodeQuestions(t *testing.T) {
+func TestMigration00104_RemovesOrphanCodeQuestions(t *testing.T) {
 	t.Parallel()
-	raw := rawDBAt(t, 102)
+	raw := rawDBAt(t, 103)
 	res, err := raw.Exec(`INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')`)
 	require.NoError(t, err)
 	live, err := res.LastInsertId()
