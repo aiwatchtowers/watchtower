@@ -29,9 +29,13 @@ final class WorkbenchDeleteSummaryTests: XCTestCase {
             let target = try XCTUnwrap(Int64.fetchOne(db, sql: "SELECT id FROM targets WHERE text = 'a'"))
             try db.execute(sql: "INSERT INTO project_comments (project_id, target_id, author, body) VALUES (?, ?, 'owner', 'x')",
                            arguments: [pid, target])
+            for contextID in ["\(pid):a.swift:1", "\(pid)::0", "\(other):a.swift:1", "\(pid)0:a.swift:1"] {
+                _ = try ChatConversationQueries.create(db, title: "q", contextType: "code_question", contextID: contextID)
+            }
             return try XCTUnwrap(WorkbenchQueries.fetch(db, id: pid))
         }
         let summary = try queue.read { try WorkbenchDeleteSummary.fetch($0, project: project, vocabulary: .current) }
+        XCTAssertEqual(summary.codeQuestions, 2, "this workbench's only, the id prefix matched exactly")
         XCTAssertEqual(summary.targets, 2)
         XCTAssertEqual(summary.asks, 1)
         XCTAssertEqual(summary.comments, 1)
@@ -53,6 +57,16 @@ final class WorkbenchDeleteSummaryTests: XCTestCase {
         XCTAssertTrue(s.message.contains("files in the folder themselves stay"), "the folder's files are never deleted")
         XCTAssertTrue(s.message.contains("copies of images attached to targets are deleted"))
         XCTAssertTrue(s.message.contains("terminal"), "the owner is told the running session is closed")
+    }
+
+    /// The code questions go with the workbench (PROJ-02): named when
+    /// there are any.
+    func testMessageNamesTheCodeQuestionsWhenThereAreAny() {
+        let none = WorkbenchDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 1, asks: 0, comments: 0)
+        XCTAssertFalse(none.message.contains("question"))
+        let some = WorkbenchDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 1, asks: 0, comments: 0,
+                                          codeQuestions: 3)
+        XCTAssertTrue(some.message.contains("0 comments. Its 3 questions about the code go too. The files"), some.message)
     }
 
     /// A folder set up before the Workbench rename has the old skill and

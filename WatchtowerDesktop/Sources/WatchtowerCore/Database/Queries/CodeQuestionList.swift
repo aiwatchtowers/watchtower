@@ -63,6 +63,16 @@ package enum CodeQuestionList {
         }
     }
 
+    /// How many code questions the workbench has (the delete takes them,
+    /// PROJ-02).
+    package static func count(_ db: Database, workbenchID: Int64) throws -> Int {
+        let prefix = "\(workbenchID):"
+        return try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM chat_conversations
+            WHERE context_type = ? AND substr(context_id, 1, length(?)) = ?
+            """, arguments: [contextType, prefix, prefix]) ?? 0
+    }
+
     /// The origin a `context_id` names, or nil when it is not one of
     /// `workbenchID`'s. The line follows the last colon (a path may hold
     /// colons).

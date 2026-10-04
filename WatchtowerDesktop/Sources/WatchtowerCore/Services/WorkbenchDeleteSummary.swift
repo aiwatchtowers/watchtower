@@ -12,6 +12,8 @@ package struct WorkbenchDeleteSummary: Equatable {
     package let targets: Int
     package let asks: Int
     package let comments: Int
+    /// The AI questions asked about the folder's code (Questions tab).
+    package let codeQuestions: Int
     package let vocabulary: WorkbenchVocabulary
 
     package init(
@@ -20,6 +22,7 @@ package struct WorkbenchDeleteSummary: Equatable {
         targets: Int,
         asks: Int,
         comments: Int,
+        codeQuestions: Int = 0,
         vocabulary: WorkbenchVocabulary = .current
     ) {
         self.name = name
@@ -27,6 +30,7 @@ package struct WorkbenchDeleteSummary: Equatable {
         self.targets = targets
         self.asks = asks
         self.comments = comments
+        self.codeQuestions = codeQuestions
         self.vocabulary = vocabulary
     }
 
@@ -41,6 +45,7 @@ package struct WorkbenchDeleteSummary: Equatable {
             targets: try count("targets"),
             asks: try count("owner_asks"),
             comments: try count("project_comments"),
+            codeQuestions: try CodeQuestionList.count(db, workbenchID: project.id),
             vocabulary: vocabulary
         )
     }
@@ -50,7 +55,7 @@ package struct WorkbenchDeleteSummary: Equatable {
     package var message: String {
         """
         Watchtower removes the board: \(Self.plural(targets, "target")), \
-        \(Self.plural(asks, "ask")) and \(Self.plural(comments, "comment")). \
+        \(Self.plural(asks, "ask")) and \(Self.plural(comments, "comment")).\(questionsSentence) \
         The files in the folder themselves stay; Watchtower's own \
         copies of images attached to targets are deleted.
 
@@ -62,6 +67,10 @@ package struct WorkbenchDeleteSummary: Equatable {
 
         The workbench's terminal session is closed first.
         """
+    }
+
+    private var questionsSentence: String {
+        codeQuestions == 0 ? "" : " Its \(Self.plural(codeQuestions, "question")) about the code go too."
     }
 
     private static func plural(_ n: Int, _ word: String) -> String {
