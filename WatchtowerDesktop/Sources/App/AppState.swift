@@ -1739,6 +1739,7 @@ final class AppState {
             guard let self else { return }
             codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
         }
+        vm.onWorkbenchRemoved = { [weak codeQuestionCenter] in codeQuestionCenter?.workbenchRemoved($0) }
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)

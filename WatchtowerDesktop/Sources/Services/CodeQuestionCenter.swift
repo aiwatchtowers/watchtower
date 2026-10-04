@@ -770,6 +770,19 @@ final class CodeQuestionCenter {
         }
     }
 
+    /// The workbench was deleted, its code questions with it (PROJ-02): the
+    /// popover closes, every engine of its questions stops quietly and the
+    /// tab's state goes.
+    func workbenchRemoved(_ workbenchID: Int64) {
+        if sessions[workbenchID] != nil { closeQuestion(workbenchID: workbenchID) }
+        for question in questionRefs.values where question.project.id == workbenchID {
+            forget(question)
+        }
+        inspectorQuestions[workbenchID] = nil
+        questionLists[workbenchID] = nil
+        questionListErrors[workbenchID] = nil
+    }
+
     private func forget(_ question: CodeQuestionRef) {
         let conversationID = question.conversationID
         embeddedChats?.drop(EmbeddedChatKey(

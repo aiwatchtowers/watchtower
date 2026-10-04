@@ -221,6 +221,14 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path)
 		VALUES (NULL, 'shell', 'Terminal', '/tmp/acme')`)
 	require.NoError(t, err)
+	// Code questions quote the folder's code: this workbench's go, another's
+	// (and a main-chat row) stay.
+	question := insertCodeQuestion(t, d, fmt.Sprintf("%d:Sources/App.swift:12", pid), "what does this do?")
+	noFile := insertCodeQuestion(t, d, fmt.Sprintf("%d::0", pid), "where is the config read?")
+	keepQuestion := insertCodeQuestion(t, d, fmt.Sprintf("%d:Sources/App.swift:12", keep), "theirs")
+	_, err = d.Exec(`INSERT INTO chat_conversations (title, context_id, created_at, updated_at)
+		VALUES ('main', ?, 0, 0)`, fmt.Sprintf("%d:x:1", pid))
+	require.NoError(t, err)
 
 	require.NoError(t, d.DeleteWorkbench(pid))
 
@@ -263,7 +271,57 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	var standalone int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
 	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")
+	for _, conv := range []int64{question, noFile} {
+		for _, q := range []string{
+			`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`,
+			`SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?`,
+		} {
+			var n int
+			require.NoError(t, d.QueryRow(q, conv).Scan(&n))
+			assert.Zero(t, n, q)
+		}
+	}
+	var hits int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_fts WHERE chat_fts MATCH 'config'`).Scan(&hits))
+	assert.Zero(t, hits, "the deleted questions leave no search rows")
+	var keptQuestions int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?`, keepQuestion).Scan(&keptQuestions))
+	assert.Equal(t, 1, keptQuestions, "another workbench's code questions are untouched")
+	var mainChat int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE context_type IS NULL`).Scan(&mainChat))
+	assert.Equal(t, 1, mainChat, "only code_question rows go, whatever their context_id")
 	assert.ErrorIs(t, d.DeleteWorkbench(pid), ErrWorkbenchNotFound)
+}
+
+// TestDeleteWorkbench_CodeQuestionPrefixIsExact: deleting workbench 1 never
+// takes workbench 10's code questions.
+func TestDeleteWorkbench_CodeQuestionPrefixIsExact(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	longer := insertCodeQuestion(t, d, fmt.Sprintf("%d0:main.go:3", pid), "a longer id")
+	insertCodeQuestion(t, d, fmt.Sprintf("%d:main.go:3", pid), "mine")
+
+	require.NoError(t, d.DeleteWorkbench(pid))
+
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE context_type = 'code_question'`).Scan(&n))
+	assert.Equal(t, 1, n)
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`, longer).Scan(&n))
+	assert.Equal(t, 1, n, "the id with the same leading digits survives")
+}
+
+// insertCodeQuestion plants a code question conversation with one owner
+// message, as the Desktop writes it.
+func insertCodeQuestion(t *testing.T, d *DB, contextID, question string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES ('q', 'code_question', ?, 0, 0)`, contextID)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, 'user', ?, 0)`, id, question)
+	require.NoError(t, err)
+	return id
 }
 
 // I3 (docs/superpowers/sdd/2026-09-29-projects-poc/final-review.md): a plain

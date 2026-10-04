@@ -822,6 +822,35 @@ final class CodeQuestionCenterTests: XCTestCase {
         ai.finish()
     }
 
+    /// A deleted workbench takes its questions' state along (PROJ-02): the
+    /// popover closes, the engines stop, the tab forgets the list; another
+    /// workbench's question stays.
+    func testARemovedWorkbenchForgetsItsQuestions() async throws {
+        let (center, _, buffer) = makeCenter()
+        await center.askAI(bufferID: buffer.id, project: project)
+        center.quickAction(.explain, workbenchID: project.id)
+        let popoverID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
+        let popoverKey = try XCTUnwrap(center.engine(workbenchID: project.id)).spec.key
+        await reply("ok", after: 1, engine: center.engine(workbenchID: project.id))
+        let other = Workbench(row: Row(["id": 10, "name": "other", "folder_path": folder.path]))
+        guard case let .started(otherID) = center.askFromOpenQuickly("Theirs?", project: other) else {
+            return XCTFail("other")
+        }
+        await reply("theirs", after: 2, engine: center.engine(for: try XCTUnwrap(center.questionRef(otherID))))
+        center.reloadQuestionList(workbenchID: project.id)
+        center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project)
+
+        center.workbenchRemoved(project.id)
+
+        XCTAssertNil(center.sessions[project.id])
+        XCTAssertEqual(page.closed, 1, "the popover closes")
+        XCTAssertNil(center.questionRef(popoverID))
+        XCTAssertNil(center.embeddedChats?.loaded(popoverKey), "its engine is dropped")
+        XCTAssertNil(center.inspectorQuestions[project.id])
+        XCTAssertNil(center.questionLists[project.id])
+        XCTAssertNotNil(center.questionRef(otherID), "another workbench's question stays")
+    }
+
     /// Deleting the question the popover shows closes the popover.
     func testDeletingThePopoversQuestionClosesIt() async throws {
         let (center, _, buffer) = makeCenter()
