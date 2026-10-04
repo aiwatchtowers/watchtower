@@ -65,6 +65,19 @@ package enum OnboardingFeaturePlan {
     package static func enabledFeatureIDs(for goals: Set<OnboardingGoal>) -> Set<String> {
         goals.reduce(alwaysOnFeatureIDs) { $0.union(featureIDs(for: $1)) }
     }
+
+    /// Features that ship off by default yet carry no "Experimental" tag on
+    /// the Customize screen: Memory is off until a goal turns it on, but it
+    /// is Work communication's headline feature, not a trial (owner decision
+    /// 2026-10-04, #378).
+    package static let establishedDefaultOffFeatureIDs: Set<String> = ["memory"]
+
+    /// The Customize screen's "Experimental" rows: the features `disabled`
+    /// in `features` (the registry's `id`/`state` pairs), minus
+    /// `establishedDefaultOffFeatureIDs`.
+    package static func experimentalFeatureIDs(_ features: [(id: String, state: String)]) -> Set<String> {
+        Set(features.filter { $0.state == "disabled" }.map(\.id)).subtracting(establishedDefaultOffFeatureIDs)
+    }
 }
 
 /// Onboarding's feature choice: derived from the goals until the owner flips

@@ -35,7 +35,9 @@ struct CodeHandoffSessionChoice: Identifiable, Equatable {
 /// to Claude Code. A request opens the page's sheet; its Send is the
 /// owner's confirmation. A running session gets the text pasted
 /// (`TerminalCenter.submitPrompt`) and submitted only when it waits idle at
-/// its prompt (ruling R52; else the owner presses Return), a new one starts with it as
+/// its prompt and its prompt holds nothing not sent, such as an ask's
+/// answer left typed (ruling R52, board #380; else the owner presses
+/// Return), a new one starts with it as
 /// its first prompt; either way the session opens beside the editor in a
 /// split (`Placement.beside(.files)`: a split keeps the editor and swaps
 /// the other pane, as `keeping` does; a single pane splits instead of

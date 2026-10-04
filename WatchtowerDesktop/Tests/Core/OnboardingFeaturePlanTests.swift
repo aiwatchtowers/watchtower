@@ -114,6 +114,21 @@ final class OnboardingFeaturePlanTests: XCTestCase {
         XCTAssertEqual(selection.enabledFeatureIDs, enabled)
     }
 
+    /// Memory ships off but is no trial: the Customize screen shows it
+    /// without the "Experimental" tag; other default-off features keep it
+    /// (#378).
+    func testMemoryIsNeverTaggedExperimental() {
+        let features = [
+            (id: "memory", state: "disabled"), (id: "next-step", state: "disabled"),
+            (id: "ideas", state: "disabled"), (id: "slack-digests", state: "enabled")
+        ]
+        XCTAssertEqual(Plan.experimentalFeatureIDs(features), ["next-step", "ideas"])
+        XCTAssertEqual(Plan.experimentalFeatureIDs([(id: "memory", state: "disabled")]), [])
+        XCTAssertEqual(Plan.experimentalFeatureIDs([]), [])
+        XCTAssertTrue(Plan.establishedDefaultOffFeatureIDs.isSubset(of: Plan.customizableFeatureIDs),
+                      "an exempted id the Customize screen never shows")
+    }
+
     func testManagedSetExcludesCoreAndConfluence() {
         // Core entries have no switch (the CLI rejects enable/disable on
         // them); Confluence in search is a Settings affordance, left as is.
