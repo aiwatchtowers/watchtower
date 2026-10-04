@@ -53,18 +53,6 @@ struct SidebarView: View {
         return result
     }
 
-    /// Writes each section whose flag differs between `old` and `new` to
-    /// `defaults`, so a toggle in either mode survives a relaunch.
-    static func persistCollapsedSections(
-        _ new: [String: Bool], replacing old: [String: Bool], to defaults: UserDefaults = .standard
-    ) {
-        for section in SidebarSection.ordered where new[section.id] != old[section.id] {
-            if let value = new[section.id] {
-                defaults.set(value, forKey: storageKey(section))
-            }
-        }
-    }
-
     private static let hiddenItemsKey = "sidebar.hiddenItems"
 
     private static func loadHiddenItems() -> Set<String> {
@@ -123,9 +111,6 @@ struct SidebarView: View {
             googleAuth.checkStatus()
             expandSectionContainingSelection()
             Self.lastSeenSelection = new
-        }
-        .onChange(of: collapsedSections) { old, new in
-            Self.persistCollapsedSections(new, replacing: old)
         }
     }
 
@@ -206,8 +191,9 @@ struct SidebarView: View {
     /// when the selection changes — navigating to a tab tucked inside a folded
     /// section, also while the sidebar was off screen (a notification routed
     /// with the window closed) — never on a cold launch, a reopen on the same
-    /// tab or a ⌘B fold, so the owner's own folds stand; a folded section holding the selection is tinted
-    /// instead (the menu's header label, the rail's group icon).
+    /// tab or a ⌘B fold, so the owner's own folds stand; a folded section
+    /// holding the selection is tinted instead (the menu's header label, the
+    /// rail's group icon). Not persisted: a relaunch shows the owner's folds.
     private func expandSectionContainingSelection() {
         if let expanded = Self.expandingSection(for: selection, in: collapsedSections) {
             collapsedSections = expanded
@@ -381,6 +367,17 @@ struct SidebarView: View {
         return updated
     }
 
+    /// The owner's toggle of `section` in either mode, its new flag written
+    /// to `defaults` so it survives a relaunch. Only the owner's toggles are
+    /// written — navigation's expand (`expandingSection`) never is.
+    static func toggledSection(
+        _ section: SidebarSection, in collapsed: [String: Bool], persistingTo defaults: UserDefaults = .standard
+    ) -> [String: Bool] {
+        let updated = togglingSection(section, in: collapsed)
+        defaults.set(updated[section.id], forKey: storageKey(section))
+        return updated
+    }
+
     /// Whether the sidebar appears on a selection that changed while it was
     /// off screen — a notification, link or shortcut routed while the window
     /// was closed — which counts as navigation. `lastSeen` is nil on a cold
@@ -397,7 +394,7 @@ struct SidebarView: View {
     }
 
     private func toggleSection(_ section: SidebarSection) {
-        collapsedSections = Self.togglingSection(section, in: collapsedSections)
+        collapsedSections = Self.toggledSection(section, in: collapsedSections)
     }
 
     @ViewBuilder

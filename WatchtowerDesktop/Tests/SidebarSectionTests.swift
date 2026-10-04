@@ -163,21 +163,27 @@ final class SidebarSectionTests: XCTestCase {
     func testToggleSurvivesARelaunch() throws {
         let defaults = try scratchDefaults()
         let before = SidebarView.loadCollapsedSections(from: defaults)
-        let after = SidebarView.togglingSection(.today, in: before)
-        SidebarView.persistCollapsedSections(after, replacing: before, to: defaults)
+        let after = SidebarView.toggledSection(.today, in: before, persistingTo: defaults)
         XCTAssertEqual(defaults.object(forKey: "sidebar.section.today.collapsed") as? Bool, true)
         XCTAssertNil(defaults.object(forKey: "sidebar.section.delivery.collapsed"), "an unchanged section is not written")
         XCTAssertEqual(SidebarView.loadCollapsedSections(from: defaults), after)
     }
 
-    /// Persisting an unchanged map writes nothing.
-    func testPersistOfAnUnchangedMapWritesNothing() throws {
+    /// Board #365: navigation's expand of a folded section is for this run
+    /// only — a later toggle of another section writes that section alone,
+    /// so a relaunch shows the owner's fold again.
+    func testNavigationsExpandIsNotPersisted() throws {
         let defaults = try scratchDefaults()
-        let state = SidebarView.loadCollapsedSections(from: defaults)
-        SidebarView.persistCollapsedSections(state, replacing: state, to: defaults)
-        for section in SidebarSection.ordered {
-            XCTAssertNil(defaults.object(forKey: SidebarView.storageKey(section)))
-        }
+        let loaded = SidebarView.loadCollapsedSections(from: defaults)
+        let navigated = try XCTUnwrap(SidebarView.expandingSection(for: .digests, in: loaded))
+        XCTAssertEqual(navigated[SidebarSection.analytics.id], false)
+
+        let toggled = SidebarView.toggledSection(.today, in: navigated, persistingTo: defaults)
+
+        XCTAssertEqual(toggled[SidebarSection.analytics.id], false, "still open in this run")
+        XCTAssertNil(defaults.object(forKey: SidebarView.storageKey(.analytics)))
+        XCTAssertEqual(SidebarView.loadCollapsedSections(from: defaults)[SidebarSection.analytics.id], true,
+                       "a relaunch shows it folded")
     }
 
     /// The retired rail accordion key is ignored: a stale value opens nothing.
