@@ -19,10 +19,6 @@ package enum OnboardingFeaturePlan {
     /// here — they have no switch at all.
     package static let alwaysOnFeatureIDs: Set<String> = ["knowledge-search", "secretary-inbox"]
 
-    /// Off whatever the goals are: Memory is still an experiment, opted into
-    /// only by hand.
-    package static let alwaysOffFeatureIDs: Set<String> = ["memory"]
-
     /// Development maps to nothing: Workbench, the chat, Knowledge search,
     /// Attention detection and Targets are always on. Meetings' calendar
     /// connection is the Connect step's business, not a feature switch.
@@ -30,10 +26,13 @@ package enum OnboardingFeaturePlan {
         switch goal {
         case .workCommunication:
             // Slack Digests is load-bearing: Tracks and People Cards mine its
-            // output and have no material without it.
+            // output and have no material without it. Memory's core pipeline
+            // extracts its episodes from Slack messages; its other sources
+            // (Gmail, calendar, Jira, …) are its own sub-switches, off until
+            // turned on in Settings.
             return [
                 "slack-digests", "tracks", "people-cards",
-                "briefing", "day-plan", "ideas", "reaction-commands"
+                "briefing", "day-plan", "ideas", "reaction-commands", "memory"
             ]
         case .tasksAndJira:
             return ["stream-digests", "next-step"]
@@ -54,7 +53,7 @@ package enum OnboardingFeaturePlan {
     /// Every feature whose state onboarding decides. Anything outside it
     /// (core entries, `unmanagedFeatureIDs`) keeps whatever state it has.
     package static let managedFeatureIDs: Set<String> = OnboardingGoal.allCases.reduce(
-        alwaysOnFeatureIDs.union(alwaysOffFeatureIDs)
+        alwaysOnFeatureIDs
     ) { $0.union(featureIDs(for: $1)) }
 
     /// The managed features the Customize screen shows a switch for — the

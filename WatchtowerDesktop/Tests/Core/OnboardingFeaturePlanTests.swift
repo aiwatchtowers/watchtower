@@ -9,7 +9,7 @@ final class OnboardingFeaturePlanTests: XCTestCase {
 
     private let workCommunication: Set<String> = [
         "slack-digests", "tracks", "people-cards",
-        "briefing", "day-plan", "ideas", "reaction-commands"
+        "briefing", "day-plan", "ideas", "reaction-commands", "memory"
     ]
     private let alwaysOn: Set<String> = ["knowledge-search", "secretary-inbox"]
 
@@ -75,12 +75,12 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     /// re-run is customized for the hand toggle, and both stay off through
     /// Reset.
     func testRerunKeepsEveryAlwaysOnFeatureOffThroughReset() {
-        let enabled = Plan.enabledFeatureIDs(for: [.meetings]).subtracting(alwaysOn).union(["memory"])
-        var selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.meetings])
+        let enabled = Plan.enabledFeatureIDs(for: [.tasksAndJira]).subtracting(alwaysOn).subtracting(["next-step"])
+        var selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.tasksAndJira])
         XCTAssertTrue(selection.isCustomized)
         XCTAssertEqual(selection.enabledFeatureIDs, enabled)
         selection.resetToGoals()
-        XCTAssertEqual(selection.enabledFeatureIDs, Plan.enabledFeatureIDs(for: [.meetings]).subtracting(alwaysOn))
+        XCTAssertEqual(selection.enabledFeatureIDs, Plan.enabledFeatureIDs(for: [.tasksAndJira]).subtracting(alwaysOn))
     }
 
     func testNoGoalsIsTheSameAsOnlyDevelopment() {
@@ -92,9 +92,26 @@ final class OnboardingFeaturePlanTests: XCTestCase {
                        workCommunication.union(alwaysOn).union(["stream-digests", "next-step"]))
     }
 
-    func testMemoryIsOffForEveryGoalCombination() {
-        XCTAssertFalse(Plan.enabledFeatureIDs(for: Set(OnboardingGoal.allCases)).contains("memory"))
-        XCTAssertTrue(Plan.managedFeatureIDs.contains("memory"), "off means written off, not left alone")
+    /// Memory is Work communication's: its core pipeline learns from Slack
+    /// messages, and onboarding must not leave it off by default (#375).
+    func testMemoryRidesWorkCommunication() {
+        XCTAssertTrue(Plan.featureIDs(for: .workCommunication).contains("memory"))
+        for goal in OnboardingGoal.allCases where goal != .workCommunication {
+            XCTAssertFalse(Plan.featureIDs(for: goal).contains("memory"), "\(goal)")
+        }
+        XCTAssertFalse(Plan.alwaysOnFeatureIDs.contains("memory"))
+    }
+
+    /// A re-run where the owner turned Memory off in Settings keeps it off:
+    /// no goal combination reproduces that set, so it is a manual pick, and
+    /// Continue writes nothing the owner did not change.
+    func testRerunKeepsMemoryTurnedOffInSettings() {
+        let enabled = Plan.enabledFeatureIDs(for: [.workCommunication]).subtracting(["memory"])
+        let selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.workCommunication])
+        XCTAssertEqual(selection.goals, [.workCommunication])
+        XCTAssertTrue(selection.isCustomized)
+        XCTAssertFalse(selection.isEnabled("memory"))
+        XCTAssertEqual(selection.enabledFeatureIDs, enabled)
     }
 
     func testManagedSetExcludesCoreAndConfluence() {
@@ -157,8 +174,8 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     func testManualOverrideWinsOverLaterGoalChanges() {
         var selection = OnboardingFeatureSelection(goals: [.workCommunication])
         selection.setFeature("tracks", enabled: false)
-        selection.setFeature("memory", enabled: true)
-        let picked = workCommunication.subtracting(["tracks"]).union(alwaysOn).union(["memory"])
+        selection.setFeature("memory", enabled: false)
+        let picked = workCommunication.subtracting(["tracks", "memory"]).union(alwaysOn)
         XCTAssertTrue(selection.isCustomized)
         XCTAssertEqual(selection.enabledFeatureIDs, picked)
 

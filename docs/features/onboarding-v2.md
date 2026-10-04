@@ -11,7 +11,14 @@ UI text is English only.
 **Goal → feature mapping** (`OnboardingFeaturePlan`, WatchtowerCore). The
 goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 - Work communication → `slack-digests`, `tracks`, `people-cards`,
-  `briefing`, `day-plan`, `ideas`, `reaction-commands`.
+  `briefing`, `day-plan`, `ideas`, `reaction-commands`, `memory`. Memory
+  rides this goal (owner decision 2026-10-04, #375 — it is a headline
+  feature, not one to leave off by default): its core pipeline extracts
+  episodes from Slack messages, so it has material exactly when this goal
+  does; its other sources (Gmail, calendar, Jira, chats, Targets/Tracks)
+  are sub-switches onboarding does not touch. The config default
+  (`memory.enabled: false`) is unchanged, so an install that never ran
+  onboarding keeps it off.
 - Tasks & Jira → `stream-digests`, `next-step`.
 - Meetings → `briefing` (meeting prep rides the daily briefing).
 - Development → nothing (Workbench, the chat, Targets and Knowledge search
@@ -23,8 +30,7 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   in Settings shows under "Off (as in Settings)" on a re-run and stays
   off, Reset to goals included; on its own it does not make the re-run
   "Features customized". Settings → Features keeps them as normal toggles, and the
-  related-features offer after a connect never proposes them. Always
-  off: `memory`. Left alone:
+  related-features offer after a connect never proposes them. Left alone:
   `knowledge-connectors` (Confluence in search) and the core entries.
   `OnboardingFeaturePlanTests` parses `internal/features/registry.go` and
   fails on a toggleable feature that is in none of these sets.

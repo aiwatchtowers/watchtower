@@ -411,7 +411,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testHandToggledSetIsCustomized() {
         var enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
         enabled.remove("ideas")
-        enabled.insert("memory")
+        enabled.remove("memory")
         enabled.insert("not-managed")
         let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.development])
         XCTAssertTrue(seeded.isCustomized)

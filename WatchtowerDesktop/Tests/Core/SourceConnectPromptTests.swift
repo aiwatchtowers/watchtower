@@ -41,7 +41,7 @@ final class SourceConnectPromptTests: XCTestCase {
         let ids = SourceConnectPrompt.suggestedFeatureIDs(
             for: [.workCommunication], disabled: ["tracks", "people-cards", "memory"], registryOrder: order
         )
-        XCTAssertEqual(ids, ["tracks", "people-cards"], "only what is off, never memory")
+        XCTAssertEqual(ids, ["tracks", "people-cards", "memory"], "only what is off, in registry order")
     }
 
     func testGoogleSuggestsMailAndCalendarFeatures() {
