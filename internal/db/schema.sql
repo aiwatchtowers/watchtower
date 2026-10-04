@@ -2222,6 +2222,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     finish_summary    TEXT NOT NULL DEFAULT '', -- the agent's last finish_session summary, kept after finished_at is cleared
     agent_failed_at   TEXT, -- = agent_state_at of the StopFailure write that set it; NULL = no error
     agent_error       TEXT NOT NULL DEFAULT '', -- the StopFailure error type, clipped to 60 runes; '' = unknown
+    agent_turn_end    INTEGER, -- the transcript's size in bytes at the last Stop hook of this run; NULL = none (Go only)
+    agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (Go only)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );

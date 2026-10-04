@@ -13,7 +13,11 @@ final class TerminalOwnerInputTests: XCTestCase {
         let session = SwiftTermSession()
         let terminal = try XCTUnwrap(session.view as? PalettedTerminalView)
         var reported = 0
-        session.onOwnerInput = { reported += 1 }
+        var bytes: [[UInt8]] = []
+        session.onOwnerInput = {
+            reported += 1
+            bytes.append($0)
+        }
 
         session.sendInput(Array("\u{1B}[200~Ask #1 answered\u{1B}[201~".utf8))
         terminal.getTerminal().sendResponse(text: "\u{1B}[I")
@@ -22,6 +26,7 @@ final class TerminalOwnerInputTests: XCTestCase {
 
         terminal.send(txt: "\r")
         XCTAssertEqual(reported, 1, "a keystroke is")
+        XCTAssertEqual(bytes, [[0x0D]], "with its bytes (board #379: a Return ends the owner's draft)")
 
         session.onOwnerInput = nil
         terminal.send(txt: "x")

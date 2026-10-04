@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/memory"
@@ -68,6 +71,21 @@ memory:
 	t.Cleanup(func() { flagConfig = oldFlagConfig })
 
 	return filepath.Join(wsDir, "memory")
+}
+
+// The daemon wiring opens no vault: the memory phase opens it lazily, so a
+// vault that fails to open is a failed run retried each cycle, never a
+// failed daemon start.
+func TestWireMemoryPipelineOpensNoVaultAtWiring(t *testing.T) {
+	vaultPath := setupMemoryTestEnv(t, true)
+	cfg, database, err := memoryConfigAndDB()
+	require.NoError(t, err)
+	defer database.Close()
+
+	wireMemoryPipeline(daemon.New(cfg), database, cfg, log.New(io.Discard, "", 0))
+
+	_, err = os.Stat(vaultPath)
+	assert.True(t, os.IsNotExist(err), "no vault at %s yet: %v", vaultPath, err)
 }
 
 // seedMemoryEntityFixture opens (initializing) the vault, writes one entity

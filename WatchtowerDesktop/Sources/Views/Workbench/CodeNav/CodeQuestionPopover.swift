@@ -12,6 +12,7 @@ struct CodeQuestionPopoverHost: View {
 
     var body: some View {
         CodeQuestionPopover(questions: questions, workbenchID: workbenchID)
+            .popoverSurface()
             .environment(\.dictationCenter, questions.dictation)
             .codeAnswerLinks { [questions, workbenchID] url in
                 Task { await questions.openLink(url, workbenchID: workbenchID) }
@@ -169,7 +170,7 @@ struct CodeQuestionPopover: View {
                 let workbenchID = workbenchID
                 Task { await questions.applyProposal(workbenchID: workbenchID) }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.popoverPrimary)
         }
         .controlSize(.small)
         .padding(.horizontal, 12)

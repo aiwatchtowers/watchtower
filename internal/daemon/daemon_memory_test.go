@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -149,6 +150,145 @@ func TestDaemon_MemoryPhaseNilPipeline(t *testing.T) {
 
 	// Should not panic when no memory pipeline is installed.
 	d.phaseMemory(context.Background())
+}
+
+// TestDaemon_MemoryPhaseOpenFailureIsRecordedAndRetried: a vault that fails
+// to open through the opener records a failed "memory" pipeline_runs row (no
+// silent skip), and every later cycle retries the open — once it succeeds
+// the pipeline is installed and runs normally.
+func TestDaemon_MemoryPhaseOpenFailureIsRecordedAndRetried(t *testing.T) {
+	orch, cfg, _ := testDaemonWithTempHome(t)
+	memCfg := enabledMemoryConfig()
+	cfg.Memory = memCfg
+
+	database := db.OpenTestDB(t)
+	d := newDaemon(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[memory-open-test] ", 0))
+	d.SetDB(database)
+
+	var opens int
+	openErr := errors.New("opening memory vault: permission denied")
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		opens++
+		if opens <= 2 {
+			return nil, openErr
+		}
+		return newTestMemoryPipeline(t, database, memCfg), nil
+	})
+	now := time.Now()
+	d.memoryNow = func() time.Time { return now }
+
+	type runRow struct{ pipeline, source, status, errMsg string }
+	readRuns := func() []runRow {
+		rows, err := database.Query(`SELECT pipeline, source, status, COALESCE(error_msg, '') FROM pipeline_runs ORDER BY id`)
+		require.NoError(t, err)
+		defer rows.Close()
+		var out []runRow
+		for rows.Next() {
+			var r runRow
+			require.NoError(t, rows.Scan(&r.pipeline, &r.source, &r.status, &r.errMsg))
+			out = append(out, r)
+		}
+		require.NoError(t, rows.Err())
+		return out
+	}
+
+	d.phaseMemory(context.Background())
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 2, opens, "every cycle retries the open")
+	runs := readRuns()
+	require.Len(t, runs, 1, "the same failure is recorded once")
+	assert.Equal(t, runRow{"memory", "daemon", "error", openErr.Error()}, runs[0])
+	assert.Nil(t, d.memoryPipe, "a failed open installs no pipeline")
+
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 3, opens, "the open is retried on the next cycle")
+	require.NotNil(t, d.memoryPipe)
+	runs = readRuns()
+	require.Len(t, runs, 2)
+	assert.Equal(t, "memory", runs[1].pipeline)
+	assert.Equal(t, "daemon", runs[1].source)
+	assert.Equal(t, "done", runs[1].status, "the recovered pipeline records its own successful run")
+
+	d.phaseMemory(context.Background())
+	assert.Equal(t, 3, opens, "an installed pipeline is not reopened")
+}
+
+// TestDaemon_MemoryPhaseOpenFailureRowsAreRateLimited: a vault that stays
+// unopenable records its failure once per memoryOpenFailureRepeat while the
+// error text stays the same, and at once when the text changes — the open
+// itself is retried every cycle.
+func TestDaemon_MemoryPhaseOpenFailureRowsAreRateLimited(t *testing.T) {
+	orch, cfg, _ := testDaemonWithTempHome(t)
+	cfg.Memory = enabledMemoryConfig()
+	database := db.OpenTestDB(t)
+	d := newDaemon(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[memory-open-limit-test] ", 0))
+	d.SetDB(database)
+	var opens int
+	msg := "opening memory vault: permission denied"
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		opens++
+		return nil, errors.New(msg)
+	})
+	now := time.Now()
+	d.memoryNow = func() time.Time { return now }
+	failures := func() []string {
+		rows, err := database.Query(`SELECT error_msg FROM pipeline_runs WHERE pipeline = 'memory' AND status = 'error' ORDER BY id`)
+		require.NoError(t, err)
+		defer rows.Close()
+		var out []string
+		for rows.Next() {
+			var m string
+			require.NoError(t, rows.Scan(&m))
+			out = append(out, m)
+		}
+		require.NoError(t, rows.Err())
+		return out
+	}
+
+	for range 4 { // four cycles a little under 15 minutes apart
+		d.phaseMemory(context.Background())
+		now = now.Add(memoryOpenFailureRepeat/4 - time.Second)
+	}
+	assert.Equal(t, 4, opens)
+	assert.Len(t, failures(), 1, "the same error within the hour is recorded once")
+
+	now = now.Add(time.Minute)
+	d.phaseMemory(context.Background())
+	assert.Len(t, failures(), 2, "an hour on it is recorded again")
+
+	msg = "opening memory vault: no such file or directory"
+	d.phaseMemory(context.Background())
+	assert.Equal(t, []string{
+		"opening memory vault: permission denied",
+		"opening memory vault: permission denied",
+		"opening memory vault: no such file or directory",
+	}, failures(), "a new error is recorded at once")
+	assert.Equal(t, 6, opens)
+}
+
+// TestDaemon_MemoryPhaseDisabledNeverOpens: with Memory off the opener is
+// never called and no run is recorded (FEAT-01).
+func TestDaemon_MemoryPhaseDisabledNeverOpens(t *testing.T) {
+	orch, cfg, _ := testDaemonWithTempHome(t)
+	cfg.Memory = enabledMemoryConfig()
+	cfg.Memory.Enabled = false
+
+	database := db.OpenTestDB(t)
+	d := newDaemon(orch, cfg)
+	d.SetLogger(log.New(os.Stderr, "[memory-open-disabled-test] ", 0))
+	d.SetDB(database)
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		t.Fatal("opener called while memory is disabled")
+		return nil, nil
+	})
+
+	d.phaseMemory(context.Background())
+
+	var runs int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM pipeline_runs`).Scan(&runs))
+	assert.Zero(t, runs)
 }
 
 // TestDaemon_MemoryPhaseLeavesInboxWatermark: the memory phase never touches

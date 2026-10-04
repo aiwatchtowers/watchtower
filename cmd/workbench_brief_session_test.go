@@ -77,7 +77,7 @@ func TestProjectBrief_HookRecordsTheSessionIDAfterClear(t *testing.T) {
 // storeAgentState gives the fixture row a state from a previous run.
 func storeAgentState(t *testing.T, database *db.DB, projectID, rowID int64, sessionID string) {
 	t.Helper()
-	ok, err := database.SetTerminalAgentState(rowID, projectID, sessionID, "waiting", time.Now().Add(-time.Minute), "", nil, false)
+	ok, err := database.SetTerminalAgentState(rowID, projectID, sessionID, "waiting", time.Now().Add(-time.Minute), "", nil, false, db.AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 }
@@ -113,6 +113,27 @@ func TestProjectBrief_HookClearsTheAgentStateOnANewRun(t *testing.T) {
 			assert.Empty(t, errOut)
 		})
 	}
+}
+
+// Board #368: a new run also drops a turn end stored without any agent
+// state (a Stop recorded it, a hook write failed), so the earlier run's
+// offset never orders the new run's tool results.
+func TestProjectBrief_HookClearsATurnEndWithoutAState(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	ok, err := database.SetTerminalTurnEnd(row, pid, briefLaunchID, 100)
+	require.NoError(t, err)
+	require.True(t, ok)
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	require.False(t, s.AgentState.Valid)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+	_, errOut := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
+
+	assert.Empty(t, errOut)
+	s, err = database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.False(t, s.TurnEnd.Valid, "the previous run's turn end went")
 }
 
 // The dual path's other half is TerminalLaunch.sessionRowEnv.

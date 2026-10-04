@@ -86,6 +86,30 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
     }
 
+    /// Navigating opens the target's section and leaves every other fold as
+    /// the owner set it — nothing closes.
+    func testExpandingSectionKeepsOtherSectionsFolds() {
+        let updated = SidebarView.expandingSection(
+            for: .workload, in: ["today": true, "delivery": true, "analytics": false]
+        )
+        XCTAssertEqual(updated, ["today": true, "delivery": false, "analytics": false])
+    }
+
+    /// A cold launch has no last-seen selection: the persisted folds stand.
+    func testColdLaunchIsNotNavigation() {
+        XCTAssertFalse(SidebarView.selectionChangedWhileOffScreen(.digests, lastSeen: nil))
+    }
+
+    /// A tab switched while the window was closed (a notification route)
+    /// counts as navigation when the sidebar reappears.
+    func testReopenAfterTheSelectionChangedElsewhereIsNavigation() {
+        XCTAssertTrue(SidebarView.selectionChangedWhileOffScreen(.digests, lastSeen: .inbox))
+    }
+
+    func testReopenOnTheSameTabIsNotNavigation() {
+        XCTAssertFalse(SidebarView.selectionChangedWhileOffScreen(.digests, lastSeen: .digests))
+    }
+
     func testExpandingSectionNilWhenAlreadyExpanded() {
         XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: false]))
     }
@@ -104,15 +128,73 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [:]))
     }
 
-    func testExpandingSectionHandlesInitialSelectionInsideACollapsedSection() {
-        // The same pure function backs both the sidebar's `onAppear` and its
-        // `onChange(of: selection)` — the initial `selection` can already sit
-        // inside a collapsed section (window reopened from the tray via a
-        // notification route, or the sidebar toggled off and back on with a
-        // stale selection), so this must expand exactly like a live
-        // navigation does.
-        let updated = SidebarView.expandingSection(for: .memory, in: [SidebarSection.analytics.id: true])
-        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
+    // MARK: - Section fold state (shared by the menu and the rail)
+
+    /// A toggle flips only the clicked section: several sections can be
+    /// open at once (the rail is no longer an accordion).
+    func testToggleFlipsOnlyTheClickedSection() {
+        let open: [String: Bool] = ["today": false, "delivery": false, "analytics": true]
+        let updated = SidebarView.togglingSection(.analytics, in: open)
+        XCTAssertEqual(updated, ["today": false, "delivery": false, "analytics": false])
+        XCTAssertEqual(SidebarView.togglingSection(.today, in: updated)["today"], true)
+        XCTAssertEqual(SidebarView.togglingSection(.today, in: updated)["delivery"], false)
+    }
+
+    /// A section with no entry flips away from its default.
+    func testToggleOfAMissingEntryFlipsTheDefault() {
+        XCTAssertEqual(SidebarView.togglingSection(.today, in: [:]), ["today": true])
+        XCTAssertEqual(SidebarView.togglingSection(.delivery, in: [:]), ["delivery": false])
+    }
+
+    private func scratchDefaults() throws -> UserDefaults {
+        let name = "SidebarSectionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { defaults.removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    func testLoadFallsBackToSectionDefaults() throws {
+        let loaded = SidebarView.loadCollapsedSections(from: try scratchDefaults())
+        XCTAssertEqual(loaded, ["today": false, "delivery": true, "analytics": true])
+    }
+
+    /// A fold persists under `sidebar.section.<id>.collapsed` and a relaunch
+    /// reads it back — the one state the menu and the rail both draw.
+    func testToggleSurvivesARelaunch() throws {
+        let defaults = try scratchDefaults()
+        let before = SidebarView.loadCollapsedSections(from: defaults)
+        let after = SidebarView.toggledSection(.today, in: before, persistingTo: defaults)
+        XCTAssertEqual(defaults.object(forKey: "sidebar.section.today.collapsed") as? Bool, true)
+        XCTAssertNil(defaults.object(forKey: "sidebar.section.delivery.collapsed"), "an unchanged section is not written")
+        XCTAssertEqual(SidebarView.loadCollapsedSections(from: defaults), after)
+    }
+
+    /// Board #365: navigation's expand of a folded section is for this run
+    /// only — a later toggle of another section writes that section alone,
+    /// so a relaunch shows the owner's fold again.
+    func testNavigationsExpandIsNotPersisted() throws {
+        let defaults = try scratchDefaults()
+        let loaded = SidebarView.loadCollapsedSections(from: defaults)
+        let navigated = try XCTUnwrap(SidebarView.expandingSection(for: .digests, in: loaded))
+        XCTAssertEqual(navigated[SidebarSection.analytics.id], false)
+
+        let toggled = SidebarView.toggledSection(.today, in: navigated, persistingTo: defaults)
+
+        XCTAssertEqual(toggled[SidebarSection.analytics.id], false, "still open in this run")
+        XCTAssertNil(defaults.object(forKey: SidebarView.storageKey(.analytics)))
+        XCTAssertEqual(SidebarView.loadCollapsedSections(from: defaults)[SidebarSection.analytics.id], true,
+                       "a relaunch shows it folded")
+    }
+
+    /// The retired rail accordion key is ignored: a stale value opens nothing.
+    func testRetiredRailKeyIsIgnored() throws {
+        let defaults = try scratchDefaults()
+        defaults.set("analytics", forKey: "sidebar.rail.expandedSection")
+        defaults.set(true, forKey: "sidebar.section.today.collapsed")
+        XCTAssertEqual(
+            SidebarView.loadCollapsedSections(from: defaults),
+            ["today": true, "delivery": true, "analytics": true]
+        )
     }
 
     // MARK: - Feature-gated visibility
@@ -308,29 +390,6 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     // MARK: - Icon rail
-
-    /// Opening a section in the rail closes whichever was open: at most one.
-    func testRailToggleOpensClickedSectionAndClosesTheOther() {
-        XCTAssertEqual(SidebarView.railSection(afterToggling: .delivery, current: SidebarSection.today.id), "delivery")
-        XCTAssertEqual(SidebarView.railSection(afterToggling: .today, current: nil), "today")
-    }
-
-    func testRailToggleOfTheOpenSectionClosesIt() {
-        XCTAssertNil(SidebarView.railSection(afterToggling: .analytics, current: SidebarSection.analytics.id))
-    }
-
-    func testRailSectionFollowsTheSelectionsSection() {
-        XCTAssertEqual(SidebarView.railSection(for: .digests, current: SidebarSection.today.id), "analytics")
-        XCTAssertEqual(SidebarView.railSection(for: .workload, current: nil), "delivery")
-    }
-
-    /// A root, trailing or tool selection has no section: whatever the
-    /// owner had open stays open (or closed).
-    func testRailSectionKeptForSelectionsOutsideAnySection() {
-        XCTAssertEqual(SidebarView.railSection(for: .targets, current: SidebarSection.delivery.id), "delivery")
-        XCTAssertNil(SidebarView.railSection(for: .chat, current: nil))
-        XCTAssertNil(SidebarView.railSection(for: .search, current: nil))
-    }
 
     func testRailGroupIconsAreDistinctFromItemIcons() {
         let groupIcons = SidebarSection.ordered.map(\.railIcon)

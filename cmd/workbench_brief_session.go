@@ -107,7 +107,7 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 		return err
 	}
 	moveID := switches && row.ClaudeSessionID.String != sessionID
-	clearState := newRun && row.AgentState.Valid
+	clearState := newRun && (row.AgentState.Valid || row.TurnEnd.Valid || row.ToolRun)
 	if !moveID && !clearState {
 		return nil
 	}

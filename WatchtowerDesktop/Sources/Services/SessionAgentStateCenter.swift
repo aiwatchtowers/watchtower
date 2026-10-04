@@ -51,6 +51,13 @@ final class SessionAgentStateCenter {
     /// Whether the app is frontmost, when a banner is not needed. Without an
     /// application object (a test host) nothing is posted.
     @ObservationIgnored var isAppActive: () -> Bool = { NSApp?.isActive ?? true }
+    /// Every change of `statuses`, after it is assigned (held ask answers
+    /// go once their session leaves a permission prompt). One subscriber.
+    @ObservationIgnored var onChange: (() -> Void)?
+    /// Every read that succeeded, after its result is published, changed
+    /// or not (an answer held because a read failed goes on the next one
+    /// that succeeds). One subscriber.
+    @ObservationIgnored var onRead: (() -> Void)?
     @ObservationIgnored private let interval: Duration
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
@@ -120,14 +127,18 @@ final class SessionAgentStateCenter {
         Task { await poll() }
     }
 
-    /// One read of the stored states.
-    func poll() async {
+    /// One read of the stored states. Returns whether it succeeded — then
+    /// `statuses` is at least as new as this read (a newer read may have
+    /// been applied first); after a failure they are the last good read's,
+    /// which a caller deciding on a Return must not trust (PROJ-12).
+    @discardableResult
+    func poll() async -> Bool {
         readsStarted += 1
         let token = readsStarted
         do {
             let next = try await read(terminalCenter.liveClaudeIDs.sorted())
             failing = false
-            guard token > readApplied else { return }
+            guard token > readApplied else { return true }
             readApplied = token
             rows = next
         } catch {
@@ -136,8 +147,12 @@ final class SessionAgentStateCenter {
                 failing = true
             }
             // The last good read stays, resolved for the sessions live now.
+            publishResolved()
+            return false
         }
         publishResolved()
+        onRead?()
+        return true
     }
 
     /// The last good read under the current liveness and run starts: a
@@ -154,6 +169,7 @@ final class SessionAgentStateCenter {
     private func publish(_ next: [Int64: SessionAgentStatus]) {
         guard next != statuses else { return }
         statuses = next
+        onChange?()
         let canPost = !isAppActive() && WorkbenchNotificationCenter.sending(defaults)
         for action in notices.update(next, canPost: canPost) {
             switch action {

@@ -80,7 +80,7 @@ struct CommentableDocumentText: View {
             }
             .buttonStyle(FloatingCommentButtonStyle())
             .help("Comment on the selection")
-            .popover(isPresented: $composing, arrowEdge: .trailing) { composer }
+            .popover(isPresented: $composing, arrowEdge: .trailing) { composer.popoverSurface() }
             // Padding, not offset: the popover anchors on the layout frame.
             .padding(.leading, origin.x)
             .padding(.top, origin.y)
@@ -119,7 +119,7 @@ struct CommentableDocumentText: View {
                     composing = false
                 }
                 Button("Comment", action: save)
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.popoverPrimary)
                     .disabled(!canSave)
             }
         }

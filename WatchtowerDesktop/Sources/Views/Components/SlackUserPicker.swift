@@ -25,7 +25,7 @@ struct SlackUserPicker: View {
                 .buttonStyle(.plain)
                 .help("Add person")
                 .popover(isPresented: $showingPopover, arrowEdge: .trailing) {
-                    userSearchPopover
+                    userSearchPopover.popoverSurface()
                 }
             }
 

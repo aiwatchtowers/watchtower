@@ -19,6 +19,18 @@ package enum PipelineRunQueries {
         )
     }
 
+    /// The one pipeline whose failed runs are listed even when they used no
+    /// tokens: a memory vault that will not open fails before the first AI call
+    /// and has no other signal in the app (the daemon records the same open
+    /// error at most once an hour). Other pipelines' token-less failures
+    /// (slack-sync, reaction-commands, jira-boards, their reaped
+    /// "interrupted" runs) stay filtered — offline or with a revoked token
+    /// they fail every cycle and would bury the memory row. A reaped memory
+    /// run is listed.
+    static let tokenlessFailurePipeline = "memory"
+
+    /// The day's runs that used tokens, plus token-less failures of
+    /// `tokenlessFailurePipeline`.
     package static func fetchByDate(_ db: Database, on date: Date) throws -> [PipelineRun] {
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: date)
@@ -36,10 +48,11 @@ package enum PipelineRunQueries {
                 LEFT JOIN (SELECT run_id, COUNT(*) AS cnt FROM pipeline_steps GROUP BY run_id) sc ON sc.run_id = pr.id
                 WHERE pr.started_at >= ? AND pr.started_at < ?
                     AND pr.status IN ('done', 'error')
-                    AND (pr.input_tokens > 0 OR pr.output_tokens > 0 OR pr.total_api_tokens > 0)
+                    AND ((pr.status = 'error' AND pr.pipeline = ?)
+                        OR pr.input_tokens > 0 OR pr.output_tokens > 0 OR pr.total_api_tokens > 0)
                 ORDER BY pr.started_at DESC
                 """,
-            arguments: [fmt.string(from: dayStart), fmt.string(from: dayEnd)]
+            arguments: [fmt.string(from: dayStart), fmt.string(from: dayEnd), tokenlessFailurePipeline]
         )
     }
 
