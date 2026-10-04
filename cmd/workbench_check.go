@@ -176,6 +176,7 @@ func printCheckReport(w io.Writer, rep workbenchcheck.Report) {
 // stopHookInput is the part of Claude Code's Stop hook input we read.
 type stopHookInput struct {
 	SessionID      string `json:"session_id"`
+	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
 }
 
@@ -241,11 +242,57 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", stopStateLost(in.SessionID), err)
 			return
 		}
+		markStopTurnEnd(database, id, in)
 		if blocked := stopHookDrift(ctx, stdout, stderr, database, id, vocab); blocked {
 			return
 		}
 	}
-	recordStopAgentState(stderr, database, id, in.SessionID, at)
+	recordStopAgentState(stderr, database, id, in, at)
+}
+
+// markStopTurnEnd records the turn end before the drift check, which can
+// take seconds: a tool result of the ending turn whose async hook starts in
+// the meantime then already finds its call before it (board #368). Only a
+// folder with the session state hooks gets it (nothing else reads it). Best
+// effort and silent: the state write after the check records it again and
+// reports a failure. Harmless when the check blocks the stop (the continued
+// turn's calls come after it).
+func markStopTurnEnd(database *db.DB, workbenchID int64, in stopHookInput) {
+	rowID, ok, err := terminalSessionRowID()
+	if !ok || err != nil || in.SessionID == "" {
+		return
+	}
+	if has, err := workbenchHasStateHooks(database, workbenchID); err != nil || !has {
+		return
+	}
+	_ = recordStopTurnEnd(database, rowID, workbenchID, in)
+}
+
+// recordStopTurnEnd stores the transcript's size as the row's turn end. Read
+// first, under the session record's short lock wait: the sync Stop hook
+// holds the owner's turn end, and the common case (the end already stored by
+// markStopTurnEnd) must not wait for the write lock. A transcript that cannot
+// be read leaves the last turn end.
+func recordStopTurnEnd(database *db.DB, rowID, workbenchID int64, in stopHookInput) error {
+	end, ok := transcriptSize(in.TranscriptPath)
+	if !ok {
+		return nil
+	}
+	row, err := database.GetTerminalSession(rowID)
+	if errors.Is(err, db.ErrTerminalSessionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if row.TurnEnd.Valid && row.TurnEnd.Int64 == end {
+		return nil
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	_, err = database.SetTerminalTurnEnd(rowID, workbenchID, in.SessionID, end)
+	return err
 }
 
 // stopHookDrift runs the drift check and prints the block JSON when git
@@ -304,13 +351,13 @@ func stopStateExpected(sessionID string) bool {
 // recordStopAgentState records "waiting" for a turn the Stop hook let end.
 // Outside a Desktop terminal it does nothing and opens nothing; database is
 // the hook's own handle, or nil to open one.
-func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, sessionID string, at time.Time) {
+func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, in stopHookInput, at time.Time) {
 	rowID, ok, err := terminalSessionRowID()
-	if !ok || (err == nil && sessionID == "") {
+	if !ok || (err == nil && in.SessionID == "") {
 		return
 	}
 	if err == nil {
-		err = writeStopAgentState(database, rowID, workbenchID, sessionID, at)
+		err = writeStopAgentState(database, rowID, workbenchID, in, at)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
@@ -320,8 +367,10 @@ func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, 
 // writeStopAgentState is recordStopAgentState's write, opening a handle when
 // database is nil. Only a folder with the session state hooks gets it:
 // without them nothing records "working", so "waiting" would stick after the
-// first turn until Repair (board #340).
-func writeStopAgentState(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time) error {
+// first turn until Repair (board #340). The turn end goes first, also when
+// the state write is a repeat (a turn without a prompt over a stored
+// "waiting").
+func writeStopAgentState(database *db.DB, rowID, workbenchID int64, in stopHookInput, at time.Time) error {
 	if database == nil {
 		_, opened, err := openJiraCmdDB()
 		if err != nil {
@@ -333,8 +382,11 @@ func writeStopAgentState(database *db.DB, rowID, workbenchID int64, sessionID st
 	if has, err := workbenchHasStateHooks(database, workbenchID); err != nil || !has {
 		return err
 	}
+	if err := recordStopTurnEnd(database, rowID, workbenchID, in); err != nil {
+		return err
+	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, rowID, workbenchID, sessionID, state, onlyFrom, nil, false, at)
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, hookTurn{stop: true})
 }
 
 // workbenchHasStateHooks reports whether workbench id's folder has its

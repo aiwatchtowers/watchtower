@@ -77,7 +77,7 @@ func TestProjectBrief_HookRecordsTheSessionIDAfterClear(t *testing.T) {
 // storeAgentState gives the fixture row a state from a previous run.
 func storeAgentState(t *testing.T, database *db.DB, projectID, rowID int64, sessionID string) {
 	t.Helper()
-	ok, err := database.SetTerminalAgentState(rowID, projectID, sessionID, "waiting", time.Now().Add(-time.Minute), "", nil, false)
+	ok, err := database.SetTerminalAgentState(rowID, projectID, sessionID, "waiting", time.Now().Add(-time.Minute), "", nil, false, db.AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 }

@@ -80,6 +80,10 @@ type sessionStateInput struct {
 	NotificationType string `json:"notification_type"`
 	// AgentID is set when the hook fired inside a subagent.
 	AgentID string `json:"agent_id"`
+	// TranscriptPath and a PostToolUse's ToolUseID place the tool call
+	// against the last Stop (board #368).
+	TranscriptPath string `json:"transcript_path"`
+	ToolUseID      string `json:"tool_use_id"`
 	// Error is a StopFailure's error type ("rate_limit", pinned by
 	// testdata/stopfailure_rate_limit.json). Raw, so a non-string value
 	// never fails the whole input.
@@ -106,9 +110,10 @@ func (in sessionStateInput) agentFailure() *db.AgentFailure {
 // A main-thread PostToolUse means a tool just ran: it clears "needs
 // approval" after a granted permission and "waiting" when a turn started
 // without a prompt (a teammate or background-task message, a wakeup fires
-// no UserPromptSubmit); one stamped before the stop's "waiting" is an older
-// event and writes nothing. ok is false for an event that records nothing —
-// an unknown event or notification type, or a missing one.
+// no UserPromptSubmit); one stamped before the stop's "waiting", or whose
+// tool call the transcript places before the stop, writes nothing. ok is
+// false for an event that records nothing — an unknown event or
+// notification type, or a missing one.
 func agentStateFor(event, notificationType string) (state, onlyFrom string, ok bool) {
 	switch event {
 	case "UserPromptSubmit":
@@ -173,10 +178,16 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	if !ok || in.SessionID == "" {
 		return nil
 	}
-	if in.AgentID != "" && in.HookEventName == "PostToolUse" {
-		// A background subagent works on after the main turn stopped to wait
-		// for the owner: its tool results clear only a granted permission.
-		onlyFrom = agentStateApproval
+	var turn hookTurn
+	if in.HookEventName == "PostToolUse" {
+		if in.AgentID != "" {
+			// A background subagent works on after the main turn stopped to
+			// wait for the owner: its tool results clear only a granted
+			// permission.
+			onlyFrom = agentStateApproval
+		} else {
+			turn = hookTurn{toolRun: true, transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}
+		}
 	}
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
@@ -187,7 +198,18 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	}
 	defer database.Close()
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, in.agentFailure(),
-		in.HookEventName == "UserPromptSubmit", at)
+		in.HookEventName == "UserPromptSubmit", at, turn)
+}
+
+// hookTurn ties a main-thread PostToolUse or the Stop hook's write to its
+// turn (board #368): the async PostToolUse's process can start after the
+// sync Stop hook's, so the hook start times alone would let an ended turn's
+// tool result turn the stop's "waiting" back into "working". The zero value
+// is every other event.
+type hookTurn struct {
+	toolRun                   bool // a main-thread PostToolUse
+	stop                      bool // the sync Stop hook
+	transcriptPath, toolUseID string
 }
 
 // terminalSessionRowID is the terminal_sessions row the Desktop launched
@@ -213,9 +235,13 @@ func terminalSessionRowID() (id int64, ok bool, err error) {
 // write repeats every guard, so a race with another hook stays correct.
 // failure is a StopFailure's error, nil for every other event; prompt says
 // the event is a UserPromptSubmit. nil when a guard holds the write back — a
-// gone row is not an error.
+// gone row is not an error. turn orders a main-thread tool result and the
+// Stop by the transcript: a tool call from before the run's last Stop writes
+// nothing, and the Stop replaces a tool result's `working` stamped after it
+// (its process started later); a call the transcript cannot place falls back
+// to the time order.
 func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, state, onlyFrom string,
-	failure *db.AgentFailure, prompt bool, at time.Time) error {
+	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
 	if !terminal.IsSessionID(sessionID) {
 		return fmt.Errorf("the hook input carries no session id (%q)", briefClip(sessionID, 40))
 	}
@@ -232,14 +258,28 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		row.ClaudeSessionID.String != sessionID,
 		repeatsAgentState(row, state, failure, prompt),
 		onlyFrom != "" && row.AgentState.String != onlyFrom,
-		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt):
+		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt) && !stopEndsToolRun(row, turn):
 		return nil
+	}
+	order := db.AgentOrder{Stop: turn.stop}
+	if turn.toolRun {
+		order.ToolRun, order.SeenTurnEnd = true, row.TurnEnd
+		if row.TurnEnd.Valid && toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64) == toolCallBeforeStop {
+			return nil // the ended turn's tool result
+		}
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err = database.SetTerminalAgentState(rowID, workbenchID, sessionID, state, at, onlyFrom, failure, prompt)
+	_, err = database.SetTerminalAgentState(rowID, workbenchID, sessionID, state, at, onlyFrom, failure, prompt, order)
 	return err
+}
+
+// stopEndsToolRun: the Stop replaces a main-thread tool result's `working`
+// whatever its time — no main-thread tool of a later turn runs before the
+// sync Stop hook returns, so that tool ran in the ending turn.
+func stopEndsToolRun(row *db.TerminalSession, turn hookTurn) bool {
+	return turn.stop && row.ToolRun && row.AgentState.String == agentStateWorking
 }
 
 // repeatsAgentState says the write would change nothing the guarded UPDATE

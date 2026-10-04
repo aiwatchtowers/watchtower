@@ -188,18 +188,18 @@ func TestProj11_WorkingClearsFinishedAndError(t *testing.T) {
 
 	require.NoError(t, d.FinishTerminalSession(sid, "Done.", t0))
 	for i, state := range []string{"waiting", "approval"} {
-		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, state, t0.Add(time.Duration(i+1)*time.Second), "", nil, false)
+		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, state, t0.Add(time.Duration(i+1)*time.Second), "", nil, false, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok, state)
 		finished, _ := finishColumns(t, d, sid)
 		assert.True(t, finished.Valid, "%s cleared finished_at", state)
 	}
 	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0.Add(3*time.Second), "",
-		&AgentFailure{Error: "rate_limit"}, false)
+		&AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(4*time.Second), "", nil, false)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(4*time.Second), "", nil, false, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 	finished, summary := finishColumns(t, d, sid)
@@ -211,9 +211,9 @@ func TestProj11_WorkingClearsFinishedAndError(t *testing.T) {
 
 	// A subagent's PostToolUse (working only out of approval) clears it too.
 	require.NoError(t, d.FinishTerminalSession(sid, "Again.", t0.Add(5*time.Second)))
-	_, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "approval", t0.Add(6*time.Second), "", nil, false)
+	_, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "approval", t0.Add(6*time.Second), "", nil, false, AgentOrder{})
 	require.NoError(t, err)
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(7*time.Second), "approval", nil, false)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(7*time.Second), "approval", nil, false, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 	finished, _ = finishColumns(t, d, sid)
@@ -230,18 +230,18 @@ func TestProj11_WorkingOverWorkingClearsFinished(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
-	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0, "", nil, false)
+	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0, "", nil, false, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoError(t, d.FinishTerminalSession(sid, "Done.", t0.Add(time.Second)))
 
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(-time.Second), "", nil, true)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(-time.Second), "", nil, true, AgentOrder{})
 	require.NoError(t, err)
 	assert.False(t, ok, "an older working wrote")
 	finished, _ := finishColumns(t, d, sid)
 	assert.True(t, finished.Valid, "an older working cleared finished_at")
 
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(2*time.Second), "", nil, true)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(2*time.Second), "", nil, true, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok, "a prompt's working over a finished working did not land")
 	finished, summary := finishColumns(t, d, sid)
@@ -250,7 +250,7 @@ func TestProj11_WorkingOverWorkingClearsFinished(t *testing.T) {
 	_, _, stateAt := failureColumns(t, d, sid)
 	assert.Equal(t, t0.Add(2*time.Second).Format(agentStateAtLayout), stateAt)
 
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(3*time.Second), "", nil, true)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(3*time.Second), "", nil, true, AgentOrder{})
 	require.NoError(t, err)
 	assert.False(t, ok, "a plain working repeat wrote")
 	_, _, afterAt := failureColumns(t, d, sid)
@@ -264,12 +264,12 @@ func TestProj11_ToolRunWorkingOverWorkingKeepsFinished(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
-	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0, "", nil, true)
+	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0, "", nil, true, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoError(t, d.FinishTerminalSession(sid, "Done.", t0.Add(time.Second)))
 
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(2*time.Second), "", nil, false)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(2*time.Second), "", nil, false, AgentOrder{})
 	require.NoError(t, err)
 	assert.False(t, ok, "a tool run's working over working wrote")
 	finished, summary := finishColumns(t, d, sid)
@@ -286,15 +286,15 @@ func TestProj11_ToolRunOutOfWaitingClearsFinished(t *testing.T) {
 		pid := newTestWorkbench(t, d)
 		sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 		t0 := time.Now().UTC().Truncate(time.Millisecond)
-		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0, "", nil, true)
+		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0, "", nil, true, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok)
 		require.NoError(t, d.FinishTerminalSession(sid, "Done.", t0.Add(time.Second)))
-		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, from, t0.Add(2*time.Second), "", nil, false)
+		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, from, t0.Add(2*time.Second), "", nil, false, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok, from)
 
-		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(3*time.Second), "", nil, false)
+		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(3*time.Second), "", nil, false, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok, "a tool run out of %s did not land", from)
 		finished, summary := finishColumns(t, d, sid)
@@ -309,12 +309,12 @@ func TestSetTerminalAgentState_RefusedWorkingKeepsFinished(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
-	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false)
+	ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoError(t, d.FinishTerminalSession(sid, "Done.", t0))
 
-	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(-time.Second), "", nil, false)
+	ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "working", t0.Add(-time.Second), "", nil, false, AgentOrder{})
 	require.NoError(t, err)
 	assert.False(t, ok)
 	finished, _ := finishColumns(t, d, sid)
@@ -345,12 +345,12 @@ func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 		pid := newTestWorkbench(t, d)
 		sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 		t0 := time.Now().UTC().Truncate(time.Millisecond)
-		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, tc.from, t0, "", nil, false)
+		ok, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, tc.from, t0, "", nil, false, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok)
 
 		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0.Add(time.Second), "",
-			&AgentFailure{Error: "rate_limit"}, false)
+			&AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok, "StopFailure from %s did not land", tc.from)
 		failedAt, agentError, stateAt := failureColumns(t, d, sid)
@@ -363,20 +363,20 @@ func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 
 		// A repeated StopFailure is a repeat: the transition time is kept.
 		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0.Add(2*time.Second), "",
-			&AgentFailure{Error: "rate_limit"}, false)
+			&AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
 		require.NoError(t, err)
 		assert.False(t, ok, "a repeated StopFailure wrote")
 
 		// A StopFailure with another error replaces it and stamps its own
 		// time, unless it is older than the stored state.
 		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0.Add(500*time.Millisecond), "",
-			&AgentFailure{Error: "overloaded"}, false)
+			&AgentFailure{Error: "overloaded"}, false, AgentOrder{})
 		require.NoError(t, err)
 		assert.False(t, ok, "an older StopFailure with another error wrote")
 		_, agentError, _ = failureColumns(t, d, sid)
 		assert.Equal(t, "rate_limit", agentError, "an older StopFailure replaced the error")
 		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0.Add(2500*time.Millisecond), "",
-			&AgentFailure{Error: "overloaded"}, false)
+			&AgentFailure{Error: "overloaded"}, false, AgentOrder{})
 		require.NoError(t, err)
 		require.True(t, ok, "a StopFailure with another error did not land")
 		failedAt, agentError, newAt := failureColumns(t, d, sid)
@@ -386,7 +386,7 @@ func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 		assert.Equal(t, "overloaded", agentError)
 		stateAt = newAt
 
-		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, tc.next, t0.Add(3*time.Second), "", nil, false)
+		ok, err = d.SetTerminalAgentState(sid, pid, agentStateUUID, tc.next, t0.Add(3*time.Second), "", nil, false, AgentOrder{})
 		require.NoError(t, err)
 		assert.Equal(t, !tc.kept, ok, "%s after a StopFailure: written", tc.next)
 		failedAt, agentError, afterAt := failureColumns(t, d, sid)
@@ -411,7 +411,7 @@ func TestClearTerminalAgentState_ClearsTheError(t *testing.T) {
 	pid := newTestWorkbench(t, d)
 	sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
-	_, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false)
+	_, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
 	require.NoError(t, err)
 	ok, err := d.ClearTerminalAgentState(sid, pid, agentStateUUID, t0.Add(time.Second))
 	require.NoError(t, err)
