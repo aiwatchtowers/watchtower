@@ -661,7 +661,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer Claude Code and never show a stale state
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, see the changelog)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse` and
@@ -672,7 +672,18 @@ write only workbench N's `claude` row whose stored `claude_session_id` equals
 the payload's `session_id` (a nested `claude -p` that inherited the variable
 never moves the row), never replace a newer state with an older one (an
 event time not later than the stored `agent_state_at` writes nothing), and
-never rewrite an unchanged state. The Desktop shows a stored hook state only
+never rewrite an unchanged state. Since 2026-10-04 (board #368) a turn's
+Stop and its main-thread tool results are ordered by the turn, not by when
+their hook processes started: the Stop hook records the transcript's size
+(`agent_turn_end`) before its drift check and again with its `waiting` (also
+over a stored `waiting`); a main-thread `PostToolUse` whose `tool_use_id`
+the transcript places before it writes nothing, and its write lands only
+while the turn end it checked still holds; the Stop's `waiting` replaces a
+`working` a main-thread `PostToolUse` wrote (`agent_tool_run`) even when
+stamped later, keeping the later `agent_state_at`. A prompt's, a
+notification's or a subagent's state keeps the time order (owner decision,
+ask #20: a granted subagent shows working), and a tool call the transcript
+cannot place falls back to it. The Desktop shows a stored hook state only
 for the process run it was written in (the row is live and `agent_state_at`
 is not earlier than that run's start, `SessionAgentStatus.effective`).
 
@@ -725,6 +736,8 @@ cried wolf — the owner must be able to trust that orange means their move.
 - `internal/db/session_report_test.go::TestProj11_ToolRunOutOfWaitingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseIntoWorkingClearsFinished` (finish, then Stop (`waiting`) or a permission prompt (`approval`), then a main-thread PostToolUse `working`: cleared; the hook half also pins that a subagent's PostToolUse over `waiting` writes nothing and keeps `finished_at`)
 - `internal/db/session_report_test.go::TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (db half: a later plain `waiting` keeps the error, a StopFailure with another error replaces it at its own time, `working`/`approval` clear it)
 - `cmd/workbench_session_state_test.go::TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (hook half: the payload's `error` field, a repeated StopFailure keeps its time and another error replaces it, a missing or non-string one stored as `''`, clipped to 60 runes on one line)
+- `cmd/workbench_session_state_test.go::TestProj11_EndedTurnsToolResultNeverOverwritesTheStop` (board #368: the ended turn's tool result whose hook starts after the Stop's leaves `waiting`; a later self-started turn's first tool result still records `working`)
+- `cmd/workbench_session_state_test.go::TestProj11_StopReplacesItsTurnsLateToolResult` (board #368: the ended turn's tool result landing first with a later stamp is replaced by the Stop's `waiting`, the stored time never goes back; a subagent's `working` keeps the time order)
 
 **Locked since:** 2026-10-03
 
@@ -936,13 +949,15 @@ owner's and the agent's backs.
   render waits for the next change or an explicit trigger.
 
 - **Session agent state ordering and subagents (PROJ-11, board #367).**
-  (a) Events are ordered by when their hook process started (`hookNow` at
-  process start, in both the async `PostToolUse` hook and the sync `Stop`
-  hook), not by when the tool finished: a `PostToolUse` stamped before the
-  `Stop` writes nothing, but an async `PostToolUse` of the ended turn whose
-  process starts after the `Stop` hook's overwrites `waiting` with
-  `working` until the next stop (the Desktop then withdraws the "stopped"
-  notice; follow-up board #368). (b) A subagent's permission prompt (`Notification`) moves the
+  (a) Closed 2026-10-04 by board #368 (events of a turn are ordered by the
+  turn, see PROJ-11). What still orders by hook-process start time: a tool
+  call the transcript cannot place (no `tool_use_id`, an unreadable
+  transcript, more than 16 MiB from the turn end on either side), and a
+  turn that ended on a `StopFailure` (async, so it records no turn end); and
+  an ended turn's tool result that lands before the Stop hook's first
+  turn-end write (the Stop's database open) over `waiting` or `approval`
+  clears `finished_at`, which the Stop's `waiting` does not restore.
+  (b) A subagent's permission prompt (`Notification`) moves the
   row from `waiting` to `approval`, and after the grant the subagent's
   `PostToolUse` records `working` while the main turn is still stopped.
   (c) A turn started without a prompt whose first tool fails stays
@@ -952,6 +967,7 @@ owner's and the agent's backs.
 
 ## Changelog
 
+- 2026-10-04 (board #368, owner-approved target): **PROJ-11 amended** (strengthened) — a turn's Stop and its main-thread tool results are ordered by the turn, not by hook-process start time, closing v1 note (a) of "Session agent state ordering and subagents". Migration `00102` adds `terminal_sessions.agent_turn_end` (the transcript's size at the run's last Stop hook) and `agent_tool_run` (the stored state came from a main-thread `PostToolUse`), both Go-only. The Stop hook records the turn end before its drift check and with its `waiting`; a main-thread `PostToolUse` whose `tool_use_id` the transcript places before it writes nothing (`cmd/workbench_turn_order.go`, `toolCallTurn`); the Stop's `waiting` replaces a tool result's `working` stamped after it. Owner decision ask #20 unchanged: a subagent's tool result after a granted permission still records `working`, time-ordered. New guards `TestProj11_EndedTurnsToolResultNeverOverwritesTheStop` and `TestProj11_StopReplacesItsTurnsLateToolResult`; every existing guard runs unchanged (`TestProj11_OlderEventNeverOverwritesANewerState` holds for every write but the Stop's over a tool result's `working`). The note's narrower leftovers (unplaceable calls, StopFailure, `finished_at` in the Stop's first milliseconds) stay listed. PROJ-11's "never show a stale state" now holds outside those listed leftovers.
 - 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-session-report.md`). **Approved by the owner (the states brainstorm, asks #2 and #4):** migration `00101` adds `terminal_sessions.finished_at`/`finish_summary`/`agent_failed_at`/`agent_error`, `terminal_session_targets` and `workbench_pr_states`. **PROJ-11 amended** — the stored `waiting` now shows Stopped (grey), "waiting for you" comes only from an open ask or a permission dialog, a StopFailure records an error (red), `finish_session` marks Finished (blue; orange with open asks), any `working` write clears both; the state order is pinned. The existing guards that asserted `waiting` → "waiting for you" (orange) were rewritten to Stopped (grey) — the intended change, not a relaxation; the "a dead run's state never shows" assertions are unchanged (`testProj11_StateFromAnEarlierRunIsIgnored` gained an earlier run's error). New guards `testProj11_StateOrder`, `testProj11_TurnEndWithoutAskIsStoppedNotWaiting`, `TestProj11_WorkingClearsFinishedAndError` and `TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (db and hook halves). **PROJ-13 amended** — the ask guard prompt is v2 with the `finish_session` reminder; its pass rules are unchanged; new guard `TestProj13_V1PromptIsUpgradedToV2`. **PROJ-14 added** — a session report shows only that session's work, and only the session itself says it finished. **PROJ-02 strengthened** — the delete also removes the session link rows and the PR cache (`TestProj02_DeleteProjectLeavesNoRows` extended). **Implementation rulings (spec Revision 3):** (1) a plain `waiting` over a failed one is a no-op, so the error clears only on `working`, `approval` or the SessionStart clear (spec Part 4 said "every other write clears"); (2) the spec's "an owner-edited prompt is kept and reported `drifted`" would have contradicted PROJ-04, which sets our edited prompt back — every marker prompt, v1 or edited, becomes v2 and PROJ-04 is unchanged (the planned guard name `TestProj13_V1PromptIsUpgradedEditedIsKept` became `TestProj13_V1PromptIsUpgradedToV2`). The owner-asks v1 note (b) now reads Stopped. PROJ-01, 03–10 and 12 unchanged; DEV-06 lists `finish_session` (`dev-surface.md`).
 - 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-owner-asks.md`). **Approved by the owner (§9, 2026-10-03):** attached documents, document comments and the Desktop Documents pane are replaced by **owner asks** (`owner_asks`, migration `00100`, which also drops `project_documents` and the document columns of `project_comments`). **PROJ-03 amended** — the document view and its comment re-anchoring are gone (the guard `testProj03DesktopNeverWritesTheDocument` went with `WorkbenchDocumentViewModelTests.swift`); the contract is the Files pane rule plus "no workbench tool writes the folder" (`ask_owner` only reads `doc_path`), new guard `TestProj03_AskOwnerNeverWritesTheFolder`; the Files pane guards are unchanged. **PROJ-08 amended** — "attached documents" becomes every `.md`/`.markdown`/`.txt` file of the folder git does not ignore (or the walk keeps outside git), ≤ 2000 per workbench; visibility, privacy, symlink, caps and PROJ-02 deletion unchanged. (Beyond §9, see the rulings below: explicit triggers render every file gated by content hash (only the daemon is mtime-gated), a file that left the listing loses its entry, the installed skill directories are skipped, and a privacy-protected folder is indexed only by an explicit trigger (`resync`, `create`, `kb reindex`, `ask_owner`'s one file.) Guards renamed in place, assertions kept: `TestProj08_ProjectDocsOnlyInTheirOwnProjectSession` → `TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`, `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` → `TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`, `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` → `TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (its "a dry run indexes nothing" step went with `import-docs` and became "a daemon pass never reads a protected folder"). **PROJ-12 added** (the spec's "PROJ-11", renumbered — PROJ-11 is the session state hooks): an ask reaches its session as typed text, never submitted. **PROJ-13 added** (the spec's "PROJ-12"): the ask guard never traps a turn. **PROJ-02** — asks join the cascaded rows and both ask guard hooks the removal (its guards extended, none relaxed); `TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused` lost its document half with the table and is now `TestProj02_DeletedProjectAndCommentIDsAreNeverReused`. **Implementation rulings, pending owner confirmation:** (1) the PROJ-13 pass clause "tool_calls contains a call whose name ends with ask_owner" became "last_assistant_message says it filed an ask, e.g. names ask #<number>", since Claude Code's Stop input has no `tool_calls`; (2) the PROJ-08 extras in parentheses above; (3) **PROJ-04 reworded** (widened, no guard relaxed) — `Stop` now holds two entries of ours (the drift command and the ask guard prompt, recognised by its marker line) and `PreToolUse` is a newly owned event (matcher `AskUserQuestion`; malformed counts as a malformed file); new guards `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks`, `TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`; (4) `get_ask`'s unaudited `delivered` write, the AGENT-06 scope exception and DEV-06's ask session binding (`dev-surface.md`, `agent-actions.md`). The v1 note "Re-anchor hides an owner root" is retired with re-anchoring; owner-asks limits are added. PROJ-01, 05–07, 09–11 unchanged.
 - 2026-10-03 (code navigation phase C, Task 11, ruling R47): **PROJ-03 amendment (owner-approved 2026-10-03)** — the Files pane's editor may also write text the owner explicitly applies from a code-question suggestion (Apply), through the same base-revision and conflict path as the owner's typed edits (spec §9.2). Apply is refused while the buffer has a `CodeFileBuffer.Problem` or when the selected text changed since the question (`CodeQuestionCenterTests.testApplyRefusedWhileTheBufferIsInConflict`, `testApplyRefusedWhenTheSelectedTextChanged`; the editor bridge harness's `applyEdit` checks). No guard test changed.

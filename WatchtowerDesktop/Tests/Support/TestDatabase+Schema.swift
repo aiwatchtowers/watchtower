@@ -1379,7 +1379,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     claude_session_id TEXT,
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    closed_at         TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '',
+    closed_at         TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '', agent_turn_end INTEGER, agent_tool_run INTEGER NOT NULL DEFAULT 0,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );

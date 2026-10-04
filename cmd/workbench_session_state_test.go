@@ -265,7 +265,7 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 		{name: "repeat is a no-op", wantState: "working", setup: func(t *testing.T, database *db.DB, row int64) {
 			s, err := database.GetTerminalSession(row)
 			require.NoError(t, err)
-			_, err = database.SetTerminalAgentState(row, s.WorkbenchID.Int64, briefLaunchID, "working", time.Now().Add(-time.Hour), "", nil, false)
+			_, err = database.SetTerminalAgentState(row, s.WorkbenchID.Int64, briefLaunchID, "working", time.Now().Add(-time.Hour), "", nil, false, db.AgentOrder{})
 			require.NoError(t, err)
 		}},
 		{name: "unknown flag", args: []string{"--future-flag"}, wantState: "working"},
@@ -626,7 +626,7 @@ func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 	stopHookWaiting := func(t *testing.T, database *db.DB, pid, row int64) {
 		// The Stop hook's write (writeStopAgentState) after its settings check.
 		state, onlyFrom, _ := agentStateFor("Stop", "")
-		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, onlyFrom, nil, false, hookNow()))
+		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, onlyFrom, nil, false, hookNow(), hookTurn{}))
 	}
 	hookEvent := func(event, notification string) func(*testing.T, *db.DB, int64, int64) {
 		return func(t *testing.T, _ *db.DB, pid, _ int64) {
@@ -778,7 +778,7 @@ func TestProj11_PostToolUseOverWorkingKeepsFinished(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, storedFinishedAt(t, database, row).Valid, "finish_session's PostToolUse cleared finished_at")
 
-	require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, agentStateWorking, "", nil, false, hookNow()))
+	require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, agentStateWorking, "", nil, false, hookNow(), hookTurn{}))
 	assert.True(t, storedFinishedAt(t, database, row).Valid, "a tool run's working over working cleared finished_at")
 	assert.Equal(t, "working", storedAgentState(t, database, row))
 }
@@ -815,5 +815,137 @@ func TestProj11_PostToolUseIntoWorkingClearsFinished(t *testing.T) {
 		}
 		assert.Equal(t, "working", storedAgentState(t, database, row), from)
 		assert.False(t, storedFinishedAt(t, database, row).Valid, "a tool run out of %s kept finished_at", from)
+	}
+}
+
+// toolResultPayload is a main-thread PostToolUse of call id, its transcript
+// at path.
+func toolResultPayload(id, path string) string {
+	return `{"session_id":"` + briefLaunchID + `","transcript_path":"` + path + `","hook_event_name":"PostToolUse",` +
+		`"tool_name":"Bash","tool_use_id":"` + id + `","tool_response":{"stdout":"a.txt"}}`
+}
+
+func stopPayload(path string) string {
+	return `{"session_id":"` + briefLaunchID + `","transcript_path":"` + path + `","hook_event_name":"Stop","stop_hook_active":false}`
+}
+
+// PROJ-11, board #368: events are ordered by the turn they belong to, not by
+// when their hook processes started. The ended turn's tool result whose
+// async hook starts after the sync Stop hook leaves "waiting" alone; a turn
+// started without a prompt still turns it into "working" with its first
+// tool result (board #367).
+func TestProj11_EndedTurnsToolResultNeverOverwritesTheStop(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now()
+	orig := hookNow
+	t.Cleanup(func() { hookNow = orig })
+	at := func(sec int) { hookNow = func() time.Time { return base.Add(time.Duration(sec) * time.Second) } }
+	record := func(payload string) {
+		t.Helper()
+		_, _, err := runSessionState(t, pid, strings.NewReader(payload))
+		require.NoError(t, err)
+	}
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptToolUse("toolu_A"), transcriptToolResult("toolu_A"),
+		transcriptReply("done"))
+
+	at(1)
+	record(statePayload("UserPromptSubmit", briefLaunchID, ""))
+	at(2)
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+	require.Empty(t, out)
+	require.Empty(t, errOut)
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+
+	at(3)
+	record(toolResultPayload("toolu_A", transcript))
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "the ended turn's tool result, its hook started after the Stop's")
+
+	appendTranscript(t, transcript, transcriptToolUse("toolu_B"), transcriptToolResult("toolu_B"))
+	at(4)
+	record(toolResultPayload("toolu_B", transcript))
+	assert.Equal(t, "working", storedAgentState(t, database, row), "a self-started turn's first tool result")
+}
+
+// PROJ-11, board #368: the other interleaving — the ended turn's tool result
+// lands first (out of a granted permission) with a later stamp than the
+// Stop hook's start; the Stop still records "waiting". A prompt's or a
+// subagent's `working` stamped after the Stop keeps the time order (owner
+// decision, ask #20: a granted subagent shows working).
+func TestProj11_StopReplacesItsTurnsLateToolResult(t *testing.T) {
+	orig := hookNow
+	t.Cleanup(func() { hookNow = orig })
+	for _, tc := range []struct {
+		name, payload, want string
+	}{
+		{"the main thread's tool result", toolResultPayload("toolu_A", ""), "waiting"},
+		{"a subagent's tool result", `{"session_id":"` + briefLaunchID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3"}`, "working"},
+	} {
+		database, pid, row := stopStateFixture(t, "open")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		base := time.Now()
+		at := func(sec int) { hookNow = func() time.Time { return base.Add(time.Duration(sec) * time.Second) } }
+		transcript := writeTranscript(t, transcriptToolUse("toolu_A"), transcriptToolResult("toolu_A"), transcriptReply("done"))
+
+		at(1)
+		_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("Notification", briefLaunchID, "permission_prompt")))
+		require.NoError(t, err)
+		at(3)
+		_, _, err = runSessionState(t, pid, strings.NewReader(tc.payload))
+		require.NoError(t, err)
+		require.Equal(t, "working", storedAgentState(t, database, row), tc.name)
+		at(2)
+		_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+		require.Empty(t, errOut)
+
+		assert.Equal(t, tc.want, storedAgentState(t, database, row), tc.name)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.Equal(t, base.Add(3*time.Second).UTC().Truncate(time.Millisecond), s.AgentStateAt.UTC(), "%s: the stored time never goes back", tc.name)
+	}
+}
+
+// A turn without a prompt over a stored "waiting": the Stop's state write
+// is a repeat, but it still records the turn end, so that turn's late tool
+// result writes nothing.
+func TestSessionState_StopRecordsTheTurnEndOverWaiting(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+	_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+	require.Empty(t, errOut)
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+
+	appendTranscript(t, transcript, transcriptToolUse("toolu_A"), transcriptToolResult("toolu_A"), transcriptReply("again"))
+	_, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+	require.Empty(t, errOut)
+	_, _, err := runSessionState(t, pid, strings.NewReader(toolResultPayload("toolu_A", transcript)))
+	require.NoError(t, err)
+
+	assert.Equal(t, "waiting", storedAgentState(t, database, row))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	size, _ := transcriptSize(transcript)
+	assert.Equal(t, size, s.TurnEnd.Int64)
+}
+
+// A tool result the transcript cannot place (no tool_use_id, an unreadable
+// transcript) falls back to the time order: after the Stop, "working".
+func TestSessionState_UnplacedToolResultFallsBackToTime(t *testing.T) {
+	for _, payload := range []string{
+		statePayload("PostToolUse", briefLaunchID, ""),
+		toolResultPayload("toolu_A", filepath.Join(os.TempDir(), "no-such-transcript.jsonl")),
+	} {
+		database, pid, row := stopStateFixture(t, "open")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		stepClock(t)
+		transcript := writeTranscript(t, transcriptToolUse("toolu_A"), transcriptToolResult("toolu_A"), transcriptReply("done"))
+		_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+		require.Empty(t, errOut)
+
+		_, _, err := runSessionState(t, pid, strings.NewReader(payload))
+		require.NoError(t, err)
+		assert.Equal(t, "working", storedAgentState(t, database, row), payload)
 	}
 }
