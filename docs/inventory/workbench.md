@@ -949,11 +949,11 @@ apart or hid a branch that never merged would make the board lie in the
 other direction.
 
 **Test guards:**
-- `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_LargeBoardReadIsFast`
+- `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_UnparseableCloseTimeKeepsTheChain`, `TestProj15_ReopenAndRecloseStartsThePeriodOver`, `TestProj15_LargeBoardReadIsFast`
 - `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork`
-- `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
+- `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
 - `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift::testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardOutlineTests.swift::testSearchAlwaysMatchesArchivedTargets`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift::testSearchShowsArchivedLeaves`, `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne`
-- supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`)
+- supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`)
 
 **Locked since:** 2026-10-04
 
@@ -1089,7 +1089,11 @@ other direction.
   Restore is reopening: there is no Unarchive action (owner decision D),
   since a target taken out of the archive but still closed for longer than
   the setting would be archived again on the next read. The setting is the
-  owner's (Desktop menu); the agent cannot change it.
+  owner's (Desktop menu); the agent cannot change it. A close time that does
+  not parse as a date (every writer stores ISO-8601 UTC, so none is known)
+  keeps its target and every ancestor out of the archive, so an archived
+  target's whole subtree stays archived (guard
+  `TestProj15_UnparseableCloseTimeKeepsTheChain`).
 
 ## Changelog
 
