@@ -20,6 +20,10 @@ protocol TerminalSessionProcess: AnyObject {
     /// Whether the program in the terminal enabled bracketed paste (DECSET
     /// 2004), so a paste arrives as text rather than as keystrokes.
     var bracketedPasteMode: Bool { get }
+    /// The owner's own input reached the session (a keystroke, a paste) —
+    /// never `sendInput` or the terminal's replies (focus and mouse
+    /// reports). Main thread.
+    var onOwnerInput: (() -> Void)? { get set }
     /// ⌘-click on `path:line(:col)` resolving inside `folder` calls `open`
     /// instead of SwiftTerm's default handler (spec 2026-10-02 §9.5).
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void)
@@ -68,6 +72,11 @@ final class TerminalCenter {
     /// the terminal pane says to press Return until the owner dismisses it
     /// or the next delivery.
     private(set) var pasteHints: Set<Int64> = []
+    /// Sessions holding an ask's answer typed or copied but not sent (board
+    /// #364): the pane says so prominently — over `clipboardHints` — until
+    /// the owner's next input in that session, Dismiss, the next delivery or
+    /// the process's exit.
+    private(set) var answerHints: [Int64: PromptDelivery] = [:]
     /// Session ids the owner focused, most recent last, without duplicates —
     /// fed to `TerminalSessionPolicy.activeSession`.
     private(set) var focusOrder: [Int64] = []
@@ -213,6 +222,7 @@ final class TerminalCenter {
     /// hand-off) as several lines inside the one paste.
     func sendPrompt(_ line: String, sessionID: Int64, keepingLineBreaks: Bool = false) -> PromptDelivery {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return .noSession }
+        answerHints[sessionID] = nil
         switch WorkbenchCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode,
                                                       keepingLineBreaks: keepingLineBreaks) {
         case let .paste(bytes):
@@ -277,6 +287,22 @@ final class TerminalCenter {
     func dismissClipboardHint(sessionID: Int64) {
         clipboardHints.remove(sessionID)
         pasteHints.remove(sessionID)
+        answerHints[sessionID] = nil
+    }
+
+    /// An ask's answer line went into a running session as `delivery`
+    /// (`.sent` typed, `.copied` on the clipboard): its pane shows the
+    /// Return hint in place of the clipboard one. Never types anything.
+    func showAnswerHint(_ delivery: PromptDelivery, sessionID: Int64) {
+        guard delivery != .noSession, states[sessionID] == .running else { return }
+        clipboardHints.remove(sessionID)
+        pasteHints.remove(sessionID)
+        answerHints[sessionID] = delivery
+    }
+
+    /// The owner typed or pasted into the session: an answer hint has done its job.
+    private func ownerInput(_ sessionID: Int64) {
+        if answerHints[sessionID] != nil { answerHints[sessionID] = nil }
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -324,8 +350,10 @@ final class TerminalCenter {
         let process = processes[id] ?? makeProcess()
         process.onExit = { [weak self] code in
             self?.states[id] = .exited(code)
+            self?.answerHints[id] = nil
             self?.onSessionExit?(id, code)
         }
+        process.onOwnerInput = { [weak self] in self?.ownerInput(id) }
         processes[id] = process
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files.
@@ -355,6 +383,7 @@ final class TerminalCenter {
             if isRunning(sessionID, pid) { signaller.signal(pid, SIGKILL) }
         }
         process.onExit = nil
+        process.onOwnerInput = nil
         process.detach()
         forget(sessionID)
     }
@@ -375,6 +404,7 @@ final class TerminalCenter {
         rows[sessionID] = nil
         startedAt[sessionID] = nil
         clipboardHints.remove(sessionID)
+        answerHints[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }
     }
 
@@ -467,6 +497,35 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         applyBackground()
+    }
+
+    // MARK: Owner input (board #364)
+
+    /// `TerminalSessionProcess.onOwnerInput`.
+    var onOwnerInput: (() -> Void)?
+    /// Set while bytes that are not the owner's pass through `send(source:data:)`.
+    private var forwardingAppInput = false
+
+    /// The app's own bytes (`TerminalSessionProcess.sendInput`), through
+    /// SwiftTerm's input path but not counted as the owner's.
+    func sendAppInput(_ bytes: [UInt8]) {
+        forwardingAppInput = true
+        defer { forwardingAppInput = false }
+        send(data: bytes[...])
+    }
+
+    /// The terminal's own replies (focus and mouse reports, device
+    /// attributes) reach the process through here, then `send(source:data:)`.
+    override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        forwardingAppInput = true
+        defer { forwardingAppInput = false }
+        super.send(source: source, data: data)
+    }
+
+    /// Every byte for the process: keystrokes and pastes are the owner's.
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        if !forwardingAppInput { onOwnerInput?() }
+        super.send(source: source, data: data)
     }
 
     // MARK: path:line links (spec 2026-10-02 §9.5)
@@ -570,6 +629,10 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerminalViewDelegate {
     private let terminal: PalettedTerminalView
     var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (() -> Void)? {
+        get { terminal.onOwnerInput }
+        set { terminal.onOwnerInput = newValue }
+    }
 
     override init() {
         terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
@@ -601,7 +664,7 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     /// SwiftTerm's own input path (`TerminalView.send(data:)` →
     /// `LocalProcess.send`), on the main actor as it requires.
     func sendInput(_ bytes: [UInt8]) {
-        terminal.send(data: bytes[...])
+        terminal.sendAppInput(bytes)
     }
 
     var bracketedPasteMode: Bool { terminal.getTerminal().bracketedPasteMode }

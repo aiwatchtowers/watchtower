@@ -44,6 +44,17 @@ package struct OwnerAskStack: Equatable, Sendable {
         return next.id == askID ? nil : next
     }
 
+    /// The ask a drawer opens on by itself (board #364): the oldest open ask
+    /// of the first session on screen that holds an ask the owner has not
+    /// closed a drawer on (`dismissed`) — "k of N" walks the rest. An ask
+    /// filed outside the app never opens by itself. nil when none.
+    package func askToOpen(sessionsOnScreen: Set<Int64>, dismissed: Set<Int64>) -> OwnerAsk? {
+        groups.first { group in
+            guard let session = group.sessionID, sessionsOnScreen.contains(session) else { return false }
+            return group.asks.contains { !dismissed.contains($0.id) }
+        }?.asks.first
+    }
+
     /// One group per session in the order of its oldest ask; the asks
     /// without a session last.
     package var groups: [SessionGroup] {

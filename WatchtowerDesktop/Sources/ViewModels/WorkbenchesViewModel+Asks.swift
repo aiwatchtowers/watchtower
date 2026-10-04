@@ -24,6 +24,25 @@ extension WorkbenchesViewModel {
         return true
     }
 
+    /// Opens the drawer by itself (board #364) on the oldest open ask of a
+    /// session on the selected workbench's screen, when that session holds
+    /// an ask the owner has not closed a drawer on — after each read of the
+    /// asks and each layout change. Never over a drawer already open, never
+    /// expanded (the terminal stays visible and keeps the keyboard), and
+    /// never moves the keyboard.
+    func openNewAsk(projectID: Int64) {
+        guard selectedWorkbenchID == projectID, asks.drawerAskIDs[projectID] == nil else { return }
+        let onScreen = Set(layout(projectID: projectID).visiblePanes.compactMap { pane -> Int64? in
+            if case let .session(id) = pane { return id }
+            return nil
+        })
+        guard let ask = asks.stack(projectID: projectID).askToOpen(
+            sessionsOnScreen: onScreen, dismissed: asks.dismissedAskIDs[projectID] ?? []
+        ) else { return }
+        asks.drawerExpanded = false
+        asks.openDrawer(ask)
+    }
+
     /// Whether an expanded ask drawer covers `sessionID`'s terminal: its own
     /// session's, or every terminal of the page for an ask filed outside the
     /// app. A covered terminal never takes the keyboard (typing into an

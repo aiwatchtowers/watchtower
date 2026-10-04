@@ -132,7 +132,10 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             }
             switch state {
             case .running?:
-                if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
+                if let session, let delivery = center.answerHints[session.id] {
+                    AnswerReturnHint(delivery: delivery) { center.dismissClipboardHint(sessionID: session.id) }
+                    Divider()
+                } else if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
                     let copied = center.clipboardHints.contains(session.id)
                     HStack {
                         Label(copied ? OwnerAsksViewModel.copiedNote : OwnerAsksViewModel.sentNote,
@@ -176,6 +179,34 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id),
                          obscured: obscured || drawerCovers)
         }
+    }
+}
+
+/// Over a terminal holding an ask's answer not sent yet (board #364): typed
+/// (press Return) or copied (paste, then Return). Prominent on purpose —
+/// Watchtower never presses Return itself (PROJ-12). Goes with the owner's
+/// next input in the session (`TerminalCenter.answerHints`) or Dismiss.
+private struct AnswerReturnHint: View {
+    let delivery: TerminalCenter.PromptDelivery
+    let dismiss: () -> Void
+
+    var body: some View {
+        let copied = delivery == .copied
+        HStack(spacing: 8) {
+            Image(systemName: copied ? "doc.on.clipboard" : "return")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+                .accessibilityHidden(true)
+            Text(copied ? OwnerAsksViewModel.answerCopiedNote : OwnerAsksViewModel.answerTypedNote)
+                .font(.callout.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Dismiss", action: dismiss)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.accentColor.opacity(0.15))
     }
 }
 

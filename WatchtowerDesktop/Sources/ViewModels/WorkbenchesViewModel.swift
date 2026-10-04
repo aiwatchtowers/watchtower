@@ -266,6 +266,7 @@ final class WorkbenchesViewModel {
         }
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
+        asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }
         asks.onDelivered = { [weak self] projectID, sessionID in
             self?.showAnsweredSession(sessionID, projectID: projectID)
         }

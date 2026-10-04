@@ -25,18 +25,23 @@ final class OwnerAsksViewModel {
 
         var text: String {
             switch self {
-            case .delivered(.sent): OwnerAsksViewModel.sentNote
-            case .delivered(.copied): OwnerAsksViewModel.copiedNote
+            case .delivered(.sent): OwnerAsksViewModel.answerTypedNote
+            case .delivered(.copied): OwnerAsksViewModel.answerCopiedNote
             case .delivered(.noSession): OwnerAsksViewModel.noSessionNote
             case .withdrawn: OwnerAsksViewModel.withdrawnNote
             }
         }
     }
 
-    /// `sentNote`/`copiedNote` are also the session pane's paste and clipboard
-    /// hints (`TerminalCenter.pasteHints`/`clipboardHints`).
+    /// The session pane's paste and clipboard hints of a comment's Send or a
+    /// hand-off (`TerminalCenter.pasteHints`/`clipboardHints`).
     nonisolated static let sentNote = "Pasted into Claude — press Return to send"
     nonisolated static let copiedNote = "Prompt copied — press ⌘V in the terminal"
+    /// An answer's line waits for the owner's Return (board #364): the
+    /// drawer's notice and the session pane's hint
+    /// (`TerminalCenter.answerHints`).
+    nonisolated static let answerTypedNote = "Answer typed into the terminal — press Return to send"
+    nonisolated static let answerCopiedNote = "Answer copied — paste it into the terminal and press Return"
     nonisolated static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
     nonisolated static let withdrawnNote = "The agent withdrew this ask — your draft is kept"
     static let pollInterval: Duration = .seconds(5)
@@ -81,6 +86,10 @@ final class OwnerAsksViewModel {
     /// The ask each workbench's drawer shows (nil = closed). An answer that
     /// typed or copied its line closes it: the terminal takes over.
     private(set) var drawerAskIDs: [Int64: Int64] = [:]
+    /// Per workbench, the open asks the owner closed a drawer on (Later, ×,
+    /// an answer): the drawer does not open on them by itself again — only
+    /// a new ask opens it (board #364). Pruned to the open asks on each read.
+    private(set) var dismissedAskIDs: [Int64: Set<Int64>] = [:]
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
     /// The drawer's width, kept across launches under `drawerWidthKey`.
@@ -93,6 +102,9 @@ final class OwnerAsksViewModel {
     /// An answer's line was typed or copied into `sessionID`: the page shows
     /// that terminal and moves the keyboard into it.
     @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
+    /// A workbench's open asks were read: the page opens a new one's drawer
+    /// if its session is on screen (`WorkbenchesViewModel.openNewAsk`).
+    @ObservationIgnored var onLoaded: ((_ projectID: Int64) -> Void)?
     /// An answer was saved: the session states re-read their open asks.
     @ObservationIgnored var onAnswered: (() async -> Void)?
     /// Seams for tests: the poll's wait and the activation notifications.
@@ -150,8 +162,10 @@ final class OwnerAsksViewModel {
             closedCounts[projectID] = snapshot.closedCounts
             replacements[projectID] = snapshot.replacements
             if let shown = snapshot.shown { shownAsks[shown.id] = shown }
+            dismissedAskIDs[projectID]?.formIntersection(snapshot.open.asks.map(\.id))
             // A row it cannot read is left out of the stack and named here.
             loadErrors[projectID] = snapshot.open.problem
+            onLoaded?(projectID)
         } catch {
             // The last list stays beside the error.
             loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
@@ -293,8 +307,20 @@ final class OwnerAsksViewModel {
         drawerAskIDs[ask.projectID] = ask.id
     }
 
-    /// "Later" and the drawer's close: the drafts stay.
+    /// "Later", the drawer's close and a delivered answer: the drafts stay.
+    /// The drawer's session's open asks count as seen — none of them opens
+    /// the drawer by itself again (board #364).
     func closeDrawer(projectID: Int64) {
+        if let session = drawerAsk(projectID: projectID)?.sessionID {
+            let seen = (openAsks[projectID] ?? []).filter { $0.sessionID == session }.map(\.id)
+            dismissedAskIDs[projectID, default: []].formUnion(seen)
+        }
+        hideDrawer(projectID: projectID)
+    }
+
+    /// The drawer's session left the screen: the drawer goes, and opens
+    /// again by itself when the session comes back with an ask not closed.
+    func hideDrawer(projectID: Int64) {
         if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
         drawerAskIDs[projectID] = nil
         drawerExpanded = false
@@ -372,6 +398,7 @@ final class OwnerAsksViewModel {
         let delivery = ask.sessionID.flatMap { terminalCenter?.sendPrompt(line, sessionID: $0) } ?? .noSession
         answerNotices[askID] = .delivered(delivery)
         if delivery != .noSession, let sessionID = ask.sessionID {
+            terminalCenter?.showAnswerHint(delivery, sessionID: sessionID)
             if drawerAskIDs[projectID] == askID { closeDrawer(projectID: projectID) }
             onDelivered?(projectID, sessionID)
         }

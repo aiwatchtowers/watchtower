@@ -157,7 +157,8 @@ final class OwnerAskViewsTests: XCTestCase {
         await vm.revealTerminal(projectID: s.project, sessionID: s.second)
 
         XCTAssertFalse(shows(vm, session: s.first, project: s.project))
-        XCTAssertNil(vm.asks.drawerAskIDs[s.project], "no drawer, no highlighted row, for a session off screen")
+        XCTAssertNotEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk, "no drawer, no highlighted row, for a session off screen")
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.secondAsk, "the session put on screen opens its own ask (board #364)")
         XCTAssertEqual(vm.asks.drafts.askDraft(for: s.firstAsk).note, "half done", "the draft stays")
     }
 

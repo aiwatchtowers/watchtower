@@ -12,6 +12,7 @@ private final class ProbedInputSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (() -> Void)?
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     var onInput: (() -> Void)?
@@ -155,7 +156,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id), "the keyboard moves into it")
         XCTAssertTrue(vm.asks.drafts.askDraft(for: askID).isEmpty, "the answer is written; the draft goes")
         XCTAssertEqual(vm.asks.openAsks[p], [], "the answered ask leaves the open list")
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.sentNote)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerTypedNote)
+        XCTAssertEqual(center.answerHints[s.id], .sent, "the pane says to press Return")
     }
 
     /// PROJ-12 (spec 2026-10-03 Part 9, its "PROJ-11"): the answer is
@@ -194,8 +196,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(delivery, .copied)
         XCTAssertTrue(typed.isEmpty, "no keystrokes reach the terminal")
         XCTAssertEqual(copied.count, 1)
-        XCTAssertTrue(center.clipboardHints.contains(s.id), "the session's pane shows the hint")
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.copiedNote)
+        XCTAssertEqual(center.answerHints[s.id], .copied, "the session's pane says to paste, then press Return")
+        XCTAssertFalse(center.clipboardHints.contains(s.id), "in place of the generic clipboard hint")
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerCopiedNote)
         XCTAssertNil(vm.asks.drawerAskIDs[p])
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id))
     }
@@ -217,6 +220,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.noSessionNote)
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "nothing went to a terminal: the drawer stays")
         XCTAssertNil(center.keyboardFocusSerial(for: s.id))
+        XCTAssertNil(center.answerHints[s.id], "no Return hint for a line that went nowhere")
     }
 
     func testAnAskFiledOutsideTheAppIsWrittenAndNothingIsTyped() async throws {
@@ -370,6 +374,149 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await waitUntil { vm.asks.openAsks[p] != nil }
 
         XCTAssertEqual(vm.asks.openAsks[p]?.map(\.id), [askID])
+    }
+
+    // MARK: - A new ask opens by itself (board #364)
+
+    /// A second open ask filed from `sessionID`, newer than the seeded one.
+    private func fileAnotherAsk(project: Int64, sessionID: Int64?) async throws -> Int64 {
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
+        return try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: project, sessionID: sessionID, payload: Self.questions, createdAt: created)
+        }
+    }
+
+    func testANewAskOpensItsDrawerWhenItsSessionIsOnScreenWithoutTakingTheKeyboard() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+
+        await vm.asks.load(projectID: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "no Open click needed")
+        XCTAssertFalse(vm.asks.drawerExpanded, "beside the terminal, never covering it")
+        XCTAssertNil(center.keyboardFocusRequest, "the keyboard stays where it was")
+        XCTAssertFalse(vm.isObscured(sessionID: s.id, projectID: p))
+    }
+
+    func testANewAskOpensWhenTheOwnerGoesToItsSession() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.board)
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "its session is not on screen")
+
+        vm.layout.show(.session(s.id))
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    func testAnotherWorkbenchsAskNeverOpensOnTheSelectedOne() async throws {
+        let (p, s, _) = try await seed()
+        let vm = makeVM()
+        var onScreen = WorkspaceLayout.default
+        onScreen.show(.session(s.id))
+        vm.setLayout(onScreen, projectID: p)
+        vm.selectedWorkbenchID = nil
+
+        await vm.asks.load(projectID: p)
+
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "a workbench not on screen opens nothing")
+    }
+
+    /// Later/× close the drawer for good: the next poll leaves it closed,
+    /// leaving and coming back too; only a new ask opens it again, on the
+    /// session's oldest ask ("k of N").
+    func testAClosedDrawerStaysClosedUntilANewAskArrives() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+
+        vm.asks.closeDrawer(projectID: p)
+        let unchanged = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertFalse(unchanged)
+        await vm.asks.load(projectID: p)
+        vm.layout.show(.board)
+        vm.layout.show(.session(s.id))
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "a closed drawer never re-opens by itself")
+
+        let newer = try await fileAnotherAsk(project: p, sessionID: s.id)
+        let changed = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertTrue(changed)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "the new ask opens the drawer on the session's first ask")
+        XCTAssertEqual(vm.asks.stack(projectID: p).askPosition(of: newer), 2)
+    }
+
+    /// A drawer that went because its session left the screen comes back
+    /// with it; the closed state lives on the AppState-owned VM.
+    func testADrawerHiddenByNavigationComesBackWithItsSession() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+        await vm.asks.load(projectID: p)
+
+        vm.layout.show(.board)
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+        vm.selectedWorkbenchID = nil
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    func testAnAnsweredSessionsOtherAsksDoNotPopOverItsReturnHint() async throws {
+        let (p, s, askID) = try await seed()
+        _ = try await fileAnotherAsk(project: p, sessionID: s.id)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+        let ask = try await openAsk(vm, project: p, id: askID)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        pick(vm, askID)
+
+        await vm.asks.answer(ask)
+
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "the terminal takes over; the banner names the other ask")
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+    }
+
+    func testAnAskFiledOutsideTheAppNeverOpensByItself() async throws {
+        let (p, s, _) = try await seed(session: false)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+
+        await vm.asks.load(projectID: p)
+
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+    }
+
+    // MARK: - The Return hint (board #364)
+
+    /// PROJ-12 stays: the hint only says to press Return; the owner's own
+    /// next input in the session takes it away.
+    func testTheReturnHintGoesWithTheOwnersNextInput() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+        await vm.asks.answer(ask)
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+        XCTAssertFalse(typed.joined().contains(0x0D), "still never submitted")
+
+        processes[0].onOwnerInput?()
+
+        XCTAssertNil(center.answerHints[s.id])
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
