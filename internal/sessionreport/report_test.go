@@ -152,17 +152,58 @@ func TestBuild_ScopeTakesLinkedTargetsAndSkipsDismissed(t *testing.T) {
 	assert.Equal(t, []int64{422}, ids(r.Now, func(n NowItem) int64 { return n.ID }))
 	assert.Equal(t, []int64{401}, itemIDs(r.Next), "412 is not in scope")
 
-	root := phaseByID(t, r.Phases, 400) // a flat session target stays a phase
-	assert.Equal(t, 0, root.Done)
-	assert.Equal(t, 1, root.Total)
-	assert.Equal(t, []int64{401}, itemIDs(root.Items))
+	assert.Equal(t, []int64{410, 420}, ids(r.Phases, func(p Phase) int64 { return p.TargetID }),
+		"the session target 400 is no phase while its only leaf 401 waits in todo")
 	other := phaseByID(t, r.Phases, 410)
 	assert.Equal(t, 1, other.Done)
 	assert.Equal(t, 2, other.Total, "a phase counts all its leaves, not only the touched one")
 	linked := phaseByID(t, r.Phases, 420)
 	assert.Equal(t, 1, linked.Done)
 	assert.Equal(t, 2, linked.Total)
+
+	// Once its leaf starts, the flat session target is a phase.
+	_, err := d.Exec(`UPDATE targets SET status = 'in_progress' WHERE id = 401`)
+	require.NoError(t, err)
+	r = build(t, d, 3)
+	root := phaseByID(t, r.Phases, 400)
+	assert.Equal(t, 0, root.Done)
+	assert.Equal(t, 1, root.Total)
+	assert.Equal(t, []int64{401}, itemIDs(root.Items))
 	assert.Len(t, r.Phases, 3)
+}
+
+// A session that only created a group, or moved one under another, did no
+// work in it: the group is no phase under "Done" (board #393), and its todo
+// leaves show in next instead.
+func TestBuild_GroupWithOnlyTodoLeavesIsNoPhase(t *testing.T) {
+	d := loadFixture(t, "scope.sql")
+	_, err := d.Exec(`INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id) VALUES
+		(440, 'New group', '2026-09-28', '2026-10-05', NULL, 'todo', 1),
+		(441, 'Filed task one', '2026-09-28', '2026-10-05', 440, 'todo', 1),
+		(442, 'Filed task two', '2026-09-28', '2026-10-05', 440, 'todo', 1);
+		INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at) VALUES
+		(6, 440, '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z'),
+		(6, 441, '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z'),
+		(6, 442, '2026-10-02T10:00:00Z', '2026-10-02T10:00:00Z')`)
+	require.NoError(t, err)
+
+	r := build(t, d, 6)
+	assert.Empty(t, r.Phases, "a group whose leaves all wait in todo is no phase")
+	assert.Equal(t, []int64{441, 442}, itemIDs(r.Next))
+	assert.Equal(t, Progress{Done: 0, Total: 2}, r.Progress)
+
+	// A leaf that went to in_progress and was sent back to todo still makes
+	// its group a phase: the session worked on it.
+	_, err = d.Exec(`INSERT INTO target_status_history (target_id, to_status, changed_at, actor)
+		VALUES (441, 'in_progress', '2026-10-02T11:00:00Z', 'agent')`)
+	require.NoError(t, err)
+	r = build(t, d, 6)
+	require.Len(t, r.Phases, 1)
+	g := r.Phases[0]
+	assert.EqualValues(t, 440, g.TargetID)
+	assert.Equal(t, 0, g.Done)
+	assert.Equal(t, 2, g.Total)
+	assert.Equal(t, "2026-10-02T11:00:00Z", g.StartedAt)
 }
 
 func TestBuild_TargetlessSessionLinkedToATopLevelLeaf(t *testing.T) {
