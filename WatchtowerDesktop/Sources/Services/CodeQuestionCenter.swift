@@ -587,16 +587,12 @@ final class CodeQuestionCenter {
     /// A `path:line` link in an answer: the file in the Files pane, if it is
     /// a file of the workbench (after `beforeOpening`, which closes the
     /// surface it was clicked in); where the cursor was goes on Back. Else
-    /// a beep and false.
+    /// a beep and false. A symlink leaving the folder is refused before its
+    /// target is looked at (`WorkbenchFolderPath`, board #361).
     @discardableResult
     func openLink(_ url: URL, project: Workbench, beforeOpening: () -> Void = {}) async -> Bool {
-        guard let target = CodeLineLinks.target(from: url) else {
-            beep()
-            return false
-        }
-        var isDirectory: ObjCBool = false
-        let file = project.folderURL.appendingPathComponent(target.path)
-        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        guard let target = CodeLineLinks.target(from: url),
+              WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) != nil else {
             beep()
             return false
         }
@@ -805,7 +801,9 @@ final class CodeQuestionCenter {
     }
 
     /// The open buffer's text when the file is loaded, else the file read
-    /// off the main actor; nothing for a question asked with no file.
+    /// off the main actor — only a file of the folder, a symlink leaving it
+    /// refused unread (`WorkbenchFolderPath`, board #361); nothing for a
+    /// question asked with no file.
     private func rebuildContextIfNeeded(_ question: CodeQuestionRef) {
         let conversationID = question.conversationID
         guard questionContexts[conversationID] == nil, !question.origin.path.isEmpty else { return }
@@ -813,18 +811,31 @@ final class CodeQuestionCenter {
             questionContexts[conversationID] = context(origin: question.origin, project: question.project, fileText: buffer.text)
             return
         }
-        let file = question.project.folderURL.appendingPathComponent(question.origin.path)
+        let folder = question.project.folderPath
+        let path = question.origin.path
         Task { [weak self] in
-            let text = await Task.detached(priority: .userInitiated) { () -> String? in
-                do {
-                    return String(bytes: try Data(contentsOf: file), encoding: .utf8)
-                } catch {
-                    NSLog("CodeQuestionCenter: reading a reopened question's file: %@", error.localizedDescription)
-                    return nil
-                }
+            let text = await Task.detached(priority: .userInitiated) {
+                Self.readFolderFile(path, folder: folder)
             }.value
             guard let self, let text, questionRefs[conversationID] != nil, questionContexts[conversationID] == nil else { return }
             questionContexts[conversationID] = context(origin: question.origin, project: question.project, fileText: text)
+        }
+    }
+
+    /// A file of the workbench folder as UTF-8 text; nil when it is not one
+    /// (a symlink leaving the folder is refused unread, board #361) or
+    /// cannot be read.
+    nonisolated static func readFolderFile(_ path: String, folder: String) -> String? {
+        guard let real = WorkbenchFolderPath.FileSystem.live.realPath(folder),
+              let file = WorkbenchFolderPath.resolve(path, folder: folder, folderRealPath: real) else {
+            NSLog("CodeQuestionCenter: a reopened question's file is not a file of its workbench folder")
+            return nil
+        }
+        do {
+            return String(bytes: try Data(contentsOf: URL(fileURLWithPath: real).appendingPathComponent(file)), encoding: .utf8)
+        } catch {
+            NSLog("CodeQuestionCenter: reading a reopened question's file: %@", error.localizedDescription)
+            return nil
         }
     }
 }

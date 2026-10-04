@@ -10,13 +10,17 @@ private final class CountingFileSystem: @unchecked Sendable {
 
     var seam: TerminalPathLinks.FileSystem {
         TerminalPathLinks.FileSystem(
+            entryKind: { [self] path in
+                lock.withLock { paths.append(path) }
+                return TerminalPathLinks.FileSystem.live.entryKind(path)
+            },
+            linkTarget: { [self] path in
+                lock.withLock { paths.append(path) }
+                return TerminalPathLinks.FileSystem.live.linkTarget(path)
+            },
             realPath: { [self] path in
                 lock.withLock { paths.append(path) }
                 return TerminalPathLinks.FileSystem.live.realPath(path)
-            },
-            isRegularFile: { [self] path in
-                lock.withLock { paths.append(path) }
-                return TerminalPathLinks.FileSystem.live.isRegularFile(path)
             }
         )
     }
@@ -78,6 +82,17 @@ final class TerminalPathLinksTests: XCTestCase {
         let link = URL(fileURLWithPath: folder).appendingPathComponent("leak.txt")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root.appendingPathComponent("outside.txt"))
         XCTAssertNil(resolve("leak.txt:1"))
+    }
+
+    /// Board #361: a symlink pointing out of the folder is refused by its
+    /// target's text — the target itself is never looked up.
+    func testSymlinkLeavingTheFolderNeverTouchesItsTarget() throws {
+        let link = URL(fileURLWithPath: folder).appendingPathComponent("leak.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root.appendingPathComponent("outside.txt"))
+        let disk = CountingFileSystem()
+        let realFolder = TerminalPathLinks.FileSystem.live.realPath(folder)
+        XCTAssertNil(TerminalPathLinks.resolve("leak.txt:1", folder: folder, folderRealPath: realFolder, fileSystem: disk.seam))
+        XCTAssertFalse(disk.calls.contains { $0.hasSuffix("outside.txt") }, "\(disk.calls)")
     }
 
     /// Ruling R53: a path outside the folder is refused by its text alone —

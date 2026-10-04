@@ -431,6 +431,39 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertNotNil(center.sessions[project.id])
     }
 
+    /// Board #361: a link through a symlink that leaves the folder opens
+    /// nothing; one that stays inside opens.
+    func testALinkThroughASymlinkLeavingTheFolderOpensNothing() async throws {
+        let (center, vm, _) = makeCenter()
+        let outside = folder.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString).swift")
+        try "secret\n".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("Sources/Leak.swift"),
+                                                   withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent("Sources/Alias.swift").path,
+                                                   withDestinationPath: "Other.swift")
+        let leak = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Leak.swift", line: 1, col: nil)))
+        let opened = await center.openLink(leak, project: project)
+        XCTAssertFalse(opened)
+        XCTAssertEqual(beeps, 1)
+        XCTAssertNil(vm.codeFiles.tabs(for: project).active)
+        let alias = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Alias.swift", line: 1, col: nil)))
+        let openedAlias = await center.openLink(alias, project: project)
+        XCTAssertTrue(openedAlias, "a symlink inside the folder is a file of it")
+    }
+
+    /// Board #361: a reopened question's file is read only when it is a
+    /// file of the folder; through a symlink leaving it, nothing is read.
+    func testAReopenedQuestionNeverReadsThroughASymlinkLeavingTheFolder() throws {
+        let outside = folder.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString).swift")
+        try "secret\n".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("Leak.swift"), withDestinationURL: outside)
+        XCTAssertNil(CodeQuestionCenter.readFolderFile("Leak.swift", folder: folder.path))
+        XCTAssertNil(CodeQuestionCenter.readFolderFile("../\(outside.lastPathComponent)", folder: folder.path))
+        XCTAssertEqual(CodeQuestionCenter.readFolderFile("Sources/App.swift", folder: folder.path), source)
+    }
+
     func testThePaneGoingAwayClearsTheQuestion() async {
         let (center, _, buffer) = makeCenter()
         await center.askAI(bufferID: buffer.id, project: project)

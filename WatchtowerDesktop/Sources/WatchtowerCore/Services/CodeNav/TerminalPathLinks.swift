@@ -7,8 +7,9 @@ import Foundation
 /// or a path without a line is not one. Containment is checked lexically
 /// first (ruling R53): a path outside the folder never touches the disk — a
 /// `realpath` or `stat` of `~/Desktop/…` could raise a macOS privacy prompt
-/// attributed to Watchtower. Only an in-folder candidate is resolved, which
-/// catches a symlink leaving the folder.
+/// attributed to Watchtower. Only an in-folder candidate is resolved
+/// (`WorkbenchFolderPath`), and a symlink leaving the folder is refused by
+/// its target's text before that target is looked at.
 package enum TerminalPathLinks {
     package struct Location: Equatable, Sendable {
         /// Relative to the session's folder.
@@ -24,28 +25,7 @@ package enum TerminalPathLinks {
     }
 
     /// The disk lookups `resolve` makes, a seam for tests.
-    package struct FileSystem: Sendable {
-        /// Symlinks resolved; nil when the path does not exist.
-        package var realPath: @Sendable (String) -> String?
-        package var isRegularFile: @Sendable (String) -> Bool
-
-        package init(realPath: @escaping @Sendable (String) -> String?, isRegularFile: @escaping @Sendable (String) -> Bool) {
-            self.realPath = realPath
-            self.isRegularFile = isRegularFile
-        }
-
-        package static let live = Self(
-            realPath: { path in
-                guard let resolved = realpath(path, nil) else { return nil }
-                defer { free(resolved) }
-                return String(cString: resolved)
-            },
-            isRegularFile: { path in
-                var isDirectory: ObjCBool = false
-                return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
-            }
-        )
-    }
+    package typealias FileSystem = WorkbenchFolderPath.FileSystem
 
     /// What a ⌘-clicked link does.
     package enum LinkAction: Equatable, Sendable {
@@ -100,12 +80,11 @@ package enum TerminalPathLinks {
         let lexicalRoot = lexicallyNormalized(folder)
         // Outside both spellings of the folder: refused before any disk call.
         let roots = [lexicalRoot, folderRealPath.map(lexicallyNormalized)].compactMap(\.self)
-        guard roots.contains(where: { isInside(absolute, root: $0) }) else { return nil }
-        guard let realRoot = folderRealPath ?? fileSystem.realPath(lexicalRoot),
-              let file = fileSystem.realPath(absolute), isInside(file, root: realRoot),
-              fileSystem.isRegularFile(file) else { return nil }
-        let prefix = realRoot.hasSuffix("/") ? realRoot : realRoot + "/"
-        return Location(path: String(file.dropFirst(prefix.count)), line: line, col: col)
+        guard let root = roots.first(where: { isInside(absolute, root: $0) }),
+              let file = WorkbenchFolderPath.resolve(String(absolute.dropFirst(root.count + 1)), folder: folder,
+                                                     folderRealPath: folderRealPath, fileSystem: fileSystem)
+        else { return nil }
+        return Location(path: file, line: line, col: col)
     }
 
     /// What was ⌘-clicked at `column` (a character offset) of a terminal
@@ -182,17 +161,9 @@ package enum TerminalPathLinks {
         return path.hasPrefix(prefix)
     }
 
-    /// `.` and `..` folded and repeated slashes dropped, by the text alone
-    /// (no disk access: `URL.standardized` may stat the path).
+    /// By the text alone (no disk access: `URL.standardized` may stat the
+    /// path).
     private static func lexicallyNormalized(_ path: String) -> String {
-        var parts: [Substring] = []
-        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
-            switch part {
-            case ".": continue
-            case "..": if !parts.isEmpty { parts.removeLast() }
-            default: parts.append(part)
-            }
-        }
-        return "/" + parts.joined(separator: "/")
+        WorkbenchFolderPath.lexicallyNormalized(path)
     }
 }
