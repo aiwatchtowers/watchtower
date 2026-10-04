@@ -87,14 +87,17 @@ func TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag(t *testing.T) {
 	assert.Contains(t, out, "Open task")
 	assert.NotContains(t, out, "Old task")
 	assert.NotContains(t, out, "Old feature")
+	assert.Contains(t, out, "(2 archived; --archived lists them)")
 
 	out, _, err = runWorkbench(t, "board", id, "--archived")
 	require.NoError(t, err)
 	assert.Contains(t, out, "Old task (archived)")
 	assert.Contains(t, out, fmt.Sprintf("#%d [dismissed", oldFeature))
+	assert.NotContains(t, out, "--archived lists them", "nothing is left out with the flag")
 
 	out, _, err = runWorkbench(t, "board", id, "--json")
 	require.NoError(t, err)
+	assert.NotContains(t, out, "archived; --archived", "the JSON shape stays a bare array")
 	var board []boardNodeJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &board))
 	require.Len(t, board, 1)
@@ -105,6 +108,26 @@ func TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &board))
 	require.Len(t, board, 2)
 	assert.True(t, board[1].Archived)
+}
+
+// A board whose only root is archived prints the archived count, not nothing.
+func TestWorkbenchBoardCmd_AllArchivedRootsAreCounted(t *testing.T) {
+	database := writeActionsConfig(t)
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	old := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "Old feature")
+	db.CloseTestWorkbenchTarget(t, database, old, "done", archiveAge)
+	id := strconv.FormatInt(pid, 10)
+
+	out, _, err := runWorkbench(t, "board", id)
+	require.NoError(t, err)
+	assert.Equal(t, "(1 archived; --archived lists them)\n", out)
+
+	empty, err := database.CreateWorkbench("empty", t.TempDir())
+	require.NoError(t, err)
+	out, _, err = runWorkbench(t, "board", strconv.FormatInt(empty, 10))
+	require.NoError(t, err)
+	assert.Empty(t, out, "an empty board prints no footer")
 }
 
 func TestWorkbenchShowCmd_PrintsTheArchiveSetting(t *testing.T) {

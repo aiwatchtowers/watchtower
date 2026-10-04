@@ -376,14 +376,25 @@ func runWorkbenchBoard(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	archived := 0
 	if !workbenchBoardFlagArchived {
+		archived = db.CountArchived(board)
 		board = db.WithoutArchived(board)
 	}
 	if workbenchFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), toBoardJSON(board))
 	}
 	printBoard(cmd.OutOrStdout(), board, 0, time.Now())
+	printArchivedFooter(cmd.OutOrStdout(), archived)
 	return nil
+}
+
+// printArchivedFooter says how many archived targets the text board left out,
+// so a board whose roots are all archived does not read as empty (PROJ-15).
+func printArchivedFooter(w io.Writer, archived int) {
+	if archived > 0 {
+		fmt.Fprintf(w, "(%d archived; --archived lists them)\n", archived)
+	}
 }
 
 func printBoard(w io.Writer, nodes []db.BoardNode, depth int, now time.Time) {
