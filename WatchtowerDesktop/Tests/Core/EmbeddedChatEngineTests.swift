@@ -43,6 +43,14 @@ final class EmbeddedChatEngineTests: XCTestCase {
         )
     }
 
+    /// A spec whose provider the test switches between turns.
+    private func switchingSpec(_ options: @escaping @MainActor () -> ChatRunOptions) -> ChatSurfaceSpec {
+        let base = spec()
+        let system = { @MainActor () -> String in "SYSTEM" }
+        return ChatSurfaceSpec(key: base.key, persistence: base.persistence, toolAccess: .draftOnly,
+                               systemPrompt: system, emptyHint: "", runOptions: options)
+    }
+
     private func makeEngine(
         spec: ChatSurfaceSpec? = nil,
         store: EmbeddedChatStore? = nil,
@@ -440,10 +448,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     /// kept: the next Claude turn starts fresh.
     func testANonResumingProviderForgetsTheSession() async throws {
         var provider: String? = "claude"
-        let base = spec()
-        let switching = ChatSurfaceSpec(key: base.key, persistence: base.persistence, toolAccess: .draftOnly,
-                                        systemPrompt: { "SYSTEM" }, emptyHint: "",
-                                        runOptions: { ChatRunOptions(provider: provider) })
+        let switching = switchingSpec { ChatRunOptions(provider: provider) }
         let store = MemoryEmbeddedChatStore()
         let engine = makeEngine(spec: switching, store: store)
         engine.send("one")
@@ -472,10 +477,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     /// text goes back to the composer.
     func testAFailedForgetSendsNothing() async throws {
         var provider: String? = "claude"
-        let base = spec()
-        let switching = ChatSurfaceSpec(key: base.key, persistence: base.persistence, toolAccess: .draftOnly,
-                                        systemPrompt: { "SYSTEM" }, emptyHint: "",
-                                        runOptions: { ChatRunOptions(provider: provider) })
+        let switching = switchingSpec { ChatRunOptions(provider: provider) }
         let store = FlakyStore()
         let engine = makeEngine(spec: switching, store: store)
         engine.send("one")

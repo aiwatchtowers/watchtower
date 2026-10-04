@@ -935,7 +935,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// conversation.
     func testThePopoversHandOffWaitsForTheAnswerThenClosesIt() async throws {
         let (center, _, buffer) = makeCenter()
-        let handoff = CodeHandoffCenter(beep: {})
+        let handoff = CodeHandoffCenter {}
         handoff.dbPool = pool
         center.handoff = handoff
         await center.askAI(bufferID: buffer.id, project: project)
@@ -971,7 +971,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         await reply("Because.", after: 1, engine: center.engine(for: question))
         center.handToClaude(question)
         XCTAssertEqual(beeps, 1, "no hand-off center")
-        let handoff = CodeHandoffCenter(beep: {})
+        let handoff = CodeHandoffCenter {}
         handoff.dbPool = pool
         center.handoff = handoff
         center.handToClaude(question)
