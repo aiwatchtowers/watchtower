@@ -829,6 +829,30 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.pasteHints.contains(s.id))
     }
 
+    /// Board #380: a line pasted next to text not submitted marks the
+    /// prompt shared; a relaunch or a close empties the prompt, so the
+    /// mark (and a close's paste bar) goes with it.
+    func testASharedPromptIsClearedOnRestartAndClose() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        _ = await center.submitPrompt("x", sessionID: s.id) { false }
+        XCTAssertFalse(center.sharedPrompts.contains(s.id), "the prompt held nothing before")
+        _ = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertTrue(center.sharedPrompts.contains(s.id))
+
+        sessions[0].exit(0)
+        center.start(s, fresh: true)
+        XCTAssertFalse(center.sharedPrompts.contains(s.id), "a new run starts with an empty prompt")
+
+        _ = await center.submitPrompt("x", sessionID: s.id) { false }
+        _ = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertTrue(center.sharedPrompts.contains(s.id))
+        await center.close(sessionID: s.id)
+        XCTAssertFalse(center.sharedPrompts.contains(s.id))
+        XCTAssertFalse(center.pasteHints.contains(s.id), "no paste bar outlives its session")
+    }
+
     /// Without bracketed paste the text goes to the clipboard and nothing,
     /// not even Return, reaches the terminal.
     func testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted() async throws {
