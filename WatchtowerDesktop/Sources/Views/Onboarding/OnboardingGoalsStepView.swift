@@ -106,13 +106,13 @@ struct OnboardingGoalsStepView: View {
                     }
                 } label: {
                     if model.isContinuing {
-                        ProgressView().controlSize(.small).frame(minWidth: 80)
+                        ProgressView().controlSize(.small).frame(minWidth: 120)
                     } else {
-                        Text("Continue").frame(minWidth: 80)
+                        Text("Continue").fontWeight(.semibold).frame(minWidth: 120)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .onboardingPrimaryButton()
+                .keyboardShortcut(.defaultAction)
                 .disabled(!model.canContinue || appState.isFinishingOnboarding)
             }
         }
