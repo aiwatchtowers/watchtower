@@ -20,7 +20,7 @@ final class EmbeddedChatReplayTests: XCTestCase {
             message("user", "And the caller?", turn: "t2"),
             message("assistant", "", turn: "t2", status: "partial")
         ]
-        XCTAssertEqual(EmbeddedChatReplay.block(messages: messages, before: "t2"), """
+        XCTAssertEqual(EmbeddedChatReplay.block(messages: messages, before: "t2", prompt: "And the caller?"), """
             \(EmbeddedChatReplay.header)
             Owner: Explain this.
             Assistant: It loads the config.
@@ -32,8 +32,8 @@ final class EmbeddedChatReplayTests: XCTestCase {
 
     func testTheFirstTurnHasNothingToReplay() {
         let messages = [message("user", "Explain this.", turn: "t1"), message("assistant", "", turn: "t1", status: "partial")]
-        XCTAssertNil(EmbeddedChatReplay.block(messages: messages, before: "t1"))
-        XCTAssertNil(EmbeddedChatReplay.block(messages: [], before: "t1"))
+        XCTAssertNil(EmbeddedChatReplay.block(messages: messages, before: "t1", prompt: "Explain this."))
+        XCTAssertNil(EmbeddedChatReplay.block(messages: [], before: "t1", prompt: "x"))
     }
 
     /// A failed reply is left out, and so is the question a Retry sends
@@ -46,10 +46,33 @@ final class EmbeddedChatReplayTests: XCTestCase {
             message("assistant", "boom", turn: "t2", status: "error"),
             message("assistant", "", turn: "t3", status: "partial")
         ]
-        let block = try XCTUnwrap(EmbeddedChatReplay.block(messages: messages, before: "t3"))
+        let block = try XCTUnwrap(EmbeddedChatReplay.block(messages: messages, before: "t3", prompt: "Why?"))
         XCTAssertTrue(block.contains("Assistant (stopped early): It loads\n"), block)
         XCTAssertFalse(block.contains("Why?"), block)
         XCTAssertFalse(block.contains("boom"), block)
+    }
+
+    /// A question that failed and that the owner moved on from (a new
+    /// question, not a Retry) is still replayed.
+    func testAnUnansweredQuestionTheOwnerMovedOnFromStays() throws {
+        let messages = [
+            message("user", "Q1", turn: "t1"),
+            message("assistant", "boom", turn: "t1", status: "error"),
+            message("user", "Q2", turn: "t2"),
+            message("assistant", "", turn: "t2", status: "partial")
+        ]
+        let block = try XCTUnwrap(EmbeddedChatReplay.block(messages: messages, before: "t2", prompt: "Q2"))
+        XCTAssertTrue(block.contains("Owner: Q1\n"), block)
+        XCTAssertFalse(block.contains("boom"), block)
+    }
+
+    /// The wording and the cap are the main chat's Go replay's
+    /// (`internal/chat/replay.go`).
+    func testTheBlockMatchesTheGoReplay() {
+        XCTAssertEqual(EmbeddedChatReplay.capCharacters, 24000)
+        XCTAssertEqual(EmbeddedChatReplay.header,
+                       "=== CONVERSATION SO FAR (replayed from Watchtower's history; the earlier model session is not available) ===")
+        XCTAssertEqual(EmbeddedChatReplay.footer, "=== END OF CONVERSATION SO FAR — the owner's new message follows ===")
     }
 
     /// Over the cap the oldest messages go and are counted; a newest one
@@ -61,11 +84,11 @@ final class EmbeddedChatReplayTests: XCTestCase {
             message("user", "c", turn: "t2"),
             message("assistant", "d", turn: "t2")
         ]
-        let block = try XCTUnwrap(EmbeddedChatReplay.block(messages: messages, before: "t3", capCharacters: 50))
+        let block = try XCTUnwrap(EmbeddedChatReplay.block(messages: messages, before: "t3", prompt: "e", capCharacters: 50))
         XCTAssertTrue(block.contains("[2 earlier messages omitted]\nOwner: c\nAssistant: d\n"), block)
         let long = try XCTUnwrap(EmbeddedChatReplay.block(
             messages: [message("user", "q", turn: "t1"), message("assistant", String(repeating: "x", count: 100), turn: "t1")],
-            before: "t2", capCharacters: 20))
+            before: "t2", prompt: "next", capCharacters: 20))
         XCTAssertTrue(long.contains("[1 earlier messages omitted]\nAssistant: xxxxxxxx"), long)
         XCTAssertFalse(long.contains(String(repeating: "x", count: 20)), long)
     }

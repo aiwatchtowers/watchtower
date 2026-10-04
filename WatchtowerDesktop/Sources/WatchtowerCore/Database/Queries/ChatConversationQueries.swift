@@ -171,7 +171,7 @@ package enum ChatConversationQueries {
         )
     }
 
-    package static func updateSessionID(_ db: Database, id: Int64, sessionID: String) throws {
+    package static func updateSessionID(_ db: Database, id: Int64, sessionID: String?) throws {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """
             UPDATE chat_conversations SET session_id = ?, updated_at = ? WHERE id = ?

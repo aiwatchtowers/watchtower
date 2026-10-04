@@ -45,10 +45,11 @@ final class TerminalLaunchTests: XCTestCase {
     }
 
     /// Board #361: the variable is read by `/bin/sh`, so a login shell
-    /// with another `$VAR` syntax (nushell, csh) still hands the prompt
-    /// over as one argument. Runs the command with `/bin/sh` as the login
-    /// shell and a stub `claude` that prints its arguments.
-    func testThePromptReachesClaudeAsOneArgumentThroughSh() throws {
+    /// with another `$VAR` syntax still hands the prompt over as one
+    /// argument. Runs the command under `/bin/csh` — which refuses a
+    /// multi-line `"$VAR"` ("Unmatched '"'.") — with a stub `claude` that
+    /// prints its arguments; bounded, and reaped on timeout.
+    func testThePromptReachesClaudeAsOneArgumentUnderCsh() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-launch-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -56,10 +57,10 @@ final class TerminalLaunchTests: XCTestCase {
         try "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$3\"\nenv | grep -c WATCHTOWER_FIRST_PROMPT\n".write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         let prompt = "It's $(echo x) \"y\"\n- z"
-        let l = TerminalLaunch.make(shell: "/bin/sh", folder: dir.path, mode: .newClaude(uuid: uuid, prompt: prompt))
+        let l = TerminalLaunch.make(shell: "/bin/csh", folder: dir.path, mode: .newClaude(uuid: uuid, prompt: prompt))
         let process = Process()
         process.executableURL = URL(fileURLWithPath: l.executable)
-        process.arguments = l.args.filter { $0 != "-l" }
+        process.arguments = l.args.filter { $0 != "-l" }  // csh takes -l only alone
         process.currentDirectoryURL = dir
         var env = ["PATH": "\(dir.path):/usr/bin:/bin"]
         for entry in l.environment {
@@ -69,8 +70,14 @@ final class TerminalLaunchTests: XCTestCase {
         process.environment = env
         let out = Pipe()
         process.standardOutput = out
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        process.waitUntilExit()
+        if exited.wait(timeout: .now() + 10) == .timedOut {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("the launch did not finish")
+        }
         let printed = String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
         XCTAssertEqual(printed, "3\n\(prompt)\n0\n", "--session-id, the id, then the prompt whole; the variable dropped")
     }

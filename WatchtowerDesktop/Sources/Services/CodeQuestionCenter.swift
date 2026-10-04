@@ -49,6 +49,8 @@ final class CodeQuestionCenter {
     private(set) var questionLists: [Int64: [CodeQuestionListItem]] = [:]
     /// Per workbench: why the list could not be read or changed.
     private(set) var questionListErrors: [Int64: String] = [:]
+    /// Workbenches whose shown error is a failed read of the list.
+    @ObservationIgnored private var questionListReadFailed: Set<Int64> = []
     /// Per conversation: the model pick the Questions tab shows.
     private(set) var modelChoices: [Int64: CodeQuestionSurface.ModelChoice] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
@@ -388,9 +390,20 @@ final class CodeQuestionCenter {
 
     /// The Questions tab's model picker.
     func setModelChoice(_ choice: CodeQuestionSurface.ModelChoice, conversationID: Int64) {
-        guard let failure = storeModelChoice(choice, conversationID: conversationID),
-              let workbenchID = questionRefs[conversationID]?.project.id else { return }
-        questionListErrors[workbenchID] = failure
+        let failure = storeModelChoice(choice, conversationID: conversationID)
+        guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
+        if let failure {
+            questionListErrors[workbenchID] = failure
+        } else {
+            clearActionError(workbenchID: workbenchID)
+        }
+    }
+
+    /// An action went through: its earlier failure's note goes (a failed
+    /// read's stays until the list reads again).
+    private func clearActionError(workbenchID: Int64) {
+        guard !questionListReadFailed.contains(workbenchID) else { return }
+        questionListErrors[workbenchID] = nil
     }
 
     func modelChoice(conversationID: Int64) -> CodeQuestionSurface.ModelChoice {
@@ -577,8 +590,10 @@ final class CodeQuestionCenter {
 
     /// The Questions tab while it shows (the view's task): the list follows
     /// every write to the questions — one asked, a turn streamed, a delete —
-    /// through a GRDB observation. Every code question write is the app's
-    /// own, so the observation sees them all.
+    /// through a GRDB observation. The app writes them all but two: the
+    /// CLI's workbench delete (`workbenchRemoved` clears that list) and a
+    /// migration, before any view shows. A new list clears only a read
+    /// error; an action's error stays until the next action.
     func observeQuestionList(workbenchID: Int64) async {
         guard let dbPool else { return }
         let observation = ValueObservation.tracking { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
@@ -586,11 +601,12 @@ final class CodeQuestionCenter {
         do {
             for try await items in observation.values(in: dbPool) {
                 questionLists[workbenchID] = items
-                questionListErrors[workbenchID] = nil
+                if questionListReadFailed.remove(workbenchID) != nil { questionListErrors[workbenchID] = nil }
             }
         } catch {
             guard !Task.isCancelled else { return }
             NSLog("CodeQuestionCenter: watching the code questions: %@", error.localizedDescription)
+            questionListReadFailed.insert(workbenchID)
             questionListErrors[workbenchID] = "Couldn't read the questions: \(error.localizedDescription)"
         }
     }
@@ -601,8 +617,10 @@ final class CodeQuestionCenter {
         do {
             questionLists[workbenchID] = try dbPool.read { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
             questionListErrors[workbenchID] = nil
+            questionListReadFailed.remove(workbenchID)
         } catch {
             NSLog("CodeQuestionCenter: reading the code questions: %@", error.localizedDescription)
+            questionListReadFailed.insert(workbenchID)
             questionListErrors[workbenchID] = "Couldn't read the questions: \(error.localizedDescription)"
         }
     }
@@ -677,6 +695,7 @@ final class CodeQuestionCenter {
         if sessions[workbenchID]?.conversationID == question.conversationID { closeQuestion(workbenchID: workbenchID) }
         if inspectorQuestions[workbenchID] == question.conversationID { inspectorQuestions[workbenchID] = nil }
         questionLists[workbenchID]?.removeAll { $0.conversationID == question.conversationID }
+        clearActionError(workbenchID: workbenchID)
     }
 
     /// An Open Quickly question that could not be sent: its empty row goes.
@@ -701,6 +720,7 @@ final class CodeQuestionCenter {
         inspectorQuestions[workbenchID] = nil
         questionLists[workbenchID] = nil
         questionListErrors[workbenchID] = nil
+        questionListReadFailed.remove(workbenchID)
     }
 
     private func forget(_ question: CodeQuestionRef) {
@@ -750,17 +770,26 @@ final class CodeQuestionCenter {
     /// (a symlink leaving the folder is refused unread, board #361) or
     /// cannot be read.
     nonisolated static func readFolderFile(_ path: String, folder: String) -> String? {
-        guard let real = WorkbenchFolderPath.FileSystem.live.realPath(folder),
-              let file = WorkbenchFolderPath.resolve(path, folder: folder, folderRealPath: real) else {
-            NSLog("CodeQuestionCenter: a reopened question's file is not a file of its workbench folder")
+        guard let real = WorkbenchFolderPath.FileSystem.live.realPath(folder) else {
+            NSLog("CodeQuestionCenter: a reopened question's workbench folder is gone: %@", folder)
             return nil
         }
+        guard let file = WorkbenchFolderPath.resolve(path, folder: folder, folderRealPath: real) else {
+            NSLog("CodeQuestionCenter: a reopened question's file %@ is missing or not a file of its workbench folder", path)
+            return nil
+        }
+        let data: Data
         do {
-            return String(bytes: try Data(contentsOf: URL(fileURLWithPath: real).appendingPathComponent(file)), encoding: .utf8)
+            data = try Data(contentsOf: URL(fileURLWithPath: real).appendingPathComponent(file))
         } catch {
-            NSLog("CodeQuestionCenter: reading a reopened question's file: %@", error.localizedDescription)
+            NSLog("CodeQuestionCenter: reading a reopened question's file %@: %@", path, error.localizedDescription)
             return nil
         }
+        guard let text = String(bytes: data, encoding: .utf8) else {
+            NSLog("CodeQuestionCenter: a reopened question's file %@ is not UTF-8 text", path)
+            return nil
+        }
+        return text
     }
 }
 

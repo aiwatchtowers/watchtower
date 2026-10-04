@@ -99,5 +99,5 @@ private final class UnavailableEmbeddedChatStore: EmbeddedChatStore {
         throw DatabaseNotOpenError()
     }
     func append(role: String, text: String) throws -> Int64 { throw DatabaseNotOpenError() }
-    func saveSessionID(_ sessionID: String) throws { throw DatabaseNotOpenError() }
+    func saveSessionID(_ sessionID: String?) throws { throw DatabaseNotOpenError() }
 }

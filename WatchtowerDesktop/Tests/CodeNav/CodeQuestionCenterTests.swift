@@ -858,6 +858,25 @@ final class CodeQuestionCenterTests: XCTestCase {
         ai.finish()
     }
 
+    /// An action's error (a model change on a question deleted meanwhile)
+    /// stays while new rows reach the observed list.
+    func testAnActionErrorOutlivesTheListUpdates() async throws {
+        let (center, _, _) = makeCenter()
+        let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
+        defer { watching.cancel() }
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
+        try await pool.write { db in _ = try CodeQuestionList.delete(db, conversationID: first) }
+        center.setModelChoice(.init(provider: .codex, model: ""), conversationID: first)
+        let error = try XCTUnwrap(center.questionListErrors[project.id])
+        guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["Second?"] }
+        XCTAssertTrue(listed)
+        XCTAssertEqual(center.questionListErrors[project.id], error, "a list update does not hide it")
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+    }
+
     /// A question reopened after a restart (no context in memory) rebuilds
     /// its context from the file around its line (ruling R41).
     func testAReopenedQuestionRebuildsItsContextFromTheFile() async throws {
@@ -908,6 +927,58 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertNil(center.inspectorQuestions[project.id])
         XCTAssertNil(center.questionLists[project.id])
         XCTAssertNotNil(center.questionRef(otherID), "another workbench's question stays")
+    }
+
+    /// Hand to Claude Code from the popover: refused with a beep (the
+    /// popover kept) before the first question and while the answer
+    /// streams; once it is done the popover closes and the sheet gets the
+    /// conversation.
+    func testThePopoversHandOffWaitsForTheAnswerThenClosesIt() async throws {
+        let (center, _, buffer) = makeCenter()
+        let handoff = CodeHandoffCenter(beep: {})
+        handoff.dbPool = pool
+        center.handoff = handoff
+        await center.askAI(bufferID: buffer.id, project: project)
+        center.handToClaude(workbenchID: project.id)
+        XCTAssertEqual(beeps, 1, "no question yet")
+        XCTAssertNotNil(center.sessions[project.id])
+
+        center.quickAction(.explain, workbenchID: project.id)
+        let engine = center.engine(workbenchID: project.id)
+        _ = await eventually { ai.calls.count == 1 }
+        center.handToClaude(workbenchID: project.id)
+        XCTAssertEqual(beeps, 2, "the answer is still coming")
+        XCTAssertEqual(page.closed, 0)
+        XCTAssertNotNil(center.sessions[project.id])
+
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+        _ = await eventually { engine?.isStreaming == false }
+        center.handToClaude(workbenchID: project.id)
+        XCTAssertNil(center.sessions[project.id], "the popover closes first")
+        XCTAssertEqual(page.closed, 1)
+        let presented = await eventually { handoff.requests[project.id] != nil }
+        XCTAssertTrue(presented)
+        XCTAssertEqual(beeps, 2)
+    }
+
+    /// The Questions tab's hand-off closes nothing; with no hand-off center
+    /// it beeps.
+    func testTheTabsHandOffClosesNothing() async throws {
+        let (center, _, _) = makeCenter()
+        guard case let .started(id) = center.askFromOpenQuickly("Why?", project: project) else { return XCTFail("start") }
+        let question = try XCTUnwrap(center.questionRef(id))
+        await reply("Because.", after: 1, engine: center.engine(for: question))
+        center.handToClaude(question)
+        XCTAssertEqual(beeps, 1, "no hand-off center")
+        let handoff = CodeHandoffCenter(beep: {})
+        handoff.dbPool = pool
+        center.handoff = handoff
+        center.handToClaude(question)
+        let presented = await eventually { handoff.requests[project.id] != nil }
+        XCTAssertTrue(presented)
+        XCTAssertEqual(page.closed, 0)
+        XCTAssertEqual(beeps, 1)
     }
 
     /// Deleting the question the popover shows closes the popover.

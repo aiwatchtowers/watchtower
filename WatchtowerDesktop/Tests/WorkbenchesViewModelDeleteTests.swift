@@ -61,11 +61,16 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         vm.closeTerminal = { closed in
             if runner.calls.isEmpty { closedBeforeCLI.append(closed) }
         }
+        var removedBeforeCLI: [Int64] = []
+        vm.onWorkbenchRemoved = { removed in
+            if runner.calls.isEmpty { removedBeforeCLI.append(removed) }
+        }
 
         let ok = await vm.deleteWorkbench(id)
 
         XCTAssertTrue(ok)
         XCTAssertEqual(closedBeforeCLI, [id], "the terminal closes before `project delete` runs")
+        XCTAssertEqual(removedBeforeCLI, [id], "the code questions stop before their rows go")
         XCTAssertEqual(runner.calls, [["workbench", "delete", String(id), "--json"]])
         XCTAssertTrue(vm.summaries.isEmpty)
         XCTAssertNil(vm.selectedWorkbenchID)
@@ -157,12 +162,15 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         await vm.reload()
         var closed: [Int64] = []
         vm.closeTerminal = { closed.append($0) }
+        var removed: [Int64] = []
+        vm.onWorkbenchRemoved = { removed.append($0) }
 
         // `watchtower workbench delete` from a terminal, not through the VM.
         try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [a]) }
         await vm.reload()
 
         XCTAssertEqual(closed, [a])
+        XCTAssertEqual(removed, [a], "the code questions forget a workbench deleted elsewhere, not the one left")
         XCTAssertEqual(vm.summaries.map(\.id), [b])
     }
 

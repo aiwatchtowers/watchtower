@@ -144,7 +144,8 @@ enum CodeQuestionSurface {
                     // A fresh run (Codex, Ollama, Claude after a switch):
                     // the system prompt is sent again and the earlier turns
                     // are replayed (board #361).
-                    let replay = history(conversationID: conversationID, before: input.turnID, dbPool: dbPool)
+                    let replay = history(conversationID: conversationID, before: input.turnID, prompt: input.text,
+                                         dbPool: dbPool)
                     return (replay ?? "") + input.text
                 }
                 guard let attachment else { return input.text }
@@ -164,10 +165,12 @@ enum CodeQuestionSurface {
 
     /// The conversation's earlier turns as a replay block; nil on the first
     /// turn. A failed read sends the turn without them, logged.
-    private static func history(conversationID: Int64, before turnID: String, dbPool: DatabasePool) -> String? {
+    private static func history(
+        conversationID: Int64, before turnID: String, prompt: String, dbPool: DatabasePool
+    ) -> String? {
         do {
             let messages = try dbPool.read { try ChatMessageQueries.fetchByConversation($0, conversationID: conversationID) }
-            return EmbeddedChatReplay.block(messages: messages, before: turnID)
+            return EmbeddedChatReplay.block(messages: messages, before: turnID, prompt: prompt)
         } catch {
             NSLog("CodeQuestionSurface: reading the history of conversation %lld: %@",
                   conversationID, error.localizedDescription)

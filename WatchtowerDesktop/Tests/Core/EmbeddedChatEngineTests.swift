@@ -838,7 +838,7 @@ private final class FlakyStore: EmbeddedChatStore {
         return try base.append(role: role, text: text)
     }
 
-    func saveSessionID(_ sessionID: String) throws {
+    func saveSessionID(_ sessionID: String?) throws {
         if failSession { throw Failure() }
         try base.saveSessionID(sessionID)
     }

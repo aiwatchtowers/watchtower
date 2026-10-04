@@ -7,7 +7,8 @@ import Foundation
 /// chat's Go replay (`internal/chat/replay.go`): the newest messages kept
 /// first under `capCharacters`, the oldest dropped and counted. Pure.
 package enum EmbeddedChatReplay {
-    /// The main chat's cap (`chat.ReplayCapChars`), in characters.
+    /// The main chat's cap (`chat.ReplayCapChars`), in characters; the
+    /// header and footer are Go's `replayHeader`/`replayFooter`.
     package static let capCharacters = 24000
     package static let header =
         "=== CONVERSATION SO FAR (replayed from Watchtower's history; the earlier model session is not available) ==="
@@ -16,13 +17,15 @@ package enum EmbeddedChatReplay {
     /// The block for the turn `turnID` (its own rows are left out), or nil
     /// when nothing came before it. System notices, failed replies and
     /// empty ones are skipped; a reply stopped early says so. A trailing
-    /// owner message nothing answered is the one a Retry sends again, so it
-    /// is left out too.
+    /// unanswered owner message holding `prompt` is the one a Retry sends
+    /// again, so it is left out too (as Go's `HistoryBefore` drops it); an
+    /// unanswered question the owner moved on from stays.
     package static func block(
-        messages: [ChatMessageRecord], before turnID: String, capCharacters: Int = capCharacters
+        messages: [ChatMessageRecord], before turnID: String, prompt: String, capCharacters: Int = capCharacters
     ) -> String? {
+        precondition(capCharacters > 0)
         var entries: [(role: String, text: String)] = []
-        for message in messages where message.turnID.isEmpty || message.turnID != turnID {
+        for message in messages where message.turnID != turnID {
             let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
             switch (message.role, message.status) {
@@ -36,7 +39,10 @@ package enum EmbeddedChatReplay {
                 continue
             }
         }
-        if entries.last?.role == "Owner" { entries.removeLast() }
+        if let last = entries.last, last.role == "Owner",
+           last.text == prompt.trimmingCharacters(in: .whitespacesAndNewlines) {
+            entries.removeLast()
+        }
         guard !entries.isEmpty else { return nil }
 
         let rendered = entries.map { "\($0.role): \($0.text)\n" }

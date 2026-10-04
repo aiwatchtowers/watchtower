@@ -76,6 +76,19 @@ final class CodeQuestionUsageSearchesTests: XCTestCase {
         XCTAssertNil(results[0])
     }
 
+    /// A search that finishes before its start returns keeps no handle: a
+    /// later cancel has nothing stale to kill.
+    func testASearchFinishedAtOnceKeepsNoHandle() {
+        let searches = CodeQuestionUsageSearches { _, _, _, onDone in
+            onDone(.finished(CodeSearchDone(files: 0, matches: 0, truncated: false)))
+            return Handle()
+        }
+        var results = 0
+        searches.start(name: "load", folder: folder, workbenchID: 1) { _ in results += 1 }
+        XCTAssertEqual(results, 1)
+        XCTAssertFalse(searches.isRunning(1))
+    }
+
     /// The locations stop at the cap; the result says it was cut.
     func testLocationsAreCapped() throws {
         let searches = makeSearches()

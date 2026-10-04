@@ -89,6 +89,22 @@ final class WorkbenchFolderPathTests: XCTestCase {
         }
     }
 
+    /// A relative link in a subfolder resolves from that subfolder, `..`
+    /// after a followed folder link climbs from its target, and a nested
+    /// `../..` out of the folder is refused without a lookup outside.
+    func testRelativeLinksAndDotDotResolveFromTheRealFolder() throws {
+        try FileManager.default.createSymbolicLink(atPath: (folder as NSString).appendingPathComponent("docs/a.swift"),
+                                                   withDestinationPath: "../Sources/A.swift")
+        XCTAssertEqual(resolve("docs/a.swift"), "Sources/A.swift")
+        try link("src", to: "Sources")
+        XCTAssertEqual(resolve("src/../docs/guide.md"), "docs/guide.md")
+        try FileManager.default.createSymbolicLink(atPath: (folder as NSString).appendingPathComponent("docs/up"),
+                                                   withDestinationPath: "../../private")
+        XCTAssertNil(resolve("docs/up/outside.txt"))
+        XCTAssertNil(resolve("docs/../../private/outside.txt"))
+        XCTAssertEqual(outsideLookups, [])
+    }
+
     func testASymlinkLoopIsRefused() throws {
         try link("a", to: "b")
         try link("b", to: "a")
