@@ -183,21 +183,32 @@ func TestListTargets_ArchivedOnlyWithIncludeArchived(t *testing.T) {
 	assert.NotContains(t, plain, "Old feature", "outside a workbench session nothing changes (PROJ-01)")
 }
 
+// Without a status, include_archived lists open, closed and archived
+// workbench targets; outside a workbench session it changes nothing, so a
+// personal closed target stays out (PROJ-01).
 func TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets(t *testing.T) {
 	fx := newArchiveFixture(t)
+	recent := db.SeedTestWorkbenchTarget(t, fx.d, fx.a, sql.NullInt64{}, "Recent done")
+	db.CloseTestWorkbenchTarget(t, fx.d, recent, "done", 24*time.Hour)
+	_, err := fx.d.CreateTarget(db.Target{Text: "Personal done", Level: "day", Status: "done",
+		Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
 
 	def := callReadIn(t, fx.reg, fx.a, "list_targets", `{}`)
 	assert.Contains(t, def, "Open alpha task")
-	for _, title := range []string{"Old feature", "Old task", "Old alpha task"} {
-		assert.NotContains(t, def, title, "the default still hides archived targets")
+	for _, title := range []string{"Recent done", "Old feature", "Old task", "Old alpha task"} {
+		assert.NotContains(t, def, title, "the default lists open work only")
 	}
 	all := callReadIn(t, fx.reg, fx.a, "list_targets", `{"include_archived":true}`)
-	for _, title := range []string{"Open alpha task", "Old feature", "Old task", "Old alpha task"} {
+	for _, title := range []string{"Open alpha task", "Recent done", "Old feature", "Old task", "Old alpha task"} {
 		assert.Contains(t, all, title)
 	}
+	assert.NotContains(t, all, "Personal", "a workbench session sees only its board")
 
 	plain := callReadString(t, fx.reg, "list_targets", `{"include_archived":true}`)
-	assert.NotContains(t, plain, "Old feature", "outside a workbench session nothing changes (PROJ-01)")
+	assert.Contains(t, plain, "Personal task")
+	assert.NotContains(t, plain, "Personal done", "outside a workbench session include_archived changes nothing (PROJ-01)")
+	assert.NotContains(t, plain, "Old feature", "workbench targets never reach a personal session (PROJ-01)")
 }
 
 func TestGetTarget_FindsAnArchivedTargetAndSaysSo(t *testing.T) {
