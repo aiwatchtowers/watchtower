@@ -5,8 +5,9 @@ import Foundation
 /// `claude` in the folder with a session id the app chose, so it can be
 /// resumed later. A first prompt (a fixed constant below, or a code question
 /// handed over — spec 2026-10-02 §9.5) travels in `firstPromptEnv` and the
-/// command names only the variable, so no prompt text is ever parsed by the
-/// shell, and `env -u` drops the variable before `claude` runs, so its
+/// command names only the variable, read by `/bin/sh` whatever the login
+/// shell, so no prompt text is ever parsed by a shell, and `env -u` drops
+/// the variable before `claude` runs, so its
 /// children never see it; `positionalPrompt` keeps a leading "-" from
 /// being read as a flag.
 package struct TerminalLaunch: Equatable, Sendable {
@@ -46,8 +47,12 @@ package struct TerminalLaunch: Equatable, Sendable {
         switch mode {
         case let .newClaude(uuid, prompt):
             // `env -u` keeps the prompt out of everything Claude Code runs.
+            // `/bin/sh` reads the variable: the login shell only runs a
+            // single-quoted literal, so one whose `$VAR` is not POSIX
+            // (nushell's `$env.VAR`) or that quotes differently (csh) still
+            // passes the prompt as one argument.
             args = ["-l", "-c", prompt == nil ? "exec claude --session-id \(uuid)"
-                : "exec env -u \(firstPromptEnv) claude --session-id \(uuid) \"$\(firstPromptEnv)\""]
+                : "exec /bin/sh -c 'exec env -u \(firstPromptEnv) claude --session-id \(uuid) \"$\(firstPromptEnv)\"'"]
         case let .resumeClaude(uuid):
             args = ["-l", "-c", "exec claude --resume \(uuid)"]
         case .shell:

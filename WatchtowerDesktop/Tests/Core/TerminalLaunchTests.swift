@@ -9,7 +9,7 @@ final class TerminalLaunchTests: XCTestCase {
     func testNewClaudeWithPromptPassesItThroughTheEnvironment() {
         let prompt = TerminalLaunch.workOnTargetPrompt(targetID: 42, vocabulary: .current)
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
-        let command = "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\""
+        let command = "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
         XCTAssertEqual(l.args, ["-l", "-c", command])
         XCTAssertEqual(l.environment, ["WATCHTOWER_FIRST_PROMPT=Work on target #42 using the watchtower-workbench skill."])
         XCTAssertEqual(l.currentDirectory, "/tmp/acme")
@@ -20,7 +20,7 @@ final class TerminalLaunchTests: XCTestCase {
     func testOwnerTextPromptNeverReachesTheShellCommand() {
         let prompt = "From a Watchtower code question:\nIt's $(rm -rf ~) `x` \"y\"\n- z"
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt), rowID: 3)
-        let command = "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\""
+        let command = "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
         XCTAssertEqual(l.args, ["-l", "-c", command])
         XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=3", "WATCHTOWER_FIRST_PROMPT=\(prompt)"])
     }
@@ -29,7 +29,7 @@ final class TerminalLaunchTests: XCTestCase {
     /// runs, so nothing Claude Code starts inherits the prompt.
     func testThePromptVariableDoesNotReachClaudesChildren() {
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "x"))
-        XCTAssertEqual(l.args.last?.hasPrefix("exec env -u WATCHTOWER_FIRST_PROMPT claude "), true)
+        XCTAssertEqual(l.args.last?.hasPrefix("exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude "), true)
         let plain = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: nil))
         XCTAssertFalse(plain.args.joined().contains("env -u"), "no prompt, no variable")
     }
@@ -42,6 +42,37 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertEqual(TerminalLaunch.positionalPrompt("-p x"), " -p x")
         XCTAssertEqual(TerminalLaunch.positionalPrompt("From a Watchtower code question:"), "From a Watchtower code question:")
         XCTAssertFalse(TerminalLaunch.positionalPrompt(HandoffText.header).hasPrefix("-"))
+    }
+
+    /// Board #361: the variable is read by `/bin/sh`, so a login shell
+    /// with another `$VAR` syntax (nushell, csh) still hands the prompt
+    /// over as one argument. Runs the command with `/bin/sh` as the login
+    /// shell and a stub `claude` that prints its arguments.
+    func testThePromptReachesClaudeAsOneArgumentThroughSh() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-launch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stub = dir.appendingPathComponent("claude")
+        try "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$3\"\nenv | grep -c WATCHTOWER_FIRST_PROMPT\n".write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        let prompt = "It's $(echo x) \"y\"\n- z"
+        let l = TerminalLaunch.make(shell: "/bin/sh", folder: dir.path, mode: .newClaude(uuid: uuid, prompt: prompt))
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: l.executable)
+        process.arguments = l.args.filter { $0 != "-l" }
+        process.currentDirectoryURL = dir
+        var env = ["PATH": "\(dir.path):/usr/bin:/bin"]
+        for entry in l.environment {
+            let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+            env[parts[0]] = parts[1]
+        }
+        process.environment = env
+        let out = Pipe()
+        process.standardOutput = out
+        try process.run()
+        process.waitUntilExit()
+        let printed = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        XCTAssertEqual(printed, "3\n\(prompt)\n0\n", "--session-id, the id, then the prompt whole; the variable dropped")
     }
 
     func testNewClaudeWithoutPrompt() {

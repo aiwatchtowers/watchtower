@@ -137,7 +137,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(launch.executable, "/bin/zsh")
         XCTAssertEqual(launch.currentDirectory, folder.path)
         XCTAssertEqual(launch.args.last,
-                       "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(try XCTUnwrap(s.claudeSessionID)) \"$WATCHTOWER_FIRST_PROMPT\"")
+                       "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(try XCTUnwrap(s.claudeSessionID)) \"$WATCHTOWER_FIRST_PROMPT\"'")
         XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
     }
 
