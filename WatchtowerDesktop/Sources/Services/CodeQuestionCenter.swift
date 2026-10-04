@@ -4,69 +4,6 @@ import GRDB
 import Observation
 import WatchtowerCore
 
-/// The editor page's half of code questions (spec §9.2, §8.5): the Files
-/// pane's `MonacoEditorView.Coordinator`, a fake in tests.
-@MainActor
-protocol CodeQuestionPage: AnyObject {
-    /// `askAI()`: the page posts `selection`, then `askAI`, for the file on
-    /// screen; false = no file (or the page could not be asked).
-    func requestAskAI() async -> Bool
-    /// The selection's box (a caret's when empty) in the page's points, top
-    /// left origin; nil = no file on screen or scrolled away.
-    func selectionRect() async -> CGRect?
-    func proposeEdit(bufferID: String, range: CodeTextRange, text: String)
-    func clearProposal(bufferID: String)
-    func applyEdit(bufferID: String, range: CodeTextRange, text: String, expected: String) async -> CodeEditApplyResult
-    /// The question popover, pointing at `rect` (page points); false when
-    /// it could not be shown (the editor is in no window).
-    func presentQuestionPopover(at rect: CGRect) -> Bool
-    func closeQuestionPopover()
-}
-
-/// The popover's quick actions (spec §9.2): each sends a fixed prompt.
-enum CodeQuestionQuickAction: CaseIterable, Identifiable {
-    case explain
-    case findProblems
-    case whereUsed
-    case suggestChange
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .explain: "Explain"
-        case .findProblems: "Find problems"
-        case .whereUsed: "Where is it used?"
-        case .suggestChange: "Suggest a change"
-        }
-    }
-
-    var prompt: String {
-        switch self {
-        case .explain: "Explain what this code does."
-        case .findProblems: "Find problems in this code: bugs, unhandled cases and risky assumptions."
-        case .whereUsed: "Where is this used? Answer only from the usage locations attached to this question "
-            + "(Watchtower's search of the workbench), citing each as path:line; say so when none are attached."
-        case .suggestChange: "Suggest a change to this code."
-        }
-    }
-}
-
-/// A code question's conversation as every surface opens it: the popover,
-/// Open Quickly's answer card and the Questions tab.
-struct CodeQuestionRef {
-    let project: Workbench
-    let conversationID: Int64
-    /// What `context_id` names; `path` "" for Open Quickly with no file open.
-    let origin: CodeQuestionOrigin
-}
-
-/// What asking from Open Quickly did.
-enum CodeQuestionStart: Equatable {
-    case started(conversationID: Int64)
-    case failed(String)
-}
-
 /// Code questions (spec §9.2–§9.4), per workbench, on `AppState`: the ✦
 /// button's timing (`AskAIButtonSchedule`), the popover's question
 /// (`Session`) and its suggested change, Open Quickly's questions and the
@@ -112,6 +49,8 @@ final class CodeQuestionCenter {
     private(set) var questionLists: [Int64: [CodeQuestionListItem]] = [:]
     /// Per workbench: why the list could not be read or changed.
     private(set) var questionListErrors: [Int64: String] = [:]
+    /// Workbenches whose shown error is a failed read of the list.
+    @ObservationIgnored private var questionListReadFailed: Set<Int64> = []
     /// Per conversation: the model pick the Questions tab shows.
     private(set) var modelChoices: [Int64: CodeQuestionSurface.ModelChoice] = [:]
     @ObservationIgnored weak var workbenches: WorkbenchesViewModel?
@@ -139,7 +78,8 @@ final class CodeQuestionCenter {
     @ObservationIgnored private var ownedEngines: [Int64: WeakChatEngine] = [:]
     @ObservationIgnored private var selections: [Int64: CodeEditorSelection] = [:]
     @ObservationIgnored private var schedules: [Int64: AskAIButtonSchedule] = [:]
-    @ObservationIgnored private var settleTasks: [Int64: Task<Void, Never>] = [:]
+    /// Per workbench: the wait before the ✦ shows (tests await it).
+    @ObservationIgnored private(set) var settleTasks: [Int64: Task<Void, Never>] = [:]
     /// Per workbench: bumped by every selection or scroll, so a settle
     /// that an event overtook shows nothing.
     @ObservationIgnored private var settleGenerations: [Int64: Int] = [:]
@@ -147,12 +87,8 @@ final class CodeQuestionCenter {
     @ObservationIgnored private let sleep: (TimeInterval) async -> Void
     @ObservationIgnored private let beep: @MainActor () -> Void
     @ObservationIgnored private let defaultChoice: @MainActor () -> CodeQuestionSurface.ModelChoice
-    @ObservationIgnored private let startSearch: CodeSearchStarter
-    /// Per workbench: the "Where is it used?" search; a newer question's
-    /// generation drops an older search's callbacks.
-    @ObservationIgnored private var usageSearches: [Int64: CodeSearchCancelling] = [:]
-    @ObservationIgnored private var usageGenerations: [Int64: Int] = [:]
-    @ObservationIgnored private var nextUsageGeneration = 0
+    /// "Where is it used?"'s searches, per workbench.
+    @ObservationIgnored private let usageSearches: CodeQuestionUsageSearches
 
     init(
         clock: @escaping () -> Date = Date.init,
@@ -163,7 +99,7 @@ final class CodeQuestionCenter {
             CodeSearchRun.start(folder: folder, options: options, onMatch: onMatch, onDone: onDone)
         }
     ) {
-        self.startSearch = startSearch
+        usageSearches = CodeQuestionUsageSearches(startSearch: startSearch)
         self.clock = clock
         self.sleep = sleep
         self.beep = beep
@@ -319,7 +255,6 @@ final class CodeQuestionCenter {
             return false
         }
         sessions[workbenchID]?.notice = nil
-        refreshQuestionList(workbenchID: workbenchID)
         return true
     }
 
@@ -347,37 +282,18 @@ final class CodeQuestionCenter {
             ask(prompt, workbenchID: workbenchID)
             return
         }
-        cancelUsageSearch(workbenchID)
-        nextUsageGeneration += 1
-        let generation = nextUsageGeneration
-        usageGenerations[workbenchID] = generation
         sessions[workbenchID]?.isSearchingUsages = true
-        var found: [CodeQuestionUsages.Location] = []
-        let options = CodeSearchOptions(query: name, word: true, caseSensitive: true,
-                                        max: CodeQuestionUsages.limit, context: 0)
-        usageSearches[workbenchID] = startSearch(session.project.folderURL, options, { [weak self] match in
-            guard self?.usageGenerations[workbenchID] == generation, found.count < CodeQuestionUsages.limit else { return }
-            found.append(CodeQuestionUsages.Location(path: match.path, line: match.line, text: match.text))
-        }, { [weak self] outcome in
-            guard let self, usageGenerations[workbenchID] == generation else { return }
-            usageGenerations[workbenchID] = nil
-            usageSearches[workbenchID] = nil
+        usageSearches.start(name: name, folder: session.project.folderURL, workbenchID: workbenchID) { [weak self] usages in
+            guard let self else { return }
             sessions[workbenchID]?.isSearchingUsages = false
             let before = attachedUsages(workbenchID: workbenchID)
-            switch outcome {
-            case let .finished(done):
-                let usages = CodeQuestionUsages(name: name, locations: found,
-                                                truncated: done.truncated || found.count >= CodeQuestionUsages.limit)
-                attachUsages(usages, pending: true, workbenchID: workbenchID)
-            case let .failed(message):
-                NSLog("CodeQuestionCenter: the usage search for a code question failed: %@", message)
-            }
+            if let usages { attachUsages(usages, pending: true, workbenchID: workbenchID) }
             // Not sent (a follow-up from the composer is running, say): the
             // usages go with it, so no unrelated turn carries them.
             if !ask(prompt, workbenchID: workbenchID) {
                 attachUsages(before.usages, pending: before.pending, workbenchID: workbenchID)
             }
-        })
+        }
     }
 
     private func attachedUsages(workbenchID: Int64) -> (usages: CodeQuestionUsages?, pending: Bool) {
@@ -400,15 +316,15 @@ final class CodeQuestionCenter {
     }
 
     private func cancelUsageSearch(_ workbenchID: Int64) {
-        usageGenerations[workbenchID] = nil
-        usageSearches.removeValue(forKey: workbenchID)?.cancel()
+        usageSearches.cancel(workbenchID)
         sessions[workbenchID]?.isSearchingUsages = false
     }
 
     /// App quit (ruling R34): every usage search is killed with its process
     /// group.
     func stopQuestionSearches() {
-        for workbenchID in Array(usageSearches.keys) { cancelUsageSearch(workbenchID) }
+        usageSearches.cancelAll()
+        for workbenchID in Array(sessions.keys) { sessions[workbenchID]?.isSearchingUsages = false }
     }
 
     /// The usages a resumed turn adds to its prompt, until a turn carrying
@@ -474,9 +390,27 @@ final class CodeQuestionCenter {
 
     /// The Questions tab's model picker.
     func setModelChoice(_ choice: CodeQuestionSurface.ModelChoice, conversationID: Int64) {
-        guard let failure = storeModelChoice(choice, conversationID: conversationID),
-              let workbenchID = questionRefs[conversationID]?.project.id else { return }
-        questionListErrors[workbenchID] = failure
+        let failure = storeModelChoice(choice, conversationID: conversationID)
+        guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
+        if let failure {
+            showActionError(failure, workbenchID: workbenchID)
+        } else {
+            clearActionError(workbenchID: workbenchID)
+        }
+    }
+
+    /// An action failed: its note replaces whatever was shown, and a list
+    /// read does not clear it.
+    private func showActionError(_ message: String, workbenchID: Int64) {
+        questionListReadFailed.remove(workbenchID)
+        questionListErrors[workbenchID] = message
+    }
+
+    /// An action went through: its earlier failure's note goes (a failed
+    /// read's stays until the list reads again).
+    private func clearActionError(workbenchID: Int64) {
+        guard !questionListReadFailed.contains(workbenchID) else { return }
+        questionListErrors[workbenchID] = nil
     }
 
     func modelChoice(conversationID: Int64) -> CodeQuestionSurface.ModelChoice {
@@ -503,12 +437,11 @@ final class CodeQuestionCenter {
     // MARK: Suggested change
 
     /// The one turn-finished handler of a code question's engine: a
-    /// completed turn has carried the attached usages; the list shows the
-    /// new state; a completed answer with a `wt-edit` block shows its change
-    /// as an inline diff over what the popover's question was about.
+    /// completed turn has carried the attached usages; a completed answer
+    /// with a `wt-edit` block shows its change as an inline diff over what
+    /// the popover's question was about.
     private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome, conversationID: Int64) {
         guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
-        refreshQuestionList(workbenchID: workbenchID)
         guard case let .completed(_, result) = outcome else { return }
         pendingUsageTurns.remove(conversationID)
         guard let session = sessions[workbenchID], session.conversationID == conversationID,
@@ -587,16 +520,12 @@ final class CodeQuestionCenter {
     /// A `path:line` link in an answer: the file in the Files pane, if it is
     /// a file of the workbench (after `beforeOpening`, which closes the
     /// surface it was clicked in); where the cursor was goes on Back. Else
-    /// a beep and false.
+    /// a beep and false. A symlink leaving the folder is refused before its
+    /// target is looked at (`WorkbenchFolderPath`, board #361).
     @discardableResult
     func openLink(_ url: URL, project: Workbench, beforeOpening: () -> Void = {}) async -> Bool {
-        guard let target = CodeLineLinks.target(from: url) else {
-            beep()
-            return false
-        }
-        var isDirectory: ObjCBool = false
-        let file = project.folderURL.appendingPathComponent(target.path)
-        guard FileManager.default.fileExists(atPath: file.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        guard let target = CodeLineLinks.target(from: url),
+              WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) != nil else {
             beep()
             return false
         }
@@ -635,7 +564,6 @@ final class CodeQuestionCenter {
             discardConversation(conversation)
             return .failed("Couldn't send the question.")
         }
-        refreshQuestionList(workbenchID: project.id)
         return .started(conversationID: conversationID)
     }
 
@@ -667,22 +595,40 @@ final class CodeQuestionCenter {
 
     // MARK: Questions tab (spec §9.4)
 
-    /// Reads the workbench's questions, newest first.
-    func reloadQuestionList(workbenchID: Int64) {
+    /// The Questions tab while it shows (the view's task): the list follows
+    /// every write to the questions — one asked, a turn streamed, a delete —
+    /// through a GRDB observation. The app writes them all but two: the
+    /// CLI's workbench delete (`workbenchRemoved` clears that list) and a
+    /// migration, before any view shows. A new list clears only a read
+    /// error; an action's error stays until the next action.
+    func observeQuestionList(workbenchID: Int64) async {
         guard let dbPool else { return }
+        let observation = ValueObservation.tracking { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
+            .removeDuplicates()
         do {
-            questionLists[workbenchID] = try dbPool.read { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
-            questionListErrors[workbenchID] = nil
+            for try await items in observation.values(in: dbPool) {
+                questionLists[workbenchID] = items
+                if questionListReadFailed.remove(workbenchID) != nil { questionListErrors[workbenchID] = nil }
+            }
         } catch {
-            NSLog("CodeQuestionCenter: reading the code questions: %@", error.localizedDescription)
+            guard !Task.isCancelled else { return }
+            NSLog("CodeQuestionCenter: watching the code questions: %@", error.localizedDescription)
+            questionListReadFailed.insert(workbenchID)
             questionListErrors[workbenchID] = "Couldn't read the questions: \(error.localizedDescription)"
         }
     }
 
-    /// A list the tab has shown follows new questions and turns.
-    private func refreshQuestionList(workbenchID: Int64) {
-        guard questionLists[workbenchID] != nil else { return }
-        reloadQuestionList(workbenchID: workbenchID)
+    /// Reads the workbench's questions, newest first, once.
+    func reloadQuestionList(workbenchID: Int64) {
+        guard let dbPool else { return }
+        do {
+            questionLists[workbenchID] = try dbPool.read { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
+            if questionListReadFailed.remove(workbenchID) != nil { questionListErrors[workbenchID] = nil }
+        } catch {
+            NSLog("CodeQuestionCenter: reading the code questions: %@", error.localizedDescription)
+            questionListReadFailed.insert(workbenchID)
+            questionListErrors[workbenchID] = "Couldn't read the questions: \(error.localizedDescription)"
+        }
     }
 
     /// A row's click: the conversation in the inspector. A question reopened
@@ -699,7 +645,6 @@ final class CodeQuestionCenter {
     /// Back to the list.
     func closeInspectorQuestion(workbenchID: Int64) {
         inspectorQuestions[workbenchID] = nil
-        refreshQuestionList(workbenchID: workbenchID)
     }
 
     /// Pin to inspector: the popover's conversation moves to the Questions
@@ -721,22 +666,21 @@ final class CodeQuestionCenter {
     /// page's hand-off sheet. Not while an answer streams (the button is
     /// disabled then too), nor before the first question.
     func handToClaude(workbenchID: Int64) {
-        guard let conversationID = sessions[workbenchID]?.conversationID,
-              let question = questionRefs[conversationID], let handoff,
-              engine(for: question)?.isBusy != true else {
+        guard let conversationID = sessions[workbenchID]?.conversationID, let question = questionRefs[conversationID] else {
             beep()
             return
         }
-        closeQuestion(workbenchID: workbenchID)
-        Task { await handoff.handConversation(question) }
+        handToClaude(question) { closeQuestion(workbenchID: workbenchID) }
     }
 
-    /// The Questions tab's ⌥⌘↩ on the open conversation.
-    func handToClaude(_ question: CodeQuestionRef) {
+    /// The Questions tab's ⌥⌘↩ on the open conversation, and the popover's
+    /// after `beforeHanding` closed it.
+    func handToClaude(_ question: CodeQuestionRef, beforeHanding: () -> Void = {}) {
         guard let handoff, engine(for: question)?.isBusy != true else {
             beep()
             return
         }
+        beforeHanding()
         Task { await handoff.handConversation(question) }
     }
 
@@ -750,13 +694,14 @@ final class CodeQuestionCenter {
             try dbPool.write { db in _ = try CodeQuestionList.delete(db, conversationID: question.conversationID) }
         } catch {
             NSLog("CodeQuestionCenter: deleting a code question: %@", error.localizedDescription)
-            questionListErrors[workbenchID] = "Couldn't delete the question: \(error.localizedDescription)"
+            showActionError("Couldn't delete the question: \(error.localizedDescription)", workbenchID: workbenchID)
             return
         }
         forget(question)
         if sessions[workbenchID]?.conversationID == question.conversationID { closeQuestion(workbenchID: workbenchID) }
         if inspectorQuestions[workbenchID] == question.conversationID { inspectorQuestions[workbenchID] = nil }
         questionLists[workbenchID]?.removeAll { $0.conversationID == question.conversationID }
+        clearActionError(workbenchID: workbenchID)
     }
 
     /// An Open Quickly question that could not be sent: its empty row goes.
@@ -768,6 +713,20 @@ final class CodeQuestionCenter {
         } catch {
             NSLog("CodeQuestionCenter: removing an unsent code question: %@", error.localizedDescription)
         }
+    }
+
+    /// The workbench was deleted, its code questions with it (PROJ-02): the
+    /// popover closes, every engine of its questions stops quietly and the
+    /// tab's state goes.
+    func workbenchRemoved(_ workbenchID: Int64) {
+        if sessions[workbenchID] != nil { closeQuestion(workbenchID: workbenchID) }
+        for question in questionRefs.values where question.project.id == workbenchID {
+            forget(question)
+        }
+        inspectorQuestions[workbenchID] = nil
+        questionLists[workbenchID] = nil
+        questionListErrors[workbenchID] = nil
+        questionListReadFailed.remove(workbenchID)
     }
 
     private func forget(_ question: CodeQuestionRef) {
@@ -792,7 +751,9 @@ final class CodeQuestionCenter {
     }
 
     /// The open buffer's text when the file is loaded, else the file read
-    /// off the main actor; nothing for a question asked with no file.
+    /// off the main actor — only a file of the folder, a symlink leaving it
+    /// refused unread (`WorkbenchFolderPath`, board #361); nothing for a
+    /// question asked with no file.
     private func rebuildContextIfNeeded(_ question: CodeQuestionRef) {
         let conversationID = question.conversationID
         guard questionContexts[conversationID] == nil, !question.origin.path.isEmpty else { return }
@@ -800,19 +761,41 @@ final class CodeQuestionCenter {
             questionContexts[conversationID] = context(origin: question.origin, project: question.project, fileText: buffer.text)
             return
         }
-        let file = question.project.folderURL.appendingPathComponent(question.origin.path)
+        let folder = question.project.folderPath
+        let path = question.origin.path
         Task { [weak self] in
-            let text = await Task.detached(priority: .userInitiated) { () -> String? in
-                do {
-                    return String(bytes: try Data(contentsOf: file), encoding: .utf8)
-                } catch {
-                    NSLog("CodeQuestionCenter: reading a reopened question's file: %@", error.localizedDescription)
-                    return nil
-                }
+            let text = await Task.detached(priority: .userInitiated) {
+                Self.readFolderFile(path, folder: folder)
             }.value
             guard let self, let text, questionRefs[conversationID] != nil, questionContexts[conversationID] == nil else { return }
             questionContexts[conversationID] = context(origin: question.origin, project: question.project, fileText: text)
         }
+    }
+
+    /// A file of the workbench folder as UTF-8 text; nil when it is not one
+    /// (a symlink leaving the folder is refused unread, board #361) or
+    /// cannot be read.
+    nonisolated static func readFolderFile(_ path: String, folder: String) -> String? {
+        guard let real = WorkbenchFolderPath.FileSystem.live.realPath(folder) else {
+            NSLog("CodeQuestionCenter: a reopened question's workbench folder is gone: %@", folder)
+            return nil
+        }
+        guard let file = WorkbenchFolderPath.resolve(path, folder: folder, folderRealPath: real) else {
+            NSLog("CodeQuestionCenter: a reopened question's file %@ is missing or not a file of its workbench folder", path)
+            return nil
+        }
+        let data: Data
+        do {
+            data = try Data(contentsOf: URL(fileURLWithPath: real).appendingPathComponent(file))
+        } catch {
+            NSLog("CodeQuestionCenter: reading a reopened question's file %@: %@", path, error.localizedDescription)
+            return nil
+        }
+        guard let text = String(bytes: data, encoding: .utf8) else {
+            NSLog("CodeQuestionCenter: a reopened question's file %@ is not UTF-8 text", path)
+            return nil
+        }
+        return text
     }
 }
 

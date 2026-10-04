@@ -26,7 +26,7 @@ struct QuestionsView: View {
                 QuestionListView(questions: questions, project: project)
             }
         }
-        .task(id: project.id) { questions.reloadQuestionList(workbenchID: project.id) }
+        .task(id: project.id) { await questions.observeQuestionList(workbenchID: project.id) }
     }
 
     /// "Sources/App.swift:12", or a note for a question asked with no file.

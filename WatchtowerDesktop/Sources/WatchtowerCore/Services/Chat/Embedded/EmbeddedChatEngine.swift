@@ -124,6 +124,9 @@ package final class EmbeddedChatEngine {
     private struct RunningTurn {
         let request: TurnRequest
         let turn: LiveTurn
+        /// The run's provider resumes sessions: only then is its session id
+        /// kept (another provider's id is not Claude's to resume).
+        let keepsSession: Bool
         var lastFlush: Date
         var lastEvent: Date
         /// The banner shown when the turn began: a completed turn clears it.
@@ -333,6 +336,13 @@ package final class EmbeddedChatEngine {
         let options = spec.runOptions()
         let ids: (ownerID: Int64?, assistantID: Int64)
         do {
+            // A provider that cannot resume the Claude session runs turns it
+            // never sees: the session is forgotten, so the next Claude turn
+            // starts fresh and its surface replays the whole conversation.
+            if !options.resumesSession, sessionID != nil {
+                try store.saveSessionID(nil)
+                sessionID = nil
+            }
             ids = try store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: options.provider ?? provider)
         } catch {
             // Nothing was sent: the owner's text goes back to the composer,
@@ -355,7 +365,8 @@ package final class EmbeddedChatEngine {
         let now = clock()
         let turn = LiveTurn(messageID: ids.assistantID, turnID: turnID, startedAt: now)
         liveTurn = turn
-        running = RunningTurn(request: request, turn: turn, lastFlush: now, lastEvent: now, bannerAtBegin: bannerError)
+        running = RunningTurn(request: request, turn: turn, keepsSession: options.resumesSession, lastFlush: now,
+                              lastEvent: now, bannerAtBegin: bannerError)
         refreshRows()
 
         let resumed = options.resumesSession ? sessionID : nil
@@ -389,7 +400,7 @@ package final class EmbeddedChatEngine {
                     turn.replaceText(text, now: clock())
                     flushIfDue(turn)
                 case .sessionID(let sid):
-                    recordSession(sid)
+                    if running?.keepsSession == true { recordSession(sid) }
                 case .failed(let message):
                     fail(EmbeddedChatErrorClassifier.classify(message: message))
                 case .none:

@@ -167,6 +167,10 @@ final class WorkbenchesViewModel {
     /// project's sessions in initWorkbenches; a project with none is a no-op,
     /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
+    /// A workbench was deleted here, or left the list (deleted by the CLI):
+    /// AppState lets the code questions forget it (their rows went with the
+    /// delete). Calling it twice is harmless.
+    var onWorkbenchRemoved: ((Int64) -> Void)?
     /// Whether the Workbench tab is what the owner is looking at (AppState:
     /// sidebar on Projects, main window visible). The git status refresh
     /// runs only then. Unwired = never on screen.
@@ -327,6 +331,7 @@ final class WorkbenchesViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
+            onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }
         }
@@ -371,6 +376,9 @@ final class WorkbenchesViewModel {
             deleteError = "Could not delete the workbench: \(error.localizedDescription)"
             return false
         }
+        // The rows are gone: an answer still streaming stops now, not at the
+        // reload (a failed delete above leaves the questions as they were).
+        onWorkbenchRemoved?(id)
         if let warning = result.cleanupWarning {
             errorMessage = warning
         }

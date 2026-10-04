@@ -7,8 +7,9 @@ import Foundation
 /// or a path without a line is not one. Containment is checked lexically
 /// first (ruling R53): a path outside the folder never touches the disk — a
 /// `realpath` or `stat` of `~/Desktop/…` could raise a macOS privacy prompt
-/// attributed to Watchtower. Only an in-folder candidate is resolved, which
-/// catches a symlink leaving the folder.
+/// attributed to Watchtower. Only an in-folder candidate is resolved
+/// (`WorkbenchFolderPath`), and a symlink leaving the folder is refused by
+/// its target's text before that target is looked at.
 package enum TerminalPathLinks {
     package struct Location: Equatable, Sendable {
         /// Relative to the session's folder.
@@ -24,28 +25,7 @@ package enum TerminalPathLinks {
     }
 
     /// The disk lookups `resolve` makes, a seam for tests.
-    package struct FileSystem: Sendable {
-        /// Symlinks resolved; nil when the path does not exist.
-        package var realPath: @Sendable (String) -> String?
-        package var isRegularFile: @Sendable (String) -> Bool
-
-        package init(realPath: @escaping @Sendable (String) -> String?, isRegularFile: @escaping @Sendable (String) -> Bool) {
-            self.realPath = realPath
-            self.isRegularFile = isRegularFile
-        }
-
-        package static let live = Self(
-            realPath: { path in
-                guard let resolved = realpath(path, nil) else { return nil }
-                defer { free(resolved) }
-                return String(cString: resolved)
-            },
-            isRegularFile: { path in
-                var isDirectory: ObjCBool = false
-                return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
-            }
-        )
-    }
+    package typealias FileSystem = WorkbenchFolderPath.FileSystem
 
     /// What a ⌘-clicked link does.
     package enum LinkAction: Equatable, Sendable {
@@ -100,12 +80,11 @@ package enum TerminalPathLinks {
         let lexicalRoot = lexicallyNormalized(folder)
         // Outside both spellings of the folder: refused before any disk call.
         let roots = [lexicalRoot, folderRealPath.map(lexicallyNormalized)].compactMap(\.self)
-        guard roots.contains(where: { isInside(absolute, root: $0) }) else { return nil }
-        guard let realRoot = folderRealPath ?? fileSystem.realPath(lexicalRoot),
-              let file = fileSystem.realPath(absolute), isInside(file, root: realRoot),
-              fileSystem.isRegularFile(file) else { return nil }
-        let prefix = realRoot.hasSuffix("/") ? realRoot : realRoot + "/"
-        return Location(path: String(file.dropFirst(prefix.count)), line: line, col: col)
+        guard let root = roots.first(where: { isInside(absolute, root: $0) }),
+              let file = WorkbenchFolderPath.resolve(String(absolute.dropFirst(root.count + 1)), folder: folder,
+                                                     folderRealPath: folderRealPath, fileSystem: fileSystem)
+        else { return nil }
+        return Location(path: file, line: line, col: col)
     }
 
     /// What was ⌘-clicked at `column` (a character offset) of a terminal
@@ -113,6 +92,10 @@ package enum TerminalPathLinks {
     /// the closing quote, else the whitespace-delimited token. nil on a
     /// space outside quotes or past the line.
     package static func candidate(inLine line: String, at column: Int) -> String? {
+        candidateSpan(inLine: line, at: column)?.filter { $0 != wideSpill }
+    }
+
+    private static func candidateSpan(inLine line: String, at column: Int) -> String? {
         let chars = Array(line)
         guard column >= 0, column < chars.count else { return nil }
         if let quoted = quotedSpan(chars, around: column) { return quoted }
@@ -124,7 +107,50 @@ package enum TerminalPathLinks {
         return String(chars[start..<end])
     }
 
+    /// The cell a wide character spills into, in a `Row`: keeps one
+    /// character per cell, and is dropped from a candidate.
+    package static let wideSpill: Character = "\u{0}"
+
+    /// One screen row: its cells as characters (one per cell, blanks
+    /// included) and whether it continues the row above (a soft wrap).
+    package struct Row: Equatable, Sendable {
+        package let text: String
+        package let continuesAbove: Bool
+
+        package init(text: String, continuesAbove: Bool) {
+            self.text = text
+            self.continuesAbove = continuesAbove
+        }
+    }
+
+    /// The logical line a ⌘-click at `row`/`column` falls in — the rows a
+    /// long path wrapped over joined back — and the column within it; nil
+    /// off the screen, or when the line holds right-to-left text: the
+    /// terminal may draw it reordered, so a screen column names no
+    /// character of it (board #361).
+    package static func logicalLine(rows: [Row], row: Int, column: Int) -> (line: String, column: Int)? {
+        guard rows.indices.contains(row), column >= 0 else { return nil }
+        var start = row
+        while start > 0, rows[start].continuesAbove { start -= 1 }
+        var end = row
+        while end + 1 < rows.count, rows[end + 1].continuesAbove { end += 1 }
+        let line = rows[start...end].map(\.text).joined()
+        guard !line.unicodeScalars.contains(where: isRightToLeft) else { return nil }
+        let offset = rows[start..<row].reduce(0) { $0 + $1.text.count }
+        var trimmed = line
+        while trimmed.last == " " { trimmed.removeLast() }
+        return (trimmed, offset + column)
+    }
+
     // MARK: - Private
+
+    /// Hebrew, Arabic, Syriac, Thaana, NKo and their presentation forms.
+    private static func isRightToLeft(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF: true
+        default: false
+        }
+    }
 
     private static func quotedSpan(_ chars: [Character], around column: Int) -> String? {
         for quote in quotes {
@@ -182,17 +208,9 @@ package enum TerminalPathLinks {
         return path.hasPrefix(prefix)
     }
 
-    /// `.` and `..` folded and repeated slashes dropped, by the text alone
-    /// (no disk access: `URL.standardized` may stat the path).
+    /// By the text alone (no disk access: `URL.standardized` may stat the
+    /// path).
     private static func lexicallyNormalized(_ path: String) -> String {
-        var parts: [Substring] = []
-        for part in path.split(separator: "/", omittingEmptySubsequences: true) {
-            switch part {
-            case ".": continue
-            case "..": if !parts.isEmpty { parts.removeLast() }
-            default: parts.append(part)
-            }
-        }
-        return "/" + parts.joined(separator: "/")
+        WorkbenchFolderPath.lexicallyNormalized(path)
     }
 }

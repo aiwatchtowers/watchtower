@@ -21,6 +21,8 @@ import WatchtowerCore
 /// - The model (owner decision 3) is the conversation's
 ///   `provider`/`model`, read when each turn starts, so a follow-up keeps it
 ///   and a new pick applies from the next turn.
+/// - A turn that resumes no provider session (Codex, Ollama, Claude after a
+///   switch) carries the earlier turns as `EmbeddedChatReplay`'s block.
 @MainActor
 enum CodeQuestionSurface {
     static let contextType = CodeQuestionList.contextType
@@ -138,7 +140,15 @@ enum CodeQuestionSurface {
             },
             turnPrompt: { input in
                 let attachment = turnAttachment()
-                guard input.isResumed, let attachment else { return input.text }
+                guard input.isResumed else {
+                    // A fresh run (Codex, Ollama, Claude after a switch):
+                    // the system prompt is sent again and the earlier turns
+                    // are replayed (board #361).
+                    let replay = history(conversationID: conversationID, before: input.turnID, prompt: input.text,
+                                         dbPool: dbPool)
+                    return (replay ?? "") + input.text
+                }
+                guard let attachment else { return input.text }
                 return input.text + "\n\n" + attachment
             },
             postTurn: { input in
@@ -151,6 +161,21 @@ enum CodeQuestionSurface {
             emptyHint: "Ask about this code. The assistant reads the workbench folder and never changes it.",
             runOptions: runOptions
         )
+    }
+
+    /// The conversation's earlier turns as a replay block; nil on the first
+    /// turn. A failed read sends the turn without them, logged.
+    private static func history(
+        conversationID: Int64, before turnID: String, prompt: String, dbPool: DatabasePool
+    ) -> String? {
+        do {
+            let messages = try dbPool.read { try ChatMessageQueries.fetchByConversation($0, conversationID: conversationID) }
+            return EmbeddedChatReplay.block(messages: messages, before: turnID, prompt: prompt)
+        } catch {
+            NSLog("CodeQuestionSurface: reading the history of conversation %lld: %@",
+                  conversationID, error.localizedDescription)
+            return nil
+        }
     }
 
     /// Whether the conversation already told the owner its model reads no

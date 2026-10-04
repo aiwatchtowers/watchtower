@@ -208,8 +208,9 @@ func (db *DB) SetWorkbenchArchiveDays(projectID int64, days int) error {
 
 // DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
 // sources and comments, and its folder files' search index entries
-// (kb source project_doc, PROJ-08) go in the same transaction, so the delete
-// is all-or-nothing (PROJ-02). The folder install is removed by the caller.
+// (kb source project_doc, PROJ-08) and its code questions go in the same
+// transaction, so the delete is all-or-nothing (PROJ-02). The folder install
+// is removed by the caller.
 func (db *DB) DeleteWorkbench(id int64) error {
 	return db.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, id)
@@ -219,8 +220,27 @@ func (db *DB) DeleteWorkbench(id int64) error {
 		if err := requireAffected(res, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)); err != nil {
 			return err
 		}
-		return deleteWorkbenchDocIndex(tx, id)
+		if err := deleteWorkbenchDocIndex(tx, id); err != nil {
+			return err
+		}
+		return deleteWorkbenchCodeQuestions(tx, id)
 	})
+}
+
+// deleteWorkbenchCodeQuestions drops a workbench's code questions (spec
+// 2026-10-02 §9.4): `chat_conversations` rows of context type
+// `code_question` whose `context_id` starts with `<id>:` — the prefix matched
+// exactly, so workbench 1 never takes 10's. Their messages, steps and search
+// rows go by cascade and the FTS triggers; the questions quote the folder's
+// code, so none may outlive the workbench (migration 00104 removed the ones
+// earlier deletes left behind).
+func deleteWorkbenchCodeQuestions(tx *sql.Tx, projectID int64) error {
+	prefix := strconv.FormatInt(projectID, 10) + ":"
+	if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE context_type = 'code_question'
+		AND substr(context_id, 1, length(?)) = ?`, prefix, prefix); err != nil {
+		return fmt.Errorf("deleting workbench %d code questions: %w", projectID, err)
+	}
+	return nil
 }
 
 // deleteWorkbenchDocIndex drops a workbench's folder files from the knowledge index

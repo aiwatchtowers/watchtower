@@ -17,7 +17,8 @@ package protocol EmbeddedChatStore: AnyObject {
     func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws
     @discardableResult
     func append(role: String, text: String) throws -> Int64
-    func saveSessionID(_ sessionID: String) throws
+    /// nil forgets it: the next Claude turn starts a fresh session.
+    func saveSessionID(_ sessionID: String?) throws
     /// The `sqlite` path handed to `ai query --db-path`; nil for a chat that
     /// reads no workspace data.
     var dbPath: String? { get }
@@ -102,7 +103,7 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
         }
     }
 
-    package func saveSessionID(_ sessionID: String) throws {
+    package func saveSessionID(_ sessionID: String?) throws {
         let id = conversationID
         try dbPool.write { db in
             try ChatConversationQueries.updateSessionID(db, id: id, sessionID: sessionID)
@@ -157,7 +158,7 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
         insert(role: role, text: text, turnID: "", status: "complete")
     }
 
-    package func saveSessionID(_ sessionID: String) throws {
+    package func saveSessionID(_ sessionID: String?) throws {
         self.sessionID = sessionID
     }
 

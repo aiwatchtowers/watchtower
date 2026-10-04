@@ -758,17 +758,38 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     }
 
     /// SwiftTerm detects no quoted path with a space (`"a b.txt":1`): a
-    /// ⌘-click it left alone is looked up here in the clicked line.
+    /// ⌘-click it left alone is looked up here in the clicked line — the
+    /// rows a long path wrapped over joined back.
     override func mouseUp(with event: NSEvent) {
         openedLinkThisClick = false
         super.mouseUp(with: event)
         guard !openedLinkThisClick, event.modifierFlags.contains(.command), event.clickCount == 1, !selectionActive,
               let folder = pathLinkFolder, let openPathLink, let cell = cell(at: event),
-              let line = getTerminal().getLine(row: cell.row)?.translateToString(trimRight: true),
-              let candidate = TerminalPathLinks.candidate(inLine: line, at: cell.col),
+              let hit = TerminalPathLinks.logicalLine(rows: screenRows(), row: cell.row, column: cell.col),
+              let candidate = TerminalPathLinks.candidate(inLine: hit.line, at: hit.column),
               let location = TerminalPathLinks.resolve(candidate, folder: folder, folderRealPath: pathLinkFolderRealPath)
         else { return }
         openPathLink(location)
+    }
+
+    /// The visible rows, one character per cell (an empty cell a space, the
+    /// cell a wide character spills into `TerminalPathLinks.wideSpill`),
+    /// with their soft-wrap marks.
+    private func screenRows() -> [TerminalPathLinks.Row] {
+        let terminal = getTerminal()
+        return (0..<terminal.rows).map { row in
+            guard let line = terminal.getLine(row: row) else { return TerminalPathLinks.Row(text: "", continuesAbove: false) }
+            var text = ""
+            for col in 0..<line.count {
+                let cell = line[col]
+                if cell.getCharacter() != "\u{0}" {
+                    text.append(terminal.getCharacter(for: cell))
+                } else {
+                    text.append(col > 0 && line[col - 1].width == 2 ? TerminalPathLinks.wideSpill : " ")
+                }
+            }
+            return TerminalPathLinks.Row(text: text, continuesAbove: line.isWrapped)
+        }
     }
 
     /// The visible row and column under the pointer, by SwiftTerm's own

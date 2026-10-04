@@ -43,6 +43,14 @@ final class EmbeddedChatEngineTests: XCTestCase {
         )
     }
 
+    /// A spec whose provider the test switches between turns.
+    private func switchingSpec(_ options: @escaping @MainActor () -> ChatRunOptions) -> ChatSurfaceSpec {
+        let base = spec()
+        let system = { @MainActor () -> String in "SYSTEM" }
+        return ChatSurfaceSpec(key: base.key, persistence: base.persistence, toolAccess: .draftOnly,
+                               systemPrompt: system, emptyHint: "", runOptions: options)
+    }
+
     private func makeEngine(
         spec: ChatSurfaceSpec? = nil,
         store: EmbeddedChatStore? = nil,
@@ -433,6 +441,55 @@ final class EmbeddedChatEngineTests: XCTestCase {
         ai.emit(.sessionID("s1"))
         expectTrue(await waitIdle(engine))
         XCTAssertEqual(engine.messages.last?.message.status, "error")
+    }
+
+    /// A provider that cannot resume the Claude session (code questions'
+    /// picker) makes the engine forget it, and its own session id is never
+    /// kept: the next Claude turn starts fresh.
+    func testANonResumingProviderForgetsTheSession() async throws {
+        var provider: String? = "claude"
+        let switching = switchingSpec { ChatRunOptions(provider: provider) }
+        let store = MemoryEmbeddedChatStore()
+        let engine = makeEngine(spec: switching, store: store)
+        engine.send("one")
+        ai.emit(.sessionID("s1"), .text("a"), .turnComplete("a"), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(try store.loadSessionID(), "s1")
+
+        provider = "ollama"
+        engine.send("two")
+        ai.emit(.sessionID("foreign"), .text("b"), .turnComplete("b"), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertNil(try store.loadSessionID(), "forgotten, and the other provider's id not kept")
+
+        provider = "claude"
+        engine.send("three")
+        XCTAssertEqual(ai.calls.count, 3)
+        XCTAssertNil(ai.calls[2].sessionID)
+        XCTAssertEqual(ai.calls[2].systemPrompt, "SYSTEM", "a fresh session gets the system prompt")
+        ai.emit(.text("c"), .turnComplete("c"), .done)
+        ai.finish()
+    }
+
+    /// Forgetting the session cannot be saved: nothing is sent and the
+    /// text goes back to the composer.
+    func testAFailedForgetSendsNothing() async throws {
+        var provider: String? = "claude"
+        let switching = switchingSpec { ChatRunOptions(provider: provider) }
+        let store = FlakyStore()
+        let engine = makeEngine(spec: switching, store: store)
+        engine.send("one")
+        ai.emit(.sessionID("s1"), .text("a"), .turnComplete("a"), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+
+        provider = "codex"
+        store.failSession = true
+        engine.send("two")
+        XCTAssertEqual(ai.calls.count, 1, "nothing sent")
+        XCTAssertEqual(engine.draft, "two")
     }
 
     func testAFailedHistoryLoadBlocksSendingUntilItLoads() throws {
@@ -838,7 +895,7 @@ private final class FlakyStore: EmbeddedChatStore {
         return try base.append(role: role, text: text)
     }
 
-    func saveSessionID(_ sessionID: String) throws {
+    func saveSessionID(_ sessionID: String?) throws {
         if failSession { throw Failure() }
         try base.saveSessionID(sessionID)
     }

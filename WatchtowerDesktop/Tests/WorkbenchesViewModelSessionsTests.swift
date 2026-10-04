@@ -147,7 +147,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.count, 1, "the second call does not relaunch a running session")
         let uuid = try XCTUnwrap(row.claudeSessionID)
         XCTAssertEqual(launches.first?.args.last,
-                       "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"")
+                       "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
         XCTAssertEqual(launches.first?.environment.last,
                        "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
         XCTAssertEqual(center.focusOrder.last, row.id)
@@ -236,7 +236,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
         XCTAssertEqual(row.title, title.trimmingCharacters(in: .whitespacesAndNewlines))
         let uuid = try XCTUnwrap(row.claudeSessionID)
-        let command = "exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\""
+        let command = "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
         XCTAssertEqual(launches.map(\.args), [["-l", "-c", command]])
         XCTAssertEqual(launches.first?.environment.last,
                        "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")

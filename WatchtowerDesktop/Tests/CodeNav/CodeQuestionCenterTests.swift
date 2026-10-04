@@ -174,19 +174,21 @@ final class CodeQuestionCenterTests: XCTestCase {
                                 workbenchID: project.id)
         XCTAssertNil(center.buttonRects[project.id], "hidden when the selection clears")
         center.editorScrolled(workbenchID: project.id)
-        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(center.settleTasks[project.id], "no wait without a selection")
         XCTAssertNil(center.buttonRects[project.id])
         XCTAssertEqual(page.rectRequests, requests, "nothing to anchor without a selection")
     }
 
     /// A selection change while the page answers `selectionRect` wins: the
     /// stale rect is not shown.
-    func testASelectionChangeOvertakesTheSettle() async {
+    func testASelectionChangeOvertakesTheSettle() async throws {
         let (center, _, buffer) = makeCenter()
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
+        let overtaken = try XCTUnwrap(center.settleTasks[project.id])
         center.selectionChanged(selection(buffer, "", CodeTextRange(startLine: 1, startCol: 1, endLine: 1, endCol: 1)),
                                 workbenchID: project.id)
-        try? await Task.sleep(for: .milliseconds(50))
+        await overtaken.value
+        XCTAssertNil(center.settleTasks[project.id])
         XCTAssertNil(center.buttonRects[project.id])
     }
 
@@ -429,6 +431,39 @@ final class CodeQuestionCenterTests: XCTestCase {
         await center.openLink(gone, workbenchID: project.id)
         XCTAssertEqual(beeps, 1, "a file that is not there beeps")
         XCTAssertNotNil(center.sessions[project.id])
+    }
+
+    /// Board #361: a link through a symlink that leaves the folder opens
+    /// nothing; one that stays inside opens.
+    func testALinkThroughASymlinkLeavingTheFolderOpensNothing() async throws {
+        let (center, vm, _) = makeCenter()
+        let outside = folder.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString).swift")
+        try "secret\n".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("Sources/Leak.swift"),
+                                                   withDestinationURL: outside)
+        try FileManager.default.createSymbolicLink(atPath: folder.appendingPathComponent("Sources/Alias.swift").path,
+                                                   withDestinationPath: "Other.swift")
+        let leak = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Leak.swift", line: 1, col: nil)))
+        let opened = await center.openLink(leak, project: project)
+        XCTAssertFalse(opened)
+        XCTAssertEqual(beeps, 1)
+        XCTAssertNil(vm.codeFiles.tabs(for: project).active)
+        let alias = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "Sources/Alias.swift", line: 1, col: nil)))
+        let openedAlias = await center.openLink(alias, project: project)
+        XCTAssertTrue(openedAlias, "a symlink inside the folder is a file of it")
+    }
+
+    /// Board #361: a reopened question's file is read only when it is a
+    /// file of the folder; through a symlink leaving it, nothing is read.
+    func testAReopenedQuestionNeverReadsThroughASymlinkLeavingTheFolder() throws {
+        let outside = folder.deletingLastPathComponent().appendingPathComponent("outside-\(UUID().uuidString).swift")
+        try "secret\n".write(to: outside, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("Leak.swift"), withDestinationURL: outside)
+        XCTAssertNil(CodeQuestionCenter.readFolderFile("Leak.swift", folder: folder.path))
+        XCTAssertNil(CodeQuestionCenter.readFolderFile("../\(outside.lastPathComponent)", folder: folder.path))
+        XCTAssertEqual(CodeQuestionCenter.readFolderFile("Sources/App.swift", folder: folder.path), source)
     }
 
     func testThePaneGoingAwayClearsTheQuestion() async {
@@ -799,6 +834,49 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertEqual(left, 0)
     }
 
+    /// The tab's list follows the database while it shows: a question
+    /// asked and one deleted reach it with no reload; a hidden tab's list
+    /// stays as it was.
+    func testTheShownListFollowsQuestionsAskedAndDeleted() async throws {
+        let (center, _, _) = makeCenter()
+        let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
+        let empty = await eventually { center.questionLists[project.id]?.isEmpty == true }
+        XCTAssertTrue(empty)
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["First?"] }
+        XCTAssertTrue(listed)
+        await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
+        try await pool.write { db in _ = try CodeQuestionList.delete(db, conversationID: first) }
+        let gone = await eventually { center.questionLists[project.id]?.isEmpty == true }
+        XCTAssertTrue(gone, "a delete reaches the list too")
+
+        watching.cancel()
+        await watching.value
+        guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        XCTAssertEqual(center.questionLists[project.id]?.isEmpty, true, "a list no tab shows is not followed")
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+    }
+
+    /// An action's error (a model change on a question deleted meanwhile)
+    /// stays while new rows reach the observed list.
+    func testAnActionErrorOutlivesTheListUpdates() async throws {
+        let (center, _, _) = makeCenter()
+        let watching = Task { await center.observeQuestionList(workbenchID: project.id) }
+        defer { watching.cancel() }
+        guard case let .started(first) = center.askFromOpenQuickly("First?", project: project) else { return XCTFail("first") }
+        await reply("one", after: 1, engine: center.engine(for: try XCTUnwrap(center.questionRef(first))))
+        try await pool.write { db in _ = try CodeQuestionList.delete(db, conversationID: first) }
+        center.setModelChoice(.init(provider: .codex, model: ""), conversationID: first)
+        let error = try XCTUnwrap(center.questionListErrors[project.id])
+        guard case .started = center.askFromOpenQuickly("Second?", project: project) else { return XCTFail("second") }
+        let listed = await eventually { center.questionLists[project.id]?.map(\.firstQuestion) == ["Second?"] }
+        XCTAssertTrue(listed)
+        XCTAssertEqual(center.questionListErrors[project.id], error, "a list update does not hide it")
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+    }
+
     /// A question reopened after a restart (no context in memory) rebuilds
     /// its context from the file around its line (ruling R41).
     func testAReopenedQuestionRebuildsItsContextFromTheFile() async throws {
@@ -820,6 +898,87 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertTrue(system.contains("print(value)"), system)
         ai.emit(.text("ok"), .turnComplete("ok"), .done)
         ai.finish()
+    }
+
+    /// A deleted workbench takes its questions' state along (PROJ-02): the
+    /// popover closes, the engines stop, the tab forgets the list; another
+    /// workbench's question stays.
+    func testARemovedWorkbenchForgetsItsQuestions() async throws {
+        let (center, _, buffer) = makeCenter()
+        await center.askAI(bufferID: buffer.id, project: project)
+        center.quickAction(.explain, workbenchID: project.id)
+        let popoverID = try XCTUnwrap(center.sessions[project.id]?.conversationID)
+        let popoverKey = try XCTUnwrap(center.engine(workbenchID: project.id)).spec.key
+        await reply("ok", after: 1, engine: center.engine(workbenchID: project.id))
+        let other = Workbench(row: Row(["id": 10, "name": "other", "folder_path": folder.path]))
+        guard case let .started(otherID) = center.askFromOpenQuickly("Theirs?", project: other) else {
+            return XCTFail("other")
+        }
+        await reply("theirs", after: 2, engine: center.engine(for: try XCTUnwrap(center.questionRef(otherID))))
+        center.reloadQuestionList(workbenchID: project.id)
+        center.openQuestion(try XCTUnwrap(center.questionLists[project.id]?.first), project: project)
+
+        center.workbenchRemoved(project.id)
+
+        XCTAssertNil(center.sessions[project.id])
+        XCTAssertEqual(page.closed, 1, "the popover closes")
+        XCTAssertNil(center.questionRef(popoverID))
+        XCTAssertNil(center.embeddedChats?.loaded(popoverKey), "its engine is dropped")
+        XCTAssertNil(center.inspectorQuestions[project.id])
+        XCTAssertNil(center.questionLists[project.id])
+        XCTAssertNotNil(center.questionRef(otherID), "another workbench's question stays")
+    }
+
+    /// Hand to Claude Code from the popover: refused with a beep (the
+    /// popover kept) before the first question and while the answer
+    /// streams; once it is done the popover closes and the sheet gets the
+    /// conversation.
+    func testThePopoversHandOffWaitsForTheAnswerThenClosesIt() async throws {
+        let (center, _, buffer) = makeCenter()
+        let handoff = CodeHandoffCenter {}
+        handoff.dbPool = pool
+        center.handoff = handoff
+        await center.askAI(bufferID: buffer.id, project: project)
+        center.handToClaude(workbenchID: project.id)
+        XCTAssertEqual(beeps, 1, "no question yet")
+        XCTAssertNotNil(center.sessions[project.id])
+
+        center.quickAction(.explain, workbenchID: project.id)
+        let engine = center.engine(workbenchID: project.id)
+        _ = await eventually { ai.calls.count == 1 }
+        center.handToClaude(workbenchID: project.id)
+        XCTAssertEqual(beeps, 2, "the answer is still coming")
+        XCTAssertEqual(page.closed, 0)
+        XCTAssertNotNil(center.sessions[project.id])
+
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+        _ = await eventually { engine?.isStreaming == false }
+        center.handToClaude(workbenchID: project.id)
+        XCTAssertNil(center.sessions[project.id], "the popover closes first")
+        XCTAssertEqual(page.closed, 1)
+        let presented = await eventually { handoff.requests[project.id] != nil }
+        XCTAssertTrue(presented)
+        XCTAssertEqual(beeps, 2)
+    }
+
+    /// The Questions tab's hand-off closes nothing; with no hand-off center
+    /// it beeps.
+    func testTheTabsHandOffClosesNothing() async throws {
+        let (center, _, _) = makeCenter()
+        guard case let .started(id) = center.askFromOpenQuickly("Why?", project: project) else { return XCTFail("start") }
+        let question = try XCTUnwrap(center.questionRef(id))
+        await reply("Because.", after: 1, engine: center.engine(for: question))
+        center.handToClaude(question)
+        XCTAssertEqual(beeps, 1, "no hand-off center")
+        let handoff = CodeHandoffCenter {}
+        handoff.dbPool = pool
+        center.handoff = handoff
+        center.handToClaude(question)
+        let presented = await eventually { handoff.requests[project.id] != nil }
+        XCTAssertTrue(presented)
+        XCTAssertEqual(page.closed, 0)
+        XCTAssertEqual(beeps, 1)
     }
 
     /// Deleting the question the popover shows closes the popover.

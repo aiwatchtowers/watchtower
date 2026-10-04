@@ -50,7 +50,7 @@ package enum CodeQuestionList {
                      WHERE m.conversation_id = c.id AND m.role = 'user'
                      ORDER BY m.id LIMIT 1) AS first_question
             FROM chat_conversations c
-            WHERE c.context_type = ? AND substr(c.context_id, 1, length(?)) = ?
+            WHERE c.context_type = ? AND \(ofWorkbench("c"))
             ORDER BY c.created_at DESC, c.id DESC
             """, arguments: [contextType, prefix, prefix])
         return rows.compactMap { row in
@@ -61,6 +61,22 @@ package enum CodeQuestionList {
                 conversationID: row["id"], path: origin.path, line: origin.line,
                 firstQuestion: row["first_question"], createdAt: Date(timeIntervalSince1970: createdAt))
         }
+    }
+
+    /// How many code questions the workbench has (the delete takes them,
+    /// PROJ-02).
+    package static func count(_ db: Database, workbenchID: Int64) throws -> Int {
+        let prefix = "\(workbenchID):"
+        return try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM chat_conversations c
+            WHERE c.context_type = ? AND \(ofWorkbench("c"))
+            """, arguments: [contextType, prefix, prefix]) ?? 0
+    }
+
+    /// `context_id` starts with the bound `<id>:` (bound twice): matched
+    /// exactly, so workbench 1 never takes 10's.
+    private static func ofWorkbench(_ table: String) -> String {
+        "substr(\(table).context_id, 1, length(?)) = ?"
     }
 
     /// The origin a `context_id` names, or nil when it is not one of

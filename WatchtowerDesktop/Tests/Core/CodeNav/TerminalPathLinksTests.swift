@@ -10,13 +10,17 @@ private final class CountingFileSystem: @unchecked Sendable {
 
     var seam: TerminalPathLinks.FileSystem {
         TerminalPathLinks.FileSystem(
+            entryKind: { [self] path in
+                lock.withLock { paths.append(path) }
+                return TerminalPathLinks.FileSystem.live.entryKind(path)
+            },
+            linkTarget: { [self] path in
+                lock.withLock { paths.append(path) }
+                return TerminalPathLinks.FileSystem.live.linkTarget(path)
+            },
             realPath: { [self] path in
                 lock.withLock { paths.append(path) }
                 return TerminalPathLinks.FileSystem.live.realPath(path)
-            },
-            isRegularFile: { [self] path in
-                lock.withLock { paths.append(path) }
-                return TerminalPathLinks.FileSystem.live.isRegularFile(path)
             }
         )
     }
@@ -78,6 +82,17 @@ final class TerminalPathLinksTests: XCTestCase {
         let link = URL(fileURLWithPath: folder).appendingPathComponent("leak.txt")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root.appendingPathComponent("outside.txt"))
         XCTAssertNil(resolve("leak.txt:1"))
+    }
+
+    /// Board #361: a symlink pointing out of the folder is refused by its
+    /// target's text — the target itself is never looked up.
+    func testSymlinkLeavingTheFolderNeverTouchesItsTarget() throws {
+        let link = URL(fileURLWithPath: folder).appendingPathComponent("leak.txt")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root.appendingPathComponent("outside.txt"))
+        let disk = CountingFileSystem()
+        let realFolder = TerminalPathLinks.FileSystem.live.realPath(folder)
+        XCTAssertNil(TerminalPathLinks.resolve("leak.txt:1", folder: folder, folderRealPath: realFolder, fileSystem: disk.seam))
+        XCTAssertFalse(disk.calls.contains { $0.hasSuffix("outside.txt") }, "\(disk.calls)")
     }
 
     /// Ruling R53: a path outside the folder is refused by its text alone —
@@ -165,5 +180,41 @@ final class TerminalPathLinksTests: XCTestCase {
     func testCandidateOutsideTheLineIsNil() {
         XCTAssertNil(TerminalPathLinks.candidate(inLine: "abc", at: 10))
         XCTAssertNil(TerminalPathLinks.candidate(inLine: "abc", at: -1))
+    }
+
+    // MARK: - Wrapped rows (board #361)
+
+    private func row(_ text: String, _ continuesAbove: Bool = false) -> TerminalPathLinks.Row {
+        .init(text: text, continuesAbove: continuesAbove)
+    }
+
+    /// A path wrapped over two rows is clicked whole, from either row.
+    func testAWrappedPathIsJoinedBack() throws {
+        let rows = [row("$ ls      "), row("see Sourc"), row("es/A.swift", true), row(":12 done  ", true), row("next      ")]
+        let fromFirst = try XCTUnwrap(TerminalPathLinks.logicalLine(rows: rows, row: 1, column: 6))
+        XCTAssertEqual(fromFirst.line, "see Sources/A.swift:12 done")
+        XCTAssertEqual(TerminalPathLinks.candidate(inLine: fromFirst.line, at: fromFirst.column), "Sources/A.swift:12")
+        let fromLast = try XCTUnwrap(TerminalPathLinks.logicalLine(rows: rows, row: 3, column: 1))
+        XCTAssertEqual(fromLast.column, 20)
+        XCTAssertEqual(TerminalPathLinks.candidate(inLine: fromLast.line, at: fromLast.column), "Sources/A.swift:12")
+        let alone = try XCTUnwrap(TerminalPathLinks.logicalLine(rows: rows, row: 4, column: 0))
+        XCTAssertEqual(alone.line, "next", "an unwrapped row is its own line, trailing blanks dropped")
+        XCTAssertNil(TerminalPathLinks.logicalLine(rows: rows, row: 5, column: 0))
+    }
+
+    /// A wide character takes two cells: the column after it still lands
+    /// on the clicked character, and the spill never reaches the path.
+    func testAWideCharacterKeepsTheColumns() throws {
+        let spill = String(TerminalPathLinks.wideSpill)
+        let rows = [row("界\(spill) \"a 界\(spill).txt\":3")]
+        let hit = try XCTUnwrap(TerminalPathLinks.logicalLine(rows: rows, row: 0, column: 6))
+        XCTAssertEqual(TerminalPathLinks.candidate(inLine: hit.line, at: hit.column), "\"a 界.txt\":3")
+    }
+
+    /// Right-to-left text may be drawn reordered: no screen column names a
+    /// character of it, so nothing is looked up.
+    func testALineWithRightToLeftTextIsNoHit() {
+        XCTAssertNil(TerminalPathLinks.logicalLine(rows: [row("שלום a.swift:1")], row: 0, column: 6))
+        XCTAssertNil(TerminalPathLinks.logicalLine(rows: [row("a.swift:1 مرحبا")], row: 0, column: 2))
     }
 }
