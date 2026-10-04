@@ -21,6 +21,7 @@ struct OwnerAskClosedButton: View {
         .help("Show the closed asks")
         .popover(isPresented: $showing, arrowEdge: .trailing) {
             OwnerAskClosedList(vm: vm, projectID: projectID, sessionID: sessionID) { showing = false }
+                .popoverSurface()
         }
     }
 }

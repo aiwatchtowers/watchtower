@@ -650,6 +650,7 @@ struct SidebarView: View {
                 SidebarNextMeetingCard(event: nextEvt, center: appState.meetingRecorderCenter)
                     .frame(width: 240)
                     .padding(.vertical, 8)
+                    .popoverSurface()
             }
         }
 

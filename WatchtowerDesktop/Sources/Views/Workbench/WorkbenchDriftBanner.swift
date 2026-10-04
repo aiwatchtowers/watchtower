@@ -23,7 +23,7 @@ struct WorkbenchDriftBanner: View {
                 }
                 .buttonStyle(.plain)
                 .help("Targets whose status disagrees with their git branch or pull request")
-                .popover(isPresented: $showList, arrowEdge: .bottom) { list(report) }
+                .popover(isPresented: $showList, arrowEdge: .bottom) { list(report).popoverSurface() }
                 if let error { errorIcon(error) }
                 Spacer()
             }

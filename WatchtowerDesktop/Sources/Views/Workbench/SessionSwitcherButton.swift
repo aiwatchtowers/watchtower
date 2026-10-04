@@ -32,6 +32,7 @@ struct SessionSwitcher: View {
                     vm.panelVisible = true
                 }
             )
+            .popoverSurface()
         }
     }
 }
