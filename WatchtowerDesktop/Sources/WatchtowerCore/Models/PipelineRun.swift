@@ -20,8 +20,13 @@ package struct PipelineRun: Decodable, FetchableRecord, Identifiable {
     package let durationSeconds: Double
     package let stepCount: Int
 
-    /// Number of actual AI API calls (steps if available, otherwise 1 per run).
-    package var aiCallCount: Int { max(1, stepCount) }
+    /// Number of actual AI API calls (steps if available, otherwise 1 per run
+    /// that used tokens — a failed run that never reached the model, such as
+    /// a memory vault that would not open, made none).
+    package var aiCallCount: Int {
+        let usedTokens = inputTokens > 0 || outputTokens > 0 || totalApiTokens > 0
+        return usedTokens ? max(1, stepCount) : stepCount
+    }
 
     package enum CodingKeys: String, CodingKey {
         case id, pipeline, source, model, status

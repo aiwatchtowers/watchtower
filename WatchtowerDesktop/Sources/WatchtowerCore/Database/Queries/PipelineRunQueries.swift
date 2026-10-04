@@ -19,6 +19,9 @@ package enum PipelineRunQueries {
         )
     }
 
+    /// The day's runs that used tokens, plus every failed run — a failure
+    /// before the first AI call (a memory vault that would not open) must
+    /// still show up in Usage instead of being filtered out as empty.
     package static func fetchByDate(_ db: Database, on date: Date) throws -> [PipelineRun] {
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: date)
@@ -36,7 +39,8 @@ package enum PipelineRunQueries {
                 LEFT JOIN (SELECT run_id, COUNT(*) AS cnt FROM pipeline_steps GROUP BY run_id) sc ON sc.run_id = pr.id
                 WHERE pr.started_at >= ? AND pr.started_at < ?
                     AND pr.status IN ('done', 'error')
-                    AND (pr.input_tokens > 0 OR pr.output_tokens > 0 OR pr.total_api_tokens > 0)
+                    AND (pr.status = 'error'
+                        OR pr.input_tokens > 0 OR pr.output_tokens > 0 OR pr.total_api_tokens > 0)
                 ORDER BY pr.started_at DESC
                 """,
             arguments: [fmt.string(from: dayStart), fmt.string(from: dayEnd)]
