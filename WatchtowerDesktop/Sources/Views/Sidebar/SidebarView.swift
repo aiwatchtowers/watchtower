@@ -11,18 +11,15 @@ struct SidebarView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openSettings) private var openSettings
 
-    /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
-    /// seeded from UserDefaults (persisted across launches) on first appearance.
+    /// Per-section collapsed flag — the one state both the menu and the icon
+    /// rail draw, so folding a section in either shows it folded in the other.
+    /// Held in @State so toggling re-renders the view; seeded from UserDefaults
+    /// (persisted across launches) on first appearance.
     @State private var collapsedSections: [String: Bool] = Self.loadCollapsedSections()
 
     /// Destination ids the user has hidden into their section's "Hidden" sub-list.
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
     @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
-
-    /// The one section expanded in the icon rail (an accordion), or nil.
-    /// Separate from `collapsedSections` so folding the menu never rewrites
-    /// the expanded menu's own per-section choices; persisted to UserDefaults.
-    @State private var railExpandedSection: String? = UserDefaults.standard.string(forKey: Self.railExpandedKey)
 
     /// Shows the full next-meeting card (with Join) from the rail's compact chip.
     @State private var showsMeetingPopover = false
@@ -35,21 +32,35 @@ struct SidebarView: View {
     /// connects from any screen.
     private let googleAuth = GoogleConnectFlow.shared.calendar
 
-    private static func storageKey(_ section: SidebarSection) -> String {
+    static func storageKey(_ section: SidebarSection) -> String {
         "sidebar.section.\(section.id).collapsed"
     }
 
-    private static func loadCollapsedSections() -> [String: Bool] {
+    /// Every ordered section's collapsed flag: the stored one, else the
+    /// section's default. The rail's former accordion key
+    /// (`sidebar.rail.expandedSection`) is no longer read.
+    static func loadCollapsedSections(from defaults: UserDefaults = .standard) -> [String: Bool] {
         var result: [String: Bool] = [:]
         for section in SidebarSection.ordered {
-            result[section.id] = UserDefaults.standard.object(forKey: storageKey(section)) as? Bool
+            result[section.id] = defaults.object(forKey: storageKey(section)) as? Bool
                 ?? section.collapsedByDefault
         }
         return result
     }
 
+    /// Writes each section whose flag differs between `old` and `new` to
+    /// `defaults`, so a toggle in either mode survives a relaunch.
+    static func persistCollapsedSections(
+        _ new: [String: Bool], replacing old: [String: Bool], to defaults: UserDefaults = .standard
+    ) {
+        for section in SidebarSection.ordered where new[section.id] != old[section.id] {
+            if let value = new[section.id] {
+                defaults.set(value, forKey: storageKey(section))
+            }
+        }
+    }
+
     private static let hiddenItemsKey = "sidebar.hiddenItems"
-    private static let railExpandedKey = "sidebar.rail.expandedSection"
 
     private static func loadHiddenItems() -> Set<String> {
         Set(UserDefaults.standard.stringArray(forKey: hiddenItemsKey) ?? [])
@@ -95,17 +106,14 @@ struct SidebarView: View {
         .padding(.horizontal, compact ? 6 : 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear {
-            googleAuth.checkStatus()
-            expandSectionContainingSelection()
-            expandRailSectionContainingSelection()
-        }
+        .onAppear { googleAuth.checkStatus() }
         .onChange(of: selection) { _, _ in
             googleAuth.checkStatus()
             expandSectionContainingSelection()
-            expandRailSectionContainingSelection()
         }
-        .onChange(of: compact) { _, _ in expandRailSectionContainingSelection() }
+        .onChange(of: collapsedSections) { old, new in
+            Self.persistCollapsedSections(new, replacing: old)
+        }
     }
 
     private var menuBody: some View {
@@ -181,11 +189,11 @@ struct SidebarView: View {
         }
     }
 
-    /// Expands `selection`'s section if it's currently collapsed. Called both
-    /// on first appearance — the initial `selection` can already sit inside a
-    /// collapsed section (the window reopened from the tray via a
-    /// notification route, or the sidebar toggled off and back on with a
-    /// stale selection) — and on every later change.
+    /// Expands `selection`'s section if it's currently collapsed. Called only
+    /// when the selection changes — navigating to a tab tucked inside a folded
+    /// section — never on appearance, a relaunch or a ⌘B fold, so the owner's
+    /// own folds stand; a folded section holding the selection is tinted
+    /// instead (the menu's header label, the rail's group icon).
     private func expandSectionContainingSelection() {
         if let expanded = Self.expandingSection(for: selection, in: collapsedSections) {
             collapsedSections = expanded
@@ -336,8 +344,8 @@ struct SidebarView: View {
     /// A collapsed-sections map with `destination`'s section expanded, or nil
     /// when there's nothing to do (the destination has no section, or its
     /// section is already expanded) — so navigating to a tab tucked inside a
-    /// collapsed section always shows the selection instead of hiding it
-    /// behind a closed header. Pure, for the same testability reason as
+    /// collapsed section shows the selection instead of hiding it behind a
+    /// closed header. Pure, for the same testability reason as
     /// `sectionBadgeCount` above.
     static func expandingSection(
         for destination: SidebarDestination,
@@ -351,14 +359,20 @@ struct SidebarView: View {
         return updated
     }
 
+    /// The collapsed-sections map after clicking `section`'s header (menu) or
+    /// group icon (rail): only that section flips, the others keep their state.
+    static func togglingSection(_ section: SidebarSection, in collapsed: [String: Bool]) -> [String: Bool] {
+        var updated = collapsed
+        updated[section.id] = !(collapsed[section.id] ?? section.collapsedByDefault)
+        return updated
+    }
+
     private func isCollapsed(_ section: SidebarSection) -> Bool {
         collapsedSections[section.id] ?? section.collapsedByDefault
     }
 
     private func toggleSection(_ section: SidebarSection) {
-        let newValue = !isCollapsed(section)
-        collapsedSections[section.id] = newValue
-        UserDefaults.standard.set(newValue, forKey: Self.storageKey(section))
+        collapsedSections = Self.togglingSection(section, in: collapsedSections)
     }
 
     @ViewBuilder
@@ -375,8 +389,10 @@ struct SidebarView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
                         .frame(width: 12)
+                    // A folded section holding the selection keeps an accent
+                    // tint, so the current tab is never invisible.
                     Text(section.title)
-                        .sidebarSectionLabel()
+                        .sidebarSectionLabel(highlighted: collapsed && section.items.contains(selection))
                     Spacer()
                     let badge = sectionBadgeCount(section)
                     if collapsed, badge > 0 {
@@ -459,32 +475,6 @@ struct SidebarView: View {
     /// A rail icon's tooltip: the title, plus " · <count>" when there is one.
     static func railHelp(title: String, count: Int) -> String {
         count > 0 ? "\(title) · \(count)" : title
-    }
-
-    // MARK: - Icon rail accordion
-
-    /// The rail's expanded section after clicking `section`'s group icon:
-    /// clicking the open one closes it, clicking another opens it and closes
-    /// the rest — at most one section is expanded in the rail.
-    static func railSection(afterToggling section: SidebarSection, current: String?) -> String? {
-        current == section.id ? nil : section.id
-    }
-
-    /// The rail's expanded section for `destination`: its own section when it
-    /// has one (the selection is never tucked away in a closed group), else
-    /// whatever was expanded — the rail twin of `expandingSection`.
-    static func railSection(for destination: SidebarDestination, current: String?) -> String? {
-        SidebarSection.containing(destination)?.id ?? current
-    }
-
-    private func setRailExpandedSection(_ id: String?) {
-        guard id != railExpandedSection else { return }
-        railExpandedSection = id
-        UserDefaults.standard.set(id, forKey: Self.railExpandedKey)
-    }
-
-    private func expandRailSectionContainingSelection() {
-        setRailExpandedSection(Self.railSection(for: selection, current: railExpandedSection))
     }
 
     // MARK: - Icon rail
@@ -572,13 +562,13 @@ struct SidebarView: View {
             in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures, connected: connectedSources
         )
         if !items.isEmpty {
-            let expanded = railExpandedSection == section.id
+            let expanded = !isCollapsed(section)
             let badge = sectionBadgeCount(section)
             railSeparator
             VStack(spacing: 2) {
                 Button {
                     withAnimation(.easeInOut(duration: 0.15)) {
-                        setRailExpandedSection(Self.railSection(afterToggling: section, current: railExpandedSection))
+                        toggleSection(section)
                     }
                 } label: {
                     // A closed group holding the selection keeps an accent
@@ -659,8 +649,9 @@ struct SidebarView: View {
 extension Text {
     /// The sidebar's section labels (FOCUS, EXECUTION, TOOLS), also used by
     /// the Workbench panel's SESSIONS label so the two never drift.
-    func sidebarSectionLabel() -> some View {
+    /// `highlighted` draws it in the accent colour instead.
+    func sidebarSectionLabel(highlighted: Bool = false) -> some View {
         font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(highlighted ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.tertiary))
     }
 }
