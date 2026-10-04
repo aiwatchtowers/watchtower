@@ -189,7 +189,7 @@ struct FeatureCustomizeView: View {
     }
 
     /// Read from a snapshot taken at the first successful load, not from the
-    /// live `state`: the tag means "this ships off by default", not "is
+    /// live `state`: the tag means "off at the screen's first load", not "is
     /// currently off" — a later reload (Goals' Continue applying the
     /// selection) reports what the owner switched off as `disabled` too.
     private func isExperimental(_ feature: FeatureInfo) -> Bool {
