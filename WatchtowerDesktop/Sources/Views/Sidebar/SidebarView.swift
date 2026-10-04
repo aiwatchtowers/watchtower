@@ -21,6 +21,11 @@ struct SidebarView: View {
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
     @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
 
+    /// The last selection a mounted sidebar saw, for this process only: nil
+    /// until the first appearance, so a cold launch never counts as
+    /// navigation (see `selectionChangedWhileOffScreen`).
+    private static var lastSeenSelection: SidebarDestination?
+
     /// Shows the full next-meeting card (with Join) from the rail's compact chip.
     @State private var showsMeetingPopover = false
 
@@ -106,10 +111,18 @@ struct SidebarView: View {
         .padding(.horizontal, compact ? 6 : 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { googleAuth.checkStatus() }
-        .onChange(of: selection) { _, _ in
+        .onAppear {
+            googleAuth.checkStatus()
+            if Self.selectionChangedWhileOffScreen(selection, lastSeen: Self.lastSeenSelection) {
+                expandSectionContainingSelection()
+            }
+            Self.lastSeenSelection = selection
+        }
+        .onDisappear { Self.lastSeenSelection = selection }
+        .onChange(of: selection) { _, new in
             googleAuth.checkStatus()
             expandSectionContainingSelection()
+            Self.lastSeenSelection = new
         }
         .onChange(of: collapsedSections) { old, new in
             Self.persistCollapsedSections(new, replacing: old)
@@ -191,8 +204,9 @@ struct SidebarView: View {
 
     /// Expands `selection`'s section if it's currently collapsed. Called only
     /// when the selection changes — navigating to a tab tucked inside a folded
-    /// section — never on appearance, a relaunch or a ⌘B fold, so the owner's
-    /// own folds stand; a folded section holding the selection is tinted
+    /// section, also while the sidebar was off screen (a notification routed
+    /// with the window closed) — never on a cold launch, a reopen on the same
+    /// tab or a ⌘B fold, so the owner's own folds stand; a folded section holding the selection is tinted
     /// instead (the menu's header label, the rail's group icon).
     private func expandSectionContainingSelection() {
         if let expanded = Self.expandingSection(for: selection, in: collapsedSections) {
@@ -365,6 +379,17 @@ struct SidebarView: View {
         var updated = collapsed
         updated[section.id] = !(collapsed[section.id] ?? section.collapsedByDefault)
         return updated
+    }
+
+    /// Whether the sidebar appears on a selection that changed while it was
+    /// off screen — a notification, link or shortcut routed while the window
+    /// was closed — which counts as navigation. `lastSeen` is nil on a cold
+    /// launch: the persisted folds stand.
+    static func selectionChangedWhileOffScreen(
+        _ selection: SidebarDestination, lastSeen: SidebarDestination?
+    ) -> Bool {
+        guard let lastSeen else { return false }
+        return lastSeen != selection
     }
 
     private func isCollapsed(_ section: SidebarSection) -> Bool {

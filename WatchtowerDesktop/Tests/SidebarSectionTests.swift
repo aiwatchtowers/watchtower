@@ -95,6 +95,21 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertEqual(updated, ["today": true, "delivery": false, "analytics": false])
     }
 
+    /// A cold launch has no last-seen selection: the persisted folds stand.
+    func testColdLaunchIsNotNavigation() {
+        XCTAssertFalse(SidebarView.selectionChangedWhileOffScreen(.digests, lastSeen: nil))
+    }
+
+    /// A tab switched while the window was closed (a notification route)
+    /// counts as navigation when the sidebar reappears.
+    func testReopenAfterTheSelectionChangedElsewhereIsNavigation() {
+        XCTAssertTrue(SidebarView.selectionChangedWhileOffScreen(.digests, lastSeen: .inbox))
+    }
+
+    func testReopenOnTheSameTabIsNotNavigation() {
+        XCTAssertFalse(SidebarView.selectionChangedWhileOffScreen(.digests, lastSeen: .digests))
+    }
+
     func testExpandingSectionNilWhenAlreadyExpanded() {
         XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: false]))
     }
