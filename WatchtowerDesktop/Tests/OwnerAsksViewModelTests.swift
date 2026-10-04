@@ -12,6 +12,7 @@ private final class ProbedInputSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (() -> Void)?
     var bracketedPasteMode = true
     private(set) var inputs: [[UInt8]] = []
     var onInput: (() -> Void)?
@@ -155,7 +156,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id), "the keyboard moves into it")
         XCTAssertTrue(vm.asks.drafts.askDraft(for: askID).isEmpty, "the answer is written; the draft goes")
         XCTAssertEqual(vm.asks.openAsks[p], [], "the answered ask leaves the open list")
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.sentNote)
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerTypedNote)
+        XCTAssertEqual(center.answerHints[s.id], .sent, "the pane says to press Return")
     }
 
     /// PROJ-12 (spec 2026-10-03 Part 9, its "PROJ-11"): the answer is
@@ -180,7 +182,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertFalse(typed[0].contains(0x0A))
     }
 
-    func testCopiedShowsTheClipboardHint() async throws {
+    func testCopiedShowsTheCopiedAnswerHint() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         processes[0].bracketedPasteMode = false
@@ -194,8 +196,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(delivery, .copied)
         XCTAssertTrue(typed.isEmpty, "no keystrokes reach the terminal")
         XCTAssertEqual(copied.count, 1)
-        XCTAssertTrue(center.clipboardHints.contains(s.id), "the session's pane shows the hint")
-        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.copiedNote)
+        XCTAssertEqual(center.answerHints[s.id], .copied, "the session's pane says to paste, then press Return")
+        XCTAssertFalse(center.clipboardHints.contains(s.id), "in place of the generic clipboard hint")
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerCopiedNote)
         XCTAssertNil(vm.asks.drawerAskIDs[p])
         XCTAssertNotNil(center.keyboardFocusSerial(for: s.id))
     }
@@ -217,6 +220,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.noSessionNote)
         XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "nothing went to a terminal: the drawer stays")
         XCTAssertNil(center.keyboardFocusSerial(for: s.id))
+        XCTAssertNil(center.answerHints[s.id], "no Return hint for a line that went nowhere")
     }
 
     func testAnAskFiledOutsideTheAppIsWrittenAndNothingIsTyped() async throws {
@@ -370,6 +374,236 @@ final class OwnerAsksViewModelTests: XCTestCase {
         await waitUntil { vm.asks.openAsks[p] != nil }
 
         XCTAssertEqual(vm.asks.openAsks[p]?.map(\.id), [askID])
+    }
+
+    // MARK: - A new ask opens by itself (board #364)
+
+    /// A second open ask filed from `sessionID`, newer than the seeded one.
+    private func fileAnotherAsk(project: Int64, sessionID: Int64?) async throws -> Int64 {
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
+        return try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: project, sessionID: sessionID, payload: Self.questions, createdAt: created)
+        }
+    }
+
+    /// `sessionID`'s pane on screen, measured by its view with room for the
+    /// drawer beside the terminal (`WorkbenchSessionView`'s geometry hook).
+    private func showPane(_ vm: WorkbenchesViewModel, _ sessionID: Int64, project: Int64) {
+        vm.layout.show(.session(sessionID))
+        vm.sessionPaneMeasured(sessionID, projectID: project, fits: true)
+    }
+
+    /// The board on screen; the session pane's view goes (`onDisappear`).
+    private func showBoard(_ vm: WorkbenchesViewModel, leaving sessionID: Int64) {
+        vm.layout.show(.board)
+        vm.asks.setRoomBeside(false, sessionID: sessionID)
+    }
+
+    func testANewAskOpensItsDrawerWhenItsSessionIsOnScreenWithoutTakingTheKeyboard() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+        vm.asks.drawerExpanded = true
+
+        await vm.asks.load(projectID: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "no Open click needed")
+        XCTAssertFalse(vm.asks.drawerExpanded, "beside the terminal, never covering it")
+        XCTAssertNil(center.keyboardFocusRequest, "the keyboard stays where it was")
+        XCTAssertFalse(vm.isObscured(sessionID: s.id, projectID: p))
+    }
+
+    func testANewAskOpensWhenTheOwnerGoesToItsSession() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.board)
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "its session is not on screen")
+
+        showPane(vm, s.id, project: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    func testAnAskOfAWorkbenchNotOnScreenOpensWhenTheOwnerSwitchesBack() async throws {
+        let (p, s, askID) = try await seed()
+        let otherFolder = folder.appendingPathComponent("other").path
+        let other = try await pool.write { try TestDatabase.insertWorkbench($0, folder: otherFolder) }
+        let vm = makeVM()
+        var onScreen = WorkspaceLayout.default
+        onScreen.show(.session(s.id))
+        vm.setLayout(onScreen, projectID: p)
+        vm.asks.setRoomBeside(true, sessionID: s.id)
+        vm.selectedWorkbenchID = other
+
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "a workbench not on screen opens nothing")
+
+        vm.selectedWorkbenchID = p
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    /// Another session's new ask never replaces the drawer the owner has open.
+    func testANewAskNeverReplacesAnOpenDrawer() async throws {
+        let (p, s, askID) = try await seed()
+        let acme = folder.path
+        let second = try await pool.write { d in
+            try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "zsh 2", folderPath: acme))
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(second.id))
+        vm.layout.split(with: .session(s.id))
+        vm.sessionPaneMeasured(second.id, projectID: p, fits: true)
+        vm.sessionPaneMeasured(s.id, projectID: p, fits: true)
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        vm.asks.drawerExpanded = true
+
+        // Without the guard the drawer would be opened again, collapsed.
+        _ = try await fileAnotherAsk(project: p, sessionID: second.id)
+        await vm.asks.refreshIfChanged(projectID: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        XCTAssertTrue(vm.asks.drawerExpanded, "the open drawer is left as the owner set it")
+    }
+
+    /// A pane too narrow for the drawer beside its terminal — or not
+    /// measured yet — would be covered while it may hold the keyboard: its
+    /// ask waits behind the banner until the pane measures itself with room.
+    func testAPaneOpensNothingUntilItIsMeasuredWithRoom() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "not measured yet")
+
+        vm.sessionPaneMeasured(s.id, projectID: p, fits: false)
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "too narrow")
+
+        vm.sessionPaneMeasured(s.id, projectID: p, fits: true)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "it widened")
+        XCTAssertFalse(OwnerAskDrawerLayout.fitsBeside(total: 519))
+        XCTAssertTrue(OwnerAskDrawerLayout.fitsBeside(total: 520))
+    }
+
+    /// Closing a closed ask looked at from a closed list dismisses nothing.
+    func testClosingAClosedAskLeavesTheOpenOnesNew() async throws {
+        let (p, s, askID) = try await seed()
+        let answer = #"{"verdict":"","answers":[{"id":"a","labels":["No"],"other":""}],"checklist":[],"comments":[],"note":""}"#
+        let answered = try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions, status: "answered", answer: answer)
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.board)
+        await vm.asks.load(projectID: p)
+        let looked = await vm.asks.lookUp(askID: answered, projectID: p)
+        let closed = try XCTUnwrap(looked)
+        vm.asks.openDrawer(closed)
+
+        vm.asks.closeDrawer(projectID: p)
+        showPane(vm, s.id, project: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    /// Later/× close the drawer for good: the next poll leaves it closed,
+    /// leaving and coming back too; only a new ask opens it again, on the
+    /// session's oldest ask ("k of N").
+    func testAClosedDrawerStaysClosedUntilANewAskArrives() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+
+        vm.asks.closeDrawer(projectID: p)
+        let unchanged = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertFalse(unchanged)
+        await vm.asks.load(projectID: p)
+        showBoard(vm, leaving: s.id)
+        showPane(vm, s.id, project: p)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "a closed drawer never re-opens by itself")
+
+        let newer = try await fileAnotherAsk(project: p, sessionID: s.id)
+        let changed = await vm.asks.refreshIfChanged(projectID: p)
+        XCTAssertTrue(changed)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID, "the new ask opens the drawer on the session's first ask")
+        XCTAssertEqual(vm.asks.stack(projectID: p).askPosition(of: newer), 2)
+    }
+
+    /// A drawer that went because its session left the screen comes back
+    /// with it; the closed state lives on the AppState-owned VM.
+    func testADrawerHiddenByNavigationComesBackWithItsSession() async throws {
+        let (p, s, askID) = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+        await vm.asks.load(projectID: p)
+
+        showBoard(vm, leaving: s.id)
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+        vm.selectedWorkbenchID = nil
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+    }
+
+    func testAnAnsweredSessionsOtherAsksDoNotPopOverItsReturnHint() async throws {
+        let (p, s, askID) = try await seed()
+        _ = try await fileAnotherAsk(project: p, sessionID: s.id)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+        let ask = try await openAsk(vm, project: p, id: askID)
+        XCTAssertEqual(vm.asks.drawerAskIDs[p], askID)
+        pick(vm, askID)
+
+        await vm.asks.answer(ask)
+
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "the terminal takes over; the banner names the other ask")
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+    }
+
+    func testAnAskFiledOutsideTheAppNeverOpensByItself() async throws {
+        let (p, s, _) = try await seed(session: false)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+
+        await vm.asks.load(projectID: p)
+
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+    }
+
+    // MARK: - The Return hint (board #364)
+
+    /// PROJ-12 stays: the hint only says to press Return; the owner's own
+    /// next input in the session takes it away.
+    func testTheReturnHintGoesWithTheOwnersNextInput() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+        await vm.asks.answer(ask)
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+        XCTAssertFalse(typed.joined().contains(0x0D), "still never submitted")
+
+        processes[0].onOwnerInput?()
+
+        XCTAssertNil(center.answerHints[s.id])
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {

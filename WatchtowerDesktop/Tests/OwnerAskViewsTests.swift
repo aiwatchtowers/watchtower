@@ -144,10 +144,10 @@ final class OwnerAskViewsTests: XCTestCase {
         vm.reveal(WorkbenchRoute(projectID: s.project, pane: .terminal, subjectID: s.second, askID: s.secondAsk + 100))
 
         await waitUntil { self.shows(vm, session: s.second, project: s.project) }
-        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+        XCTAssertNotEqual(vm.asks.drawerAskIDs[s.project], s.secondAsk + 100, "no drawer on an ask that is gone")
     }
 
-    func testTheDrawerClosesWhenItsSessionLeavesTheScreen() async throws {
+    func testTheDrawerLeavesWithItsSessionAndTheNextSessionsAskOpens() async throws {
         let s = try await seed()
         let vm = makeVM()
         await vm.showAsk(s.firstAsk, projectID: s.project)
@@ -155,9 +155,11 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk)
 
         await vm.revealTerminal(projectID: s.project, sessionID: s.second)
+        vm.sessionPaneMeasured(s.second, projectID: s.project, fits: true)
 
         XCTAssertFalse(shows(vm, session: s.first, project: s.project))
-        XCTAssertNil(vm.asks.drawerAskIDs[s.project], "no drawer, no highlighted row, for a session off screen")
+        XCTAssertNotEqual(vm.asks.drawerAskIDs[s.project], s.firstAsk, "no drawer, no highlighted row, for a session off screen")
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.secondAsk, "the session put on screen opens its own ask (board #364)")
         XCTAssertEqual(vm.asks.drafts.askDraft(for: s.firstAsk).note, "half done", "the draft stays")
     }
 

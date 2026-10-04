@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// The top of the session panel (spec 2026-10-03 Part 8): "Waiting for you
 /// (N)", every open ask of the workbench oldest first — kind, title,
-/// session and age. A click puts the ask's session on screen and opens the
+/// next step, session and age. A click puts the ask's session on screen and opens the
 /// drawer on it (`WorkbenchesViewModel.showAsk`). The closed asks filed
 /// from outside the app have no session row: their "N closed" sits here.
 struct OwnerAskStackSection: View {
@@ -68,7 +68,8 @@ struct OwnerAskStackSection: View {
     }
 }
 
-/// One waiting ask: its kind's icon, title, then session · age.
+/// One waiting ask: its kind's icon, title, then its next step (board
+/// #366, "Answer 2 questions") · session · age.
 private struct OwnerAskStackRow: View {
     let ask: OwnerAsk
     let sessionTitle: String
@@ -84,7 +85,7 @@ private struct OwnerAskStackRow: View {
                     .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(ask.title).lineLimit(1).truncationMode(.tail)
-                    Text(caption)
+                    Text("\(Text(OwnerAskPresentation.nextStep(for: ask)).foregroundStyle(Color.accentColor)) · \(caption)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
