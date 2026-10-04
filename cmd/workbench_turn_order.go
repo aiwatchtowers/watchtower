@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 )
@@ -46,9 +47,11 @@ type transcriptBlock struct {
 // toolCallTurn places tool call toolUseID in the transcript at path against
 // turnEnd, the transcript's size when the Stop hook let a turn end. The
 // transcript is append-only JSON lines, and Claude Code writes a tool call's
-// tool_use entry before it runs the tool, so a call whose entries all start
-// before turnEnd ran in the turn that ended there. The first entry naming the
-// call decides.
+// tool_use entry before it runs the tool, so a call whose tool_use starts
+// before turnEnd ran in the turn that ended there. It reads forward from
+// turnEnd first (a later turn's call, the common case, sits within a few
+// kilobytes; a tool_result there whose tool_use is not is the ended turn's)
+// and only then back over the ended turn's tail.
 func toolCallTurn(path, toolUseID string, turnEnd int64) toolCallPlace {
 	if path == "" || toolUseID == "" || turnEnd < 0 {
 		return toolCallUnknown
@@ -62,50 +65,82 @@ func toolCallTurn(path, toolUseID string, turnEnd int64) toolCallPlace {
 	if err != nil || info.Size() < turnEnd {
 		return toolCallUnknown // not the transcript the Stop measured
 	}
-	start := max(turnEnd-transcriptLookback, 0)
-	if _, err := f.Seek(start, io.SeekStart); err != nil {
+	switch entry, ok := findToolCall(f, toolUseID, turnEnd, turnEnd+transcriptLookahead); {
+	case !ok:
 		return toolCallUnknown
+	case entry == toolUseEntry:
+		return toolCallAfterStop
+	case entry == toolResultEntry:
+		return toolCallBeforeStop
 	}
-	r := bufio.NewReader(io.LimitReader(f, turnEnd-start+transcriptLookahead))
+	if entry, ok := findToolCall(f, toolUseID, max(turnEnd-transcriptLookback, 0), turnEnd); ok && entry != noToolEntry {
+		return toolCallBeforeStop
+	}
+	return toolCallUnknown // not found on either side, or a read failed
+}
+
+// toolEntry is the kind of transcript entry that names a tool call.
+type toolEntry int
+
+const (
+	noToolEntry toolEntry = iota
+	toolUseEntry
+	toolResultEntry
+)
+
+// findToolCall finds the first whole line in [from, to) of f that is
+// toolUseID's tool_use or tool_result entry. A span opened mid-line skips
+// that line's tail, and a line cut off at to does not parse. ok is false when
+// a read failed.
+func findToolCall(f *os.File, toolUseID string, from, to int64) (entry toolEntry, ok bool) {
+	partial := false
+	if from > 0 {
+		var prev [1]byte
+		if _, err := f.ReadAt(prev[:], from-1); err != nil {
+			return noToolEntry, false
+		}
+		partial = prev[0] != '\n'
+	}
+	r := bufio.NewReader(io.NewSectionReader(f, from, to-from))
 	id := []byte(toolUseID)
-	pos := start
-	partial := start > 0 // a span opened mid-line starts with that line's tail
 	for {
 		line, err := r.ReadBytes('\n')
-		lineStart := pos
-		pos += int64(len(line))
-		if !partial && bytes.Contains(line, id) && namesToolCall(line, toolUseID) {
-			if lineStart < turnEnd {
-				return toolCallBeforeStop
+		if !partial && bytes.Contains(line, id) {
+			if e := toolCallEntry(line, toolUseID); e != noToolEntry {
+				return e, true
 			}
-			return toolCallAfterStop
 		}
 		partial = false
+		if errors.Is(err, io.EOF) {
+			return noToolEntry, true
+		}
 		if err != nil {
-			return toolCallUnknown // the span ended without the call, or a read failed
+			return noToolEntry, false
 		}
 	}
 }
 
-// namesToolCall reports whether one transcript line is toolUseID's tool_use
-// or tool_result entry. Other lines may quote the id (a hook's attachment, a
+// toolCallEntry says whether one transcript line is toolUseID's tool_use or
+// tool_result entry. Other lines may quote the id (a hook's attachment, a
 // message text) and say nothing about when the call ran.
-func namesToolCall(line []byte, toolUseID string) bool {
+func toolCallEntry(line []byte, toolUseID string) toolEntry {
 	var entry transcriptLine
 	if json.Unmarshal(line, &entry) != nil {
-		return false
+		return noToolEntry
 	}
 	var blocks []transcriptBlock
 	if json.Unmarshal(entry.Message.Content, &blocks) != nil {
-		return false // a plain-text message
+		return noToolEntry // a plain-text message
 	}
 	for _, b := range blocks {
-		if entry.Type == "assistant" && b.Type == "tool_use" && b.ID == toolUseID ||
-			entry.Type == "user" && b.Type == "tool_result" && b.ToolUseID == toolUseID {
-			return true
+		switch {
+		case entry.Type == "assistant" && b.Type == "tool_use" && b.ID == toolUseID:
+			return toolUseEntry
+		case entry.Type == "user" && b.Type == "tool_result" && b.ToolUseID == toolUseID:
+			return toolResultEntry
 		}
 	}
-	return false
+	return noToolEntry
 }
 
 // transcriptSize is the transcript's size in bytes, the turn end a Stop

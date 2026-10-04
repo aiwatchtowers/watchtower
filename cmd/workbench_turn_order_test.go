@@ -82,21 +82,35 @@ func TestToolCallTurn(t *testing.T) {
 // bound is unknown, and a span opened mid-line never reads that line's tail
 // as an entry.
 func TestToolCallTurn_BoundedSpan(t *testing.T) {
-	early := transcriptToolUse("toolu_EARLY")
-	path := writeTranscript(t, early, transcriptToolUse("toolu_A"))
+	head, early := transcriptPrompt("go"), transcriptToolUse("toolu_EARLY")
+	path := writeTranscript(t, head, early, transcriptToolUse("toolu_A"))
 	end, _ := transcriptSize(path)
 	appendTranscript(t, path, transcriptToolUse("toolu_B"), transcriptToolUse("toolu_FAR"))
 
 	origBack, origAhead := transcriptLookback, transcriptLookahead
 	t.Cleanup(func() { transcriptLookback, transcriptLookahead = origBack, origAhead })
-	// The span starts inside the first line and stops inside the last.
-	transcriptLookback = end - int64(len(early)) + 10
+	// The span starts inside the EARLY line and stops inside the FAR one.
+	transcriptLookback = end - int64(len(head)) - 10
 	transcriptLookahead = int64(len(transcriptToolUse("toolu_B"))) + 10
 
 	assert.Equal(t, toolCallUnknown, toolCallTurn(path, "toolu_EARLY", end), "a line the span opens inside")
 	assert.Equal(t, toolCallBeforeStop, toolCallTurn(path, "toolu_A", end))
 	assert.Equal(t, toolCallAfterStop, toolCallTurn(path, "toolu_B", end))
 	assert.Equal(t, toolCallUnknown, toolCallTurn(path, "toolu_FAR", end), "a line the span cuts off")
+
+	transcriptLookback = end - int64(len(head))
+	assert.Equal(t, toolCallBeforeStop, toolCallTurn(path, "toolu_EARLY", end), "a span opened on a line's first byte")
+}
+
+// The forward read decides a later turn's call, and a tool_result after the
+// turn end whose tool_use sits before it is the ended turn's.
+func TestToolCallTurn_ResultAfterTheStop(t *testing.T) {
+	path := writeTranscript(t, transcriptToolUse("toolu_A"))
+	end, _ := transcriptSize(path)
+	appendTranscript(t, path, transcriptToolResult("toolu_A"), transcriptToolUse("toolu_B"))
+
+	assert.Equal(t, toolCallBeforeStop, toolCallTurn(path, "toolu_A", end))
+	assert.Equal(t, toolCallAfterStop, toolCallTurn(path, "toolu_B", end))
 }
 
 func TestTranscriptSize(t *testing.T) {

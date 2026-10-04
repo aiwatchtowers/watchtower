@@ -95,9 +95,10 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 // or a resume that switched conversations, so the Desktop's next relaunch
 // resumes it. The same column write as the Desktop's
 // `TerminalSessionQueries.replaceClaudeSessionID`; false when the row is not
-// that project's claude row or already holds sessionID.
+// that project's claude row or already holds sessionID. The new conversation
+// has its own transcript, so the turn order measured in the old one goes.
 func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
-	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?
+	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_turn_end = NULL, agent_tool_run = 0
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id IS NOT ?`,
 		sessionID, id, projectID, sessionID)
 	if err != nil {
@@ -117,15 +118,16 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 // keep the old run's time, which the Desktop does not trust. agent_state_at
 // becomes at, not NULL, so a late async hook of the previous run (stamped
 // earlier) still cannot land. A new run starts with no error and no turn
-// order either. Same
+// order either (the Desktop's Start fresh moves the id without resetting it,
+// so a row with no state but a turn order is cleared too). Same
 // row guards as SetTerminalAgentState; false
-// when there was no state to clear or a guard held it back.
+// when there was nothing to clear or a guard held it back.
 func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
-		  AND agent_state IS NOT NULL
+		  AND (agent_state IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0)
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, id, workbenchID, sessionID, stamp)
 	if err != nil {

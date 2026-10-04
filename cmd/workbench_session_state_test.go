@@ -949,3 +949,55 @@ func TestSessionState_UnplacedToolResultFallsBackToTime(t *testing.T) {
 		assert.Equal(t, "working", storedAgentState(t, database, row), payload)
 	}
 }
+
+// A folder without the state hooks gets no turn end either, not even the
+// one recorded before the drift check (nothing would read it; the sync Stop
+// hook must not take the write lock for it).
+func TestSessionState_StopHookWithoutStateHooksRecordsNoTurnEnd(t *testing.T) {
+	for _, branch := range []string{"open", "merged"} {
+		database, pid, row := stopStateFixture(t, branch)
+		_, err := devpack.RemoveStateHooks(mustFolder(t, database, pid), pid)
+		require.NoError(t, err)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+
+		_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+		require.Empty(t, errOut)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.False(t, s.TurnEnd.Valid, branch)
+	}
+}
+
+// Board #368: a conversation switch (/clear, a fork) starts a new transcript,
+// so the old one's turn end goes with the old id: the new conversation's
+// first tool result after a granted permission records "working" even when
+// its call sits at an offset below the old turn end.
+func TestSessionState_ConversationSwitchDropsTheTurnEnd(t *testing.T) {
+	const newID = "22222222-3333-4444-8555-666666666666"
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	old := writeTranscript(t, transcriptPrompt("go"), transcriptToolUse("toolu_OLD"), transcriptToolResult("toolu_OLD"),
+		transcriptReply("done"))
+	_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(old))
+	require.Empty(t, errOut)
+	oldEnd, _ := transcriptSize(old)
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	require.Equal(t, oldEnd, s.TurnEnd.Int64)
+
+	moved, err := database.SetTerminalClaudeSessionID(row, pid, newID)
+	require.NoError(t, err)
+	require.True(t, moved)
+	fresh := writeTranscript(t, transcriptToolUse("toolu_NEW"), transcriptToolResult("toolu_NEW"),
+		transcriptReply(strings.Repeat("x", int(oldEnd))))
+	_, _, err = runSessionState(t, pid, strings.NewReader(`{"session_id":"`+newID+`","hook_event_name":"Notification","notification_type":"permission_prompt"}`))
+	require.NoError(t, err)
+	require.Equal(t, "approval", storedAgentState(t, database, row))
+
+	_, _, err = runSessionState(t, pid, strings.NewReader(`{"session_id":"`+newID+`","transcript_path":"`+fresh+
+		`","hook_event_name":"PostToolUse","tool_use_id":"toolu_NEW"}`))
+	require.NoError(t, err)
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+}

@@ -252,19 +252,47 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 
 // markStopTurnEnd records the turn end before the drift check, which can
 // take seconds: a tool result of the ending turn whose async hook starts in
-// the meantime then already finds its call before it (board #368). Best
+// the meantime then already finds its call before it (board #368). Only a
+// folder with the session state hooks gets it (nothing else reads it). Best
 // effort and silent: the state write after the check records it again and
-// reports a failure. Harmless in a folder without the state hooks (no
-// PostToolUse reads it) and when the check blocks the stop (the continued
+// reports a failure. Harmless when the check blocks the stop (the continued
 // turn's calls come after it).
 func markStopTurnEnd(database *db.DB, workbenchID int64, in stopHookInput) {
 	rowID, ok, err := terminalSessionRowID()
 	if !ok || err != nil || in.SessionID == "" {
 		return
 	}
-	if end, ok := transcriptSize(in.TranscriptPath); ok {
-		_, _ = database.SetTerminalTurnEnd(rowID, workbenchID, in.SessionID, end)
+	if has, err := workbenchHasStateHooks(database, workbenchID); err != nil || !has {
+		return
 	}
+	_ = recordStopTurnEnd(database, rowID, workbenchID, in)
+}
+
+// recordStopTurnEnd stores the transcript's size as the row's turn end. Read
+// first, under the session record's short lock wait: the sync Stop hook
+// holds the owner's turn end, and the common case (the end already stored by
+// markStopTurnEnd) must not wait for the write lock. A transcript that cannot
+// be read leaves the last turn end.
+func recordStopTurnEnd(database *db.DB, rowID, workbenchID int64, in stopHookInput) error {
+	end, ok := transcriptSize(in.TranscriptPath)
+	if !ok {
+		return nil
+	}
+	row, err := database.GetTerminalSession(rowID)
+	if errors.Is(err, db.ErrTerminalSessionNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if row.TurnEnd.Valid && row.TurnEnd.Int64 == end {
+		return nil
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	_, err = database.SetTerminalTurnEnd(rowID, workbenchID, in.SessionID, end)
+	return err
 }
 
 // stopHookDrift runs the drift check and prints the block JSON when git
@@ -341,7 +369,7 @@ func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, 
 // without them nothing records "working", so "waiting" would stick after the
 // first turn until Repair (board #340). The turn end goes first, also when
 // the state write is a repeat (a turn without a prompt over a stored
-// "waiting"); a transcript that cannot be read leaves the last one.
+// "waiting").
 func writeStopAgentState(database *db.DB, rowID, workbenchID int64, in stopHookInput, at time.Time) error {
 	if database == nil {
 		_, opened, err := openJiraCmdDB()
@@ -354,10 +382,8 @@ func writeStopAgentState(database *db.DB, rowID, workbenchID int64, in stopHookI
 	if has, err := workbenchHasStateHooks(database, workbenchID); err != nil || !has {
 		return err
 	}
-	if end, ok := transcriptSize(in.TranscriptPath); ok {
-		if _, err := database.SetTerminalTurnEnd(rowID, workbenchID, in.SessionID, end); err != nil {
-			return err
-		}
+	if err := recordStopTurnEnd(database, rowID, workbenchID, in); err != nil {
+		return err
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, hookTurn{stop: true})

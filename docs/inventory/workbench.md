@@ -676,7 +676,8 @@ never rewrite an unchanged state. Since 2026-10-04 (board #368) a turn's
 Stop and its main-thread tool results are ordered by the turn, not by when
 their hook processes started: the Stop hook records the transcript's size
 (`agent_turn_end`) before its drift check and again with its `waiting` (also
-over a stored `waiting`); a main-thread `PostToolUse` whose `tool_use_id`
+over a stored `waiting`), and a conversation switch drops it with the old
+transcript; a main-thread `PostToolUse` whose `tool_use_id`
 the transcript places before it writes nothing, and its write lands only
 while the turn end it checked still holds; the Stop's `waiting` replaces a
 `working` a main-thread `PostToolUse` wrote (`agent_tool_run`) even when

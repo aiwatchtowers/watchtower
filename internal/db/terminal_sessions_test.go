@@ -437,3 +437,42 @@ func TestSetTerminalTurnEnd_GuardsTheToolRunWrite(t *testing.T) {
 		t.Fatalf("after the clear: tool run %v, turn end %v", s.ToolRun, s.TurnEnd)
 	}
 }
+
+// Board #368: a conversation switch drops the old transcript's turn order,
+// and a new run clears a turn order left on a row with no state (the
+// Desktop's Start fresh moves the id without it).
+func TestTerminalTurnOrder_ResetOnSwitchAndNewRun(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0, "", nil, false,
+		AgentOrder{ToolRun: true, SeenTurnEnd: sql.NullInt64{Int64: 100, Valid: true}}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.SetTerminalClaudeSessionID(id, pid, otherUUID); err != nil || !ok {
+		t.Fatalf("switch: ok=%v err=%v", ok, err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.TurnEnd.Valid || s.ToolRun || s.AgentState.String != "working" {
+		t.Fatalf("after the switch: turn end %v, tool run %v, state %q", s.TurnEnd, s.ToolRun, s.AgentState.String)
+	}
+
+	// A row with no state but a turn order: the new run's clear still runs.
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_turn_end = 50 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ClearTerminalAgentState(id, pid, otherUUID, t0.Add(time.Second)); err != nil || !ok {
+		t.Fatalf("clear: ok=%v err=%v", ok, err)
+	}
+	if s, _ := d.GetTerminalSession(id); s.TurnEnd.Valid {
+		t.Fatalf("after the clear: turn end %v", s.TurnEnd)
+	}
+}
