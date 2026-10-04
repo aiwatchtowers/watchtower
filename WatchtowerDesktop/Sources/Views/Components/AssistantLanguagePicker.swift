@@ -9,29 +9,50 @@ enum AssistantLanguageText {
         + "In chat, the assistant replies in the language you write in."
 }
 
-/// Onboarding's Goals line: "Watchtower will write to you in Russian (from
-/// macOS) · Change". Seed `selection` with
-/// `AssistantLanguageCatalog.systemDefault().englishName`; "(from macOS)"
+/// Onboarding's Goals row: "Assistant language", what it governs, and a
+/// button showing the current language ("Russian · from macOS") that opens
+/// the picker sheet. Seed `selection` with
+/// `AssistantLanguageCatalog.systemDefault().englishName`; "from macOS"
 /// shows while the value is still that default.
-struct AssistantLanguageLine: View {
+struct AssistantLanguageRow: View {
     private static let macDefault = AssistantLanguageCatalog.systemDefault().englishName
 
     @Binding var selection: String
     @State private var showPicker = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text("Watchtower will write to you in")
-            Text(selection).fontWeight(.semibold).foregroundStyle(.primary)
-            if selection == Self.macDefault {
-                Text("(from macOS)").foregroundStyle(.tertiary)
+        HStack(spacing: 12) {
+            Image(systemName: "globe")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Assistant language").fontWeight(.semibold)
+                Text(AssistantLanguageText.caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text("·")
-            Button("Change") { showPicker = true }
-                .buttonStyle(.link)
+            Spacer(minLength: 12)
+            Button { showPicker = true } label: {
+                HStack(spacing: 6) {
+                    Text(selection)
+                    if selection == Self.macDefault {
+                        Text("· from macOS").foregroundStyle(.secondary)
+                    }
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(minWidth: 140)
+            }
+            .controlSize(.large)
+            .accessibilityLabel("Assistant language: \(selection)")
+            .accessibilityHint("Opens the language picker")
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.secondary.opacity(0.25)))
         .sheet(isPresented: $showPicker) {
             AssistantLanguageSheet(selection: $selection)
         }
