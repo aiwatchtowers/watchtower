@@ -20,8 +20,9 @@ final class OwnerAsksViewModel {
         /// Pasted into the ask's session and submitted with Return.
         case submitted
         /// Pasted without Return — the session's hooks reported no state this
-        /// run, its prompt held text not submitted (the owner's, or an
-        /// earlier line's), a state read failed, or a permission prompt
+        /// run, its prompt held text not submitted (the owner's, or another
+        /// line's — a hand-off's too, even one still in its pause), a state
+        /// read failed, or a permission prompt
         /// appeared during the pause: the owner presses it.
         case typed
         /// Bracketed paste was off: on the clipboard, nothing typed.
@@ -60,6 +61,9 @@ final class OwnerAsksViewModel {
     /// The session pane's paste and clipboard hints of a comment's Send or a
     /// hand-off (`TerminalCenter.pasteHints`/`clipboardHints`).
     nonisolated static let sentNote = "Pasted into Claude — press Return to send"
+    /// The paste hint when the line shares the prompt with other text not
+    /// sent — an answer left typed, a draft (`pasteHintsBesideText`).
+    nonisolated static let sentBesideTextNote = "Pasted into Claude next to text not sent yet — press Return to send them together"
     nonisolated static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     nonisolated static let answerSentNote = "Answer sent to Claude"
     /// An answer's line not sent yet (boards #364, #379): the drawer's

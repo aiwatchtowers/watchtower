@@ -189,6 +189,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertTrue(sent)
         XCTAssertEqual(processes[0].inputs, [bracketedPasteBytes(text)], "no 0x0D into a working session")
         XCTAssertTrue(terminals.pasteHints.contains(session.id))
+        XCTAssertFalse(terminals.pasteHintsBesideText.contains(session.id), "the prompt held nothing else")
         XCTAssertNil(handoff.requests[project.id])
     }
 
@@ -303,6 +304,85 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertEqual(delivery, .typed)
         XCTAssertEqual(processes[0].inputs.count, 1)
         XCTAssertFalse(processes[0].inputs.contains([0x0D]))
+    }
+
+    // MARK: - A hand-off beside an answer not sent (board #380)
+
+    /// An answer left typed (no Return: no hook state this run) is still in
+    /// the prompt: a hand-off into that session, now idle at its prompt,
+    /// is only pasted — its Return would send the answer with it — and the
+    /// pane says the Return sends both.
+    func testAHandOffIntoAPromptHoldingAnAnswerLeftTypedIsOnlyPasted() async throws {
+        let (handoff, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting", at: "2000-01-01T00:00:00.000Z")
+        await agentStates.poll()
+        let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
+        XCTAssertEqual(delivery, .typed)
+        stored.storeAgentState(session.id, "waiting", at: "2999-01-01T00:00:00.000Z")
+        await agentStates.poll()
+        XCTAssertTrue(vm.isSessionAtPrompt(session), "otherwise the hand-off would submit")
+        handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
+        let text = try XCTUnwrap(handoff.requests[project.id]?.text)
+
+        let sent = await handoff.send(to: .session(session.id), workbenchID: project.id)
+
+        XCTAssertTrue(sent)
+        XCTAssertEqual(processes[0].inputs.count, 2)
+        XCTAssertEqual(processes[0].inputs.last, bracketedPasteBytes(text))
+        XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return over the answer")
+        XCTAssertTrue(terminals.pasteHints.contains(session.id))
+        XCTAssertTrue(terminals.pasteHintsBesideText.contains(session.id), "the pane says both go on Return")
+    }
+
+    /// A hand-off sent while an answer waits out its pause before its
+    /// Return: neither Return goes, the two lines wait for the owner's.
+    func testAHandOffDuringAnAnswersPauseLeavesBothUnsubmitted() async throws {
+        let (handoff, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting")
+        await agentStates.poll()
+        let ask = try await answerableAsk(vm, project, session)
+        handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
+        let text = try XCTUnwrap(handoff.requests[project.id]?.text)
+        var handedOff = false
+        duringPause = { [self] in
+            duringPause = nil
+            handedOff = await handoff.send(to: .session(session.id), workbenchID: project.id)
+        }
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertTrue(handedOff)
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(processes[0].inputs.count, 2)
+        XCTAssertEqual(processes[0].inputs.last, bracketedPasteBytes(text))
+        XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return over the other line")
+    }
+
+    /// The reverse: an answer delivered while a hand-off waits out its
+    /// pause is only pasted, and the hand-off's Return does not go either.
+    func testAnAnswerDuringAHandOffsPauseLeavesBothUnsubmitted() async throws {
+        let (handoff, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting")
+        await agentStates.poll()
+        let ask = try await answerableAsk(vm, project, session)
+        handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
+        let text = try XCTUnwrap(handoff.requests[project.id]?.text)
+        var answered: OwnerAsksViewModel.Delivery?
+        duringPause = { [self] in
+            duringPause = nil
+            answered = await vm.asks.answer(ask)
+        }
+
+        let sent = await handoff.send(to: .session(session.id), workbenchID: project.id)
+
+        XCTAssertTrue(sent)
+        XCTAssertEqual(answered, .typed)
+        XCTAssertEqual(processes[0].inputs.count, 2)
+        XCTAssertEqual(processes[0].inputs.first, bracketedPasteBytes(text))
+        XCTAssertFalse(processes[0].inputs.contains([0x0D]), "no Return over the other line")
     }
 
     /// Ruling R54(d): Cancel during the pause stops the queued Return and

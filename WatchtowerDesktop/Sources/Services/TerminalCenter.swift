@@ -72,6 +72,11 @@ final class TerminalCenter {
     /// the terminal pane says to press Return until the owner dismisses it
     /// or the next delivery.
     private(set) var pasteHints: Set<Int64> = []
+    /// The `pasteHints` whose line shares the prompt with other text not
+    /// submitted — an ask's answer left typed, the owner's draft, another
+    /// hand-off, before the paste or during its pause (board #380): the
+    /// pane says the Return sends it all together.
+    private(set) var pasteHintsBesideText: Set<Int64> = []
     /// Sessions holding an ask's answer not sent yet (board #364): typed but
     /// not submitted, copied, or held behind a permission prompt (board
     /// #379). The pane says so prominently — over `clipboardHints` — until
@@ -87,6 +92,11 @@ final class TerminalCenter {
     /// Input while `inputAnswersDialog` holds goes to Claude Code's
     /// permission dialog, not to its prompt, and changes nothing.
     @ObservationIgnored private(set) var promptDrafts: Set<Int64> = []
+    /// Sessions where a `submitPrompt` pasted its line and waits out the
+    /// pause before its Return (board #380): that line is in the prompt
+    /// not submitted yet, so another delivery meanwhile — a hand-off during
+    /// an answer's pause, or the reverse — only pastes, as over a draft.
+    @ObservationIgnored private var pendingReturns: Set<Int64> = []
     /// Sessions whose owner's last printable prompt input was `\`, with
     /// only escape sequences or paste brackets since: a Return there inserts
     /// a line break in Claude Code, it does not submit.
@@ -245,12 +255,12 @@ final class TerminalCenter {
                                                       keepingLineBreaks: keepingLineBreaks) {
         case let .paste(bytes):
             clipboardHints.remove(sessionID)
-            pasteHints.remove(sessionID)
+            removePasteHint(sessionID)
             process.sendInput(bytes)
             return .sent
         case let .clipboard(text):
             copyToClipboard(text)
-            pasteHints.remove(sessionID)
+            removePasteHint(sessionID)
             clipboardHints.insert(sessionID)
             return .copied
         }
@@ -280,7 +290,8 @@ final class TerminalCenter {
     /// its line breaks, an answer line passes `keepingLineBreaks: false`).
     /// A Return follows only while `canSubmit` holds and the session's
     /// prompt held no text before the paste (`promptDrafts`: the owner's
-    /// half-typed text, or an earlier line left without its Return) — both
+    /// half-typed text, or an earlier line left without its Return or still
+    /// in its pause, `pendingReturns`) — both
     /// checked before the pause and again after it, the caller re-reading
     /// the session's agent state (ruling R52: a hand-off only into a session
     /// idle at its prompt; an answer only into a session whose hooks
@@ -293,7 +304,7 @@ final class TerminalCenter {
     /// up to 1 s stale) and returns whether that read succeeded: after a
     /// failed one the state is not known, so no Return. Otherwise the paste
     /// waits for the owner's own Return, and the session holds a draft until
-    /// then.
+    /// then; a line sharing the prompt with other text says so (`pasteHintsBesideText`).
     func submitPrompt(
         _ text: String,
         sessionID: Int64,
@@ -302,14 +313,17 @@ final class TerminalCenter {
         refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
-        let promptWasEmpty = !promptDrafts.contains(sessionID)
+        let promptWasEmpty = !promptDrafts.contains(sessionID) && !pendingReturns.contains(sessionID)
         switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
         case .noSession: return .noSession
         case .copied: return .copied
         case .sent: break
         }
         guard let process = processes[sessionID] else { return .noSession }
+        var besideText = !promptWasEmpty
         if promptWasEmpty, canSubmit() {
+            pendingReturns.insert(sessionID)
+            defer { pendingReturns.remove(sessionID) }
             await signaller.sleep(delay)
             let fresh = await refresh()
             guard states[sessionID] == .running, processes[sessionID] === process else { return .noSession }
@@ -317,18 +331,25 @@ final class TerminalCenter {
                 process.sendInput([0x0D])
                 return .submitted
             }
+            besideText = promptDrafts.contains(sessionID)
         }
         // The line sits in the prompt unsubmitted: the next line must not
         // submit it with its own Return.
         promptDrafts.insert(sessionID)
         pasteHints.insert(sessionID)
+        if besideText { pasteHintsBesideText.insert(sessionID) }
         return .pasted
     }
 
     func dismissClipboardHint(sessionID: Int64) {
         clipboardHints.remove(sessionID)
-        pasteHints.remove(sessionID)
+        removePasteHint(sessionID)
         answerHints[sessionID] = nil
+    }
+
+    private func removePasteHint(_ sessionID: Int64) {
+        pasteHints.remove(sessionID)
+        pasteHintsBesideText.remove(sessionID)
     }
 
     /// What the hint over a session holding an ask's answer says.
@@ -364,7 +385,7 @@ final class TerminalCenter {
     func showAnswerHint(_ hint: AnswerHint, sessionID: Int64) {
         guard states[sessionID] == .running else { return }
         clipboardHints.remove(sessionID)
-        pasteHints.remove(sessionID)
+        removePasteHint(sessionID)
         answerHints[sessionID] = hint
     }
 
@@ -559,6 +580,7 @@ final class TerminalCenter {
         promptDrafts.remove(sessionID)
         ownerBackslashPending.remove(sessionID)
         clipboardHints.remove(sessionID)
+        removePasteHint(sessionID)
         answerHints[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }
     }
