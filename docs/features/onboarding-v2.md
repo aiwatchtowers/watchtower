@@ -18,7 +18,11 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
   does; its other sources (Gmail, calendar, Jira, chats, Targets/Tracks)
   are sub-switches onboarding does not touch. The config default
   (`memory.enabled: false`) is unchanged, so an install that never ran
-  onboarding keeps it off.
+  onboarding keeps it off. An install onboarded before this change has
+  Work communication's features on and Memory off, a set no goal
+  combination reproduces: its Run setup again reads "Features customized"
+  and Continue keeps Memory off — there is no telling it from Memory
+  switched off in Settings — and Reset to goals turns it on.
 - Tasks & Jira → `stream-digests`, `next-step`.
 - Meetings → `briefing` (meeting prep rides the daily briefing).
 - Development → nothing (Workbench, the chat, Targets and Knowledge search

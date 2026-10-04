@@ -46,7 +46,8 @@ struct AssistantLanguageRow: View {
                 .frame(minWidth: 140)
             }
             .controlSize(.large)
-            .accessibilityLabel("Assistant language: \(selection)")
+            .accessibilityLabel("Assistant language")
+            .accessibilityValue(selection == Self.macDefault ? "\(selection), from macOS" : selection)
             .accessibilityHint("Opens the language picker")
         }
         .padding(14)

@@ -379,6 +379,27 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs, enabled)
     }
 
+    /// An install onboarded before Memory joined Work communication (#375)
+    /// has the default goals' features on and Memory off. Its re-run reads
+    /// as customized and Continue keeps Memory off; Reset turns it on.
+    func testRerunFromBeforeMemoryJoinedKeepsItOffUntilReset() async {
+        let goals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .development]
+        defaults.set(goals.map(\.rawValue).sorted(), forKey: OnboardingGoalsModel.goalsKey)
+        let model = makeModel()
+        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: goals).subtracting(["memory"])
+        model.seedForRerun(enabledFeatureIDs: enabled, language: "Polish")
+        await model.prepareGoalsStep(configuredLanguage: "Polish")
+        XCTAssertEqual(model.selection.goals, goals)
+        XCTAssertTrue(model.selection.isCustomized)
+
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs, enabled)
+
+        model.selection.resetToGoals()
+        XCTAssertTrue(model.selection.isEnabled("memory"))
+        XCTAssertFalse(model.selection.isCustomized)
+    }
+
     func testRerunWithANewLanguageWritesIt() async {
         let model = makeModel()
         model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
@@ -417,6 +438,16 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertTrue(seeded.isCustomized)
         XCTAssertTrue(seeded.goals.contains(.workCommunication), "the goals the set overlaps most, not the saved ones")
         XCTAssertEqual(seeded.enabledFeatureIDs, enabled.subtracting(["not-managed"]))
+    }
+
+    /// A managed feature on beyond its goals' set (Tracks turned on in
+    /// Settings next to Tasks & Jira) is a hand pick too, and it is kept.
+    func testExtraFeatureBeyondTheGoalsIsCustomized() {
+        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.tasksAndJira]).union(["tracks"])
+        let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.tasksAndJira])
+        XCTAssertTrue(seeded.isCustomized)
+        XCTAssertTrue(seeded.goals.contains(.tasksAndJira))
+        XCTAssertEqual(seeded.enabledFeatureIDs, enabled)
     }
 
     // MARK: - What a Continue wrote

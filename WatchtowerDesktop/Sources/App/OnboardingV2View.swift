@@ -76,12 +76,10 @@ struct OnboardingV2View: View {
 }
 
 extension View {
-    /// The forward button of an onboarding step: large and filled with an
-    /// explicit accent tint, so an enabled one never reads as disabled;
-    /// `.disabled` still dims it.
+    /// The forward button of an onboarding step: large and filled with the
+    /// system accent; `.disabled` dims it.
     func onboardingPrimaryButton() -> some View {
         buttonStyle(.borderedProminent)
-            .tint(.accentColor)
             .controlSize(.large)
     }
 }
