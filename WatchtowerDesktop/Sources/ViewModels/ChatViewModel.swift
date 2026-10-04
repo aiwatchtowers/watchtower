@@ -669,7 +669,7 @@ final class ChatViewModel {
         } else {
             id = newConversation()
         }
-        if let id {
+        if id != nil {
             isOnLanding = true
             landingDraft = currentConversation.map { LandingDraft(id: $0.id, createdAt: $0.createdAt) }
         }

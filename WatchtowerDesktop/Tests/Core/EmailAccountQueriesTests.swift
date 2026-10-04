@@ -42,7 +42,7 @@ final class EmailAccountQueriesTests: XCTestCase {
 
     func testFetchAllDecodesAllFields() throws {
         let pool = try makePool()
-        try pool.write { db in
+        _ = try pool.write { db in
             try TestDatabase.insertEmailAccount(
                 db, provider: "imap", emailAddress: "me@example.com",
                 host: "imap.example.com", port: 993, security: "ssl",

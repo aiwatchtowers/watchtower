@@ -86,7 +86,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
                 db, title: "Task: ship feature", contextType: "target", contextID: String(target.id)
             )
         }
-        try manager.dbPool.write { db in
+        _ = try manager.dbPool.write { db in
             try ChatMessageQueries.insert(db, conversationID: existing.id, role: "user", text: "hello")
         }
 
@@ -211,7 +211,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         let assistant = makeContainer(manager, target: target)
         let firstID = try XCTUnwrap(assistant.activeConversationID)
         let secondID = try XCTUnwrap(assistant.newConversation())
-        try manager.dbPool.write { db in
+        _ = try manager.dbPool.write { db in
             try ChatMessageQueries.insert(db, conversationID: secondID, role: "user", text: "hi")
         }
 

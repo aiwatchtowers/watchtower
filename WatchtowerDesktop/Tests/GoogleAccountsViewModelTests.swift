@@ -22,7 +22,7 @@ final class GoogleAccountsViewModelTests: XCTestCase {
 
     func testRefreshPopulatesAccountsFromDB() async throws {
         let pool = try makePool()
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertGoogleAccount(db, email: "me@gmail.com")
         }
         let vm = GoogleAccountsViewModel(dbPool: pool)

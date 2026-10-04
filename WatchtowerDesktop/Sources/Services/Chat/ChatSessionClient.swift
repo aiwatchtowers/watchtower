@@ -53,7 +53,7 @@ struct ChatSessionConfig: Equatable, Sendable {
 @Observable
 final class ChatSessionClient {
     /// How long a SIGTERMed process gets before SIGKILL.
-    static let defaultKillAfter: Duration = .seconds(3)
+    nonisolated static let defaultKillAfter: Duration = .seconds(3)
 
     let conversationID: Int64
     let config: ChatSessionConfig
@@ -529,10 +529,7 @@ private final class TailBuffer: @unchecked Sendable {
     func waitForEOF(upTo bound: Duration) async {
         let deadline = ContinuousClock.now + bound
         while ContinuousClock.now < deadline {
-            lock.lock()
-            let done = reachedEOF
-            lock.unlock()
-            if done { return }
+            if lock.withLock({ reachedEOF }) { return }
             try? await Task.sleep(for: .milliseconds(5))
         }
     }

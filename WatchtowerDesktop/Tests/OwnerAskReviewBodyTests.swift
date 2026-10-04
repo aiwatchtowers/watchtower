@@ -13,7 +13,7 @@ import WatchtowerTestSupport
 /// the text view's boxes for the margin and the focus bars.
 @MainActor
 final class OwnerAskReviewBodyTests: XCTestCase {
-    private static let snapshot = "# Plan\n\nShip the retry budget first.\n\n## Rollout\n\nCanary for a week."
+    nonisolated private static let snapshot = "# Plan\n\nShip the retry budget first.\n\n## Rollout\n\nCanary for a week."
 
     private func ask(_ id: Int64, snapshot: String = snapshot, focus: String = "[]") throws -> OwnerAsk {
         try OwnerAsk(row: Row([

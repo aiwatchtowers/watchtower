@@ -111,9 +111,10 @@ final class GateEngine: WhisperWindowEngine, @unchecked Sendable {
                 lock.unlock()
             }
         }
-        lock.lock()
-        defer { index += 1; lock.unlock() }
-        let text = index < texts.count ? texts[index] : ""
+        let text = lock.withLock {
+            defer { index += 1 }
+            return index < texts.count ? texts[index] : ""
+        }
         return [TranscribedSegment(text: text, startSec: 0,
                                    endSec: Double(samples.count) / Double(TranscriptionConfig.sampleRate))]
     }

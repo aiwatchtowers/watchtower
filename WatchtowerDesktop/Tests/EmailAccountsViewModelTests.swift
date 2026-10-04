@@ -22,7 +22,7 @@ final class EmailAccountsViewModelTests: XCTestCase {
 
     func testRefreshPopulatesAccountsFromDB() async throws {
         let pool = try makePool()
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertEmailAccount(db, provider: "imap", emailAddress: "me@example.com")
         }
         let vm = EmailAccountsViewModel(dbPool: pool)

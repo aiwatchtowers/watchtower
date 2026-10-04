@@ -75,28 +75,27 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
     }
 
     func run(args: [String]) async throws -> Data {
-        lock.lock()
-        recorded.append(args)
-        lock.unlock()
+        lock.withLock { recorded.append(args) }
         guard args.first == "confluence", args.count >= 2 else { return Data() }
         switch args[1] {
         case "spaces":
-            lock.lock()
-            let call = spacesCallCount
-            spacesCallCount += 1
-            let json = call < spacesQueue.count ? spacesQueue[call] : spacesJSON
-            let gated = gatedSpacesCalls.contains(call)
-            lock.unlock()
+            let (call, json, gated) = lock.withLock {
+                let call = spacesCallCount
+                spacesCallCount += 1
+                let json = call < spacesQueue.count ? spacesQueue[call] : spacesJSON
+                return (call, json, gatedSpacesCalls.contains(call))
+            }
             if gated { await waitForSpacesRelease(call) }
             if let spacesError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: spacesError) }
             return Data(json.utf8)
         case "select":
             // Only the first select waits: a second one (a guard regression)
             // must fail the test by count, not hang it.
-            lock.lock()
-            let holdThisCall = gateArmed && !gateTaken
-            if holdThisCall { gateTaken = true }
-            lock.unlock()
+            let holdThisCall = lock.withLock {
+                let hold = gateArmed && !gateTaken
+                if hold { gateTaken = true }
+                return hold
+            }
             if holdThisCall { await waitForGate() }
             if let selectError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: selectError) }
             let account = Self.account(in: args)

@@ -112,7 +112,7 @@ final class DayPlanViewModelTests: XCTestCase {
         let planId = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
                                                sourceType: "task", sourceID: "42", title: "T")
         }
@@ -138,7 +138,7 @@ final class DayPlanViewModelTests: XCTestCase {
         let planId = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
                                                sourceType: "task", sourceID: "42", title: "T")
         }
@@ -166,7 +166,7 @@ final class DayPlanViewModelTests: XCTestCase {
         let planId = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
                                                sourceType: "task", sourceID: "10",
                                                title: "Task", status: "done")
@@ -188,7 +188,7 @@ final class DayPlanViewModelTests: XCTestCase {
         let planId = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "timeblock",
                                                sourceType: "calendar", title: "Meeting")
         }
@@ -207,7 +207,7 @@ final class DayPlanViewModelTests: XCTestCase {
         let planId = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
                                                sourceType: "manual", title: "Removable")
         }
@@ -266,7 +266,7 @@ final class DayPlanViewModelTests: XCTestCase {
     // MARK: - regenerate shells to CLI
 
     func testRegenerateShellsToCLI() async throws {
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
 
@@ -279,7 +279,7 @@ final class DayPlanViewModelTests: XCTestCase {
     }
 
     func testRegenerateWithoutFeedback() async throws {
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
 
@@ -290,7 +290,7 @@ final class DayPlanViewModelTests: XCTestCase {
     }
 
     func testRegenerateWithEmptyFeedbackOmitsFeedbackFlag() async throws {
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
         }
 
@@ -351,7 +351,7 @@ final class DayPlanViewModelTests: XCTestCase {
     // MARK: - hasConflicts reflects plan state
 
     func testHasConflictsReflectsPlan() async throws {
-        try await pool.write { db in
+        _ = try await pool.write { db in
             try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23",
                                            hasConflicts: true,
                                            conflictSummary: "Overlapping meetings at 10am")

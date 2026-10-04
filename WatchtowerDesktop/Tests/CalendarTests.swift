@@ -549,7 +549,7 @@ struct CalendarQueriesTests {
     @Test("fetchAuthState nil when all Calendar-enabled accounts are OK")
     func fetchAuthStateNilWhenAllAccountsOK() throws {
         let dbQueue = try TestDatabase.create()
-        try dbQueue.write { db in
+        _ = try dbQueue.write { db in
             try TestDatabase.insertGoogleAccount(db, email: "a@gmail.com", calendarEnabled: true, gmailEnabled: true, status: "ok")
         }
         let auth = try dbQueue.read { db in try CalendarQueries.fetchAuthState(db) }
@@ -596,7 +596,7 @@ struct CalendarQueriesTests {
         // A Gmail-only (calendar_enabled=0) account in an error state must not
         // trigger the Calendar reconnect alert — Calendar was never connected there.
         let dbQueue = try TestDatabase.create()
-        try dbQueue.write { db in
+        _ = try dbQueue.write { db in
             try TestDatabase.insertGoogleAccount(
                 db, email: "gmail-only@gmail.com", calendarEnabled: false, gmailEnabled: false,
                 status: "error", error: "some error"
@@ -611,7 +611,7 @@ struct CalendarQueriesTests {
         // Same as above but with gmail_enabled=1 — still must not surface as a
         // Calendar reconnect since calendar_enabled is 0.
         let dbQueue = try TestDatabase.create()
-        try dbQueue.write { db in
+        _ = try dbQueue.write { db in
             try TestDatabase.insertGoogleAccount(
                 db, email: "gmail-only@gmail.com", calendarEnabled: false, gmailEnabled: true,
                 status: "error", error: "gmail token revoked"

@@ -35,13 +35,13 @@ final class OwnerAsksViewModel {
 
     /// `sentNote`/`copiedNote` are also the session pane's paste and clipboard
     /// hints (`TerminalCenter.pasteHints`/`clipboardHints`).
-    static let sentNote = "Pasted into Claude — press Return to send"
-    static let copiedNote = "Prompt copied — press ⌘V in the terminal"
-    static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
-    static let withdrawnNote = "The agent withdrew this ask — your draft is kept"
+    nonisolated static let sentNote = "Pasted into Claude — press Return to send"
+    nonisolated static let copiedNote = "Prompt copied — press ⌘V in the terminal"
+    nonisolated static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
+    nonisolated static let withdrawnNote = "The agent withdrew this ask — your draft is kept"
     static let pollInterval: Duration = .seconds(5)
     static let drawerWidthKey = "workbench.asks.drawerWidth"
-    static let drawerWidthRange: ClosedRange<Double> = 320...900
+    nonisolated static let drawerWidthRange: ClosedRange<Double> = 320...900
     static let defaultDrawerWidth: Double = 440
 
     /// One session's closed list, or (`sessionID` nil) the asks filed from

@@ -13,7 +13,7 @@ extension NotificationService: WorkbenchNotifying {}
 
 /// One project's activity read, seamed so a test can fail a single project
 /// without corrupting the shared database for every other one.
-protocol WorkbenchActivityReading {
+protocol WorkbenchActivityReading: Sendable {
     func snapshot(_ db: Database, project: Workbench, afterAgentCommentID: Int64) throws -> WorkbenchNotificationPolicy.Snapshot
 }
 
@@ -126,8 +126,9 @@ final class WorkbenchNotificationCenter {
         let previous = load(project.id)
         let touchedBefore = ownerTouched[project.id] ?? []
         let watermark = previous?.lastAgentCommentID ?? 0
+        let reader = activityReader
         var current = try await dbPool.read {
-            try self.activityReader.snapshot($0, project: project, afterAgentCommentID: watermark)
+            try reader.snapshot($0, project: project, afterAgentCommentID: watermark)
         }
         // Writes recorded while the read ran stay pending for the next poll
         // too: their effect may or may not be in this snapshot.

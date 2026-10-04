@@ -32,7 +32,7 @@ final class TrackStateQueriesTests: XCTestCase {
     // BEHAVIOR TRACKS-06: a track without history returns an empty array, not nil.
     func test_TRACKS_06_fetchByTrackID_emptyForNewTrack() throws {
         let dbq = try TestDatabase.create()
-        try dbq.write { db in
+        _ = try dbq.write { db in
             try TestDatabase.insertTrack(db, text: "fresh")
         }
         let states = try dbq.read { db in

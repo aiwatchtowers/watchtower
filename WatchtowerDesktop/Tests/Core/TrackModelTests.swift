@@ -9,7 +9,7 @@ final class TrackModelTests: XCTestCase {
 
     func testReadPredicates() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, hasUpdates: true) }
+        _ = try db.write { try TestDatabase.insertTrack($0, hasUpdates: true) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertTrue(track.isUnread)
         XCTAssertFalse(track.isRead)
@@ -30,7 +30,7 @@ final class TrackModelTests: XCTestCase {
 
     func testOwnershipPredicates() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, ownership: "mine") }
+        _ = try db.write { try TestDatabase.insertTrack($0, ownership: "mine") }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertTrue(track.isMine)
         XCTAssertFalse(track.isDelegated)
@@ -39,7 +39,7 @@ final class TrackModelTests: XCTestCase {
 
     func testDelegatedOwnership() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, ownership: "delegated") }
+        _ = try db.write { try TestDatabase.insertTrack($0, ownership: "delegated") }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertTrue(track.isDelegated)
     }
@@ -48,14 +48,14 @@ final class TrackModelTests: XCTestCase {
 
     func testCategoryLabel() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, category: "decision") }
+        _ = try db.write { try TestDatabase.insertTrack($0, category: "decision") }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertEqual(track.categoryLabel, "Decision")
     }
 
     func testOwnershipLabel() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, ownership: "watching") }
+        _ = try db.write { try TestDatabase.insertTrack($0, ownership: "watching") }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertEqual(track.ownershipLabel, "Watching")
     }
@@ -65,7 +65,7 @@ final class TrackModelTests: XCTestCase {
     func testDecodedParticipants() throws {
         let db = try TestDatabase.create()
         let json = #"[{"name":"Alice","user_id":"U001","stance":"driver"},{"name":"Bob"}]"#
-        try db.write { try TestDatabase.insertTrack($0, participants: json) }
+        _ = try db.write { try TestDatabase.insertTrack($0, participants: json) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertEqual(track.decodedParticipants.count, 2)
         XCTAssertEqual(track.decodedParticipants[0].name, "Alice")
@@ -76,14 +76,14 @@ final class TrackModelTests: XCTestCase {
 
     func testDecodedTags() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, tags: #"["urgent","backend"]"#) }
+        _ = try db.write { try TestDatabase.insertTrack($0, tags: #"["urgent","backend"]"#) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertEqual(track.decodedTags, ["urgent", "backend"])
     }
 
     func testDecodedTagsEmpty() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0) }
+        _ = try db.write { try TestDatabase.insertTrack($0) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertTrue(track.decodedTags.isEmpty)
     }
@@ -91,7 +91,7 @@ final class TrackModelTests: XCTestCase {
     func testDecodedSourceRefs() throws {
         let db = try TestDatabase.create()
         let json = #"[{"ts":"1700000000.000100","author":"Alice","text":"Let's do it"}]"#
-        try db.write { try TestDatabase.insertTrack($0, sourceRefs: json) }
+        _ = try db.write { try TestDatabase.insertTrack($0, sourceRefs: json) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         let refs = track.decodedSourceRefs
         XCTAssertEqual(refs.count, 1)
@@ -102,14 +102,14 @@ final class TrackModelTests: XCTestCase {
 
     func testDecodedChannelIDs() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, channelIDs: #"["C001","C002"]"#) }
+        _ = try db.write { try TestDatabase.insertTrack($0, channelIDs: #"["C001","C002"]"#) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertEqual(track.decodedChannelIDs, ["C001", "C002"])
     }
 
     func testDecodedRelatedDigestIDs() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, relatedDigestIDs: #"[1,5,1]"#) }
+        _ = try db.write { try TestDatabase.insertTrack($0, relatedDigestIDs: #"[1,5,1]"#) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         let ids = track.decodedRelatedDigestIDs.sorted()
         XCTAssertEqual(ids, [1, 1, 5])
@@ -118,7 +118,7 @@ final class TrackModelTests: XCTestCase {
     func testDecodedDecisionOptions() throws {
         let db = try TestDatabase.create()
         let json = #"[{"option":"Option A","supporters":["Alice"],"pros":"Fast","cons":"Risky"}]"#
-        try db.write { try TestDatabase.insertTrack($0, decisionOptions: json) }
+        _ = try db.write { try TestDatabase.insertTrack($0, decisionOptions: json) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         let options = track.decodedDecisionOptions
         XCTAssertEqual(options.count, 1)
@@ -129,7 +129,7 @@ final class TrackModelTests: XCTestCase {
     func testDecodedSubItems() throws {
         let db = try TestDatabase.create()
         let json = #"[{"text":"Do thing","status":"open"},{"text":"Done thing","status":"done"}]"#
-        try db.write { try TestDatabase.insertTrack($0, subItems: json) }
+        _ = try db.write { try TestDatabase.insertTrack($0, subItems: json) }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         let items = track.decodedSubItems
         XCTAssertEqual(items.count, 2)
@@ -144,7 +144,7 @@ final class TrackModelTests: XCTestCase {
 
     func testPriorityOrder() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, priority: "high") }
+        _ = try db.write { try TestDatabase.insertTrack($0, priority: "high") }
         let track = try XCTUnwrap(db.read { try Track.fetchOne($0, sql: "SELECT * FROM tracks LIMIT 1") })
         XCTAssertEqual(track.priorityOrder, 0)
     }

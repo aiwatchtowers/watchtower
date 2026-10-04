@@ -12,7 +12,7 @@ final class TargetModelTests: XCTestCase {
 
     func testDecodeFromRow() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.text, "Ship the feature")
         XCTAssertEqual(target.level, "week")
@@ -31,7 +31,7 @@ final class TargetModelTests: XCTestCase {
 
     func testDecodeWithOptionalFields() throws {
         let db = try TestDatabase.create()
-        try db.write {
+        _ = try db.write {
             try TestDatabase.insertTarget(
                 $0,
                 text: "Q2 Goal",
@@ -50,42 +50,42 @@ final class TargetModelTests: XCTestCase {
 
     func testIsActiveTodo() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, status: "todo") }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "todo") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isActive)
     }
 
     func testIsActiveInProgress() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, status: "in_progress") }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "in_progress") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isActive)
     }
 
     func testIsActiveBlocked() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, status: "blocked") }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "blocked") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isActive)
     }
 
     func testIsActiveDone() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, status: "done") }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "done") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isActive)
     }
 
     func testIsActiveDismissed() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, status: "dismissed") }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "dismissed") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isActive)
     }
 
     func testIsActiveSnoozed() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, status: "snoozed") }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "snoozed") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isActive)
     }
@@ -101,7 +101,7 @@ final class TargetModelTests: XCTestCase {
         // Match the model's UTC-day semantics (todayUTCDayString) — a local-zone
         // formatter makes this test flaky between local and UTC midnight.
         fmt.timeZone = TimeZone(identifier: "UTC")
-        try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: yesterday)) }
+        _ = try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: yesterday)) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isOverdue)
     }
@@ -113,7 +113,7 @@ final class TargetModelTests: XCTestCase {
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.timeZone = TimeZone(identifier: "UTC")
-        try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: tomorrow)) }
+        _ = try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: tomorrow)) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isOverdue)
     }
@@ -125,14 +125,14 @@ final class TargetModelTests: XCTestCase {
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.timeZone = TimeZone(identifier: "UTC")
-        try db.write { try TestDatabase.insertTarget($0, status: "done", dueDate: fmt.string(from: yesterday)) }
+        _ = try db.write { try TestDatabase.insertTarget($0, status: "done", dueDate: fmt.string(from: yesterday)) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isOverdue)
     }
 
     func testIsNotOverdueNoDueDate() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertFalse(target.isOverdue)
     }
@@ -145,7 +145,7 @@ final class TargetModelTests: XCTestCase {
         fmt.dateFormat = "yyyy-MM-dd"
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.timeZone = TimeZone(identifier: "UTC")
-        try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: Date())) }
+        _ = try db.write { try TestDatabase.insertTarget($0, dueDate: fmt.string(from: Date())) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.isDueToday)
     }
@@ -154,14 +154,14 @@ final class TargetModelTests: XCTestCase {
 
     func testLevelOrder() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, level: "quarter") }
+        _ = try db.write { try TestDatabase.insertTarget($0, level: "quarter") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.levelOrder, 0)
     }
 
     func testLevelOrderDay() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, level: "day") }
+        _ = try db.write { try TestDatabase.insertTarget($0, level: "day") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.levelOrder, 3)
     }
@@ -170,14 +170,14 @@ final class TargetModelTests: XCTestCase {
 
     func testPriorityOrderHigh() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, priority: "high") }
+        _ = try db.write { try TestDatabase.insertTarget($0, priority: "high") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.priorityOrder, 0)
     }
 
     func testPriorityOrderLow() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, priority: "low") }
+        _ = try db.write { try TestDatabase.insertTarget($0, priority: "low") }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.priorityOrder, 2)
     }
@@ -186,14 +186,14 @@ final class TargetModelTests: XCTestCase {
 
     func testDecodedTags() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, tags: #"["urgent","backend"]"#) }
+        _ = try db.write { try TestDatabase.insertTarget($0, tags: #"["urgent","backend"]"#) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.decodedTags, ["urgent", "backend"])
     }
 
     func testDecodedTagsEmpty() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertTrue(target.decodedTags.isEmpty)
     }
@@ -201,7 +201,7 @@ final class TargetModelTests: XCTestCase {
     func testDecodedSubItems() throws {
         let db = try TestDatabase.create()
         let json = #"[{"text":"Step 1","done":false},{"text":"Step 2","done":true}]"#
-        try db.write { try TestDatabase.insertTarget($0, subItems: json) }
+        _ = try db.write { try TestDatabase.insertTarget($0, subItems: json) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         let items = target.decodedSubItems
         XCTAssertEqual(items.count, 2)
@@ -214,14 +214,14 @@ final class TargetModelTests: XCTestCase {
     func testSubItemsProgress() throws {
         let db = try TestDatabase.create()
         let json = #"[{"text":"A","done":true},{"text":"B","done":false},{"text":"C","done":true}]"#
-        try db.write { try TestDatabase.insertTarget($0, subItems: json) }
+        _ = try db.write { try TestDatabase.insertTarget($0, subItems: json) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertEqual(target.subItemsProgress, "2/3")
     }
 
     func testSubItemsProgressNilWhenEmpty() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         XCTAssertNil(target.subItemsProgress)
     }
@@ -229,7 +229,7 @@ final class TargetModelTests: XCTestCase {
     func testDecodedNotes() throws {
         let db = try TestDatabase.create()
         let json = #"[{"text":"Note 1","created_at":"2026-04-23T10:00:00Z"}]"#
-        try db.write { try TestDatabase.insertTarget($0, notes: json) }
+        _ = try db.write { try TestDatabase.insertTarget($0, notes: json) }
         let target = try XCTUnwrap(db.read { try Target.fetchOne($0, sql: "SELECT * FROM targets LIMIT 1") })
         let notes = target.decodedNotes
         XCTAssertEqual(notes.count, 1)
@@ -386,7 +386,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testFetchByID() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, text: "Find me") }
+        _ = try db.write { try TestDatabase.insertTarget($0, text: "Find me") }
         let target = try db.read { try TargetQueries.fetchByID($0, id: 1) }
         XCTAssertNotNil(target)
         XCTAssertEqual(target?.text, "Find me")
@@ -476,7 +476,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testCreateWithParent() throws {
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertTarget(db, text: "Parent", level: "quarter",
                                           periodStart: "2026-01-01", periodEnd: "2026-03-31")
         }
@@ -498,7 +498,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testUpdateStatus() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         try db.write { try TargetQueries.updateStatus($0, id: 1, status: "done") }
         let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 1) })
         XCTAssertEqual(target.status, "done")
@@ -508,7 +508,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testUpdatePriority() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0, priority: "medium") }
+        _ = try db.write { try TestDatabase.insertTarget($0, priority: "medium") }
         try db.write { try TargetQueries.updatePriority($0, id: 1, priority: "high") }
         let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 1) })
         XCTAssertEqual(target.priority, "high")
@@ -518,7 +518,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testUpdateSubItems() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let items = [TargetSubItem(text: "Step 1", done: false), TargetSubItem(text: "Step 2", done: true)]
         try db.write { try TargetQueries.updateSubItems($0, id: 1, subItems: items) }
         let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 1) })
@@ -532,7 +532,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testSnooze() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let snoozeDate = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 3, to: Date()))
         try db.write { try TargetQueries.snooze($0, id: 1, until: snoozeDate) }
         let target = try XCTUnwrap(db.read { try TargetQueries.fetchByID($0, id: 1) })
@@ -544,7 +544,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testDelete() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         try db.write { try TargetQueries.delete($0, id: 1) }
         let target = try db.read { try TargetQueries.fetchByID($0, id: 1) }
         XCTAssertNil(target)
@@ -594,7 +594,7 @@ final class TargetQueryTests: XCTestCase {
 
     func testFetchLinksEmptyWhenNone() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTarget($0) }
+        _ = try db.write { try TestDatabase.insertTarget($0) }
         let links = try db.read { try TargetQueries.fetchLinks($0, targetID: 1, direction: .both) }
         XCTAssertTrue(links.isEmpty)
     }
@@ -682,7 +682,7 @@ final class TargetsViewModelTests: XCTestCase {
     func testShowDoneIncludesDoneTargets() throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try mgr.dbPool.write { db in
+        _ = try mgr.dbPool.write { db in
             try TestDatabase.insertTarget(db, text: "Done target",
                                           periodStart: "2026-04-01", periodEnd: "2026-04-30", status: "done")
         }
@@ -718,7 +718,7 @@ final class TargetsViewModelTests: XCTestCase {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let today = "2026-04-23"
-        try mgr.dbPool.write { db in
+        _ = try mgr.dbPool.write { db in
             try TestDatabase.insertTarget(db, text: "Active",
                                           periodStart: today, periodEnd: today, priority: "high")
         }
@@ -748,7 +748,7 @@ final class TargetsViewModelTests: XCTestCase {
     func testDeleteTargetRemovesRow() throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try mgr.dbPool.write { try TestDatabase.insertTarget($0) }
+        _ = try mgr.dbPool.write { try TestDatabase.insertTarget($0) }
 
         let vm = TargetsViewModel(dbManager: mgr)
         let target = try XCTUnwrap(mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) })

@@ -22,8 +22,8 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class SessionReportCenter {
-    static let summaryInterval: Duration = .seconds(15)
-    static let reportInterval: Duration = .seconds(30)
+    nonisolated static let summaryInterval: Duration = .seconds(15)
+    nonisolated static let reportInterval: Duration = .seconds(30)
 
     /// The last good value and, when the run after it failed, that run's
     /// error line.

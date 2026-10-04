@@ -76,7 +76,7 @@ final class TrackQueryTests: XCTestCase {
 
     func testFetchByID() throws {
         let db = try TestDatabase.create()
-        try db.write { try TestDatabase.insertTrack($0, text: "Find me") }
+        _ = try db.write { try TestDatabase.insertTrack($0, text: "Find me") }
         let track = try db.read { try TrackQueries.fetchByID($0, id: 1) }
         XCTAssertNotNil(track)
         XCTAssertEqual(track?.text, "Find me")
@@ -206,7 +206,7 @@ final class TrackQueryTests: XCTestCase {
 
     func testFetchLatestCustomReturnsNilWhenNoneCustom() throws {
         let db = try TestDatabase.create()
-        try db.write { db in
+        _ = try db.write { db in
             try TestDatabase.insertTrack(db, text: "Auto track")
         }
         let latest = try db.read { try TrackQueries.fetchLatestCustom($0) }

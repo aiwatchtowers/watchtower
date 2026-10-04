@@ -24,7 +24,7 @@ final class ReactionDictionaryQueriesTests: XCTestCase {
 
     func testSetEnabledFlipsTheFlag() throws {
         let queue = try TestDatabase.create()
-        try queue.write { db in
+        _ = try queue.write { db in
             try TestDatabase.insertReactionCommandMapping(db, emoji: "white_check_mark", tool: "create_target", enabled: true)
         }
 
