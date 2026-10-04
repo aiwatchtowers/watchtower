@@ -8,10 +8,17 @@ import WatchtowerTestSupport
 final class WorkbenchBoardViewModelTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
+    /// The board remembers its mode per project id in these defaults; a test
+    /// that switched `.standard` to Kanban would leak into every later view
+    /// test whose fresh database has a workbench with the same id.
+    private var suiteName: String!
+    private var defaults: UserDefaults!
 
     override func setUp() {
         super.setUp()
+        suiteName = "WorkbenchBoardViewModelTests-\(UUID().uuidString)"
         do {
+            defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         } catch {
             XCTFail("setUp failed: \(error)")
@@ -19,6 +26,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     }
 
     override func tearDown() {
+        UserDefaults().removePersistentDomain(forName: suiteName)
         TestDatabase.cleanup(path: dbPath)
         super.tearDown()
     }
@@ -61,7 +69,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     }
 
     private func makeVM(project: Int64) -> WorkbenchBoardViewModel {
-        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project)
+        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults)
     }
 
     // MARK: - Tree
