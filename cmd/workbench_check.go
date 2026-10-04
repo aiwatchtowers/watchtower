@@ -291,9 +291,12 @@ func recordStopTurnEnd(database *db.DB, rowID, workbenchID int64, in stopHookInp
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err = database.SetTerminalTurnEnd(rowID, workbenchID, in.SessionID, end)
+	_, err = setTerminalTurnEnd(database, rowID, workbenchID, in.SessionID, end)
 	return err
 }
+
+// setTerminalTurnEnd is the turn end's write; a seam for tests.
+var setTerminalTurnEnd = (*db.DB).SetTerminalTurnEnd
 
 // stopHookDrift runs the drift check and prints the block JSON when git
 // certainly disagrees with the board; true when it blocked the stop.
@@ -357,7 +360,7 @@ func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, 
 		return
 	}
 	if err == nil {
-		err = writeStopAgentState(database, rowID, workbenchID, in, at)
+		err = writeStopAgentState(stderr, database, rowID, workbenchID, in, at)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
@@ -369,8 +372,9 @@ func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, 
 // without them nothing records "working", so "waiting" would stick after the
 // first turn until Repair (board #340). The turn end goes first, also when
 // the state write is a repeat (a turn without a prompt over a stored
-// "waiting").
-func writeStopAgentState(database *db.DB, rowID, workbenchID int64, in stopHookInput, at time.Time) error {
+// "waiting"). It only orders late tool results (board #368, limit (a)): its
+// failure is reported on stderr and never costs the state write.
+func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID int64, in stopHookInput, at time.Time) error {
 	if database == nil {
 		_, opened, err := openJiraCmdDB()
 		if err != nil {
@@ -383,7 +387,7 @@ func writeStopAgentState(database *db.DB, rowID, workbenchID int64, in stopHookI
 		return err
 	}
 	if err := recordStopTurnEnd(database, rowID, workbenchID, in); err != nil {
-		return err
+		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, hookTurn{stop: true})

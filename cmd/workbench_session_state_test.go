@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -924,6 +925,53 @@ func TestSessionState_StopRecordsTheTurnEndOverWaiting(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "waiting", storedAgentState(t, database, row))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	size, _ := transcriptSize(transcript)
+	assert.Equal(t, size, s.TurnEnd.Int64)
+}
+
+// The turn end only orders late tool results: a Stop whose turn-end write
+// fails still records "waiting", and says on stderr what it lost.
+func TestSessionState_StopRecordsWaitingWhenTheTurnEndFails(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+	require.NoError(t, err)
+	require.Equal(t, "working", storedAgentState(t, database, row))
+	orig := setTerminalTurnEnd
+	t.Cleanup(func() { setTerminalTurnEnd = orig })
+	setTerminalTurnEnd = func(*db.DB, int64, int64, string, int64) (bool, error) {
+		return false, errors.New("database is locked")
+	}
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+
+	assert.Empty(t, out)
+	assert.Equal(t, "watchtower: turn end not recorded: database is locked\n", errOut)
+	assert.Equal(t, "waiting", storedAgentState(t, database, row))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.False(t, s.TurnEnd.Valid)
+}
+
+// A Stop the drift check blocks continues the turn: it records the turn end
+// it marked before the check (the continued turn's calls come after it),
+// and no "waiting".
+func TestSessionState_BlockedStopRecordsTheTurnEndButNoWaiting(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "merged")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+	require.NoError(t, err)
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+
+	out, _ := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+
+	require.NotEmpty(t, out, "the drift blocks the stop")
+	assert.Equal(t, "working", storedAgentState(t, database, row))
 	s, err := database.GetTerminalSession(row)
 	require.NoError(t, err)
 	size, _ := transcriptSize(transcript)
