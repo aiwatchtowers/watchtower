@@ -24,23 +24,12 @@ func isoAgo(age time.Duration) string {
 	return time.Now().UTC().Add(-age).Format("2006-01-02T15:04:05Z")
 }
 
-// closedAgo dates every status change of target id, and its updated_at, age
-// ago — the target's close time as the view reads it.
-func closedAgo(t *testing.T, d *DB, id int64, age time.Duration) {
-	t.Helper()
-	at := isoAgo(age)
-	_, err := d.Exec(`UPDATE target_status_history SET changed_at = ? WHERE target_id = ?`, at, id)
-	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE targets SET updated_at = ? WHERE id = ?`, at, id)
-	require.NoError(t, err)
-}
-
 // closedLeaf seeds a top-level target of workbench pid with status, closed age ago.
 func closedLeaf(t *testing.T, d *DB, pid int64, status string, age time.Duration) int64 {
 	t.Helper()
 	id := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "leaf")
 	setStatusRaw(t, d, id, status)
-	closedAgo(t, d, id, age)
+	BackdateTestWorkbenchClose(t, d, id, age)
 	return id
 }
 
@@ -121,7 +110,7 @@ func TestProj15_UmbrellaArchivedOnlyWhole(t *testing.T) {
 	openGrandchild := insertBoardChild(t, d, pid, openChild, "todo")
 	closedGrandchild := insertBoardChild(t, d, pid, openChild, "dismissed")
 	for _, id := range []int64{root, closedChild, openChild, openGrandchild, closedGrandchild} {
-		closedAgo(t, d, id, 30*oneDay)
+		BackdateTestWorkbenchClose(t, d, id, 30*oneDay)
 	}
 
 	requireArchived(t, d, pid, map[int64]bool{
@@ -144,11 +133,11 @@ func TestProj15_GroupWaitsForItsLastClose(t *testing.T) {
 	setStatusRaw(t, d, child, "done")
 	require.Equal(t, "done", targetStatus(t, d, parent), "rollup closes the parent")
 
-	closedAgo(t, d, parent, 30*oneDay)
-	closedAgo(t, d, child, 2*oneDay)
+	BackdateTestWorkbenchClose(t, d, parent, 30*oneDay)
+	BackdateTestWorkbenchClose(t, d, child, 2*oneDay)
 	requireArchived(t, d, pid, map[int64]bool{parent: false, child: false})
 
-	closedAgo(t, d, child, 20*oneDay)
+	BackdateTestWorkbenchClose(t, d, child, 20*oneDay)
 	requireArchived(t, d, pid, map[int64]bool{parent: true, child: true})
 }
 
@@ -159,8 +148,8 @@ func TestProj15_HandSetDoneParentWithOpenChildIsNotArchived(t *testing.T) {
 	child := SeedTestWorkbenchTarget(t, d, pid, nullID(parent), "piece")
 	setStatusRaw(t, d, parent, "done")
 	require.Equal(t, "todo", targetStatus(t, d, child))
-	closedAgo(t, d, parent, 30*oneDay)
-	closedAgo(t, d, child, 30*oneDay)
+	BackdateTestWorkbenchClose(t, d, parent, 30*oneDay)
+	BackdateTestWorkbenchClose(t, d, child, 30*oneDay)
 
 	requireArchived(t, d, pid, map[int64]bool{parent: false, child: false})
 }
@@ -219,8 +208,8 @@ func archivedGroup(t *testing.T, d *DB, pid int64) (group, child int64) {
 	t.Helper()
 	group = SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "group")
 	child = insertBoardChild(t, d, pid, group, "done")
-	closedAgo(t, d, group, 30*oneDay)
-	closedAgo(t, d, child, 30*oneDay)
+	BackdateTestWorkbenchClose(t, d, group, 30*oneDay)
+	BackdateTestWorkbenchClose(t, d, child, 30*oneDay)
 	requireArchived(t, d, pid, map[int64]bool{group: true, child: true})
 	return group, child
 }
@@ -495,21 +484,13 @@ func seedLargeBoard(t *testing.T, d *DB, pid int64, roots, children, grandchildr
 	return n
 }
 
-// countArchived counts the archived nodes of a board.
-func countArchived(nodes []BoardNode) int {
-	n := 0
-	for _, x := range nodes {
-		if x.Archived {
-			n++
-		}
-		n += countArchived(x.Children)
-	}
-	return n
-}
-
 // The view runs on every board read: a 2000-target board must stay cheap.
 // Measured ~30 ms locally (the view alone ~12 ms with a second 2000-target
-// workbench in the database); the bound leaves CI headroom.
+// workbench in the database). The bound is far above that, so a loaded
+// machine passes, yet still trips on a read that walks the board
+// quadratically; the race detector scales it.
+const largeBoardReadBound = 3 * time.Second * raceSlowdown
+
 func TestProj15_LargeBoardReadIsFast(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
@@ -523,6 +504,6 @@ func TestProj15_LargeBoardReadIsFast(t *testing.T) {
 	t.Logf("2000-target board read: %s", elapsed)
 	assert.Len(t, board, 40)
 	// 30 roots × (1 + 7 + 42) archived; the other 10 roots × 7 × 5 closed grandchildren.
-	assert.Equal(t, 30*50+10*7*5, countArchived(board))
-	assert.Less(t, elapsed, time.Second, "2000-target board read")
+	assert.Equal(t, 30*50+10*7*5, CountArchived(board))
+	assert.Less(t, elapsed, largeBoardReadBound, "2000-target board read")
 }

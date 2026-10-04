@@ -14,6 +14,13 @@ func CloseTestWorkbenchTarget(t *testing.T, d *DB, id int64, status string, ago 
 	if err := d.UpdateTargetStatus(int(id), status); err != nil {
 		t.Fatalf("closing target %d: %v", id, err)
 	}
+	BackdateTestWorkbenchClose(t, d, id, ago)
+}
+
+// BackdateTestWorkbenchClose moves target id's close — every status history
+// row and updated_at — to ago before now, leaving its status alone.
+func BackdateTestWorkbenchClose(t *testing.T, d *DB, id int64, ago time.Duration) {
+	t.Helper()
 	at := time.Now().Add(-ago).UTC().Format("2006-01-02T15:04:05Z")
 	if _, err := d.Exec(`UPDATE target_status_history SET changed_at = ? WHERE target_id = ?`, at, id); err != nil {
 		t.Fatalf("backdating target %d's history: %v", id, err)

@@ -193,11 +193,10 @@ func (db *DB) UpdateWorkbenchDescription(id int64, description string) error {
 }
 
 // SetWorkbenchArchiveDays sets after how many days closed targets of
-// workbench projectID are archived (0 = never). The column's CHECK refuses a
-// value outside 0...365, for this path and the Desktop's alike.
-//
-// Dual path: the Desktop writes the setting with
-// WorkbenchQueries.setArchiveAfterDays (WatchtowerCore).
+// workbench projectID are archived (0 = never). It is the Go writer for
+// tests and tooling; the only production writer is the Desktop's
+// WorkbenchQueries.setArchiveAfterDays (WatchtowerCore, via GRDB). The
+// column's CHECK (0...365) is the rule both share.
 func (db *DB) SetWorkbenchArchiveDays(projectID int64, days int) error {
 	res, err := db.Exec(`UPDATE projects SET archive_after_days = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, days, projectID)
