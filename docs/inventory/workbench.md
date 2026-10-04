@@ -1079,9 +1079,11 @@ other direction.
   not hooked. (d) Subagent detection relies solely on the `agent_id` field
   of the hook input; an input without it is treated as the main thread's.
 
-- **Board archive (PROJ-15).** The view is computed over all of a
-  workbench's targets on every board read (a 2000-target board is pinned
-  by `TestProj15_LargeBoardReadIsFast`). Nothing is stored, so the Desktop
+- **Board archive (PROJ-15).** SQLite cannot push a `project_id` filter
+  into the recursive, grouped view, so every board read, `get_target` and
+  session `list_targets` computes the archive over all workbench targets in
+  the database, every workbench's (about 3 µs per target — fine at today's
+  sizes; a 2000-target board is pinned by `TestProj15_LargeBoardReadIsFast`). Nothing is stored, so the Desktop
   board notices a target ageing into the archive only at its next reload
   (any board change, Refresh, reopening the pane), not at the exact minute.
   Restore is reopening: there is no Unarchive action (owner decision D),
