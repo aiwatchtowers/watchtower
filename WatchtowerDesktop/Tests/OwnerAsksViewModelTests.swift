@@ -476,9 +476,9 @@ final class OwnerAsksViewModelTests: XCTestCase {
     /// Closing a closed ask looked at from a closed list dismisses nothing.
     func testClosingAClosedAskLeavesTheOpenOnesNew() async throws {
         let (p, s, askID) = try await seed()
+        let answer = #"{"verdict":"","answers":[{"id":"a","labels":["No"],"other":""}],"checklist":[],"comments":[],"note":""}"#
         let answered = try await pool.write { d in
-            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions, status: "answered",
-                                        answer: #"{"verdict":"","answers":[{"id":"a","labels":["No"],"other":""}],"checklist":[],"comments":[],"note":""}"#)
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions, status: "answered", answer: answer)
         }
         let vm = makeVM()
         vm.selectedWorkbenchID = p
