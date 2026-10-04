@@ -174,19 +174,21 @@ final class CodeQuestionCenterTests: XCTestCase {
                                 workbenchID: project.id)
         XCTAssertNil(center.buttonRects[project.id], "hidden when the selection clears")
         center.editorScrolled(workbenchID: project.id)
-        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertNil(center.settleTasks[project.id], "no wait without a selection")
         XCTAssertNil(center.buttonRects[project.id])
         XCTAssertEqual(page.rectRequests, requests, "nothing to anchor without a selection")
     }
 
     /// A selection change while the page answers `selectionRect` wins: the
     /// stale rect is not shown.
-    func testASelectionChangeOvertakesTheSettle() async {
+    func testASelectionChangeOvertakesTheSettle() async throws {
         let (center, _, buffer) = makeCenter()
         center.selectionChanged(selection(buffer, "load(config)", loadRange), workbenchID: project.id)
+        let overtaken = try XCTUnwrap(center.settleTasks[project.id])
         center.selectionChanged(selection(buffer, "", CodeTextRange(startLine: 1, startCol: 1, endLine: 1, endCol: 1)),
                                 workbenchID: project.id)
-        try? await Task.sleep(for: .milliseconds(50))
+        await overtaken.value
+        XCTAssertNil(center.settleTasks[project.id])
         XCTAssertNil(center.buttonRects[project.id])
     }
 

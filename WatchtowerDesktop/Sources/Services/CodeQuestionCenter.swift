@@ -139,7 +139,8 @@ final class CodeQuestionCenter {
     @ObservationIgnored private var ownedEngines: [Int64: WeakChatEngine] = [:]
     @ObservationIgnored private var selections: [Int64: CodeEditorSelection] = [:]
     @ObservationIgnored private var schedules: [Int64: AskAIButtonSchedule] = [:]
-    @ObservationIgnored private var settleTasks: [Int64: Task<Void, Never>] = [:]
+    /// Per workbench: the wait before the ✦ shows (tests await it).
+    @ObservationIgnored private(set) var settleTasks: [Int64: Task<Void, Never>] = [:]
     /// Per workbench: bumped by every selection or scroll, so a settle
     /// that an event overtook shows nothing.
     @ObservationIgnored private var settleGenerations: [Int64: Int] = [:]
