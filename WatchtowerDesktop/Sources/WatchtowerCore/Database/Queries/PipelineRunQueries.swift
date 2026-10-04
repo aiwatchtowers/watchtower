@@ -21,10 +21,12 @@ package enum PipelineRunQueries {
 
     /// The one pipeline whose failed runs are listed even when they used no
     /// tokens: a memory vault that will not open fails before the first AI call
-    /// and has no other signal in the app. The mechanical phases (slack-sync,
-    /// reaction-commands, jira-boards, reaped "interrupted" runs) stay
-    /// filtered — offline or with a revoked token they fail every cycle and
-    /// would bury the memory row.
+    /// and has no other signal in the app (the daemon records the same open
+    /// error at most once an hour). Other pipelines' token-less failures
+    /// (slack-sync, reaction-commands, jira-boards, their reaped
+    /// "interrupted" runs) stay filtered — offline or with a revoked token
+    /// they fail every cycle and would bury the memory row. A reaped memory
+    /// run is listed.
     static let tokenlessFailurePipeline = "memory"
 
     /// The day's runs that used tokens, plus token-less failures of

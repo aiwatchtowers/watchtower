@@ -20,7 +20,8 @@ final class PipelineRunQueriesTests: XCTestCase {
 
     /// A token-less memory failure (the vault would not open) is listed in
     /// Usage and counts no AI call; token-less runs of other pipelines stay
-    /// filtered out, failed or not — offline they would fail every cycle.
+    /// filtered out, failed or not — offline they would fail every cycle —
+    /// and so is a token-less memory run that did not fail (nothing to do).
     func testFetchByDateKeepsOnlyMemoryTokenlessFailures() throws {
         let db = try TestDatabase.create()
         let now = ISO8601DateFormatter().string(from: Date())
@@ -35,12 +36,15 @@ final class PipelineRunQueriesTests: XCTestCase {
                 db, pipeline: "memory", status: "error",
                 errorMsg: "opening memory vault: permission denied", tokens: 0, startedAt: now
             )
+            try insertRun(db, pipeline: "memory", status: "done", tokens: 0, startedAt: now)
         }
 
         let runs = try db.read { try PipelineRunQueries.fetchByDate($0, on: Date()) }
 
         XCTAssertEqual(Set(runs.map(\.pipeline)), ["digests", "memory"])
-        let memory = try XCTUnwrap(runs.first { $0.pipeline == "memory" })
+        let memoryRuns = runs.filter { $0.pipeline == "memory" }
+        XCTAssertEqual(memoryRuns.count, 1, "the token-less memory run that did not fail stays hidden")
+        let memory = try XCTUnwrap(memoryRuns.first)
         XCTAssertEqual(memory.status, "error")
         XCTAssertEqual(memory.errorMsg, "opening memory vault: permission denied")
         XCTAssertEqual(memory.aiCallCount, 0, "a run that used no tokens made no AI call")

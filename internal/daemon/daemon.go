@@ -94,6 +94,8 @@ type Daemon struct {
 	ideasPipe           *ideas.Pipeline
 	memoryPipe          *memory.Pipeline
 	memoryOpen          func() (*memory.Pipeline, error)
+	memoryOpenFailed    memoryOpenFailure // the last one recorded (recordMemoryOpenFailure)
+	memoryNow           func() time.Time  // its clock, nil = time.Now; a seam for tests
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline
@@ -495,7 +497,10 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		fn()
 		return
 	}
-	runID, _ := d.db.CreatePipelineRun(name, "daemon", "auto")
+	runID, err := d.db.CreatePipelineRun(name, "daemon", "auto")
+	if err != nil {
+		d.logger.Printf("pipeline_runs: %s run not recorded: %v", name, err)
+	}
 	stats := fn()
 	if runID <= 0 {
 		return
@@ -504,7 +509,42 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 	if stats.err != nil {
 		errMsg = stats.err.Error()
 	}
-	_ = d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg)
+	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
+		d.logger.Printf("pipeline_runs: %s run %d not completed: %v", name, runID, err)
+	}
+}
+
+// memoryOpenFailure is a failed vault open's error text and when it was
+// recorded.
+type memoryOpenFailure struct {
+	msg string
+	at  time.Time
+}
+
+// memoryOpenFailureRepeat is how often a vault that keeps failing to open
+// with the same error is recorded again.
+const memoryOpenFailureRepeat = time.Hour
+
+// recordMemoryOpenFailure surfaces a failed vault open where every other
+// phase's failure shows — a failed "memory" pipeline_runs row (Usage) and a
+// log line — instead of skipping the phase silently while Memory shows on.
+// The open is retried every cycle, but the same error is recorded at most
+// once per memoryOpenFailureRepeat, so a vault that stays unopenable does
+// not flood the day's Usage list; a new error text is recorded at once.
+func (d *Daemon) recordMemoryOpenFailure(err error) {
+	now := time.Now()
+	if d.memoryNow != nil {
+		now = d.memoryNow()
+	}
+	last := d.memoryOpenFailed
+	if last.msg == err.Error() && now.Sub(last.at) < memoryOpenFailureRepeat {
+		return
+	}
+	d.memoryOpenFailed = memoryOpenFailure{msg: err.Error(), at: now}
+	d.logger.Printf("memory: pipeline unavailable, skipping cycles until it opens: %v", err)
+	d.trackedPipelineRun("memory", func() pipelineRunStats {
+		return pipelineRunStats{err: err}
+	})
 }
 
 // stalePipelineRunAfter is how long another process's pipeline_runs row may
@@ -1449,15 +1489,10 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 	if d.memoryPipe == nil && d.memoryOpen != nil {
 		p, err := d.memoryOpen()
 		if err != nil {
-			// Surface the failure where every other phase's does — a failed
-			// "memory" pipeline_runs row (Usage) plus one log line per cycle —
-			// instead of skipping the phase silently while Memory shows on.
-			d.logger.Printf("memory: pipeline unavailable, skipping cycle: %v", err)
-			d.trackedPipelineRun("memory", func() pipelineRunStats {
-				return pipelineRunStats{err: err}
-			})
+			d.recordMemoryOpenFailure(err)
 			return
 		}
+		d.memoryOpenFailed.msg = ""
 		d.SetMemoryPipeline(p)
 	}
 	if d.memoryPipe == nil {
