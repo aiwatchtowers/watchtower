@@ -84,10 +84,11 @@ struct OnboardingAboutYouStepView: View {
                 Button {
                     Task { await onFinish(model.answers) }
                 } label: {
-                    Text("Done").frame(minWidth: 70)
+                    Text("Done").fontWeight(.semibold).frame(minWidth: 120)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                // No Return shortcut: Return in a people search field picks
+                // the first match, and a default button would take it first.
+                .onboardingPrimaryButton()
                 // Done before the prefill would write empty fields over the
                 // profile.
                 .disabled(!model.isPrefilled)

@@ -161,11 +161,10 @@ struct FeatureCustomizeView: View {
                 Button {
                     onDone()
                 } label: {
-                    Text("Done").frame(minWidth: 120)
+                    Text("Done").fontWeight(.semibold).frame(minWidth: 120)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .keyboardShortcut(.return, modifiers: .command)
+                .onboardingPrimaryButton()
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)

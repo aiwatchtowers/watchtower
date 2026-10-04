@@ -223,7 +223,7 @@ var registry = []Feature{
 	{
 		ID:          "memory",
 		Title:       "Memory",
-		Description: "Builds and maintains a durable long-term memory vault — people, projects, and beliefs — from what the rest of Watchtower observes, so later answers, drafts, and briefings have real context instead of starting cold. Off by default. Medium AI use for the core pipeline; the sources and surfaces below are further switches within it. Feeds the daily Briefing and Day Plan.",
+		Description: "Builds and maintains a durable long-term memory vault — people, projects, and beliefs — from what the rest of Watchtower observes, so later answers, drafts, and briefings have real context instead of starting cold. Off by default; setup's Work communication goal turns it on. Medium AI use for the core pipeline; the sources and surfaces below are further switches within it. Feeds the daily Briefing and Day Plan.",
 		Tagline:     "An assistant that remembers, not just reacts",
 		Benefits: []string{
 			"Durable memory of people, projects and beliefs",
