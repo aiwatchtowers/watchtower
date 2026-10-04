@@ -440,13 +440,17 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(seeded.enabledFeatureIDs, enabled.subtracting(["not-managed"]))
     }
 
-    /// A managed feature on beyond its goals' set (Tracks turned on in
-    /// Settings next to Tasks & Jira) is a hand pick too, and it is kept.
-    func testExtraFeatureBeyondTheGoalsIsCustomized() {
-        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.tasksAndJira]).union(["tracks"])
-        let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.tasksAndJira])
+    /// Among goals that overlap a hand-toggled set equally, the one that
+    /// would turn on the fewest features beyond it wins over the saved
+    /// goals: Briefing and Stream digests on alone read as Meetings + Tasks
+    /// & Jira, not Work communication + Tasks & Jira.
+    func testFewestExtrasBeatTheSavedGoals() {
+        let enabled = OnboardingFeaturePlan.alwaysOnFeatureIDs.union(["briefing", "stream-digests"])
+        let seeded = OnboardingFeatureSelection.current(
+            enabledIDs: enabled, savedGoals: [.workCommunication, .tasksAndJira]
+        )
         XCTAssertTrue(seeded.isCustomized)
-        XCTAssertTrue(seeded.goals.contains(.tasksAndJira))
+        XCTAssertEqual(seeded.goals, [.meetings, .tasksAndJira])
         XCTAssertEqual(seeded.enabledFeatureIDs, enabled)
     }
 

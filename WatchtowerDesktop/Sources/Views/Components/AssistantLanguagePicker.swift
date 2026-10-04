@@ -26,7 +26,9 @@ struct AssistantLanguageRow: View {
                 .font(.title3)
                 .foregroundStyle(Color.accentColor)
             VStack(alignment: .leading, spacing: 3) {
+                // The button below carries the name for VoiceOver.
                 Text("Assistant language").fontWeight(.semibold)
+                    .accessibilityHidden(true)
                 Text(AssistantLanguageText.caption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
