@@ -99,6 +99,26 @@ package enum OwnerAskPresentation {
         }
     }
 
+    /// A "Waiting for you" row's next step (board #366): "Review doc",
+    /// "Answer 2 questions", "Run 1 check".
+    package static func nextStep(for ask: OwnerAsk) -> String {
+        switch ask.kind {
+        case .review: "Review doc"
+        case .question: counted("Answer", ask.payload.questions.count, "question")
+        case .check: counted("Run", ask.payload.checklist.count, "check")
+        }
+    }
+
+    /// "Answer 1 question", "Answer 3 questions"; the bare verb and plural
+    /// noun when there are none (a payload Go would not file).
+    private static func counted(_ verb: String, _ count: Int, _ noun: String) -> String {
+        switch count {
+        case 0: "\(verb) \(noun)s"
+        case 1: "\(verb) 1 \(noun)"
+        default: "\(verb) \(count) \(noun)s"
+        }
+    }
+
     package static func askKindIcon(_ kind: OwnerAskKind) -> String {
         switch kind {
         case .review: "doc.text.magnifyingglass"

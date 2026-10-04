@@ -12,6 +12,7 @@ private final class ProbedTerminalSession: TerminalSessionProcess {
     let view = NSView()
     let pid: pid_t = 0
     var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (() -> Void)?
     var bracketedPasteMode = true
     var onDetach: (() -> Void)?
 

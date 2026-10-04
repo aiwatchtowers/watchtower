@@ -50,6 +50,27 @@ final class OwnerAskStackTests: XCTestCase {
         XCTAssertEqual(OwnerAskStack.outsideTheAppTitle, "Outside the app")
     }
 
+    /// Board #364: a drawer opens by itself on the oldest ask of the first
+    /// session on screen that holds an ask not closed yet.
+    func testAskToOpenTakesTheFirstSessionOnScreenWithAnAskNotClosed() throws {
+        let stack = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 9),
+            try ask(2, session: 8, minutesAgo: 5),
+            try ask(3, session: 7, minutesAgo: 4),
+            try ask(4, session: nil, minutesAgo: 3)
+        ])
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7, 8], dismissed: [])?.id, 1)
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [8], dismissed: [])?.id, 2)
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7, 8], dismissed: [1, 3])?.id, 2, "session 7 was closed")
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7], dismissed: [1])?.id, 1,
+                       "a new ask in a closed session opens the drawer on its oldest ask")
+        XCTAssertNil(stack.askToOpen(sessionsOnScreen: [7], dismissed: [1, 3]))
+        XCTAssertNil(stack.askToOpen(sessionsOnScreen: [9], dismissed: []), "no session of an ask on screen")
+        XCTAssertNil(OwnerAskStack([try ask(4, session: nil, minutesAgo: 1)]).askToOpen(sessionsOnScreen: [7], dismissed: []),
+                     "an ask filed outside the app never opens by itself")
+        XCTAssertNil(OwnerAskStack([]).askToOpen(sessionsOnScreen: [7], dismissed: []))
+    }
+
     func testNoAsksIsAnEmptyStack() {
         let stack = OwnerAskStack([])
         XCTAssertEqual(stack.count, 0)

@@ -10,6 +10,7 @@ final class FakeTerminalSession: TerminalSessionProcess {
     let view = NSView()
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (() -> Void)?
     private(set) var launches: [TerminalLaunch] = []
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []
@@ -522,6 +523,78 @@ final class TerminalCenterTests: XCTestCase {
 
         center.dismissClipboardHint(sessionID: s.id)
         XCTAssertFalse(center.clipboardHints.contains(s.id))
+    }
+
+    // MARK: - An ask's Return hint (board #364)
+
+    func testTheAnswerHintGoesWithTheOwnersInputDismissTheNextDeliveryOrTheExit() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+
+        center.showAnswerHint(.sent, sessionID: s.id)
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+        sessions[0].onOwnerInput?()
+        XCTAssertNil(center.answerHints[s.id], "the owner's next input")
+
+        center.showAnswerHint(.sent, sessionID: s.id)
+        center.dismissClipboardHint(sessionID: s.id)
+        XCTAssertNil(center.answerHints[s.id], "Dismiss")
+
+        center.showAnswerHint(.sent, sessionID: s.id)
+        XCTAssertEqual(center.sendPrompt("next", sessionID: s.id), .sent)
+        XCTAssertNil(center.answerHints[s.id], "the next delivery")
+
+        center.showAnswerHint(.sent, sessionID: s.id)
+        sessions[0].exit(0)
+        XCTAssertNil(center.answerHints[s.id], "the process exit")
+    }
+
+    /// A copied answer's hint walks the owner through it: the paste turns
+    /// it into "press Return", the next input clears it.
+    func testACopiedAnswerHintTurnsIntoPressReturnOnThePaste() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        center.showAnswerHint(.copied, sessionID: s.id)
+
+        sessions[0].onOwnerInput?()
+        XCTAssertEqual(center.answerHints[s.id], .sent)
+        sessions[0].onOwnerInput?()
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// The copied hint replaces the generic clipboard one; a line that went
+    /// nowhere, or a session not running, gets no hint.
+    func testTheAnswerHintReplacesTheClipboardHintAndNeedsARunningSession() throws {
+        let center = makeCenter()
+        center.copyToClipboard = { _ in }
+        let s = try row()
+        center.showAnswerHint(.sent, sessionID: s.id)
+        XCTAssertNil(center.answerHints[s.id], "not running")
+
+        center.start(s, fresh: true)
+        sessions[0].bracketedPasteMode = false
+        XCTAssertEqual(center.sendPrompt("x", sessionID: s.id), .copied)
+        center.showAnswerHint(.copied, sessionID: s.id)
+        XCTAssertEqual(center.answerHints[s.id], .copied)
+        XCTAssertFalse(center.clipboardHints.contains(s.id))
+
+        center.dismissClipboardHint(sessionID: s.id)
+        center.showAnswerHint(.noSession, sessionID: s.id)
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    func testClosingASessionForgetsItsAnswerHint() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        center.showAnswerHint(.sent, sessionID: s.id)
+
+        await center.close(sessionID: s.id)
+
+        XCTAssertNil(center.answerHints[s.id])
+        XCTAssertNil(sessions[0].onOwnerInput, "a closed process reports no input")
     }
 
     // MARK: - Hand to Claude Code (spec 2026-10-02 §9.5)

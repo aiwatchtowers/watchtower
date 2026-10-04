@@ -19,6 +19,23 @@ final class OwnerAskPresentationTests: XCTestCase {
         ]))
     }
 
+    /// Board #366: a "Waiting for you" row's next step by kind, counted.
+    func testNextStepPerKindSingularAndPlural() throws {
+        let step = { (ask: OwnerAsk) in OwnerAskPresentation.nextStep(for: ask) }
+        XCTAssertEqual(step(try ask(.review)), "Review doc")
+        XCTAssertEqual(step(try ask(.question, questions: true)), "Answer 1 question")
+        XCTAssertEqual(step(try ask(.check, checklist: #"[{"text":"Launch"}]"#)), "Run 1 check")
+        XCTAssertEqual(step(try ask(.check, checklist: #"[{"text":"Launch"},{"text":"Quit"}]"#)), "Run 2 checks")
+        XCTAssertEqual(step(try ask(.check)), "Run checks", "no items: the verb and the plural noun")
+        XCTAssertEqual(step(try ask(.question)), "Answer questions")
+        let second = Self.question.replacingOccurrences(of: #""id":"a""#, with: #""id":"b""#)
+        let two = try OwnerAsk(row: Row([
+            "id": 5, "project_id": 1, "kind": "question", "title": "t", "status": "open",
+            "payload": #"{"questions":[\#(Self.question),\#(second)]}"#
+        ]))
+        XCTAssertEqual(step(two), "Answer 2 questions")
+    }
+
     func testAnswerActionsPerKind() {
         let labels = { (kind: OwnerAskKind) in OwnerAskPresentation.answerActions(for: kind).map(\.label) }
         XCTAssertEqual(labels(.review), ["Request changes", "Approve"])

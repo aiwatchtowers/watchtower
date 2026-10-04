@@ -349,6 +349,42 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         assertOnScreen(c.id, "the resumed session")
     }
 
+    /// Board #364 through the real view: a session pane measures itself on
+    /// appearing, so a new ask opens beside a wide terminal; a pane too
+    /// narrow for the drawer beside it opens nothing until it widens.
+    func testANewAskOpensBesideAWideTerminalAndWaitsInANarrowOne() async throws {
+        let a = try await insertSession("a")
+        let vm = try await page(running: [a])
+        let project = try XCTUnwrap(vm.selectedWorkbench)
+        let projectID = projectID
+        let askID = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: projectID, sessionID: a.id) }
+        let host = NSHostingView(rootView: WorkspaceAreaView(vm: vm, project: project).environment(appState))
+        host.frame = NSRect(x: 0, y: 0, width: 500, height: 400)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        settle(0.05)
+
+        await vm.asks.load(projectID: projectID)
+        settle(0.05)
+        XCTAssertNil(vm.asks.drawerAskIDs[projectID], "500 pt: the drawer would cover the terminal")
+
+        window.setContentSize(NSSize(width: 800, height: 400))
+        let deadline = Date().addingTimeInterval(2)
+        while vm.asks.drawerAskIDs[projectID] == nil, Date() < deadline { settle(0.01) }
+        XCTAssertEqual(vm.asks.drawerAskIDs[projectID], askID, "widened: it opens by itself")
+
+        // Off screen and back: the pane measures itself again on appearing.
+        vm.asks.hideDrawer(projectID: projectID)
+        vm.layout.show(.board)
+        settle(0.05)
+        vm.layout.show(.session(a.id))
+        let back = Date().addingTimeInterval(2)
+        while vm.asks.drawerAskIDs[projectID] == nil, Date() < back { settle(0.01) }
+        XCTAssertEqual(vm.asks.drawerAskIDs[projectID], askID, "measured on appearing")
+    }
+
     /// Turns the run loop: SwiftUI applies pending updates, the hosts their
     /// deferred work.
     private func settle(_ seconds: TimeInterval) {

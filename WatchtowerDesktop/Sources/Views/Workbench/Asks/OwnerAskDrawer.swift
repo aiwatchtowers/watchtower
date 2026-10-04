@@ -24,10 +24,16 @@ enum OwnerAskDrawerLayout {
         let covers: Bool
     }
 
+    /// Whether a pane `total` wide has room for the drawer beside its
+    /// content; without it the drawer covers the content.
+    static func fitsBeside(total: CGFloat) -> Bool {
+        total - minContentWidth >= minDrawerWidth
+    }
+
     static func frames(total: CGFloat, drawerWidth: CGFloat, hasDrawer: Bool, expanded: Bool) -> Frames {
         guard hasDrawer else { return Frames(content: total, drawerX: total, drawer: 0, covers: false) }
         let room = total - minContentWidth
-        guard room >= minDrawerWidth else { return Frames(content: total, drawerX: 0, drawer: total, covers: true) }
+        guard fitsBeside(total: total) else { return Frames(content: total, drawerX: 0, drawer: total, covers: true) }
         let drawer = min(max(drawerWidth, minDrawerWidth), room)
         let content = total - drawer
         return expanded
