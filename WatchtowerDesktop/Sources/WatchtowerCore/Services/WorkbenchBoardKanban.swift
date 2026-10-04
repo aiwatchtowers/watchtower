@@ -9,6 +9,8 @@ import Foundation
 /// part of `WorkbenchBoardOrder` is constant there); the Done column instead
 /// lists the most recently updated first, because with "Show done" off it
 /// keeps only the latest `doneCap` and "latest" is what the owner looks for.
+/// Archived leaves (board #301) are cards only with "Archive" on, in the Done
+/// and Dismissed columns, never capped.
 package struct WorkbenchBoardKanban {
     /// Status of the catch-all column for a status this build does not know.
     package static let otherStatus = "__other__"
@@ -48,24 +50,38 @@ package struct WorkbenchBoardKanban {
     /// The filter actually applied: nil (All) when the requested one is not
     /// among `filterOptions` (deleted, or no longer a parent).
     package let filterRootID: Int?
+    /// Archived leaves under the filter "Archive" on would apply, whatever
+    /// the toggles and the search: the cards "Archive" adds, Kanban's
+    /// "Archive (K)".
+    package let archivedCardCount: Int
 
     /// A non-empty `query` (`WorkbenchBoardSearch`) keeps the leaves it
-    /// matches and the leaves under a parent it matches, and shows the done
-    /// and dismissed ones as if "Show done" were on.
-    package init(_ roots: [WorkbenchBoardNode], filterRootID: Int?, showDone: Bool, query: String = "") {
+    /// matches and the leaves under a parent it matches, and shows the done,
+    /// dismissed and archived ones as if "Show done" and "Archive" were on.
+    /// With "Archive" on and "Show done" off, the Dismissed column holds only
+    /// archived cards.
+    package init(
+        _ roots: [WorkbenchBoardNode],
+        filterRootID: Int?,
+        showDone: Bool,
+        showArchived: Bool = false,
+        query: String = ""
+    ) {
         let search = WorkbenchBoardSearch(query)
         let showDone = showDone || search != nil
-        let options = roots.filter { !$0.children.isEmpty }.map {
-            FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
-        }
-        let applied = filterRootID.flatMap { id in options.contains { $0.id == id } ? id : nil }
-        let scope = applied.map { id in roots.filter { $0.target.id == id } } ?? roots
+        let showArchived = showArchived || search != nil
+        let options = Self.filterOptions(roots, showArchived: showArchived)
+        let applied = Self.applied(filterRootID, among: options)
+        let scope = Self.scope(roots, applied)
 
-        var leaves: [Card] = []
-        Self.collectLeaves(scope, chain: [], search: search, ancestorMatched: false, into: &leaves)
+        var collected: [Card] = []
+        Self.collectLeaves(scope, chain: [], search: search, ancestorMatched: false, into: &collected)
+        let leaves = collected.filter { card in
+            card.node.archived ? showArchived : (showDone || card.node.target.status != "dismissed")
+        }
 
         var statuses = ["todo", "in_progress", "in_review", "blocked", "done"]
-        if showDone { statuses.append("dismissed") }
+        if showDone || showArchived { statuses.append("dismissed") }
         var columns = statuses.map { status in
             Self.column(status, cards: leaves.filter { $0.node.target.status == status }, showDone: showDone)
         }
@@ -78,6 +94,10 @@ package struct WorkbenchBoardKanban {
         self.columns = columns
         self.filterOptions = options
         self.filterRootID = applied
+        // Counted over what "Archive" on shows: a remembered filter on an
+        // archived root applies only then.
+        let archiveScope = Self.scope(roots, Self.applied(filterRootID, among: Self.filterOptions(roots, showArchived: true)))
+        self.archivedCardCount = Self.archivedLeafCount(archiveScope)
     }
 
     /// Whether `id` is a card shown on this board. A drop accepts only these:
@@ -92,12 +112,35 @@ package struct WorkbenchBoardKanban {
         guard status == "done" else {
             return Column(status: status, title: title, cards: cards.sorted(by: byPriorityThenID), hiddenCount: 0)
         }
-        let recent = cards.sorted { lhs, rhs in
-            let l = lhs.node.target, r = rhs.node.target
-            return l.updatedAt != r.updatedAt ? l.updatedAt > r.updatedAt : l.id > r.id
+        let recent = cards.filter { !$0.node.archived }.sorted(by: byRecency)
+        let kept = showDone ? recent : Array(recent.prefix(doneCap))
+        let shown = (kept + cards.filter(\.node.archived)).sorted(by: byRecency)
+        return Column(status: status, title: title, cards: shown, hiddenCount: recent.count - kept.count)
+    }
+
+    private static func filterOptions(_ roots: [WorkbenchBoardNode], showArchived: Bool) -> [FilterOption] {
+        roots.filter { !$0.children.isEmpty && (showArchived || !$0.archived) }.map {
+            FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
         }
-        let shown = showDone ? recent : Array(recent.prefix(doneCap))
-        return Column(status: status, title: title, cards: shown, hiddenCount: recent.count - shown.count)
+    }
+
+    private static func applied(_ filterRootID: Int?, among options: [FilterOption]) -> Int? {
+        filterRootID.flatMap { id in options.contains { $0.id == id } ? id : nil }
+    }
+
+    private static func scope(_ roots: [WorkbenchBoardNode], _ applied: Int?) -> [WorkbenchBoardNode] {
+        applied.map { id in roots.filter { $0.target.id == id } } ?? roots
+    }
+
+    private static func archivedLeafCount(_ nodes: [WorkbenchBoardNode]) -> Int {
+        nodes.reduce(0) { count, n in
+            count + (n.children.isEmpty ? (n.archived ? 1 : 0) : archivedLeafCount(n.children))
+        }
+    }
+
+    private static func byRecency(_ lhs: Card, _ rhs: Card) -> Bool {
+        let l = lhs.node.target, r = rhs.node.target
+        return l.updatedAt != r.updatedAt ? l.updatedAt > r.updatedAt : l.id > r.id
     }
 
     private static func byPriorityThenID(_ lhs: Card, _ rhs: Card) -> Bool {

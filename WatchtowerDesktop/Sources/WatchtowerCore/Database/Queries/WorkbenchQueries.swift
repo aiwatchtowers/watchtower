@@ -6,6 +6,7 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
     case wrongWorkbench
     case notARoot(Int64)
     case invalidStatus(String)
+    case workbenchNotFound
 
     package var errorDescription: String? {
         switch self {
@@ -13,6 +14,7 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
         case .wrongWorkbench: "That target belongs to another workbench."
         case let .notARoot(id): "Comment \(id) is a reply; only a thread's first comment has a status."
         case let .invalidStatus(status): "Unknown comment status \u{201C}\(status)\u{201D}."
+        case .workbenchNotFound: "That workbench no longer exists."
         }
     }
 }
@@ -34,6 +36,19 @@ package enum WorkbenchQueries {
 
     package static func fetch(_ db: Database, id: Int64) throws -> Workbench? {
         try Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id])
+    }
+
+    /// The header menu's "Archive Closed Targets After" (board #301): days a
+    /// closed target waits before the board archives it, 0 = never. The
+    /// column's CHECK bounds it (0…365) for both languages.
+    ///
+    /// Dual path of Go `SetWorkbenchArchiveDays` (internal/db/workbenches.go).
+    package static func setArchiveAfterDays(_ db: Database, projectID: Int64, days: Int) throws {
+        try db.execute(
+            sql: "UPDATE projects SET archive_after_days = ?, updated_at = \(now) WHERE id = ?",
+            arguments: [days, projectID]
+        )
+        guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
     }
 
     package static func summaries(_ db: Database) throws -> [WorkbenchSummary] {
@@ -260,11 +275,19 @@ package enum WorkbenchQueries {
 
     /// The project's target tree: roots (and orphans whose parent is outside
     /// the project) in `WorkbenchBoardOrder` (priority, then status, then id —
-    /// Go's `boardSiblingOrder`). Children use the same order.
+    /// Go's `boardSiblingOrder`). Children use the same order. Archived
+    /// targets stay in the tree, marked from the `workbench_target_archive`
+    /// view (board #301) — the one archive rule Go reads too — so a parent's
+    /// counter still counts them; the board's filters hide them.
     package static func board(_ db: Database, projectID: Int64) throws -> [WorkbenchBoardNode] {
         let targets = try Target.fetchAll(
             db, sql: "SELECT * FROM targets WHERE project_id = ?", arguments: [projectID]
         )
+        let archived = Set(try Int.fetchAll(
+            db,
+            sql: "SELECT target_id FROM workbench_target_archive WHERE project_id = ? AND archived",
+            arguments: [projectID]
+        ))
         let counters = try boardCounters(db, projectID: projectID)
         let ids = Set(targets.map(\.id))
         let byParent = Dictionary(grouping: targets) { target in
@@ -276,7 +299,8 @@ package enum WorkbenchQueries {
                 target: target,
                 children: WorkbenchBoardOrder.sorted(byParent[target.id] ?? []).map(node),
                 openComments: counters.open[key] ?? 0,
-                unreadForOwner: counters.unread[key] ?? 0
+                unreadForOwner: counters.unread[key] ?? 0,
+                archived: archived.contains(target.id)
             )
         }
         return WorkbenchBoardOrder.sorted(byParent[0] ?? []).map(node)

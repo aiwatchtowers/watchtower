@@ -303,4 +303,70 @@ final class WorkbenchQueriesTests: XCTestCase {
         }
     }
 
+    // MARK: - Archive (board #301)
+
+    /// Backdates every status change of `target` — its close time for the
+    /// `workbench_target_archive` view — by `days` days from now.
+    private func close(_ d: Database, _ target: Int64, daysAgo days: Int) throws {
+        try d.execute(
+            sql: """
+                UPDATE target_status_history SET changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?)
+                WHERE target_id = ?
+                """,
+            arguments: ["-\(days) days", target]
+        )
+    }
+
+    func testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let open = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Open group", status: "in_progress")
+            let oldTask = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Old task", status: "done", parentID: open)
+            _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Live task", status: "in_progress", parentID: open)
+            let group = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Old group", status: "done")
+            let leaf = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Old leaf", status: "dismissed", parentID: group)
+            let recent = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Recent", status: "done")
+            for id in [oldTask, group, leaf] { try close(d, id, daysAgo: 20) }
+            try close(d, recent, daysAgo: 13)
+
+            let board = try WorkbenchQueries.board(d, projectID: p)
+            let archived = { (id: Int64) in WorkbenchBoardOutline.find(Int(id), in: board)?.archived }
+            XCTAssertEqual(archived(open), false)
+            XCTAssertEqual(archived(oldTask), true, "a closed task of an open group archives alone")
+            XCTAssertEqual(archived(group), true)
+            XCTAssertEqual(archived(leaf), true)
+            XCTAssertEqual(archived(recent), false, "13 days is inside the default 14")
+            let openNode = try XCTUnwrap(WorkbenchBoardOutline.find(Int(open), in: board))
+            XCTAssertEqual(openNode.children.count, 2, "archived targets stay in the tree")
+            XCTAssertEqual(WorkbenchBoardCard(openNode).children?.done, 1, "the counter still counts the archived task")
+            XCTAssertEqual(WorkbenchBoardCard(openNode).children?.total, 2)
+        }
+    }
+
+    func testSetArchiveAfterDaysAppliesBothWaysAndTheCheckRefusesOutOfRange() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let other = try TestDatabase.insertWorkbench(d, name: "other", folder: "/tmp/other")
+            let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p, status: "done")
+            try close(d, t, daysAgo: 5)
+            let isArchived = { try WorkbenchQueries.board(d, projectID: p).first?.archived }
+            XCTAssertEqual(try WorkbenchQueries.fetch(d, id: p)?.archiveAfterDays, 14, "the column's default")
+            XCTAssertEqual(try isArchived(), false)
+
+            try WorkbenchQueries.setArchiveAfterDays(d, projectID: p, days: 3)
+            XCTAssertEqual(try WorkbenchQueries.fetch(d, id: p)?.archiveAfterDays, 3)
+            XCTAssertEqual(try WorkbenchQueries.fetch(d, id: other)?.archiveAfterDays, 14, "per workbench")
+            XCTAssertEqual(try isArchived(), true, "shortening archives at once")
+            try WorkbenchQueries.setArchiveAfterDays(d, projectID: p, days: 0)
+            XCTAssertEqual(try isArchived(), false, "Never brings it back")
+
+            for days in [-1, 366] {
+                XCTAssertThrowsError(try WorkbenchQueries.setArchiveAfterDays(d, projectID: p, days: days), "\(days)")
+            }
+            XCTAssertEqual(try WorkbenchQueries.fetch(d, id: p)?.archiveAfterDays, 0, "a refused value writes nothing")
+            XCTAssertThrowsError(try WorkbenchQueries.setArchiveAfterDays(d, projectID: 999, days: 7)) { error in
+                XCTAssertEqual(error as? WorkbenchQueryError, .workbenchNotFound)
+            }
+        }
+    }
 }

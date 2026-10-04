@@ -110,7 +110,8 @@ type workbenchInfoView struct {
 	// BoardLanguageRule is the sentence the agent follows (BoardLanguageLine).
 	BoardLanguageRule string         `json:"board_language_rule"`
 	Sources           []sourceView   `json:"sources"`
-	Targets           map[string]int `json:"targets_by_status"`
+	Targets           map[string]int `json:"targets_by_status"` // the whole board, archived targets included
+	Archived          int            `json:"archived"`          // archived targets (PROJ-15)
 	NewComments       int            `json:"comments_new_for_agent"`
 }
 
@@ -120,7 +121,7 @@ func NewWorkbenchInfo() *Tool {
 	return &Tool{
 		Name: WorkbenchInfoTool,
 		Description: "Describe this Watchtower workbench: name, folder, description, board language, sources, target counts by " +
-			"status and owner comments waiting for you. An empty description means the " +
+			"status (the whole board), how many targets are archived and owner comments waiting for you. An empty description means the " +
 			"workbench is not set up yet (run the setup of the Watchtower skill in this folder).",
 		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
@@ -151,7 +152,7 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 	v := &workbenchInfoView{
 		ID: p.ID, Name: p.Name, Folder: p.FolderPath, Description: p.Description,
 		BoardLanguageRule: BoardLanguageLine, Sources: make([]sourceView, 0, len(sources)),
-		Targets: map[string]int{}, NewComments: len(fresh),
+		Targets: map[string]int{}, Archived: db.CountArchived(board), NewComments: len(fresh),
 	}
 	for _, s := range sources {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
@@ -165,65 +166,6 @@ func countStatuses(nodes []db.BoardNode, into map[string]int) {
 		into[n.Target.Status]++
 		countStatuses(n.Children, into)
 	}
-}
-
-// ---- workbench_board ---------------------------------------------------
-
-type boardNodeView struct {
-	ID             int             `json:"id"`
-	Text           string          `json:"text"`
-	Intent         string          `json:"intent,omitempty"`
-	Status         string          `json:"status"`
-	Priority       string          `json:"priority"`
-	Progress       float64         `json:"progress"`
-	StatusSince    string          `json:"status_since,omitempty"` // when it entered its current status (UTC)
-	Branch         string          `json:"branch,omitempty"`       // the git branch carrying the work (PROJ-07)
-	PR             string          `json:"pr,omitempty"`           // the pull request, a number or URL
-	NewForAgent    int             `json:"comments_new_for_agent,omitempty"`
-	UnreadForOwner int             `json:"comments_unread_for_owner,omitempty"`
-	Children       []boardNodeView `json:"children,omitempty"`
-}
-
-type workbenchBoardView struct {
-	WorkbenchID int64           `json:"workbench_id"`
-	Targets     []boardNodeView `json:"targets"`
-}
-
-// NewWorkbenchBoard returns the bound workbench's target tree with comment
-// counters.
-func NewWorkbenchBoard() *Tool {
-	return &Tool{
-		Name: WorkbenchBoardTool,
-		Description: "The workbench board: the target tree (ids, status and since when, priority, progress, comment counters; " +
-			"siblings sorted by priority, then status). Read it before changing the board.",
-		InputSchema: mustSchema[emptyArgs](WorkbenchBoardTool),
-		Access:      AccessRead,
-		Surfaces:    workbenchSurfaces,
-		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
-			p, err := workbenchOf(ctx, d, call.Binding)
-			if err != nil {
-				return nil, err
-			}
-			board, err := d.GetWorkbenchBoard(p.ID)
-			if err != nil {
-				return nil, fmt.Errorf("loading board: %w", err)
-			}
-			return workbenchBoardView{WorkbenchID: p.ID, Targets: boardViews(board)}, nil
-		},
-	}
-}
-
-func boardViews(nodes []db.BoardNode) []boardNodeView {
-	out := make([]boardNodeView, 0, len(nodes))
-	for _, n := range nodes {
-		out = append(out, boardNodeView{
-			ID: n.Target.ID, Text: n.Target.Text, Intent: n.Target.Intent,
-			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress,
-			StatusSince: n.StatusSince, Branch: n.Target.Branch, PR: n.Target.PR, NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
-			Children: boardViews(n.Children),
-		})
-	}
-	return out
 }
 
 // ---- update_workbench --------------------------------------------------

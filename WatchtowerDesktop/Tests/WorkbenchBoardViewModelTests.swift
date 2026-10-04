@@ -8,10 +8,17 @@ import WatchtowerTestSupport
 final class WorkbenchBoardViewModelTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
+    /// The board remembers its mode per project id in these defaults; a test
+    /// that switched `.standard` to Kanban would leak into every later view
+    /// test whose fresh database has a workbench with the same id.
+    private var suiteName: String!
+    private var defaults: UserDefaults!
 
     override func setUp() {
         super.setUp()
+        suiteName = "WorkbenchBoardViewModelTests-\(UUID().uuidString)"
         do {
+            defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         } catch {
             XCTFail("setUp failed: \(error)")
@@ -19,6 +26,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     }
 
     override func tearDown() {
+        UserDefaults().removePersistentDomain(forName: suiteName)
         TestDatabase.cleanup(path: dbPath)
         super.tearDown()
     }
@@ -61,7 +69,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     }
 
     private func makeVM(project: Int64) -> WorkbenchBoardViewModel {
-        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project)
+        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project, defaults: defaults)
     }
 
     // MARK: - Tree
@@ -590,4 +598,78 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.stopPolling()
     }
 
+    // MARK: - Archive (board #301)
+
+    /// Backdates `target`'s status changes — its close time for the archive
+    /// view — past the default 14 days.
+    nonisolated private static func closeLongAgo(_ db: Database, _ target: Int64) throws {
+        try db.execute(
+            sql: """
+                UPDATE target_status_history SET changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')
+                WHERE target_id = ?
+                """,
+            arguments: [target]
+        )
+    }
+
+    func testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne() throws {
+        let (pid, live, old) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let live = try Self.insertTarget(db, project: pid, text: "Live", status: "done")
+            let old = try Self.insertTarget(db, project: pid, text: "Old", status: "done")
+            try Self.closeLongAgo(db, old)
+            return (pid, live, old)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.showDone = true
+        XCTAssertEqual(vm.archivedCount, 1)
+        XCTAssertEqual(vm.rows.map(\.id), [Int(live)])
+        XCTAssertFalse(vm.kanban.showsCard(Int(old)))
+
+        vm.showArchived = true
+        XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(live), Int(old)])
+        XCTAssertTrue(vm.kanban.showsCard(Int(old)))
+
+        vm.showArchived = false
+        XCTAssertTrue(vm.setStatus("todo", for: Int(old)), "restoring = reopening")
+        XCTAssertEqual(vm.archivedCount, 0)
+        XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(live), Int(old)])
+    }
+
+    /// "Archive (K)" counts what the toggle adds: every archived target in
+    /// the list, only the archived leaf cards in Kanban.
+    func testTheArchiveCountFollowsTheMode() throws {
+        let pid = try dbManager.dbPool.write { db -> Int64 in
+            let pid = try Self.insertWorkbench(db)
+            let group = try Self.insertTarget(db, project: pid, text: "Old group", status: "done")
+            let child = try Self.insertTarget(db, project: pid, text: "Old task", parent: group, status: "done")
+            try Self.closeLongAgo(db, group)
+            try Self.closeLongAgo(db, child)
+            return pid
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.mode = .list
+        XCTAssertEqual(vm.archivedCount, 2, "the group and its task")
+        vm.mode = .kanban
+        XCTAssertEqual(vm.archivedCount, 1, "only the task is a card")
+    }
+
+    func testTheArchiveSettingIsInTheFingerprint() throws {
+        let pid = try dbManager.dbPool.write { db -> Int64 in
+            let pid = try Self.insertWorkbench(db)
+            let old = try Self.insertTarget(db, project: pid, text: "Old", status: "done")
+            try Self.closeLongAgo(db, old)
+            return pid
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        XCTAssertEqual(vm.archivedCount, 1)
+        XCTAssertFalse(vm.refreshIfChanged())
+
+        try dbManager.dbPool.write { try WorkbenchQueries.setArchiveAfterDays($0, projectID: pid, days: 0) }
+        XCTAssertTrue(vm.refreshIfChanged(), "a changed setting reloads the board")
+        XCTAssertEqual(vm.archivedCount, 0)
+    }
 }

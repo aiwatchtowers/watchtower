@@ -13,21 +13,34 @@ package enum WorkbenchBoardOutline {
     /// Depth-first rows. A collapsed node keeps its row and hides its subtree.
     /// With `showDone == false` a done/dismissed node is hidden only when it has
     /// no open descendant — hiding a done feature must never hide its open task.
+    /// An archived node (board #301) shows only with `showArchived`, whatever
+    /// `showDone` says; a closed node leading to a shown archived one stays
+    /// so the archived one keeps its place in the tree.
     ///
     /// A non-empty `query` (board #207, `WorkbenchBoardSearch`) keeps the
     /// targets it matches, their whole subtrees and the ancestors leading to
-    /// them; done and dismissed targets are searched too and nothing is
-    /// collapsed, so a match is never hidden by either.
+    /// them; done, dismissed and archived targets are searched too and nothing
+    /// is collapsed, so a match is never hidden by any of them.
     package static func rows(
-        _ roots: [WorkbenchBoardNode], collapsed: Set<Int>, showDone: Bool, query: String = ""
+        _ roots: [WorkbenchBoardNode],
+        collapsed: Set<Int>,
+        showDone: Bool,
+        showArchived: Bool = false,
+        query: String = ""
     ) -> [WorkbenchBoardRow] {
         var out: [WorkbenchBoardRow] = []
         if let search = WorkbenchBoardSearch(query) {
             appendMatches(roots, depth: 0, search: search, ancestorMatched: false, into: &out)
         } else {
-            append(roots, depth: 0, collapsed: collapsed, showDone: showDone, into: &out)
+            let filter = Filter(showDone: showDone, showArchived: showArchived)
+            append(roots, depth: 0, collapsed: collapsed, filter: filter, into: &out)
         }
         return out
+    }
+
+    /// Archived targets on the board, at any depth — the board's "Archive (K)".
+    package static func archivedCount(_ nodes: [WorkbenchBoardNode]) -> Int {
+        nodes.reduce(0) { $0 + ($1.archived ? 1 : 0) + archivedCount($1.children) }
     }
 
     package static func find(_ targetID: Int, in nodes: [WorkbenchBoardNode]) -> WorkbenchBoardNode? {
@@ -56,7 +69,7 @@ package enum WorkbenchBoardOutline {
         guard let node = find(targetID, in: roots) else { return [] }
         // Collapsing the target hides its subtree — with itself and its
         // current parent, the only places it cannot go.
-        return rows(roots, collapsed: [node.target.id], showDone: true)
+        return rows(roots, collapsed: [node.target.id], showDone: true, showArchived: true)
             .filter { $0.id != targetID && $0.id != node.target.parentId }
     }
 
@@ -64,14 +77,25 @@ package enum WorkbenchBoardOutline {
         _ nodes: [WorkbenchBoardNode],
         depth: Int,
         collapsed: Set<Int>,
-        showDone: Bool,
+        filter: Filter,
         into out: inout [WorkbenchBoardRow]
     ) {
-        for n in nodes where showDone || hasOpenWork(n) {
+        for n in nodes where filter.shows(n) {
             out.append(WorkbenchBoardRow(node: n, depth: depth, hasChildren: !n.children.isEmpty))
             if !collapsed.contains(n.target.id) {
-                append(n.children, depth: depth + 1, collapsed: collapsed, showDone: showDone, into: &out)
+                append(n.children, depth: depth + 1, collapsed: collapsed, filter: filter, into: &out)
             }
+        }
+    }
+
+    /// The list's Show done and Archive toggles, outside a search.
+    private struct Filter {
+        let showDone: Bool
+        let showArchived: Bool
+
+        func shows(_ n: WorkbenchBoardNode) -> Bool {
+            if n.archived { return showArchived }
+            return showDone || !WorkbenchBoardOutline.isClosed(n.target.status) || n.children.contains(where: shows)
         }
     }
 
@@ -88,11 +112,6 @@ package enum WorkbenchBoardOutline {
             out.append(WorkbenchBoardRow(node: n, depth: depth, hasChildren: !n.children.isEmpty))
             appendMatches(n.children, depth: depth + 1, search: search, ancestorMatched: matched, into: &out)
         }
-    }
-
-    private static func hasOpenWork(_ n: WorkbenchBoardNode) -> Bool {
-        if !isClosed(n.target.status) { return true }
-        return n.children.contains(where: hasOpenWork)
     }
 
     private static func isClosed(_ status: String) -> Bool {

@@ -33,8 +33,8 @@ final class WorkbenchBoardOutlineTests: XCTestCase {
         }
     }
 
-    private func node(_ t: Target, _ children: [WorkbenchBoardNode] = []) -> WorkbenchBoardNode {
-        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0)
+    private func node(_ t: Target, _ children: [WorkbenchBoardNode] = [], archived: Bool = false) -> WorkbenchBoardNode {
+        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, archived: archived)
     }
 
     func testRowsFlattenDepthFirstWithDepth() throws {
@@ -155,5 +155,61 @@ final class WorkbenchBoardOutlineTests: XCTestCase {
         XCTAssertEqual(WorkbenchBoardOutline.moveDestinations(for: 5, in: tree).map(\.id), [1, 2, 3, 4])
         XCTAssertEqual(WorkbenchBoardOutline.moveDestinations(for: 5, in: tree).map(\.depth), [0, 1, 2, 1])
         XCTAssertTrue(WorkbenchBoardOutline.moveDestinations(for: 99, in: tree).isEmpty)
+    }
+
+    // MARK: - Archive (board #301)
+
+    /// 1 open > {2 archived done}; 3 done (recent) > {4 archived done};
+    /// 5 done (recent); 6 archived dismissed > {7 archived done}.
+    private func archiveTree() throws -> [WorkbenchBoardNode] {
+        [
+            node(try target(1, "Open group"), [node(try target(2, "Old task", status: "done", parent: 1), archived: true)]),
+            node(try target(3, "Recent group", status: "done"), [
+                node(try target(4, "Old step", status: "done", parent: 3), archived: true)
+            ]),
+            node(try target(5, "Recent", status: "done")),
+            node(try target(6, "Old group", status: "dismissed"), [
+                node(try target(7, "Old leaf", status: "done", parent: 6), archived: true)
+            ], archived: true)
+        ]
+    }
+
+    func testArchivedTargetsAreHiddenWithoutTheToggleWhateverShowDoneSays() throws {
+        let tree = try archiveTree()
+        XCTAssertEqual(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false).map(\.id), [1])
+        XCTAssertEqual(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: true).map(\.id), [1, 3, 5],
+                       "an archived group goes whole")
+        XCTAssertEqual(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: true).map(\.hasChildren),
+                       [true, true, false], "the chevron and the counter still see the archived child")
+    }
+
+    func testArchiveToggleShowsArchivedTargetsAndThePathToThem() throws {
+        let tree = try archiveTree()
+        XCTAssertEqual(
+            WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false, showArchived: true).map(\.id),
+            [1, 2, 3, 4, 6, 7],
+            "closed group 3 leads to an archived step; recent done 5 still waits for Show done"
+        )
+        XCTAssertEqual(
+            WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: true, showArchived: true).map(\.id),
+            [1, 2, 3, 4, 5, 6, 7]
+        )
+    }
+
+    func testSearchAlwaysMatchesArchivedTargets() throws {
+        let tree = try archiveTree()
+        XCTAssertEqual(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false, query: "old").map(\.id),
+                       [1, 2, 3, 4, 6, 7])
+        XCTAssertEqual(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false, query: "#7").map(\.id), [6, 7])
+    }
+
+    func testArchivedCountCountsEveryDepthAndZeroOnAnEmptyBoard() throws {
+        XCTAssertEqual(WorkbenchBoardOutline.archivedCount(try archiveTree()), 4)
+        XCTAssertEqual(WorkbenchBoardOutline.archivedCount([]), 0)
+    }
+
+    func testMoveDestinationsIncludeArchivedTargets() throws {
+        XCTAssertEqual(WorkbenchBoardOutline.moveDestinations(for: 5, in: try archiveTree()).map(\.id), [1, 2, 3, 4, 6, 7],
+                       "moving open work under an archived group restores the group")
     }
 }
