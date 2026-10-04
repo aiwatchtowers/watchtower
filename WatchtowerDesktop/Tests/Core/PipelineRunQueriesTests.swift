@@ -18,15 +18,19 @@ final class PipelineRunQueriesTests: XCTestCase {
         )
     }
 
-    /// A failed run that never reached the model (the memory vault would not
-    /// open) is listed in Usage and counts no AI call; a zero-token
-    /// successful run stays filtered out.
-    func testFetchByDateKeepsZeroTokenFailures() throws {
+    /// A token-less memory failure (the vault would not open) is listed in
+    /// Usage and counts no AI call; token-less runs of other pipelines stay
+    /// filtered out, failed or not — offline they would fail every cycle.
+    func testFetchByDateKeepsOnlyMemoryTokenlessFailures() throws {
         let db = try TestDatabase.create()
         let now = ISO8601DateFormatter().string(from: Date())
         try db.write { db in
             try insertRun(db, pipeline: "digests", status: "done", tokens: 100, startedAt: now)
             try insertRun(db, pipeline: "slack-sync", status: "done", tokens: 0, startedAt: now)
+            try insertRun(
+                db, pipeline: "slack-sync", status: "error",
+                errorMsg: "slack: invalid_auth", tokens: 0, startedAt: now
+            )
             try insertRun(
                 db, pipeline: "memory", status: "error",
                 errorMsg: "opening memory vault: permission denied", tokens: 0, startedAt: now

@@ -19,9 +19,16 @@ package enum PipelineRunQueries {
         )
     }
 
-    /// The day's runs that used tokens, plus every failed run — a failure
-    /// before the first AI call (a memory vault that would not open) must
-    /// still show up in Usage instead of being filtered out as empty.
+    /// The one pipeline whose failed runs are listed even when they used no
+    /// tokens: a memory vault that will not open fails before the first AI call
+    /// and has no other signal in the app. The mechanical phases (slack-sync,
+    /// reaction-commands, jira-boards, reaped "interrupted" runs) stay
+    /// filtered — offline or with a revoked token they fail every cycle and
+    /// would bury the memory row.
+    static let tokenlessFailurePipeline = "memory"
+
+    /// The day's runs that used tokens, plus token-less failures of
+    /// `tokenlessFailurePipeline`.
     package static func fetchByDate(_ db: Database, on date: Date) throws -> [PipelineRun] {
         let cal = Calendar.current
         let dayStart = cal.startOfDay(for: date)
@@ -39,11 +46,11 @@ package enum PipelineRunQueries {
                 LEFT JOIN (SELECT run_id, COUNT(*) AS cnt FROM pipeline_steps GROUP BY run_id) sc ON sc.run_id = pr.id
                 WHERE pr.started_at >= ? AND pr.started_at < ?
                     AND pr.status IN ('done', 'error')
-                    AND (pr.status = 'error'
+                    AND ((pr.status = 'error' AND pr.pipeline = ?)
                         OR pr.input_tokens > 0 OR pr.output_tokens > 0 OR pr.total_api_tokens > 0)
                 ORDER BY pr.started_at DESC
                 """,
-            arguments: [fmt.string(from: dayStart), fmt.string(from: dayEnd)]
+            arguments: [fmt.string(from: dayStart), fmt.string(from: dayEnd), tokenlessFailurePipeline]
         )
     }
 

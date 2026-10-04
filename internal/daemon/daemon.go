@@ -1435,11 +1435,12 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 }
 
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
-// seeding, episode extraction). Runs after inbox, before next-step. The pipeline records its
-// own pipeline_runs row (source="daemon", see SetMemoryPipeline), so there is
-// no trackedPipelineRun wrapper here — except for a failed open through
-// SetMemoryPipelineOpener, which has no pipeline to record it. Errors are logged and never abort the
-// cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
+// seeding, episode extraction). Runs after inbox, before next-step. The
+// pipeline records its own pipeline_runs row (source="daemon", see
+// SetMemoryPipeline), so there is no trackedPipelineRun wrapper here — except
+// for a failed open through SetMemoryPipelineOpener, which has no pipeline to
+// record it. Errors are logged and never abort the cycle; watermark freeze on
+// failure is the pipeline's own business (MEM-04).
 func (d *Daemon) phaseMemory(ctx context.Context) {
 	if !d.config.Memory.Enabled {
 		d.logger.Printf("memory: disabled, skipping")
