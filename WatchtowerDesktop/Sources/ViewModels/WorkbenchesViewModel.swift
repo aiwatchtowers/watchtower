@@ -167,9 +167,9 @@ final class WorkbenchesViewModel {
     /// project's sessions in initWorkbenches; a project with none is a no-op,
     /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
-    /// A workbench is being deleted here, or left the list (deleted by the
-    /// CLI): AppState lets the code questions forget it (their rows go with
-    /// the delete). Calling it twice is harmless.
+    /// A workbench was deleted here, or left the list (deleted by the CLI):
+    /// AppState lets the code questions forget it (their rows went with the
+    /// delete). Calling it twice is harmless.
     var onWorkbenchRemoved: ((Int64) -> Void)?
     /// Whether the Workbench tab is what the owner is looking at (AppState:
     /// sidebar on Projects, main window visible). The git status refresh
@@ -369,9 +369,6 @@ final class WorkbenchesViewModel {
         deleteError = nil
         defer { deletingWorkbenchID = nil }
         await closeTerminal?(id)
-        // Before the rows go: an answer still streaming stops instead of
-        // writing into a deleted conversation.
-        onWorkbenchRemoved?(id)
         let result: WorkbenchDeleted
         do {
             result = try await cli.delete(projectID: id)
@@ -379,6 +376,9 @@ final class WorkbenchesViewModel {
             deleteError = "Could not delete the workbench: \(error.localizedDescription)"
             return false
         }
+        // The rows are gone: an answer still streaming stops now, not at the
+        // reload (a failed delete above leaves the questions as they were).
+        onWorkbenchRemoved?(id)
         if let warning = result.cleanupWarning {
             errorMessage = warning
         }

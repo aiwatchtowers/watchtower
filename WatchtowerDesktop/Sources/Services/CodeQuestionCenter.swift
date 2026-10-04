@@ -393,10 +393,17 @@ final class CodeQuestionCenter {
         let failure = storeModelChoice(choice, conversationID: conversationID)
         guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
         if let failure {
-            questionListErrors[workbenchID] = failure
+            showActionError(failure, workbenchID: workbenchID)
         } else {
             clearActionError(workbenchID: workbenchID)
         }
+    }
+
+    /// An action failed: its note replaces whatever was shown, and a list
+    /// read does not clear it.
+    private func showActionError(_ message: String, workbenchID: Int64) {
+        questionListReadFailed.remove(workbenchID)
+        questionListErrors[workbenchID] = message
     }
 
     /// An action went through: its earlier failure's note goes (a failed
@@ -616,8 +623,7 @@ final class CodeQuestionCenter {
         guard let dbPool else { return }
         do {
             questionLists[workbenchID] = try dbPool.read { try CodeQuestionList.fetch($0, workbenchID: workbenchID) }
-            questionListErrors[workbenchID] = nil
-            questionListReadFailed.remove(workbenchID)
+            if questionListReadFailed.remove(workbenchID) != nil { questionListErrors[workbenchID] = nil }
         } catch {
             NSLog("CodeQuestionCenter: reading the code questions: %@", error.localizedDescription)
             questionListReadFailed.insert(workbenchID)
@@ -688,7 +694,7 @@ final class CodeQuestionCenter {
             try dbPool.write { db in _ = try CodeQuestionList.delete(db, conversationID: question.conversationID) }
         } catch {
             NSLog("CodeQuestionCenter: deleting a code question: %@", error.localizedDescription)
-            questionListErrors[workbenchID] = "Couldn't delete the question: \(error.localizedDescription)"
+            showActionError("Couldn't delete the question: \(error.localizedDescription)", workbenchID: workbenchID)
             return
         }
         forget(question)

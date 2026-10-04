@@ -61,16 +61,16 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         vm.closeTerminal = { closed in
             if runner.calls.isEmpty { closedBeforeCLI.append(closed) }
         }
-        var removedBeforeCLI: [Int64] = []
+        var removedAfterCLI: [Int64] = []
         vm.onWorkbenchRemoved = { removed in
-            if runner.calls.isEmpty { removedBeforeCLI.append(removed) }
+            if !runner.calls.isEmpty { removedAfterCLI.append(removed) }
         }
 
         let ok = await vm.deleteWorkbench(id)
 
         XCTAssertTrue(ok)
         XCTAssertEqual(closedBeforeCLI, [id], "the terminal closes before `project delete` runs")
-        XCTAssertEqual(removedBeforeCLI, [id], "the code questions stop before their rows go")
+        XCTAssertEqual(removedAfterCLI.first, id, "the code questions stop once their rows are gone")
         XCTAssertEqual(runner.calls, [["workbench", "delete", String(id), "--json"]])
         XCTAssertTrue(vm.summaries.isEmpty)
         XCTAssertNil(vm.selectedWorkbenchID)
@@ -119,10 +119,13 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         runner.fail = true
         let vm = makeVM(runner)
         await vm.reload()
+        var removed: [Int64] = []
+        vm.onWorkbenchRemoved = { removed.append($0) }
 
         let ok = await vm.deleteWorkbench(id)
 
         XCTAssertFalse(ok)
+        XCTAssertEqual(removed, [], "a failed delete leaves the code questions alone")
         XCTAssertEqual(vm.summaries.map(\.id), [id])
         XCTAssertNotNil(vm.deleteError)
         XCTAssertTrue(vm.deleteError?.contains("database is locked") ?? false)
