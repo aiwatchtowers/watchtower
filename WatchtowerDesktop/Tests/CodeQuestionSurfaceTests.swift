@@ -173,6 +173,32 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         XCTAssertEqual(notices, [CodeQuestionSurface.cannotReadFilesNotice])
     }
 
+    /// Board #361: a turn that resumes no provider session carries the
+    /// earlier turns; a resumed Claude turn does not (its session has them).
+    func testAFollowUpWithoutASessionReplaysTheEarlierTurns() async throws {
+        let conv = try conversation(.init(provider: .ollama, model: "llama3"))
+        let ai = ScriptedAIService()
+        let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
+
+        await turn(engine, ai, "Explain this.", reply: "It loads the config.")
+        XCTAssertEqual(ai.calls[0].prompt, "Explain this.", "nothing to replay on the first turn")
+        await turn(engine, ai, "And the caller?", reply: "main.swift calls it.")
+        let second = ai.calls[1].prompt
+        XCTAssertTrue(second.hasPrefix(EmbeddedChatReplay.header), second)
+        XCTAssertTrue(second.contains("Owner: Explain this.\nAssistant: It loads the config.\n"), second)
+        XCTAssertTrue(second.hasSuffix(EmbeddedChatReplay.footer + "\n\nAnd the caller?"), second)
+        XCTAssertFalse(second.contains(CodeQuestionSurface.cannotReadFilesNotice), "notices are not replayed")
+
+        try CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
+                                               dbPool: dbManager.dbPool)
+        await turn(engine, ai, "Any problems?", sessionID: "s1")
+        XCTAssertTrue(ai.calls[2].prompt.contains("Assistant: main.swift calls it."),
+                      "a Claude turn with no session yet replays too")
+        await turn(engine, ai, "Thanks?")
+        XCTAssertEqual(ai.calls[3].sessionID, "s1")
+        XCTAssertEqual(ai.calls[3].prompt, "Thanks?", "a resumed session already holds the turns")
+    }
+
     /// Claude reads the folder (ruling R55): no "cannot read" notice.
     func testClaudeGetsNoNotice() async throws {
         let conv = try conversation(.init(provider: .claude, model: ""))
