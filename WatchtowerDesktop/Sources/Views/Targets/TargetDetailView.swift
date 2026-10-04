@@ -1448,7 +1448,7 @@ struct TargetDetailView: View {
                 viewModel.snooze(target, until: snoozeCustomDate)
                 showSnoozePopover = false
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.popoverPrimary)
         }
         .padding()
         .frame(width: 220)
