@@ -305,7 +305,8 @@ final class TerminalCenter {
     /// up to 1 s stale) and returns whether that read succeeded: after a
     /// failed one the state is not known, so no Return. Otherwise the paste
     /// waits for the owner's own Return, and the session holds a draft until
-    /// then; a line sharing the prompt with other text says so (`sharedPrompts`).
+    /// then; a line sharing the prompt with other text says so
+    /// (`sharedPrompts`).
     func submitPrompt(
         _ text: String,
         sessionID: Int64,
@@ -321,6 +322,8 @@ final class TerminalCenter {
         case .sent: break
         }
         guard let process = processes[sessionID] else { return .noSession }
+        // The pair of `promptWasEmpty`: whether the line ends up next to
+        // other text not submitted.
         var besideText = !promptWasEmpty
         if promptWasEmpty, canSubmit() {
             pendingReturns.insert(sessionID)
@@ -332,6 +335,7 @@ final class TerminalCenter {
                 process.sendInput([0x0D])
                 return .submitted
             }
+            // An owner key or another delivery landed during the pause.
             besideText = promptDrafts.contains(sessionID)
         }
         // The line sits in the prompt unsubmitted: the next line must not
