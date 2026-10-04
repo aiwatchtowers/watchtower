@@ -76,11 +76,13 @@ func (s scope) phaseParents(spans map[int64]span) []*boardEntry {
 	return parents
 }
 
-// movedPastTodo reports whether leaf e is out of todo now or ever went to
-// in_progress or done (a leaf sent back to todo still counts).
+// movedPastTodo reports whether leaf e is out of todo now (snoozed counts as
+// todo: filed, then put off) or ever went to in_progress or done (a leaf sent
+// back to todo still counts).
 func movedPastTodo(e *boardEntry, spans map[int64]span) bool {
 	sp := spans[e.id()]
-	return e.target.Status != "todo" || sp.started != "" || sp.finished != ""
+	waiting := e.target.Status == "todo" || e.target.Status == "snoozed"
+	return !waiting || sp.started != "" || sp.finished != ""
 }
 
 // phaseOf is parent p's Phase: its counted leaves' progress and span, and its

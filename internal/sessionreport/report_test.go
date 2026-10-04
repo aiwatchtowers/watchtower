@@ -192,6 +192,12 @@ func TestBuild_GroupWithOnlyTodoLeavesIsNoPhase(t *testing.T) {
 	assert.Equal(t, []int64{441, 442}, itemIDs(r.Next))
 	assert.Equal(t, Progress{Done: 0, Total: 2}, r.Progress)
 
+	// A filed leaf put off to later did no work either.
+	_, err = d.Exec(`UPDATE targets SET status = 'snoozed' WHERE id = 442`)
+	require.NoError(t, err)
+	r = build(t, d, 6)
+	assert.Empty(t, r.Phases, "a snoozed leaf counts as waiting, like todo")
+
 	// A leaf that went to in_progress and was sent back to todo still makes
 	// its group a phase: the session worked on it.
 	_, err = d.Exec(`INSERT INTO target_status_history (target_id, to_status, changed_at, actor)
