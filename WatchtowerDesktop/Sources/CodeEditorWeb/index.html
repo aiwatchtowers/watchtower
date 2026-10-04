@@ -386,13 +386,16 @@
       node.style.fontFamily = font.fontFamily;
       node.style.fontSize = font.fontSize + "px";
       node.style.lineHeight = editor.getOption(monaco.editor.EditorOption.lineHeight) + "px";
-      node.textContent = p.text;
-      monaco.editor.colorize(p.text, model.getLanguageId(), {}).then(function (html) {
+      // A selection's trailing line break is kept in the suggestion; it ends
+      // the last line and adds none to the zone.
+      var shown = p.text.replace(/\r?\n$/, "");
+      node.textContent = shown;
+      monaco.editor.colorize(shown, model.getLanguageId(), {}).then(function (html) {
         if (proposals[id] === p) { node.innerHTML = html; }
       }, function () {});
       var after = p.range.endCol === 1 && p.range.endLine > p.range.startLine ? p.range.endLine - 1 : p.range.endLine;
       editor.changeViewZones(function (zones) {
-        p.zone = zones.addZone({ afterLineNumber: after, heightInLines: p.text.split("\n").length, domNode: node });
+        p.zone = zones.addZone({ afterLineNumber: after, heightInLines: shown.split("\n").length, domNode: node });
       });
     }
     function clearProposalOf(id) {
