@@ -193,18 +193,20 @@ func memoryVaultPath(cfg *config.Config) string {
 }
 
 // wireMemoryPipeline attaches the memory consolidation phase to the daemon
-// when enabled. A vault-open failure disables the phase for this daemon run
-// instead of aborting sync.
+// when enabled. The vault is opened lazily by the phase: a vault-open failure
+// is recorded as a failed memory run and retried next cycle instead of
+// aborting sync or disabling the phase until a restart.
 func wireMemoryPipeline(d *daemon.Daemon, database *db.DB, cfg *config.Config, logger *log.Logger) {
 	if !cfg.Memory.Enabled {
 		return
 	}
-	vault, err := memory.OpenVault(memoryVaultPath(cfg))
-	if err != nil {
-		logger.Printf("memory: failed to open vault, phase disabled: %v", err)
-		return
-	}
-	d.SetMemoryPipeline(newMemoryPipelineFactory(database, vault, cfg, logger.Printf))
+	d.SetMemoryPipelineOpener(func() (*memory.Pipeline, error) {
+		vault, err := memory.OpenVault(memoryVaultPath(cfg))
+		if err != nil {
+			return nil, fmt.Errorf("opening memory vault: %w", err)
+		}
+		return newMemoryPipelineFactory(database, vault, cfg, logger.Printf), nil
+	})
 }
 
 // ── handlers ──────────────────────────────────────────────────────────────────

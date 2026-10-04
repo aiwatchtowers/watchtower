@@ -93,6 +93,7 @@ type Daemon struct {
 	inboxPipe           *inbox.Pipeline
 	ideasPipe           *ideas.Pipeline
 	memoryPipe          *memory.Pipeline
+	memoryOpen          func() (*memory.Pipeline, error)
 	nextStepPipe        *targets.Pipeline
 	customTracksPipe    *customtracks.Pipeline
 	reactionCmdPipe     *reactioncmd.Pipeline
@@ -211,6 +212,13 @@ func (d *Daemon) SetMemoryPipeline(p *memory.Pipeline) {
 		p.Source = "daemon"
 	}
 	d.memoryPipe = p
+}
+
+// SetMemoryPipelineOpener wires a lazy constructor for the memory pipeline:
+// phaseMemory calls it while no pipeline is set, so a vault that fails to
+// open is retried every cycle instead of disabling Memory until a restart.
+func (d *Daemon) SetMemoryPipelineOpener(open func() (*memory.Pipeline, error)) {
+	d.memoryOpen = open
 }
 
 // SetNextStepPipeline sets the targets pipeline used to refresh AI next-step
@@ -1427,14 +1435,30 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 }
 
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
-// seeding, episode extraction). Runs after inbox, before next-step. The pipeline records its
-// own pipeline_runs row (source="daemon", see SetMemoryPipeline), so there is
-// no trackedPipelineRun wrapper here. Errors are logged and never abort the
-// cycle; watermark freeze on failure is the pipeline's own business (MEM-04).
+// seeding, episode extraction). Runs after inbox, before next-step. The
+// pipeline records its own pipeline_runs row (source="daemon", see
+// SetMemoryPipeline), so there is no trackedPipelineRun wrapper here — except
+// for a failed open through SetMemoryPipelineOpener, which has no pipeline to
+// record it. Errors are logged and never abort the cycle; watermark freeze on
+// failure is the pipeline's own business (MEM-04).
 func (d *Daemon) phaseMemory(ctx context.Context) {
 	if !d.config.Memory.Enabled {
 		d.logger.Printf("memory: disabled, skipping")
 		return
+	}
+	if d.memoryPipe == nil && d.memoryOpen != nil {
+		p, err := d.memoryOpen()
+		if err != nil {
+			// Surface the failure where every other phase's does — a failed
+			// "memory" pipeline_runs row (Usage) plus one log line per cycle —
+			// instead of skipping the phase silently while Memory shows on.
+			d.logger.Printf("memory: pipeline unavailable, skipping cycle: %v", err)
+			d.trackedPipelineRun("memory", func() pipelineRunStats {
+				return pipelineRunStats{err: err}
+			})
+			return
+		}
+		d.SetMemoryPipeline(p)
 	}
 	if d.memoryPipe == nil {
 		return

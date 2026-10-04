@@ -451,7 +451,7 @@ Columns: channel name (clickable Slack deep link), total messages, your messages
 Full-text search across all synced Slack messages. Shows matching messages with channel, author, text snippet, and timestamp.
 
 ### Usage
-**Progress tab** — the background pipelines' run history (each run's steps, tokens and duration).
+**Progress tab** — the background pipelines' run history (each run's steps, tokens and duration). Runs that made no AI call are not listed, with one exception: a failed Memory run (its vault cannot be opened) is shown with its error.
 **Usage tab** — Historical token consumption and costs by date, model, and feature. Navigate between days.
 
 ### Training
