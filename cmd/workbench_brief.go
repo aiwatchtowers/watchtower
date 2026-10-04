@@ -256,9 +256,12 @@ const briefLegacyLine = "This folder's Watchtower setup predates the Workbench r
 // the section is left out), the rules — at most briefMaxChars runes. vocab
 // names the skill and tools the folder's install knows; a legacy folder also
 // gets briefLegacyLine after the header when it fits. A drift check cut short
-// says so, so a partial check never reads as a clean board. Pure.
+// says so, so a partial check never reads as a clean board. board is the full
+// board: archived targets (PROJ-15) leave the counts and the tree, and are
+// only counted in the header; comments on them keep their titles. Pure.
 func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, vocab vocabulary) string {
-	header := briefHeader(p, board, len(comments), vocab)
+	shown := db.WithoutArchived(board)
+	header := briefHeader(p, shown, db.CountArchived(board), len(comments), vocab)
 	head := header
 	rules := strings.Join(briefRules, "\n")
 	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
@@ -281,7 +284,7 @@ func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.W
 	if len(commentLines) > 0 {
 		treeBudget = shared / 2
 	}
-	targetLines := briefTargetLines(board, now)
+	targetLines := briefTargetLines(shown, now)
 	tree, treeShown := fitBriefSection("Open targets:", targetLines, treeBudget, "targets ("+vocab.BoardTool+")")
 	section, commentsShown := fitBriefSection(commentsTitle, commentLines, shared-utf8.RuneCountInString(tree), "comments (list_comments)")
 	parts := []string{head, tree, section}
@@ -421,12 +424,18 @@ func briefDay(when string) string {
 	return when
 }
 
-func briefHeader(p *db.Workbench, board []db.BoardNode, newComments int, vocab vocabulary) string {
+// briefHeader counts the targets of board (archived ones already left out)
+// and adds ", K archived" when the workbench has any.
+func briefHeader(p *db.Workbench, board []db.BoardNode, archived, newComments int, vocab vocabulary) string {
 	c := countBoardStatuses(board)
+	archivedPart := ""
+	if archived > 0 {
+		archivedPart = fmt.Sprintf(", %d archived", archived)
+	}
 	lines := []string{
 		briefClip(fmt.Sprintf("Watchtower workbench #%d %q — %s", p.ID, p.Name, p.FolderPath), briefLineChars),
-		fmt.Sprintf("Targets: %d in progress, %d in review, %d blocked, %d todo, %d done. New comments for you: %d.",
-			c["in_progress"], c["in_review"], c["blocked"], c["todo"], c["done"], newComments),
+		fmt.Sprintf("Targets: %d in progress, %d in review, %d blocked, %d todo, %d done%s. New comments for you: %d.",
+			c["in_progress"], c["in_review"], c["blocked"], c["todo"], c["done"], archivedPart, newComments),
 		tools.BoardLanguageLine,
 	}
 	if strings.TrimSpace(p.Description) == "" {

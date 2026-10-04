@@ -50,14 +50,14 @@ var workbenchListCmd = &cobra.Command{
 
 var workbenchShowCmd = &cobra.Command{
 	Use:   "show <id>",
-	Short: "Show a workbench: folder, description, sources, target counts",
+	Short: "Show a workbench: folder, description, archive setting, sources, target counts",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkbenchShow,
 }
 
 var workbenchBoardCmd = &cobra.Command{
 	Use:   "board <id>",
-	Short: "Print a workbench's target tree (status, priority; siblings by priority) with comment counters",
+	Short: "Print a workbench's target tree (status, priority; siblings by priority) with comment counters; archived targets only with --archived",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkbenchBoard,
 }
@@ -71,9 +71,10 @@ var workbenchDeleteCmd = &cobra.Command{
 }
 
 var (
-	workbenchFlagJSON         bool
-	workbenchCreateFlagFolder string
-	workbenchCreateFlagName   string
+	workbenchFlagJSON          bool
+	workbenchCreateFlagFolder  string
+	workbenchCreateFlagName    string
+	workbenchBoardFlagArchived bool
 )
 
 // workbenchRemoveInstall undoes what `integrate claude-code --workbench N` put
@@ -88,6 +89,7 @@ func init() {
 	for _, c := range []*cobra.Command{workbenchCreateCmd, workbenchListCmd, workbenchShowCmd, workbenchBoardCmd, workbenchDeleteCmd} {
 		c.Flags().BoolVar(&workbenchFlagJSON, "json", false, "output JSON")
 	}
+	workbenchBoardCmd.Flags().BoolVar(&workbenchBoardFlagArchived, "archived", false, "also print archived targets (closed longer than the workbench's archive period)")
 	workbenchCmd.AddCommand(workbenchCreateCmd, workbenchListCmd, workbenchShowCmd, workbenchBoardCmd, workbenchDeleteCmd)
 	rootCmd.AddCommand(workbenchCmd)
 }
@@ -110,23 +112,27 @@ type workbenchSourceJSON struct {
 
 type workbenchViewJSON struct {
 	workbenchJSON
-	Sources []workbenchSourceJSON `json:"sources"`
-	Counts  map[string]int        `json:"counts"` // targets per status
+	ArchiveAfterDays int                   `json:"archive_after_days"` // 0 = never (PROJ-15)
+	Sources          []workbenchSourceJSON `json:"sources"`
+	Counts           map[string]int        `json:"counts"` // targets per status, archived ones included
 }
 
 type boardNodeJSON struct {
-	ID             int             `json:"id"`
-	Title          string          `json:"title"`
-	Intent         string          `json:"intent"`
-	Status         string          `json:"status"`
-	StatusSince    string          `json:"status_since"` // when it entered its status (UTC); "" = unknown
-	Priority       string          `json:"priority"`
-	Progress       float64         `json:"progress"`
-	Branch         string          `json:"branch"` // the git branch carrying the work; "" = none
-	PR             string          `json:"pr"`     // the pull request, a number or URL; "" = none
-	NewForAgent    int             `json:"new_for_agent"`
-	UnreadForOwner int             `json:"unread_for_owner"`
-	Children       []boardNodeJSON `json:"children"`
+	ID             int     `json:"id"`
+	Title          string  `json:"title"`
+	Intent         string  `json:"intent"`
+	Status         string  `json:"status"`
+	StatusSince    string  `json:"status_since"` // when it entered its status (UTC); "" = unknown
+	Priority       string  `json:"priority"`
+	Progress       float64 `json:"progress"`
+	Branch         string  `json:"branch"` // the git branch carrying the work; "" = none
+	PR             string  `json:"pr"`     // the pull request, a number or URL; "" = none
+	NewForAgent    int     `json:"new_for_agent"`
+	UnreadForOwner int     `json:"unread_for_owner"`
+	Archived       bool    `json:"archived"` // listed with --archived only (PROJ-15)
+	// ArchivedChildren counts the direct children left out as archived.
+	ArchivedChildren int             `json:"archived_children"`
+	Children         []boardNodeJSON `json:"children"`
 }
 
 func toWorkbenchJSON(p db.Workbench) workbenchJSON {
@@ -148,7 +154,8 @@ func toBoardJSON(nodes []db.BoardNode) []boardNodeJSON {
 		out = append(out, boardNodeJSON{ID: n.Target.ID, Title: n.Target.Text, Intent: n.Target.Intent,
 			Status: n.Target.Status, StatusSince: n.StatusSince, Priority: n.Target.Priority, Progress: n.Target.Progress,
 			Branch: n.Target.Branch, PR: n.Target.PR, NewForAgent: n.NewForAgent,
-			UnreadForOwner: n.UnreadForOwner, Children: toBoardJSON(n.Children)})
+			UnreadForOwner: n.UnreadForOwner, Archived: n.Archived, ArchivedChildren: n.ArchivedChildren,
+			Children: toBoardJSON(n.Children)})
 	}
 	return out
 }
@@ -319,8 +326,8 @@ func loadWorkbenchView(database *db.DB, id int64) (workbenchViewJSON, error) {
 	if err != nil {
 		return workbenchViewJSON{}, err
 	}
-	view := workbenchViewJSON{workbenchJSON: toWorkbenchJSON(*p), Sources: make([]workbenchSourceJSON, 0, len(sources)),
-		Counts: countBoardStatuses(board)}
+	view := workbenchViewJSON{workbenchJSON: toWorkbenchJSON(*p), ArchiveAfterDays: p.ArchiveAfterDays,
+		Sources: make([]workbenchSourceJSON, 0, len(sources)), Counts: countBoardStatuses(board)}
 	for _, s := range sources {
 		view.Sources = append(view.Sources, workbenchSourceJSON{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
 	}
@@ -333,11 +340,23 @@ func printWorkbenchView(w io.Writer, v workbenchViewJSON) {
 		fmt.Fprintf(w, "Description: %s\n", v.Description)
 	}
 	fmt.Fprintln(w, tools.BoardLanguageLine)
+	fmt.Fprintf(w, "Archive after: %s\n", archiveAfterText(v.ArchiveAfterDays))
 	fmt.Fprintf(w, "Targets: %d in progress, %d in review, %d blocked, %d todo, %d done\n",
 		v.Counts["in_progress"], v.Counts["in_review"], v.Counts["blocked"], v.Counts["todo"], v.Counts["done"])
 	for _, s := range v.Sources {
 		fmt.Fprintf(w, "Source #%d %s %s %s\n", s.ID, s.Kind, s.Ref, s.Label)
 	}
+}
+
+// archiveAfterText renders the archive setting: "14 days", or "never" for 0.
+func archiveAfterText(days int) string {
+	switch days {
+	case 0:
+		return "never"
+	case 1:
+		return "1 day"
+	}
+	return fmt.Sprintf("%d days", days)
 }
 
 func runWorkbenchBoard(cmd *cobra.Command, args []string) error {
@@ -357,6 +376,9 @@ func runWorkbenchBoard(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if !workbenchBoardFlagArchived {
+		board = db.WithoutArchived(board)
+	}
 	if workbenchFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), toBoardJSON(board))
 	}
@@ -366,10 +388,23 @@ func runWorkbenchBoard(cmd *cobra.Command, args []string) error {
 
 func printBoard(w io.Writer, nodes []db.BoardNode, depth int, now time.Time) {
 	for _, n := range nodes {
-		fmt.Fprintf(w, "%s#%d [%s, %s] %s%s\n", strings.Repeat("  ", depth), n.Target.ID,
-			statusWithAge(n, now), n.Target.Priority, n.Target.Text, gitLinks(n.Target))
+		fmt.Fprintf(w, "%s#%d [%s, %s] %s%s%s\n", strings.Repeat("  ", depth), n.Target.ID,
+			statusWithAge(n, now), n.Target.Priority, n.Target.Text, gitLinks(n.Target), archiveMarks(n))
 		printBoard(w, n.Children, depth+1, now)
 	}
+}
+
+// archiveMarks renders a board node's archive state (PROJ-15): " (archived)"
+// for an archived target, " (+k archived)" for the archived children left out.
+func archiveMarks(n db.BoardNode) string {
+	out := ""
+	if n.Archived {
+		out += " (archived)"
+	}
+	if n.ArchivedChildren > 0 {
+		out += fmt.Sprintf(" (+%d archived)", n.ArchivedChildren)
+	}
+	return out
 }
 
 // gitLinks renders a project target's branch and pull request, if any, as
