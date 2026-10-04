@@ -92,6 +92,10 @@ package enum TerminalPathLinks {
     /// the closing quote, else the whitespace-delimited token. nil on a
     /// space outside quotes or past the line.
     package static func candidate(inLine line: String, at column: Int) -> String? {
+        candidateSpan(inLine: line, at: column)?.filter { $0 != wideSpill }
+    }
+
+    private static func candidateSpan(inLine line: String, at column: Int) -> String? {
         let chars = Array(line)
         guard column >= 0, column < chars.count else { return nil }
         if let quoted = quotedSpan(chars, around: column) { return quoted }
@@ -103,7 +107,50 @@ package enum TerminalPathLinks {
         return String(chars[start..<end])
     }
 
+    /// The cell a wide character spills into, in a `Row`: keeps one
+    /// character per cell, and is dropped from a candidate.
+    package static let wideSpill: Character = "\u{0}"
+
+    /// One screen row: its cells as characters (one per cell, blanks
+    /// included) and whether it continues the row above (a soft wrap).
+    package struct Row: Equatable, Sendable {
+        package let text: String
+        package let continuesAbove: Bool
+
+        package init(text: String, continuesAbove: Bool) {
+            self.text = text
+            self.continuesAbove = continuesAbove
+        }
+    }
+
+    /// The logical line a ⌘-click at `row`/`column` falls in — the rows a
+    /// long path wrapped over joined back — and the column within it; nil
+    /// off the screen, or when the line holds right-to-left text: the
+    /// terminal may draw it reordered, so a screen column names no
+    /// character of it (board #361).
+    package static func logicalLine(rows: [Row], row: Int, column: Int) -> (line: String, column: Int)? {
+        guard rows.indices.contains(row), column >= 0 else { return nil }
+        var start = row
+        while start > 0, rows[start].continuesAbove { start -= 1 }
+        var end = row
+        while end + 1 < rows.count, rows[end + 1].continuesAbove { end += 1 }
+        let line = rows[start...end].map(\.text).joined()
+        guard !line.unicodeScalars.contains(where: isRightToLeft) else { return nil }
+        let offset = rows[start..<row].reduce(0) { $0 + $1.text.count }
+        var trimmed = line
+        while trimmed.last == " " { trimmed.removeLast() }
+        return (trimmed, offset + column)
+    }
+
     // MARK: - Private
+
+    /// Hebrew, Arabic, Syriac, Thaana, NKo and their presentation forms.
+    private static func isRightToLeft(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF: true
+        default: false
+        }
+    }
 
     private static func quotedSpan(_ chars: [Character], around column: Int) -> String? {
         for quote in quotes {
