@@ -978,6 +978,24 @@ func TestSessionState_BlockedStopRecordsTheTurnEndButNoWaiting(t *testing.T) {
 	assert.Equal(t, size, s.TurnEnd.Int64)
 }
 
+// A Stop the drift check blocks has no state write to report a failed turn
+// end for it: the mark before the check says so on stderr itself.
+func TestSessionState_BlockedStopReportsAFailedTurnEnd(t *testing.T) {
+	_, pid, row := stopStateFixture(t, "merged")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	orig := setTerminalTurnEnd
+	t.Cleanup(func() { setTerminalTurnEnd = orig })
+	setTerminalTurnEnd = func(*db.DB, int64, int64, string, int64) (bool, error) {
+		return false, errors.New("database is locked")
+	}
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopPayload(transcript))
+
+	require.NotEmpty(t, out, "the drift blocks the stop")
+	assert.Equal(t, "watchtower: turn end not recorded: database is locked\n", errOut)
+}
+
 // A tool result the transcript cannot place (no tool_use_id, an unreadable
 // transcript) falls back to the time order: after the Stop, "working".
 func TestSessionState_UnplacedToolResultFallsBackToTime(t *testing.T) {

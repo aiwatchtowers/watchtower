@@ -242,8 +242,12 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", stopStateLost(in.SessionID), err)
 			return
 		}
-		markStopTurnEnd(database, id, in)
+		turnEndErr := markStopTurnEnd(database, id, in)
 		if blocked := stopHookDrift(ctx, stdout, stderr, database, id, vocab); blocked {
+			// No state write follows to record it again and report it.
+			if turnEndErr != nil {
+				fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", turnEndErr)
+			}
 			return
 		}
 	}
@@ -254,18 +258,23 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 // take seconds: a tool result of the ending turn whose async hook starts in
 // the meantime then already finds its call before it (board #368). Only a
 // folder with the session state hooks gets it (nothing else reads it). Best
-// effort and silent: the state write after the check records it again and
-// reports a failure. Harmless when the check blocks the stop (the continued
-// turn's calls come after it).
-func markStopTurnEnd(database *db.DB, workbenchID int64, in stopHookInput) {
+// effort: it returns the write's error, which the caller reports only when
+// the check blocks the stop — otherwise the state write after the check
+// records it again and reports a failure. Outside a Desktop terminal, or
+// in a folder without the hooks, it does nothing.
+func markStopTurnEnd(database *db.DB, workbenchID int64, in stopHookInput) error {
 	rowID, ok, err := terminalSessionRowID()
-	if !ok || err != nil || in.SessionID == "" {
-		return
+	if !ok || (err == nil && in.SessionID == "") {
+		return nil
 	}
-	if has, err := workbenchHasStateHooks(database, workbenchID); err != nil || !has {
-		return
+	if err != nil {
+		return err
 	}
-	_ = recordStopTurnEnd(database, rowID, workbenchID, in)
+	has, err := workbenchHasStateHooks(database, workbenchID)
+	if err != nil || !has {
+		return err
+	}
+	return recordStopTurnEnd(database, rowID, workbenchID, in)
 }
 
 // recordStopTurnEnd stores the transcript's size as the row's turn end. Read
