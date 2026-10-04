@@ -35,7 +35,7 @@ Status: approved by the owner 2026-10-04 (decisions A–D as recommended). Migra
 ## 2. Technical decisions
 
 1. **Storage: a SQLite view, not an `archived_at` column and not a Go/Swift
-   age filter.** Migration `00102` (next free number on
+   age filter.** Migration `00103` (next free number on
    `feature/polish-wave-1004`) adds `projects.archive_after_days INTEGER NOT
    NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365)` (0 = Never)
    and a view `workbench_target_archive(target_id, project_id, archived)`.
@@ -175,7 +175,7 @@ Go `internal/db` (new `proj15_board_archive_test.go`, times seeded from
   0 archives nothing; out-of-range values refused by the CHECK.
 - `TestProj15_CloseTimeFallsBackToUpdatedAt`.
 - `TestWithoutArchived_CountsArchivedChildren`.
-- `TestMigration00102_DefaultsToFourteen`; `TestSchemaGolden` /
+- `TestMigration00103_DefaultsToFourteen`; `TestSchemaGolden` /
   `TestDesktopTestSchema` regenerated; a 2000-target fixture reads the board
   within a stated bound.
 
@@ -208,7 +208,7 @@ Swift (`Tests/Core` where possible):
 
 | Task | Scope | Depends on |
 | --- | --- | --- |
-| G1 | Migration 00102 (column + view), `schema.sql`, golden + Swift test schema regen; `Workbench.ArchiveAfterDays`, `BoardNode.Archived`/`ArchivedChildren`, `db.WithoutArchived`, `db.SetWorkbenchArchiveDays(projectID int64, days int) error`, `TargetFilter.IncludeArchived`; the `internal/db` tests | none |
+| G1 | Migration 00103 (column + view), `schema.sql`, golden + Swift test schema regen; `Workbench.ArchiveAfterDays`, `BoardNode.Archived`/`ArchivedChildren`, `db.WithoutArchived`, `db.SetWorkbenchArchiveDays(projectID int64, days int) error`, `TargetFilter.IncludeArchived`; the `internal/db` tests | none |
 | G2 | `workbench_board` (+ decision A), `workbench_info`, `list_targets`, `get_target`; brief; `workbench board`/`show`; caller audit (decision 8); drift guard; tools/cmd tests | G1 |
 | G3 | `docs/features/workbench.md`, `docs/inventory/workbench.md` PROJ-15 (pending approval) + changelog, skill lines, `docs/app-guide.md` | G2, S2 |
 | S1 | `WorkbenchBoardNode.archived` from `WorkbenchQueries.board`; `showArchived` in `WorkbenchBoardOutline.rows`/`WorkbenchBoardKanban`; `WorkbenchQueries.setArchiveAfterDays`; Core tests | G1 |
