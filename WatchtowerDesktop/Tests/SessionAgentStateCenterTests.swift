@@ -282,6 +282,23 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
     }
 
+    /// `onRead` fires on every read that succeeded, changed or not, and on
+    /// no failed one.
+    func testOnReadFiresOnEverySuccessfulReadOnly() async throws {
+        let center = makeCenter(interval: .seconds(60))
+        var reads = 0
+        center.onRead = { reads += 1 }
+        _ = try await session()
+        let first = await center.poll()
+        let unchanged = await center.poll()
+        XCTAssertTrue(first && unchanged)
+        XCTAssertEqual(reads, 2, "an unchanged read too")
+        log.fail = true
+        let failed = await center.poll()
+        XCTAssertFalse(failed)
+        XCTAssertEqual(reads, 2)
+    }
+
     /// `onChange` fires on a change of the statuses only.
     func testOnChangeFiresOnlyWhenTheStatusesChange() async throws {
         let center = makeCenter(interval: .seconds(60))

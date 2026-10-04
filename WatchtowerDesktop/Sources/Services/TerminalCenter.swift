@@ -87,10 +87,10 @@ final class TerminalCenter {
     /// Input while `inputAnswersDialog` holds goes to Claude Code's
     /// permission dialog, not to its prompt, and changes nothing.
     @ObservationIgnored private(set) var promptDrafts: Set<Int64> = []
-    /// The last byte of the owner's previous prompt input per session: a
-    /// lone Return after `\` inserts a line break in Claude Code, it does
-    /// not submit.
-    @ObservationIgnored private var lastOwnerByte: [Int64: UInt8] = [:]
+    /// Sessions whose owner's last printable prompt input was `\`, with
+    /// only escape sequences or paste brackets since: a Return there inserts
+    /// a line break in Claude Code, it does not submit.
+    @ObservationIgnored private var ownerBackslashPending: Set<Int64> = []
     /// Whether the session's agent shows a permission dialog right now (its
     /// agent status is `needsApproval`). Set by `WorkbenchesViewModel`.
     @ObservationIgnored var inputAnswersDialog: (_ sessionID: Int64) -> Bool = { _ in false }
@@ -377,12 +377,17 @@ final class TerminalCenter {
     /// delivery.
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
         guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
-        if Self.isSubmit(bytes, after: lastOwnerByte[sessionID]) {
+        let backslashBefore = ownerBackslashPending.contains(sessionID)
+        if Self.isSubmit(bytes, backslashBefore: backslashBefore) {
             promptDrafts.remove(sessionID)
         } else {
             promptDrafts.insert(sessionID)
         }
-        lastOwnerByte[sessionID] = bytes.last
+        if Self.endsAfterBackslash(bytes, backslashBefore: backslashBefore) {
+            ownerBackslashPending.insert(sessionID)
+        } else {
+            ownerBackslashPending.remove(sessionID)
+        }
         switch answerHints[sessionID] {
         case nil, .held?, .stillHeld?, .queued?: break
         case .copied?: answerHints[sessionID] = .typed
@@ -391,17 +396,64 @@ final class TerminalCenter {
     }
 
     /// Whether the owner's input submits Claude Code's prompt: it ends in a
-    /// plain Return (CR). Claude Code's line-break keys do not submit —
-    /// Ctrl+J (LF), Option+Return (ESC CR), `\` then Return (in one chunk
-    /// or the Return in the next), and Shift+Return under an extended
-    /// keyboard protocol (an escape sequence ending in `u` or `~`) — nor
-    /// does anything else; when unsure, the input counts as a draft, which
-    /// costs the owner a Return of their own, never a line submitted with
-    /// theirs.
-    static func isSubmit(_ bytes: [UInt8], after previousByte: UInt8?) -> Bool {
+    /// plain Return (CR) that does not follow ESC (Option+Return) and whose
+    /// last printable input before it — in this chunk or earlier ones
+    /// (`backslashBefore`), escape sequences such as cursor keys and paste
+    /// brackets skipped — is not `\` (`\` then Return is a line break).
+    /// Anything else is a draft: Ctrl+J (LF), Shift+Return under an extended
+    /// keyboard protocol (an escape sequence ending in `u` or `~`), any
+    /// other key. When unsure the input counts as a draft, which costs the
+    /// owner a Return of their own, never a line submitted with theirs.
+    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool) -> Bool {
         guard bytes.last == 0x0D else { return false }
-        let before = bytes.count >= 2 ? bytes[bytes.count - 2] : previousByte
-        return before != 0x1B && before != UInt8(ascii: "\\")
+        let body = bytes.dropLast()
+        if body.last == 0x1B { return false }
+        return !endsAfterBackslash(body, backslashBefore: backslashBefore)
+    }
+
+    /// Whether, after `bytes`, the last printable input is `\` with only
+    /// escape sequences (CSI `ESC [ … final`, SS3 `ESC O x`, `ESC x`) since —
+    /// paste brackets are CSI sequences too. A CR or LF ends the line and
+    /// clears it; any other byte keeps it as it was (fail safe: a draft).
+    static func endsAfterBackslash<Bytes: Collection>(_ bytes: Bytes, backslashBefore: Bool) -> Bool
+        where Bytes.Element == UInt8 {
+        var pending = backslashBefore
+        var index = bytes.startIndex
+        while index != bytes.endIndex {
+            let byte = bytes[index]
+            index = bytes.index(after: index)
+            switch byte {
+            case 0x1B:
+                index = escapeSequenceEnd(in: bytes, after: index)
+            case 0x0D, 0x0A:
+                pending = false
+            case 0x20...0x7E, 0x80...:
+                pending = byte == UInt8(ascii: "\\")
+            default:
+                break
+            }
+        }
+        return pending
+    }
+
+    /// The index just past the escape sequence whose ESC came before
+    /// `start`.
+    private static func escapeSequenceEnd<Bytes: Collection>(in bytes: Bytes, after start: Bytes.Index) -> Bytes.Index
+        where Bytes.Element == UInt8 {
+        guard start != bytes.endIndex else { return start }
+        var index = bytes.index(after: start)
+        switch bytes[start] {
+        case UInt8(ascii: "["):
+            // Parameters and intermediates, then one final byte 0x40–0x7E.
+            while index != bytes.endIndex, !(0x40...0x7E).contains(bytes[index]) {
+                index = bytes.index(after: index)
+            }
+            return index == bytes.endIndex ? index : bytes.index(after: index)
+        case UInt8(ascii: "O"):
+            return index == bytes.endIndex ? index : bytes.index(after: index)
+        default:
+            return index
+        }
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -462,7 +514,7 @@ final class TerminalCenter {
         }
         startedAt[id] = now()
         promptDrafts.remove(id)
-        lastOwnerByte[id] = nil
+        ownerBackslashPending.remove(id)
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
         return mode
@@ -505,7 +557,7 @@ final class TerminalCenter {
         rows[sessionID] = nil
         startedAt[sessionID] = nil
         promptDrafts.remove(sessionID)
-        lastOwnerByte[sessionID] = nil
+        ownerBackslashPending.remove(sessionID)
         clipboardHints.remove(sessionID)
         answerHints[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }

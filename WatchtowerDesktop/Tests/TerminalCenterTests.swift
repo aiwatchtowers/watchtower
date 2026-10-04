@@ -613,7 +613,10 @@ final class TerminalCenterTests: XCTestCase {
             ("backslash and Return in one chunk", [Array("fix\\\r".utf8)]),
             ("Ctrl+J (LF)", [Array("fix".utf8), [0x0A]]),
             ("Shift+Return, kitty protocol", [Array("fix".utf8), Array("\u{1B}[13;2u".utf8)]),
-            ("Shift+Return, modifyOtherKeys", [Array("fix".utf8), Array("\u{1B}[27;2;13~".utf8)])
+            ("Shift+Return, modifyOtherKeys", [Array("fix".utf8), Array("\u{1B}[27;2;13~".utf8)]),
+            ("a pasted backslash, then Return", [Array("\u{1B}[200~fix\\\u{1B}[201~".utf8), [0x0D]]),
+            ("backslash, cursor keys, then Return", [Array("fix\\".utf8), Array("\u{1B}[D\u{1B}[C".utf8), [0x0D]]),
+            ("backslash, an SS3 cursor key and Return in one chunk", [Array("fix\\\u{1B}OD\r".utf8)])
         ]
         for (name, chunks) in shapes {
             sessions = []
@@ -633,6 +636,12 @@ final class TerminalCenterTests: XCTestCase {
         sessions[0].onOwnerInput?(Array("fix\r".utf8))
         let submitted = await center.submitPrompt("x", sessionID: s.id) { true }
         XCTAssertEqual(submitted, .submitted, "a plain Return submits the draft")
+
+        sessions[0].onOwnerInput?(Array("a\\".utf8))
+        sessions[0].onOwnerInput?(Array("b".utf8))
+        sessions[0].onOwnerInput?([0x0D])
+        let afterText = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertEqual(afterText, .submitted, "a backslash followed by text no longer escapes the Return")
     }
 
     /// PROJ-12: after a failed state read the app does not know whether a

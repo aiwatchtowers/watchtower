@@ -489,36 +489,93 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertFalse(typed.contains([0x0D]))
     }
 
-    /// PROJ-12: a Return needs both state reads — before the paste and
-    /// after the pause — to have succeeded; a failed one vouches for no
+    /// PROJ-12: a state read that fails after the pause vouches for no
     /// state, so the line is only pasted.
-    func testAFailedStateReadLeavesTheLineTyped() async throws {
+    func testAFailedStateReadAfterThePauseLeavesTheLineTyped() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var reads = 0
+        vm.asks.refreshStates = {
+            reads += 1
+            return reads != 2
+        }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(typed.count, 1, "the paste, no Return")
+        XCTAssertFalse(typed.contains([0x0D]))
+    }
+
+    /// PROJ-12: when the read right before the paste fails, the last good
+    /// state may miss a permission prompt shown since — nothing is typed;
+    /// the line is held and goes on the next read that succeeds.
+    func testAFailedStateReadBeforeThePasteHoldsTheLine() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var readable = false
+        vm.asks.refreshStates = { readable }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .held)
+        XCTAssertTrue(typed.isEmpty, "nothing pasted on a stale state")
+        XCTAssertEqual(center.answerHints[s.id], .held)
+
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertTrue(typed.isEmpty, "still unreadable: still held")
+
+        readable = true
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertEqual(typed.count, 2)
+        XCTAssertEqual(typed.last, [0x0D])
+        XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.submitted))
+    }
+
+    /// An answer queued behind another that ended typed (a permission prompt
+    /// appeared in its pause) is held by that prompt: its own notice and the
+    /// bar say so, and its minute's wait starts — the earlier answer's hint
+    /// does not hide that.
+    func testAQueuedAnswerHeldByAPromptAfterTheFirstEndedTypedSaysItIsHeld() async throws {
         let (p, s, askID) = try await seed()
         let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
         center.start(s, fresh: true)
         let vm = makeVM()
+        var waits = 0
+        vm.asks.holdSleep = { _ in
+            waits += 1
+            try? await Task.sleep(for: .seconds(3600))
+        }
         await vm.asks.load(projectID: p)
         let asks = try XCTUnwrap(vm.asks.openAsks[p])
-        var reads = 0
-        var failing = 0
-        vm.asks.refreshStates = {
-            reads += 1
-            return reads != failing
+        pick(vm, askID)
+        pick(vm, otherID)
+        let other = try XCTUnwrap(asks.first { $0.id == otherID })
+        var approval = false
+        vm.asks.needsApproval = { _ in approval }
+        var queued: OwnerAsksViewModel.Delivery?
+        onPause = { [weak vm] in
+            guard let vm, queued == nil else { return }
+            queued = await vm.asks.answer(other)
+            approval = true // a permission prompt appears during the first pause
         }
-        for (read, id) in [(1, askID), (2, otherID)] {
-            reads = 0
-            failing = read
-            pick(vm, id)
-            let before = typed.count
 
-            let delivery = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == id }))
+        let first = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == askID }))
 
-            XCTAssertEqual(delivery, .typed, "read \(read) failed")
-            XCTAssertEqual(reads, read, "a failed first read ends it before the pause")
-            XCTAssertEqual(typed.count, before + 1, "the paste, no Return")
-            XCTAssertFalse(typed.contains([0x0D]))
-            processes[0].onOwnerInput?([0x0D])
-        }
+        XCTAssertEqual(first, .typed)
+        XCTAssertEqual(queued, .queued)
+        await waitUntil { vm.asks.answerNotices[otherID] == .delivered(.held) }
+        XCTAssertEqual(vm.asks.answerNotices[otherID]?.text, OwnerAsksViewModel.answerHeldNote)
+        XCTAssertEqual(center.answerHints[s.id], .held)
+        await waitUntil { waits == 1 }
+        XCTAssertEqual(typed.count, 1, "only the first line, no Return")
     }
 
     /// An answer written while another is going to the same session (in

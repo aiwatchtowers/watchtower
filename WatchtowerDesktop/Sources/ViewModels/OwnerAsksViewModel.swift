@@ -485,17 +485,18 @@ final class OwnerAsksViewModel {
         return delivery
     }
 
-    /// The session states changed (`SessionAgentStateCenter.onChange`):
-    /// each held answer whose session no longer waits on a permission
-    /// prompt goes now. One whose session stopped or started again meanwhile
+    /// The session states changed or were read again
+    /// (`SessionAgentStateCenter.onChange`/`onRead`): each held answer whose
+    /// session no longer waits on a permission prompt goes now. One whose session stopped or started again meanwhile
     /// goes nowhere — the session's brief lists it.
     func deliverHeldAnswers() async {
         for askID in heldAnswers.keys.sorted() {
             guard let held = heldAnswers[askID], !delivering.contains(held.sessionID) else { continue }
             if needsApproval(held.sessionID) {
                 // Queued behind an answer that went meanwhile, and now a
-                // permission prompt holds it.
-                if terminalCenter?.answerHints[held.sessionID] == .queued {
+                // permission prompt holds it. Its own notice says so: the
+                // session's hint may be the earlier answer's by now.
+                if answerNotices[askID] == .delivered(.queued) {
                     answerNotices[askID] = .delivered(.held)
                     showHint(.held, sessionID: held.sessionID)
                 }
@@ -528,9 +529,10 @@ final class OwnerAsksViewModel {
 
     /// The line goes to a running session: queued while another line is
     /// going to it, held while it waits on a permission prompt (a Return
-    /// could confirm the prompt's default), otherwise pasted, and submitted
-    /// after `TerminalCenter.answerSubmitDelay` only when both state reads
-    /// (before the paste, after the pause) succeeded, the session's hooks
+    /// could confirm the prompt's default) or while its state cannot be read
+    /// right before the paste, otherwise pasted, and submitted after
+    /// `TerminalCenter.answerSubmitDelay` only when the state read after the
+    /// pause succeeded too, the session's hooks
     /// reported a state this run and still show no permission prompt after
     /// the pause, and its prompt held no text not submitted; else the paste
     /// waits for the owner's Return. While the agent works, Claude Code
@@ -547,14 +549,17 @@ final class OwnerAsksViewModel {
                 Task { [weak self] in await self?.deliverHeldAnswers() }
             }
         }
+        // A failed read leaves the last good state, which may miss a
+        // permission prompt shown since: hold, and try again on the next
+        // read that succeeds (`SessionAgentStateCenter.onRead`).
         let fresh = await refreshStates()
         guard center.liveIDs.contains(sessionID) else { return .noSession }
-        if needsApproval(sessionID) { return .held }
+        if !fresh || needsApproval(sessionID) { return .held }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
                                                delay: TerminalCenter.answerSubmitDelay,
                                                refresh: refreshStates) { [weak self] in
             guard let self else { return false }
-            return fresh && hasHookState(sessionID) && !needsApproval(sessionID)
+            return hasHookState(sessionID) && !needsApproval(sessionID)
         }
         switch result {
         case .submitted: return .submitted

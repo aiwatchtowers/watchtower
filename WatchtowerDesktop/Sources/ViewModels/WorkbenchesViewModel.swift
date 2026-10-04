@@ -286,6 +286,10 @@ final class WorkbenchesViewModel {
         agentStates?.onChange = { [weak asks] in
             Task { await asks?.deliverHeldAnswers() }
         }
+        // Also on an unchanged read: an answer held because a read failed.
+        agentStates?.onRead = { [weak asks] in
+            Task { await asks?.deliverHeldAnswers() }
+        }
     }
 
     /// The Workbench tab appeared: the list reloads, and the sessions'

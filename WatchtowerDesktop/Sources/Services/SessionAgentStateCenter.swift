@@ -54,6 +54,10 @@ final class SessionAgentStateCenter {
     /// Every change of `statuses`, after it is assigned (held ask answers
     /// go once their session leaves a permission prompt). One subscriber.
     @ObservationIgnored var onChange: (() -> Void)?
+    /// Every read that succeeded, after its result is published, changed
+    /// or not (an answer held because a read failed goes on the next one
+    /// that succeeds). One subscriber.
+    @ObservationIgnored var onRead: (() -> Void)?
     @ObservationIgnored private let interval: Duration
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
@@ -147,6 +151,7 @@ final class SessionAgentStateCenter {
             return false
         }
         publishResolved()
+        onRead?()
         return true
     }
 

@@ -761,25 +761,29 @@ with no line break or control character inside it, followed after
 Code submits it (while the agent works, Claude Code queues it). The Return
 follows only when, both before the pause and after it (the states re-read):
 both reads succeeded (`SessionAgentStateCenter.poll` returns whether it
-did; after a failed read the last good state vouches for nothing), the
+did; after a failed read the last good state vouches for nothing — a
+failed read before the paste holds the line, see below), the
 session's hooks wrote a state during its current run
 (`SessionAgentStatus.at`; no hooks, or none written yet, means the app
 cannot tell a permission prompt is on screen), that state is not
 `needsApproval`, and the session's Claude Code prompt held no text not
 submitted (`TerminalCenter.promptDrafts`): nothing the owner typed since
-their last submitting Return — only input ending in a plain CR submits;
-Claude Code's line-break keys (`\` then Return, Option+Return as ESC CR,
-Ctrl+J as LF, Shift+Return as an escape sequence) and anything else leave a
-draft — and no earlier line the app pasted there without its Return (an
+their last submitting Return — only input ending in a plain CR not right
+after ESC, whose last printable input before it (escape sequences and paste
+brackets skipped) is not `\`, submits; Claude Code's line-break keys (`\`
+then Return, Option+Return as ESC CR, Ctrl+J as LF, Shift+Return as an
+escape sequence) and anything else leave a draft — and no earlier line the app pasted there without its Return (an
 answer or a hand-off left typed). Keys sent while the session shows
 `needsApproval` answer the dialog and change nothing. Otherwise the line is
 only pasted, the session's prompt counts as holding a draft until the
 owner's submitting Return (or the process's start or close), and a bar over
 the terminal says to press Return. Nothing is typed while the session's
 agent waits on a permission prompt (`needsApproval`, PROJ-11, re-read right
-before the paste): the line is held in memory and goes on the first read of
-the states that shows the prompt resolved (`SessionAgentStateCenter.onChange`
-→ `OwnerAsksViewModel.deliverHeldAnswers`), under the same Return rules;
+before the paste), or while that re-read fails (the last good state may
+miss a prompt shown since): the line is held in memory and goes on the
+first read of the states that succeeds and shows no prompt
+(`SessionAgentStateCenter.onChange`/`onRead` →
+`OwnerAsksViewModel.deliverHeldAnswers`), under the same Return rules;
 it is never sent on a timer — after a minute held (`stillHeldAfter`) its
 bar says it is still waiting and that Dismiss sends it through the
 session's brief instead. Nor is anything typed while another answer's line
@@ -813,7 +817,7 @@ would send the agent to read an answer that is not there — the
 `WorkbenchCommentPrompt` rule carried over to asks.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after), `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted` (at once and after a hold; a dialog key is no draft), `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted`, `testAPermissionPromptDuringThePauseLeavesTheLineTyped` (a line left typed keeps the next answer from submitting it, through a dialog key), `testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt`, `testAFailedStateReadLeavesTheLineTyped` (either read), `testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer`
+- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after), `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted` (at once and after a hold; a dialog key is no draft), `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted`, `testAPermissionPromptDuringThePauseLeavesTheLineTyped` (a line left typed keeps the next answer from submitting it, through a dialog key), `testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt`, `testAFailedStateReadAfterThePauseLeavesTheLineTyped`, `testAFailedStateReadBeforeThePasteHoldsTheLine`, `testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer`
 - `internal/asks/line_test.go::TestDeliveryLineFixtures`, `internal/asks/line_test.go::TestDeliveryLineIsOneLine`
 - `WatchtowerDesktop/Tests/Core/OwnerAskPromptTests.swift` (`testTheLineMatchesEveryGoFixture`, `testTheLineIsOneLineWithNoControlCharacters`)
 - `WatchtowerDesktop/Tests/TerminalCenterTests.swift` (`testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn` — the Return strictly after the pause, `testOverTheOwnersDraftSubmitPromptOnlyPastes`, `testTheOwnerTypingDuringThePauseStopsTheReturn`, `testALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt`, `testClaudeCodeLineBreakKeysLeaveTheDraft`, `testAFailedRefreshAfterThePauseStopsTheReturn`, `testWithoutBracketedPasteTheLineIsCopiedNotTyped`, `testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted`)
@@ -1000,10 +1004,13 @@ owner's and the agent's backs.
   later): a held answer waits that long — never sent on a timer; after a
   minute its bar says it is still waiting and that Dismiss sends it through
   the session's brief instead. The prompt's draft is tracked from the
-  owner's keystrokes and the app's own pastes only, and errs toward a draft:
-  only input ending in a plain CR (not after `\` or ESC) submits — the
-  bytes Claude Code itself reads as Enter — so a draft cleared with Ctrl-C
-  or Esc still counts and the next line is then only pasted. Keys typed while
+  owner's keystrokes and the app's own pastes only, and errs toward a draft.
+  The rule: input submits only when it ends in a CR that does not directly
+  follow ESC and the last printable byte the owner typed or pasted before
+  that CR (escape sequences — cursor keys, paste brackets — skipped, across
+  earlier inputs) is not `\`; every other input leaves a draft. So a draft
+  cleared with Ctrl-C or Esc still counts and the next line is then only
+  pasted. Keys typed while
   the app still shows `needsApproval` (the 1 s poll and the hook's latency
   after the dialog closes) count as the dialog's, so text typed in that
   second may be submitted with the answer. The 500 ms pause is a timing
@@ -1028,7 +1035,7 @@ owner's and the agent's backs.
 
 ## Changelog
 
-- 2026-10-04 (PR #163 review round, controller decisions): **PROJ-12 tightened** to hold as written; heading and the "two answers never share a prompt" wording unchanged, no guard relaxed. A line the app pasted without its Return (an answer left typed, a hand-off left pasted) now counts as a draft in the session's prompt (`TerminalCenter.ownerDrafts` → `promptDrafts`), cleared by the owner's submitting Return or the process's start or close, never by keys into a permission dialog — before this, the next answer was submitted with it. A submitting Return is input ending in a plain CR not after `\` or ESC (`TerminalCenter.isSubmit`): Claude Code's line-break keys (`\` then Return, Option+Return, Ctrl+J, Shift+Return sequences) leave the draft. A Return needs both state reads to have succeeded (`SessionAgentStateCenter.poll` returns `Bool`; `refreshStates` and `submitPrompt`'s `refresh` too; a hand-off's Return follows the same rule). A held answer is never sent on a timer; after `stillHeldAfter` (60 s) its bar reads "Still waiting for the permission prompt — Dismiss to send the answer through the session's brief instead". A line held only behind another answer to the same session is `queued`, with the note "Answer saved — sending after the previous answer". A key into a permission dialog no longer clears a typed answer's "press Return" bar. Limit (h) rewritten. New guards listed under PROJ-12; `testAPermissionPromptDuringThePauseLeavesTheLineTyped` strengthened (it now asserts the bar stays through a dialog key and a second answer is only pasted).
+- 2026-10-04 (PR #163 review round, controller decisions): **PROJ-12 tightened** to hold as written; heading and the "two answers never share a prompt" wording unchanged, no guard relaxed. A line the app pasted without its Return (an answer left typed, a hand-off left pasted) now counts as a draft in the session's prompt (`TerminalCenter.ownerDrafts` → `promptDrafts`), cleared by the owner's submitting Return or the process's start or close, never by keys into a permission dialog — before this, the next answer was submitted with it. A submitting Return is input ending in a plain CR not after `\` or ESC (`TerminalCenter.isSubmit`): Claude Code's line-break keys (`\` then Return, Option+Return, Ctrl+J, Shift+Return sequences) leave the draft. A Return needs both state reads to have succeeded (`SessionAgentStateCenter.poll` returns `Bool`; `refreshStates` and `submitPrompt`'s `refresh` too), and a failed read before the paste holds the answer until a read succeeds (`SessionAgentStateCenter.onRead`); a hand-off reads no state before its paste, so only its read after the pause gates its Return. The `\` rule skips escape sequences and paste brackets (`TerminalCenter.endsAfterBackslash`). A queued answer later held by a permission prompt is told by its own notice, so it gets the held bar and its minute's wait even when the earlier answer ended typed. A held answer is never sent on a timer; after `stillHeldAfter` (60 s) its bar reads "Still waiting for the permission prompt — Dismiss to send the answer through the session's brief instead". A line held only behind another answer to the same session is `queued`, with the note "Answer saved — sending after the previous answer". A key into a permission dialog no longer clears a typed answer's "press Return" bar. Limit (h) rewritten. New guards listed under PROJ-12; `testAPermissionPromptDuringThePauseLeavesTheLineTyped` strengthened (it now asserts the bar stays through a dialog key and a second answer is only pasted).
 - 2026-10-04 (board #379, owner-approved): **PROJ-12 amended** — the owner asked for the answer to an ask to go to the agent by itself after answering, instead of having to press Enter. The answer's line (still stored first, still one line) is now pasted and submitted: `TerminalCenter.submitPrompt` (`keepingLineBreaks: false`) writes the bracketed paste, then one Return on its own after `answerSubmitDelay` (500 ms). The "Why locked" risk — a Return confirming a permission dialog's default — is met by the session agent state (PROJ-11): while the ask's session is `needsApproval` nothing is typed and the line is held in memory until a read of the states shows the prompt answered (a stopped or restarted session gets nothing; a quit leaves the ask `answered` for the brief); the state is re-read before the paste and after the pause, and a prompt that appears during the pause stops the Return. Without bracketed paste the line is still copied, never typed. The pane hint "press Return to send" (board #364) remains only for that pause race and the copied case; a held answer shows "Answer saved — it goes to Claude once the permission prompt is resolved", a submitted one "Answer sent to Claude". Guards renamed in place: `testProj12_TheAnswerIsStoredBeforeTheLineIsTypedAndNeverSubmitted` → `testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (stored-before-typed and the one-line, no-control-byte paste kept, Return now asserted as a write of its own), `TerminalCenterTests::testARunningSessionGetsOneBracketedPasteWithNoEnter` leaves the PROJ-12 list (it now pins only `sendPrompt`, the paste step of `submitPrompt`, which has no other caller) for `testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn`; new `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer`. Review round (same day, controller decisions): no Return over the owner's half-typed text (`TerminalCenter.ownerDrafts`, fed by `onOwnerInput` now carrying the bytes; the "half-typed prompt" risk is back in "Why locked"; this also covers a hand-off's Return), a Return only into a session whose hooks wrote a state this run, one delivery per session at a time, a 500 ms pause for answers (`answerSubmitDelay`; hand-offs keep 150 ms), and the held bar's Dismiss cancels the delivery (the brief lists the answer); new guards `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted`, `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted`; limit (h) rewritten.
 - 2026-10-04 (polish wave, owner-approved default): PROJ-11's heading gains "(v1 limits below)" — "never show a stale state" holds outside the time-ordered leftovers listed under "Session agent state ordering and subagents" in "v1 limits and notes". Wording only; no contract semantics or guard tests changed.
 - 2026-10-04 (board #368, owner-approved target): **PROJ-11 amended** (strengthened) — a turn's Stop and its main-thread tool results are ordered by the turn, not by hook-process start time, closing v1 note (a) of "Session agent state ordering and subagents". Migration `00102` adds `terminal_sessions.agent_turn_end` (the transcript's size at the run's last Stop hook) and `agent_tool_run` (the stored state came from a main-thread `PostToolUse`), both Go-only. The Stop hook records the turn end before its drift check and with its `waiting`; a main-thread `PostToolUse` whose `tool_use_id` the transcript places before it writes nothing (`cmd/workbench_turn_order.go`, `toolCallTurn`); the Stop's `waiting` replaces a tool result's `working` stamped after it. Owner decision ask #20 unchanged: a subagent's tool result after a granted permission still records `working`, time-ordered. New guards `TestProj11_EndedTurnsToolResultNeverOverwritesTheStop` and `TestProj11_StopReplacesItsTurnsLateToolResult`; every existing guard runs unchanged (`TestProj11_OlderEventNeverOverwritesANewerState` holds for every write but the Stop's over a tool result's `working`). The note's narrower leftovers (unplaceable calls, StopFailure, `finished_at` in the Stop's first milliseconds) stay listed. PROJ-11's "never show a stale state" now holds outside those listed leftovers.
