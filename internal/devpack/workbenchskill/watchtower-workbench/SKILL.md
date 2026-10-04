@@ -15,12 +15,12 @@ At session start a hook prints the workbench brief: counts, the open part of the
 ## Tools
 
 - `workbench_info` — name, folder, description, sources, counts.
-- `workbench_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters.
+- `workbench_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters. By default it lists open work and the closed targets above it; the other closed (`done`/`dismissed`) targets are only counted (`closed_children`, `closed`) — pass `include_closed` to list them briefly. Archived targets (closed longer than the workbench's archive period) are left out and counted too (`archived_children`, `archived`).
 - `update_workbench` — set the workbench description.
 - `add_workbench_source` / `remove_workbench_source` — a source of kind `slack_channel`, `jira_project`, `confluence_space`, `person` or `link`.
 - `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, branch?, pr?, parent_id? | parent_key?, images?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`; `branch`/`pr` link the git work (see "Keeping the board in step with git"); `images` are absolute paths of image files to attach (see Images).
 - `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`), `branch` and `pr` (`""` clears one); `add_images` (absolute paths) and `remove_image_ids` attach and detach images. `parent_id` moves the target under another target of this workbench (`0` = to the top level; never under itself or one of its own sub-targets). Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
-- `get_target` — one target with its status history and its images (each with the `path` of Watchtower's copy — read it to look at the image).
+- `get_target` — one target with its status history and its images (each with the `path` of Watchtower's copy — read it to look at the image). It finds any target by id, archived or not, and says whether it is `archived`. To look up archived targets use `get_target` with the id, or `include_archived` on `workbench_board`/`list_targets`; to bring one back on the board, reopen it (`update_target` to an open status).
 - `list_comments` — by `target_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
