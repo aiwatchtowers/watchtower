@@ -105,9 +105,11 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         let s = try await seed()
         let sut = controls(makeVM(), s.project)
 
-        let titles = try sut.inspect().findAll(ViewType.Toggle.self).map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Session", "Board", "Files"])
+        // The view buttons' own ForEach: the … menu holds toggles too (the
+        // archive setting's choices).
         let buttons = try sut.inspect().find(ViewType.ForEach.self)
+        let titles = try buttons.findAll(ViewType.Toggle.self).map(Self.title)
+        XCTAssertEqual(titles, ["Terminal", "Session", "Board", "Files"])
         XCTAssertNoThrow(try buttons.tupleView(0).find(ViewType.Menu.self), "the sessions chevron sits by Terminal")
         for index in 1..<4 {
             XCTAssertThrowsError(try buttons.tupleView(index).find(ViewType.Menu.self), "no chevron by \(titles[index])")
