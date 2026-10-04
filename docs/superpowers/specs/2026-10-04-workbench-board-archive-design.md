@@ -1,6 +1,6 @@
 # Workbench board archive — design (board #301, 2026-10-04)
 
-Status: draft for owner review. Nothing is implemented yet.
+Status: approved by the owner 2026-10-04 (decisions A–D as recommended). Migration number: 00103 (00102 was taken by the turn-order migration).
 
 ## 1. What the owner sees
 
