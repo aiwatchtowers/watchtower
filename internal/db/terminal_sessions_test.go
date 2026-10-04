@@ -385,13 +385,12 @@ func TestSetTerminalAgentState_StopReplacesAToolRunsWorking(t *testing.T) {
 	}
 }
 
-// Board #368: a tool result's write lands only while the turn end it checked
-// its call against still holds, and SetTerminalTurnEnd keeps the row guards.
-func TestSetTerminalTurnEnd_GuardsTheToolRunWrite(t *testing.T) {
+// Board #368: SetTerminalTurnEnd keeps the row guards — its own workbench's
+// row and conversation only — and skips an unchanged end.
+func TestSetTerminalTurnEnd_KeepsTheRowGuards(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-	t0 := time.Now().UTC().Truncate(time.Millisecond)
 
 	for _, tc := range []struct {
 		name      string
@@ -409,6 +408,18 @@ func TestSetTerminalTurnEnd_GuardsTheToolRunWrite(t *testing.T) {
 		if err != nil || ok != tc.want {
 			t.Fatalf("%s: ok=%v err=%v, want %v", tc.name, ok, err, tc.want)
 		}
+	}
+}
+
+// Board #368: a tool result's write lands only while the turn end it checked
+// its call against still holds.
+func TestSetTerminalAgentState_ToolRunNeedsTheCurrentTurnEnd(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, AgentOrder{Stop: true}); err != nil {
 		t.Fatal(err)
@@ -428,9 +439,23 @@ func TestSetTerminalTurnEnd_GuardsTheToolRunWrite(t *testing.T) {
 	if !s.ToolRun || s.TurnEnd.Int64 != 100 {
 		t.Fatalf("tool run %v, turn end %v; want true, 100", s.ToolRun, s.TurnEnd)
 	}
+}
 
-	// A new process run starts with no turn order.
-	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, t0.Add(2*time.Second)); err != nil || !ok {
+// Board #368: a new process run starts with no turn order.
+func TestClearTerminalAgentState_DropsTheTurnOrder(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100); err != nil {
+		t.Fatal(err)
+	}
+	seen := AgentOrder{ToolRun: true, SeenTurnEnd: sql.NullInt64{Int64: 100, Valid: true}}
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0, "", nil, false, seen); err != nil || !ok {
+		t.Fatalf("tool result: ok=%v err=%v", ok, err)
+	}
+
+	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, t0.Add(time.Second)); err != nil || !ok {
 		t.Fatalf("clear: ok=%v err=%v", ok, err)
 	}
 	if s, _ := d.GetTerminalSession(id); s.ToolRun || s.TurnEnd.Valid {
