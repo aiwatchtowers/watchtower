@@ -729,7 +729,7 @@ struct TargetDetailView: View {
                 .foregroundStyle(target.isOverdue ? Color.red : (target.dueDate.isEmpty ? Color.secondary : Color.orange))
         }
         .buttonStyle(.plain)
-        .popover(isPresented: $showDuePopover) { duePopover }
+        .popover(isPresented: $showDuePopover) { duePopover.popoverSurface() }
     }
 
     @ViewBuilder
@@ -979,7 +979,7 @@ struct TargetDetailView: View {
                     Label("Snooze", systemImage: "moon")
                 }
                 .buttonStyle(.bordered)
-                .popover(isPresented: $showSnoozePopover) { snoozePopover }
+                .popover(isPresented: $showSnoozePopover) { snoozePopover.popoverSurface() }
             }
 
             Spacer()

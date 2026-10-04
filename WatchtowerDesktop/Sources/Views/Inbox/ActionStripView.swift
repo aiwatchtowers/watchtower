@@ -171,6 +171,7 @@ struct ActionStripActionsView: View {
                     .popover(isPresented: $showsCheatSheet, arrowEdge: .bottom) {
                         ReactionCheatSheetView(rows: cheatSheetRows, onOpenSettings: onOpenSettings)
                             .frame(width: 440)
+                            .popoverSurface()
                     }
                 }
                 .padding(.horizontal, 12)

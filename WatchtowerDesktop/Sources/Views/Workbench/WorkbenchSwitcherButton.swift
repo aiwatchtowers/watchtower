@@ -40,6 +40,7 @@ struct WorkbenchSwitcher: View {
                         actions.showAll()
                     }
                 )
+                .popoverSurface()
             }
     }
 }

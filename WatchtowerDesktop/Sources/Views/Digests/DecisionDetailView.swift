@@ -426,6 +426,7 @@ struct EditableImportanceBadge: View {
             }
             .padding(.vertical, 4)
             .frame(width: 140)
+            .popoverSurface()
         }
         .help(isCorrected ? "Importance changed (click to adjust)" : "Click to change importance")
     }

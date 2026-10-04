@@ -25,7 +25,7 @@ struct ChannelPicker: View {
                 .buttonStyle(.plain)
                 .help("Add channel")
                 .popover(isPresented: $showingPopover, arrowEdge: .trailing) {
-                    channelSearchPopover
+                    channelSearchPopover.popoverSurface()
                 }
             }
 

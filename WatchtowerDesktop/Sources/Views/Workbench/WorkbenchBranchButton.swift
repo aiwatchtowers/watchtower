@@ -30,6 +30,7 @@ struct WorkbenchBranchCrumb: View {
                 }
                 .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
                     WorkbenchBranchPopover(vm: vm, project: project)
+                        .popoverSurface()
                 }
             }
         } else if let error {

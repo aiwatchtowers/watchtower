@@ -17,6 +17,7 @@ struct CommentTextEditor: View {
     var cornerRadius: CGFloat = 6
     var onSubmit: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
+    @Environment(\.onPopoverSurface) private var onPopoverSurface
 
     var body: some View {
         CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear, onSubmit: onSubmit)
@@ -30,11 +31,17 @@ struct CommentTextEditor: View {
                         .allowsHitTesting(false)
                 }
             }
-            .background(RoundedRectangle(cornerRadius: cornerRadius).fill(Color(nsColor: .textBackgroundColor)))
+            .background(RoundedRectangle(cornerRadius: cornerRadius).fill(wellColor))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             )
+    }
+
+    /// Opaque in a pane; on a popover a translucent well over the material
+    /// (#363), still lighter (dark: darker) than it so the text reads.
+    private var wellColor: Color {
+        Color(nsColor: .textBackgroundColor).opacity(onPopoverSurface ? 0.5 : 1)
     }
 }
 

@@ -329,7 +329,7 @@ struct ConnectionsView: View {
             get: { selectedNode == node.userID },
             set: { if !$0 { selectedNode = nil } }
         )) {
-            nodePopover(node: node)
+            nodePopover(node: node).popoverSurface()
         }
     }
 

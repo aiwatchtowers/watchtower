@@ -38,7 +38,7 @@ struct CustomTrackTimelineView: View {
                 .controlSize(.small)
                 .disabled(viewModel.isScanRunning)
                 .help("Scan a chosen range and fill the timeline")
-                .popover(isPresented: $showScanPopover, arrowEdge: .bottom) { scanRangePopover }
+                .popover(isPresented: $showScanPopover, arrowEdge: .bottom) { scanRangePopover.popoverSurface() }
             }
 
             if viewModel.isScanRunning {
