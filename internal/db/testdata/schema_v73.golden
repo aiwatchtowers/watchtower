@@ -1788,7 +1788,8 @@ folder_path TEXT NOT NULL UNIQUE, -- absolute, symlinks resolved
 description TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, board_language TEXT NOT NULL DEFAULT '')
+, board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
+CHECK (archive_after_days BETWEEN 0 AND 365))
 
 table	prompt_history
 CREATE TABLE prompt_history (
@@ -2598,6 +2599,33 @@ VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
 COALESCE(NEW.status_actor, 'owner'));
 UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
 END
+
+view	workbench_target_archive
+CREATE VIEW workbench_target_archive AS
+WITH RECURSIVE
+node(id, parent_id, project_id, open, closed_at) AS (
+SELECT t.id, t.parent_id, t.project_id,
+t.status NOT IN ('done', 'dismissed'),
+COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
+t.updated_at)
+FROM targets t
+WHERE t.project_id IS NOT NULL
+),
+up(ancestor, parent_id, project_id, open, closed_at) AS (
+SELECT id, parent_id, project_id, open, closed_at FROM node
+UNION
+SELECT a.id, a.parent_id, up.project_id, up.open, up.closed_at
+FROM up JOIN targets a ON a.id = up.parent_id AND a.project_id = up.project_id
+)
+SELECT up.ancestor AS target_id,
+up.project_id AS project_id,
+CASE WHEN p.archive_after_days > 0
+AND MAX(up.open) = 0
+AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
+THEN 1 ELSE 0 END AS archived
+FROM up
+JOIN projects p ON p.id = up.project_id
+GROUP BY up.ancestor
 
 # table_info
 ## agent_actions
@@ -3799,6 +3827,7 @@ END
 4	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 5	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 6	board_language	TEXT	notnull=1	dflt=''	pk=0
+7	archive_after_days	INTEGER	notnull=1	dflt=14	pk=0
 
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

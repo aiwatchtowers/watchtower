@@ -465,6 +465,10 @@ type TargetFilter struct {
 	// WorkbenchID scopes the query to one project board: 0 (every existing
 	// caller) excludes project targets, N returns only project N's (PROJ-01).
 	WorkbenchID int64
+	// IncludeArchived keeps workbench N's archived targets
+	// (workbench_target_archive, PROJ-15), which are left out by default,
+	// an explicit Status included. No effect when WorkbenchID is 0.
+	IncludeArchived bool
 }
 
 // TargetLink represents a typed link between two targets or to an external reference.

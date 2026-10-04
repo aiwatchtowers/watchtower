@@ -1343,7 +1343,8 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, board_language TEXT NOT NULL DEFAULT '');
+, board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
+    CHECK (archive_after_days BETWEEN 0 AND 365));
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1564,6 +1565,31 @@ CREATE TABLE IF NOT EXISTS workbench_pr_states (
     checked_at  TEXT NOT NULL,
     PRIMARY KEY (project_id, ref)
 );
+CREATE VIEW IF NOT EXISTS workbench_target_archive AS
+WITH RECURSIVE
+    node(id, parent_id, project_id, open, closed_at) AS (
+        SELECT t.id, t.parent_id, t.project_id,
+               t.status NOT IN ('done', 'dismissed'),
+               COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
+                        t.updated_at)
+        FROM targets t
+        WHERE t.project_id IS NOT NULL
+    ),
+    up(ancestor, parent_id, project_id, open, closed_at) AS (
+        SELECT id, parent_id, project_id, open, closed_at FROM node
+        UNION
+        SELECT a.id, a.parent_id, up.project_id, up.open, up.closed_at
+        FROM up JOIN targets a ON a.id = up.parent_id AND a.project_id = up.project_id
+    )
+SELECT up.ancestor AS target_id,
+       up.project_id AS project_id,
+       CASE WHEN p.archive_after_days > 0
+             AND MAX(up.open) = 0
+             AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
+            THEN 1 ELSE 0 END AS archived
+FROM up
+JOIN projects p ON p.id = up.project_id
+GROUP BY up.ancestor;
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);

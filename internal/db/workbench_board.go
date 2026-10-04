@@ -15,6 +15,13 @@ type BoardNode struct {
 	// StatusSince is when the target entered its current status (its latest
 	// target_status_history row, UTC ISO-8601); "" when it has none.
 	StatusSince string
+	// Archived is the workbench_target_archive view's verdict (00103,
+	// PROJ-15): the target and its whole subtree are closed and older than
+	// the workbench's archive_after_days.
+	Archived bool
+	// ArchivedChildren counts the direct children WithoutArchived dropped;
+	// always 0 on GetWorkbenchBoard's full forest.
+	ArchivedChildren int
 }
 
 // boardSiblingOrder sorts siblings by priority (high, medium, low), then by
@@ -26,8 +33,10 @@ const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1
 
 type boardCounts struct{ newForAgent, unreadForOwner int }
 
-// GetWorkbenchBoard returns workbench projectID's target forest. An unknown
-// workbench yields an empty board; callers check GetWorkbench first.
+// GetWorkbenchBoard returns workbench projectID's whole target forest,
+// archived targets included and marked (BoardNode.Archived); display callers
+// prune it with WithoutArchived. An unknown workbench yields an empty board;
+// callers check GetWorkbench first.
 func (db *DB) GetWorkbenchBoard(projectID int64) ([]BoardNode, error) {
 	targets, err := db.listBoardTargets(projectID)
 	if err != nil {
@@ -41,7 +50,52 @@ func (db *DB) GetWorkbenchBoard(projectID int64) ([]BoardNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	return assembleBoard(targets, counts, since), nil
+	archived, err := db.workbenchArchivedTargets(projectID)
+	if err != nil {
+		return nil, err
+	}
+	ix := boardIndex{children: map[int64][]Target{}, counts: counts, seen: map[int64]bool{}, since: since, archived: archived}
+	return ix.assemble(targets), nil
+}
+
+// workbenchArchivedTargets returns the ids of workbench projectID's archived
+// targets (the workbench_target_archive view, PROJ-15).
+func (db *DB) workbenchArchivedTargets(projectID int64) (map[int64]bool, error) {
+	rows, err := db.Query(`SELECT target_id FROM workbench_target_archive
+		WHERE project_id = ? AND archived = 1`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("reading archived board targets: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning archived board target: %w", err)
+		}
+		out[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading archived board targets: %w", err)
+	}
+	return out, nil
+}
+
+// WithoutArchived returns a copy of board with every archived node and its
+// subtree left out; a kept node's ArchivedChildren counts the direct children
+// it lost. board itself is not changed.
+func WithoutArchived(board []BoardNode) []BoardNode {
+	out := make([]BoardNode, 0, len(board))
+	for _, n := range board {
+		if n.Archived {
+			continue
+		}
+		kept := WithoutArchived(n.Children)
+		n.ArchivedChildren = len(n.Children) - len(kept)
+		n.Children = kept
+		out = append(out, n)
+	}
+	return out
 }
 
 func (db *DB) listBoardTargets(projectID int64) ([]Target, error) {
@@ -90,14 +144,14 @@ type boardIndex struct {
 	counts   map[int64]boardCounts
 	seen     map[int64]bool
 	since    map[int64]string
+	archived map[int64]bool
 }
 
-func assembleBoard(targets []Target, counts map[int64]boardCounts, since map[int64]string) []BoardNode {
+func (ix boardIndex) assemble(targets []Target) []BoardNode {
 	onBoard := make(map[int64]bool, len(targets))
 	for _, t := range targets {
 		onBoard[int64(t.ID)] = true
 	}
-	ix := boardIndex{children: map[int64][]Target{}, counts: counts, seen: map[int64]bool{}, since: since}
 	var roots []Target
 	for _, t := range targets {
 		if t.ParentID.Valid && onBoard[t.ParentID.Int64] {
@@ -121,7 +175,7 @@ func (ix boardIndex) build(level []Target) []BoardNode {
 		ix.seen[id] = true
 		c := ix.counts[id]
 		nodes = append(nodes, BoardNode{Target: t, NewForAgent: c.newForAgent, UnreadForOwner: c.unreadForOwner,
-			StatusSince: ix.since[id], Children: ix.build(ix.children[id])})
+			StatusSince: ix.since[id], Archived: ix.archived[id], Children: ix.build(ix.children[id])})
 	}
 	return nodes
 }
