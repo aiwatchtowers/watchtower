@@ -68,11 +68,14 @@ final class OwnerAsksViewModelTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Its sessions' hooks count as having reported this run (no
-    /// `SessionAgentStateCenter` here), so an answer may be submitted.
+    /// Its sessions' hooks count as having reported this run and every
+    /// state read as fresh (no `SessionAgentStateCenter` here), so an
+    /// answer may be submitted. The held hint's wait never ends by itself.
     private func makeVM() -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults, terminalCenter: center)
         vm.asks.hasHookState = { _ in true }
+        vm.asks.refreshStates = { true }
+        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
         return vm
     }
 
@@ -425,26 +428,233 @@ final class OwnerAsksViewModelTests: XCTestCase {
     }
 
     /// A permission prompt that appears during the pause between the paste
-    /// and Return stops the Return: the pane says to press it.
+    /// and Return stops the Return: the pane says to press it. The owner's
+    /// key into that prompt leaves the line unsent in Claude Code's prompt,
+    /// so the hint stays, and the next answer is only pasted after it —
+    /// two answers never go as one message (PROJ-12).
     func testAPermissionPromptDuringThePauseLeavesTheLineTyped() async throws {
         let (p, s, askID) = try await seed()
+        let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
         center.start(s, fresh: true)
         let vm = makeVM()
+        await vm.asks.load(projectID: p)
+        let asks = try XCTUnwrap(vm.asks.openAsks[p])
         var refreshes = 0
-        vm.asks.refreshStates = { refreshes += 1 }
-        vm.asks.needsApproval = { _ in refreshes >= 2 }
-        let ask = try await openAsk(vm, project: p, id: askID)
+        vm.asks.refreshStates = {
+            refreshes += 1
+            return true
+        }
+        var approval: Bool { refreshes == 2 }
+        vm.asks.needsApproval = { _ in approval }
+        center.inputAnswersDialog = { _ in approval }
         pick(vm, askID)
+        pick(vm, otherID)
 
-        let delivery = await vm.asks.answer(ask)
+        let delivery = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == askID }))
 
         XCTAssertEqual(delivery, .typed)
         XCTAssertEqual(refreshes, 2, "read before the paste and after the pause")
         XCTAssertEqual(typed.count, 1, "the paste, no Return")
         XCTAssertEqual(center.answerHints[s.id], .typed)
         XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerTypedNote)
-        processes[0].onOwnerInput?(Array("y".utf8))
-        XCTAssertNil(center.answerHints[s.id], "the owner's next input")
+        processes[0].onOwnerInput?(Array("1".utf8))
+        XCTAssertEqual(center.answerHints[s.id], .typed, "a key into the permission dialog sends nothing of the line")
+
+        refreshes = 3
+        let second = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == otherID }))
+        XCTAssertEqual(second, .typed)
+        XCTAssertEqual(typed.count, 2, "pasted after the first line")
+        XCTAssertFalse(typed.contains([0x0D]), "no Return submits the two lines as one message")
+
+        processes[0].onOwnerInput?([0x0D])
+        XCTAssertNil(center.answerHints[s.id], "the owner's Return")
+    }
+
+    /// PROJ-12: a hand-off left pasted without its Return (its session was
+    /// not idle) is still in the prompt; an answer is only pasted after it,
+    /// never submitting text the owner did not send.
+    func testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let handOff = await center.submitPrompt("From a Watchtower code question", sessionID: s.id) { false }
+        XCTAssertEqual(handOff, .pasted)
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(typed.count, 2)
+        XCTAssertFalse(typed.contains([0x0D]))
+    }
+
+    /// PROJ-12: a Return needs both state reads — before the paste and
+    /// after the pause — to have succeeded; a failed one vouches for no
+    /// state, so the line is only pasted.
+    func testAFailedStateReadLeavesTheLineTyped() async throws {
+        let (p, s, askID) = try await seed()
+        let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        await vm.asks.load(projectID: p)
+        let asks = try XCTUnwrap(vm.asks.openAsks[p])
+        var reads = 0
+        var failing = 0
+        vm.asks.refreshStates = {
+            reads += 1
+            return reads != failing
+        }
+        for (read, id) in [(1, askID), (2, otherID)] {
+            reads = 0
+            failing = read
+            pick(vm, id)
+            let before = typed.count
+
+            let delivery = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == id }))
+
+            XCTAssertEqual(delivery, .typed, "read \(read) failed")
+            XCTAssertEqual(reads, read, "a failed first read ends it before the pause")
+            XCTAssertEqual(typed.count, before + 1, "the paste, no Return")
+            XCTAssertFalse(typed.contains([0x0D]))
+            processes[0].onOwnerInput?([0x0D])
+        }
+    }
+
+    /// An answer written while another is going to the same session (in
+    /// its pause) waits behind it with its own note — not the permission
+    /// prompt's — and goes right after it, pasted and submitted, without a
+    /// state change.
+    func testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext() async throws {
+        let (p, s, askID) = try await seed()
+        let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        await vm.asks.load(projectID: p)
+        let asks = try XCTUnwrap(vm.asks.openAsks[p])
+        pick(vm, askID)
+        pick(vm, otherID)
+        let other = try XCTUnwrap(asks.first { $0.id == otherID })
+        var queued: OwnerAsksViewModel.Delivery?
+        onPause = { [weak self, weak vm] in
+            guard let self, let vm, queued == nil else { return }
+            queued = await vm.asks.answer(other)
+            XCTAssertEqual(vm.asks.answerNotices[otherID]?.text, OwnerAsksViewModel.answerQueuedNote)
+            XCTAssertEqual(center.answerHints[s.id], .queued)
+            XCTAssertEqual(typed.count, 1, "nothing of the second line yet")
+        }
+
+        let first = await vm.asks.answer(try XCTUnwrap(asks.first { $0.id == askID }))
+
+        XCTAssertEqual(first, .submitted)
+        XCTAssertEqual(queued, .queued)
+        await waitUntil { self.typed.count == 4 }
+        guard typed.count == 4 else { return }
+        let lines = typed.map { String(bytes: $0, encoding: .utf8) ?? "" }
+        XCTAssertTrue(lines[0].contains("Ask #\(askID) "))
+        XCTAssertEqual(typed[1], [0x0D])
+        XCTAssertTrue(lines[2].contains("Ask #\(otherID) "))
+        XCTAssertEqual(typed[3], [0x0D])
+        await waitUntil { vm.asks.answerNotices[otherID] == .delivered(.submitted) }
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// A line held behind a permission prompt is never sent on a timer:
+    /// after `stillHeldAfter` the bar says it still waits (Dismiss hands it
+    /// to the brief), and the line goes only once the prompt is answered.
+    func testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var waited: [Duration] = []
+        vm.asks.holdSleep = { waited.append($0) }
+        var approval = true
+        vm.asks.needsApproval = { _ in approval }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .held)
+        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
+        XCTAssertEqual(waited, [OwnerAsksViewModel.stillHeldAfter])
+        XCTAssertEqual(OwnerAsksViewModel.stillHeldAfter, .seconds(60))
+        XCTAssertTrue(typed.isEmpty, "still held: nothing typed")
+        XCTAssertTrue(OwnerAsksViewModel.answerStillHeldNote.contains("Dismiss"))
+
+        approval = false
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertEqual(typed.count, 2)
+        XCTAssertEqual(typed.last, [0x0D])
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// A line held again (the prompt came back right before its paste)
+    /// starts its wait anew: the first hold's wait does not mark it.
+    func testOnlyTheLatestHoldsWaitMarksItStillWaiting() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var wakes: [CheckedContinuation<Void, Never>] = []
+        vm.asks.holdSleep = { _ in await withCheckedContinuation { wakes.append($0) } }
+        var approval = true
+        vm.asks.needsApproval = { _ in approval }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+        let delivery = await vm.asks.answer(ask)
+        XCTAssertEqual(delivery, .held)
+        await waitUntil { wakes.count == 1 }
+
+        approval = false
+        vm.asks.refreshStates = {
+            approval = true
+            return true
+        }
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertTrue(typed.isEmpty, "held again")
+        await waitUntil { wakes.count == 2 }
+        guard wakes.count == 2 else { return }
+        wakes[0].resume()
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(center.answerHints[s.id], .held)
+        wakes[1].resume()
+        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
+    }
+
+    /// A hold that ended before the wait is over never turns into "still
+    /// waiting".
+    func testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var wakes: [CheckedContinuation<Void, Never>] = []
+        vm.asks.holdSleep = { _ in await withCheckedContinuation { wakes.append($0) } }
+        var approval = true
+        vm.asks.needsApproval = { _ in approval }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+        let delivery = await vm.asks.answer(ask)
+        XCTAssertEqual(delivery, .held)
+        await waitUntil { wakes.count == 1 }
+
+        approval = false
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertNil(center.answerHints[s.id], "delivered")
+        let other = try await fileAnotherAsk(project: p, sessionID: s.id)
+        approval = true
+        await vm.asks.load(projectID: p)
+        pick(vm, other)
+        let held = await vm.asks.answer(try XCTUnwrap(vm.asks.openAsks[p]?.first { $0.id == other }))
+        XCTAssertEqual(held, .held)
+        await waitUntil { wakes.count == 2 }
+        guard wakes.count == 2 else { return }
+        wakes[0].resume()
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(center.answerHints[s.id], .held, "the first hold's wait does not mark the second")
+        wakes[1].resume()
+        await waitUntil { self.center.answerHints[s.id] == .stillHeld }
     }
 
     func testCopiedShowsTheCopiedAnswerHint() async throws {

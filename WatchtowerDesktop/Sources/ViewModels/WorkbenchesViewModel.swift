@@ -281,7 +281,8 @@ final class WorkbenchesViewModel {
         terminalCenter?.inputAnswersDialog = { [weak agentStates] id in
             agentStates?.statuses[id]?.state.kind == .needsApproval
         }
-        asks.refreshStates = { [weak agentStates] in await agentStates?.poll() }
+        // A failed read (or no states at all) vouches for nothing: no Return.
+        asks.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
         agentStates?.onChange = { [weak asks] in
             Task { await asks?.deliverHeldAnswers() }
         }

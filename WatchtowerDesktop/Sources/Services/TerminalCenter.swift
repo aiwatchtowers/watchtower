@@ -77,14 +77,20 @@ final class TerminalCenter {
     /// #379). The pane says so prominently — over `clipboardHints` — until
     /// the owner's next input in that session (a copied one's first input,
     /// the paste, turns it into "press Return"; a held one stays, the input
-    /// answers the prompt), Dismiss, the next delivery or the process's exit.
+    /// answers the prompt; input into a permission dialog changes none),
+    /// Dismiss, the next delivery or the process's exit.
     private(set) var answerHints: [Int64: AnswerHint] = [:]
-    /// Sessions whose owner typed since their last Return (board #379): a
-    /// Return now would submit that half-typed text with ours, so
-    /// `submitPrompt` only pastes. Input while `inputAnswersDialog` holds
-    /// goes to Claude Code's permission dialog, not to its prompt, and does
-    /// not count.
-    @ObservationIgnored private(set) var ownerDrafts: Set<Int64> = []
+    /// Sessions whose Claude Code prompt holds text not submitted (board
+    /// #379): the owner typed since their last submitting Return, or
+    /// `submitPrompt` left a line pasted without its Return. A Return now
+    /// would submit that text with ours, so `submitPrompt` only pastes.
+    /// Input while `inputAnswersDialog` holds goes to Claude Code's
+    /// permission dialog, not to its prompt, and changes nothing.
+    @ObservationIgnored private(set) var promptDrafts: Set<Int64> = []
+    /// The last byte of the owner's previous prompt input per session: a
+    /// lone Return after `\` inserts a line break in Claude Code, it does
+    /// not submit.
+    @ObservationIgnored private var lastOwnerByte: [Int64: UInt8] = [:]
     /// Whether the session's agent shows a permission dialog right now (its
     /// agent status is `needsApproval`). Set by `WorkbenchesViewModel`.
     @ObservationIgnored var inputAnswersDialog: (_ sessionID: Int64) -> Bool = { _ in false }
@@ -272,41 +278,49 @@ final class TerminalCenter {
     /// "Hand to Claude Code" (spec 2026-10-02 §9.5) and an ask's answer line
     /// (PROJ-12, board #379): `text` pasted (`sendPrompt`; a hand-off keeps
     /// its line breaks, an answer line passes `keepingLineBreaks: false`).
-    /// A Return follows only while `canSubmit` holds and the owner has no
-    /// half-typed text in the session (`ownerDrafts`) — both checked before
-    /// the pause and again after it, the caller re-reading the session's
-    /// agent state (ruling R52: a hand-off only into a session idle at its
-    /// prompt; an answer only into a session whose hooks reported a state
-    /// this run that is not a permission prompt; a Return could answer a
-    /// prompt that appeared meanwhile) — and only into the same running
-    /// process, as a write of its own after `delay`: a CR read in one chunk
-    /// with the paste could be taken as part of it (a line break, not
-    /// Enter). Otherwise the paste waits for the owner's own Return.
-    /// `refresh` runs after the pause, before the second check (the caller
-    /// re-reads the agent state, which its poll may hold up to 1 s stale).
+    /// A Return follows only while `canSubmit` holds and the session's
+    /// prompt held no text before the paste (`promptDrafts`: the owner's
+    /// half-typed text, or an earlier line left without its Return) — both
+    /// checked before the pause and again after it, the caller re-reading
+    /// the session's agent state (ruling R52: a hand-off only into a session
+    /// idle at its prompt; an answer only into a session whose hooks
+    /// reported a state this run that is not a permission prompt; a Return
+    /// could answer a prompt that appeared meanwhile) — and only into the
+    /// same running process, as a write of its own after `delay`: a CR read
+    /// in one chunk with the paste could be taken as part of it (a line
+    /// break, not Enter). `refresh` runs after the pause, before the second
+    /// check (the caller re-reads the agent state, which its poll may hold
+    /// up to 1 s stale) and returns whether that read succeeded: after a
+    /// failed one the state is not known, so no Return. Otherwise the paste
+    /// waits for the owner's own Return, and the session holds a draft until
+    /// then.
     func submitPrompt(
         _ text: String,
         sessionID: Int64,
         keepingLineBreaks: Bool = true,
         delay: Duration = submitDelay,
-        refresh: () async -> Void = {},
+        refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
+        let promptWasEmpty = !promptDrafts.contains(sessionID)
         switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
         case .noSession: return .noSession
         case .copied: return .copied
         case .sent: break
         }
         guard let process = processes[sessionID] else { return .noSession }
-        if canSubmit(), !ownerDrafts.contains(sessionID) {
+        if promptWasEmpty, canSubmit() {
             await signaller.sleep(delay)
-            await refresh()
+            let fresh = await refresh()
             guard states[sessionID] == .running, processes[sessionID] === process else { return .noSession }
-            if canSubmit(), !ownerDrafts.contains(sessionID) {
+            if fresh, canSubmit(), !promptDrafts.contains(sessionID) {
                 process.sendInput([0x0D])
                 return .submitted
             }
         }
+        // The line sits in the prompt unsubmitted: the next line must not
+        // submit it with its own Return.
+        promptDrafts.insert(sessionID)
         pasteHints.insert(sessionID)
         return .pasted
     }
@@ -327,6 +341,22 @@ final class TerminalCenter {
         /// Held while the agent waits on a permission prompt; it goes once
         /// the prompt is answered.
         case held
+        /// Held so long (`OwnerAsksViewModel.stillHeldAfter`) with no change
+        /// that the pane says it still waits and that Dismiss leaves it for
+        /// the session's brief.
+        case stillHeld
+        /// Held while another answer is going to the same session; it goes
+        /// right after that one.
+        case queued
+
+        /// Waiting for its delivery: the owner's input keeps it, and its
+        /// Dismiss cancels the delivery.
+        var isHeld: Bool {
+            switch self {
+            case .held, .stillHeld, .queued: true
+            case .typed, .copied: false
+            }
+        }
     }
 
     /// An ask's answer line is waiting in or for a running session: its pane
@@ -338,24 +368,40 @@ final class TerminalCenter {
         answerHints[sessionID] = hint
     }
 
-    /// The owner typed or pasted into the session. Unless it answers a
-    /// permission dialog, it leaves a draft in Claude Code's prompt until it
-    /// ends with a Return (`ownerDrafts`). A copied answer's hint turns into
-    /// "press Return" (the paste was the first step); a typed one has done
-    /// its job; a held one waits for its delivery.
+    /// The owner typed or pasted into the session. Input that answers a
+    /// permission dialog changes nothing: the prompt still holds what it
+    /// held. Otherwise a submitting Return (`isSubmit`) empties the prompt
+    /// (`promptDrafts`) and any other input leaves a draft in it. A copied
+    /// answer's hint turns into "press Return" (the paste was the first
+    /// step); a typed one has done its job; a held one waits for its
+    /// delivery.
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
-        if !inputAnswersDialog(sessionID) {
-            if let last = bytes.last, last == 0x0D || last == 0x0A {
-                ownerDrafts.remove(sessionID)
-            } else if !bytes.isEmpty {
-                ownerDrafts.insert(sessionID)
-            }
+        guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
+        if Self.isSubmit(bytes, after: lastOwnerByte[sessionID]) {
+            promptDrafts.remove(sessionID)
+        } else {
+            promptDrafts.insert(sessionID)
         }
+        lastOwnerByte[sessionID] = bytes.last
         switch answerHints[sessionID] {
-        case nil, .held?: break
+        case nil, .held?, .stillHeld?, .queued?: break
         case .copied?: answerHints[sessionID] = .typed
         case .typed?: answerHints[sessionID] = nil
         }
+    }
+
+    /// Whether the owner's input submits Claude Code's prompt: it ends in a
+    /// plain Return (CR). Claude Code's line-break keys do not submit —
+    /// Ctrl+J (LF), Option+Return (ESC CR), `\` then Return (in one chunk
+    /// or the Return in the next), and Shift+Return under an extended
+    /// keyboard protocol (an escape sequence ending in `u` or `~`) — nor
+    /// does anything else; when unsure, the input counts as a draft, which
+    /// costs the owner a Return of their own, never a line submitted with
+    /// theirs.
+    static func isSubmit(_ bytes: [UInt8], after previousByte: UInt8?) -> Bool {
+        guard bytes.last == 0x0D else { return false }
+        let before = bytes.count >= 2 ? bytes[bytes.count - 2] : previousByte
+        return before != 0x1B && before != UInt8(ascii: "\\")
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -415,7 +461,8 @@ final class TerminalCenter {
             }
         }
         startedAt[id] = now()
-        ownerDrafts.remove(id)
+        promptDrafts.remove(id)
+        lastOwnerByte[id] = nil
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
         return mode
@@ -457,7 +504,8 @@ final class TerminalCenter {
         states[sessionID] = nil
         rows[sessionID] = nil
         startedAt[sessionID] = nil
-        ownerDrafts.remove(sessionID)
+        promptDrafts.remove(sessionID)
+        lastOwnerByte[sessionID] = nil
         clipboardHints.remove(sessionID)
         answerHints[sessionID] = nil
         focusOrder.removeAll { $0 == sessionID }

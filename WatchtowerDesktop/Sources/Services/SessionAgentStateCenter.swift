@@ -123,14 +123,18 @@ final class SessionAgentStateCenter {
         Task { await poll() }
     }
 
-    /// One read of the stored states.
-    func poll() async {
+    /// One read of the stored states. Returns whether it succeeded — then
+    /// `statuses` is at least as new as this read (a newer read may have
+    /// been applied first); after a failure they are the last good read's,
+    /// which a caller deciding on a Return must not trust (PROJ-12).
+    @discardableResult
+    func poll() async -> Bool {
         readsStarted += 1
         let token = readsStarted
         do {
             let next = try await read(terminalCenter.liveClaudeIDs.sorted())
             failing = false
-            guard token > readApplied else { return }
+            guard token > readApplied else { return true }
             readApplied = token
             rows = next
         } catch {
@@ -139,8 +143,11 @@ final class SessionAgentStateCenter {
                 failing = true
             }
             // The last good read stays, resolved for the sessions live now.
+            publishResolved()
+            return false
         }
         publishResolved()
+        return true
     }
 
     /// The last good read under the current liveness and run starts: a

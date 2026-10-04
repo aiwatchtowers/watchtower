@@ -5,19 +5,33 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The stored agent state per session id ("working", "waiting", "approval").
+/// The stored agent state per session id ("working", "waiting", "approval"),
+/// stamped during the current run unless `stamp` says otherwise; a read
+/// throws while `failing`.
 private final class AgentStates: @unchecked Sendable {
+    struct ReadFailed: Error {}
+
     private let lock = NSLock()
     private var states: [Int64: String] = [:]
+    private var stamp = "2999-01-01T00:00:00.000Z"
+    private var failing = false
 
-    func storeAgentState(_ id: Int64, _ state: String) { lock.withLock { states[id] = state } }
-
-    func agentStateRows(_ asked: [Int64]) -> [SessionAgentStateRow] {
+    func storeAgentState(_ id: Int64, _ state: String, at stamp: String? = nil) {
         lock.withLock {
-            asked.compactMap { id in
+            states[id] = state
+            if let stamp { self.stamp = stamp }
+        }
+    }
+
+    func failReads() { lock.withLock { failing = true } }
+
+    func agentStateRows(_ asked: [Int64]) throws -> [SessionAgentStateRow] {
+        try lock.withLock {
+            if failing { throw ReadFailed() }
+            return asked.compactMap { id in
                 states[id].map {
                     SessionAgentStateRow(id: id, projectID: nil, title: "s", agentState: $0,
-                                         agentStateAt: "2999-01-01T00:00:00.000Z", workbenchName: nil)
+                                         agentStateAt: stamp, workbenchName: nil)
                 }
             }
         }
@@ -67,7 +81,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         let stored = stored
         agentStates = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, notifier: RecordingSessionNotifier(), defaults: defaults
-        ) { stored.agentStateRows($0) }
+        ) { try stored.agentStateRows($0) }
     }
 
     override func tearDown() {
@@ -213,6 +227,82 @@ final class CodeHandoffCenterTests: XCTestCase {
 
         XCTAssertEqual(processes[0].inputs, [bracketedPasteBytes(text)], "the refreshed state stops the Return")
         XCTAssertEqual(vm.sessionState(session), .live(.needsApproval))
+    }
+
+    /// PROJ-12: a state read that fails after the pause vouches for
+    /// nothing — the last good `waiting` is not trusted, no Return.
+    func testAFailedStateReadAfterThePauseStopsTheReturn() async throws {
+        let (handoff, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting")
+        await agentStates.poll()
+        handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
+        let text = try XCTUnwrap(handoff.requests[project.id]?.text)
+        duringPause = { [self] in stored.failReads() }
+
+        await handoff.send(to: .session(session.id), workbenchID: project.id)
+
+        XCTAssertEqual(processes[0].inputs, [bracketedPasteBytes(text)], "no 0x0D on a stale state")
+        XCTAssertEqual(vm.sessionState(session), .live(.stopped), "the last good read still shows")
+    }
+
+    // MARK: - An ask's answer through the real state center (PROJ-12)
+
+    /// An open question ask filed from `session`, its draft picked.
+    private func answerableAsk(_ vm: WorkbenchesViewModel, _ project: Workbench, _ session: TerminalSession) async throws -> OwnerAsk {
+        let payload = #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+        let askID = try await pool.write { db in
+            try TestDatabase.insertOwnerAsk(db, projectID: project.id, sessionID: session.id, payload: payload)
+        }
+        await vm.asks.load(projectID: project.id)
+        vm.asks.drafts.update(askID) { $0.picks["a"] = .init(labels: ["Yes"]) }
+        return try XCTUnwrap(vm.asks.openAsks[project.id]?.first { $0.id == askID })
+    }
+
+    /// The wiring submits an answer into a session whose hooks reported
+    /// `waiting` this run.
+    func testAnAnswerIntoASessionWaitingThisRunIsSubmitted() async throws {
+        let (_, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting")
+        await agentStates.poll()
+
+        let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(processes[0].inputs.last, [0x0D])
+    }
+
+    /// A state stamped before the session's current run started is an
+    /// earlier run's: it vouches for no prompt, so the line is only pasted.
+    func testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted() async throws {
+        let (_, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting", at: "2000-01-01T00:00:00.000Z")
+        await agentStates.poll()
+
+        let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
+
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(processes[0].inputs.count, 1)
+        XCTAssertFalse(processes[0].inputs.contains([0x0D]))
+    }
+
+    /// A state read that fails after the answer's pause leaves the line
+    /// typed: no Return on the last good read.
+    func testAFailedStateReadAfterTheAnswersPauseLeavesTheLineTyped() async throws {
+        let (_, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting")
+        await agentStates.poll()
+        let ask = try await answerableAsk(vm, project, session)
+        duringPause = { [self] in stored.failReads() }
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .typed)
+        XCTAssertEqual(processes[0].inputs.count, 1)
+        XCTAssertFalse(processes[0].inputs.contains([0x0D]))
     }
 
     /// Ruling R54(d): Cancel during the pause stops the queued Return and

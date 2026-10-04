@@ -149,7 +149,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                 if let session, let hint = center.answerHints[session.id] {
                     AnswerReturnHint(hint: hint) {
                         // A held answer's Dismiss cancels its typing: the brief lists it.
-                        if hint == .held, let workbenches = vm {
+                        if hint.isHeld, let workbenches = vm {
                             workbenches.asks.cancelHeldAnswers(sessionID: session.id)
                         } else {
                             center.dismissClipboardHint(sessionID: session.id)
@@ -205,11 +205,12 @@ private struct TerminalSessionPane<NotStarted: View>: View {
 
 /// Over a terminal holding an ask's answer not sent yet (boards #364,
 /// #379): typed (press Return — a permission prompt appeared before
-/// Watchtower's own Return), copied (paste, then Return) or held behind a
-/// permission prompt (it goes once the prompt is resolved; Dismiss cancels
-/// that, the brief lists the answer). Prominent on purpose. Goes with the
-/// owner's next input in the session (not a held one), the delivery, or
-/// Dismiss (`TerminalCenter.answerHints`).
+/// Watchtower's own Return), copied (paste, then Return), held behind a
+/// permission prompt (it goes once the prompt is resolved; after a minute
+/// the bar says it still waits) or queued behind another answer; Dismiss
+/// cancels a held one's delivery, the brief lists the answer. Prominent on
+/// purpose. Goes with the owner's next input in the session (not a held
+/// one), the delivery, or Dismiss (`TerminalCenter.answerHints`).
 private struct AnswerReturnHint: View {
     let hint: TerminalCenter.AnswerHint
     let dismiss: () -> Void
@@ -226,7 +227,7 @@ private struct AnswerReturnHint: View {
             Spacer(minLength: 8)
             Button("Dismiss", action: dismiss)
                 .controlSize(.small)
-                .help(hint == .held ? "Don't send it — the agent gets it in the session's next brief" : "")
+                .help(hint.isHeld ? "Don't send it — the agent gets it in the session's next brief" : "")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -237,7 +238,7 @@ private struct AnswerReturnHint: View {
         switch hint {
         case .typed: "return"
         case .copied: "doc.on.clipboard"
-        case .held: "hourglass"
+        case .held, .stillHeld, .queued: "hourglass"
         }
     }
 
@@ -246,6 +247,8 @@ private struct AnswerReturnHint: View {
         case .typed: OwnerAsksViewModel.answerTypedNote
         case .copied: OwnerAsksViewModel.answerCopiedNote
         case .held: OwnerAsksViewModel.answerHeldNote
+        case .stillHeld: OwnerAsksViewModel.answerStillHeldNote
+        case .queued: OwnerAsksViewModel.answerQueuedNote
         }
     }
 }
