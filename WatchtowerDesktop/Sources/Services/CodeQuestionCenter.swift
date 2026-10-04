@@ -718,22 +718,21 @@ final class CodeQuestionCenter {
     /// page's hand-off sheet. Not while an answer streams (the button is
     /// disabled then too), nor before the first question.
     func handToClaude(workbenchID: Int64) {
-        guard let conversationID = sessions[workbenchID]?.conversationID,
-              let question = questionRefs[conversationID], let handoff,
-              engine(for: question)?.isBusy != true else {
+        guard let conversationID = sessions[workbenchID]?.conversationID, let question = questionRefs[conversationID] else {
             beep()
             return
         }
-        closeQuestion(workbenchID: workbenchID)
-        Task { await handoff.handConversation(question) }
+        handToClaude(question) { closeQuestion(workbenchID: workbenchID) }
     }
 
-    /// The Questions tab's ⌥⌘↩ on the open conversation.
-    func handToClaude(_ question: CodeQuestionRef) {
+    /// The Questions tab's ⌥⌘↩ on the open conversation, and the popover's
+    /// after `beforeHanding` closed it.
+    func handToClaude(_ question: CodeQuestionRef, beforeHanding: () -> Void = {}) {
         guard let handoff, engine(for: question)?.isBusy != true else {
             beep()
             return
         }
+        beforeHanding()
         Task { await handoff.handConversation(question) }
     }
 
