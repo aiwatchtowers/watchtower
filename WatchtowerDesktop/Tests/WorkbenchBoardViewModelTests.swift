@@ -590,4 +590,59 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         vm.stopPolling()
     }
 
+    // MARK: - Archive (board #301)
+
+    /// Backdates `target`'s status changes — its close time for the archive
+    /// view — past the default 14 days.
+    nonisolated private static func closeLongAgo(_ db: Database, _ target: Int64) throws {
+        try db.execute(
+            sql: """
+                UPDATE target_status_history SET changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')
+                WHERE target_id = ?
+                """,
+            arguments: [target]
+        )
+    }
+
+    func testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne() throws {
+        let (pid, live, old) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let live = try Self.insertTarget(db, project: pid, text: "Live", status: "done")
+            let old = try Self.insertTarget(db, project: pid, text: "Old", status: "done")
+            try Self.closeLongAgo(db, old)
+            return (pid, live, old)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.showDone = true
+        XCTAssertEqual(vm.archivedCount, 1)
+        XCTAssertEqual(vm.rows.map(\.id), [Int(live)])
+        XCTAssertFalse(vm.kanban.showsCard(Int(old)))
+
+        vm.showArchived = true
+        XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(live), Int(old)])
+        XCTAssertTrue(vm.kanban.showsCard(Int(old)))
+
+        vm.showArchived = false
+        XCTAssertTrue(vm.setStatus("todo", for: Int(old)), "restoring = reopening")
+        XCTAssertEqual(vm.archivedCount, 0)
+        XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(live), Int(old)])
+    }
+
+    func testTheArchiveSettingIsInTheFingerprint() throws {
+        let pid = try dbManager.dbPool.write { db -> Int64 in
+            let pid = try Self.insertWorkbench(db)
+            let old = try Self.insertTarget(db, project: pid, text: "Old", status: "done")
+            try Self.closeLongAgo(db, old)
+            return pid
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        XCTAssertEqual(vm.archivedCount, 1)
+        XCTAssertFalse(vm.refreshIfChanged())
+
+        try dbManager.dbPool.write { try WorkbenchQueries.setArchiveAfterDays($0, projectID: pid, days: 0) }
+        XCTAssertTrue(vm.refreshIfChanged(), "a changed setting reloads the board")
+        XCTAssertEqual(vm.archivedCount, 0)
+    }
 }

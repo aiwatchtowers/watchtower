@@ -44,6 +44,28 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
     /// Spec 2026-10-03 Part 8: the badge is open asks plus unread agent
     /// target comments, summed over the workbenches.
+    /// The header menu's "Archive Closed Targets After" (board #301): a write
+    /// reloads the summaries (the menu's checkmark); a refused one says why
+    /// for that workbench only and keeps the value.
+    func testSetArchiveAfterDaysWritesReloadsAndReportsARefusal() async throws {
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let vm = makeVM()
+        await vm.reload()
+        XCTAssertEqual(vm.summaries.first?.project.archiveAfterDays, 14)
+
+        await vm.setArchiveAfterDays(30, projectID: p)
+        XCTAssertEqual(vm.summaries.first?.project.archiveAfterDays, 30)
+        XCTAssertNil(vm.archiveSettingErrors[p])
+
+        await vm.setArchiveAfterDays(400, projectID: p)
+        XCTAssertNotNil(vm.archiveSettingErrors[p], "the CHECK refuses it")
+        XCTAssertEqual(try await pool.read { try WorkbenchQueries.fetch($0, id: p)?.archiveAfterDays }, 30)
+
+        await vm.setArchiveAfterDays(0, projectID: p)
+        XCTAssertNil(vm.archiveSettingErrors[p], "the next write clears the error")
+        XCTAssertEqual(vm.summaries.first?.project.archiveAfterDays, 0)
+    }
+
     func testTheBadgeCountsOpenAsksPlusUnreadAgentComments() async throws {
         let (p, other) = try await pool.write { d -> (Int64, Int64) in
             let p = try TestDatabase.insertWorkbench(d)

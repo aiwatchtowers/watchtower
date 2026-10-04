@@ -41,6 +41,8 @@ package enum WorkbenchQueries {
     /// The header menu's "Archive Closed Targets After" (board #301): days a
     /// closed target waits before the board archives it, 0 = never. The
     /// column's CHECK bounds it (0…365) for both languages.
+    ///
+    /// Dual path of Go `SetWorkbenchArchiveDays` (internal/db/workbenches.go).
     package static func setArchiveAfterDays(_ db: Database, projectID: Int64, days: Int) throws {
         try db.execute(
             sql: "UPDATE projects SET archive_after_days = ?, updated_at = \(now) WHERE id = ?",
