@@ -201,6 +201,10 @@ enum DocumentAttributedString {
 
     private static func box(padding: CGFloat) -> NSTextBlock {
         let block = NSTextBlock()
+        // Without a width a block keeps the one it was first laid out at:
+        // a view laid out before its width arrived (a `GeometryReader`
+        // starts at zero) would draw the block a letter per line (#398).
+        block.setContentWidth(100, type: .percentageValueType)
         block.setWidth(padding, type: .absoluteValueType, for: .padding)
         block.setWidth(4, type: .absoluteValueType, for: .margin, edge: .minY)
         block.setWidth(4, type: .absoluteValueType, for: .margin, edge: .maxY)

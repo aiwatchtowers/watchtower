@@ -110,3 +110,88 @@ final class DocumentAttributedStringLayoutTests: XCTestCase {
                        .systemPurple)
     }
 }
+
+/// #398: a quote or a code block spans the column whatever its inline
+/// markup, and keeps doing so once the column widens: the review body is
+/// first laid out at the zero width a `GeometryReader` starts with.
+@MainActor
+final class DocumentAttributedStringBlockWidthTests: XCTestCase {
+    /// The standard superpowers plan header: a quote with bold inside.
+    private static let planHeader = """
+    # Atlas plan
+
+    > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development \
+    (recommended) or superpowers:executing-plans to implement this plan task-by-task.
+
+    **Goal:** keep the retry budget small.
+
+    ```go
+    // retry with a [small](budget) budget
+    return nil
+    ```
+
+    ---
+    """
+
+    private static let column: CGFloat = 600
+
+    /// Lays `out` out with no room at all, then at `column`, the way a
+    /// `DocumentTextView` sees its width arrive (the default line fragment
+    /// padding, as there). The storage is returned
+    /// too: it owns the layout manager, not the other way round.
+    private func layoutAfterWidening(_ out: NSAttributedString) -> (NSTextStorage, NSLayoutManager) {
+        let storage = NSTextStorage(attributedString: out)
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        container.size = NSSize(width: Self.column, height: CGFloat.greatestFiniteMagnitude)
+        layout.ensureLayout(for: container)
+        return (storage, layout)
+    }
+
+    private func lineRect(_ layout: NSLayoutManager, _ out: NSAttributedString, at text: String) -> CGRect {
+        let location = (out.string as NSString).range(of: text).location
+        return layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: location), effectiveRange: nil)
+    }
+
+    func testAQuoteParagraphWithInlineMarkupHasOneBlock() throws {
+        let out = DocumentAttributedString.make(DocumentRendering.render(Self.planHeader), highlights: [:],
+                                                activeThreadID: nil, typography: ReviewTypography.style)
+        let text = out.string as NSString
+        let paragraph = text.paragraphRange(for: text.range(of: "For agentic"))
+        var effective = NSRange()
+        let style = try XCTUnwrap(out.attribute(.paragraphStyle, at: paragraph.location, longestEffectiveRange: &effective,
+                                                in: paragraph) as? NSParagraphStyle)
+        XCTAssertEqual(effective, paragraph, "one paragraph style across the bold and the plain text")
+        XCTAssertEqual(style.textBlocks.count, 1)
+    }
+
+    func testQuotesCodeBlocksAndRulesSpanTheColumnAfterItWidens() {
+        for typography in [DocumentTypography.standard, ReviewTypography.style] {
+            let out = DocumentAttributedString.make(DocumentRendering.render(Self.planHeader), highlights: [:],
+                                                    activeThreadID: nil, typography: typography)
+            let (storage, layout) = layoutAfterWidening(out)
+            XCTAssertEqual(storage.length, out.length)
+            for text in ["For agentic", "// retry", "\u{00A0}"] {
+                let rect = lineRect(layout, out, at: text)
+                XCTAssertGreaterThan(rect.width, Self.column - 40, "\(text) spans the column")
+                XCTAssertLessThanOrEqual(rect.maxX, Self.column, "\(text) stays inside it")
+            }
+            XCTAssertLessThan(lineRect(layout, out, at: "Goal").minY, 300, "the quote is a few lines, not a letter per line")
+        }
+    }
+
+    func testNestedBlocksStayInsideTheColumn() {
+        let markdown = "- item\n\n  > quoted in a list\n\n> outer\n>\n> > nested quote\n\n- item\n\n  ```\n  code in a list\n  ```"
+        let out = DocumentAttributedString.make(DocumentRendering.render(markdown), highlights: [:], activeThreadID: nil)
+        let (storage, layout) = layoutAfterWidening(out)
+        XCTAssertEqual(storage.length, out.length)
+        for text in ["quoted in a list", "nested quote", "code in a list"] {
+            let rect = lineRect(layout, out, at: text)
+            XCTAssertGreaterThan(rect.width, Self.column / 2, "\(text) is not squeezed")
+            XCTAssertLessThanOrEqual(rect.maxX, Self.column, "\(text) stays inside the column")
+        }
+    }
+}
