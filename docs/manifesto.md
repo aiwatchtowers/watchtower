@@ -27,7 +27,7 @@ So we keep them, and we change their role. They stay where conversations, ticket
 One place where you and your agents work from the same context.
 
 - **One connected picture.** Messages, tickets, pages, mail, calendar, meeting transcripts and code are synced and indexed locally, then linked into people, decisions, tracks and history. This is a standing model of your work, not a query fired at an API at the moment you ask.
-- **Shared ground with your agents.** An agent sees what you see: the board, the people, the decisions, the memory of what happened before. You stop re-explaining the world at the start of every session.
+- **Shared ground with your agents.** An agent sees what you see: the tasks, the people, the decisions, the memory of what happened before. You stop re-explaining the world at the start of every session.
 - **Acting, not just answering.** Replies, page edits and ticket updates go out from the same place, and you approve them before they leave.
 
 ## Where the multiplier comes from
@@ -35,7 +35,7 @@ One place where you and your agents work from the same context.
 The gain is not a smarter chatbot. It comes from removing the work that sits between the actual work:
 
 1. **Context assembly.** "What did we discuss about X, who owns it, what changed?" stops being half an hour of searching across six tabs. For you and for your agent, the answer is already assembled.
-2. **No re-briefing.** An agent that starts with your context, your board and your memory gets to useful output in minutes, not after a long prompt you have to rewrite every time.
+2. **No re-briefing.** An agent that starts with your context, your tasks and your memory gets to useful output in minutes, not after a long prompt you have to rewrite every time.
 3. **Attention on what matters.** Instead of badges in every tool, one surface tells you what needs you: a direct question, a blocked decision, a meeting to prepare for, or a recap of what you missed while you were away.
 4. **Delegation that holds.** Agents get the task together with its context, come back with a clear question when they are stuck, and hand back finished work. You review and decide. You stop babysitting them. (For code, the Workbench takes this furthest: a coding agent works a folder alongside you, tracks its tasks and reports where things stand.)
 5. **Closing the loop.** Decisions turn into tickets, replies and page edits without copying anything between windows.
@@ -53,5 +53,5 @@ It also grows by connection, not by roadmap. Connect an external MCP server and 
 - **Build on top, never replace.** Existing tools stay the systems of record.
 - **Local first.** Your data is synced to and stored on your machine, not in our cloud. The model you choose receives the context a task needs, not your whole archive.
 - **The human decides.** Agents propose, and nothing leaves on your behalf without your approval.
-- **Agents are colleagues, not features.** They get the same context, the same board and the same memory you have.
-- **Personal first, team next.** We start with one person and their agents, because that is where the gain is immediate and the trust is easiest to earn. The same model of shared context and shared boards is how teams will follow.
+- **Agents are colleagues, not features.** They get the same context, the same tasks and the same memory you have.
+- **Personal first, team next.** We start with one person and their agents, because that is where the gain is immediate and the trust is easiest to earn. The same model of shared context and shared work is how teams will follow.
