@@ -74,16 +74,21 @@ final class OwnerAskTextTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(button: "Yes"), "the label renders without its markup")
     }
 
+    /// Every link the text renders opens something: a file, or the
+    /// system for an allowlisted scheme; any other scheme is stripped
+    /// before it renders, so none looks clickable and does nothing.
     func testLinkRoutes() throws {
         let file = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "a.go", line: 3, col: nil)))
         XCTAssertEqual(OwnerAskLinks.route(file), .file(OpenQuicklyTarget(path: "a.go", line: 3, col: nil)))
-        for url in ["https://example.com", "HTTP://example.com"] {
-            XCTAssertEqual(OwnerAskLinks.route(try XCTUnwrap(URL(string: url))), .browser, url)
+        for url in ["https://example.com", "HTTP://example.com", "mailto:someone@example.com", "slack://channel?id=C1"] {
+            XCTAssertEqual(OwnerAskLinks.route(try XCTUnwrap(URL(string: url))), .system, url)
         }
         let escaping = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "../x.go", line: 1, col: nil)))
-        for url in ["mailto:someone@example.com", "slack://channel?id=C1", "file:///etc/hosts", escaping.absoluteString] {
-            XCTAssertEqual(OwnerAskLinks.route(try XCTUnwrap(URL(string: url))), .discarded, url)
+        for url in ["file:///etc/hosts", "smb://host/x", escaping.absoluteString] {
+            XCTAssertEqual(OwnerAskLinks.route(try XCTUnwrap(URL(string: url))), .refused, url)
         }
+        let card = OwnerAskHeaderCard(ask: try ask(summary: "[hosts](file:///etc/hosts) or [share](smb://host/x)"))
+        XCTAssertEqual(try links(card), [], "a refused scheme renders as plain text")
     }
 
     // MARK: - Fields

@@ -350,23 +350,27 @@ struct OwnerAskDrawer: View {
 
 /// Links in an ask's text (#394): a workbench path (`path:line`, or a
 /// link to a path) opens the file in Files — a beep when it is not a file
-/// of the folder — and http(s) opens in the browser; any other scheme is
-/// dropped. A modifier of its own: it is rebuilt only when the workbench
-/// changes, not on every keystroke into the draft (an `OpenURLAction`
-/// cannot be compared — `MarkdownView`).
+/// of the folder — and any scheme of the app-wide allowlist (http(s),
+/// mailto, slack…) goes to the system. A link of any other scheme is
+/// never clickable: `MarkdownView` strips it before it renders. A
+/// modifier of its own: it is rebuilt only when the workbench changes,
+/// not on every keystroke into the draft (an `OpenURLAction` cannot be
+/// compared — `MarkdownView`).
 struct OwnerAskLinks: ViewModifier {
     let vm: WorkbenchesViewModel
     let projectID: Int64
 
     enum Route: Equatable {
         case file(OpenQuicklyTarget)
-        case browser
-        case discarded
+        case system
+        /// A workbench link naming no file of the folder (`../x.go:3`),
+        /// or a scheme past the allowlist.
+        case refused
     }
 
     static func route(_ url: URL) -> Route {
         if let target = CodeLineLinks.target(from: url) { return .file(target) }
-        return ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? .browser : .discarded
+        return AllowedURLSchemes.permits(url) ? .system : .refused
     }
 
     func body(content: Content) -> some View {
@@ -379,10 +383,11 @@ struct OwnerAskLinks: ViewModifier {
                         if !(await vm.openAskLink(target, projectID: projectID)) { NSSound.beep() }
                     }
                     return .handled
-                case .browser:
+                case .system:
                     return .systemAction
-                case .discarded:
-                    return .discarded
+                case .refused:
+                    NSSound.beep()
+                    return .handled
                 }
             })
     }
