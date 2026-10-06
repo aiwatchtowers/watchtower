@@ -55,4 +55,34 @@ final class CommentTextEditorHostedTests: XCTestCase {
         XCTAssertEqual(textView.undoManager?.canUndo, false, "nothing of ask A is left to undo")
     }
 
+    func testTakingTheKeyboardRunsOnFocus() throws {
+        var focused = 0
+        let (window, host) = host(Box()) { focused += 1 }
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(textView(in: host))))
+        spin()
+        XCTAssertEqual(focused, 1)
+    }
+
+    /// A click into the field that already has the keyboard (its card made
+    /// inactive by a click elsewhere that took no focus) runs it again.
+    func testAClickWhileFocusedRunsOnFocus() throws {
+        var focused = 0
+        let (window, host) = host(Box()) { focused += 1 }
+        defer { window.close() }
+        let textView = try XCTUnwrap(textView(in: host))
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        spin()
+        let point = textView.convert(NSPoint(x: 10, y: 10), to: nil)
+        func click(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        let down = try XCTUnwrap(click(.leftMouseDown))
+        // The text view's tracking loop ends on this mouse-up.
+        NSApp.postEvent(try XCTUnwrap(click(.leftMouseUp)), atStart: false)
+        textView.mouseDown(with: down)
+        spin()
+        XCTAssertEqual(focused, 2, "taking the keyboard, then the click")
+    }
 }

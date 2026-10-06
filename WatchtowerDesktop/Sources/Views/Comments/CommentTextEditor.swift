@@ -8,8 +8,8 @@ import WatchtowerCore
 /// already blinking in it when it opens. Grows with its text from
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
 /// is sent with its batch) leaves ⌘↩/⌃↩ to the text view. `onFocus` runs
-/// when the field takes the keyboard (a margin comment's card turning
-/// active). Text set through the binding
+/// when the field takes the keyboard or is clicked while it has it (a
+/// margin comment's card turning active). Text set through the binding
 /// from outside is not undoable (`updateNSView`).
 struct CommentTextEditor: View {
     @Binding var text: String
@@ -184,6 +184,14 @@ private final class SubmittingTextView: NSTextView {
         // Not inside AppKit's responder change: the callback writes SwiftUI state.
         if took, let onFocus { DispatchQueue.main.async(execute: onFocus) }
         return took
+    }
+
+    /// A click into the field while it already has the keyboard (its card
+    /// made inactive by a click elsewhere that took no focus) makes it
+    /// active again; `becomeFirstResponder` covers the other clicks.
+    override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder === self, let onFocus { DispatchQueue.main.async(execute: onFocus) }
+        super.mouseDown(with: event)
     }
 
     override func viewDidMoveToWindow() {
