@@ -150,13 +150,16 @@ final class OwnerAskTextTests: XCTestCase {
 
     func testACheckNoteIsTheMultiLineEditorWritingTheDraft() throws {
         var written: [String: String] = [:]
+        var keys: [Bool] = []
         let setNote: (String, String) -> Void = { written[$0] = $1 }
         let body = OwnerAskChecklistBody(
             items: [OwnerAskCheckItem(id: "1", text: "Step")], marks: ["1": .broken], notes: [:], editable: true, setNote: setNote
-        )
+        ) { keys.append($0) }
         let editor = try body.inspect().find(CommentTextEditor.self).actualView()
         XCTAssertEqual(editor.minHeight, CommentTextEditor.formMinHeight, "several lines tall from the start")
-        XCTAssertTrue(editor.leavesOnSubmit, "⌘↩ leaves the field")
+        editor.onSubmit?()
+        editor.onShiftSubmit?()
+        XCTAssertEqual(keys, [false, true], "⌘↩ and ⌘⇧↩ press the ask's buttons")
         editor.text = "Line one\nline two"
         XCTAssertEqual(written, ["1": "Line one\nline two"])
     }

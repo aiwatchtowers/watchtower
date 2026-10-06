@@ -47,6 +47,29 @@ final class CommentTextEditorHostedTests: XCTestCase {
                                        keyCode: CommentEditorKeys.returnKeyCode))
     }
 
+    /// ⌘⇧↩ goes to `onShiftSubmit` when it is set (an ask's Request
+    /// changes), ⌘↩ to `onSubmit`; without it ⌘⇧↩ is ⌘↩.
+    func testCommandShiftReturnRunsOnShiftSubmit() throws {
+        var sent: [String] = []
+        let (window, hosting) = host(AnyView(CommentTextEditor(text: .constant(""), onSubmit: { sent.append("submit") },
+                                                               onShiftSubmit: { sent.append("shift") })))
+        defer { window.close() }
+        let field = try XCTUnwrap(textView(in: hosting))
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertTrue(field.performKeyEquivalent(with: try commandReturn(window)))
+        XCTAssertTrue(field.performKeyEquivalent(with: try commandReturn(window, shift: true)))
+        XCTAssertEqual(sent, ["submit", "shift"])
+
+        // Labelled: a trailing closure would be `onFocus`.
+        // swiftlint:disable:next trailing_closure
+        let (plainWindow, plainHost) = host(AnyView(CommentTextEditor(text: .constant(""), onSubmit: { sent.append("plain") })))
+        defer { plainWindow.close() }
+        let plain = try XCTUnwrap(textView(in: plainHost))
+        XCTAssertTrue(plainWindow.makeFirstResponder(plain))
+        XCTAssertTrue(plain.performKeyEquivalent(with: try commandReturn(plainWindow, shift: true)))
+        XCTAssertEqual(sent.last, "plain")
+    }
+
     /// A field whose text is kept as typed (a margin comment): ⌘↩ leaves
     /// it, in its own window — not merely the key one.
     func testCommandReturnLeavesAFieldKeptAsTyped() throws {

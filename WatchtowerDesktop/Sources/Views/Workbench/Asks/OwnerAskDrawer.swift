@@ -149,6 +149,7 @@ struct OwnerAskDrawer: View {
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .background(OwnerAskKeyCatcher(onKey: pressKey))
         .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
         // "k of N ›" swaps the ask under the same drawer.
@@ -175,7 +176,8 @@ struct OwnerAskDrawer: View {
                 answerText: nil,
                 onAnswer: nil,
                 draftPicks: picksBinding,
-                editable: editable
+                editable: editable,
+                onKey: pressKey
             )
         }
     }
@@ -208,6 +210,13 @@ struct OwnerAskDrawer: View {
                 }
             }
         }
+    }
+
+    /// ⌘↩ / ⌘⇧↩ (`shift`) from a field or `OwnerAskKeyCatcher` (owner ask
+    /// #90): the answer button the key names, pressed as a click would —
+    /// nothing while it is off.
+    private func pressKey(_ shift: Bool) {
+        asks.pressKey(on: ask, shift: shift)
     }
 
     /// A review's focus item jumps to its place once the snapshot is
@@ -303,7 +312,8 @@ struct OwnerAskDrawer: View {
                 notes: checkNotes,
                 editable: editable,
                 mark: { id, state in asks.editDraft(ask.id) { $0.checks[id] = state } },
-                setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } }
+                setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } },
+                onKey: pressKey
             )
         case .question: EmptyView()
         }
@@ -317,7 +327,8 @@ struct OwnerAskDrawer: View {
                 placeholder: "Note for the agent (optional)",
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
-                leavesOnSubmit: true
+                onSubmit: { pressKey(false) },
+                onShiftSubmit: { pressKey(true) }
             )
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {

@@ -9,7 +9,8 @@ import WatchtowerCore
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
 /// is sent with its batch) leaves ⌘↩/⌃↩ to the text view; with
 /// `leavesOnSubmit` they leave the field instead (its text is already kept
-/// as typed: a margin comment). `onFocus` runs
+/// as typed: a margin comment). `onShiftSubmit`, when set, takes ⌘⇧↩/⌃⇧↩
+/// from `onSubmit` (an ask's Request changes). `onFocus` runs
 /// when the field takes the keyboard or is clicked while it has it (a
 /// margin comment's card turning active). Text set through the binding
 /// from outside is not undoable (`updateNSView`).
@@ -22,6 +23,7 @@ struct CommentTextEditor: View {
     var cornerRadius: CGFloat = 6
     var leavesOnSubmit = false
     var onSubmit: (() -> Void)?
+    var onShiftSubmit: (() -> Void)?
     var onFocus: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
@@ -34,7 +36,8 @@ struct CommentTextEditor: View {
 
     var body: some View {
         CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear,
-                            leavesOnSubmit: leavesOnSubmit, onSubmit: onSubmit, onFocus: onFocus)
+                            leavesOnSubmit: leavesOnSubmit, onSubmit: onSubmit, onShiftSubmit: onShiftSubmit,
+                            onFocus: onFocus)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -68,6 +71,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     let focusOnAppear: Bool
     let leavesOnSubmit: Bool
     let onSubmit: (() -> Void)?
+    let onShiftSubmit: (() -> Void)?
     let onFocus: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -92,6 +96,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.focusOnAppear = focusOnAppear
         textView.leavesOnSubmit = leavesOnSubmit
         textView.onSubmit = onSubmit
+        textView.onShiftSubmit = onShiftSubmit
         textView.onFocus = onFocus
 
         // A new width re-wraps the text: measure again.
@@ -114,6 +119,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         guard let textView = scroll.documentView as? SubmittingTextView else { return }
         textView.leavesOnSubmit = leavesOnSubmit
         textView.onSubmit = onSubmit
+        textView.onShiftSubmit = onShiftSubmit
         textView.onFocus = onFocus
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
@@ -177,6 +183,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 /// and never as `insertNewline:`, and ⌃↩ arrives as `insertLineBreak:`.
 private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onShiftSubmit: (() -> Void)?
     var onFocus: (() -> Void)?
     var focusOnAppear = false
     var leavesOnSubmit = false
@@ -208,21 +215,22 @@ private final class SubmittingTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if submits(event) { submit(); return }
+        if submits(event) { submit(event); return }
         super.keyDown(with: event)
     }
 
     /// ⌘-combinations reach the window as key equivalents before `keyDown`.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if window?.firstResponder === self, submits(event) {
-            submit()
+            submit(event)
             return true
         }
         return super.performKeyEquivalent(with: event)
     }
 
-    private func submit() {
-        onSubmit?()
+    private func submit(_ event: NSEvent) {
+        let shift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
+        if shift, let onShiftSubmit { onShiftSubmit() } else { onSubmit?() }
         if leavesOnSubmit { window?.makeFirstResponder(nil) }
     }
 

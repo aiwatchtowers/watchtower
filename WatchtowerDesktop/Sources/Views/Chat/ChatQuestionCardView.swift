@@ -22,6 +22,9 @@ struct ChatQuestionCardView: View {
     /// With `draftPicks`: whether they take input (an open ask, no answer
     /// being written).
     var editable = true
+    /// With `draftPicks`: ⌘↩ (false) / ⌘⇧↩ (true) in an Other field press
+    /// the ask's answer buttons (`OwnerAsksViewModel.pressKey`).
+    var onKey: ((Bool) -> Void)?
 
     @State private var picks: [String: ChatQuestionAnswer.Entry] = [:]
 
@@ -110,11 +113,12 @@ struct ChatQuestionCardView: View {
         if interactive {
             // Return is a new line. In the chat ⌘↩ sends a complete card;
             // on an owner ask the field starts about three lines tall and
-            // ⌘↩ leaves it (the ask's answer bar sends).
+            // ⌘↩ presses the ask's answer button, as its bar's would.
             if draftPicks != nil {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…",
                                   minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
-                                  leavesOnSubmit: true)
+                                  onSubmit: onKey.map { onKey in { onKey(false) } },
+                                  onShiftSubmit: onKey.map { onKey in { onKey(true) } })
             } else {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…", onSubmit: complete ? send : nil)
             }

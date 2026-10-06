@@ -11,6 +11,8 @@ struct OwnerAskChecklistBody: View {
     let editable: Bool
     var mark: (String, OwnerAskAnswer.CheckState?) -> Void = { _, _ in }
     var setNote: (String, String) -> Void = { _, _ in }
+    /// ⌘↩ (false) / ⌘⇧↩ (true) in a note: the ask's answer buttons.
+    var onKey: (Bool) -> Void = { _ in }
 
     private static let states: [(OwnerAskAnswer.CheckState, String)] = [(.ok, "Ok"), (.broken, "Broken"), (.skipped, "Skipped")]
 
@@ -71,7 +73,8 @@ struct OwnerAskChecklistBody: View {
                 placeholder: state == .broken ? "What broke? (required)" : "Note",
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
-                leavesOnSubmit: true
+                onSubmit: { onKey(false) },
+                onShiftSubmit: { onKey(true) }
             )
         } else if let note = notes[item.id], !note.isEmpty {
             MarkdownView(text: note, lineBreaks: true).font(.callout).foregroundStyle(.secondary)
