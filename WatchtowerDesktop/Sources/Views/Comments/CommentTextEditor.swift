@@ -140,8 +140,12 @@ private struct CommentNSTextEditor: NSViewRepresentable {
             measure(textView)
         }
 
+        /// Posted inside AppKit's responder change, which may itself run
+        /// inside a SwiftUI update (a view removed, the panel switching):
+        /// the handler, which writes state, runs on the next turn.
         func textDidEndEditing(_ notification: Notification) {
-            parent.onEndEditing?()
+            guard let onEndEditing = parent.onEndEditing else { return }
+            DispatchQueue.main.async { onEndEditing() }
         }
 
         /// A new width re-wraps the text. It arrives mid-layout, so the
