@@ -373,22 +373,31 @@ struct OwnerAskLinks: ViewModifier {
         return AllowedURLSchemes.permits(url) ? .system : .refused
     }
 
+    /// What a click on `url` does: a file opens through `openFile`, an
+    /// allowlisted scheme goes to the system, anything else beeps.
+    static func handle(_ url: URL, openFile: (OpenQuicklyTarget) -> Void, beep: () -> Void) -> OpenURLAction.Result {
+        switch route(url) {
+        case let .file(target):
+            openFile(target)
+            return .handled
+        case .system:
+            return .systemAction
+        case .refused:
+            beep()
+            return .handled
+        }
+    }
+
     func body(content: Content) -> some View {
         content
             .environment(\.markdownCodeLinks, true)
             .environment(\.openURL, OpenURLAction { [vm, projectID] url in
-                switch Self.route(url) {
-                case let .file(target):
+                Self.handle(url, openFile: { target in
+                    // A beep when it names no file of the folder.
                     Task {
                         if !(await vm.openAskLink(target, projectID: projectID)) { NSSound.beep() }
                     }
-                    return .handled
-                case .system:
-                    return .systemAction
-                case .refused:
-                    NSSound.beep()
-                    return .handled
-                }
+                }, beep: NSSound.beep)
             })
     }
 }

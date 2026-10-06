@@ -91,6 +91,31 @@ final class OwnerAskTextTests: XCTestCase {
         XCTAssertEqual(try links(card), [], "a refused scheme renders as plain text")
     }
 
+    /// A click on each route: a file opens in Files, an allowlisted scheme
+    /// goes to the system, a refused one beeps and opens nothing.
+    func testLinkHandling() throws {
+        var opened: [OpenQuicklyTarget] = []
+        var beeps = 0
+        func click(_ url: String) throws -> String {
+            let result = OwnerAskLinks.handle(try XCTUnwrap(URL(string: url)), openFile: { opened.append($0) }, beep: { beeps += 1 })
+            return String(describing: result)
+        }
+        let handled = String(describing: OpenURLAction.Result.handled)
+        XCTAssertNotEqual(handled, String(describing: OpenURLAction.Result.systemAction), "the results tell apart")
+
+        XCTAssertEqual(try click(CodeLineLinks.url(path: "a.go", line: 3, col: nil)), handled)
+        XCTAssertEqual(opened, [OpenQuicklyTarget(path: "a.go", line: 3, col: nil)])
+        XCTAssertEqual(beeps, 0)
+
+        XCTAssertEqual(try click("https://example.com"), String(describing: OpenURLAction.Result.systemAction))
+        XCTAssertEqual(opened.count, 1)
+        XCTAssertEqual(beeps, 0)
+
+        XCTAssertEqual(try click("file:///etc/hosts"), handled)
+        XCTAssertEqual(opened.count, 1, "a refused link opens nothing")
+        XCTAssertEqual(beeps, 1)
+    }
+
     /// What the owner wrote keeps its line breaks once the ask is closed
     /// (GitHub-comment style); the agent's text keeps markdown's soft break.
     func testOwnerWrittenTextKeepsItsLineBreaks() async throws {
