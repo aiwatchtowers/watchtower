@@ -445,10 +445,11 @@ final class WorkbenchBoardViewModel {
 
     // MARK: - Edits
 
-    /// The detail pane's status menu: the selected target.
+    /// The panel's status menu: the selected task. A group's status follows
+    /// its sub-tasks (PROJ-05) and is never written from the panel.
     func setStatus(_ status: String) {
-        guard let id = selectedTargetID else { return }
-        setStatus(status, for: id)
+        guard let node = selectedNode, node.children.isEmpty else { return }
+        setStatus(status, for: node.target.id)
     }
 
     /// A kanban card dropped into another lane's column: refused, and said

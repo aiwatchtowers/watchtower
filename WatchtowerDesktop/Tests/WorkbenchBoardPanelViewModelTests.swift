@@ -332,6 +332,25 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(reported, 0)
     }
 
+    /// Spec Part 5: a group's status is never written from the panel.
+    func testThePanelStatusMenuNeverWritesAGroupsStatus() throws {
+        let (pid, group, _, _) = try seedGroup()
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: "UPDATE targets SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?", arguments: [group])
+        }
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.select(group)
+
+        vm.setStatus("done")
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: group) }
+        XCTAssertEqual(stored?.status, "todo")
+        XCTAssertEqual(stored?.updatedAt, "2026-01-01T00:00:00Z", "nothing was written")
+        XCTAssertEqual(reported, 0)
+    }
+
     // MARK: - History
     // MARK: - History
 
