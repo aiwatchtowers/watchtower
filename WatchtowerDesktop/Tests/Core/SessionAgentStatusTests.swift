@@ -188,6 +188,7 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertFalse(marked?.isAtPrompt == true, "a hand-off still waits for a turn end")
         XCTAssertTrue(resolved("waiting", at: stamp(1))?.hooksReported == true, "a hook state reports too")
         XCTAssertFalse(resolved("waiting", at: stamp(1))?.runMarked == true)
+        XCTAssertFalse(marked?.isTrusted(startedAt: started) == true, "a mark has no stamp to hold for a run")
 
         for (stored, at, live, name) in [
             (nil, stamp(-1), true, "an earlier run's mark"),

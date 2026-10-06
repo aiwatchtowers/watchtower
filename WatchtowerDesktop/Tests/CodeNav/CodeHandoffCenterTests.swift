@@ -354,17 +354,24 @@ final class CodeHandoffCenterTests: XCTestCase {
 
     /// PROJ-12 (amended 2026-10-07, board #396): a compaction — a manual
     /// /compact or the one Claude Code runs by itself while idle — continues
-    /// the run and leaves the stored row as it was (the Go half,
-    /// `TestProj12_CompactWhileIdleKeepsTheRunsState`): a turn's `waiting`
-    /// or a fresh run's mark still gets the answer its Return, also after
-    /// the compaction moved the row to a new conversation id.
+    /// the run and leaves the stored state as it was (the Go half,
+    /// `TestProj12_CompactWhileIdleKeepsTheRunsState`); its SessionStart may
+    /// move the row to a new conversation id. Read through the real query
+    /// of the stored rows: a fresh run's mark, then a turn's `waiting`,
+    /// each across such a move, still gets the answer its Return.
     func testProj12_ACompactWhileIdleKeepsTheReturn() async throws {
+        agentStates = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: terminals, notifier: RecordingSessionNotifier(), defaults: defaults
+        )
         let (_, vm, project) = try await makeHandoffFixture()
         let session = try await runningSession(vm, project)
-        stored.markRun(session.id)
-        for turnEnded in [false, true] {
-            if turnEnded { stored.storeAgentState(session.id, "waiting") }
+        for (state, stamp) in [(nil, "2999-01-01T00:00:00.000Z"), ("waiting", "2999-01-01T00:00:01.000Z")] as [(String?, String)] {
+            try await pool.write { db in
+                try db.execute(sql: "UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ? WHERE id = ?",
+                               arguments: [state, stamp, session.id])
+            }
             await agentStates.poll()
+            XCTAssertTrue(agentStates.statuses[session.id]?.hooksReported == true, "\(state ?? "mark"): before")
             try await pool.write { db in
                 try db.execute(sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
                                arguments: [UUID().uuidString.lowercased(), session.id])
@@ -375,7 +382,7 @@ final class CodeHandoffCenterTests: XCTestCase {
 
             let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
 
-            XCTAssertEqual(delivery, .submitted, "turn ended: \(turnEnded)")
+            XCTAssertEqual(delivery, .submitted, state ?? "mark")
             XCTAssertEqual(processes[0].inputs.count, before + 2, "the paste, then Return")
             XCTAssertEqual(processes[0].inputs.last, [0x0D])
             XCTAssertNil(terminals.answerHints[session.id])

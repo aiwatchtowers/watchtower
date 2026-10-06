@@ -111,24 +111,31 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 	if err != nil {
 		return err
 	}
+	moveID := switches && row.ClaudeSessionID.String != sessionID
+	// A nested `claude -p` (another id, no switch) owns no run of the row:
+	// it is not even asked about the hooks.
+	ownRun := newRun && (moveID || row.ClaudeSessionID.String == sessionID)
 	hooks := false
-	if newRun {
-		if hooks, err = workbenchHasStateHooks(database, workbenchID); err != nil {
-			return err
+	var hooksErr error
+	if ownRun {
+		// A failed read neither marks nor clears, but the id still moves
+		// (board #160); the error is returned after it.
+		if hooks, hooksErr = workbenchHasStateHooks(database, workbenchID); hooksErr != nil {
+			ownRun = false
+			hooksErr = fmt.Errorf("reading the workbench's state hooks: %w", hooksErr)
 		}
 	}
-	moveID := switches && row.ClaudeSessionID.String != sessionID
-	markRun := newRun && hooks
-	clearState := newRun && !hooks && (row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun)
+	markRun := ownRun && hooks
+	clearState := ownRun && !hooks && (row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun)
 	if !moveID && !markRun && !clearState {
-		return nil
+		return hooksErr
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
-		return err
+		return errors.Join(err, hooksErr)
 	}
 	if moveID {
 		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, sessionID); err != nil {
-			return err
+			return errors.Join(err, hooksErr)
 		}
 	}
 	if markRun {
@@ -141,5 +148,5 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 			return fmt.Errorf("clearing the previous run's agent state: %w", err)
 		}
 	}
-	return nil
+	return hooksErr
 }

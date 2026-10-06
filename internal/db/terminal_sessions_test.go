@@ -491,23 +491,34 @@ func TestSetTerminalAgentState_ToolRunNeedsTheCurrentTurnEnd(t *testing.T) {
 
 // Board #368: a new process run starts with no turn order.
 func TestClearTerminalAgentState_DropsTheTurnOrder(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestWorkbench(t, d)
-	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-	t0 := time.Now().UTC().Truncate(time.Millisecond)
-	if _, err := d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100); err != nil {
-		t.Fatal(err)
-	}
-	seen := AgentOrder{ToolRun: true, SeenTurnEnd: sql.NullInt64{Int64: 100, Valid: true}}
-	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0, "", nil, false, seen); err != nil || !ok {
-		t.Fatalf("tool result: ok=%v err=%v", ok, err)
-	}
+	for name, start := range map[string]func(d *DB, id, pid int64, at time.Time) (bool, error){
+		"clear": func(d *DB, id, pid int64, _ time.Time) (bool, error) {
+			return d.ClearTerminalAgentState(id, pid, agentStateUUID)
+		},
+		"mark": func(d *DB, id, pid int64, at time.Time) (bool, error) {
+			return d.MarkTerminalAgentRun(id, pid, agentStateUUID, at)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := openTestDB(t)
+			pid := newTestWorkbench(t, d)
+			id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+			t0 := time.Now().UTC().Truncate(time.Millisecond)
+			if _, err := d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100); err != nil {
+				t.Fatal(err)
+			}
+			seen := AgentOrder{ToolRun: true, SeenTurnEnd: sql.NullInt64{Int64: 100, Valid: true}}
+			if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0, "", nil, false, seen); err != nil || !ok {
+				t.Fatalf("tool result: ok=%v err=%v", ok, err)
+			}
 
-	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID); err != nil || !ok {
-		t.Fatalf("clear: ok=%v err=%v", ok, err)
-	}
-	if s, _ := d.GetTerminalSession(id); s.ToolRun || s.TurnEnd.Valid {
-		t.Fatalf("after the clear: tool run %v, turn end %v", s.ToolRun, s.TurnEnd)
+			if ok, err := start(d, id, pid, t0.Add(time.Second)); err != nil || !ok {
+				t.Fatalf("%s: ok=%v err=%v", name, ok, err)
+			}
+			if s, _ := d.GetTerminalSession(id); s.ToolRun || s.TurnEnd.Valid {
+				t.Fatalf("after the %s: tool run %v, turn end %v", name, s.ToolRun, s.TurnEnd)
+			}
+		})
 	}
 }
 

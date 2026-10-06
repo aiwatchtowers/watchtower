@@ -184,6 +184,26 @@ func TestProj12_ANewRunWithTheStateHooksIsMarked(t *testing.T) {
 	}
 }
 
+// Board #396 review: a failed read of the workbench's state hooks neither
+// marks nor clears the new run, yet a resume onto another conversation
+// still moves the row's id (board #160); the error is returned after.
+func TestApplySessionStart_HooksReadErrorStillMovesTheID(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	storeAgentState(t, database, pid, row, briefLaunchID)
+	_, err := database.Exec(`ALTER TABLE projects RENAME TO projects_gone`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = database.Exec(`ALTER TABLE projects_gone RENAME TO projects`) })
+
+	err = applySessionStart(database, row, pid, briefClearedID, true, true)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "state hooks")
+	s, gerr := database.GetTerminalSession(row)
+	require.NoError(t, gerr)
+	assert.Equal(t, briefClearedID, s.ClaudeSessionID.String, "the id still moved")
+	assert.True(t, s.AgentState.Valid, "neither marked nor cleared")
+}
+
 // PROJ-12 (amended 2026-10-07, board #396): a compaction — a manual
 // /compact or the one Claude Code runs by itself while idle — continues the
 // run: its SessionStart ("compact", onto the same or a new id) keeps the
