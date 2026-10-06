@@ -323,6 +323,9 @@ struct WorkbenchBoardView: View {
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
         .overlay(alignment: .leading) { Divider() }
+        // Flattened first, so the shadow is the panel's outline and not a
+        // blurred halo behind each line of text.
+        .compositingGroup()
         .shadow(color: .black.opacity(0.18), radius: 12, x: -2)
         .overlay(alignment: .leading) {
             PanelResizeHandle(
