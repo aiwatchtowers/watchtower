@@ -305,15 +305,16 @@ extension WorkbenchesViewModel {
 
     /// A workbench path clicked in an ask's text (#394): the file in Files
     /// at the line, beside the terminal (a terminal link's placement); an
-    /// expanded drawer goes back beside it so the file shows. False — and
-    /// nothing opened — for a path that is not a file of the folder or a
-    /// workbench no longer listed.
+    /// expanded drawer goes back beside it so the file shows. The file
+    /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
+    /// False — and nothing opened — for a path that is not a file of the
+    /// folder or a workbench no longer listed.
     @discardableResult
     func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64) async -> Bool {
         guard let project = summaries.first(where: { $0.id == projectID })?.project,
-              WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) != nil else { return false }
+              let path = WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) else { return false }
         asks.drawerExpanded = false
-        await openFile(at: target, project: project, beside: true)
+        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), project: project, beside: true)
         return true
     }
 

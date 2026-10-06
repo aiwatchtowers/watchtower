@@ -69,6 +69,11 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         XCTAssertTrue(vm.layout(projectID: id).isShowing(.files))
         XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project)).paths, ["b.go"])
         XCTAssertFalse(vm.asks.drawerExpanded)
+
+        let dotted = await vm.openAskLink(OpenQuicklyTarget(path: "./b.go", line: 2, col: nil), projectID: id)
+        XCTAssertTrue(dotted)
+        XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project)).paths, ["b.go"],
+                       "the same file is the same tab, however the link spells it")
     }
 }
 
