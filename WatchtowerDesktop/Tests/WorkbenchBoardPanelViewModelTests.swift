@@ -267,6 +267,25 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
 
     // MARK: - Mark read, stale content, banner
 
+    func testPushOntoATargetWithAnUnreadAgentCommentMarksItRead() throws {
+        let (pid, group, taskA, _) = try seedGroup()
+        _ = try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkbenchComment(db, projectID: pid, body: "Which endpoint?", targetID: Int64(taskA))
+        }
+        let vm = makeVM(project: pid)
+        vm.select(group)
+        XCTAssertEqual(WorkbenchBoardOutline.find(taskA, in: vm.roots)?.unreadForOwner, 1)
+
+        vm.push(taskA)
+
+        XCTAssertEqual(vm.selectedNode?.unreadForOwner, 0)
+        let unread = try dbManager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM project_comments WHERE target_id = ? AND read_at = ''",
+                             arguments: [taskA])
+        }
+        XCTAssertEqual(unread, 0)
+    }
+
     /// A panel move whose read fails never shows the previous target's
     /// comments under the new header.
     func testAFailedReadOnAPanelMoveDropsThePreviousTargetsContent() throws {
