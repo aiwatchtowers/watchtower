@@ -35,6 +35,10 @@ final class WorkbenchBoardViewModel {
     /// The selected target's status changes, newest first; read with the
     /// comments on selection and on reload.
     private(set) var selectedHistory: [TargetStatusChange] = []
+    /// The target the `selected*` arrays above were read for: a failed
+    /// reload after a panel move clears them rather than show the previous
+    /// target's under the new header.
+    private var loadedTargetID: Int?
     private(set) var errorMessage: String?
 
     /// Half-typed comments by target id (spec 2026-10-06 Part 3): the
@@ -141,6 +145,12 @@ final class WorkbenchBoardViewModel {
 
     var threads: [WorkbenchCommentThread] { WorkbenchCommentThread.group(selectedComments) }
 
+    /// The board's banner: the error whenever the panel is not on screen —
+    /// the panel shows it in its own row otherwise. Keyed off the node the
+    /// panel draws, not the selected id: an id no longer on the board shows
+    /// no panel, so the banner must.
+    var boardBannerError: String? { selectedNode == nil ? errorMessage : nil }
+
     /// `WorkbenchesViewModel.onOwnerWrite`, set by the view: every successful owner
     /// write reports its target so the notification center never announces the
     /// owner's own change (e.g. a target the owner marked done).
@@ -196,9 +206,17 @@ final class WorkbenchBoardViewModel {
             selectedImages = images
             selectedAsks = asks
             selectedHistory = history
+            loadedTargetID = path.last
             fingerprint = stamp
         } catch {
             errorMessage = "Could not load the board: \(error.localizedDescription)"
+            if panelPath.last != loadedTargetID {
+                selectedComments = []
+                selectedImages = []
+                selectedAsks = []
+                selectedHistory = []
+                loadedTargetID = panelPath.last
+            }
         }
     }
 
@@ -433,6 +451,13 @@ final class WorkbenchBoardViewModel {
         setStatus(status, for: id)
     }
 
+    /// A kanban card dropped into another lane's column: refused, and said
+    /// so — the column highlighted as a target, so a silent no-op reads as
+    /// a bug.
+    func refuseCrossLaneDrop() {
+        errorMessage = "A card moves within its own lane — use Move to… to change its group."
+    }
+
     /// The one status writer — the detail menu and a kanban drop alike. A
     /// status equal to the current one (a drop into the card's own column),
     /// a status the board does not offer, and a target not on this board
@@ -532,11 +557,16 @@ final class WorkbenchBoardViewModel {
 
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
     /// the "Waiting for you" stack row's path, so a click never starts an
-    /// agent. An ask that is gone says so in the panel's error row.
-    func openAsk(_ askID: Int64, show: (Int64, Int64) async -> Bool) async {
-        if await !show(askID, projectID) {
-            errorMessage = "This ask is gone."
-        }
+    /// agent. When it opens nothing, `failure` names why (the asks'
+    /// `loadErrors`, a read error included); without a reason the ask is
+    /// gone. Either says so in the panel's error row.
+    func openAsk(
+        _ askID: Int64,
+        show: (Int64, Int64) async -> Bool,
+        failure: () -> String? = { nil }
+    ) async {
+        guard await !show(askID, projectID) else { return }
+        errorMessage = failure().map { "Could not open the ask: \($0)" } ?? "This ask is gone."
     }
 
     /// The composer's send: the open target's own draft, cleared once the

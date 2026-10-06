@@ -18,6 +18,8 @@ struct WorkbenchTargetPanel: View {
     @Binding var titleDraft: String
     /// `WorkbenchesViewModel.showAsk`: an Asks row opens the ask drawer.
     let onShowAsk: (Int64, Int64) async -> Bool
+    /// Why an ask did not open (the asks' `loadErrors`); nil = it is gone.
+    let askOpenFailure: () -> String?
     /// Open group: enters the group as the board scope (spec 2026-10-06
     /// Part 4).
     let onOpenGroup: (Int) -> Void
@@ -290,7 +292,7 @@ struct WorkbenchTargetPanel: View {
                 WorkbenchTargetImagesSection(images: vm.selectedImages)
             }
             if !vm.selectedAsks.isEmpty {
-                WorkbenchPanelAsks(vm: vm, onShowAsk: onShowAsk)
+                WorkbenchPanelAsks(vm: vm, onShowAsk: onShowAsk, failure: askOpenFailure)
             }
             WorkbenchPanelActivity(vm: vm)
         }

@@ -8,6 +8,8 @@ struct WorkbenchPanelAsks: View {
     let vm: WorkbenchBoardViewModel
     /// `WorkbenchesViewModel.showAsk`.
     let onShowAsk: (Int64, Int64) async -> Bool
+    /// Why an ask did not open; nil = it is gone.
+    let failure: () -> String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -16,7 +18,7 @@ struct WorkbenchPanelAsks: View {
                 .padding(.bottom, 4)
             ForEach(vm.selectedAsks) { ask in
                 Button {
-                    Task { await vm.openAsk(ask.id, show: onShowAsk) }
+                    Task { await vm.openAsk(ask.id, show: onShowAsk, failure: failure) }
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(ask.title)

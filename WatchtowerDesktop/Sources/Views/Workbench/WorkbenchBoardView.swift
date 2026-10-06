@@ -153,7 +153,7 @@ struct WorkbenchBoardView: View {
             // Board-level: a kanban drop can fail for a card that is not the
             // open one (or with nothing open). While the panel is open the
             // same message shows in its error row instead, not twice.
-            if let error = vm.errorMessage, vm.selectedTargetID == nil {
+            if let error = vm.boardBannerError {
                 HStack(alignment: .top) {
                     Text(error)
                         .font(.callout)
@@ -312,6 +312,10 @@ struct WorkbenchBoardView: View {
             titleDraft: $titleDraft,
             onShowAsk: { [weak projects = appState.workbenchesViewModel] askID, projectID in
                 await projects?.showAsk(askID, projectID: projectID) ?? false
+            },
+            askOpenFailure: { [weak projects = appState.workbenchesViewModel, projectID] in
+                guard let projects else { return "the workbench list is not loaded." }
+                return projects.asks.loadErrors[projectID]
             },
             onOpenGroup: { enterScopeAndFocus(vm, $0, enter: { vm.enterScope($0) }) },
             onClose: { closePanel(vm) }

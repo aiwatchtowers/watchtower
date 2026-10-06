@@ -72,8 +72,13 @@ struct WorkbenchBoardKanbanView: View {
                             onSelect: onSelect,
                             onEnter: onEnter
                         ) { id, status in
-                            // A card moves only within its own lane.
-                            lane.showsCard(id) && onMove(id, status)
+                            // A card moves only within its own lane; one of
+                            // another lane is refused with a reason.
+                            guard lane.showsCard(id) else {
+                                if board.lanes.contains(where: { $0.showsCard(id) }) { vm.refuseCrossLaneDrop() }
+                                return false
+                            }
+                            return onMove(id, status)
                         }
                     }
                 } header: {

@@ -265,6 +265,74 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.errorMessage)
     }
 
+    // MARK: - Mark read, stale content, banner
+
+    /// A panel move whose read fails never shows the previous target's
+    /// comments under the new header.
+    func testAFailedReadOnAPanelMoveDropsThePreviousTargetsContent() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        _ = try dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkbenchComment(db, projectID: pid, author: "owner", body: "On A",
+                                                    targetID: Int64(taskA))
+        }
+        let pool = try DatabasePool(path: dbPath)
+        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
+        vm.load()
+        vm.select(taskA)
+        XCTAssertEqual(vm.threads.map(\.root.body), ["On A"])
+        try pool.close()
+
+        vm.push(taskB)
+
+        XCTAssertEqual(vm.selectedTargetID, taskB)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(vm.threads.isEmpty, "A's comment is not shown under B")
+        XCTAssertEqual(vm.selectedHistory, [])
+        XCTAssertEqual(vm.selectedAsks.count, 0)
+        XCTAssertEqual(vm.selectedImages.count, 0)
+    }
+
+    /// The banner follows the panel actually drawn. A target the board has
+    /// not read yet (the Session view's handoff of a new target) opened while
+    /// the read fails leaves its id selected with no panel on screen: the
+    /// error must show on the board.
+    func testTheBannerShowsTheErrorWhenNoPanelIsDrawnForTheSelection() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let pool = try DatabasePool(path: dbPath)
+        let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
+        vm.load()
+        vm.select(taskA)
+        vm.refuseCrossLaneDrop()
+        XCTAssertNil(vm.boardBannerError, "the open panel shows it in its own row")
+        try pool.close()
+
+        vm.select(999_999)
+
+        XCTAssertEqual(vm.selectedTargetID, 999_999)
+        XCTAssertNil(vm.selectedNode)
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertEqual(vm.boardBannerError, error)
+    }
+
+    // MARK: - Writes the panel refuses
+
+    func testACrossLaneDropIsRefusedWithAReasonAndWritesNothing() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        let before = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+
+        vm.refuseCrossLaneDrop()
+
+        XCTAssertEqual(vm.errorMessage, "A card moves within its own lane — use Move to… to change its group.")
+        let after = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(after?.status, before?.status)
+        XCTAssertEqual(after?.updatedAt, before?.updatedAt)
+        XCTAssertEqual(reported, 0)
+    }
+
+    // MARK: - History
     // MARK: - History
 
     func testHistoryIsNewestFirstAndFollowsTheSelection() throws {
@@ -371,6 +439,10 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.errorMessage, "This ask is gone.")
         XCTAssertEqual(vm.panelPath, [taskA], "the panel stays open")
+
+        await vm.openAsk(42, show: { _, _ in false }, failure: { "Could not load the ask: disk I/O error" })
+        XCTAssertEqual(vm.errorMessage, "Could not open the ask: Could not load the ask: disk I/O error",
+                       "a read failure is named, not reported as gone")
     }
 
     func testSaveIntentFailureKeepsTheErrorAndReturnsFalse() throws {
