@@ -7,7 +7,9 @@ import WatchtowerCore
 /// only while this field has focus), and — with `focusOnAppear` — the caret
 /// already blinking in it when it opens. Grows with its text from
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
-/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view.
+/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view. `onFocus` runs
+/// when the field takes the keyboard (a margin comment's card turning
+/// active).
 struct CommentTextEditor: View {
     @Binding var text: String
     var placeholder = ""
@@ -16,6 +18,7 @@ struct CommentTextEditor: View {
     var maxHeight: CGFloat = 120
     var cornerRadius: CGFloat = 6
     var onSubmit: (() -> Void)?
+    var onFocus: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
 
@@ -32,7 +35,8 @@ struct CommentTextEditor: View {
     }
 
     var body: some View {
-        CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear, onSubmit: onSubmit)
+        CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear, onSubmit: onSubmit,
+                            onFocus: onFocus)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -65,6 +69,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     @Binding var contentHeight: CGFloat
     let focusOnAppear: Bool
     let onSubmit: (() -> Void)?
+    let onFocus: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -87,6 +92,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.focusOnAppear = focusOnAppear
         textView.onSubmit = onSubmit
+        textView.onFocus = onFocus
 
         // A new width re-wraps the text: measure again.
         textView.postsFrameChangedNotifications = true
@@ -107,6 +113,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? SubmittingTextView else { return }
         textView.onSubmit = onSubmit
+        textView.onFocus = onFocus
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
             // Through the undoable path: a plain `string =` leaves typing undo
@@ -167,7 +174,15 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 /// and never as `insertNewline:`, and ⌃↩ arrives as `insertLineBreak:`.
 private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onFocus: (() -> Void)?
     var focusOnAppear = false
+
+    override func becomeFirstResponder() -> Bool {
+        let took = super.becomeFirstResponder()
+        // Not inside AppKit's responder change: the callback writes SwiftUI state.
+        if took, let onFocus { DispatchQueue.main.async(execute: onFocus) }
+        return took
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

@@ -145,12 +145,16 @@ final class OwnerAskTextTests: XCTestCase {
     }
 
     func testMarginCommentsAreTheMultiLineEditor() throws {
+        var active: String?
         let anchor = CommentAnchor(quote: "q", prefix: "", suffix: "", heading: "")
         let margin = OwnerAskMarginComments(
             comments: [OwnerAskMarginComment(id: "c", draftID: UUID(), anchor: anchor, body: "", placed: false)],
-            rects: [nil], textExtent: nil, active: .constant(nil), setBody: { _, _ in }, remove: { _ in }
+            rects: [nil], textExtent: nil, active: Binding(get: { active }, set: { active = $0 }), setBody: { _, _ in }, remove: { _ in }
         )
-        XCTAssertEqual(try margin.inspect().find(CommentTextEditor.self).actualView().minHeight, CommentTextEditor.formMinHeight)
+        let editor = try margin.inspect().find(CommentTextEditor.self).actualView()
+        XCTAssertEqual(editor.minHeight, CommentTextEditor.formMinHeight)
+        editor.onFocus?()
+        XCTAssertEqual(active, "c", "clicking into the comment makes its card active")
         XCTAssertThrowsError(try margin.inspect().find(ViewType.TextField.self))
     }
 }
