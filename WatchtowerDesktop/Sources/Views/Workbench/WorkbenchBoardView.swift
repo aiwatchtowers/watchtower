@@ -144,6 +144,7 @@ struct WorkbenchBoardView: View {
             .labelsHidden()
             .fixedSize()
             if let kanban {
+                lanesMenu(vm)
                 kanbanFilterMenu(vm, kanban)
             }
             Spacer()
@@ -179,6 +180,18 @@ struct WorkbenchBoardView: View {
         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
         .frame(maxWidth: 200)
         .help("Search the board by title, intent or #number")
+    }
+
+    /// "Lanes: By group | None" (spec 2026-10-06 Part 2), remembered per
+    /// workbench.
+    private func lanesMenu(_ vm: WorkbenchBoardViewModel) -> some View {
+        Picker("Lanes", selection: Binding(get: { vm.lanesMode }, set: { vm.lanesMode = $0 })) {
+            Text("By group").tag(WorkbenchBoardLanesMode.group)
+            Text("None").tag(WorkbenchBoardLanesMode.none)
+        }
+        .pickerStyle(.menu)
+        .fixedSize()
+        .help("One lane per top-level group, or the flat columns")
     }
 
     private func kanbanFilterMenu(_ vm: WorkbenchBoardViewModel, _ kanban: WorkbenchBoardKanban) -> some View {

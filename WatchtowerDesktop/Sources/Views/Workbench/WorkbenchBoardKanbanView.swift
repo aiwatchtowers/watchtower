@@ -1,13 +1,16 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The Board pane's kanban mode: leaf targets in status columns. Clicking a
-/// card selects it (the detail pane is shared with the list mode); dragging a
-/// card to another column sets its status through the same writer the status
-/// menu uses. The menu stays the keyboard/accessibility path.
+/// The Board pane's kanban mode: leaf targets in status columns, either one
+/// lane per top-level group under a totals row ("Lanes: By group", spec
+/// 2026-10-06 Part 2) or the flat columns ("Lanes: None"). Clicking a card
+/// selects it (the detail pane is shared with the list mode); dragging a card
+/// to another column sets its status through the same writer the status menu
+/// uses. The menu stays the keyboard/accessibility path.
 struct WorkbenchBoardKanbanView: View {
     let board: WorkbenchBoardKanban
-    /// For the cards' context menu (copy the number, Move to…).
+    /// For the cards' context menu (copy the number, Move to…) and the
+    /// lanes' fold state.
     let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
@@ -15,8 +18,15 @@ struct WorkbenchBoardKanbanView: View {
     let onMove: (_ targetID: Int, _ status: String) -> Bool
 
     var body: some View {
+        switch vm.kanbanLayout {
+        case .columns: columns
+        case .lanes: lanes
+        }
+    }
+
+    private var columns: some View {
         ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: WorkbenchBoardKanbanLayout.spacing) {
                 ForEach(board.columns) { column in
                     WorkbenchBoardKanbanColumnView(
                         column: column,
@@ -32,6 +42,227 @@ struct WorkbenchBoardKanbanView: View {
             .padding(10)
             .frame(maxHeight: .infinity, alignment: .top)
         }
+    }
+
+    private var lanes: some View {
+        let folded = vm.foldedLaneIDs(in: board.lanes)
+        return ScrollView([.horizontal, .vertical]) {
+            LazyVStack(alignment: .leading, spacing: 12, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    if board.lanes.isEmpty {
+                        Text(WorkbenchBoardSearch(vm.searchText) == nil
+                             ? "Nothing open. Turn on Show done to see finished work."
+                             : "No targets match the search.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 4)
+                    }
+                    ForEach(board.lanes) { lane in
+                        WorkbenchBoardKanbanLaneView(
+                            lane: lane,
+                            columnCount: board.columns.count,
+                            isFolded: folded.contains(lane.id),
+                            isDoneUnfolded: vm.unfoldedDoneLanes.contains(lane.id),
+                            vm: vm,
+                            selectedTargetID: selectedTargetID,
+                            onSelect: onSelect
+                        ) { id, status in
+                            // A card moves only within its own lane.
+                            lane.showsCard(id) && onMove(id, status)
+                        }
+                    }
+                } header: {
+                    totals
+                }
+            }
+            .padding(10)
+        }
+    }
+
+    /// The column titles and, per column, the cards over the lanes shown —
+    /// a folded lane's and a folded Done's included.
+    private var totals: some View {
+        HStack(spacing: WorkbenchBoardKanbanLayout.spacing) {
+            ForEach(board.columns) { column in
+                HStack {
+                    Text(column.title).font(.subheadline.weight(.semibold))
+                    Text("\(board.totals[column.status] ?? 0)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .frame(width: WorkbenchBoardKanbanLayout.columnWidth)
+            }
+        }
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+/// Shared column geometry, so the lanes line up under the totals row.
+private enum WorkbenchBoardKanbanLayout {
+    static let columnWidth: CGFloat = 250
+    static let spacing: CGFloat = 10
+
+    static func width(columns: Int) -> CGFloat {
+        CGFloat(columns) * columnWidth + CGFloat(max(columns - 1, 0)) * spacing
+    }
+}
+
+/// One lane: a header (fold chevron, `#id`, title, progress, status) over the
+/// board's columns filled with this lane's cards. Clicking the header opens
+/// the group; the chevron folds the lane.
+private struct WorkbenchBoardKanbanLaneView: View {
+    let lane: WorkbenchBoardKanban.Lane
+    let columnCount: Int
+    let isFolded: Bool
+    let isDoneUnfolded: Bool
+    let vm: WorkbenchBoardViewModel
+    let selectedTargetID: Int?
+    let onSelect: (Int) -> Void
+    let onMove: (_ targetID: Int, _ status: String) -> Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            header
+            if !isFolded {
+                if lane.columns.allSatisfy(\.cards.isEmpty) {
+                    Text("No open tasks")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, WorkbenchBoardChevron.zoneWidth)
+                } else {
+                    HStack(alignment: .top, spacing: WorkbenchBoardKanbanLayout.spacing) {
+                        ForEach(lane.columns) { column in
+                            WorkbenchBoardKanbanLaneCellView(
+                                lane: lane,
+                                column: column,
+                                isDoneUnfolded: isDoneUnfolded,
+                                vm: vm,
+                                selectedTargetID: selectedTargetID,
+                                onSelect: onSelect,
+                                onMove: onMove
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Button { vm.toggleLane(lane.id) } label: {
+                Image(systemName: isFolded ? "chevron.right" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: WorkbenchBoardChevron.zoneWidth, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isFolded ? "Show this lane" : "Fold this lane")
+            .accessibilityLabel(isFolded ? "Show lane" : "Fold lane")
+            .accessibilityValue(isFolded ? "Folded" : "Expanded")
+            summary
+        }
+        .padding(.vertical, 4)
+        .padding(.trailing, 10)
+        .frame(width: WorkbenchBoardKanbanLayout.width(columns: columnCount), alignment: .leading)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Everything right of the chevron; for a group lane a click opens the
+    /// group (double-click is reserved).
+    @ViewBuilder
+    private var summary: some View {
+        let content = HStack(spacing: 8) {
+            if let root = lane.root {
+                Text(WorkbenchTargetNumber.label(root.target.id))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text(lane.title.isEmpty ? "Untitled" : lane.title)
+                .font(.callout.weight(.semibold))
+                .lineLimit(1)
+            progress
+            if let root = lane.root {
+                WorkbenchBoardChip(
+                    text: WorkbenchBoardCard.statusLabel(root.target.status),
+                    color: WorkbenchBoardColors.status(root.target.statusColor)
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        if let root = lane.root {
+            content
+                .contentShape(Rectangle())
+                .onTapGesture { vm.select(root.target.id) }
+                .accessibilityAddTraits(.isButton)
+                .help("Open \(WorkbenchTargetNumber.label(root.target.id))")
+        } else {
+            content
+        }
+    }
+
+    private var progress: some View {
+        let progress = lane.progress
+        return HStack(spacing: 6) {
+            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                .progressViewStyle(.linear)
+                .controlSize(.small)
+                .tint(progress.total > 0 && progress.done == progress.total ? .green : .accentColor)
+                .frame(width: 80)
+            Text("\(progress.done)/\(progress.total)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .help("Tasks done in this group")
+    }
+}
+
+/// One column of a lane: its cards, no title (the totals row has it), and in
+/// Done the per-lane fold.
+private struct WorkbenchBoardKanbanLaneCellView: View {
+    let lane: WorkbenchBoardKanban.Lane
+    let column: WorkbenchBoardKanban.Column
+    let isDoneUnfolded: Bool
+    let vm: WorkbenchBoardViewModel
+    let selectedTargetID: Int?
+    let onSelect: (Int) -> Void
+    let onMove: (_ targetID: Int, _ status: String) -> Bool
+
+    @State private var isTargeted = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WorkbenchBoardKanbanCards(
+                cards: lane.cards(column, unfolded: isDoneUnfolded),
+                vm: vm,
+                selectedTargetID: selectedTargetID,
+                onSelect: onSelect
+            )
+            if column.status == "done", lane.doneFolded, lane.doneCount > 0 {
+                Button(isDoneUnfolded ? "Hide done" : "✓ \(lane.doneCount) done — show") {
+                    vm.toggleLaneDone(lane.id)
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .padding(.horizontal, 4)
+            }
+        }
+        .padding(8)
+        .frame(width: WorkbenchBoardKanbanLayout.columnWidth, alignment: .topLeading)
+        .frame(minHeight: 44, alignment: .top)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isTargeted ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(isTargeted ? Color.accentColor : .clear, lineWidth: 1.5)
+        )
+        .modifier(DropTarget(column: column, isTargeted: $isTargeted, onMove: onMove))
     }
 }
 
@@ -57,22 +288,9 @@ private struct WorkbenchBoardKanbanColumnView: View {
             .padding(.vertical, 8)
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 6) {
-                    ForEach(column.cards) { card in
-                        WorkbenchBoardCardView(
-                            row: card.row,
-                            isSelected: selectedTargetID == card.id,
-                            isCollapsed: false,
-                            caption: card.breadcrumb.isEmpty ? nil : card.breadcrumb,
-                            onToggle: {},
-                            trailing: { hovering in
-                                WorkOnTargetButton(target: card.row.node.target, compact: true,
-                                                   isVisible: hovering || selectedTargetID == card.id)
-                            }
-                        )
-                        .onTapGesture { onSelect(card.id) }
-                        .contextMenu { WorkbenchTargetMenu(target: card.row.node.target, vm: vm) }
-                        .draggable(String(card.id))
-                    }
+                    WorkbenchBoardKanbanCards(
+                        cards: column.cards, vm: vm, selectedTargetID: selectedTargetID, onSelect: onSelect
+                    )
                     if column.hiddenCount > 0 {
                         Text("\(column.hiddenCount) more")
                             .font(.caption)
@@ -85,7 +303,7 @@ private struct WorkbenchBoardKanbanColumnView: View {
                 .padding(.bottom, 8)
             }
         }
-        .frame(width: 250)
+        .frame(width: WorkbenchBoardKanbanLayout.columnWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(
             RoundedRectangle(cornerRadius: 10)
@@ -96,6 +314,34 @@ private struct WorkbenchBoardKanbanColumnView: View {
                 .strokeBorder(isTargeted ? Color.accentColor : .clear, lineWidth: 1.5)
         )
         .modifier(DropTarget(column: column, isTargeted: $isTargeted, onMove: onMove))
+    }
+}
+
+/// A column's cards, title and breadcrumb wrapped in full.
+private struct WorkbenchBoardKanbanCards: View {
+    let cards: [WorkbenchBoardKanban.Card]
+    let vm: WorkbenchBoardViewModel
+    let selectedTargetID: Int?
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        ForEach(cards) { card in
+            WorkbenchBoardCardView(
+                row: card.row,
+                isSelected: selectedTargetID == card.id,
+                isCollapsed: false,
+                caption: card.breadcrumb.isEmpty ? nil : card.breadcrumb,
+                wrapsText: true,
+                onToggle: {},
+                trailing: { hovering in
+                    WorkOnTargetButton(target: card.row.node.target, compact: true,
+                                       isVisible: hovering || selectedTargetID == card.id)
+                }
+            )
+            .onTapGesture { onSelect(card.id) }
+            .contextMenu { WorkbenchTargetMenu(target: card.row.node.target, vm: vm) }
+            .draggable(String(card.id))
+        }
     }
 }
 

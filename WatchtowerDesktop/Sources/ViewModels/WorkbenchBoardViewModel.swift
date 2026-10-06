@@ -48,6 +48,28 @@ final class WorkbenchBoardViewModel {
         didSet { preferences.kanbanFilterRootID = kanbanFilterRootID }
     }
 
+    /// Kanban's "Lanes: By group | None", remembered per project.
+    var lanesMode: WorkbenchBoardLanesMode {
+        didSet { preferences.lanesMode = lanesMode }
+    }
+
+    /// What Kanban lays out: lanes under a totals row, or the flat columns.
+    enum KanbanLayout: Equatable {
+        case lanes
+        case columns
+    }
+
+    var kanbanLayout: KanbanLayout { lanesMode == .none ? .columns : .lanes }
+
+    /// Folded lanes as remembered (`Lane.id`, No group = 0), stale ids
+    /// included: a target that is a lane again folds again. Read through
+    /// `foldedLaneIDs(in:)`.
+    private var storedFoldedLanes: Set<Int>
+
+    /// Lanes whose folded Done the owner opened ("✓ N done — show"): this
+    /// session only, never remembered (spec 2026-10-06 Part 2).
+    private(set) var unfoldedDoneLanes: Set<Int> = []
+
     var kanban: WorkbenchBoardKanban {
         WorkbenchBoardKanban(
             roots, filterRootID: kanbanFilterRootID, showDone: showDone, showArchived: showArchived, query: searchText
@@ -96,6 +118,8 @@ final class WorkbenchBoardViewModel {
         self.preferences = preferences
         mode = preferences.mode
         kanbanFilterRootID = preferences.kanbanFilterRootID
+        lanesMode = preferences.lanesMode
+        storedFoldedLanes = preferences.foldedLanes
     }
 
     // MARK: - Loading
@@ -268,6 +292,26 @@ final class WorkbenchBoardViewModel {
         } else {
             collapsed.insert(targetID)
         }
+    }
+
+    // MARK: - Lanes
+
+    /// The folded ones among `lanes` (the board on screen); a remembered id
+    /// that is no longer a lane is ignored, never dropped from storage.
+    func foldedLaneIDs(in lanes: [WorkbenchBoardKanban.Lane]) -> Set<Int> {
+        storedFoldedLanes.intersection(lanes.map(\.id))
+    }
+
+    /// The lane header's chevron: folds or opens the lane, remembered per
+    /// project. Stale ids already stored stay stored.
+    func toggleLane(_ laneID: Int) {
+        if storedFoldedLanes.remove(laneID) == nil { storedFoldedLanes.insert(laneID) }
+        preferences.foldedLanes = storedFoldedLanes
+    }
+
+    /// "✓ N done — show" and its "Hide done": this lane's Done only.
+    func toggleLaneDone(_ laneID: Int) {
+        if unfoldedDoneLanes.remove(laneID) == nil { unfoldedDoneLanes.insert(laneID) }
     }
 
     // MARK: - Edits

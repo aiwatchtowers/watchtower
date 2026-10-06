@@ -5,12 +5,15 @@ import WatchtowerCore
 /// its `#id`, priority/status chips, counters, and — for a parent — its children's
 /// progress and a collapse chevron. `trailing` is the card's action slot,
 /// told whether the pointer is over the card; `caption` is an extra line
-/// under the title (the kanban's parent chain).
+/// under the title (the kanban's parent chain). `wrapsText` shows the title
+/// and caption in full (kanban, spec 2026-10-06 Part 2); the list keeps
+/// them short.
 struct WorkbenchBoardCardView<Trailing: View>: View {
     let row: WorkbenchBoardRow
     let isSelected: Bool
     let isCollapsed: Bool
     var caption: String?
+    var wrapsText = false
     let onToggle: () -> Void
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
@@ -28,15 +31,15 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(card.title.isEmpty ? "Untitled" : card.title)
                     .font(row.hasChildren ? .callout.weight(.semibold) : .callout)
-                    .lineLimit(2)
+                    .lineLimit(wrapsText ? nil : 2)
                     .strikethrough(card.isDone)
                     .foregroundStyle(card.isClosed ? .secondary : .primary)
                 if let caption {
                     Text(caption)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .lineLimit(wrapsText ? nil : 1)
+                        .truncationMode(wrapsText ? .tail : .middle)
                         .help(caption)
                 }
                 chips(card)
