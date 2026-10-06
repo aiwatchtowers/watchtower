@@ -88,6 +88,17 @@ final class HandoffTextTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix("References: a.go:3"), text)
     }
 
+    /// A markdown link to a workbench path cites the path it opens, not
+    /// its text; a link to anything else cites nothing.
+    func testALinkCitesTheFileItOpensNotItsText() throws {
+        let answer = "See [the plan](docs/plan.md) and `a.go:3`, [file.go:42](internal/x/file.go#L42), [site](https://example.com)."
+        let text = try XCTUnwrap(HandoffText.conversation(
+            origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),
+            messages: [message("user", "q"), message("assistant", answer)]
+        ))
+        XCTAssertTrue(text.hasSuffix("References: docs/plan.md:1, a.go:3, internal/x/file.go:42"), text)
+    }
+
     func testQuestionWithNoFileOpen() throws {
         let text = try XCTUnwrap(HandoffText.conversation(
             origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),
