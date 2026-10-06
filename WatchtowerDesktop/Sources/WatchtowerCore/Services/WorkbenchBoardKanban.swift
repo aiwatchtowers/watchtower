@@ -106,9 +106,6 @@ package struct WorkbenchBoardKanban {
     /// The scope actually applied (`WorkbenchBoardScope`): nil (the board
     /// root) when the requested one is stale.
     package let scopeID: Int?
-    /// The applied scope's path, top-level target first, the scope last;
-    /// empty at the board root.
-    package let scopePath: [WorkbenchBoardNode]
     /// Archived leaves under the scope "Archive" on would apply, whatever
     /// the toggles and the search: the cards "Archive" adds, Kanban's
     /// "Archive (K)".
@@ -136,7 +133,7 @@ package struct WorkbenchBoardKanban {
         let showArchived = showArchived || search != nil
         let scope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: showArchived)
         let nodes = scope.node?.children ?? roots
-        let pathMatched = search.map { search in scope.path.contains { search.matches($0.target) } } ?? false
+        let pathMatched = WorkbenchBoardScope.pathMatches(scope.path, search)
 
         var collected: [Card] = []
         Self.collectLeaves(nodes, chain: [], search: search, ancestorMatched: pathMatched, into: &collected)
@@ -163,7 +160,6 @@ package struct WorkbenchBoardKanban {
             })
         })
         self.scopeID = scope.node?.target.id
-        self.scopePath = scope.path
         // Counted over what "Archive" on shows: a remembered scope under an
         // archived target applies only then.
         let archiveScope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: true).node

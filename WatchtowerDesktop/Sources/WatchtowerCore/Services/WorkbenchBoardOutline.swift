@@ -38,7 +38,7 @@ package enum WorkbenchBoardOutline {
         let scope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: showArchived, query: query)
         let nodes = scope.node?.children ?? roots
         if let search = WorkbenchBoardSearch(query) {
-            let pathMatched = scope.path.contains { search.matches($0.target) }
+            let pathMatched = WorkbenchBoardScope.pathMatches(scope.path, search)
             appendMatches(nodes, depth: 0, search: search, ancestorMatched: pathMatched, into: &out)
         } else {
             let filter = Filter(showDone: showDone, showArchived: showArchived)
@@ -147,6 +147,14 @@ package enum WorkbenchBoardScope {
         guard let id, let path = path(to: id, in: roots), let node = path.last, !node.children.isEmpty,
               showArchived || !path.contains(where: \.archived) else { return (nil, []) }
         return (node, path)
+    }
+
+    /// Whether `search` matches a target on the scope's `path` (the scope
+    /// or an ancestor): then every leaf inside the scope matches too, as the
+    /// same search on the whole board keeps them. False without a search.
+    package static func pathMatches(_ path: [WorkbenchBoardNode], _ search: WorkbenchBoardSearch?) -> Bool {
+        guard let search else { return false }
+        return path.contains { search.matches($0.target) }
     }
 
     private static func path(to id: Int, in nodes: [WorkbenchBoardNode]) -> [WorkbenchBoardNode]? {

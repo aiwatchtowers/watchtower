@@ -84,7 +84,6 @@ final class WorkbenchBoardScopeTests: XCTestCase {
 
         let board = WorkbenchBoardKanban(roots, scopeID: 5, showDone: false)
         XCTAssertEqual(board.scopeID, 5)
-        XCTAssertEqual(board.scopePath.map(\.target.id), [1, 3, 5])
     }
 
     func testNilStaleOrLeafResolvesToTheBoardRoot() throws {
@@ -95,7 +94,6 @@ final class WorkbenchBoardScopeTests: XCTestCase {
             XCTAssertTrue(scope.path.isEmpty)
             let board = WorkbenchBoardKanban(roots, scopeID: id, showDone: false)
             XCTAssertNil(board.scopeID)
-            XCTAssertTrue(board.scopePath.isEmpty)
             XCTAssertEqual(ids(board, "todo"), [2, 4, 6, 7, 9, 11, 12])
         }
     }

@@ -121,7 +121,6 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(board.columns.map(\.status), ["todo", "in_progress", "in_review", "blocked", "done"])
         XCTAssertTrue(board.columns.allSatisfy { $0.cards.isEmpty && $0.hiddenCount == 0 })
         XCTAssertNil(board.scopeID)
-        XCTAssertTrue(board.scopePath.isEmpty)
     }
 
     // MARK: - Done / Dismissed
@@ -618,8 +617,7 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
             }
             // Entered: the path bar's summary of the scope is the same number
             // the lane showed for it on the board.
-            let scoped = WorkbenchBoardKanban(roots, scopeID: 1, showDone: false, showArchived: archive)
-            let scope = try XCTUnwrap(scoped.scopePath.last)
+            let scope = try XCTUnwrap(WorkbenchBoardScope.resolve(1, in: roots, showArchived: archive).path.last)
             let pathBar = WorkbenchGroupSummary(scope, showArchived: archive)
             XCTAssertEqual(Progress(done: pathBar.done, total: pathBar.total), expected, "Archive \(archive)")
         }
