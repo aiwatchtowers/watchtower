@@ -210,9 +210,9 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertTrue(board.columns.dropLast().allSatisfy(\.acceptsDrops))
     }
 
-    // MARK: - Parent filter
+    // MARK: - Scope
 
-    func testFilterKeepsOnlyThatRootsSubtree() throws {
+    func testAScopeKeepsOnlyItsSubtree() throws {
         let roots = [
             node(try target(1, "Plan A"), [node(try target(2)), node(try target(3), [node(try target(4))])]),
             node(try target(5, "Plan B"), [node(try target(6))]),
@@ -227,14 +227,14 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(filtered.scopeID, 1)
     }
 
-    func testStaleOrNonOptionFilterFallsBackToAll() throws {
+    func testAStaleOrLeafScopeFallsBackToTheBoard() throws {
         let roots = [
             node(try target(1, "Plan A"), [node(try target(2))]),
             node(try target(3, "Lone leaf"))
         ]
         for stale in [999, 3, 2] {
             let board = WorkbenchBoardKanban(roots, scopeID: stale, showDone: false)
-            XCTAssertNil(board.scopeID, "filter \(stale) is not an option")
+            XCTAssertNil(board.scopeID, "scope \(stale) is not a group here")
             XCTAssertEqual(ids(board, "todo"), [2, 3])
         }
     }
@@ -662,7 +662,7 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(lane(board, 8)?.columns.flatMap(\.cards).map(\.id), [7])
     }
 
-    func testLanesFollowTheParentFilter() throws {
+    func testLanesFollowTheScope() throws {
         let roots = [
             node(try target(1, "Plan A"), [node(try target(2))]),
             node(try target(3, "Plan B"), [node(try target(4))]),
@@ -680,7 +680,7 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
 
     // MARK: - Preferences
 
-    func testPreferencesArePerProjectAndDefaultToListAndAll() throws {
+    func testPreferencesArePerProjectAndDefaultToListAndTheBoard() throws {
         let suite = "WorkbenchBoardKanbanTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
