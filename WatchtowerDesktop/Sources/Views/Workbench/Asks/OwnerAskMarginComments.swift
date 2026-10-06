@@ -80,9 +80,9 @@ struct OwnerAskMarginComments: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             if let draftID = comment.draftID {
-                TextField("Comment", text: Binding(get: { comment.body }, set: { setBody(draftID, $0) }), axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
+                CommentTextEditor(text: Binding(get: { comment.body }, set: { setBody(draftID, $0) }), placeholder: "Comment",
+                                  minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
+                                  onSubmit: CommentTextEditor.endEditing)
                 HStack {
                     Spacer()
                     Button("Remove") { remove(draftID) }
@@ -90,9 +90,7 @@ struct OwnerAskMarginComments: View {
                         .font(.caption)
                 }
             } else {
-                Text(comment.body)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                MarkdownView(text: comment.body)
             }
             if !comment.placed {
                 Text("Passage not found").font(.caption2).foregroundStyle(.orange)

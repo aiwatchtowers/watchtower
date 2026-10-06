@@ -59,9 +59,8 @@ struct ChatQuestionCardView: View {
     private func questionView(_ question: ChatQuestion) -> some View {
         let entry = answered?[question.id] ?? currentPicks[question.id] ?? .init()
         VStack(alignment: .leading, spacing: 6) {
-            Text(question.question)
+            MarkdownView(text: question.question)
                 .font(.callout.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
             ForEach(question.options, id: \.label) { option in
                 optionRow(option, in: question, selected: entry.labels.contains(option.label))
             }
@@ -70,47 +69,57 @@ struct ChatQuestionCardView: View {
     }
 
     private func optionRow(_ option: ChatQuestionOption, in question: ChatQuestion, selected: Bool) -> some View {
-        Button {
-            toggle(option.label, in: question)
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: icon(multi: question.multi, selected: selected))
-                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Text(option.label)
-                        if option.recommended {
-                            Text("Recommended")
-                                .font(.caption2.weight(.medium))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.accentColor.opacity(0.15), in: Capsule())
-                        }
+        let icon = icon(multi: question.multi, selected: selected)
+        return VStack(alignment: .leading, spacing: 2) {
+            Button {
+                toggle(option.label, in: question)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: icon)
+                        .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+                    Text(MarkdownView.inlineLabel(option.label))
+                    if option.recommended {
+                        Text("Recommended")
+                            .font(.caption2.weight(.medium))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.15), in: Capsule())
                     }
-                    if !option.description.isEmpty {
-                        Text(option.description)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .disabled(!interactive)
+            .accessibilityLabel(option.label)
+            if !option.description.isEmpty {
+                // Outside the button, so its links open instead of picking
+                // the option; indented under the label by a hidden icon.
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: icon).hidden().accessibilityHidden(true)
+                    MarkdownView(text: option.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(!interactive)
-        .accessibilityLabel(option.label)
     }
 
     @ViewBuilder
     private func otherField(_ question: ChatQuestion, entry: ChatQuestionAnswer.Entry) -> some View {
         if interactive {
-            TextField("Other…", text: otherBinding(question))
-                .textFieldStyle(.roundedBorder)
-                .font(.callout)
+            // Return is a new line. In the chat ⌘↩ sends a complete card;
+            // on an owner ask the field starts about three lines tall and
+            // ⌘↩ leaves it (the ask's answer bar sends).
+            if draftPicks != nil {
+                CommentTextEditor(text: otherBinding(question), placeholder: "Other…",
+                                  minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
+                                  onSubmit: CommentTextEditor.endEditing)
+            } else {
+                CommentTextEditor(text: otherBinding(question), placeholder: "Other…", onSubmit: complete ? send : nil)
+            }
         } else if let other = entry.other, !other.isEmpty {
-            Text("Other: \(other)")
+            MarkdownView(text: "Other: \(other)")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -124,14 +133,16 @@ struct ChatQuestionCardView: View {
             Label("Answered", systemImage: "checkmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-        } else if let onAnswer {
-            Button("Send answers") {
-                onAnswer(ChatQuestionAnswer.format(card, answers: picks))
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(!complete)
+        } else if onAnswer != nil {
+            Button("Send answers", action: send)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!complete)
         }
+    }
+
+    private func send() {
+        onAnswer?(ChatQuestionAnswer.format(card, answers: picks))
     }
 
     private func icon(multi: Bool, selected: Bool) -> String {

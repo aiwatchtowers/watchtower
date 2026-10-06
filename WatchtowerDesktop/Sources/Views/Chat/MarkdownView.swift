@@ -31,6 +31,20 @@ struct MarkdownView: View {
         AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
                                                    renderOnly: codeLinks ? [CodeLineLinks.scheme] : [])
     }
+
+    /// One line of markdown as a label (a button's, an ask's focus place):
+    /// its inline styling without links — the label's own action is the
+    /// click. Text that is not a single paragraph shows as written.
+    static func inlineLabel(_ text: String) -> AttributedString {
+        let blocks = MarkdownDocument.parse(text)
+        guard blocks.count == 1, case let .paragraph(inlines) = blocks[0] else { return AttributedString(text) }
+        var result = MarkdownInlineRenderer.attributed(inlines)
+        let links = result.runs.compactMap { $0.link == nil ? nil : $0.range }
+        for range in links {
+            result[range].link = nil
+        }
+        return result
+    }
 }
 
 struct MarkdownBlocksView: View {

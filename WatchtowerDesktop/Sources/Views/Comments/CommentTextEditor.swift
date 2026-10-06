@@ -19,6 +19,18 @@ struct CommentTextEditor: View {
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
 
+    /// A form field's heights (an ask's note, a check item's note, an
+    /// "Other…" answer; #394): about three lines from the start, so it
+    /// reads as room to write.
+    static let formMinHeight: CGFloat = 60
+    static let formMaxHeight: CGFloat = 180
+
+    /// ⌘↩ in a field whose text is already kept as it is typed (an ask's
+    /// draft): it leaves the field.
+    static func endEditing() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
     var body: some View {
         CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear, onSubmit: onSubmit)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))

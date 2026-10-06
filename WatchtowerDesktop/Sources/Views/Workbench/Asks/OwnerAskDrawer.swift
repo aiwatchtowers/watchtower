@@ -149,6 +149,7 @@ struct OwnerAskDrawer: View {
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
         // "k of N ›" swaps the ask under the same drawer.
         .onChange(of: ask.id) { _, _ in
@@ -311,17 +312,17 @@ struct OwnerAskDrawer: View {
     @ViewBuilder
     private var noteView: some View {
         if editable {
-            TextField(
-                "Note for the agent (optional)",
+            CommentTextEditor(
                 text: Binding(get: { asks.drafts.askDraft(for: ask.id).note }, set: { text in asks.editDraft(ask.id) { $0.note = text } }),
-                axis: .vertical
+                placeholder: "Note for the agent (optional)",
+                minHeight: CommentTextEditor.formMinHeight,
+                maxHeight: CommentTextEditor.formMaxHeight,
+                onSubmit: CommentTextEditor.endEditing
             )
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(2...6)
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Note").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(note).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                MarkdownView(text: note)
             }
         }
     }
@@ -344,6 +345,46 @@ struct OwnerAskDrawer: View {
 
     private var note: String {
         ask.answer?.note ?? asks.drafts.askDraft(for: ask.id).note
+    }
+}
+
+/// Links in an ask's text (#394): a workbench path (`path:line`, or a
+/// link to a path) opens the file in Files — a beep when it is not a file
+/// of the folder — and http(s) opens in the browser; any other scheme is
+/// dropped. A modifier of its own: it is rebuilt only when the workbench
+/// changes, not on every keystroke into the draft (an `OpenURLAction`
+/// cannot be compared — `MarkdownView`).
+struct OwnerAskLinks: ViewModifier {
+    let vm: WorkbenchesViewModel
+    let projectID: Int64
+
+    enum Route: Equatable {
+        case file(OpenQuicklyTarget)
+        case browser
+        case discarded
+    }
+
+    static func route(_ url: URL) -> Route {
+        if let target = CodeLineLinks.target(from: url) { return .file(target) }
+        return ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? .browser : .discarded
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.markdownCodeLinks, true)
+            .environment(\.openURL, OpenURLAction { [vm, projectID] url in
+                switch Self.route(url) {
+                case let .file(target):
+                    Task {
+                        if !(await vm.openAskLink(target, projectID: projectID)) { NSSound.beep() }
+                    }
+                    return .handled
+                case .browser:
+                    return .systemAction
+                case .discarded:
+                    return .discarded
+                }
+            })
     }
 }
 

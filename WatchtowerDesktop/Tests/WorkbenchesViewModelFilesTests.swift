@@ -48,6 +48,28 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         XCTAssertTrue(vm.codeFiles.existingBuffer(project, "a.go") === buffer)
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
     }
+
+    /// A workbench path clicked in an ask (#394) opens in Files beside the
+    /// terminal, an expanded drawer stepping back so it shows; a path that
+    /// is not a file of the folder opens nothing.
+    func testAnAskLinkOpensTheFileInFiles() async throws {
+        let folderPath = folder.path
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, folder: folderPath) }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        await vm.reload()
+        vm.asks.drawerExpanded = true
+
+        let missing = await vm.openAskLink(OpenQuicklyTarget(path: "gone.go", line: 1, col: nil), projectID: id)
+        XCTAssertFalse(missing)
+        XCTAssertFalse(vm.layout(projectID: id).isShowing(.files))
+        XCTAssertTrue(vm.asks.drawerExpanded, "nothing opened, nothing moved")
+
+        let opened = await vm.openAskLink(OpenQuicklyTarget(path: "b.go", line: 1, col: nil), projectID: id)
+        XCTAssertTrue(opened)
+        XCTAssertTrue(vm.layout(projectID: id).isShowing(.files))
+        XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project)).paths, ["b.go"])
+        XCTAssertFalse(vm.asks.drawerExpanded)
+    }
 }
 
 @MainActor

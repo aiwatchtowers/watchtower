@@ -81,6 +81,16 @@ final class ChatQuestionCardTests: XCTestCase {
                        answers)
     }
 
+    /// The Other field takes several lines; the answer keeps one line per
+    /// question, so the card still reads its answer back whole.
+    func testAMultiLineOtherAnswerStaysOnItsQuestionsLine() throws {
+        let card = try XCTUnwrap(ChatQuestionParser.parse(block(validJSON), final: true).card)
+        let scope = try XCTUnwrap(card.questions.first?.id)
+        let text = ChatQuestionAnswer.format(card, answers: [scope: .init(other: "Neither.\n\nShip v0.12\nnext week")])
+        XCTAssertEqual(text.split(separator: "\n").count, 1 + card.questions.count)
+        XCTAssertEqual(ChatQuestionAnswer.selections(in: text, for: card)[scope]?.other, "Neither. Ship v0.12 next week")
+    }
+
     func testAnswerableOnlyOnTheLatestUnansweredReply() {
         func row(_ id: Int64, _ role: String, _ text: String = "x") -> ChatMessageRecord {
             ChatMessageRecord(id: id, conversationID: 1, role: role, text: text, createdAt: Double(id))
