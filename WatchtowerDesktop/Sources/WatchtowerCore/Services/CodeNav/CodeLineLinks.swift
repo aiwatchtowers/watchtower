@@ -6,9 +6,10 @@ import Foundation
 /// `watchtower-code://open?path=…&line=…[&col=…]`; so does an existing
 /// link whose target is such a path (`[plan](docs/plan.md)`,
 /// `[run](cmd/run.go:40)`, `[x](a.go#L12)`; line 1 when none is given).
-/// Fenced code, URLs, images and other links are left alone. A path is
-/// relative to the workbench folder and needs a folder or an extension
-/// (`main.go:7`, `cmd/run:3`).
+/// Fenced code, URLs, images and other links are left alone, and so is a
+/// link target that reads as a web address or a version (`www.example.com`,
+/// `example.com`, `v1.2`). A path is relative to the workbench folder and
+/// needs a folder or an extension (`main.go:7`, `cmd/run:3`).
 package enum CodeLineLinks {
     package static let scheme = "watchtower-code"
 
@@ -124,13 +125,32 @@ package enum CodeLineLinks {
             return link
         }
         let filePath = target.substring(with: match.range(at: 1))
-        guard !filePath.split(separator: "/").contains("..") else { return link }
+        guard !filePath.split(separator: "/").contains(".."), !looksLikeHost(filePath) else { return link }
         let number = { (group: Int) -> Int? in
             let range = match.range(at: group)
             return range.location == NSNotFound ? nil : Int(target.substring(with: range))
         }
         let line = max(number(2) ?? number(4) ?? 1, 1)
         return "[\(text.substring(with: parts.range(at: 1)))](\(url(path: filePath, line: line, col: number(3))))"
+    }
+
+    /// Top-level domains a link target's first segment ends in when it is
+    /// a schemeless web address; none is a common file extension. A denylist,
+    /// not an allowlist of source extensions, so a file of a rarer type
+    /// (`schema.proto`, `main.tf`) still opens.
+    private static let webDomains: Set<String> = ["com", "org", "net", "io", "edu", "gov"]
+
+    /// A link target written as a web address or a version, not a file:
+    /// its first segment starts `www.` or ends in a web domain
+    /// (`www.example.com`, `example.org/docs/a.md`), or the whole target is
+    /// a dotted number (`v1.2`). Only for link targets — a citation in prose
+    /// carries a line and keeps its own rules.
+    private static func looksLikeHost(_ path: String) -> Bool {
+        let segments = path.split(separator: "/")
+        guard let first = segments.first?.lowercased(), let domain = first.split(separator: ".").last,
+              first.contains(".") else { return false }
+        if first.hasPrefix("www.") || webDomains.contains(String(domain)) { return true }
+        return segments.count == 1 && domain.allSatisfy(\.isNumber)
     }
 
     /// Where a backtick run of exactly `count` starts, from `start` on.

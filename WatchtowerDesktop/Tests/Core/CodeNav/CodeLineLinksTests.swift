@@ -51,6 +51,19 @@ final class CodeLineLinksTests: XCTestCase {
                        "Read [the plan](\(url("docs/plan.md", 1))) first")
         XCTAssertEqual(CodeLineLinks.linkified("[run](cmd/run.go:40:3) and [x](a.go#L12-L14)"),
                        "[run](\(url("cmd/run.go", 40, 3))) and [x](\(url("a.go", 12)))")
+        XCTAssertEqual(CodeLineLinks.linkified("[x](a.go:12) and [r](README.md)"),
+                       "[x](\(url("a.go", 12))) and [r](\(url("README.md", 1)))")
+    }
+
+    /// A schemeless web address or a version number written as a link
+    /// target is no file: it keeps its target.
+    func testALinkToAHostOrAVersionKeepsItsTarget() {
+        for text in ["[site](www.example.com)", "[s](example.com)", "[s](example.org/docs/a.md)",
+                     "[s](Example.IO)", "[s](example.com:8080)", "[v](v1.2)", "[w](www.notes.md)"] {
+            XCTAssertEqual(CodeLineLinks.linkified(text), text)
+        }
+        XCTAssertEqual(CodeLineLinks.linkified("[n](docs/v1.2)"), "[n](\(url("docs/v1.2", 1)))",
+                       "only a whole target that is a number is refused")
     }
 
     /// Images, anchors, absolute paths, paths out of the folder and other
