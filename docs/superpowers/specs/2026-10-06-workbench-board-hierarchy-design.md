@@ -37,7 +37,7 @@ parent.
   - *Task:* `#id` (click copies), **Work on It**, **⋯** (the card's menu), ✕; a parent link
     "▦ #249 … ›" that opens the parent in the same panel, with "‹" to go back; title; Status
     and Priority menus; branch and PR; the description folded with **Show all**, editable on
-    click; images; the asks; **Comments | History** tabs; the comment field pinned at the
+    click; images; **Asks** (instead of the Documents field, see below); **Comments | History** tabs; the comment field pinned at the
     bottom (⌘↩ / ⌃↩).
   - *Group:* the same, except a **GROUP** tag; the status is not a menu but reads
     "from sub-tasks", with an "N of M done" bar and a per-status breakdown; **Open group**
@@ -60,10 +60,18 @@ parent.
    full width — the reason the popup replaced a side column in board #155), no dimming.
    *Alternative:* a real side column that narrows the board.
 
+**Why there is no "Documents" field.** The #255 sketch has one, but targets no longer have
+documents. On 2026-10-03 the Documents tab and documents attached to a target were removed
+(the owner asks feature): a spec or plan now reaches you as a **review ask** filed on the
+target — the document opens inside the ask, with the agent's notes and your comments. So the
+panel shows an **Asks** section instead: every ask about this target (reviews, checks,
+questions), title and status, newest first. A click on one opens it in the ask drawer, exactly
+like a row in the "Waiting for you" stack. Today that section is read-only; this makes it the
+way into the target's documents.
+
 **Not in scope.** Dragging a card into another lane (that would move it to another group —
-the List's drag-to-nest and **Move to** stay the way to regroup); a Documents field (documents
-became asks; the panel shows the target's asks instead); creating targets from the Desktop
-(decision 1); any change to what the agent sees.
+the List's drag-to-nest and **Move to** stay the way to regroup); creating targets from the
+Desktop (decision 1, now #410); any change to what the agent sees.
 
 **Done when** lanes, the panel in both shapes and entering a group work on the live board, the
 popup is gone, parent ↔ sub-task navigation goes back with "‹", the layout has tests in
@@ -120,7 +128,10 @@ WatchtowerCore, and `docs/app-guide.md` describes the new board.
   text (the `Target` model gains `branch`/`pr`, read from the existing columns; empty =
   the row is hidden). Description: folded to 6 lines with **Show all** when longer; a click
   switches to an editor, ⌘↩ or focus loss saves through `TargetQueries.updateIntent` (owner
-  write, reported to `onOwnerWrite`), Esc cancels. Images and asks are today's sections.
+  write, reported to `onOwnerWrite`), Esc cancels. Images are today's section. Asks are
+  today's section (`OwnerAskQueries.targetAsks`), but each row is a button that calls
+  `WorkbenchesViewModel.showAsk(askID, projectID:)` — the stack row's path, so a click never
+  starts an agent; a `false` return shows "This ask is gone" in the panel's error row.
 - **Comments | History.** History lists `TargetQueries.statusHistory` (already in Core),
   newest first: "from → to", actor, relative time. Loaded with the comments on selection and
   on reload, not per tab switch.

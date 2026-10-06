@@ -79,7 +79,8 @@ List: a click on a group row opens group mode (it already selects; mode is deriv
 **Tests:** Core helper for the group summary (`done`, `total`, breakdown by status, zeros
 omitted, archived per toggle) with unit tests; the sub-task tree rows (closed folded into one
 row). Manual: open card → click parent link → "‹" back; click another card while open swaps;
-Esc closes; terminal split unaffected; description edit saves on ⌘↩ and cancels on Esc.
+Esc closes; terminal split unaffected; description edit saves on ⌘↩ and cancels on Esc; a
+click on an ask row opens its drawer (a review ask shows its document).
 
 ## Task 5 — Board scope at any depth (Core)
 
