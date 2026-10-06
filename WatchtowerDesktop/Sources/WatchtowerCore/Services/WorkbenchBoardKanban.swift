@@ -40,14 +40,17 @@ package struct WorkbenchBoardKanban {
     }
 
     /// A parent-filter menu entry: a top-level target with leaf descendants.
+    /// The header's filter menu reads these until the path bar replaces it
+    /// (spec 2026-10-06 Part 4).
     package struct FilterOption: Identifiable, Equatable {
         package let id: Int
         package let title: String
     }
 
     /// One lane of the "Lanes: By group" layout (spec 2026-10-06 Part 2): a
-    /// top-level group's leaves, or the top-level leaves under No group, in
-    /// the board's columns. The Done column holds every done card, never
+    /// group's leaves, the top-level leaves under No group, or inside a
+    /// scope the scope's own leaf children under "Tasks", in the board's
+    /// columns. The Done column holds every done card, never
     /// capped; folding it is the view's (`doneFolded`, `cards(_:unfolded:)`).
     package struct Lane: Identifiable {
         /// Done leaves over the leaves that still count (dismissed ones do
@@ -58,7 +61,8 @@ package struct WorkbenchBoardKanban {
             package let total: Int
         }
 
-        /// The lane's group; nil for the No group lane.
+        /// The lane's group; nil for the No group lane; the scope itself
+        /// for a scope's "Tasks" lane.
         package let root: WorkbenchBoardNode?
         package let title: String
         /// The board's columns, filled with this lane's cards only.
@@ -91,17 +95,24 @@ package struct WorkbenchBoardKanban {
     /// The "Lanes: None" layout: the whole board in one set of columns.
     package let columns: [Column]
     /// The "Lanes: By group" layout, in `WorkbenchBoardOrder` with No group
-    /// last. A lane with nothing to show is left out, except one whose root
-    /// is open while the search is empty (the view says "No open tasks").
+    /// last — inside a scope, "Tasks" first and no No group. A lane with
+    /// nothing to show is left out, except one whose root is open while the
+    /// search is empty (the view says "No open tasks").
     package let lanes: [Lane]
     /// Per column status, the cards in that column over `lanes`: the totals
     /// row above the lanes.
     package let totals: [String: Int]
     package let filterOptions: [FilterOption]
-    /// The filter actually applied: nil (All) when the requested one is not
-    /// among `filterOptions` (deleted, or no longer a parent).
-    package let filterRootID: Int?
-    /// Archived leaves under the filter "Archive" on would apply, whatever
+    /// The scope actually applied (`WorkbenchBoardScope`): nil (the board
+    /// root) when the requested one is stale.
+    package let scopeID: Int?
+    /// The applied scope's path, top-level target first, the scope last;
+    /// empty at the board root.
+    package let scopePath: [WorkbenchBoardNode]
+    /// The applied scope under its pre-scope name, for the header's filter
+    /// menu.
+    package var filterRootID: Int? { scopeID }
+    /// Archived leaves under the scope "Archive" on would apply, whatever
     /// the toggles and the search: the cards "Archive" adds, Kanban's
     /// "Archive (K)".
     package let archivedCardCount: Int
@@ -111,9 +122,13 @@ package struct WorkbenchBoardKanban {
     /// dismissed and archived ones as if "Show done" and "Archive" were on.
     /// With "Archive" on and "Show done" off, the Dismissed column holds only
     /// archived cards.
+    ///
+    /// A `scopeID` (spec 2026-10-06 Part 4, `WorkbenchBoardScope`) keeps the
+    /// scope's leaves only, breadcrumbs starting below it; a search inside
+    /// it keeps what the same search on the whole board keeps there.
     package init(
         _ roots: [WorkbenchBoardNode],
-        filterRootID: Int?,
+        scopeID: Int?,
         showDone: Bool,
         showArchived: Bool = false,
         query: String = ""
@@ -121,28 +136,26 @@ package struct WorkbenchBoardKanban {
         let search = WorkbenchBoardSearch(query)
         let showDone = showDone || search != nil
         let showArchived = showArchived || search != nil
-        let options = Self.filterOptions(roots, showArchived: showArchived)
-        let applied = Self.applied(filterRootID, among: options)
-        let scope = Self.scope(roots, applied)
+        let scope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: showArchived)
+        let nodes = scope.node?.children ?? roots
+        let pathMatched = search.map { search in scope.path.contains { search.matches($0.target) } } ?? false
 
         var collected: [Card] = []
-        Self.collectLeaves(scope, chain: [], search: search, ancestorMatched: false, into: &collected)
+        Self.collectLeaves(nodes, chain: [], search: search, ancestorMatched: pathMatched, into: &collected)
         let leaves = collected.filter { Self.isShown($0, showDone: showDone, showArchived: showArchived) }
 
         var statuses = ["todo", "in_progress", "in_review", "blocked", "done"]
         if showDone || showArchived { statuses.append("dismissed") }
-        var columns = statuses.map { status in
-            Self.column(status, cards: leaves.filter { $0.node.target.status == status }, showDone: showDone)
+        if leaves.contains(where: { !Self.knownStatuses.contains($0.node.target.status) }) {
+            statuses.append(Self.otherStatus)
         }
-        let known = Set(WorkbenchBoardCard.editableStatuses)
-        let other = leaves.filter { !known.contains($0.node.target.status) }
-        if !other.isEmpty {
-            columns.append(Self.column(Self.otherStatus, cards: other, showDone: showDone))
+        let columns = statuses.map { status in
+            Self.column(status, cards: Self.cards(leaves, inColumn: status), showDone: showDone)
         }
 
         self.columns = columns
-        let lanes = Self.lanes(scope, LaneRules(
-            statuses: columns.map(\.status), search: search, showDone: showDone, showArchived: showArchived
+        let lanes = Self.lanes(scope.node, roots: roots, pathMatched: pathMatched, LaneRules(
+            statuses: statuses, search: search, showDone: showDone, showArchived: showArchived
         ))
         self.lanes = lanes
         self.totals = Dictionary(uniqueKeysWithValues: columns.map { column in
@@ -150,12 +163,25 @@ package struct WorkbenchBoardKanban {
                 sum + (lane.columns.first { $0.status == column.status }?.cards.count ?? 0)
             })
         })
-        self.filterOptions = options
-        self.filterRootID = applied
-        // Counted over what "Archive" on shows: a remembered filter on an
-        // archived root applies only then.
-        let archiveScope = Self.scope(roots, Self.applied(filterRootID, among: Self.filterOptions(roots, showArchived: true)))
-        self.archivedCardCount = Self.archivedLeafCount(archiveScope)
+        self.filterOptions = Self.filterOptions(roots, showArchived: showArchived)
+        self.scopeID = scope.node?.target.id
+        self.scopePath = scope.path
+        // Counted over what "Archive" on shows: a remembered scope under an
+        // archived target applies only then.
+        let archiveScope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: true).node
+        self.archivedCardCount = Self.archivedLeafCount(archiveScope?.children ?? roots)
+    }
+
+    /// The pre-scope spelling the ViewModel still calls; `filterRootID` is
+    /// a `scopeID`.
+    package init(
+        _ roots: [WorkbenchBoardNode],
+        filterRootID: Int?,
+        showDone: Bool,
+        showArchived: Bool = false,
+        query: String = ""
+    ) {
+        self.init(roots, scopeID: filterRootID, showDone: showDone, showArchived: showArchived, query: query)
     }
 
     /// Whether `id` is a card shown on this board. A drop accepts only these:
@@ -163,6 +189,16 @@ package struct WorkbenchBoardKanban {
     /// (or a parent's id) must never move a target.
     package func showsCard(_ id: Int) -> Bool {
         columns.contains { $0.cards.contains { $0.id == id } }
+    }
+
+    private static let knownStatuses = Set(WorkbenchBoardCard.editableStatuses)
+
+    /// The cards of `cards` that belong in the `status` column: the Other
+    /// column takes every status this build does not know.
+    private static func cards(_ cards: [Card], inColumn status: String) -> [Card] {
+        status == otherStatus
+            ? cards.filter { !knownStatuses.contains($0.node.target.status) }
+            : cards.filter { $0.node.target.status == status }
     }
 
     private static func isShown(_ card: Card, showDone: Bool, showArchived: Bool) -> Bool {
@@ -178,18 +214,30 @@ package struct WorkbenchBoardKanban {
         let showArchived: Bool
     }
 
-    /// Lays out `roots`: each one with children is a lane, the leaves among
-    /// them share the No group lane.
-    private static func lanes(_ roots: [WorkbenchBoardNode], _ rules: LaneRules) -> [Lane] {
-        let groups = Dictionary(uniqueKeysWithValues: roots.filter { !$0.children.isEmpty }.map { ($0.target.id, $0) })
+    /// Lays out the board root's `roots`, or the `scope`'s children: each
+    /// one with children is a lane; the leaves among them share the No group
+    /// lane (last) at the root, the scope's "Tasks" lane (first) inside it.
+    /// `pathMatched`: the search matches the scope or one of its ancestors.
+    private static func lanes(
+        _ scope: WorkbenchBoardNode?,
+        roots: [WorkbenchBoardNode],
+        pathMatched: Bool,
+        _ rules: LaneRules
+    ) -> [Lane] {
+        let nodes = scope?.children ?? roots
+        let groups = Dictionary(uniqueKeysWithValues: nodes.filter { !$0.children.isEmpty }.map { ($0.target.id, $0) })
         let ordered = WorkbenchBoardOrder.sorted(groups.values.map(\.target)).compactMap { groups[$0.id] }
         var lanes = ordered.map { root in
             lane(root: root, title: WorkbenchBoardCard.title(root.target.text), nodes: root.children,
-                 ancestorMatched: rules.search?.matches(root.target) ?? false, rules: rules)
+                 ancestorMatched: pathMatched || (rules.search?.matches(root.target) ?? false), rules: rules)
         }
-        let loose = roots.filter(\.children.isEmpty)
+        let loose = nodes.filter(\.children.isEmpty)
         if !loose.isEmpty {
-            lanes.append(lane(root: nil, title: "No group", nodes: loose, ancestorMatched: false, rules: rules))
+            if let scope {
+                lanes.insert(lane(root: scope, title: "Tasks", nodes: loose, ancestorMatched: pathMatched, rules: rules), at: 0)
+            } else {
+                lanes.append(lane(root: nil, title: "No group", nodes: loose, ancestorMatched: false, rules: rules))
+            }
         }
         return lanes.filter { lane in
             let shows = lane.columns.contains { !lane.cards($0, unfolded: false).isEmpty }
@@ -210,14 +258,8 @@ package struct WorkbenchBoardKanban {
         var collected: [Card] = []
         collectLeaves(nodes, chain: [], search: rules.search, ancestorMatched: ancestorMatched, into: &collected)
         let cards = collected.filter { isShown($0, showDone: rules.showDone, showArchived: rules.showArchived) }
-        let known = Set(WorkbenchBoardCard.editableStatuses)
-        let columns = rules.statuses.map { status in
-            let inColumn = status == otherStatus
-                ? cards.filter { !known.contains($0.node.target.status) }
-                : cards.filter { $0.node.target.status == status }
-            // Uncapped: the per-lane fold replaces the board-wide `doneCap`.
-            return column(status, cards: inColumn, showDone: true)
-        }
+        // Uncapped: the per-lane fold replaces the board-wide `doneCap`.
+        let columns = rules.statuses.map { column($0, cards: Self.cards(cards, inColumn: $0), showDone: true) }
         let counted = leafNodes(nodes).filter { $0.target.status != "dismissed" }
         return Lane(
             root: root,
@@ -248,14 +290,6 @@ package struct WorkbenchBoardKanban {
         roots.filter { !$0.children.isEmpty && (showArchived || !$0.archived) }.map {
             FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
         }
-    }
-
-    private static func applied(_ filterRootID: Int?, among options: [FilterOption]) -> Int? {
-        filterRootID.flatMap { id in options.contains { $0.id == id } ? id : nil }
-    }
-
-    private static func scope(_ roots: [WorkbenchBoardNode], _ applied: Int?) -> [WorkbenchBoardNode] {
-        applied.map { id in roots.filter { $0.target.id == id } } ?? roots
     }
 
     private static func archivedLeafCount(_ nodes: [WorkbenchBoardNode]) -> Int {
@@ -331,13 +365,20 @@ package struct WorkbenchBoardPreferences {
         nonmutating set { defaults.set(newValue.rawValue, forKey: modeKey) }
     }
 
-    /// The kanban parent filter's root target id; nil = All. A stale id is
-    /// resolved to All by `WorkbenchBoardKanban`, not here.
-    package var kanbanFilterRootID: Int? {
+    /// The board scope's target id (any depth); nil = the board root. On the
+    /// pre-scope filter's key, so a remembered top-level filter carries
+    /// over. A stale id is resolved by `WorkbenchBoardScope`, not here.
+    package var boardScopeID: Int? {
         get { defaults.object(forKey: filterKey) == nil ? nil : defaults.integer(forKey: filterKey) }
         nonmutating set {
             if let newValue { defaults.set(newValue, forKey: filterKey) } else { defaults.removeObject(forKey: filterKey) }
         }
+    }
+
+    /// `boardScopeID` under the name the ViewModel still uses.
+    package var kanbanFilterRootID: Int? {
+        get { boardScopeID }
+        nonmutating set { boardScopeID = newValue }
     }
 
     /// Defaults to By group; an unknown stored value reads as By group too.
