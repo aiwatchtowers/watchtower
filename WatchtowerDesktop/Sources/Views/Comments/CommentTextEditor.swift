@@ -126,9 +126,12 @@ private struct CommentNSTextEditor: NSViewRepresentable {
             // Text from outside (another ask's draft under the same field,
             // a sent comment cleared) is not an edit: it is not undoable,
             // and the typing undo steps of the text it replaces go with it,
-            // so ⌘Z never brings one draft's text into another.
+            // so ⌘Z never brings one draft's text into another. The typing
+            // run in progress ends with them: the next keystroke opens its
+            // own undo step instead of extending the one just removed.
             textView.string = text
             context.coordinator.undoManager.removeAllActions()
+            textView.breakUndoCoalescing()
             DispatchQueue.main.async { context.coordinator.measure(textView) }
         }
     }

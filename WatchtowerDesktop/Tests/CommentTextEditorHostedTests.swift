@@ -47,6 +47,15 @@ final class CommentTextEditorHostedTests: XCTestCase {
                                        keyCode: CommentEditorKeys.returnKeyCode))
     }
 
+    /// A keystroke as the keyboard sends it, so it goes through the text
+    /// view's own typing (and its undo coalescing).
+    private func typed(_ window: NSWindow, _ character: String) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                       context: nil, characters: character, charactersIgnoringModifiers: character,
+                                       isARepeat: false, keyCode: 0))
+    }
+
     /// ⌘⇧↩ goes to `onShiftSubmit` when it is set (an ask's Request
     /// changes), ⌘↩ to `onSubmit`; without it ⌘⇧↩ is ⌘↩.
     func testCommandShiftReturnRunsOnShiftSubmit() throws {
@@ -124,6 +133,31 @@ final class CommentTextEditorHostedTests: XCTestCase {
         spin()
         XCTAssertEqual(textView.string, "ask B's note")
         XCTAssertEqual(textView.undoManager?.canUndo, false, "nothing of ask A is left to undo")
+    }
+
+    /// Typing after text set from outside is undoable again, and ⌘Z goes
+    /// back to that text — not to an older draft.
+    func testTypingAfterTextSetFromOutsideIsUndoable() throws {
+        let box = Box()
+        let (window, host) = host(box)
+        defer { window.close() }
+        let textView = try XCTUnwrap(textView(in: host))
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        for character in "note A" { textView.keyDown(with: try typed(window, String(character))) }
+        XCTAssertEqual(box.text, "note A")
+
+        box.text = "ask B's note"
+        host.rootView = Self.editor(box, onFocus: nil)
+        host.layoutSubtreeIfNeeded()
+        spin()
+        textView.keyDown(with: try typed(window, "!"))
+        XCTAssertEqual(textView.string, "ask B's note!")
+        let undo = try XCTUnwrap(textView.undoManager)
+        XCTAssertTrue(undo.canUndo, "the keystroke after the swap is its own undo step")
+
+        undo.undo()
+        XCTAssertEqual(textView.string, "ask B's note")
+        XCTAssertEqual(box.text, "ask B's note")
     }
 
     func testTakingTheKeyboardRunsOnFocus() throws {
