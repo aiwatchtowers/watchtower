@@ -30,9 +30,11 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
     }
 
     /// ⌘↩ or ⌘⇧↩, Return or the keypad's Enter; nil for any other key or
-    /// modifiers (⌘⌥↩ is the code question's).
+    /// modifiers (⌘⌥↩ is the code question's), and for a held key's
+    /// auto-repeat: a ⌘↩ held past leaving a margin comment would
+    /// otherwise reach the catcher with nothing focused and answer.
     static func answerKey(_ event: NSEvent) -> Key? {
-        guard event.type == .keyDown,
+        guard event.type == .keyDown, !event.isARepeat,
               [CommentEditorKeys.returnKeyCode, CommentEditorKeys.keypadEnterKeyCode].contains(event.keyCode) else { return nil }
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
         switch flags {

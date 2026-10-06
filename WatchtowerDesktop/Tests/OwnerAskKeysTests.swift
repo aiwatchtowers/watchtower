@@ -167,10 +167,10 @@ final class OwnerAskKeysTests: XCTestCase {
 
     // MARK: - With no field focused
 
-    private func key(_ window: NSWindow, _ flags: NSEvent.ModifierFlags) throws -> NSEvent {
+    private func key(_ window: NSWindow, _ flags: NSEvent.ModifierFlags, repeat isARepeat: Bool = false) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                                       context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false,
+                                       context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: isARepeat,
                                        keyCode: CommentEditorKeys.returnKeyCode))
     }
 
@@ -228,6 +228,29 @@ final class OwnerAskKeysTests: XCTestCase {
         XCTAssertEqual(keys, [false, true, false], "a focused field keeps its ⌘↩")
         XCTAssertEqual(insideSent, 1)
         XCTAssertEqual(outsideSent, 1)
+    }
+
+    /// A ⌘↩ held past leaving a margin comment: its auto-repeat reaches
+    /// the catcher with nothing focused and must not answer the ask.
+    func testAHeldKeysRepeatAnswersNothing() throws {
+        var keys: [Bool] = []
+        let host = NSHostingView(rootView: Color.clear.frame(width: 200, height: 100)
+            .background(OwnerAskKeyCatcher { keys.append($0) }))
+        host.frame = NSRect(x: 0, y: 0, width: 200, height: 100)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        window.makeFirstResponder(nil)
+        XCTAssertNil(OwnerAskKeyCatcher.answerKey(try key(window, .command, repeat: true)))
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(window, .command, repeat: true)))
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(window, [.command, .shift], repeat: true)))
+        XCTAssertEqual(keys, [], "a repeat falls through")
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(window, .command)))
+        XCTAssertEqual(keys, [false], "a fresh press still answers")
     }
 }
 

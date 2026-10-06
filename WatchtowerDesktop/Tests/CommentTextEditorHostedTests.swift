@@ -40,10 +40,10 @@ final class CommentTextEditorHostedTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.textView(in: $0) }.first
     }
 
-    private func commandReturn(_ window: NSWindow, shift: Bool = false) throws -> NSEvent {
+    private func commandReturn(_ window: NSWindow, shift: Bool = false, repeat isARepeat: Bool = false) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: shift ? [.command, .shift] : .command,
                                        timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                                       context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false,
+                                       context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: isARepeat,
                                        keyCode: CommentEditorKeys.returnKeyCode))
     }
 
@@ -68,6 +68,24 @@ final class CommentTextEditorHostedTests: XCTestCase {
         XCTAssertTrue(plainWindow.makeFirstResponder(plain))
         XCTAssertTrue(plain.performKeyEquivalent(with: try commandReturn(plainWindow, shift: true)))
         XCTAssertEqual(sent.last, "plain")
+    }
+
+    /// A held ⌘↩/⌘⇧↩ sends once: its auto-repeat is taken and dropped,
+    /// never sent again nor typed as a new line.
+    func testAHeldKeysRepeatSendsNothing() throws {
+        var sent: [String] = []
+        let (window, hosting) = host(AnyView(CommentTextEditor(text: .constant(""), onSubmit: { sent.append("submit") },
+                                                               onShiftSubmit: { sent.append("shift") })))
+        defer { window.close() }
+        let field = try XCTUnwrap(textView(in: hosting))
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertTrue(field.performKeyEquivalent(with: try commandReturn(window, repeat: true)))
+        XCTAssertTrue(field.performKeyEquivalent(with: try commandReturn(window, shift: true, repeat: true)))
+        field.keyDown(with: try commandReturn(window, repeat: true))
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(field.string, "")
+        XCTAssertTrue(field.performKeyEquivalent(with: try commandReturn(window)))
+        XCTAssertEqual(sent, ["submit"])
     }
 
     /// A field whose text is kept as typed (a margin comment): ⌘↩ leaves

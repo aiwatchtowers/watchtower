@@ -228,7 +228,9 @@ private final class SubmittingTextView: NSTextView {
         return super.performKeyEquivalent(with: event)
     }
 
+    /// A held key's auto-repeat is taken and dropped: one press sends once.
     private func submit(_ event: NSEvent) {
+        guard !event.isARepeat else { return }
         let shift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
         if shift, let onShiftSubmit { onShiftSubmit() } else { onSubmit?() }
         if leavesOnSubmit { window?.makeFirstResponder(nil) }
