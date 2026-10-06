@@ -126,7 +126,7 @@ struct OwnerAskDrawer: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            OwnerAskDrawerHeader(vm: vm, ask: ask)
             Divider()
             if ask.kind == .review {
                 reviewLayout
@@ -149,6 +149,8 @@ struct OwnerAskDrawer: View {
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .background(OwnerAskKeyCatcher(onKey: pressAnswerKey))
+        .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
         // "k of N ›" swaps the ask under the same drawer.
         .onChange(of: ask.id) { _, _ in
@@ -174,7 +176,8 @@ struct OwnerAskDrawer: View {
                 answerText: nil,
                 onAnswer: nil,
                 draftPicks: picksBinding,
-                editable: editable
+                editable: editable,
+                onKey: pressAnswerKey
             )
         }
     }
@@ -209,71 +212,18 @@ struct OwnerAskDrawer: View {
         }
     }
 
+    /// ⌘↩ / ⌘⇧↩ (`shift`) from a field or `OwnerAskKeyCatcher` (owner ask
+    /// #90): the answer button the key names, pressed as a click would —
+    /// nothing while it is off.
+    private func pressAnswerKey(_ shift: Bool) {
+        asks.pressKey(on: ask, shift: shift)
+    }
+
     /// A review's focus item jumps to its place once the snapshot is
     /// rendered; one not in it gets no link.
     private func focusAction(_ focus: OwnerAskFocus) -> (() -> Void)? {
         guard ask.kind == .review, let range = asks.reviewDocuments.range(of: focus, askID: ask.id) else { return nil }
         return { scrollTarget = DocumentScrollTarget(offset: range.location) }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        let stack = asks.stack(projectID: ask.projectID)
-        return HStack(spacing: 8) {
-            Image(systemName: OwnerAskPresentation.askKindIcon(ask.kind))
-                .foregroundStyle(Color.accentColor)
-                .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(ask.title).font(.headline).lineLimit(2)
-                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            if let position = stack.askPosition(of: ask.id), stack.count > 1 {
-                Button {
-                    Task { await vm.showNextAsk(after: ask.id, projectID: ask.projectID) }
-                } label: {
-                    Text("\(OwnerAskPresentation.positionLabel(position, of: stack.count)) ›").monospacedDigit()
-                }
-                .buttonStyle(.borderless)
-                .help("Next ask")
-            }
-            Button {
-                // The terminal under an expanded drawer is hidden: it must
-                // not keep the keystrokes.
-                // Only the terminal's focus goes; the note field keeps its caret.
-                if !asks.drawerExpanded, TerminalHostAttachment.terminalHasFocus(in: NSApp.keyWindow) {
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                }
-                asks.drawerExpanded.toggle()
-            } label: {
-                Image(systemName: asks.drawerExpanded
-                      ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.borderless)
-            .help(asks.drawerExpanded ? "Back beside the terminal" : "Expand")
-            .accessibilityLabel(asks.drawerExpanded ? "Collapse" : "Expand")
-            Button {
-                asks.closeDrawer(projectID: ask.projectID)
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.borderless)
-            .help("Close; your draft is kept")
-            .accessibilityLabel("Close")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    /// Kind · #target · age.
-    private var caption: String {
-        let parts: [String?] = [
-            OwnerAskPresentation.askKindLabel(ask.kind),
-            ask.targetID.map { "#\($0)" },
-            TimeFormatting.shortAge(from: ask.createdAt, now: Date())
-        ]
-        return parts.compactMap(\.self).joined(separator: " · ")
     }
 
     private func noticeRow(_ notice: OwnerAsksViewModel.AnswerNotice) -> some View {
@@ -302,7 +252,8 @@ struct OwnerAskDrawer: View {
                 notes: checkNotes,
                 editable: editable,
                 mark: { id, state in asks.editDraft(ask.id) { $0.checks[id] = state } },
-                setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } }
+                setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } },
+                onKey: pressAnswerKey
             )
         case .question: EmptyView()
         }
@@ -311,17 +262,18 @@ struct OwnerAskDrawer: View {
     @ViewBuilder
     private var noteView: some View {
         if editable {
-            TextField(
-                "Note for the agent (optional)",
+            CommentTextEditor(
                 text: Binding(get: { asks.drafts.askDraft(for: ask.id).note }, set: { text in asks.editDraft(ask.id) { $0.note = text } }),
-                axis: .vertical
+                placeholder: "Note for the agent (optional)",
+                minHeight: CommentTextEditor.formMinHeight,
+                maxHeight: CommentTextEditor.formMaxHeight,
+                onSubmit: { pressAnswerKey(false) },
+                onShiftSubmit: { pressAnswerKey(true) }
             )
-            .textFieldStyle(.roundedBorder)
-            .lineLimit(2...6)
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Note").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(note).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                MarkdownView(text: note, lineBreaks: true)
             }
         }
     }

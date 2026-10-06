@@ -14,12 +14,17 @@ import WatchtowerCore
 /// longer shadowed.
 struct MarkdownView: View {
     let text: String
+    /// Text the owner wrote: one newline is a new line
+    /// (`MarkdownDocument.withLineBreaks`); the agent's text keeps markdown's
+    /// soft breaks.
+    var lineBreaks = false
     /// A code answer's `path:line` citations as links (`CodeLineLinks`);
     /// set by the code question popover, whose own `openURL` opens them.
     @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
-        MarkdownBlocksView(blocks: MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text))
+        let blocks = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
+        MarkdownBlocksView(blocks: lineBreaks ? MarkdownDocument.withLineBreaks(blocks) : blocks)
             .textSelection(.enabled)
     }
 
@@ -30,6 +35,20 @@ struct MarkdownView: View {
     static func inlineText(_ inlines: [MarkdownInline], codeLinks: Bool = false) -> AttributedString {
         AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
                                                    renderOnly: codeLinks ? [CodeLineLinks.scheme] : [])
+    }
+
+    /// One line of markdown as a label (a button's, an ask's focus place):
+    /// its inline styling without links — the label's own action is the
+    /// click. Text that is not a single paragraph shows as written.
+    static func inlineLabel(_ text: String) -> AttributedString {
+        let blocks = MarkdownDocument.parse(text)
+        guard blocks.count == 1, case let .paragraph(inlines) = blocks[0] else { return AttributedString(text) }
+        var result = MarkdownInlineRenderer.attributed(inlines)
+        let links = result.runs.compactMap { $0.link == nil ? nil : $0.range }
+        for range in links {
+            result[range].link = nil
+        }
+        return result
     }
 }
 

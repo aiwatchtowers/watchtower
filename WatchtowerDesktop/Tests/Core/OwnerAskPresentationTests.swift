@@ -46,6 +46,21 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(OwnerAskPresentation.answerActions(for: .check).map(\.verdict), [nil])
     }
 
+    /// Owner ask #90: ⌘↩ presses the primary button, ⌘⇧↩ a review's
+    /// Request changes and nothing on the other kinds.
+    func testKeyActionPerKind() throws {
+        let key = { (ask: OwnerAsk, shift: Bool) in OwnerAskPresentation.keyAction(for: ask, draft: OwnerAskDraft(), shift: shift) }
+        XCTAssertEqual(key(try ask(.review), false)?.verdict, .approved)
+        XCTAssertEqual(key(try ask(.review), true)?.verdict, .changes)
+        XCTAssertEqual(key(try ask(.question, questions: true), false)?.label, "Answer")
+        XCTAssertNil(key(try ask(.question, questions: true), true))
+        let check = try ask(.check, checklist: #"[{"text":"Launch"}]"#)
+        XCTAssertEqual(key(check, false)?.label, "Send (1 unmarked)", "the button as the bar shows it")
+        XCTAssertNil(key(check, true))
+        let review = OwnerAskPresentation.answerActions(for: .review)
+        XCTAssertEqual(review.map(OwnerAskPresentation.keyLabel), ["⌘⇧↩", "⌘↩"])
+    }
+
     func testAQuestionAnswersOnlyOnceEveryQuestionHasAPick() throws {
         let ask = try ask(.question, questions: true)
         let action = try XCTUnwrap(OwnerAskPresentation.answerActions(for: .question).first)
