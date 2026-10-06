@@ -183,6 +183,32 @@ final class DocumentAttributedStringBlockWidthTests: XCTestCase {
         }
     }
 
+    /// A table sizes its columns by its automatic algorithm, not to the
+    /// full column, so the guard is that widening lays it out as a fresh
+    /// layout at that width does.
+    func testTablesLayOutAfterTheColumnWidensAsAtThatWidth() {
+        let long = "keep the retry budget small enough that a stuck sync never eats the whole cycle, then log it"
+        let markdown = "| Name | Rule |\n|---|---|\n| retry | \(long) |"
+        for typography in [DocumentTypography.standard, ReviewTypography.style] {
+            let out = DocumentAttributedString.make(DocumentRendering.render(markdown), highlights: [:],
+                                                    activeThreadID: nil, typography: typography)
+            let (storage, widened) = layoutAfterWidening(out)
+            let fresh = NSLayoutManager()
+            let container = NSTextContainer(size: NSSize(width: Self.column, height: CGFloat.greatestFiniteMagnitude))
+            fresh.addTextContainer(container)
+            let freshStorage = NSTextStorage(attributedString: out)
+            freshStorage.addLayoutManager(fresh)
+            fresh.ensureLayout(for: container)
+            XCTAssertEqual(storage.length, freshStorage.length)
+            for text in ["Name", "retry", "keep the retry", "then log it"] {
+                XCTAssertEqual(lineRect(widened, out, at: text), lineRect(fresh, out, at: text), text)
+            }
+            let cell = lineRect(widened, out, at: "keep the retry")
+            XCTAssertGreaterThan(cell.width, Self.column / 3, "the long cell is not squeezed")
+            XCTAssertLessThanOrEqual(cell.maxX, Self.column, "the table stays inside the column")
+        }
+    }
+
     func testNestedBlocksStayInsideTheColumn() {
         let markdown = "- item\n\n  > quoted in a list\n\n> outer\n>\n> > nested quote\n\n- item\n\n  ```\n  code in a list\n  ```"
         let out = DocumentAttributedString.make(DocumentRendering.render(markdown), highlights: [:], activeThreadID: nil)
