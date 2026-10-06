@@ -190,16 +190,8 @@ struct WorkbenchTargetPanel: View {
     /// Read-only: the agent's tools set a task's progress.
     private var progress: some View {
         let value = min(max(target.progress, 0), 1)
-        return HStack(spacing: 6) {
-            ProgressView(value: value)
-                .progressViewStyle(.linear)
-                .controlSize(.small)
-                .tint(value >= 1 ? .green : .accentColor)
-            Text(value, format: .percent.precision(.fractionLength(0)))
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .fixedSize()
-        }
+        return WorkbenchCompactProgress(fraction: value,
+                                        label: value.formatted(.percent.precision(.fractionLength(0))))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Progress")
     }

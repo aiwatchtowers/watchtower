@@ -68,17 +68,8 @@ struct WorkbenchBoardPathBar: View {
     }
 
     private func progress(_ summary: WorkbenchGroupSummary) -> some View {
-        HStack(spacing: 6) {
-            ProgressView(value: Double(summary.done), total: Double(max(summary.total, 1)))
-                .progressViewStyle(.linear)
-                .controlSize(.small)
-                .tint(summary.total > 0 && summary.done == summary.total ? .green : .accentColor)
-                .frame(width: 80)
-            Text("\(summary.done) of \(summary.total)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-                .fixedSize()
-        }
+        WorkbenchCompactProgress(done: summary.done, total: summary.total,
+                                 label: "\(summary.done) of \(summary.total)", barWidth: 80)
         .accessibilityElement(children: .combine)
         .help("Tasks done in this group")
     }

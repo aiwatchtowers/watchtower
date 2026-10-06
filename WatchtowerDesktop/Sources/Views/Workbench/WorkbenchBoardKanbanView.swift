@@ -249,16 +249,8 @@ private struct WorkbenchBoardKanbanLaneView: View {
 
     private var progress: some View {
         let progress = lane.progress
-        return HStack(spacing: 6) {
-            ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
-                .progressViewStyle(.linear)
-                .controlSize(.small)
-                .tint(progress.total > 0 && progress.done == progress.total ? .green : .accentColor)
-                .frame(width: 80)
-            Text("\(progress.done)/\(progress.total)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
-        }
+        return WorkbenchCompactProgress(done: progress.done, total: progress.total,
+                                        label: "\(progress.done)/\(progress.total)", barWidth: 80)
         .help("Tasks done in this group")
     }
 }
