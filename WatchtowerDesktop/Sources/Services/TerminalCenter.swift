@@ -540,7 +540,10 @@ final class TerminalCenter {
             }
         }
         startedAt[id] = now()
+        // A new run starts with an empty prompt: no line of the last run
+        // waits for a Return there (board #389).
         clearPromptDraft(id)
+        pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))

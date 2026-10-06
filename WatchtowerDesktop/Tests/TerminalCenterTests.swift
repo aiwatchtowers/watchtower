@@ -854,6 +854,26 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.pasteHints.contains(s.id), "no paste bar outlives its session")
     }
 
+    /// Board #389: a line the last run left without its Return is gone with
+    /// that run's prompt, so a restart drops its "press Return" bar along
+    /// with the draft.
+    func testARestartDropsTheLastRunsPasteBar() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        _ = await center.submitPrompt("x", sessionID: s.id) { false }
+        XCTAssertTrue(center.pasteHints.contains(s.id))
+        XCTAssertTrue(center.promptDrafts.contains(s.id))
+
+        sessions[0].exit(0)
+        center.start(s, fresh: false)
+
+        XCTAssertFalse(center.pasteHints.contains(s.id), "a new run starts with no paste bar")
+        XCTAssertFalse(center.promptDrafts.contains(s.id))
+        let next = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertEqual(next, .submitted)
+    }
+
     /// Without bracketed paste the text goes to the clipboard and nothing,
     /// not even Return, reaches the terminal.
     func testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted() async throws {
