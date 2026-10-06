@@ -91,7 +91,7 @@ struct ChatQuestionCardView: View {
             }
             .buttonStyle(.plain)
             .disabled(!interactive)
-            .accessibilityLabel(option.label)
+            .accessibilityLabel(String(MarkdownView.inlineLabel(option.label).characters))
             if !option.description.isEmpty {
                 // Outside the button, so its links open instead of picking
                 // the option; indented under the label by a hidden icon.

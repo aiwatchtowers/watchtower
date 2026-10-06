@@ -21,6 +21,16 @@ final class ChatQuestionCardViewTests: XCTestCase {
         XCTAssertTrue(try view.inspect().find(button: "Send answers").isDisabled(), "nothing picked yet")
     }
 
+    /// VoiceOver reads an option's label as shown, not its markup.
+    func testAnOptionsAccessibilityLabelIsItsPlainText() throws {
+        let card = ChatQuestionCard(questions: [ChatQuestion(id: "q", question: "Keep?", options: [
+            ChatQuestionOption(label: "**Yes**, see [the RFC](https://example.com/rfc)")
+        ])])
+        let view = ChatQuestionCardView(card: card, answerText: nil) { _ in }
+        let button = try view.inspect().find(button: "Yes, see the RFC")
+        XCTAssertEqual(try button.accessibilityLabel().string(), "Yes, see the RFC")
+    }
+
     func testAnAnsweredCardTakesNoInput() throws {
         let answer = ChatQuestionAnswer.format(card, answers: ["scope": .init(labels: ["v0.10"])])
         let view = ChatQuestionCardView(card: card, answerText: answer) { _ in }
