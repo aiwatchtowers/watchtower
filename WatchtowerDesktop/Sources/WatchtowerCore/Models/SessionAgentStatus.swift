@@ -191,8 +191,9 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// Whether this status still holds for a run started at `startedAt`:
     /// one without a trusted hook state always does, one with it only when
     /// that state was written during that run (decision 9 again, for a run that began after the read).
-    /// A run's mark keeps no stamp to check, so a marked status holds for
-    /// no run: only a fresh `resolve` vouches for it.
+    /// A status holding only the run's mark carries no `at` (the row's mark
+    /// has its `agent_state_at`, which only `resolve` checks), so it holds
+    /// for no run here: only a fresh `resolve` vouches for it.
     package func isTrusted(startedAt: Date?) -> Bool {
         guard let at else { return !runMarked }
         guard let startedAt, let stamp = Self.parseStamp(at) else { return false }

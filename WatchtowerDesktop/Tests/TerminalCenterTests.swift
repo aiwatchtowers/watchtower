@@ -639,6 +639,9 @@ final class TerminalCenterTests: XCTestCase {
             center.start(s, fresh: true)
             let session = try XCTUnwrap(sessions.last)
             var approval = false
+            // Still false when the owner's Return comes (a stale state), a
+            // dialog by the read after the pause.
+            center.inputAnswersDialog = { _ in approval }
             onSleep = {
                 session.onOwnerInput?([0x0D])
                 approval = dialog
@@ -651,6 +654,29 @@ final class TerminalCenterTests: XCTestCase {
             XCTAssertTrue(center.promptDrafts.contains(s.id), "\(name): the next line must not submit it")
             XCTAssertTrue(center.pasteHints.contains(s.id), "\(name): the bar asks for Return")
         }
+    }
+
+    /// Board #388 review (F1): the owner's Return during the pause starts a
+    /// turn, so the caller's own condition may fail by the read after it —
+    /// a hand-off's session no longer idle at its prompt (its `working`
+    /// landed), a request cancelled. That never makes the line the owner
+    /// sent count as still typed: no bar, no draft, no Return of ours.
+    func testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        var atPrompt = true
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            atPrompt = false
+        }
+
+        let delivery = await center.submitPrompt("x", sessionID: s.id) { atPrompt }
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return of ours")
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+        XCTAssertFalse(center.promptDrafts.contains(s.id))
     }
 
     /// PROJ-12: a line the app left without its Return is still in the

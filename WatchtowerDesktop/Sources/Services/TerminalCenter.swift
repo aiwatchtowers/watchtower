@@ -316,8 +316,9 @@ final class TerminalCenter {
     /// check (the caller re-reads the agent state, which its poll may hold
     /// up to 1 s stale) and returns whether that read succeeded: after a
     /// failed one the state is not known, so no Return. An owner's
-    /// submitting Return during the pause, with the state after it read and
-    /// clean, has sent the line: none follows, and it counts as submitted.
+    /// submitting Return during the pause has sent the line — unless that
+    /// read failed or shows a permission dialog (`inputAnswersDialog`, asked
+    /// again after it): none follows, and it counts as submitted.
     /// Otherwise the paste
     /// waits for the owner's own Return, and the session holds a draft until
     /// then; a line sharing the prompt with other text says so
@@ -332,7 +333,8 @@ final class TerminalCenter {
     ) async -> HandoffDelivery {
         // A running session always has its run: the line never goes
         // untracked by run.
-        guard states[sessionID] == .running, let run = runs[sessionID] else { return .noSession }
+        guard states[sessionID] == .running, let run = runs[sessionID],
+              let process = processes[sessionID] else { return .noSession }
         let otherReturnPending = pendingReturns.contains(run)
         let promptWasEmpty = !promptDrafts.contains(sessionID) && !otherReturnPending
         // For the log only: a bar still asking for a Return means a line of
@@ -343,7 +345,6 @@ final class TerminalCenter {
         case .copied: return .copied
         case .sent: break
         }
-        guard let process = processes[sessionID] else { return .noSession }
         // The pair of `promptWasEmpty`: whether the line ends up next to
         // other text not submitted.
         var besideText = !promptWasEmpty
@@ -367,16 +368,22 @@ final class TerminalCenter {
             }
             if !fresh {
                 logWithheld(sessionID, "the state read after the pause failed")
+            } else if ownerReturnsInPause.contains(run) {
+                // `inputAnswersDialog` may have been up to a second stale
+                // when that Return came, so it may have gone into a dialog
+                // shown during the pause: re-asked after the read, a dialog
+                // keeps the line typed (the bar may be a false one, never a
+                // Return of ours). The caller's other conditions do not
+                // count — the owner's Return starts a turn, and its
+                // `working` may land before the read.
+                if inputAnswersDialog(sessionID) {
+                    logWithheld(sessionID, "a permission prompt after the owner's Return in the pause")
+                } else {
+                    logWithheld(sessionID, "the owner pressed Return during the pause")
+                    return .submitted
+                }
             } else if !canSubmit() {
                 logWithheld(sessionID, "the session's state, after the pause")
-            } else if ownerReturnsInPause.contains(run) {
-                // Only with a clean state after the pause: `inputAnswersDialog`
-                // may be up to a second stale, so an owner's Return into a
-                // dialog shown during the pause could pass for one into the
-                // prompt. Then the line counts as still typed (the bar may
-                // be a false one, never a Return of ours).
-                logWithheld(sessionID, "the owner pressed Return during the pause")
-                return .submitted
             } else if promptDrafts.contains(sessionID) {
                 logWithheld(sessionID, "text reached the prompt during the pause")
             } else {
