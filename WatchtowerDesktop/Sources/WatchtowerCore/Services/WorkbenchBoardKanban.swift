@@ -19,8 +19,8 @@ package struct WorkbenchBoardKanban {
 
     package struct Card: Identifiable {
         package let node: WorkbenchBoardNode
-        /// The parent chain from the top-level target down, " › "-joined;
-        /// empty for a top-level leaf.
+        /// The parent chain below the board's scope (in a lane, below the
+        /// lane root), " › "-joined; empty for a card right under it.
         package let breadcrumb: String
         package var id: Int { node.target.id }
         /// The card as a flat board row: no indent, no chevron.
@@ -37,14 +37,6 @@ package struct WorkbenchBoardKanban {
         /// has no single status to set.
         package var acceptsDrops: Bool { status != WorkbenchBoardKanban.otherStatus }
         package var id: String { status }
-    }
-
-    /// A parent-filter menu entry: a top-level target with leaf descendants.
-    /// The header's filter menu reads these until the path bar replaces it
-    /// (spec 2026-10-06 Part 4).
-    package struct FilterOption: Identifiable, Equatable {
-        package let id: Int
-        package let title: String
     }
 
     /// One lane of the "Lanes: By group" layout (spec 2026-10-06 Part 2): a
@@ -75,7 +67,9 @@ package struct WorkbenchBoardKanban {
         /// never folded, as the None layout's cap never trims them.
         package let doneCount: Int
 
-        /// The root's id; the No group lane folds under id 0.
+        /// The root's id; the No group lane folds under id 0. A scope's
+        /// "Tasks" lane shares the scope's id: one fold per group, so a
+        /// group folded as a lane opens with its Tasks folded too.
         package var id: Int { root?.target.id ?? 0 }
 
         /// What `column` shows: with the Done fold closed, its live done
@@ -102,16 +96,12 @@ package struct WorkbenchBoardKanban {
     /// Per column status, the cards in that column over `lanes`: the totals
     /// row above the lanes.
     package let totals: [String: Int]
-    package let filterOptions: [FilterOption]
     /// The scope actually applied (`WorkbenchBoardScope`): nil (the board
     /// root) when the requested one is stale.
     package let scopeID: Int?
     /// The applied scope's path, top-level target first, the scope last;
     /// empty at the board root.
     package let scopePath: [WorkbenchBoardNode]
-    /// The applied scope under its pre-scope name, for the header's filter
-    /// menu.
-    package var filterRootID: Int? { scopeID }
     /// Archived leaves under the scope "Archive" on would apply, whatever
     /// the toggles and the search: the cards "Archive" adds, Kanban's
     /// "Archive (K)".
@@ -163,25 +153,12 @@ package struct WorkbenchBoardKanban {
                 sum + (lane.columns.first { $0.status == column.status }?.cards.count ?? 0)
             })
         })
-        self.filterOptions = Self.filterOptions(roots, showArchived: showArchived)
         self.scopeID = scope.node?.target.id
         self.scopePath = scope.path
         // Counted over what "Archive" on shows: a remembered scope under an
         // archived target applies only then.
         let archiveScope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: true).node
         self.archivedCardCount = Self.archivedLeafCount(archiveScope?.children ?? roots)
-    }
-
-    /// The pre-scope spelling the ViewModel still calls; `filterRootID` is
-    /// a `scopeID`.
-    package init(
-        _ roots: [WorkbenchBoardNode],
-        filterRootID: Int?,
-        showDone: Bool,
-        showArchived: Bool = false,
-        query: String = ""
-    ) {
-        self.init(roots, scopeID: filterRootID, showDone: showDone, showArchived: showArchived, query: query)
     }
 
     /// Whether `id` is a card shown on this board. A drop accepts only these:
@@ -286,12 +263,6 @@ package struct WorkbenchBoardKanban {
         return Column(status: status, title: title, cards: shown, hiddenCount: recent.count - kept.count)
     }
 
-    private static func filterOptions(_ roots: [WorkbenchBoardNode], showArchived: Bool) -> [FilterOption] {
-        roots.filter { !$0.children.isEmpty && (showArchived || !$0.archived) }.map {
-            FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
-        }
-    }
-
     private static func archivedLeafCount(_ nodes: [WorkbenchBoardNode]) -> Int {
         nodes.reduce(0) { count, n in
             count + (n.children.isEmpty ? (n.archived ? 1 : 0) : archivedLeafCount(n.children))
@@ -346,7 +317,7 @@ package enum WorkbenchBoardLanesMode: String, CaseIterable {
 package struct WorkbenchBoardPreferences {
     private let defaults: UserDefaults
     private let modeKey: String
-    private let filterKey: String
+    private let scopeKey: String
     private let lanesKey: String
     private let foldedLanesKey: String
 
@@ -354,7 +325,7 @@ package struct WorkbenchBoardPreferences {
         self.defaults = defaults
         // The `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
         modeKey = "projects.boardMode.\(workbenchID)"
-        filterKey = "projects.boardKanbanFilter.\(workbenchID)"
+        scopeKey = "projects.boardKanbanFilter.\(workbenchID)"
         lanesKey = "projects.boardLanes.\(workbenchID)"
         foldedLanesKey = "projects.boardFoldedLanes.\(workbenchID)"
     }
@@ -369,16 +340,10 @@ package struct WorkbenchBoardPreferences {
     /// pre-scope filter's key, so a remembered top-level filter carries
     /// over. A stale id is resolved by `WorkbenchBoardScope`, not here.
     package var boardScopeID: Int? {
-        get { defaults.object(forKey: filterKey) == nil ? nil : defaults.integer(forKey: filterKey) }
+        get { defaults.object(forKey: scopeKey) == nil ? nil : defaults.integer(forKey: scopeKey) }
         nonmutating set {
-            if let newValue { defaults.set(newValue, forKey: filterKey) } else { defaults.removeObject(forKey: filterKey) }
+            if let newValue { defaults.set(newValue, forKey: scopeKey) } else { defaults.removeObject(forKey: scopeKey) }
         }
-    }
-
-    /// `boardScopeID` under the name the ViewModel still uses.
-    package var kanbanFilterRootID: Int? {
-        get { boardScopeID }
-        nonmutating set { boardScopeID = newValue }
     }
 
     /// Defaults to By group; an unknown stored value reads as By group too.

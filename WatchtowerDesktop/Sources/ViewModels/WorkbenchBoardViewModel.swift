@@ -42,10 +42,13 @@ final class WorkbenchBoardViewModel {
         didSet { preferences.mode = mode }
     }
 
-    /// The kanban parent filter (a top-level target id; nil = All),
-    /// remembered per project. A stale id shows as All.
-    var kanbanFilterRootID: Int? {
-        didSet { preferences.kanbanFilterRootID = kanbanFilterRootID }
+    /// The group the board is entered into (spec 2026-10-06 Part 4): any
+    /// target with children, at any depth; nil = the whole board. Kanban
+    /// and List alike, remembered per project; a stale id shows the whole
+    /// board (`WorkbenchBoardScope`). Changed through `enterScope` and
+    /// `leaveScope`.
+    private(set) var boardScopeID: Int? {
+        didSet { preferences.boardScopeID = boardScopeID }
     }
 
     /// Kanban's "Lanes: By group | None", remembered per project.
@@ -72,21 +75,42 @@ final class WorkbenchBoardViewModel {
 
     var kanban: WorkbenchBoardKanban {
         WorkbenchBoardKanban(
-            roots, filterRootID: kanbanFilterRootID, showDone: showDone, showArchived: showArchived, query: searchText
+            roots, scopeID: boardScopeID, showDone: showDone, showArchived: showArchived, query: searchText
         )
     }
 
     var rows: [WorkbenchBoardRow] {
         WorkbenchBoardOutline.rows(
-            roots, collapsed: collapsed, showDone: showDone, showArchived: showArchived, query: searchText
+            roots, collapsed: collapsed, showDone: showDone, showArchived: showArchived, query: searchText,
+            scopeID: boardScopeID
         )
     }
 
+    /// The scope as applied, top-level target first, the scope last: the
+    /// path bar. Empty at the board root, a stale scope included.
+    var scopePath: [WorkbenchBoardNode] {
+        WorkbenchBoardScope.resolve(boardScopeID, in: roots, showArchived: showArchived, query: searchText).path
+    }
+
+    /// The scope as applied (nil = the board root): `boardScopeID` unless
+    /// it is stale.
+    var scopeNode: WorkbenchBoardNode? { scopePath.last }
+
     /// The K of "Archive (K)": what the toggle adds in the current mode —
-    /// every archived target in the list, the archived leaf cards under the
-    /// parent filter in Kanban.
+    /// every archived target in the list, the archived leaf cards in
+    /// Kanban, both under the scope "Archive" on would apply.
     var archivedCount: Int {
-        mode == .kanban ? kanban.archivedCardCount : WorkbenchBoardOutline.archivedCount(roots)
+        guard mode == .list else { return kanban.archivedCardCount }
+        let scope = WorkbenchBoardScope.resolve(boardScopeID, in: roots, showArchived: true).node
+        return WorkbenchBoardOutline.archivedCount(scope?.children ?? roots)
+    }
+
+    /// What an empty board says when no search is active: the toggle that
+    /// would show more, never one that is already on.
+    var emptyBoardText: String {
+        if !showDone { return "Nothing open. Turn on Show done to see finished work." }
+        if !showArchived { return "Everything here is archived. Turn on Archive to see it." }
+        return "Nothing to show."
     }
 
     var selectedNode: WorkbenchBoardNode? {
@@ -123,7 +147,7 @@ final class WorkbenchBoardViewModel {
         let preferences = WorkbenchBoardPreferences(workbenchID: projectID, defaults: defaults)
         self.preferences = preferences
         mode = preferences.mode
-        kanbanFilterRootID = preferences.kanbanFilterRootID
+        boardScopeID = preferences.boardScopeID
         lanesMode = preferences.lanesMode
         storedFoldedLanes = preferences.foldedLanes
     }
@@ -305,6 +329,29 @@ final class WorkbenchBoardViewModel {
         } else {
             collapsed.insert(targetID)
         }
+    }
+
+    // MARK: - Scope
+
+    /// Enters the group `id` (Open group, a lane header double-click, the
+    /// list's Open Group, a path bar step); nil returns to the whole board.
+    /// An id that is no group on this board, or the scope already applied,
+    /// changes nothing. The panel stays as it is.
+    func enterScope(_ id: Int?) {
+        guard let id else {
+            boardScopeID = nil
+            return
+        }
+        guard id != scopeNode?.target.id,
+              WorkbenchBoardScope.resolve(id, in: roots, showArchived: showArchived, query: searchText).node != nil
+        else { return }
+        boardScopeID = id
+    }
+
+    /// "✕ Leave group" and Esc with the panel closed: one level up, to the
+    /// scope's parent group or, from a top-level group, the whole board.
+    func leaveScope() {
+        boardScopeID = scopePath.dropLast().last?.target.id
     }
 
     // MARK: - Lanes

@@ -19,6 +19,9 @@ struct WorkbenchTargetPanel: View {
     @Binding var commentDraft: String
     /// `WorkbenchesViewModel.showAsk`: an Asks row opens the ask drawer.
     let onShowAsk: (Int64, Int64) async -> Bool
+    /// Open group: enters the group as the board scope (spec 2026-10-06
+    /// Part 4).
+    let onOpenGroup: (Int) -> Void
     let onClose: () -> Void
 
     private enum Mode {
@@ -103,12 +106,18 @@ struct WorkbenchTargetPanel: View {
                 WorkbenchBoardChip(text: "GROUP", color: .secondary)
             }
             Spacer(minLength: 0)
-            // A group's place here is Open group (spec Part 4), which enters
-            // the group's scope on the board; until the board has scopes a
-            // group shows no action button.
-            if mode == .task {
+            switch mode {
+            case .task:
                 WorkOnTargetButton(target: target, compact: false, isVisible: true)
                     .fixedSize()
+            case .group:
+                Button { onOpenGroup(target.id) } label: {
+                    Label("Open group", systemImage: "arrow.down.right.square")
+                }
+                .buttonStyle(.borderedProminent)
+                .fixedSize()
+                .disabled(vm.scopeNode?.target.id == target.id)
+                .help("Show only this group on the board")
             }
             moreMenu
             closeButton

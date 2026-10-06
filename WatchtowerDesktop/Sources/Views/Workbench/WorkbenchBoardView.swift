@@ -19,6 +19,10 @@ struct WorkbenchBoardView: View {
     @AppStorage("projects.boardPanelWidth") private var panelWidth = Self.panelDefaultWidth
     @State private var dragPanelWidth: Double?
     @FocusState private var panelFocused: Bool
+    /// The path bar takes focus when the panel closes inside a scope, or a
+    /// scope is entered, so the next Esc leaves one level even in Kanban,
+    /// where a card click focuses nothing.
+    @FocusState private var pathBarFocused: Bool
 
     var body: some View {
         Group {
@@ -38,12 +42,13 @@ struct WorkbenchBoardView: View {
                     }
                 }
                 .animation(.easeOut(duration: 0.15), value: vm.selectedTargetID == nil)
-                // Esc closes the panel while focus is anywhere in this pane
-                // (the board list, the panel's fields). Deliberately not a
-                // `.keyboardShortcut(.cancelAction)`: that is window-wide and
-                // would steal Esc from a Claude Code terminal in the other
-                // split pane.
-                .onExitCommand { if vm.selectedTargetID != nil { vm.closeDetail() } }
+                // Esc while focus is anywhere in this pane (the board list,
+                // the panel's fields): the panel closes first; only with it
+                // closed does Esc leave one scope level (spec 2026-10-06
+                // Part 4). Deliberately not a `.keyboardShortcut(.cancelAction)`:
+                // that is window-wide and would steal Esc from a Claude Code
+                // terminal in the other split pane.
+                .onExitCommand { escape(vm) }
             } else {
                 ProgressView()
             }
@@ -79,6 +84,31 @@ struct WorkbenchBoardView: View {
         appState.workbenchesViewModel?.summaries.first { $0.id == projectID }?.project.archiveAfterDays
     }
 
+    /// One Esc: the panel if open, else one scope level.
+    private func escape(_ vm: WorkbenchBoardViewModel) {
+        if vm.selectedTargetID != nil {
+            closePanel(vm)
+        } else if vm.scopeNode != nil {
+            vm.leaveScope()
+        }
+    }
+
+    /// The panel's ✕ and Esc. Inside a scope the path bar takes focus, so
+    /// the next Esc leaves the group.
+    private func closePanel(_ vm: WorkbenchBoardViewModel) {
+        vm.closeDetail()
+        if vm.scopeNode != nil { pathBarFocused = true }
+    }
+
+    /// Open Group from the list or a lane header. With the panel closed the
+    /// path bar takes focus — on the next turn, as entering from the board
+    /// root is what puts the bar on screen.
+    private func enterScope(_ vm: WorkbenchBoardViewModel, _ id: Int) {
+        vm.enterScope(id)
+        guard vm.selectedTargetID == nil, vm.scopeNode != nil else { return }
+        DispatchQueue.main.async { pathBarFocused = true }
+    }
+
     private func takeFocus() {
         guard let vm = viewModel, let id = appState.workbenchesViewModel?.takeBoardFocus(projectID: projectID) else { return }
         vm.select(Int(id))
@@ -91,6 +121,25 @@ struct WorkbenchBoardView: View {
         return VStack(alignment: .leading, spacing: 0) {
             header(vm, kanban: kanban)
                 .padding(8)
+            if !vm.scopePath.isEmpty {
+                WorkbenchBoardPathBar(
+                    path: vm.scopePath,
+                    showArchived: vm.showArchived,
+                    onJump: { vm.enterScope($0) },
+                    onLeave: { vm.leaveScope() }
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+                .focusable()
+                .focusEffectDisabled()
+                .focused($pathBarFocused)
+                // Reached only with the panel closed: the open panel holds
+                // focus and closes on Esc itself.
+                .onKeyPress(.escape) {
+                    vm.leaveScope()
+                    return .handled
+                }
+            }
             if let projects = appState.workbenchesViewModel {
                 WorkbenchDriftBanner(
                     report: projects.drift[projectID],
@@ -133,6 +182,7 @@ struct WorkbenchBoardView: View {
                     vm: vm,
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
+                    onEnter: { enterScope(vm, $0) },
                     onMove: { vm.setStatus($1, for: $0) }
                 )
             } else {
@@ -151,9 +201,8 @@ struct WorkbenchBoardView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            if let kanban {
+            if kanban != nil {
                 lanesMenu(vm)
-                kanbanFilterMenu(vm, kanban)
             }
             Spacer()
             searchField(vm)
@@ -202,29 +251,6 @@ struct WorkbenchBoardView: View {
         .help("One lane per top-level group, or the flat columns")
     }
 
-    private func kanbanFilterMenu(_ vm: WorkbenchBoardViewModel, _ kanban: WorkbenchBoardKanban) -> some View {
-        let current = kanban.filterOptions.first { $0.id == kanban.filterRootID }
-        return Menu {
-            Toggle("All", isOn: Binding(
-                get: { kanban.filterRootID == nil },
-                set: { if $0 { vm.kanbanFilterRootID = nil } }
-            ))
-            if !kanban.filterOptions.isEmpty { Divider() }
-            ForEach(kanban.filterOptions) { option in
-                Toggle(option.title.isEmpty ? "Untitled" : option.title, isOn: Binding(
-                    get: { kanban.filterRootID == option.id },
-                    set: { if $0 { vm.kanbanFilterRootID = option.id } }
-                ))
-            }
-        } label: {
-            Text(current.map { $0.title.isEmpty ? "Untitled" : $0.title } ?? "All")
-                .lineLimit(1)
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Show only one top-level target's tasks")
-    }
-
     // MARK: - Tree
 
     @ViewBuilder
@@ -234,9 +260,9 @@ struct WorkbenchBoardView: View {
                 .frame(maxHeight: .infinity)
         } else if vm.rows.isEmpty {
             ContentUnavailableView(
-                "Nothing open",
+                vm.showDone ? "Nothing to show" : "Nothing open",
                 systemImage: "checkmark.circle",
-                description: Text("Every target is done or dismissed. Turn on Show done to see them.")
+                description: Text(vm.emptyBoardText)
             )
             .frame(maxHeight: .infinity)
         } else {
@@ -254,7 +280,9 @@ struct WorkbenchBoardView: View {
                                            isVisible: hovering || vm.selectedTargetID == row.id)
                     }
                 )
-                .contextMenu { WorkbenchTargetMenu(target: row.node.target, vm: vm) }
+                .contextMenu {
+                    WorkbenchTargetMenu(target: row.node.target, vm: vm) { enterScope(vm, $0) }
+                }
                 // Drop a row onto another to nest it there (board #186).
                 .draggable(WorkbenchTargetDrag.payload(row.id))
                 .dropDestination(for: String.self) { items, _ in
@@ -284,7 +312,8 @@ struct WorkbenchBoardView: View {
             onShowAsk: { [weak projects = appState.workbenchesViewModel] askID, projectID in
                 await projects?.showAsk(askID, projectID: projectID) ?? false
             },
-            onClose: { vm.closeDetail() }
+            onOpenGroup: { enterScope(vm, $0) },
+            onClose: { closePanel(vm) }
         )
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
@@ -304,7 +333,7 @@ struct WorkbenchBoardView: View {
         .focusEffectDisabled()
         .focused($panelFocused)
         .onKeyPress(.escape) {
-            vm.closeDetail()
+            closePanel(vm)
             return .handled
         }
         .onAppear { panelFocused = true }

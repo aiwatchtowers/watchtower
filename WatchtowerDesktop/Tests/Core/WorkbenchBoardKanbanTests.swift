@@ -116,11 +116,12 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(cards.map(\.breadcrumb), ["Polish the Projects page UI › Sub-parent", ""])
     }
 
-    func testEmptyBoardHasTheFiveEmptyColumnsAndNoFilterOptions() {
+    func testEmptyBoardHasTheFiveEmptyColumnsAndNoScope() {
         let board = WorkbenchBoardKanban([], scopeID: nil, showDone: false)
         XCTAssertEqual(board.columns.map(\.status), ["todo", "in_progress", "in_review", "blocked", "done"])
         XCTAssertTrue(board.columns.allSatisfy { $0.cards.isEmpty && $0.hiddenCount == 0 })
-        XCTAssertTrue(board.filterOptions.isEmpty)
+        XCTAssertNil(board.scopeID)
+        XCTAssertTrue(board.scopePath.isEmpty)
     }
 
     // MARK: - Done / Dismissed
@@ -226,19 +227,6 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(filtered.scopeID, 1)
     }
 
-    /// A top-level leaf is its own card under All; it is not a filter option
-    /// (a "subtree" of one card is not worth a menu entry).
-    func testFilterOptionsAreTopLevelTargetsWithLeaves() throws {
-        let roots = [
-            node(try target(1, "Plan A\nbody"), [node(try target(2))]),
-            node(try target(3, "Lone leaf")),
-            node(try target(4, "Plan B"), [node(try target(5))])
-        ]
-        let board = WorkbenchBoardKanban(roots, scopeID: nil, showDone: false)
-        XCTAssertEqual(board.filterOptions.map(\.id), [1, 4])
-        XCTAssertEqual(board.filterOptions.map(\.title), ["Plan A", "Plan B"])
-    }
-
     func testStaleOrNonOptionFilterFallsBackToAll() throws {
         let roots = [
             node(try target(1, "Plan A"), [node(try target(2))]),
@@ -294,16 +282,14 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(ids(board, "dismissed"), [400])
     }
 
-    func testAnArchivedRootIsAFilterOptionOnlyWithTheToggle() throws {
+    func testAnArchivedRootScopesOnlyWithTheToggle() throws {
         let roots = [
             node(try target(1, "Live"), [node(try target(2))]),
             node(try target(3, "Gone", status: "done"), [node(try target(4, status: "done"), archived: true)], archived: true)
         ]
         let off = WorkbenchBoardKanban(roots, scopeID: 3, showDone: false)
-        XCTAssertEqual(off.filterOptions.map(\.id), [1])
         XCTAssertNil(off.scopeID, "a filter on an archived group shows All while the archive is hidden")
         let on = WorkbenchBoardKanban(roots, scopeID: 3, showDone: false, showArchived: true)
-        XCTAssertEqual(on.filterOptions.map(\.id), [1, 3])
         XCTAssertEqual(on.scopeID, 3)
         XCTAssertEqual(ids(on, "done"), [4])
     }
@@ -650,7 +636,6 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         let reread = WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults)
         XCTAssertEqual(reread.mode, .kanban)
         XCTAssertEqual(reread.boardScopeID, 42)
-        XCTAssertEqual(reread.kanbanFilterRootID, 42, "the pre-scope name reads the same key")
 
         let two = WorkbenchBoardPreferences(workbenchID: 2, defaults: defaults)
         XCTAssertEqual(two.mode, .list)

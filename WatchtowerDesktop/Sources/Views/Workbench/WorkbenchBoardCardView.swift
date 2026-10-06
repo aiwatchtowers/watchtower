@@ -238,13 +238,22 @@ enum WorkbenchTargetNumber {
     }
 }
 
-/// The context menu of a board row or kanban card: copy the number, and
-/// "Move to…" another target or the top level (board #186).
+/// The context menu of a board row or kanban card: Open Group on a list row
+/// with children (spec 2026-10-06 Part 4), copy the number, and "Move to…"
+/// another target or the top level (board #186).
 struct WorkbenchTargetMenu: View {
     let target: Target
     let vm: WorkbenchBoardViewModel
+    /// The list's Open Group: enters `target` as the board scope. Nil hides
+    /// the item (kanban cards are leaves; the panel has its own button).
+    var onOpenGroup: ((Int) -> Void)?
 
     var body: some View {
+        if let onOpenGroup, let node = WorkbenchBoardOutline.find(target.id, in: vm.roots), !node.children.isEmpty {
+            Button("Open Group") { onOpenGroup(target.id) }
+                .disabled(vm.scopeNode?.target.id == target.id)
+            Divider()
+        }
         Button("Copy \(WorkbenchTargetNumber.label(target.id))") { WorkbenchTargetNumber.copy(target.id) }
         Divider()
         Menu("Move to") {

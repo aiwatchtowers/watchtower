@@ -100,14 +100,16 @@ final class WorkbenchBoardScopeTests: XCTestCase {
         }
     }
 
-    /// An archived scope — or a live one under an archived ancestor — is
-    /// the board root while "Archive" is off; with it on, or with a search
-    /// (which shows the archive), it applies.
+    /// An archived scope — a top-level one or a group nested in one; an
+    /// archived target's whole subtree is archived with it — is the board
+    /// root while "Archive" is off; with it on, or with a search (which
+    /// shows the archive), it applies.
     func testAnArchivedScopeAppliesOnlyWithArchiveOrASearch() throws {
         let roots = [
             node(try target(1, "Live"), [node(try target(2))]),
             node(try target(3, "Gone", status: "done"), [
-                node(try target(4, "Sub", status: "done"), [node(try target(5, "Old", status: "done"), archived: true)])
+                node(try target(4, "Sub", status: "done"), [node(try target(5, "Old", status: "done"), archived: true)],
+                     archived: true)
             ], archived: true)
         ]
         for id in [3, 4] {
@@ -125,14 +127,6 @@ final class WorkbenchBoardScopeTests: XCTestCase {
         XCTAssertEqual(ids(on, "done"), [5])
         XCTAssertEqual(WorkbenchBoardOutline.rows(roots, collapsed: [], showDone: false, scopeID: 4).map(\.id), [1, 2],
                        "the List falls back to the whole board too")
-    }
-
-    func testThePreScopeInitLabelIsTheSameScope() throws {
-        let roots = try tree()
-        let legacy = WorkbenchBoardKanban(roots, filterRootID: 5, showDone: false)
-        XCTAssertEqual(legacy.scopeID, 5)
-        XCTAssertEqual(legacy.filterRootID, 5)
-        XCTAssertEqual(ids(legacy, "todo"), ids(WorkbenchBoardKanban(roots, scopeID: 5, showDone: false), "todo"))
     }
 
     // MARK: - Kanban in a scope
@@ -165,6 +159,42 @@ final class WorkbenchBoardScopeTests: XCTestCase {
         let groupsOnly = [node(try target(20, "Top"), [node(try target(21, "Group"), [node(try target(22))])])]
         let scoped = WorkbenchBoardKanban(groupsOnly, scopeID: 20, showDone: false)
         XCTAssertEqual(scoped.lanes.map(\.id), [21], "no own leaf, no Tasks lane")
+    }
+
+    /// "Lanes: None" in a top-level scope: the breadcrumb starts below the
+    /// scope, so the scope's own name is never repeated on its cards.
+    func testATopLevelScopesColumnsDropTheScopeFromTheBreadcrumb() throws {
+        let board = WorkbenchBoardKanban(try tree(), scopeID: 1, showDone: false)
+        let todo = try XCTUnwrap(board.columns.first { $0.status == "todo" })
+        XCTAssertEqual(todo.cards.map(\.id), [2, 4, 6, 7, 9])
+        XCTAssertEqual(todo.cards.map(\.breadcrumb),
+                       ["", "Feature", "Feature › Step group", "Feature › Step group", "Epic"])
+    }
+
+    /// The Tasks lane follows the lane rule with the scope as its root: an
+    /// open scope keeps it with nothing left to show ("No open tasks"); a
+    /// closed one hides it until Show done.
+    func testTheTasksLaneHidesOnlyForAClosedScope() throws {
+        let open = [
+            node(try target(20, "Open scope"), [
+                node(try target(21, status: "done")),
+                node(try target(22, "Group"), [node(try target(23))])
+            ])
+        ]
+        let openBoard = WorkbenchBoardKanban(open, scopeID: 20, showDone: false)
+        XCTAssertEqual(openBoard.lanes.map(\.title), ["Tasks", "Group"])
+        let tasks = try XCTUnwrap(openBoard.lanes.first)
+        XCTAssertTrue(tasks.columns.allSatisfy { tasks.cards($0, unfolded: false).isEmpty })
+        XCTAssertEqual(tasks.doneCount, 1)
+
+        let closed = [
+            node(try target(30, "Closed scope", status: "done"), [
+                node(try target(31, status: "done")),
+                node(try target(32, "Group", status: "done"), [node(try target(33, status: "done"))])
+            ])
+        ]
+        XCTAssertEqual(WorkbenchBoardKanban(closed, scopeID: 30, showDone: false).lanes.map(\.id), [])
+        XCTAssertEqual(WorkbenchBoardKanban(closed, scopeID: 30, showDone: true).lanes.map(\.id), [30, 32])
     }
 
     func testScopedColumnsHoldTheScopesLeavesWithBreadcrumbsBelowIt() throws {

@@ -91,6 +91,38 @@ final class WorkbenchBoardLanesViewModelTests: XCTestCase {
         XCTAssertEqual(preferences(pid).foldedLanes, [stale], "a stale id stays stored")
     }
 
+    func testFoldingALaneKeepsStaleIDsStored() throws {
+        let (pid, group) = try seedBoard()
+        let stale = 9_999
+        preferences(pid).foldedLanes = [stale]
+        let vm = makeVM(project: pid)
+        vm.toggleLane(group)
+        XCTAssertEqual(preferences(pid).foldedLanes, [stale, group])
+        XCTAssertEqual(vm.foldedLaneIDs(in: vm.kanban.lanes), [group])
+    }
+
+    /// Opening one lane's "✓ N done" leaves every other lane's Done folded.
+    func testOneLanesDoneUnfoldLeavesTheOtherLanesFolded() throws {
+        let (pid, group) = try seedBoard()
+        try dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertWorkbenchTarget(
+                db, projectID: pid, text: "Shipped", status: "done", parentID: Int64(group)
+            )
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Loose done", status: "done")
+        }
+        let vm = makeVM(project: pid)
+        vm.toggleLaneDone(group)
+
+        let shown = Dictionary(uniqueKeysWithValues: vm.kanban.lanes.map { lane in
+            let done = lane.columns.first { $0.status == "done" }
+            let cards = done.map { lane.cards($0, unfolded: vm.unfoldedDoneLanes.contains(lane.id)) } ?? []
+            return (lane.id, cards.map(\.node.target.text))
+        })
+        XCTAssertEqual(shown[group], ["Shipped"])
+        XCTAssertEqual(shown[0], [], "No group's Done stays folded")
+        XCTAssertEqual(vm.kanban.lanes.first { $0.id == 0 }?.doneCount, 1)
+    }
+
     func testDoneUnfoldIsPerLaneAndNotRemembered() throws {
         let (pid, group) = try seedBoard()
         let vm = makeVM(project: pid)
