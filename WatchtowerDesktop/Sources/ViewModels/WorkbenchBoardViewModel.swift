@@ -467,13 +467,29 @@ final class WorkbenchBoardViewModel {
     /// that lands after the panel moved on still saves to its own target.
     /// The text is trimmed like a rename; a description unchanged once
     /// trimmed writes nothing.
+    ///
+    /// `original` is the description the editor opened with: a draft equal
+    /// to it (once trimmed) writes nothing, even when the agent changed the
+    /// description meanwhile, and a changed draft over a description that
+    /// moved since then writes nothing either — the editor keeps the draft
+    /// and `errorMessage` says so. Nil skips both checks.
     /// - Returns: whether the description is saved, so the editor keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func saveIntent(_ text: String, for id: Int? = nil) -> Bool {
+    func saveIntent(_ text: String, original: String? = nil, for id: Int? = nil) -> Bool {
         let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let id = id ?? selectedTargetID, let node = WorkbenchBoardOutline.find(id, in: roots) else { return false }
+        // Nothing open and no editor's target: nothing to save, nothing to say.
+        guard let id = id ?? selectedTargetID else { return false }
+        guard let node = WorkbenchBoardOutline.find(id, in: roots) else {
+            errorMessage = "Could not save the description: \(WorkbenchTargetNumber.label(id)) is no longer on this board."
+            return false
+        }
+        if let original, intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
         guard node.target.intent != intent else { return true }
+        if let original, node.target.intent != original {
+            errorMessage = "The description changed while you were editing. Copy your text, press Esc and edit again."
+            return false
+        }
         return write("save the description", target: id) { db in
             try TargetQueries.updateIntent(db, id: id, intent: intent)
         }

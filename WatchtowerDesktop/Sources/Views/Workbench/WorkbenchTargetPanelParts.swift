@@ -56,17 +56,22 @@ struct WorkbenchDetailMenuLabel: View {
 /// The panel's description (spec 2026-10-06 Part 3): folded to six lines
 /// with Show all when longer; a click opens the editor, where ⌘↩ or focus
 /// loss saves and Esc cancels. A failed save keeps the editor and the
-/// draft (the panel's error row says why).
+/// draft (the panel's error row says why) — after a switch too: the draft
+/// stays bound to its own target and is back when the panel returns to it.
 struct WorkbenchPanelDescription: View {
     let targetID: Int
     let intent: String
-    /// `WorkbenchBoardViewModel.saveIntent(_:for:)` on the target the
-    /// editor was opened on: whether the text is saved.
-    let onSave: (_ text: String, _ targetID: Int) -> Bool
+    /// `WorkbenchBoardViewModel.saveIntent(_:original:for:)` on the target
+    /// the editor was opened on, with the text it opened with: whether the
+    /// text is saved.
+    let onSave: (_ text: String, _ original: String, _ targetID: Int) -> Bool
 
     static let foldedLines = 6
 
     @State private var draft = ""
+    /// The description the editor opened with: a save never writes this
+    /// snapshot over a newer description (`saveIntent`'s `original`).
+    @State private var original = ""
     /// The target the editor was opened on: a save that arrives after the
     /// panel moved to another target (focus loss while it switches) still
     /// goes to this one, never to the new one.
@@ -93,11 +98,16 @@ struct WorkbenchPanelDescription: View {
         }
         .onChange(of: targetID) {
             // Moving to another target is a focus loss: the draft saves to
-            // its own target (a failure shows in the error row).
+            // its own target. A failure (shown in the error row) keeps the
+            // draft on that target, so returning to it reopens the editor.
             save()
-            editingTargetID = nil
             expanded = false
         }
+        // The panel closing (✕, Esc, a reload that empties the path) saves
+        // explicitly rather than trusting the editor's teardown focus loss;
+        // a save that already ran cleared `editingTargetID`, so this one is
+        // a no-op then.
+        .onDisappear { save() }
     }
 
     private var text: some View {
@@ -152,6 +162,7 @@ struct WorkbenchPanelDescription: View {
 
     private func beginEditing() {
         draft = intent
+        original = intent
         editingTargetID = targetID
     }
 
@@ -159,7 +170,7 @@ struct WorkbenchPanelDescription: View {
     /// the focus loss its removal causes saves nothing.
     private func save() {
         guard let id = editingTargetID else { return }
-        if onSave(draft, id) { editingTargetID = nil }
+        if onSave(draft, original, id) { editingTargetID = nil }
     }
 
     private func cancel() {

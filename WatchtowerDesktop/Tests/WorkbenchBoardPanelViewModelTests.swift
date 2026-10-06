@@ -412,11 +412,94 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(storedB?.intent, "", "the open target is untouched")
         XCTAssertEqual(reported, [.target(Int64(taskA))])
         XCTAssertFalse(vm.saveIntent("Lost", for: 999_999), "a target not on the board writes nothing")
+        let error = try XCTUnwrap(vm.errorMessage, "a draft that cannot be saved says why")
+        XCTAssertTrue(error.contains("#999999"), error)
+    }
+
+    /// The editor's switch-save fails (the trigger fixture): the error is
+    /// set after the panel moved on, so the owner sees why the draft stayed.
+    func testAFailedSaveOnASwitchLeavesTheErrorSet() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_intent_update BEFORE UPDATE OF intent ON targets
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+        vm.select(taskB)
+
+        XCTAssertFalse(vm.saveIntent("Draft on A", original: "", for: taskA))
+
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains("disk full"), error)
+        XCTAssertEqual(vm.selectedTargetID, taskB)
     }
 
     func testSaveIntentWithNothingSelectedWritesNothing() throws {
         let (pid, _, _, _) = try seedGroup()
         let vm = makeVM(project: pid)
         XCTAssertFalse(vm.saveIntent("Lost"))
+        XCTAssertNil(vm.errorMessage, "nothing open and no editor's target: silent")
+    }
+
+    // MARK: - Description: a newer description is never overwritten
+
+    /// The agent's `update_target` lands while the editor is open.
+    private func agentWritesIntent(_ text: String, on id: Int) throws {
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: "UPDATE targets SET intent = ?, updated_at = '2026-01-02T00:00:00Z' WHERE id = ?",
+                           arguments: [text, id])
+        }
+    }
+
+    func testAnUntouchedEditorNeverWritesItsSnapshotOverTheAgentsText() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.select(taskA)
+        let opened = try XCTUnwrap(vm.selectedNode?.target.intent)
+        try agentWritesIntent("Agent's newer text", on: taskA)
+        vm.load()
+
+        XCTAssertTrue(vm.saveIntent(opened, original: opened, for: taskA), "nothing to save is no failure")
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(stored?.intent, "Agent's newer text")
+        XCTAssertEqual(stored?.updatedAt, "2026-01-02T00:00:00Z", "nothing was written")
+        XCTAssertEqual(reported, 0)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testAnEditedDraftOverANewerDescriptionIsRefusedAndKept() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.select(taskA)
+        try agentWritesIntent("Agent's newer text", on: taskA)
+        vm.load()
+
+        XCTAssertFalse(vm.saveIntent("Owner's draft", original: "", for: taskA))
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(stored?.intent, "Agent's newer text")
+        XCTAssertEqual(stored?.updatedAt, "2026-01-02T00:00:00Z")
+        XCTAssertEqual(reported, 0)
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains("changed while you were editing"), error)
+    }
+
+    func testAnEditedDraftOverAnUnchangedDescriptionSaves() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+
+        XCTAssertTrue(vm.saveIntent("Owner's draft", original: "", for: taskA))
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(stored?.intent, "Owner's draft")
     }
 }

@@ -280,8 +280,8 @@ struct WorkbenchTargetPanel: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 20) {
-            WorkbenchPanelDescription(targetID: target.id, intent: target.intent) { text, id in
-                vm.saveIntent(text, for: id)
+            WorkbenchPanelDescription(targetID: target.id, intent: target.intent) { text, original, id in
+                vm.saveIntent(text, original: original, for: id)
             }
             if mode == .group {
                 WorkbenchGroupSubtasks(group: node, showArchived: vm.showArchived) { vm.push($0) }
