@@ -80,6 +80,12 @@ package struct WorkbenchBoardKanban {
             return column.cards.filter(\.node.archived)
         }
 
+        /// Whether the lane shows a card with its Done fold closed: a kept
+        /// lane without one says "No open tasks" (spec 2026-10-06 Part 2).
+        package var hasVisibleCards: Bool {
+            columns.contains { !cards($0, unfolded: false).isEmpty }
+        }
+
         /// Whether `id` is a card of this lane, folded or not. A drop into
         /// this lane's columns accepts only these.
         package func showsCard(_ id: Int) -> Bool {
@@ -223,7 +229,7 @@ package struct WorkbenchBoardKanban {
             }
         }
         return lanes.filter { lane in
-            let shows = lane.columns.contains { !lane.cards($0, unfolded: false).isEmpty }
+            let shows = lane.hasVisibleCards
             let rootOpen = lane.root.map { !["done", "dismissed"].contains($0.target.status) } ?? false
             return shows || (rules.search == nil && rootOpen)
         }

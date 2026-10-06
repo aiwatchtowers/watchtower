@@ -137,11 +137,20 @@ private struct WorkbenchBoardKanbanLaneView: View {
         VStack(alignment: .leading, spacing: 6) {
             header
             if !isFolded {
-                if lane.columns.allSatisfy(\.cards.isEmpty) {
-                    Text("No open tasks")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, WorkbenchBoardChevron.zoneWidth)
+                // Judged with the Done fold closed, as Core keeps the lane;
+                // the fold's own link stays, so its done cards are one click away.
+                if !lane.hasVisibleCards, !isDoneUnfolded {
+                    HStack(spacing: 12) {
+                        Text("No open tasks")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        if lane.doneFolded, lane.doneCount > 0 {
+                            Button("✓ \(lane.doneCount) done — show") { vm.toggleLaneDone(lane.id) }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(.leading, WorkbenchBoardChevron.zoneWidth)
                 } else {
                     HStack(alignment: .top, spacing: WorkbenchBoardKanbanLayout.spacing) {
                         ForEach(lane.columns) { column in

@@ -573,7 +573,10 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(board.lanes.map(\.id), [1, 4], "No group has no root to keep it")
         let waiting = try XCTUnwrap(lane(board, 1))
         XCTAssertTrue(waiting.columns.allSatisfy { waiting.cards($0, unfolded: false).isEmpty })
+        XCTAssertFalse(waiting.hasVisibleCards, "only folded done cards: the view says No open tasks")
+        XCTAssertFalse(waiting.columns.allSatisfy(\.cards.isEmpty), "the done card is still in its column")
         XCTAssertEqual(waiting.doneCount, 1)
+        XCTAssertTrue(try XCTUnwrap(lane(board, 4)).hasVisibleCards)
 
         let emptyRoot = [node(try target(7, "Bare", status: "todo"), [node(try target(8, status: "dismissed"))])]
         let bare = try XCTUnwrap(WorkbenchBoardKanban(emptyRoot, scopeID: nil, showDone: false).lanes.first)
