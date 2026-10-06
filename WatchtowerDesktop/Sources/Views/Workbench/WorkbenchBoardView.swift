@@ -209,7 +209,9 @@ struct WorkbenchBoardView: View {
             Toggle("Show done", isOn: Binding(get: { vm.showDone }, set: { vm.showDone = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
-            Toggle("Archive (\(vm.archivedCount))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
+            // The kanban this render already built: `vm.archivedCount`
+            // would build it again in Kanban mode.
+            Toggle("Archive (\(kanban?.archivedCardCount ?? vm.archivedCount))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
                 .help("Show the targets closed longer than the workbench's archive setting (… menu). Reopen one to bring it back.")
