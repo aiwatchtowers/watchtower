@@ -168,6 +168,106 @@ final class WorkbenchBoardScopeViewModelTests: XCTestCase {
         XCTAssertEqual(vm.archivedCount, 1, "only Old is under Feature")
     }
 
+    // MARK: - Esc
+
+    func testEscClosesThePanelFirstThenLeavesOneLevel() throws {
+        let board = try seedBoard()
+        let vm = makeVM(project: board.project)
+        vm.enterScope(board.feature)
+        vm.select(board.deep)
+
+        XCTAssertTrue(vm.escape())
+        XCTAssertNil(vm.selectedTargetID, "the panel closes")
+        XCTAssertEqual(vm.scopeNode?.target.id, board.feature, "the scope stays")
+
+        XCTAssertTrue(vm.escape())
+        XCTAssertEqual(vm.scopeNode?.target.id, board.plan, "up one level")
+        XCTAssertTrue(vm.escape())
+        XCTAssertNil(vm.scopeNode)
+
+        XCTAssertFalse(vm.escape(), "at the board root Esc does nothing")
+        XCTAssertNil(vm.boardScopeID)
+    }
+
+    // MARK: - Lane header double-click (R15)
+
+    func testEnteringALaneClosesThePanelItsFirstClickOpened() throws {
+        let board = try seedBoard()
+        let vm = makeVM(project: board.project)
+        vm.mode = .kanban
+        vm.select(board.plan)
+
+        XCTAssertTrue(vm.enterLane(board.plan))
+        XCTAssertEqual(vm.scopeNode?.target.id, board.plan)
+        XCTAssertNil(vm.selectedTargetID, "the group's panel the single click opened closes")
+
+        vm.select(board.leaf)
+        XCTAssertTrue(vm.enterLane(board.feature))
+        XCTAssertEqual(vm.scopeNode?.target.id, board.feature)
+        XCTAssertEqual(vm.selectedTargetID, board.leaf, "a panel on another target stays")
+    }
+
+    // MARK: - Archived groups
+
+    /// Old › { Old task }, both done 30 days ago: archived (default 14 days).
+    private func seedArchivedGroup(_ project: Int64) throws -> Int {
+        try dbManager.dbPool.write { db -> Int in
+            let group = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Old", status: "done")
+            let task = try TestDatabase.insertWorkbenchTarget(
+                db, projectID: project, text: "Old task", status: "done", parentID: group
+            )
+            try db.execute(
+                sql: """
+                    UPDATE target_status_history SET changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days')
+                    WHERE target_id IN (?, ?)
+                    """,
+                arguments: [group, task]
+            )
+            return Int(group)
+        }
+    }
+
+    func testAnArchivedGroupIsRefusedWithAReasonWhileArchiveIsOff() throws {
+        let board = try seedBoard()
+        let old = try seedArchivedGroup(board.project)
+        let vm = makeVM(project: board.project)
+
+        XCTAssertFalse(vm.enterScope(old))
+        XCTAssertNil(vm.boardScopeID)
+        XCTAssertEqual(vm.errorMessage, "This group is archived. Turn on Archive to open it.")
+
+        vm.dismissError()
+        XCTAssertFalse(vm.enterScope(board.leaf), "a leaf is no group")
+        XCTAssertNil(vm.errorMessage, "and no archived one either: nothing to say")
+
+        vm.showArchived = true
+        XCTAssertTrue(vm.enterScope(old))
+        XCTAssertEqual(vm.scopeNode?.target.id, old)
+    }
+
+    /// R16: a scope entered under a search follows the stale rule once the
+    /// search is cleared — an archived one shows the board root with Archive
+    /// off, its id kept, and is back with Archive on.
+    func testAnArchivedGroupEnteredDuringASearchFollowsTheStaleRuleAfterIt() throws {
+        let board = try seedBoard()
+        let old = try seedArchivedGroup(board.project)
+        let vm = makeVM(project: board.project)
+        vm.searchText = "old"
+
+        XCTAssertTrue(vm.enterScope(old), "a search shows the archive, so the group opens")
+        XCTAssertEqual(vm.scopePath.map(\.target.id), [old])
+        XCTAssertNil(vm.errorMessage)
+
+        vm.searchText = ""
+        XCTAssertTrue(vm.scopePath.isEmpty, "Archive off and no search: the board root")
+        XCTAssertNil(vm.scopeNode)
+        XCTAssertNil(vm.kanban.scopeID)
+        XCTAssertEqual(vm.boardScopeID, old, "the stale rule keeps the remembered id")
+
+        vm.showArchived = true
+        XCTAssertEqual(vm.scopeNode?.target.id, old)
+    }
+
     func testTheEmptyBoardTextNeverAsksForAToggleThatIsOn() throws {
         let board = try seedBoard()
         let vm = makeVM(project: board.project)

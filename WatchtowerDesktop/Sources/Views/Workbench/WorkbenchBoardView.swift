@@ -47,7 +47,7 @@ struct WorkbenchBoardView: View {
                 // Part 4). Deliberately not a `.keyboardShortcut(.cancelAction)`:
                 // that is window-wide and would steal Esc from a Claude Code
                 // terminal in the other split pane.
-                .onExitCommand { escape(vm) }
+                .onExitCommand { _ = escape(vm) }
             } else {
                 ProgressView()
             }
@@ -83,28 +83,33 @@ struct WorkbenchBoardView: View {
         appState.workbenchesViewModel?.summaries.first { $0.id == projectID }?.project.archiveAfterDays
     }
 
-    /// One Esc: the panel if open, else one scope level.
-    private func escape(_ vm: WorkbenchBoardViewModel) {
-        if vm.selectedTargetID != nil {
-            closePanel(vm)
-        } else if vm.scopeNode != nil {
-            vm.leaveScope()
-        }
+    /// One Esc from the panel, the path bar or the board: the rule is the
+    /// view model's (`escape()`); a panel it closed inside a scope hands
+    /// focus to the path bar, so the next Esc leaves the group.
+    private func escape(_ vm: WorkbenchBoardViewModel) -> KeyPress.Result {
+        let closesPanel = vm.selectedTargetID != nil
+        guard vm.escape() else { return .ignored }
+        if closesPanel, vm.scopeNode != nil { pathBarFocused = true }
+        return .handled
     }
 
-    /// The panel's ✕ and Esc. Inside a scope the path bar takes focus, so
-    /// the next Esc leaves the group.
+    /// The panel's ✕. Inside a scope the path bar takes focus, so the next
+    /// Esc leaves the group.
     private func closePanel(_ vm: WorkbenchBoardViewModel) {
         vm.closeDetail()
         if vm.scopeNode != nil { pathBarFocused = true }
     }
 
-    /// Open Group from the list or a lane header. With the panel closed the
-    /// path bar takes focus — on the next turn, as entering from the board
-    /// root is what puts the bar on screen.
-    private func enterScope(_ vm: WorkbenchBoardViewModel, _ id: Int) {
-        vm.enterScope(id)
-        guard vm.selectedTargetID == nil, vm.scopeNode != nil else { return }
+    /// Open Group from the list or the panel, or a lane header
+    /// double-click (`enter`, `WorkbenchBoardViewModel.enterLane` there).
+    /// With the panel closed the path bar takes focus — on the next turn, as
+    /// entering from the board root is what puts the bar on screen.
+    private func enterScopeAndFocus(
+        _ vm: WorkbenchBoardViewModel,
+        _ id: Int,
+        enter: (Int) -> Bool
+    ) {
+        guard enter(id), vm.selectedTargetID == nil, vm.scopeNode != nil else { return }
         DispatchQueue.main.async { pathBarFocused = true }
     }
 
@@ -132,12 +137,8 @@ struct WorkbenchBoardView: View {
                 .focusable()
                 .focusEffectDisabled()
                 .focused($pathBarFocused)
-                // Reached only with the panel closed: the open panel holds
-                // focus and closes on Esc itself.
-                .onKeyPress(.escape) {
-                    vm.leaveScope()
-                    return .handled
-                }
+                // The same rule as everywhere in the pane: the panel first.
+                .onKeyPress(.escape) { escape(vm) }
             }
             if let projects = appState.workbenchesViewModel {
                 WorkbenchDriftBanner(
@@ -181,7 +182,7 @@ struct WorkbenchBoardView: View {
                     vm: vm,
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
-                    onEnter: { enterScope(vm, $0) },
+                    onEnter: { enterScopeAndFocus(vm, $0, enter: { vm.enterLane($0) }) },
                     onMove: { vm.setStatus($1, for: $0) }
                 )
             } else {
@@ -280,7 +281,9 @@ struct WorkbenchBoardView: View {
                     }
                 )
                 .contextMenu {
-                    WorkbenchTargetMenu(target: row.node.target, vm: vm) { enterScope(vm, $0) }
+                    WorkbenchTargetMenu(target: row.node.target, vm: vm) {
+                        enterScopeAndFocus(vm, $0, enter: { vm.enterScope($0) })
+                    }
                 }
                 // Drop a row onto another to nest it there (board #186).
                 .draggable(WorkbenchTargetDrag.payload(row.id))
@@ -310,7 +313,7 @@ struct WorkbenchBoardView: View {
             onShowAsk: { [weak projects = appState.workbenchesViewModel] askID, projectID in
                 await projects?.showAsk(askID, projectID: projectID) ?? false
             },
-            onOpenGroup: { enterScope(vm, $0) },
+            onOpenGroup: { enterScopeAndFocus(vm, $0, enter: { vm.enterScope($0) }) },
             onClose: { closePanel(vm) }
         )
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
@@ -330,10 +333,7 @@ struct WorkbenchBoardView: View {
         .focusable()
         .focusEffectDisabled()
         .focused($panelFocused)
-        .onKeyPress(.escape) {
-            closePanel(vm)
-            return .handled
-        }
+        .onKeyPress(.escape) { escape(vm) }
         .onAppear { panelFocused = true }
         // Transparent, never hit-tested: a narrow pane keeps a strip of the
         // board clickable beside the panel.

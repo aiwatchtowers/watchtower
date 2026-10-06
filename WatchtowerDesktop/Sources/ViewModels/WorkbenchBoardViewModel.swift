@@ -349,19 +349,54 @@ final class WorkbenchBoardViewModel {
 
     // MARK: - Scope
 
-    /// Enters the group `id` (Open group, a lane header double-click, the
-    /// list's Open Group, a path bar step); nil returns to the whole board.
-    /// An id that is no group on this board, or the scope already applied,
-    /// changes nothing. The panel stays as it is.
-    func enterScope(_ id: Int?) {
+    /// Enters the group `id` (Open group, the list's Open Group, a path bar
+    /// step); nil returns to the whole board. An id that is no group on
+    /// this board changes nothing; an archived group with Archive off and no
+    /// search is refused with a message. The panel stays as it is. A scope
+    /// entered under a search follows the stale rule once the search is
+    /// cleared (an archived one shows the board root, its id kept).
+    /// - Returns: whether `id` is the scope now.
+    @discardableResult
+    func enterScope(_ id: Int?) -> Bool {
         guard let id else {
             boardScopeID = nil
-            return
+            return true
         }
-        guard id != scopeNode?.target.id,
-              WorkbenchBoardScope.resolve(id, in: roots, showArchived: showArchived, query: searchText).node != nil
-        else { return }
+        if id == scopeNode?.target.id { return true }
+        guard WorkbenchBoardScope.resolve(id, in: roots, showArchived: showArchived, query: searchText).node != nil else {
+            if WorkbenchBoardScope.resolve(id, in: roots, showArchived: true).node != nil {
+                errorMessage = "This group is archived. Turn on Archive to open it."
+            }
+            return false
+        }
         boardScopeID = id
+        return true
+    }
+
+    /// A lane header double-click: its first click opened the group in the
+    /// panel, so entering the group closes that panel again (ruling R15);
+    /// a panel open on another target stays.
+    /// - Returns: whether `id` is the scope now.
+    @discardableResult
+    func enterLane(_ id: Int) -> Bool {
+        guard enterScope(id) else { return false }
+        if selectedTargetID == id { closeDetail() }
+        return true
+    }
+
+    /// One Esc anywhere in the pane (spec 2026-10-06 Part 4): the panel
+    /// closes first; with it closed Esc leaves one scope level; at the
+    /// board root it does nothing.
+    /// - Returns: whether it did anything.
+    @discardableResult
+    func escape() -> Bool {
+        if selectedTargetID != nil {
+            closeDetail()
+            return true
+        }
+        guard scopeNode != nil else { return false }
+        leaveScope()
+        return true
     }
 
     /// "✕ Leave group" and Esc with the panel closed: one level up, to the
