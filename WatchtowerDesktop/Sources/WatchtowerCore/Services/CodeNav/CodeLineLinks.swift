@@ -135,14 +135,16 @@ package enum CodeLineLinks {
     }
 
     /// Top-level domains a link target's first segment ends in when it is
-    /// a schemeless web address; none is a common file extension. A denylist,
-    /// not an allowlist of source extensions, so a file of a rarer type
-    /// (`schema.proto`, `main.tf`) still opens.
-    private static let webDomains: Set<String> = ["com", "org", "net", "io", "edu", "gov"]
+    /// a schemeless web address; none is a file extension (`org` is left
+    /// out: an Org-mode file, `notes.org`, must open — a schemeless
+    /// `example.org` then reads as a file). A denylist, not an allowlist of
+    /// source extensions, so a file of a rarer type (`schema.proto`,
+    /// `main.tf`) still opens.
+    private static let webDomains: Set<String> = ["com", "net", "io", "edu", "gov"]
 
     /// A link target written as a web address or a version, not a file:
     /// its first segment starts `www.` or ends in a web domain
-    /// (`www.example.com`, `example.org/docs/a.md`), or the whole target is
+    /// (`www.example.com`, `example.net/docs/a.md`), or the whole target is
     /// a dotted number (`v1.2`). Only for link targets — a citation in prose
     /// carries a line and keeps its own rules.
     private static func looksLikeHost(_ path: String) -> Bool {

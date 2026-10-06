@@ -58,12 +58,20 @@ final class CodeLineLinksTests: XCTestCase {
     /// A schemeless web address or a version number written as a link
     /// target is no file: it keeps its target.
     func testALinkToAHostOrAVersionKeepsItsTarget() {
-        for text in ["[site](www.example.com)", "[s](example.com)", "[s](example.org/docs/a.md)",
+        for text in ["[site](www.example.com)", "[s](example.com)", "[s](example.net/docs/a.md)", "[s](www.example.org)",
                      "[s](Example.IO)", "[s](example.com:8080)", "[v](v1.2)", "[w](www.notes.md)"] {
             XCTAssertEqual(CodeLineLinks.linkified(text), text)
         }
         XCTAssertEqual(CodeLineLinks.linkified("[n](docs/v1.2)"), "[n](\(url("docs/v1.2", 1)))",
                        "only a whole target that is a number is refused")
+    }
+
+    /// An Org-mode file opens. The trade-off, kept on purpose: `org` is no
+    /// web domain, so a schemeless `example.org` (no `www.`) links as a
+    /// file too — an agent writes a web address with its scheme.
+    func testAnOrgFileIsAFile() {
+        XCTAssertEqual(CodeLineLinks.linkified("[notes](notes.org)"), "[notes](\(url("notes.org", 1)))")
+        XCTAssertEqual(CodeLineLinks.linkified("[s](example.org)"), "[s](\(url("example.org", 1)))")
     }
 
     /// Images, anchors, absolute paths, paths out of the folder and other
