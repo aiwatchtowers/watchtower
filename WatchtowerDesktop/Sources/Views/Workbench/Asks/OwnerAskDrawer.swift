@@ -317,7 +317,7 @@ struct OwnerAskDrawer: View {
                 placeholder: "Note for the agent (optional)",
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
-                onSubmit: CommentTextEditor.endEditing
+                leavesOnSubmit: true
             )
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {

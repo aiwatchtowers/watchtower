@@ -82,7 +82,7 @@ struct OwnerAskMarginComments: View {
             if let draftID = comment.draftID {
                 CommentTextEditor(text: Binding(get: { comment.body }, set: { setBody(draftID, $0) }), placeholder: "Comment",
                                   minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
-                                  onSubmit: CommentTextEditor.endEditing) { [commentID = comment.id] in active = commentID }
+                                  leavesOnSubmit: true, onFocus: { [commentID = comment.id] in active = commentID })
                 HStack {
                     Spacer()
                     Button("Remove") { remove(draftID) }

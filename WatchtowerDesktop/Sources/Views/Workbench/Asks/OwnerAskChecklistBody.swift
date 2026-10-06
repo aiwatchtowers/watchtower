@@ -71,7 +71,7 @@ struct OwnerAskChecklistBody: View {
                 placeholder: state == .broken ? "What broke? (required)" : "Note",
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
-                onSubmit: CommentTextEditor.endEditing
+                leavesOnSubmit: true
             )
         } else if let note = notes[item.id], !note.isEmpty {
             MarkdownView(text: note, lineBreaks: true).font(.callout).foregroundStyle(.secondary)

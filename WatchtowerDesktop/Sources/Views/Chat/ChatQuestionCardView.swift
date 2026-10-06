@@ -114,7 +114,7 @@ struct ChatQuestionCardView: View {
             if draftPicks != nil {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…",
                                   minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
-                                  onSubmit: CommentTextEditor.endEditing)
+                                  leavesOnSubmit: true)
             } else {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…", onSubmit: complete ? send : nil)
             }

@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// `CommentTextEditor` hosted in a window, through AppKit's own chain:
 /// undo across text set from outside, and focus reaching `onFocus`.
@@ -12,7 +13,11 @@ final class CommentTextEditorHostedTests: XCTestCase {
     }
 
     private func host(_ box: Box, onFocus: (() -> Void)? = nil) -> (NSWindow, NSHostingView<AnyView>) {
-        let host = NSHostingView(rootView: Self.editor(box, onFocus: onFocus))
+        host(Self.editor(box, onFocus: onFocus))
+    }
+
+    private func host(_ root: AnyView) -> (NSWindow, NSHostingView<AnyView>) {
+        let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: 300, height: 120)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -33,6 +38,31 @@ final class CommentTextEditorHostedTests: XCTestCase {
     private func textView(in view: NSView) -> NSTextView? {
         if let text = view as? NSTextView { return text }
         return view.subviews.lazy.compactMap { self.textView(in: $0) }.first
+    }
+
+    private func commandReturn(_ window: NSWindow, shift: Bool = false) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: shift ? [.command, .shift] : .command,
+                                       timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                       context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false,
+                                       keyCode: CommentEditorKeys.returnKeyCode))
+    }
+
+    /// A field whose text is kept as typed (a margin comment): ⌘↩ leaves
+    /// it, in its own window — not merely the key one.
+    func testCommandReturnLeavesAFieldKeptAsTyped() throws {
+        let box = Box()
+        let (window, host) = host(AnyView(CommentTextEditor(text: Binding(get: { box.text }, set: { box.text = $0 }),
+                                                            leavesOnSubmit: true)))
+        defer { window.close() }
+        let textView = try XCTUnwrap(textView(in: host))
+        XCTAssertTrue(window.makeFirstResponder(textView))
+        textView.insertText("kept", replacementRange: textView.selectedRange())
+
+        XCTAssertTrue(textView.performKeyEquivalent(with: try commandReturn(window)))
+
+        XCTAssertFalse(window.firstResponder === textView, "the field is left")
+        XCTAssertEqual(box.text, "kept")
+        XCTAssertEqual(textView.string, "kept", "no new line typed")
     }
 
     /// Paging to another ask swaps the draft under the same field: ⌘Z

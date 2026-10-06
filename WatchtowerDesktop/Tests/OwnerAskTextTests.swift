@@ -156,7 +156,7 @@ final class OwnerAskTextTests: XCTestCase {
         )
         let editor = try body.inspect().find(CommentTextEditor.self).actualView()
         XCTAssertEqual(editor.minHeight, CommentTextEditor.formMinHeight, "several lines tall from the start")
-        XCTAssertNotNil(editor.onSubmit, "⌘↩ leaves the field")
+        XCTAssertTrue(editor.leavesOnSubmit, "⌘↩ leaves the field")
         editor.text = "Line one\nline two"
         XCTAssertEqual(written, ["1": "Line one\nline two"])
     }

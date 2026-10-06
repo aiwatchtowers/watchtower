@@ -7,7 +7,9 @@ import WatchtowerCore
 /// only while this field has focus), and — with `focusOnAppear` — the caret
 /// already blinking in it when it opens. Grows with its text from
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
-/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view. `onFocus` runs
+/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view; with
+/// `leavesOnSubmit` they leave the field instead (its text is already kept
+/// as typed: a margin comment). `onFocus` runs
 /// when the field takes the keyboard or is clicked while it has it (a
 /// margin comment's card turning active). Text set through the binding
 /// from outside is not undoable (`updateNSView`).
@@ -18,6 +20,7 @@ struct CommentTextEditor: View {
     var minHeight: CGFloat = 30
     var maxHeight: CGFloat = 120
     var cornerRadius: CGFloat = 6
+    var leavesOnSubmit = false
     var onSubmit: (() -> Void)?
     var onFocus: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
@@ -29,15 +32,9 @@ struct CommentTextEditor: View {
     static let formMinHeight: CGFloat = 60
     static let formMaxHeight: CGFloat = 180
 
-    /// ⌘↩ in a field whose text is already kept as it is typed (an ask's
-    /// draft): it leaves the field.
-    static func endEditing() {
-        NSApp.keyWindow?.makeFirstResponder(nil)
-    }
-
     var body: some View {
-        CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear, onSubmit: onSubmit,
-                            onFocus: onFocus)
+        CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear,
+                            leavesOnSubmit: leavesOnSubmit, onSubmit: onSubmit, onFocus: onFocus)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -69,6 +66,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var contentHeight: CGFloat
     let focusOnAppear: Bool
+    let leavesOnSubmit: Bool
     let onSubmit: (() -> Void)?
     let onFocus: (() -> Void)?
 
@@ -92,6 +90,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.string = text
         textView.delegate = context.coordinator
         textView.focusOnAppear = focusOnAppear
+        textView.leavesOnSubmit = leavesOnSubmit
         textView.onSubmit = onSubmit
         textView.onFocus = onFocus
 
@@ -113,6 +112,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? SubmittingTextView else { return }
+        textView.leavesOnSubmit = leavesOnSubmit
         textView.onSubmit = onSubmit
         textView.onFocus = onFocus
         textView.isEditable = context.environment.isEnabled
@@ -170,7 +170,8 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     }
 }
 
-/// Sends on ⌘↩/⌃↩ while it is the first responder; everything else —
+/// Sends on ⌘↩/⌃↩ while it is the first responder (or, with
+/// `leavesOnSubmit`, resigns it in its own window); everything else —
 /// Return included — is ordinary editing. Decided on the key event, not in
 /// `doCommandBy` like the chat composer: ⌘↩ arrives as a key equivalent
 /// and never as `insertNewline:`, and ⌃↩ arrives as `insertLineBreak:`.
@@ -178,6 +179,7 @@ private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onFocus: (() -> Void)?
     var focusOnAppear = false
+    var leavesOnSubmit = false
 
     override func becomeFirstResponder() -> Bool {
         let took = super.becomeFirstResponder()
@@ -206,22 +208,27 @@ private final class SubmittingTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if submits(event) { onSubmit?(); return }
+        if submits(event) { submit(); return }
         super.keyDown(with: event)
     }
 
     /// ⌘-combinations reach the window as key equivalents before `keyDown`.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if window?.firstResponder === self, submits(event) {
-            onSubmit?()
+            submit()
             return true
         }
         return super.performKeyEquivalent(with: event)
     }
 
+    private func submit() {
+        onSubmit?()
+        if leavesOnSubmit { window?.makeFirstResponder(nil) }
+    }
+
     private func submits(_ event: NSEvent) -> Bool {
         // Never mid-IME-composition: the Return belongs to the input method.
-        guard onSubmit != nil, event.type == .keyDown, !hasMarkedText() else { return false }
+        guard onSubmit != nil || leavesOnSubmit, event.type == .keyDown, !hasMarkedText() else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         return CommentEditorKeys.submits(keyCode: event.keyCode, command: flags.contains(.command),
                                          control: flags.contains(.control))
