@@ -93,11 +93,13 @@ final class TerminalCenter {
     /// or added during its pause (board #380). The pane's "press Return"
     /// bar says the Return sends them together. Cleared with `promptDrafts`.
     private(set) var sharedPrompts: Set<Int64> = []
-    /// Sessions where a `submitPrompt` pasted its line and waits out the
-    /// pause before its Return (board #380): that line is in the prompt
-    /// not submitted yet, so another delivery meanwhile — a hand-off during
-    /// an answer's pause, or the reverse — only pastes, as over a draft.
-    @ObservationIgnored private var pendingReturns: Set<Int64> = []
+    /// Process runs (`runs`) where a `submitPrompt` pasted its line and
+    /// waits out the pause before its Return (board #380): that line is in
+    /// the prompt not submitted yet, so another delivery meanwhile — a
+    /// hand-off during an answer's pause, or the reverse — only pastes, as
+    /// over a draft. Keyed by run, so a relaunch during the pause starts
+    /// with an empty prompt (board #387).
+    @ObservationIgnored private var pendingReturns: Set<Int> = []
     /// Sessions whose owner's last printable prompt input was `\`, with
     /// only escape sequences or paste brackets since: a Return there inserts
     /// a line break in Claude Code, it does not submit.
@@ -115,6 +117,12 @@ final class TerminalCenter {
     /// agent state's trust rule (board #312): a hook state stamped before it
     /// belongs to an earlier run. Replaced on every relaunch.
     @ObservationIgnored private(set) var startedAt: [Int64: Date] = [:]
+    /// Each session's current process run, a number never handed out twice
+    /// (board #387): `start()` relaunches in the same process object, so
+    /// only this tells a pause's run from a relaunch that began during it.
+    /// Replaced on every relaunch, gone with the session.
+    @ObservationIgnored private(set) var runs: [Int64: Int] = [:]
+    @ObservationIgnored private var lastRun = 0
     @ObservationIgnored var now: () -> Date = Date.init
     @ObservationIgnored private var processes: [Int64: any TerminalSessionProcess] = [:]
     /// The row each process was started from, so a project's sessions can be
@@ -298,7 +306,7 @@ final class TerminalCenter {
     /// idle at its prompt; an answer only into a session whose hooks
     /// reported a state this run that is not a permission prompt; a Return
     /// could answer a prompt that appeared meanwhile) — and only into the
-    /// same running process, as a write of its own after `delay`: a CR read
+    /// same process run (`runs`), as a write of its own after `delay`: a CR read
     /// in one chunk with the paste could be taken as part of it (a line
     /// break, not Enter). `refresh` runs after the pause, before the second
     /// check (the caller re-reads the agent state, which its poll may hold
@@ -315,22 +323,24 @@ final class TerminalCenter {
         refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
-        let promptWasEmpty = !promptDrafts.contains(sessionID) && !pendingReturns.contains(sessionID)
+        let run = runs[sessionID]
+        let promptWasEmpty = !promptDrafts.contains(sessionID) && !(run.map(pendingReturns.contains) ?? false)
         switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
         case .noSession: return .noSession
         case .copied: return .copied
         case .sent: break
         }
-        guard let process = processes[sessionID] else { return .noSession }
+        guard let process = processes[sessionID], let run else { return .noSession }
         // The pair of `promptWasEmpty`: whether the line ends up next to
         // other text not submitted.
         var besideText = !promptWasEmpty
         if promptWasEmpty, canSubmit() {
-            pendingReturns.insert(sessionID)
-            defer { pendingReturns.remove(sessionID) }
+            pendingReturns.insert(run)
+            defer { pendingReturns.remove(run) }
             await signaller.sleep(delay)
             let fresh = await refresh()
-            guard states[sessionID] == .running, processes[sessionID] === process else { return .noSession }
+            // The Return goes only into the run the line was pasted into.
+            guard states[sessionID] == .running, runs[sessionID] == run else { return .noSession }
             if fresh, canSubmit(), !promptDrafts.contains(sessionID) {
                 process.sendInput([0x0D])
                 return .submitted
@@ -540,6 +550,8 @@ final class TerminalCenter {
             }
         }
         startedAt[id] = now()
+        lastRun += 1
+        runs[id] = lastRun
         // A new run starts with an empty prompt: no line of the last run
         // waits for a Return there (board #389).
         clearPromptDraft(id)
@@ -586,6 +598,7 @@ final class TerminalCenter {
         states[sessionID] = nil
         rows[sessionID] = nil
         startedAt[sessionID] = nil
+        runs[sessionID] = nil
         clearPromptDraft(sessionID)
         ownerBackslashPending.remove(sessionID)
         clipboardHints.remove(sessionID)

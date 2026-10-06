@@ -854,6 +854,29 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertFalse(center.pasteHints.contains(s.id), "no paste bar outlives its session")
     }
 
+    /// Board #387: a relaunch during the pause reuses the process object,
+    /// yet the Return never goes into the new run, and the new run's prompt
+    /// is empty — its first line is submitted.
+    func testARelaunchDuringThePauseGetsNoReturn() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        onSleep = { [weak self, center] in
+            guard let self else { return }
+            sessions[0].exit(0)
+            center.start(s, fresh: false)
+        }
+
+        let delivery = await center.submitPrompt("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(sessions.count, 1, "the relaunch reused the process")
+        XCTAssertEqual(delivery, .noSession)
+        XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return into the new run")
+        onSleep = nil
+        let next = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertEqual(next, .submitted)
+    }
+
     /// Board #389: a line the last run left without its Return is gone with
     /// that run's prompt, so a restart drops its "press Return" bar along
     /// with the draft.

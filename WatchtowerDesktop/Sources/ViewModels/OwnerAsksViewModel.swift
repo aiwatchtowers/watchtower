@@ -478,8 +478,7 @@ final class OwnerAsksViewModel {
         if let sessionID = ask.sessionID {
             delivery = await deliver(line, sessionID: sessionID)
             if delivery == .held || delivery == .queued {
-                heldAnswers[askID] = HeldAnswer(sessionID: sessionID, line: line,
-                                                startedAt: terminalCenter?.startedAt[sessionID])
+                heldAnswers[askID] = HeldAnswer(sessionID: sessionID, line: line, run: terminalCenter?.runs[sessionID])
             }
         }
         answerNotices[askID] = .delivered(delivery)
@@ -512,7 +511,7 @@ final class OwnerAsksViewModel {
             }
             // Taken before any wait, so an overlapping call never sends it twice.
             heldAnswers[askID] = nil
-            let sameRun = terminalCenter?.startedAt[held.sessionID] == held.startedAt
+            let sameRun = terminalCenter?.runs[held.sessionID] == held.run
             let delivery = sameRun ? await deliver(held.line, sessionID: held.sessionID) : .noSession
             if delivery == .held || delivery == .queued {
                 heldAnswers[askID] = held
@@ -547,7 +546,8 @@ final class OwnerAsksViewModel {
     /// queues the submitted line for its next turn. Without bracketed paste
     /// the line is copied, never typed.
     private func deliver(_ line: String, sessionID: Int64) async -> Delivery {
-        guard let center = terminalCenter, center.liveIDs.contains(sessionID) else { return .noSession }
+        guard let center = terminalCenter, center.liveIDs.contains(sessionID),
+              let run = center.runs[sessionID] else { return .noSession }
         guard !delivering.contains(sessionID) else { return .queued }
         delivering.insert(sessionID)
         defer {
@@ -561,7 +561,9 @@ final class OwnerAsksViewModel {
         // permission prompt shown since: hold, and try again on the next
         // read that succeeds (`SessionAgentStateCenter.onRead`).
         let fresh = await refreshStates()
-        guard center.liveIDs.contains(sessionID) else { return .noSession }
+        // A relaunch during the read is a new run: the line was answered
+        // into the one before, whose brief lists it (board #387).
+        guard center.liveIDs.contains(sessionID), center.runs[sessionID] == run else { return .noSession }
         if !fresh || needsApproval(sessionID) { return .held }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
                                                delay: TerminalCenter.answerSubmitDelay,
@@ -619,7 +621,8 @@ final class OwnerAsksViewModel {
 private struct HeldAnswer {
     let sessionID: Int64
     let line: String
-    /// The session's process run when the answer was written; a line never
-    /// goes into a later run (that run's brief listed the answer).
-    let startedAt: Date?
+    /// The session's process run (`TerminalCenter.runs`) when the answer
+    /// was written; a line never goes into a later run (that run's brief
+    /// listed the answer).
+    let run: Int?
 }

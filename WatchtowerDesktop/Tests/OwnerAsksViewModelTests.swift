@@ -414,7 +414,8 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         processes[0].onExit?(0)
         if restart {
-            center.now = { Date().addingTimeInterval(60) }
+            // The same instant and the same process object: only the run
+            // number tells the relaunch apart (board #387).
             center.start(s, fresh: false)
             XCTAssertEqual(center.states[s.id], .running)
         }
@@ -425,6 +426,55 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertTrue(copied.isEmpty)
         XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.noSessionNote, "the brief lists it")
         XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// Board #387: a relaunch of the session while the line waits for its
+    /// Return reuses the process object; the Return never goes into the new
+    /// run, and the answer is left for that run's brief.
+    func testARelaunchDuringThePauseGetsNoReturn() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        onPause = { [weak self] in
+            guard let self else { return }
+            processes[0].onExit?(0)
+            center.start(s, fresh: false)
+        }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(processes.count, 1, "the relaunch reused the process")
+        XCTAssertEqual(delivery, .noSession)
+        XCTAssertEqual(typed.count, 1, "the paste into the old run, no Return into the new one")
+        XCTAssertFalse(typed.contains([0x0D]))
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.noSessionNote, "the brief lists it")
+    }
+
+    /// Board #387: a relaunch during the state read before the paste is a
+    /// new run too: nothing is typed into it.
+    func testARelaunchDuringTheReadBeforeThePasteTypesNothing() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        var reads = 0
+        vm.asks.refreshStates = { [weak self] in
+            reads += 1
+            if reads == 1, let self {
+                processes[0].onExit?(0)
+                center.start(s, fresh: false)
+            }
+            return true
+        }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .noSession)
+        XCTAssertTrue(typed.isEmpty)
+        XCTAssertEqual(center.states[s.id], .running)
     }
 
     /// A permission prompt that appears during the pause between the paste
