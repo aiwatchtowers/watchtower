@@ -14,12 +14,17 @@ import WatchtowerCore
 /// longer shadowed.
 struct MarkdownView: View {
     let text: String
+    /// Text the owner wrote: one newline is a new line
+    /// (`MarkdownDocument.withLineBreaks`); the agent's text keeps markdown's
+    /// soft breaks.
+    var lineBreaks = false
     /// A code answer's `path:line` citations as links (`CodeLineLinks`);
     /// set by the code question popover, whose own `openURL` opens them.
     @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
-        MarkdownBlocksView(blocks: MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text))
+        let blocks = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
+        MarkdownBlocksView(blocks: lineBreaks ? MarkdownDocument.withLineBreaks(blocks) : blocks)
             .textSelection(.enabled)
     }
 

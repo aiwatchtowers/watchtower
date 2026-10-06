@@ -74,7 +74,7 @@ struct OwnerAskChecklistBody: View {
                 onSubmit: CommentTextEditor.endEditing
             )
         } else if let note = notes[item.id], !note.isEmpty {
-            MarkdownView(text: note).font(.callout).foregroundStyle(.secondary)
+            MarkdownView(text: note, lineBreaks: true).font(.callout).foregroundStyle(.secondary)
         }
     }
 

@@ -119,7 +119,7 @@ struct ChatQuestionCardView: View {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…", onSubmit: complete ? send : nil)
             }
         } else if let other = entry.other, !other.isEmpty {
-            MarkdownView(text: "Other: \(other)")
+            MarkdownView(text: "Other: \(other)", lineBreaks: true)
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

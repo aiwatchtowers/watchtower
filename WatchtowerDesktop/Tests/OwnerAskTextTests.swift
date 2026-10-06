@@ -91,6 +91,36 @@ final class OwnerAskTextTests: XCTestCase {
         XCTAssertEqual(try links(card), [], "a refused scheme renders as plain text")
     }
 
+    /// What the owner wrote keeps its line breaks once the ask is closed
+    /// (GitHub-comment style); the agent's text keeps markdown's soft break.
+    func testOwnerWrittenTextKeepsItsLineBreaks() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let answer = try OwnerAskAnswer(note: "First line\nsecond line").encoded()
+        let askID = try await pool.write { db in
+            try TestDatabase.insertOwnerAsk(db, projectID: try TestDatabase.insertWorkbench(db, folder: "/tmp/acme"),
+                                            payload: Self.questions, status: "answered", answer: answer)
+        }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "OwnerAskTextTests-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
+        let closed = try await pool.read { db in
+            try OwnerAsk.fetchOne(db, sql: "SELECT * FROM owner_asks WHERE id = ?", arguments: [askID])
+        }
+        let drawer = OwnerAskDrawer(vm: vm, ask: try XCTUnwrap(closed))
+        XCTAssertTrue(try attributedTexts(drawer).contains { String($0.characters) == "First line\nsecond line" })
+
+        let checklist = OwnerAskChecklistBody(items: [OwnerAskCheckItem(id: "1", text: "Step\none")], marks: ["1": .broken],
+                                              notes: ["1": "Fails\nevery time"], editable: false)
+        let texts = try attributedTexts(checklist).map { String($0.characters) }
+        XCTAssertTrue(texts.contains("Fails\nevery time"), "\(texts)")
+        XCTAssertTrue(texts.contains("Step one"), "the agent's item keeps the soft break")
+
+        let card = ChatQuestionCard(questions: [ChatQuestion(id: "q", question: "Which?", options: [ChatQuestionOption(label: "A")])])
+        let other = ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil,
+                                         draftPicks: .constant(["q": ChatQuestionAnswer.Entry(other: "Neither\nB")]), editable: false)
+        XCTAssertTrue(try attributedTexts(other).contains { String($0.characters) == "Other: Neither\nB" })
+    }
+
     // MARK: - Fields
 
     func testACheckNoteIsTheMultiLineEditorWritingTheDraft() throws {

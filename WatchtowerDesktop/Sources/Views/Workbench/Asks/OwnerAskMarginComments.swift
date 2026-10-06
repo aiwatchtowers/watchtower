@@ -90,7 +90,7 @@ struct OwnerAskMarginComments: View {
                         .font(.caption)
                 }
             } else {
-                MarkdownView(text: comment.body)
+                MarkdownView(text: comment.body, lineBreaks: true)
             }
             if !comment.placed {
                 Text("Passage not found").font(.caption2).foregroundStyle(.orange)

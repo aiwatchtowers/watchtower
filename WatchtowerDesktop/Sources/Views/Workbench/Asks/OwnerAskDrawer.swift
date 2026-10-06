@@ -322,7 +322,7 @@ struct OwnerAskDrawer: View {
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Note").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                MarkdownView(text: note)
+                MarkdownView(text: note, lineBreaks: true)
             }
         }
     }
