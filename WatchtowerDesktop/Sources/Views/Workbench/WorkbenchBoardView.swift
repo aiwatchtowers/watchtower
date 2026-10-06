@@ -182,7 +182,7 @@ struct WorkbenchBoardView: View {
                     vm: vm,
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
-                    onEnter: { enterScopeAndFocus(vm, $0, enter: { vm.enterLane($0) }) },
+                    onEnter: { id in enterScopeAndFocus(vm, id) { vm.enterLane($0) } },
                     onMove: { vm.setStatus($1, for: $0) }
                 )
             } else {
@@ -211,7 +211,8 @@ struct WorkbenchBoardView: View {
                 .font(.caption)
             // The kanban this render already built: `vm.archivedCount`
             // would build it again in Kanban mode.
-            Toggle("Archive (\(kanban?.archivedCardCount ?? vm.archivedCount))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
+            let archived = kanban?.archivedCardCount ?? vm.archivedCount
+            Toggle("Archive (\(archived))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
                 .help("Show the targets closed longer than the workbench's archive setting (… menu). Reopen one to bring it back.")
@@ -284,7 +285,7 @@ struct WorkbenchBoardView: View {
                 )
                 .contextMenu {
                     WorkbenchTargetMenu(target: row.node.target, vm: vm) {
-                        enterScopeAndFocus(vm, $0, enter: { vm.enterScope($0) })
+                        enterScopeAndFocus(vm, $0) { vm.enterScope($0) }
                     }
                 }
                 // Drop a row onto another to nest it there (board #186).
@@ -319,7 +320,7 @@ struct WorkbenchBoardView: View {
                 guard let projects else { return "the workbench list is not loaded." }
                 return projects.asks.loadErrors[projectID]
             },
-            onOpenGroup: { enterScopeAndFocus(vm, $0, enter: { vm.enterScope($0) }) },
+            onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
             onClose: { closePanel(vm) }
         )
         .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
