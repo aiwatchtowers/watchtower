@@ -625,6 +625,43 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         }
     }
 
+    /// A search matching only a lane root's title keeps every leaf under
+    /// it in that lane, as the flat columns keep them.
+    func testASearchMatchingALaneRootKeepsItsLeaves() throws {
+        let roots = [
+            node(try target(1, "Widget group"), [
+                node(try target(2, "Alpha")),
+                node(try target(3, "Nested"), [node(try target(4, "Beta", status: "in_progress"))])
+            ]),
+            node(try target(10, "Other"), [node(try target(11, "Gamma"))])
+        ]
+        let board = WorkbenchBoardKanban(roots, scopeID: nil, showDone: false, query: "widget")
+        XCTAssertEqual(board.lanes.map(\.id), [1])
+        let widget = try XCTUnwrap(lane(board, 1))
+        let laneCards = widget.columns.flatMap(\.cards).map(\.id).sorted()
+        XCTAssertEqual(laneCards, [2, 4])
+        XCTAssertEqual(laneCards, board.columns.flatMap(\.cards).map(\.id).sorted())
+    }
+
+    /// Inside a scope, a search matching an ancestor above the scope keeps
+    /// every leaf below it, in the Tasks lane and the group lanes alike.
+    func testASearchMatchingTheScopePathKeepsTheScopesLeaves() throws {
+        let roots = [
+            node(try target(1, "Plan"), [
+                node(try target(5, "Feature"), [
+                    node(try target(6, "Alpha")),
+                    node(try target(8, "Sub"), [node(try target(7, "Beta"))])
+                ])
+            ]),
+            node(try target(10, "Other"), [node(try target(11, "Gamma"))])
+        ]
+        let board = WorkbenchBoardKanban(roots, scopeID: 5, showDone: false, query: "plan")
+        XCTAssertEqual(board.lanes.map(\.id), [5, 8], "Tasks first, then the group lane")
+        XCTAssertEqual(lane(board, 5)?.title, "Tasks")
+        XCTAssertEqual(lane(board, 5)?.columns.flatMap(\.cards).map(\.id), [6])
+        XCTAssertEqual(lane(board, 8)?.columns.flatMap(\.cards).map(\.id), [7])
+    }
+
     func testLanesFollowTheParentFilter() throws {
         let roots = [
             node(try target(1, "Plan A"), [node(try target(2))]),
