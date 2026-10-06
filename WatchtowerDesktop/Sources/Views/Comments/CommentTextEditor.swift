@@ -9,7 +9,8 @@ import WatchtowerCore
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
 /// is sent with its batch) leaves ⌘↩/⌃↩ to the text view. `onFocus` runs
 /// when the field takes the keyboard (a margin comment's card turning
-/// active).
+/// active). Text set through the binding
+/// from outside is not undoable (`updateNSView`).
 struct CommentTextEditor: View {
     @Binding var text: String
     var placeholder = ""
@@ -116,17 +117,12 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.onFocus = onFocus
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
-            // Through the undoable path: a plain `string =` leaves typing undo
-            // steps pointing into the text that was just replaced.
-            // The delegate stays out of it: this runs inside a SwiftUI update.
-            let all = NSRange(location: 0, length: (textView.string as NSString).length)
-            context.coordinator.applyingExternalText = true
-            if textView.shouldChangeText(in: all, replacementString: text) {
-                textView.replaceCharacters(in: all, with: text)
-                textView.didChangeText()
-            }
-            context.coordinator.applyingExternalText = false
-            textView.breakUndoCoalescing()
+            // Text from outside (another ask's draft under the same field,
+            // a sent comment cleared) is not an edit: it is not undoable,
+            // and the typing undo steps of the text it replaces go with it,
+            // so ⌘Z never brings one draft's text into another.
+            textView.string = text
+            context.coordinator.undoManager.removeAllActions()
             DispatchQueue.main.async { context.coordinator.measure(textView) }
         }
     }
@@ -137,15 +133,21 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CommentNSTextEditor
-        var applyingExternalText = false
+        /// The field's own undo history (not the window's), so text set
+        /// from outside can clear it without touching another field's.
+        let undoManager = UndoManager()
         private var measuredWidth: CGFloat?
 
         init(parent: CommentNSTextEditor) {
             self.parent = parent
         }
 
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            undoManager
+        }
+
         func textDidChange(_ notification: Notification) {
-            guard !applyingExternalText, let textView = notification.object as? NSTextView else { return }
+            guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
             measure(textView)
         }
