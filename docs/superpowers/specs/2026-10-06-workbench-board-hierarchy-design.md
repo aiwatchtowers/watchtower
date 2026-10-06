@@ -5,6 +5,9 @@
 **Plan:** `docs/superpowers/plans/2026-10-06-workbench-board-hierarchy.md`.
 **Desktop only.** No migration, no Go change, no new MCP tool.
 
+**Owner rulings (2026-10-06, ask #87):** "＋ Add" sub-task is out of this feature (its own
+board target); the panel lies over the board, no scrim.
+
 Part 1 is the one-page owner spec. Parts 2–6 are the technical spec: decisions and contracts
 for the implementing sessions.
 
@@ -48,7 +51,7 @@ parent.
   lanes. Every step of the path is clickable back up to Board. It is today's kanban filter,
   widened to any level; it stays when you switch List ↔ Kanban (List shows that subtree).
 
-**Decisions for you** (filed as an ask, recommendation first):
+**Decisions** (answered 2026-10-06: both as recommended):
 1. **"＋ Add" sub-task in a group's panel.** Today only the agent creates workbench targets;
    the Desktop has no write path for them. *Recommended:* leave it out of this feature and
    file it as its own target — it is a new owner write (status history, rollup, the agent's
