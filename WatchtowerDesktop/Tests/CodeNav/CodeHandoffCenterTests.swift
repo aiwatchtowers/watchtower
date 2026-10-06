@@ -5,20 +5,29 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The stored agent state per session id ("working", "waiting", "approval"),
-/// stamped during the current run unless `stamp` says otherwise; a read
-/// throws while `failing`.
+/// The stored agent state per session id ("working", "waiting", "approval",
+/// or none — a run's mark), stamped during the current run unless `stamp`
+/// says otherwise; a read throws while `failing`.
 private final class AgentStates: @unchecked Sendable {
     struct ReadFailed: Error {}
 
     private let lock = NSLock()
-    private var states: [Int64: String] = [:]
+    private var states: [Int64: String?] = [:]
     private var stamp = "2999-01-01T00:00:00.000Z"
     private var failing = false
 
     func storeAgentState(_ id: Int64, _ state: String, at stamp: String? = nil) {
         lock.withLock {
             states[id] = state
+            if let stamp { self.stamp = stamp }
+        }
+    }
+
+    /// The SessionStart hook's mark of a run whose folder has the state
+    /// hooks (Go `MarkTerminalAgentRun`): no state, a stamp.
+    func markRun(_ id: Int64, at stamp: String? = nil) {
+        lock.withLock {
+            states[id] = .some(nil)
             if let stamp { self.stamp = stamp }
         }
     }
@@ -274,19 +283,103 @@ final class CodeHandoffCenterTests: XCTestCase {
         XCTAssertEqual(processes[0].inputs.last, [0x0D])
     }
 
-    /// A state stamped before the session's current run started is an
-    /// earlier run's: it vouches for no prompt, so the line is only pasted.
-    func testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted() async throws {
+    /// PROJ-12 (amended 2026-10-07, board #396): only the session's hooks
+    /// writing during its current run — a state or the run's mark — vouch
+    /// that no permission prompt is on screen. Without the state hooks
+    /// nothing of this run is stamped (no row, or a row cleared with no
+    /// stamp), and an earlier run's state or mark, or a value this build
+    /// does not know, vouch for nothing: the line is only pasted and the
+    /// bar asks for Return.
+    func testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted() async throws {
         let (_, vm, project) = try await makeHandoffFixture()
         let session = try await runningSession(vm, project)
-        stored.storeAgentState(session.id, "waiting", at: "2000-01-01T00:00:00.000Z")
+        let earlier = "2000-01-01T00:00:00.000Z"
+        let cases: [(String, () -> Void)] = [
+            ("no state row", {}),
+            ("an earlier run's state", { [stored] in stored.storeAgentState(session.id, "waiting", at: earlier) }),
+            ("an earlier run's mark", { [stored] in stored.markRun(session.id, at: earlier) }),
+            ("an unknown state this run", { [stored] in
+                stored.storeAgentState(session.id, "idle", at: "2999-01-01T00:00:00.000Z")
+            })
+        ]
+        for (name, store) in cases {
+            store()
+            await agentStates.poll()
+            let before = processes[0].inputs.count
+
+            let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
+
+            XCTAssertEqual(delivery, .typed, name)
+            XCTAssertEqual(processes[0].inputs.count, before + 1, "\(name): the paste only")
+            XCTAssertFalse(processes[0].inputs.contains([0x0D]), name)
+            XCTAssertEqual(terminals.answerHints[session.id], .typed, "\(name): the bar asks for Return")
+            processes[0].onOwnerInput?([0x0D])
+        }
+    }
+
+    /// PROJ-12 (amended 2026-10-07, board #396): a session just launched or
+    /// resumed holds only its run's mark — its hooks ran, its agent has not
+    /// started a turn, so no permission prompt can be up. The answer is
+    /// submitted with no "press Return" bar; an earlier run's state left
+    /// over a relaunch vouches for nothing until the new run's mark lands.
+    func testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn() async throws {
+        let (_, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.markRun(session.id)
         await agentStates.poll()
 
-        let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
+        let fresh = await vm.asks.answer(try await answerableAsk(vm, project, session))
 
-        XCTAssertEqual(delivery, .typed)
-        XCTAssertEqual(processes[0].inputs.count, 1)
-        XCTAssertFalse(processes[0].inputs.contains([0x0D]))
+        XCTAssertEqual(fresh, .submitted)
+        XCTAssertEqual(processes[0].inputs.last, [0x0D])
+        XCTAssertNil(terminals.answerHints[session.id], "no press Return bar")
+
+        processes[0].exit(0)
+        stored.storeAgentState(session.id, "waiting", at: "2000-01-01T00:00:00.000Z")
+        XCTAssertNotNil(terminals.start(session, fresh: false))
+        await agentStates.poll()
+        let beforeTheMark = await vm.asks.answer(try await answerableAsk(vm, project, session))
+        XCTAssertEqual(beforeTheMark, .typed, "the previous run's waiting vouches for nothing")
+        processes[0].onOwnerInput?([0x0D])
+
+        stored.markRun(session.id, at: "2999-01-01T00:00:00.000Z")
+        await agentStates.poll()
+        let resumed = await vm.asks.answer(try await answerableAsk(vm, project, session))
+
+        XCTAssertEqual(resumed, .submitted)
+        XCTAssertEqual(processes.count, 1, "the relaunch reused the process")
+        XCTAssertEqual(processes[0].inputs.last, [0x0D])
+        XCTAssertNil(terminals.answerHints[session.id])
+    }
+
+    /// PROJ-12 (amended 2026-10-07, board #396): a compaction — a manual
+    /// /compact or the one Claude Code runs by itself while idle — continues
+    /// the run and leaves the stored row as it was (the Go half,
+    /// `TestProj12_CompactWhileIdleKeepsTheRunsState`): a turn's `waiting`
+    /// or a fresh run's mark still gets the answer its Return, also after
+    /// the compaction moved the row to a new conversation id.
+    func testProj12_ACompactWhileIdleKeepsTheReturn() async throws {
+        let (_, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.markRun(session.id)
+        for turnEnded in [false, true] {
+            if turnEnded { stored.storeAgentState(session.id, "waiting") }
+            await agentStates.poll()
+            try await pool.write { db in
+                try db.execute(sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
+                               arguments: [UUID().uuidString.lowercased(), session.id])
+            }
+            await vm.reload()
+            await agentStates.poll()
+            let before = processes[0].inputs.count
+
+            let delivery = await vm.asks.answer(try await answerableAsk(vm, project, session))
+
+            XCTAssertEqual(delivery, .submitted, "turn ended: \(turnEnded)")
+            XCTAssertEqual(processes[0].inputs.count, before + 2, "the paste, then Return")
+            XCTAssertEqual(processes[0].inputs.last, [0x0D])
+            XCTAssertNil(terminals.answerHints[session.id])
+        }
     }
 
     /// A state read that fails after the answer's pause leaves the line

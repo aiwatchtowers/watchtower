@@ -170,6 +170,38 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertFalse(statuses[5]?.isAtPrompt == true, "a session that is not live is at no prompt")
     }
 
+    /// Board #396 (PROJ-12): the SessionStart hook's mark — no state,
+    /// stamped this run — says the hooks report this run: the dot stays
+    /// plain running, no turn is over (`isAtPrompt` keeps its rule), and an
+    /// answer may get its Return. An earlier run's mark, a row with no
+    /// stamp, an unknown stored value or a session that is not live vouch
+    /// for nothing.
+    func testTheRunsMarkSaysTheHooksReportThisRun() {
+        func resolved(_ stored: String?, at: String?, live: Bool = true) -> SessionAgentStatus? {
+            SessionAgentStatus.resolve([row(stored, at: at)], liveIDs: live ? [1] : [], startedAt: [1: started])[1]
+        }
+        let marked = resolved(nil, at: stamp(1))
+        XCTAssertEqual(marked?.state, .live(.running))
+        XCTAssertNil(marked?.at, "no hook state")
+        XCTAssertTrue(marked?.runMarked == true)
+        XCTAssertTrue(marked?.hooksReported == true)
+        XCTAssertFalse(marked?.isAtPrompt == true, "a hand-off still waits for a turn end")
+        XCTAssertTrue(resolved("waiting", at: stamp(1))?.hooksReported == true, "a hook state reports too")
+        XCTAssertFalse(resolved("waiting", at: stamp(1))?.runMarked == true)
+
+        for (stored, at, live, name) in [
+            (nil, stamp(-1), true, "an earlier run's mark"),
+            (nil, nil, true, "no stamp: cleared without the state hooks"),
+            ("idle", stamp(1), true, "an unknown stored value"),
+            ("waiting", stamp(-1), true, "an earlier run's state"),
+            (nil, stamp(1), false, "not live")
+        ] as [(String?, String?, Bool, String)] {
+            let status = resolved(stored, at: at, live: live)
+            XCTAssertFalse(status?.hooksReported == true, name)
+            XCTAssertFalse(status?.runMarked == true, name)
+        }
+    }
+
     func testAtPromptOnlyAfterATurnOfThisRun() {
         func status(_ state: SessionSwitcherPresentation.State, at: String?) -> SessionAgentStatus {
             SessionAgentStatus(sessionID: 1, workbenchID: 7, workbenchName: "acme", title: "s", state: state, at: at)

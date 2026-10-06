@@ -266,8 +266,8 @@ func TestGetTerminalSession_UnreadableStampReadsAsNeverReported(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state_at = 'yesterday' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, at); err != nil || !ok {
-		t.Fatalf("a clear over a bad stamp: ok=%v err=%v", ok, err)
+	if ok, err := d.MarkTerminalAgentRun(id, pid, agentStateUUID, at); err != nil || !ok {
+		t.Fatalf("a mark over a bad stamp: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -299,8 +299,10 @@ func TestSetTerminalAgentState_TimestampFormat(t *testing.T) {
 
 // Board #312: a new run starts with no state, so its first state is written
 // even when it equals the previous run's last one; a late hook of the
-// previous run (stamped before the clear) still cannot land.
-func TestClearTerminalAgentState_NewRunStartsEmpty(t *testing.T) {
+// previous run (stamped before the mark) still cannot land. Board #396: the
+// mark is written with nothing stored too — the stamp with no state is
+// what tells the Desktop the hooks run.
+func TestMarkTerminalAgentRun_NewRunStartsEmpty(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	other := newTestWorkbench(t, d)
@@ -317,29 +319,75 @@ func TestClearTerminalAgentState_NewRunStartsEmpty(t *testing.T) {
 		{"another workbench", other, agentStateUUID},
 		{"a nested session's id", pid, "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"},
 	} {
-		if ok, err := d.ClearTerminalAgentState(id, tc.workbench, tc.uuid, t0.Add(time.Second)); err != nil || ok {
-			t.Fatalf("%s: cleared=%v err=%v", tc.name, ok, err)
+		if ok, err := d.MarkTerminalAgentRun(id, tc.workbench, tc.uuid, t0.Add(time.Second)); err != nil || ok {
+			t.Fatalf("%s: marked=%v err=%v", tc.name, ok, err)
 		}
 	}
-	cleared := t0.Add(2 * time.Second)
-	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, cleared); err != nil || !ok {
+	if ok, _ := d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0); ok {
+		t.Fatal("a mark not later than the stored state wrote")
+	}
+	marked := t0.Add(2 * time.Second)
+	if ok, err := d.MarkTerminalAgentRun(id, pid, agentStateUUID, marked); err != nil || !ok {
+		t.Fatalf("mark: ok=%v err=%v", ok, err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AgentState.Valid || !s.AgentStateAt.Equal(marked) {
+		t.Fatalf("after the mark: state %v at %v, want NULL at %v", s.AgentState, s.AgentStateAt, marked)
+	}
+	again := marked.Add(time.Second)
+	if ok, err := d.MarkTerminalAgentRun(id, pid, agentStateUUID, again); err != nil || !ok {
+		t.Fatalf("a mark with nothing stored: ok=%v err=%v", ok, err)
+	}
+	if s, _ := d.GetTerminalSession(id); !s.AgentStateAt.Equal(again) {
+		t.Fatalf("after the second mark: at %v, want %v", s.AgentStateAt, again)
+	}
+	if ok, _ := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, AgentOrder{}); ok {
+		t.Fatal("a late hook of the previous run landed after the mark")
+	}
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", again.Add(time.Second), "", nil, false, AgentOrder{}); err != nil || !ok {
+		t.Fatalf("the new run's first state, equal to the old one: ok=%v err=%v", ok, err)
+	}
+}
+
+// Board #396: without the state hooks a new run is cleared with no stamp —
+// one would read as the run's mark — and a row with nothing stored, a mark
+// of an earlier run included, is cleared once.
+func TestClearTerminalAgentState_LeavesNoStamp(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, AgentOrder{}); err != nil || !ok {
+		t.Fatalf("first write: ok=%v err=%v", ok, err)
+	}
+	if ok, err := d.ClearTerminalAgentState(id, other, agentStateUUID); err != nil || ok {
+		t.Fatalf("another workbench: cleared=%v err=%v", ok, err)
+	}
+	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID); err != nil || !ok {
 		t.Fatalf("clear: ok=%v err=%v", ok, err)
 	}
 	s, err := d.GetTerminalSession(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.AgentState.Valid || !s.AgentStateAt.Equal(cleared) {
-		t.Fatalf("after the clear: state %v at %v, want NULL at %v", s.AgentState, s.AgentStateAt, cleared)
+	if s.AgentState.Valid || !s.AgentStateAt.IsZero() {
+		t.Fatalf("after the clear: state %v at %v, want both NULL", s.AgentState, s.AgentStateAt)
 	}
-	if ok, _ := d.ClearTerminalAgentState(id, pid, agentStateUUID, cleared.Add(time.Second)); ok {
+	if ok, _ := d.ClearTerminalAgentState(id, pid, agentStateUUID); ok {
 		t.Fatal("a second clear with nothing stored wrote")
 	}
-	if ok, _ := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, AgentOrder{}); ok {
-		t.Fatal("a late hook of the previous run landed after the clear")
+	if _, err := d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0); err != nil {
+		t.Fatal(err)
 	}
-	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", cleared.Add(time.Second), "", nil, false, AgentOrder{}); err != nil || !ok {
-		t.Fatalf("the new run's first state, equal to the old one: ok=%v err=%v", ok, err)
+	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID); err != nil || !ok {
+		t.Fatalf("an earlier run's mark: cleared=%v err=%v", ok, err)
+	}
+	if s, _ := d.GetTerminalSession(id); !s.AgentStateAt.IsZero() {
+		t.Fatalf("the earlier mark stayed: at %v", s.AgentStateAt)
 	}
 }
 
@@ -455,7 +503,7 @@ func TestClearTerminalAgentState_DropsTheTurnOrder(t *testing.T) {
 		t.Fatalf("tool result: ok=%v err=%v", ok, err)
 	}
 
-	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, t0.Add(time.Second)); err != nil || !ok {
+	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID); err != nil || !ok {
 		t.Fatalf("clear: ok=%v err=%v", ok, err)
 	}
 	if s, _ := d.GetTerminalSession(id); s.ToolRun || s.TurnEnd.Valid {
@@ -494,7 +542,7 @@ func TestTerminalTurnOrder_ResetOnSwitchAndNewRun(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_turn_end = 50 WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := d.ClearTerminalAgentState(id, pid, otherUUID, t0.Add(time.Second)); err != nil || !ok {
+	if ok, err := d.ClearTerminalAgentState(id, pid, otherUUID); err != nil || !ok {
 		t.Fatalf("clear: ok=%v err=%v", ok, err)
 	}
 	if s, _ := d.GetTerminalSession(id); s.TurnEnd.Valid {

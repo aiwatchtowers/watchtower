@@ -308,7 +308,7 @@ final class TerminalCenter {
     /// checked before the pause and again after it, the caller re-reading
     /// the session's agent state (ruling R52: a hand-off only into a session
     /// idle at its prompt; an answer only into a session whose hooks
-    /// reported a state this run that is not a permission prompt; a Return
+    /// reported this run and show no permission prompt; a Return
     /// could answer a prompt that appeared meanwhile) — and only into the
     /// same process run (`runs`), as a write of its own after `delay`: a CR read
     /// in one chunk with the paste could be taken as part of it (a line
@@ -330,7 +330,11 @@ final class TerminalCenter {
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
         let run = runs[sessionID]
-        let promptWasEmpty = !promptDrafts.contains(sessionID) && !(run.map(pendingReturns.contains) ?? false)
+        let otherReturnPending = run.map(pendingReturns.contains) ?? false
+        let promptWasEmpty = !promptDrafts.contains(sessionID) && !otherReturnPending
+        // For the log only: a bar still asking for a Return means a line of
+        // ours is what the prompt holds.
+        let lineLeftTyped = pasteHints.contains(sessionID) || answerHints[sessionID] == .typed
         switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
         case .noSession: return .noSession
         case .copied: return .copied
@@ -340,7 +344,12 @@ final class TerminalCenter {
         // The pair of `promptWasEmpty`: whether the line ends up next to
         // other text not submitted.
         var besideText = !promptWasEmpty
-        if promptWasEmpty, canSubmit() {
+        if !promptWasEmpty {
+            logWithheld(sessionID, otherReturnPending ? "another line waits for its Return"
+                : lineLeftTyped ? "an earlier line left typed" : "the owner's draft")
+        } else if !canSubmit() {
+            logWithheld(sessionID, "the session's state, before the pause")
+        } else {
             pendingReturns.insert(run)
             defer {
                 pendingReturns.remove(run)
@@ -349,11 +358,23 @@ final class TerminalCenter {
             await signaller.sleep(delay)
             let fresh = await refresh()
             // The Return goes only into the run the line was pasted into.
-            guard states[sessionID] == .running, runs[sessionID] == run else { return .noSession }
+            guard states[sessionID] == .running, runs[sessionID] == run else {
+                logWithheld(sessionID, "the run changed during the pause")
+                return .noSession
+            }
             // The owner's Return sent the line already; nothing waits for
             // ours, and no bar asks for one.
-            if ownerReturnsInPause.contains(run) { return .submitted }
-            if fresh, canSubmit(), !promptDrafts.contains(sessionID) {
+            if ownerReturnsInPause.contains(run) {
+                logWithheld(sessionID, "the owner pressed Return during the pause")
+                return .submitted
+            }
+            if !fresh {
+                logWithheld(sessionID, "the state read after the pause failed")
+            } else if !canSubmit() {
+                logWithheld(sessionID, "the session's state, after the pause")
+            } else if promptDrafts.contains(sessionID) {
+                logWithheld(sessionID, "text reached the prompt during the pause")
+            } else {
                 process.sendInput([0x0D])
                 return .submitted
             }
@@ -366,6 +387,12 @@ final class TerminalCenter {
         pasteHints.insert(sessionID)
         if besideText { sharedPrompts.insert(sessionID) }
         return .pasted
+    }
+
+    /// Why `submitPrompt` sent no Return of its own (board #396); the
+    /// caller's `canSubmit` logs its own reasons.
+    private func logWithheld(_ sessionID: Int64, _ reason: String) {
+        NSLog("TerminalCenter: session %lld: Return withheld — %@", sessionID, reason)
     }
 
     func dismissClipboardHint(sessionID: Int64) {

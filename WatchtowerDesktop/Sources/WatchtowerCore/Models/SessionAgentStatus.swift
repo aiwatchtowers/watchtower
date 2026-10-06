@@ -93,6 +93,11 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// The trusted hook state's `agent_state_at`; nil when no hook state is
     /// trusted (not live, or none written during this run).
     package let at: String?
+    /// The row holds the current run's mark and no state: a stamp of this
+    /// run that the SessionStart hook writes only for a folder with the
+    /// session state hooks (Go `MarkTerminalAgentRun`, board #396) — the
+    /// hooks run, and the agent has not started a turn.
+    package let runMarked: Bool
     /// The last `finish_session` summary ('' when none), a finished
     /// notice's body.
     package let finishSummary: String
@@ -104,6 +109,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
         title: String,
         state: SessionSwitcherPresentation.State,
         at: String?,
+        runMarked: Bool = false,
         finishSummary: String = ""
     ) {
         self.sessionID = sessionID
@@ -112,6 +118,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
         self.title = title
         self.state = state
         self.at = at
+        self.runMarked = runMarked
         self.finishSummary = finishSummary
     }
 
@@ -154,9 +161,15 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// The row's hook state when it was written during the run started at
     /// `startedAt`; nil otherwise.
     private static func trustedHook(_ row: SessionAgentStateRow, startedAt: Date?) -> SessionAgentState? {
-        guard let stored = row.stored, let startedAt,
-              let at = row.agentStateAt.flatMap(parseStamp), at >= startedAt else { return nil }
+        guard let stored = row.stored, writtenThisRun(row, startedAt: startedAt) else { return nil }
         return stored
+    }
+
+    /// Whether the row's `agent_state_at` was written during the run
+    /// started at `startedAt` (an unknown start or an unreadable stamp: no).
+    private static func writtenThisRun(_ row: SessionAgentStateRow, startedAt: Date?) -> Bool {
+        guard let startedAt, let at = row.agentStateAt.flatMap(parseStamp) else { return false }
+        return at >= startedAt
     }
 
     /// The agent's turn is over and it sits at its prompt: a trusted
@@ -169,6 +182,11 @@ package struct SessionAgentStatus: Equatable, Sendable {
         case .notStarted, .running, .working, .needsApproval: return false
         }
     }
+
+    /// The session's hooks wrote during its current run — a hook state or
+    /// the run's mark — so a permission prompt on screen would show as
+    /// `needsApproval`: an ask's answer may get its Return (PROJ-12).
+    package var hooksReported: Bool { at != nil || runMarked }
 
     /// Whether this status still holds for a run started at `startedAt`:
     /// one without a trusted hook state always does, one with it only when
@@ -190,6 +208,9 @@ package struct SessionAgentStatus: Equatable, Sendable {
         for row in rows {
             let live = liveIDs.contains(row.id)
             let trusted = live && trustedHook(row, startedAt: startedAt[row.id]) != nil
+            // The run's mark: no state at all — a value this build does not
+            // know may be a dialog of its own, so it vouches for nothing.
+            let marked = live && row.agentState == nil && writtenThisRun(row, startedAt: startedAt[row.id])
             result[row.id] = Self(
                 sessionID: row.id,
                 workbenchID: row.projectID,
@@ -197,6 +218,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
                 title: row.title,
                 state: effective(row: row, live: live, startedAt: startedAt[row.id]),
                 at: trusted ? row.agentStateAt : nil,
+                runMarked: marked,
                 finishSummary: row.finishSummary
             )
         }

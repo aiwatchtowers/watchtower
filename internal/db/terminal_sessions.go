@@ -111,25 +111,52 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 	return n > 0, nil
 }
 
-// ClearTerminalAgentState starts a new process run of workbench workbenchID's
-// claude row id with no agent state — the SessionStart hook of a launch or a
-// resume of conversation sessionID at at. Otherwise a new run whose first
-// state equals the previous run's last one would be skipped as a repeat and
-// keep the old run's time, which the Desktop does not trust. agent_state_at
-// becomes at, not NULL, so a late async hook of the previous run (stamped
-// earlier) still cannot land. A new run starts with no error and no turn
-// order either (the Desktop's Start fresh moves the id without resetting it,
-// so a row with no state but a turn order is cleared too). Same
-// row guards as SetTerminalAgentState; false
-// when there was nothing to clear or a guard held it back.
-func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
+// MarkTerminalAgentRun starts a new process run of workbench workbenchID's
+// claude row id — the SessionStart hook of a launch or a resume of
+// conversation sessionID, stamped at — when the workbench's folder has the session
+// state hooks: the previous run's state, error and turn order go, and
+// agent_state_at becomes at even when nothing was stored. That stamp with no
+// state is the run's mark: the hooks run, and the agent has not started a
+// turn, so no permission dialog can be on screen (the Desktop's PROJ-12
+// Return, board #396). It also keeps the new run's first state from being
+// skipped as a repeat of the previous run's last one, and a late async hook
+// of the previous run (stamped earlier) from landing. Same row guards as
+// SetTerminalAgentState; false when a guard held it back or a newer stamp
+// is stored.
+func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
-		  AND (agent_state IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0)
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, id, workbenchID, sessionID, stamp)
+	if err != nil {
+		return false, fmt.Errorf("marking terminal session %d's new run: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("marking terminal session %d's new run: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// ClearTerminalAgentState starts a new process run of workbench workbenchID's
+// claude row id with no agent state when the folder lacks the session state
+// hooks (with them, MarkTerminalAgentRun): no hook of this run will report,
+// so agent_state_at becomes NULL — a stamp of this run would read as the
+// run's mark (MarkTerminalAgentRun) and vouch for a state nobody reports. A
+// late async hook of the previous run may still land, stamped before the
+// run, which the Desktop does not trust. A new run starts with no error and
+// no turn order either (the Desktop's Start fresh moves the id without
+// resetting it, so a row with no state but a turn order is cleared too).
+// Same row guards as SetTerminalAgentState; false when there was nothing to
+// clear or a guard held it back.
+func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string) (bool, error) {
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = NULL,
+		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND (agent_state IS NOT NULL OR agent_state_at IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0)`,
+		id, workbenchID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
 	}

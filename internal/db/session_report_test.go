@@ -405,18 +405,27 @@ func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 	}
 }
 
-// A new run (SessionStart) starts with no error either.
+// A new run (SessionStart) starts with no error either, marked or cleared.
 func TestClearTerminalAgentState_ClearsTheError(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	sid := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	t0 := time.Now().UTC().Truncate(time.Millisecond)
-	_, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
-	require.NoError(t, err)
-	ok, err := d.ClearTerminalAgentState(sid, pid, agentStateUUID, t0.Add(time.Second))
-	require.NoError(t, err)
-	require.True(t, ok)
-	failedAt, agentError, _ := failureColumns(t, d, sid)
-	assert.False(t, failedAt.Valid)
-	assert.Empty(t, agentError)
+	for i, start := range []func() (bool, error){
+		func() (bool, error) { return d.ClearTerminalAgentState(sid, pid, agentStateUUID) },
+		func() (bool, error) { return d.MarkTerminalAgentRun(sid, pid, agentStateUUID, t0.Add(time.Hour)) },
+	} {
+		at := t0.Add(time.Duration(i) * time.Minute)
+		_, err := d.SetTerminalAgentState(sid, pid, agentStateUUID, "waiting", at, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})
+		require.NoError(t, err)
+		ok, err := start()
+		require.NoError(t, err)
+		require.True(t, ok)
+		var failedAt sql.NullString
+		var agentError string
+		require.NoError(t, d.QueryRow(`SELECT agent_failed_at, agent_error FROM terminal_sessions WHERE id = ?`, sid).
+			Scan(&failedAt, &agentError))
+		assert.False(t, failedAt.Valid)
+		assert.Empty(t, agentError)
+	}
 }

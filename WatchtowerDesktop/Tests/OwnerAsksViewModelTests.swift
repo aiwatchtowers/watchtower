@@ -308,11 +308,12 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(typed.last, [0x0D])
     }
 
-    /// PROJ-12 (amended 2026-10-04): only a state the session's hooks
-    /// reported during this run vouches that no permission prompt is on
-    /// screen; without one (no hooks, none written yet) the line is pasted
-    /// and the owner presses Return.
-    func testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted() async throws {
+    /// PROJ-12 (amended 2026-10-04 and 2026-10-07, board #396): only the
+    /// session's hooks reporting during this run — a state, or the mark of
+    /// a run whose folder has the state hooks — vouch that no permission
+    /// prompt is on screen; without them the line is pasted and the owner
+    /// presses Return.
+    func testProj12_WithoutTheStateHooksTheLineIsOnlyPasted() async throws {
         let (p, s, askID) = try await seed()
         center.start(s, fresh: true)
         let vm = makeVM()

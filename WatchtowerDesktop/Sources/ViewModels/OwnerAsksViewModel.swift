@@ -20,7 +20,7 @@ final class OwnerAsksViewModel {
         /// Pasted into the ask's session and submitted with Return (or by
         /// the owner's own Return during the pause).
         case submitted
-        /// Pasted without Return — the session's hooks reported no state this
+        /// Pasted without Return — the session's hooks reported nothing this
         /// run, its prompt held text not submitted (the owner's, or another
         /// line's — a hand-off's too, even one still in its pause), a state
         /// read failed, or a permission prompt
@@ -158,9 +158,11 @@ final class OwnerAsksViewModel {
     /// `SessionAgentStatus` is `needsApproval`): an answer's line is held,
     /// never typed into the prompt.
     @ObservationIgnored var needsApproval: (_ sessionID: Int64) -> Bool = { _ in false }
-    /// Whether the session's hooks reported a state during its current run
-    /// (`SessionAgentStatus.at`): only then may an answer's Return follow —
-    /// without hooks the app cannot tell a permission prompt is on screen.
+    /// Whether the session's hooks reported during its current run — a
+    /// state, or the mark of a run the agent has not turned to yet
+    /// (`SessionAgentStatus.hooksReported`, board #396): only then may an
+    /// answer's Return follow — without hooks the app cannot tell a
+    /// permission prompt is on screen.
     @ObservationIgnored var hasHookState: (_ sessionID: Int64) -> Bool = { _ in false }
     /// A fresh read of the session states, before a line goes and again
     /// after the paste's pause (the poll may be up to 1 s stale); returns
@@ -541,7 +543,8 @@ final class OwnerAsksViewModel {
     /// right before the paste, otherwise pasted, and submitted after
     /// `TerminalCenter.answerSubmitDelay` only when the state read after the
     /// pause succeeded too, the session's hooks
-    /// reported a state this run and still show no permission prompt after
+    /// reported this run (a state, or the run's mark) and still show no
+    /// permission prompt after
     /// the pause, and its prompt held no text not submitted; else the paste
     /// waits for the owner's Return. While the agent works, Claude Code
     /// queues the submitted line for its next turn. Without bracketed paste
@@ -565,12 +568,24 @@ final class OwnerAsksViewModel {
         // A relaunch during the read is a new run: the line was answered
         // into the one before, whose brief lists it (board #387).
         guard center.liveIDs.contains(sessionID), center.runs[sessionID] == run else { return .noSession }
-        if !fresh || needsApproval(sessionID) { return .held }
+        if !fresh || needsApproval(sessionID) {
+            NSLog("OwnerAsks: session %lld: answer held — %@", sessionID,
+                  fresh ? "permission prompt (needsApproval)" : "state read failed")
+            return .held
+        }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
                                                delay: TerminalCenter.answerSubmitDelay,
                                                refresh: refreshStates) { [weak self] in
             guard let self else { return false }
-            return hasHookState(sessionID) && !needsApproval(sessionID)
+            let withheld: String? = if !hasHookState(sessionID) {
+                "no hook state this run"
+            } else if needsApproval(sessionID) {
+                "permission prompt (needsApproval)"
+            } else {
+                nil
+            }
+            if let withheld { NSLog("OwnerAsks: session %lld: Return withheld — %@", sessionID, withheld) }
+            return withheld == nil
         }
         switch result {
         case .submitted: return .submitted

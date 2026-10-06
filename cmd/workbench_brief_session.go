@@ -46,16 +46,18 @@ var sessionSwitchSources = map[string]bool{"clear": true, "compact": true, "resu
 
 // newRunSources are the SessionStart sources of a new process run — the
 // Desktop's launch (`--session-id`) and its relaunch (`--resume`): the row's
-// agent state from the previous run is cleared (board #312). /clear and
-// compaction continue the same run, so its state stays.
+// agent state from the previous run is cleared (board #312), and with the
+// session state hooks the run is marked (board #396). /clear and compaction
+// — a manual /compact or one Claude Code runs by itself while idle —
+// continue the same run, so its state stays.
 var newRunSources = map[string]bool{"startup": true, "resume": true}
 
 // recordTerminalSessionID keeps an embedded terminal's row on the Claude
 // Code conversation it is in (board #160): the Desktop relaunches the stored
 // id, so after /clear it would otherwise resume the pre-clear conversation.
-// A new process run also clears the row's agent state (`newRunSources`),
-// after the id moved, so the clear's guard sees the final id; a nested
-// `claude -p` has another id and clears nothing. nil when there is nothing
+// A new process run also starts the row's agent state anew
+// (`newRunSources`), after the id moved, so the write's guard sees the final
+// id; a nested `claude -p` has another id and writes nothing. nil when there is nothing
 // to record — no env var (not a Desktop-launched session), another source,
 // a row that is gone or already current; an error means the row may still
 // name the previous conversation or keep the previous run's state. Never
@@ -95,10 +97,13 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 }
 
 // applySessionStart moves row rowID to conversation sessionID when the
-// source switched conversations, and clears its agent state on a new run.
+// source switched conversations, and on a new run marks it when the
+// workbench's folder has the session state hooks (MarkTerminalAgentRun: the
+// hooks run, no turn yet — PROJ-12's Return, board #396), else clears the
+// previous run's state without a stamp.
 func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID string, switches, newRun bool) error {
-	// Read first: every relaunch resumes the stored id, and that common
-	// case must not wait for the write lock.
+	// Read first: a relaunch without the state hooks and with nothing to
+	// clear must not wait for the write lock.
 	row, err := database.GetTerminalSession(rowID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return nil // deleted while its terminal ran
@@ -106,9 +111,16 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 	if err != nil {
 		return err
 	}
+	hooks := false
+	if newRun {
+		if hooks, err = workbenchHasStateHooks(database, workbenchID); err != nil {
+			return err
+		}
+	}
 	moveID := switches && row.ClaudeSessionID.String != sessionID
-	clearState := newRun && (row.AgentState.Valid || row.TurnEnd.Valid || row.ToolRun)
-	if !moveID && !clearState {
+	markRun := newRun && hooks
+	clearState := newRun && !hooks && (row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun)
+	if !moveID && !markRun && !clearState {
 		return nil
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
@@ -119,8 +131,13 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 			return err
 		}
 	}
+	if markRun {
+		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow()); err != nil {
+			return fmt.Errorf("marking the new run: %w", err)
+		}
+	}
 	if clearState {
-		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, sessionID, hookNow()); err != nil {
+		if _, err := database.ClearTerminalAgentState(rowID, workbenchID, sessionID); err != nil {
 			return fmt.Errorf("clearing the previous run's agent state: %w", err)
 		}
 	}
