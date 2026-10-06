@@ -584,21 +584,42 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(searched.lanes.map(\.id), [4])
     }
 
+    /// One counting rule (R13): a lane's progress is its group's
+    /// `WorkbenchGroupSummary` — the panel's and the path bar's — so an
+    /// archived leaf counts only with the Archive toggle on, a search never
+    /// turns it on, a dismissed leaf never counts and a nested group counts
+    /// through its own leaves.
     func testLaneProgressCountsDoneLeavesOverLeavesThatCount() throws {
         let roots = [
             node(try target(1, "Plan"), [
                 node(try target(2, status: "done")),
                 node(try target(3, status: "dismissed")),
-                node(try target(4, "Nested"), [node(try target(5, status: "done")), node(try target(6))])
+                node(try target(4, "Nested"), [node(try target(5, status: "done")), node(try target(6))]),
+                node(try target(9, status: "done"), archived: true)
             ]),
             node(try target(7, "Lone leaf")),
             node(try target(8, "Lone leaf", status: "done"))
         ]
-        let board = WorkbenchBoardKanban(roots, scopeID: nil, showDone: false, query: "#6")
-        XCTAssertEqual(lane(board, 1)?.progress, WorkbenchBoardKanban.Lane.Progress(done: 2, total: 3),
-                       "the group's progress, whatever the filters")
-        let all = WorkbenchBoardKanban(roots, scopeID: nil, showDone: false)
-        XCTAssertEqual(lane(all, 0)?.progress, WorkbenchBoardKanban.Lane.Progress(done: 1, total: 2))
+        typealias Progress = WorkbenchBoardKanban.Lane.Progress
+        for (archive, expected) in [(false, Progress(done: 2, total: 3)), (true, Progress(done: 3, total: 4))] {
+            for query in ["", "#6"] {
+                let board = WorkbenchBoardKanban(roots, scopeID: nil, showDone: false, showArchived: archive, query: query)
+                let plan = try XCTUnwrap(lane(board, 1))
+                let summary = WorkbenchGroupSummary(try XCTUnwrap(plan.root), showArchived: archive)
+                XCTAssertEqual(plan.progress, expected, "Archive \(archive), query '\(query)'")
+                XCTAssertEqual(plan.progress, Progress(done: summary.done, total: summary.total),
+                               "the lane and the panel agree")
+                if query.isEmpty {
+                    XCTAssertEqual(lane(board, 0)?.progress, Progress(done: 1, total: 2))
+                }
+            }
+            // Entered: the path bar's summary of the scope is the same number
+            // the lane showed for it on the board.
+            let scoped = WorkbenchBoardKanban(roots, scopeID: 1, showDone: false, showArchived: archive)
+            let scope = try XCTUnwrap(scoped.scopePath.last)
+            let pathBar = WorkbenchGroupSummary(scope, showArchived: archive)
+            XCTAssertEqual(Progress(done: pathBar.done, total: pathBar.total), expected, "Archive \(archive)")
+        }
     }
 
     func testLanesFollowTheParentFilter() throws {

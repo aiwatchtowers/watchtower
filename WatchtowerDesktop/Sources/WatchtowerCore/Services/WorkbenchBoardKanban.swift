@@ -45,9 +45,10 @@ package struct WorkbenchBoardKanban {
     /// columns. The Done column holds every done card, never
     /// capped; folding it is the view's (`doneFolded`, `cards(_:unfolded:)`).
     package struct Lane: Identifiable {
-        /// Done leaves over the leaves that still count (dismissed ones do
-        /// not), archived included and whatever the filters: the group's own
-        /// progress, not the cards on screen. `total` may be 0.
+        /// The lane's `WorkbenchGroupSummary` (the panel's and the path
+        /// bar's rule): done leaves over the leaves that still count,
+        /// archived ones only with the Archive toggle on, whatever the other
+        /// filters and the search. `total` may be 0.
         package struct Progress: Equatable {
             package let done: Int
             package let total: Int
@@ -124,6 +125,7 @@ package struct WorkbenchBoardKanban {
         query: String = ""
     ) {
         let search = WorkbenchBoardSearch(query)
+        let archiveToggle = showArchived
         let showDone = showDone || search != nil
         let showArchived = showArchived || search != nil
         let scope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: showArchived)
@@ -145,7 +147,8 @@ package struct WorkbenchBoardKanban {
 
         self.columns = columns
         let lanes = Self.lanes(scope.node, roots: roots, pathMatched: pathMatched, LaneRules(
-            statuses: statuses, search: search, showDone: showDone, showArchived: showArchived
+            statuses: statuses, search: search, showDone: showDone, showArchived: showArchived,
+            archiveToggle: archiveToggle
         ))
         self.lanes = lanes
         self.totals = Dictionary(uniqueKeysWithValues: columns.map { column in
@@ -189,6 +192,9 @@ package struct WorkbenchBoardKanban {
         let search: WorkbenchBoardSearch?
         let showDone: Bool
         let showArchived: Bool
+        /// The Archive toggle as the owner set it (a search does not turn
+        /// it on): the lanes' progress rule.
+        let archiveToggle: Bool
     }
 
     /// Lays out the board root's `roots`, or the `scope`'s children: each
@@ -237,19 +243,15 @@ package struct WorkbenchBoardKanban {
         let cards = collected.filter { isShown($0, showDone: rules.showDone, showArchived: rules.showArchived) }
         // Uncapped: the per-lane fold replaces the board-wide `doneCap`.
         let columns = rules.statuses.map { column($0, cards: Self.cards(cards, inColumn: $0), showDone: true) }
-        let counted = leafNodes(nodes).filter { $0.target.status != "dismissed" }
+        let summary = WorkbenchGroupSummary(over: nodes, showArchived: rules.archiveToggle)
         return Lane(
             root: root,
             title: title,
             columns: columns,
-            progress: Lane.Progress(done: counted.filter { $0.target.status == "done" }.count, total: counted.count),
+            progress: Lane.Progress(done: summary.done, total: summary.total),
             doneFolded: !rules.showDone,
             doneCount: cards.filter { $0.node.target.status == "done" && !$0.node.archived }.count
         )
-    }
-
-    private static func leafNodes(_ nodes: [WorkbenchBoardNode]) -> [WorkbenchBoardNode] {
-        nodes.flatMap { $0.children.isEmpty ? [$0] : leafNodes($0.children) }
     }
 
     private static func column(_ status: String, cards: [Card], showDone: Bool) -> Column {

@@ -1,10 +1,11 @@
 import Foundation
 
-/// The side panel's "N of M done" for a group (spec 2026-10-06 Part 3):
-/// over the group's leaves at every depth, a nested group counted through
-/// its own leaves. Archived leaves count only with the board's Archive
-/// toggle on. A dismissed leaf is in the breakdown but not in `total` — out
-/// of scope, not unfinished work (the lane and card progress rule).
+/// A group's "N of M done" (spec 2026-10-06 Part 3) — the side panel, the
+/// path bar and the lane header alike: over the group's leaves at every
+/// depth, a nested group counted through its own leaves. Archived leaves
+/// count only with the board's Archive toggle on (the toggle itself, not a
+/// search). A dismissed leaf is in the breakdown but not in `total` — out
+/// of scope, not unfinished work.
 package struct WorkbenchGroupSummary: Equatable {
     package struct StatusCount: Equatable {
         package let status: String
@@ -23,7 +24,13 @@ package struct WorkbenchGroupSummary: Equatable {
     package let breakdown: [StatusCount]
 
     package init(_ group: WorkbenchBoardNode, showArchived: Bool) {
-        let leaves = Self.leaves(group.children, showArchived: showArchived)
+        self.init(over: group.children, showArchived: showArchived)
+    }
+
+    /// Over `nodes` and their leaves: a group's children, or the loose
+    /// leaves a lane without a group holds (No group, a scope's Tasks).
+    package init(over nodes: [WorkbenchBoardNode], showArchived: Bool) {
+        let leaves = Self.leaves(nodes, showArchived: showArchived)
         done = leaves.filter { $0.target.status == "done" }.count
         total = leaves.filter { $0.target.status != "dismissed" }.count
         let counts = Dictionary(grouping: leaves, by: \.target.status).mapValues(\.count)
