@@ -13,10 +13,9 @@ struct WorkbenchTargetPanel: View {
     let node: WorkbenchBoardNode
     /// The board drift findings on this target (PROJ-07), shown as chips.
     let findings: [WorkbenchDriftFinding]
-    /// Owned by the board view so a half-typed title or comment survives
-    /// the panel closing and reopening.
+    /// Owned by the board view; reset to the open target's title on every
+    /// switch. Comment drafts are per target in the view model.
     @Binding var titleDraft: String
-    @Binding var commentDraft: String
     /// `WorkbenchesViewModel.showAsk`: an Asks row opens the ask drawer.
     let onShowAsk: (Int64, Int64) async -> Bool
     /// Open group: enters the group as the board scope (spec 2026-10-06
@@ -40,7 +39,7 @@ struct WorkbenchTargetPanel: View {
                 content
             }
             Divider()
-            WorkbenchPanelComposer(vm: vm, draft: $commentDraft)
+            WorkbenchPanelComposer(vm: vm)
         }
         .onAppear { titleDraft = target.text }
         .onChange(of: target.id) { titleDraft = target.text }

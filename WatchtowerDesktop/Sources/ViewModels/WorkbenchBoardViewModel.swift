@@ -37,6 +37,22 @@ final class WorkbenchBoardViewModel {
     private(set) var selectedHistory: [TargetStatusChange] = []
     private(set) var errorMessage: String?
 
+    /// Half-typed comments by target id (spec 2026-10-06 Part 3): the
+    /// composer edits the open target's entry only, so a draft never follows
+    /// the panel to another target, and it survives closing and reopening
+    /// its own. Session state, never remembered.
+    private var commentDrafts: [Int: String] = [:]
+
+    /// The open target's comment draft; empty with the panel closed, where
+    /// a write is ignored.
+    var commentDraft: String {
+        get { selectedTargetID.flatMap { commentDrafts[$0] } ?? "" }
+        set {
+            guard let id = selectedTargetID else { return }
+            commentDrafts[id] = newValue.isEmpty ? nil : newValue
+        }
+    }
+
     /// List or Kanban, remembered per project.
     var mode: WorkbenchBoardMode {
         didSet { preferences.mode = mode }
@@ -470,6 +486,16 @@ final class WorkbenchBoardViewModel {
         if await !show(askID, projectID) {
             errorMessage = "This ask is gone."
         }
+    }
+
+    /// The composer's send: the open target's own draft, cleared once the
+    /// comment is saved; a failed write keeps it (`errorMessage` says why).
+    /// - Returns: whether the comment was written.
+    @discardableResult
+    func sendCommentDraft() -> Bool {
+        guard let id = selectedTargetID, addComment(commentDraft) else { return false }
+        commentDrafts[id] = nil
+        return true
     }
 
     /// - Returns: whether the comment was written, so the composer keeps the

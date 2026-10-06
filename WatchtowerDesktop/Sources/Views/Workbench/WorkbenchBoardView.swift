@@ -15,7 +15,6 @@ struct WorkbenchBoardView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: WorkbenchBoardViewModel?
     @State private var titleDraft = ""
-    @State private var commentDraft = ""
     @AppStorage("projects.boardPanelWidth") private var panelWidth = Self.panelDefaultWidth
     @State private var dragPanelWidth: Double?
     @FocusState private var panelFocused: Bool
@@ -308,7 +307,6 @@ struct WorkbenchBoardView: View {
             node: node,
             findings: appState.workbenchesViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
             titleDraft: $titleDraft,
-            commentDraft: $commentDraft,
             onShowAsk: { [weak projects = appState.workbenchesViewModel] askID, projectID in
                 await projects?.showAsk(askID, projectID: projectID) ?? false
             },

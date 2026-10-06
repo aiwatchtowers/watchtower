@@ -213,6 +213,58 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertNil(projects.takeBoardFocus(projectID: pid), "the handoff is taken once")
     }
 
+    // MARK: - Comment drafts
+
+    /// A half-typed comment belongs to the target it was typed for: it never
+    /// follows the panel to another one, and it is back on returning.
+    func testCommentDraftIsPerTargetAndNeverPostedToAnother() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.commentDraft = "Answer for A"
+
+        vm.push(taskB)
+        XCTAssertEqual(vm.commentDraft, "", "B starts with its own, empty draft")
+        XCTAssertFalse(vm.sendCommentDraft(), "an empty draft on B sends nothing")
+        vm.commentDraft = "Note for B"
+        XCTAssertTrue(vm.sendCommentDraft())
+        XCTAssertEqual(vm.threads.map(\.root.body), ["Note for B"])
+        XCTAssertEqual(vm.commentDraft, "", "a sent draft is cleared")
+
+        vm.back()
+        XCTAssertEqual(vm.commentDraft, "Answer for A", "A's draft is restored")
+        XCTAssertTrue(vm.threads.isEmpty, "nothing was posted to A")
+
+        vm.select(group)
+        vm.closeDetail()
+        vm.commentDraft = "Ignored"
+        vm.select(taskA)
+        XCTAssertEqual(vm.commentDraft, "Answer for A", "survives closing and reopening the same target")
+        let comments = try dbManager.dbPool.read { db in
+            try Row.fetchAll(db, sql: "SELECT target_id, body FROM project_comments WHERE project_id = ?",
+                             arguments: [pid])
+        }
+        XCTAssertEqual(comments.map { $0["body"] as String }, ["Note for B"])
+        XCTAssertEqual(comments.map { $0["target_id"] as Int }, [taskB])
+    }
+
+    func testAFailedSendKeepsTheTargetsDraft() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.commentDraft = "Kept"
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_comment_insert BEFORE INSERT ON project_comments
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        XCTAssertFalse(vm.sendCommentDraft())
+        XCTAssertEqual(vm.commentDraft, "Kept")
+        XCTAssertNotNil(vm.errorMessage)
+    }
+
     // MARK: - History
 
     func testHistoryIsNewestFirstAndFollowsTheSelection() throws {

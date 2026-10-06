@@ -126,9 +126,12 @@ struct WorkbenchPanelActivity: View {
 /// write shows here too) over the pinned comment field.
 struct WorkbenchPanelComposer: View {
     let vm: WorkbenchBoardViewModel
-    /// Owned by the board view so a half-typed comment survives the panel
-    /// closing and reopening.
-    @Binding var draft: String
+
+    /// The open target's own draft (`WorkbenchBoardViewModel.commentDraft`):
+    /// switching the panel to another target switches the draft with it.
+    private var draft: Binding<String> {
+        Binding(get: { vm.commentDraft }, set: { vm.commentDraft = $0 })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -161,13 +164,13 @@ struct WorkbenchPanelComposer: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !vm.commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func send() {
         guard canSend else { return }
         // Cleared only once the comment is saved: a failed write keeps the text.
-        if vm.addComment(draft) { draft = "" }
+        vm.sendCommentDraft()
     }
 
     /// The chat composer's idiom: a rounded field and a round send button.
@@ -176,7 +179,7 @@ struct WorkbenchPanelComposer: View {
             // Return is a new line; ⌘↩ or ⌃↩ sends, and only while this
             // field has focus: a window-wide shortcut would also fire from a
             // terminal in the other split pane and post a stale draft.
-            CommentTextEditor(text: $draft, placeholder: "Comment or answer the agent…",
+            CommentTextEditor(text: draft, placeholder: "Comment or answer the agent…",
                               minHeight: 34, maxHeight: 140, cornerRadius: 16, onSubmit: send)
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill")
