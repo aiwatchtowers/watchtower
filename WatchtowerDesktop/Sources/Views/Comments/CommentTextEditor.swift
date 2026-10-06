@@ -7,7 +7,9 @@ import WatchtowerCore
 /// only while this field has focus), and — with `focusOnAppear` — the caret
 /// already blinking in it when it opens. Grows with its text from
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
-/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view.
+/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view. An `onCancel`
+/// takes Esc in this field (it never reaches the pane's Esc handling); an
+/// `onEndEditing` hears the field losing focus.
 struct CommentTextEditor: View {
     @Binding var text: String
     var placeholder = ""
@@ -16,11 +18,14 @@ struct CommentTextEditor: View {
     var maxHeight: CGFloat = 120
     var cornerRadius: CGFloat = 6
     var onSubmit: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onEndEditing: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
 
     var body: some View {
-        CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear, onSubmit: onSubmit)
+        CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear,
+                            onSubmit: onSubmit, onCancel: onCancel, onEndEditing: onEndEditing)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -53,6 +58,8 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     @Binding var contentHeight: CGFloat
     let focusOnAppear: Bool
     let onSubmit: (() -> Void)?
+    let onCancel: (() -> Void)?
+    let onEndEditing: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -75,6 +82,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.delegate = context.coordinator
         textView.focusOnAppear = focusOnAppear
         textView.onSubmit = onSubmit
+        textView.onCancel = onCancel
 
         // A new width re-wraps the text: measure again.
         textView.postsFrameChangedNotifications = true
@@ -95,6 +103,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? SubmittingTextView else { return }
         textView.onSubmit = onSubmit
+        textView.onCancel = onCancel
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
             // Through the undoable path: a plain `string =` leaves typing undo
@@ -131,6 +140,10 @@ private struct CommentNSTextEditor: NSViewRepresentable {
             measure(textView)
         }
 
+        func textDidEndEditing(_ notification: Notification) {
+            parent.onEndEditing?()
+        }
+
         /// A new width re-wraps the text. It arrives mid-layout, so the
         /// height is written on the next turn; height-only changes (typing)
         /// are already measured by `textDidChange`.
@@ -155,6 +168,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 /// and never as `insertNewline:`, and ⌃↩ arrives as `insertLineBreak:`.
 private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onCancel: (() -> Void)?
     var focusOnAppear = false
 
     override func viewDidMoveToWindow() {
@@ -170,7 +184,14 @@ private final class SubmittingTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if submits(event) { onSubmit?(); return }
+        if let onCancel, cancels(event) { onCancel(); return }
         super.keyDown(with: event)
+    }
+
+    /// A bare Esc, never mid-IME-composition (it cancels the composition).
+    private func cancels(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        return event.keyCode == 53 && flags.isEmpty && !hasMarkedText()
     }
 
     /// ⌘-combinations reach the window as key equivalents before `keyDown`.

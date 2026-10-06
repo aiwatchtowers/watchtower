@@ -93,6 +93,12 @@ final class WorkbenchBoardViewModel {
         selectedTargetID.flatMap { WorkbenchBoardOutline.find($0, in: roots) }
     }
 
+    /// The open target's nearest parent: the panel's parent link. Nil at
+    /// the top level.
+    var selectedParent: WorkbenchBoardNode? {
+        selectedNode?.target.parentId.flatMap { WorkbenchBoardOutline.find($0, in: roots) }
+    }
+
     var threads: [WorkbenchCommentThread] { WorkbenchCommentThread.group(selectedComments) }
 
     /// `WorkbenchesViewModel.onOwnerWrite`, set by the view: every successful owner
@@ -237,10 +243,17 @@ final class WorkbenchBoardViewModel {
     }
 
     /// The panel's parent link or a sub-task click: `targetID` opens on top
-    /// of the path, so "‹" returns. The open target itself adds no entry.
+    /// of the path, so "‹" returns. The open target itself adds no entry,
+    /// and a target already on the path cuts the path back to it (task →
+    /// parent → the same task again leaves `[task]`), so a path never holds
+    /// an id twice and "‹" never walks a loop.
     func push(_ targetID: Int) {
         guard panelPath.last != targetID else { return }
-        open(panelPath + [targetID])
+        if let index = panelPath.firstIndex(of: targetID) {
+            open(Array(panelPath.prefix(through: index)))
+        } else {
+            open(panelPath + [targetID])
+        }
     }
 
     /// "‹": back to the previous entry. A no-op on a path of one.
@@ -268,9 +281,9 @@ final class WorkbenchBoardViewModel {
         }
     }
 
-    /// Closes the detail card. Unlike `select(nil)` it keeps `errorMessage`:
-    /// a failed write from the card (rename, status, comment) moves to the
-    /// board's banner instead of vanishing with the card.
+    /// Closes the side panel. Unlike `select(nil)` it keeps `errorMessage`:
+    /// a failed write from the panel (rename, status, comment) moves to the
+    /// board's banner instead of vanishing with the panel.
     func closeDetail() {
         panelPath = []
         selectedComments = []
@@ -386,15 +399,30 @@ final class WorkbenchBoardViewModel {
         write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
     }
 
-    /// The panel's description editor (⌘↩ or focus loss). An unchanged
-    /// description writes nothing.
+    /// The panel's description editor (⌘↩ or focus loss) on `id`, the
+    /// target the editor was opened on (nil = the open one): a focus loss
+    /// that lands after the panel moved on still saves to its own target.
+    /// The text is trimmed like a rename; a description unchanged once
+    /// trimmed writes nothing.
     /// - Returns: whether the description is saved, so the editor keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func saveIntent(_ text: String) -> Bool {
-        guard let id = selectedTargetID, let node = selectedNode else { return false }
-        guard node.target.intent != text else { return true }
-        return write("save the description") { db in try TargetQueries.updateIntent(db, id: id, intent: text) }
+    func saveIntent(_ text: String, for id: Int? = nil) -> Bool {
+        let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let id = id ?? selectedTargetID, let node = WorkbenchBoardOutline.find(id, in: roots) else { return false }
+        guard node.target.intent != intent else { return true }
+        return write("save the description", target: id) { db in
+            try TargetQueries.updateIntent(db, id: id, intent: intent)
+        }
+    }
+
+    /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
+    /// the "Waiting for you" stack row's path, so a click never starts an
+    /// agent. An ask that is gone says so in the panel's error row.
+    func openAsk(_ askID: Int64, show: (Int64, Int64) async -> Bool) async {
+        if await !show(askID, projectID) {
+            errorMessage = "This ask is gone."
+        }
     }
 
     /// - Returns: whether the comment was written, so the composer keeps the

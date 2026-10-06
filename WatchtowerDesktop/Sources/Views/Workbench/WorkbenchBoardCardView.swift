@@ -182,7 +182,7 @@ enum WorkbenchBoardChevron {
     static let accessibilityID = "workbench-board-card-chevron"
 }
 
-/// A small tinted capsule: a card's priority or status, and the detail card's
+/// A small tinted capsule: a card's priority or status, and the side panel's
 /// drift findings.
 struct WorkbenchBoardChip: View {
     let text: String
@@ -228,7 +228,7 @@ enum WorkbenchBoardColors {
 }
 
 /// A board target's number as the agent writes it (`#163`, board #207), and
-/// the copy to the pasteboard behind the card menu and the detail card.
+/// the copy to the pasteboard behind the card menu and the side panel.
 enum WorkbenchTargetNumber {
     static func label(_ id: Int) -> String { "#\(id)" }
 

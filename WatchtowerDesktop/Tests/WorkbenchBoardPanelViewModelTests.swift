@@ -99,6 +99,39 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.panelPath, [taskA])
     }
 
+    func testPushOfAnIDAlreadyOnThePathCutsBackToIt() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.push(group)
+        vm.push(taskB)
+        XCTAssertEqual(vm.panelPath, [taskA, group, taskB])
+
+        vm.push(taskA)
+
+        XCTAssertEqual(vm.panelPath, [taskA], "no duplicate entry: the path is cut back to the earlier one")
+        XCTAssertEqual(vm.selectedNode?.target.text, "Task A")
+        XCTAssertFalse(vm.canGoBack)
+
+        vm.push(group)
+        vm.push(taskB)
+        vm.push(group)
+        XCTAssertEqual(vm.panelPath, [taskA, group])
+    }
+
+    func testSelectedParentIsTheNearestParentAndNilAtTheTop() throws {
+        let (pid, group, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        XCTAssertEqual(vm.selectedParent?.target.id, group)
+
+        vm.push(group)
+        XCTAssertNil(vm.selectedParent)
+
+        vm.select(nil)
+        XCTAssertNil(vm.selectedParent)
+    }
+
     func testPushWithAClosedPanelOpensIt() throws {
         let (pid, _, taskA, _) = try seedGroup()
         let vm = makeVM(project: pid)
@@ -229,8 +262,63 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.select(taskA)
 
+        // An old stamp: a write in the same second as the seed would not move
+        // a fresh one (`updated_at` has second resolution).
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: "UPDATE targets SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?", arguments: [taskA])
+        }
+
         XCTAssertTrue(vm.saveIntent(""))
+        XCTAssertTrue(vm.saveIntent(" \n\t "), "blank once trimmed is the empty description")
+
+        let after = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(reported, 0)
+        XCTAssertEqual(after?.updatedAt, "2026-01-01T00:00:00Z", "nothing was written")
+    }
+
+    func testSaveIntentTrimsBeforeComparingAndWriting() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.select(taskA)
+
+        XCTAssertTrue(vm.saveIntent("\n  Ship the v2 endpoint \n"))
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(stored?.intent, "Ship the v2 endpoint")
+        XCTAssertEqual(reported, 1)
+
+        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint\n"))
+        XCTAssertEqual(reported, 1, "equal once trimmed: no second write")
+    }
+
+    // MARK: - Asks
+
+    func testOpenAskGoesThroughShowAskWithThisWorkbench() async throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        var calls: [(Int64, Int64)] = []
+
+        await vm.openAsk(42) { askID, projectID in
+            calls.append((askID, projectID))
+            return true
+        }
+
+        XCTAssertEqual(calls.map(\.0), [42])
+        XCTAssertEqual(calls.map(\.1), [pid])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testOpenAskOnAGoneAskShowsItInTheErrorRow() async throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+
+        await vm.openAsk(42) { _, _ in false }
+
+        XCTAssertEqual(vm.errorMessage, "This ask is gone.")
+        XCTAssertEqual(vm.panelPath, [taskA], "the panel stays open")
     }
 
     func testSaveIntentFailureKeepsTheErrorAndReturnsFalse() throws {
@@ -253,6 +341,25 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(reported, 0)
         vm.load()
         XCTAssertEqual(vm.errorMessage, error, "a reload keeps the error")
+    }
+
+    func testSaveIntentForTheEditorsTargetAfterThePanelMovedOn() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.select(taskA)
+        vm.select(taskB)
+
+        XCTAssertTrue(vm.saveIntent("Written on A", for: taskA))
+
+        let (storedA, storedB) = try dbManager.dbPool.read { db in
+            (try TargetQueries.fetchByID(db, id: taskA), try TargetQueries.fetchByID(db, id: taskB))
+        }
+        XCTAssertEqual(storedA?.intent, "Written on A")
+        XCTAssertEqual(storedB?.intent, "", "the open target is untouched")
+        XCTAssertEqual(reported, [.target(Int64(taskA))])
+        XCTAssertFalse(vm.saveIntent("Lost", for: 999_999), "a target not on the board writes nothing")
     }
 
     func testSaveIntentWithNothingSelectedWritesNothing() throws {

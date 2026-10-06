@@ -2,37 +2,44 @@ import SwiftUI
 import WatchtowerCore
 
 /// Board pane of the project page: the target tree or kanban across the
-/// whole pane; the selected target's detail and comment threads open as a
-/// card over it.
+/// whole pane; the open target shows in a side panel over its trailing edge
+/// (spec 2026-10-06 Part 3).
 struct WorkbenchBoardView: View {
     let projectID: Int64
+
+    /// The side panel's width: dragged within `panelWidthRange`, remembered
+    /// for every workbench.
+    static let panelDefaultWidth: Double = 460
+    static let panelWidthRange: ClosedRange<Double> = 360...720
 
     @Environment(AppState.self) private var appState
     @State private var viewModel: WorkbenchBoardViewModel?
     @State private var titleDraft = ""
     @State private var commentDraft = ""
-    @FocusState private var cardFocused: Bool
+    @AppStorage("projects.boardPanelWidth") private var panelWidth = Self.panelDefaultWidth
+    @State private var dragPanelWidth: Double?
+    @FocusState private var panelFocused: Bool
 
     var body: some View {
         Group {
             if let vm = viewModel {
-                // The board keeps the pane's full width; the selected target
-                // opens as a card over it (board #155) — a side column
-                // squeezed the kanban and clipped the detail at narrow
-                // widths. An in-pane overlay rather than a `.sheet`: a sheet
-                // is window-modal, so in a split it would cover and block the
-                // terminal next to the board.
-                ZStack {
+                // The board keeps the pane's full width; the open target's
+                // panel lies over its trailing edge with no scrim (owner
+                // ruling 2026-10-06), so another card stays one click away
+                // and swaps the panel. In-pane rather than a `.sheet` or an
+                // `.inspector`: both act on the window, and in a split they
+                // would cover or squeeze the terminal next to the board.
+                ZStack(alignment: .trailing) {
                     board(vm)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     if let node = vm.selectedNode {
-                        detailOverlay(vm, node)
-                            .transition(.opacity)
+                        panel(vm, node)
+                            .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
                 }
                 .animation(.easeOut(duration: 0.15), value: vm.selectedTargetID == nil)
-                // Esc closes the card while focus is anywhere in this pane
-                // (the board list, the card's fields). Deliberately not a
+                // Esc closes the panel while focus is anywhere in this pane
+                // (the board list, the panel's fields). Deliberately not a
                 // `.keyboardShortcut(.cancelAction)`: that is window-wide and
                 // would steal Esc from a Claude Code terminal in the other
                 // split pane.
@@ -94,9 +101,10 @@ struct WorkbenchBoardView: View {
                 .padding(.horizontal, 8)
                 .padding(.bottom, 6)
             }
-            // Board-level, not in the detail pane: a kanban drop can fail for
-            // a card that is not the selected one (or with nothing selected).
-            if let error = vm.errorMessage {
+            // Board-level: a kanban drop can fail for a card that is not the
+            // open one (or with nothing open). While the panel is open the
+            // same message shows in its error row instead, not twice.
+            if let error = vm.errorMessage, vm.selectedTargetID == nil {
                 HStack(alignment: .top) {
                     Text(error)
                         .font(.callout)
@@ -261,44 +269,51 @@ struct WorkbenchBoardView: View {
         }
     }
 
-    // MARK: - Detail
+    // MARK: - Panel
 
-    /// The dimmed board and the detail card over it. A click on the scrim,
-    /// the card's close button or Esc closes it (`closeDetail`, which keeps
-    /// an error raised from the card for the board's banner).
-    private func detailOverlay(_ vm: WorkbenchBoardViewModel, _ node: WorkbenchBoardNode) -> some View {
-        ZStack {
-            Color.black.opacity(0.22)
-                .contentShape(Rectangle())
-                .onTapGesture { vm.closeDetail() }
-                .accessibilityAddTraits(.isButton)
-                .accessibilityLabel("Close target details")
-            WorkbenchTargetDetailCard(
-                vm: vm,
-                node: node,
-                findings: appState.workbenchesViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
-                titleDraft: $titleDraft,
-                commentDraft: $commentDraft
-            ) { vm.closeDetail() }
-            .frame(maxWidth: 620)
-            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
+    /// The side panel with its resize strip on the leading edge. The panel's
+    /// close button or Esc closes it (`closeDetail`, which keeps an error
+    /// raised from the panel for the board's banner).
+    private func panel(_ vm: WorkbenchBoardViewModel, _ node: WorkbenchBoardNode) -> some View {
+        WorkbenchTargetPanel(
+            vm: vm,
+            node: node,
+            findings: appState.workbenchesViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
+            titleDraft: $titleDraft,
+            commentDraft: $commentDraft,
+            onShowAsk: { [weak projects = appState.workbenchesViewModel] askID, projectID in
+                await projects?.showAsk(askID, projectID: projectID) ?? false
+            },
+            onClose: { vm.closeDetail() }
+        )
+        .frame(maxWidth: dragPanelWidth ?? clampedPanelWidth, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .leading) { Divider() }
+        .shadow(color: .black.opacity(0.18), radius: 12, x: -2)
+        .overlay(alignment: .leading) {
+            PanelResizeHandle(
+                width: $panelWidth,
+                liveWidth: $dragPanelWidth,
+                range: Self.panelWidthRange,
+                growsLeftward: true
             )
-            .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
-            // The card takes keyboard focus when it opens, so Esc reaches
-            // it even when a kanban click left nothing focused.
-            .focusable()
-            .focusEffectDisabled()
-            .focused($cardFocused)
-            .onKeyPress(.escape) {
-                vm.closeDetail()
-                return .handled
-            }
-            .onAppear { cardFocused = true }
-            .padding(20)
         }
+        // The panel takes keyboard focus when it opens, so Esc reaches it
+        // even when a kanban click left nothing focused.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($panelFocused)
+        .onKeyPress(.escape) {
+            vm.closeDetail()
+            return .handled
+        }
+        .onAppear { panelFocused = true }
+        // Transparent, never hit-tested: a narrow pane keeps a strip of the
+        // board clickable beside the panel.
+        .padding(.leading, 40)
+    }
+
+    private var clampedPanelWidth: Double {
+        min(max(panelWidth, Self.panelWidthRange.lowerBound), Self.panelWidthRange.upperBound)
     }
 }
