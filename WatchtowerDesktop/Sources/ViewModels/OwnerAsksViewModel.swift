@@ -17,7 +17,8 @@ import WatchtowerCore
 final class OwnerAsksViewModel {
     /// Where a written answer's line went (PROJ-12, board #379).
     enum Delivery: Equatable {
-        /// Pasted into the ask's session and submitted with Return.
+        /// Pasted into the ask's session and submitted with Return (or by
+        /// the owner's own Return during the pause).
         case submitted
         /// Pasted without Return — the session's hooks reported no state this
         /// run, its prompt held text not submitted (the owner's, or another

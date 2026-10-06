@@ -100,6 +100,10 @@ final class TerminalCenter {
     /// over a draft. Keyed by run, so a relaunch during the pause starts
     /// with an empty prompt (board #387).
     @ObservationIgnored private var pendingReturns: Set<Int> = []
+    /// The `pendingReturns` runs where the owner's own submitting Return
+    /// came during the pause (board #388): it sent the line, so ours would
+    /// only reach an empty prompt.
+    @ObservationIgnored private var ownerReturnsInPause: Set<Int> = []
     /// Sessions whose owner's last printable prompt input was `\`, with
     /// only escape sequences or paste brackets since: a Return there inserts
     /// a line break in Claude Code, it does not submit.
@@ -285,7 +289,7 @@ final class TerminalCenter {
 
     /// How a hand-off reached the session.
     enum HandoffDelivery: Equatable {
-        /// Pasted, then Return.
+        /// Pasted, then Return — ours, or the owner's own during the pause.
         case submitted
         /// Pasted; the owner presses Return (`pasteHints`).
         case pasted
@@ -311,7 +315,9 @@ final class TerminalCenter {
     /// break, not Enter). `refresh` runs after the pause, before the second
     /// check (the caller re-reads the agent state, which its poll may hold
     /// up to 1 s stale) and returns whether that read succeeded: after a
-    /// failed one the state is not known, so no Return. Otherwise the paste
+    /// failed one the state is not known, so no Return. An owner's
+    /// submitting Return during the pause has sent the line: none follows,
+    /// and it counts as submitted. Otherwise the paste
     /// waits for the owner's own Return, and the session holds a draft until
     /// then; a line sharing the prompt with other text says so
     /// (`sharedPrompts`).
@@ -336,11 +342,17 @@ final class TerminalCenter {
         var besideText = !promptWasEmpty
         if promptWasEmpty, canSubmit() {
             pendingReturns.insert(run)
-            defer { pendingReturns.remove(run) }
+            defer {
+                pendingReturns.remove(run)
+                ownerReturnsInPause.remove(run)
+            }
             await signaller.sleep(delay)
             let fresh = await refresh()
             // The Return goes only into the run the line was pasted into.
             guard states[sessionID] == .running, runs[sessionID] == run else { return .noSession }
+            // The owner's Return sent the line already; nothing waits for
+            // ours, and no bar asks for one.
+            if ownerReturnsInPause.contains(run) { return .submitted }
             if fresh, canSubmit(), !promptDrafts.contains(sessionID) {
                 process.sendInput([0x0D])
                 return .submitted
@@ -417,6 +429,7 @@ final class TerminalCenter {
         let backslashBefore = ownerBackslashPending.contains(sessionID)
         if Self.isSubmit(bytes, backslashBefore: backslashBefore) {
             clearPromptDraft(sessionID)
+            if let run = runs[sessionID], pendingReturns.contains(run) { ownerReturnsInPause.insert(run) }
         } else {
             promptDrafts.insert(sessionID)
         }

@@ -428,6 +428,27 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(center.answerHints[s.id])
     }
 
+    /// Board #388: the owner pressed Return while the line waited out its
+    /// pause — that sent it. No Return of ours follows into the empty
+    /// prompt, and no "press Return" bar is left behind.
+    func testTheOwnersReturnDuringThePauseSendsTheAnswer() async throws {
+        let (p, s, askID) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        onPause = { [weak self] in self?.processes[0].onOwnerInput?([0x0D]) }
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(typed.count, 1, "the paste only")
+        XCTAssertFalse(typed.contains([0x0D]))
+        XCTAssertNil(center.answerHints[s.id])
+        XCTAssertFalse(center.pasteHints.contains(s.id))
+        XCTAssertEqual(vm.asks.answerNotices[askID]?.text, OwnerAsksViewModel.answerSentNote)
+    }
+
     /// Board #387: a relaunch of the session while the line waits for its
     /// Return reuses the process object; the Return never goes into the new
     /// run, and the answer is left for that run's brief.

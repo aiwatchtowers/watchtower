@@ -576,6 +576,48 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(sessions[0].inputs, [bracketedPasteBytes("x")], "no Return over it")
     }
 
+    /// Board #388: the owner's own Return during the pause sent the line
+    /// (with whatever they typed before it), so no second Return goes into
+    /// the empty prompt and no bar asks for one; text they type after it
+    /// is their own draft. A Return into a permission dialog sends nothing
+    /// of the line and keeps the app's Return.
+    func testTheOwnersReturnDuringThePauseSkipsOurs() async throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: true)
+        for (input, name) in [([UInt8(0x0D)], "a bare Return"), (Array("and this\r".utf8), "text, then Return")] {
+            onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(input) }
+            let before = sessions[0].inputs.count
+
+            let delivery = await center.submitPrompt("x", sessionID: s.id) { true }
+
+            XCTAssertEqual(delivery, .submitted, name)
+            XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("x")], "\(name): no Return of ours")
+            XCTAssertFalse(center.pasteHints.contains(s.id), name)
+            XCTAssertFalse(center.promptDrafts.contains(s.id), name)
+        }
+
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            self?.sessions[0].onOwnerInput?(Array("next".utf8))
+        }
+        let thenTyped = await center.submitPrompt("y", sessionID: s.id) { true }
+        XCTAssertEqual(thenTyped, .submitted)
+        XCTAssertFalse(sessions[0].inputs.contains([0x0D]))
+        XCTAssertFalse(center.pasteHints.contains(s.id), "the line went; the draft is the owner's own")
+        XCTAssertTrue(center.promptDrafts.contains(s.id), "a later Return of ours would submit it")
+
+        sessions[0].onOwnerInput?([0x0D])
+        center.inputAnswersDialog = { _ in true }
+        onSleep = { [weak self] in
+            self?.sessions[0].onOwnerInput?([0x0D])
+            center.inputAnswersDialog = { _ in false }
+        }
+        let intoDialog = await center.submitPrompt("z", sessionID: s.id) { true }
+        XCTAssertEqual(intoDialog, .submitted)
+        XCTAssertEqual(sessions[0].inputs.last, [0x0D], "a key into the dialog left the Return to us")
+    }
+
     /// PROJ-12: a line the app left without its Return is still in the
     /// prompt, so the next line is only pasted after it — two lines never
     /// go as one message. Keys into a permission dialog leave it there; the
