@@ -44,6 +44,24 @@ final class CodeLineLinksTests: XCTestCase {
         XCTAssertEqual(CodeLineLinks.linkified("![shot of a.swift:2](img.png)"), "![shot of a.swift:2](img.png)")
     }
 
+    /// A link written to a workbench path opens the file: at its line,
+    /// or the first one.
+    func testALinkToAPathOpensTheFile() {
+        XCTAssertEqual(CodeLineLinks.linkified("Read [the plan](docs/plan.md) first"),
+                       "Read [the plan](\(url("docs/plan.md", 1))) first")
+        XCTAssertEqual(CodeLineLinks.linkified("[run](cmd/run.go:40:3) and [x](a.go#L12-L14)"),
+                       "[run](\(url("cmd/run.go", 40, 3))) and [x](\(url("a.go", 12)))")
+    }
+
+    /// Images, anchors, absolute paths, paths out of the folder and other
+    /// schemes keep their target.
+    func testALinkToAnythingElseKeepsItsTarget() {
+        for text in ["![shot](img.png)", "[top](#intro)", "[hosts](/etc/hosts)", "[up](../secret.txt)",
+                     "[mail](mailto:someone@example.com)", "[site](https://example.com/a.md)", "[name](README)"] {
+            XCTAssertEqual(CodeLineLinks.linkified(text), text)
+        }
+    }
+
     func testANameWithoutExtensionOrFolderIsNoCitation() {
         XCTAssertEqual(CodeLineLinks.linkified("at line:3 and time 10:30"), "at line:3 and time 10:30")
     }

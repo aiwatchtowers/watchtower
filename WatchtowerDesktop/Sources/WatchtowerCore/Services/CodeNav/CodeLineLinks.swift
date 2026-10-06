@@ -3,9 +3,12 @@ import Foundation
 /// `path:line` citations in a code answer (spec 2026-10-02 §9.2) as links
 /// that open the file in the Files pane: an inline code span holding only a
 /// citation, or a bare one in prose, becomes a markdown link to
-/// `watchtower-code://open?path=…&line=…[&col=…]`. Fenced code, URLs and
-/// existing links are left alone. A path is relative to the workbench
-/// folder and needs a folder or an extension (`main.go:7`, `cmd/run:3`).
+/// `watchtower-code://open?path=…&line=…[&col=…]`; so does an existing
+/// link whose target is such a path (`[plan](docs/plan.md)`,
+/// `[run](cmd/run.go:40)`, `[x](a.go#L12)`; line 1 when none is given).
+/// Fenced code, URLs, images and other links are left alone. A path is
+/// relative to the workbench folder and needs a folder or an extension
+/// (`main.go:7`, `cmd/run:3`).
 package enum CodeLineLinks {
     package static let scheme = "watchtower-code"
 
@@ -21,6 +24,10 @@ package enum CodeLineLinks {
     /// An existing markdown link (or image): its text and target stay as
     /// written, so no citation inside becomes a link within a link.
     private static let existingLink = try! NSRegularExpression(pattern: #"!?\[[^\]\n]*\]\([^)\n]*\)"#)
+    /// An existing link's text and target (not an image's).
+    private static let linkParts = try! NSRegularExpression(pattern: #"^\[([^\]\n]*)\]\(\s*([^)\s]+)\s*\)$"#)
+    /// A link target that is a path: groups 1 path, 2 line, 3 column, 4 a `#L` line.
+    private static let pathTarget = try! NSRegularExpression(pattern: "^(\(path))(?:\(suffix)|#L(\\d+)(?:-L?\\d+)?)?$")
     // swiftlint:enable force_try
 
     /// `markdown` with its citations linked.
@@ -81,7 +88,7 @@ package enum CodeLineLinks {
         var index = line.startIndex
         while index < line.endIndex {
             if let link = links.first(where: { $0.lowerBound == index }) {
-                out += linkedProse(prose) + line[link]
+                out += linkedProse(prose) + relinked(String(line[link]))
                 prose = ""
                 index = link.upperBound
                 continue
@@ -105,6 +112,25 @@ package enum CodeLineLinks {
             index = line.index(close, offsetBy: run)
         }
         return out + linkedProse(prose)
+    }
+
+    /// An existing link to a workbench path, pointed at the file; any
+    /// other link (or image) as it is.
+    private static func relinked(_ link: String) -> String {
+        let text = link as NSString
+        guard let parts = linkParts.firstMatch(in: link, range: NSRange(location: 0, length: text.length)) else { return link }
+        let target = text.substring(with: parts.range(at: 2)) as NSString
+        guard let match = pathTarget.firstMatch(in: target as String, range: NSRange(location: 0, length: target.length)) else {
+            return link
+        }
+        let filePath = target.substring(with: match.range(at: 1))
+        guard !filePath.split(separator: "/").contains("..") else { return link }
+        let number = { (group: Int) -> Int? in
+            let range = match.range(at: group)
+            return range.location == NSNotFound ? nil : Int(target.substring(with: range))
+        }
+        let line = max(number(2) ?? number(4) ?? 1, 1)
+        return "[\(text.substring(with: parts.range(at: 1)))](\(url(path: filePath, line: line, col: number(3))))"
     }
 
     /// Where a backtick run of exactly `count` starts, from `start` on.
