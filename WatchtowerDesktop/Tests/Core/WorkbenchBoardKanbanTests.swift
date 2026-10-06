@@ -351,6 +351,242 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(WorkbenchBoardKanban([], filterRootID: nil, showDone: false).archivedCardCount, 0)
     }
 
+    // MARK: - Lanes (spec 2026-10-06 Part 2)
+
+    private func lane(_ board: WorkbenchBoardKanban, _ id: Int) -> WorkbenchBoardKanban.Lane? {
+        board.lanes.first { $0.id == id }
+    }
+
+    private func laneIDs(_ lane: WorkbenchBoardKanban.Lane?, _ status: String) -> [Int] {
+        lane?.columns.first { $0.status == status }?.cards.map(\.id) ?? []
+    }
+
+    func testEachTopLevelGroupIsALaneAndTopLevelLeavesGoToNoGroupLast() throws {
+        let roots = [
+            node(try target(1, "Plan A"), [node(try target(2))]),
+            node(try target(3, "Lone leaf")),
+            node(try target(4, "Plan B\nbody"), [node(try target(5, status: "in_progress"))])
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertEqual(board.lanes.map(\.id), [1, 4, 0])
+        XCTAssertEqual(board.lanes.map(\.root?.target.id), [1, 4, nil])
+        XCTAssertEqual(board.lanes.map(\.title), ["Plan A", "Plan B", "No group"])
+        XCTAssertEqual(laneIDs(board.lanes.last, "todo"), [3])
+        XCTAssertEqual(laneIDs(lane(board, 4), "in_progress"), [5])
+        XCTAssertEqual(board.lanes.map { $0.columns.map(\.status) },
+                       Array(repeating: board.columns.map(\.status), count: 3),
+                       "every lane has the board's columns, so the totals row heads them all")
+
+        let noLeaf = WorkbenchBoardKanban(Array(roots.filter { $0.target.id != 3 }), filterRootID: nil, showDone: false)
+        XCTAssertEqual(noLeaf.lanes.map(\.id), [1, 4], "no top-level leaf, no No group lane")
+    }
+
+    func testLaneOrderIsPriorityThenStatusThenID() throws {
+        let roots = [
+            node(try target(1, priority: "medium"), [node(try target(11))]),
+            node(try target(2, status: "in_progress", priority: "medium"), [node(try target(12))]),
+            node(try target(3, priority: "high"), [node(try target(13))]),
+            node(try target(4, priority: "medium"), [node(try target(14))]),
+            node(try target(5, priority: "low"), [node(try target(15))])
+        ]
+        let board = WorkbenchBoardKanban(roots.shuffled(), filterRootID: nil, showDone: false)
+        XCTAssertEqual(board.lanes.map(\.id), [3, 2, 1, 4, 5])
+    }
+
+    func testLaneBreadcrumbIsTheChainBelowTheLaneRoot() throws {
+        let roots = [
+            node(try target(1, "Plan"), [
+                node(try target(2, "Direct leaf")),
+                node(try target(3, "Middle group"), [node(try target(4, "Deep leaf"))])
+            ]),
+            node(try target(5, "Lone leaf"))
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        let cards = try XCTUnwrap(lane(board, 1)?.columns.first { $0.status == "todo" }).cards
+        XCTAssertEqual(cards.map(\.id), [2, 4])
+        XCTAssertEqual(cards.map(\.breadcrumb), ["", "Middle group"])
+        XCTAssertEqual(board.lanes.last?.columns.first?.cards.map(\.breadcrumb), [""])
+    }
+
+    func testANestedGroupIsCardsInItsTopLevelLaneNeverALane() throws {
+        let roots = [
+            node(try target(1, "Plan"), [
+                node(try target(2, "Nested"), [node(try target(3)), node(try target(4))])
+            ])
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertEqual(board.lanes.map(\.id), [1])
+        XCTAssertEqual(laneIDs(lane(board, 1), "todo"), [3, 4])
+    }
+
+    func testLaneDoneIsFoldedWithItsCountUnlessShowDoneOrASearch() throws {
+        let roots = [
+            node(try target(1, "Plan", status: "in_progress"), [
+                node(try target(2, "Open")),
+                node(try target(3, "Closed", status: "done")),
+                node(try target(4, "Closed", status: "done"))
+            ])
+        ]
+        let folded = try XCTUnwrap(lane(WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false), 1))
+        XCTAssertTrue(folded.doneFolded)
+        XCTAssertEqual(folded.doneCount, 2)
+        XCTAssertEqual(laneIDs(folded, "done"), [4, 3], "folding is the view's: the cards stay, never capped")
+        let doneColumn = try XCTUnwrap(folded.columns.first { $0.status == "done" })
+        XCTAssertEqual(folded.cards(doneColumn, unfolded: false).map(\.id), [])
+        XCTAssertEqual(folded.cards(doneColumn, unfolded: true).map(\.id), [4, 3])
+
+        let shown = try XCTUnwrap(lane(WorkbenchBoardKanban(roots, filterRootID: nil, showDone: true), 1))
+        XCTAssertFalse(shown.doneFolded)
+        XCTAssertEqual(shown.doneCount, 2)
+        XCTAssertEqual(shown.cards(doneColumn, unfolded: false).map(\.id), [4, 3])
+
+        let searched = try XCTUnwrap(lane(WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, query: "closed"), 1))
+        XCTAssertFalse(searched.doneFolded)
+        XCTAssertEqual(laneIDs(searched, "done"), [4, 3])
+    }
+
+    /// The fold stands for the live done cards; archived ones are never
+    /// folded, as the None layout's cap never trims them.
+    func testArchivedDoneCardsStayOutOfTheLaneFold() throws {
+        let roots = [
+            node(try target(1, "Plan", status: "in_progress"), [
+                node(try target(2)),
+                node(try target(3, status: "done")),
+                node(try target(4, status: "done", updatedAt: "2026-08-01T10:00:00Z"), archived: true)
+            ])
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, showArchived: true)
+        let l = try XCTUnwrap(lane(board, 1))
+        let done = try XCTUnwrap(l.columns.first { $0.status == "done" })
+        XCTAssertEqual(l.doneCount, 1)
+        XCTAssertEqual(l.cards(done, unfolded: false).map(\.id), [4])
+        XCTAssertEqual(l.cards(done, unfolded: true).map(\.id), [3, 4])
+    }
+
+    func testLaneShowsOnlyItsOwnCards() throws {
+        let roots = [
+            node(try target(1, "Plan A"), [node(try target(2)), node(try target(6, status: "done"))]),
+            node(try target(3, "Plan B"), [node(try target(4))]),
+            node(try target(5, "Lone leaf"))
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        let a = try XCTUnwrap(lane(board, 1)), b = try XCTUnwrap(lane(board, 3)), none = try XCTUnwrap(lane(board, 0))
+        XCTAssertTrue(a.showsCard(2))
+        XCTAssertTrue(a.showsCard(6), "a folded done card is still the lane's")
+        XCTAssertFalse(a.showsCard(4))
+        XCTAssertFalse(a.showsCard(5))
+        XCTAssertFalse(a.showsCard(1), "the lane root is never a card")
+        XCTAssertTrue(b.showsCard(4))
+        XCTAssertFalse(b.showsCard(2))
+        XCTAssertTrue(none.showsCard(5))
+        XCTAssertFalse(none.showsCard(2))
+    }
+
+    func testTotalsPerStatusAreTheSumOverTheLanes() throws {
+        let roots = [
+            node(try target(1, "Plan A", status: "in_progress"), [
+                node(try target(2)), node(try target(3, status: "in_progress")), node(try target(4, status: "done"))
+            ]),
+            node(try target(5, "Plan B"), [node(try target(6)), node(try target(7, status: "blocked"))]),
+            node(try target(8, "Lone leaf", status: "done")),
+            node(try target(9, "Lone leaf"))
+        ]
+        for showDone in [false, true] {
+            let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: showDone)
+            XCTAssertEqual(Set(board.totals.keys), Set(board.columns.map(\.status)))
+            for column in board.columns {
+                let sum = board.lanes.reduce(0) { $0 + ($1.columns.first { $0.status == column.status }?.cards.count ?? 0) }
+                XCTAssertEqual(board.totals[column.status], sum, "\(column.status), showDone \(showDone)")
+            }
+            XCTAssertEqual(board.totals["todo"], 3)
+            XCTAssertEqual(board.totals["done"], 2)
+        }
+    }
+
+    func testAnEmptyClosedLaneIsHiddenAndArchiveBringsItsArchivedCardsBack() throws {
+        let roots = [
+            node(try target(1, "Live"), [node(try target(2))]),
+            node(try target(3, "Closed", status: "done"), [
+                node(try target(4, status: "done")), node(try target(5, status: "dismissed"))
+            ]),
+            node(try target(6, "Gone", status: "done"), [
+                node(try target(7, status: "done"), archived: true),
+                node(try target(8, status: "dismissed"), archived: true)
+            ], archived: true)
+        ]
+        let off = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertEqual(off.lanes.map(\.id), [1], "an all-closed lane with Show done off has nothing to show")
+        XCTAssertEqual(off.totals["done"], 0, "a hidden lane adds nothing to the totals")
+
+        let archive = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, showArchived: true)
+        XCTAssertEqual(archive.lanes.map(\.id), [1, 6])
+        let gone = try XCTUnwrap(lane(archive, 6))
+        let goneDone = try XCTUnwrap(gone.columns.first { $0.status == "done" })
+        XCTAssertEqual(gone.cards(goneDone, unfolded: false).map(\.id), [7])
+        XCTAssertEqual(laneIDs(gone, "dismissed"), [8])
+
+        let showDone = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: true)
+        XCTAssertEqual(showDone.lanes.map(\.id), [1, 3])
+    }
+
+    /// An open root keeps its lane while the search is empty — the view says
+    /// "No open tasks"; a search hides every lane it leaves empty.
+    func testAnOpenRootKeepsItsEmptyLaneOnlyWithoutASearch() throws {
+        let roots = [
+            node(try target(1, "Waiting", status: "in_progress"), [
+                node(try target(2, status: "done")), node(try target(3, status: "dismissed"))
+            ]),
+            node(try target(4, "Widget"), [node(try target(5, "Widget part"))]),
+            node(try target(6, "Lone leaf", status: "done"))
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertEqual(board.lanes.map(\.id), [1, 4], "No group has no root to keep it")
+        let waiting = try XCTUnwrap(lane(board, 1))
+        XCTAssertTrue(waiting.columns.allSatisfy { waiting.cards($0, unfolded: false).isEmpty })
+        XCTAssertEqual(waiting.doneCount, 1)
+
+        let emptyRoot = [node(try target(7, "Bare", status: "todo"), [node(try target(8, status: "dismissed"))])]
+        let bare = try XCTUnwrap(WorkbenchBoardKanban(emptyRoot, filterRootID: nil, showDone: false).lanes.first)
+        XCTAssertEqual(bare.id, 7)
+        XCTAssertTrue(bare.columns.allSatisfy(\.cards.isEmpty), "kept with no cards at all")
+
+        let searched = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, query: "widget")
+        XCTAssertEqual(searched.lanes.map(\.id), [4])
+    }
+
+    func testLaneProgressCountsDoneLeavesOverLeavesThatCount() throws {
+        let roots = [
+            node(try target(1, "Plan"), [
+                node(try target(2, status: "done")),
+                node(try target(3, status: "dismissed")),
+                node(try target(4, "Nested"), [node(try target(5, status: "done")), node(try target(6))])
+            ]),
+            node(try target(7, "Lone leaf")),
+            node(try target(8, "Lone leaf", status: "done"))
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, query: "#6")
+        XCTAssertEqual(lane(board, 1)?.progress, WorkbenchBoardKanban.Lane.Progress(done: 2, total: 3),
+                       "the group's progress, whatever the filters")
+        let all = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertEqual(lane(all, 0)?.progress, WorkbenchBoardKanban.Lane.Progress(done: 1, total: 2))
+    }
+
+    func testLanesFollowTheParentFilter() throws {
+        let roots = [
+            node(try target(1, "Plan A"), [node(try target(2))]),
+            node(try target(3, "Plan B"), [node(try target(4))]),
+            node(try target(5, "Lone leaf"))
+        ]
+        let board = WorkbenchBoardKanban(roots, filterRootID: 3, showDone: false)
+        XCTAssertEqual(board.lanes.map(\.id), [3])
+    }
+
+    func testEmptyBoardHasNoLanesAndZeroTotals() {
+        let board = WorkbenchBoardKanban([], filterRootID: nil, showDone: false)
+        XCTAssertTrue(board.lanes.isEmpty)
+        XCTAssertEqual(board.totals, ["todo": 0, "in_progress": 0, "in_review": 0, "blocked": 0, "done": 0])
+    }
+
     // MARK: - Preferences
 
     func testPreferencesArePerProjectAndDefaultToListAndAll() throws {
@@ -379,5 +615,33 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "projects.boardKanbanFilter.1"))
         defaults.set("bogus", forKey: "projects.boardMode.1")
         XCTAssertEqual(WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults).mode, .list)
+    }
+
+    func testLanesPreferencesRoundTripPerProject() throws {
+        let suite = "WorkbenchBoardKanbanTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let one = WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults)
+        XCTAssertEqual(one.lanesMode, .group)
+        XCTAssertEqual(one.foldedLanes, [])
+
+        one.lanesMode = .none
+        one.foldedLanes = [42, 0, 7]
+        XCTAssertEqual(defaults.string(forKey: "projects.boardLanes.1"), "none")
+        XCTAssertEqual(defaults.array(forKey: "projects.boardFoldedLanes.1") as? [Int], [0, 7, 42])
+
+        let reread = WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults)
+        XCTAssertEqual(reread.lanesMode, .none)
+        XCTAssertEqual(reread.foldedLanes, [0, 7, 42], "a folded id is kept whether or not it is still a lane")
+
+        let two = WorkbenchBoardPreferences(workbenchID: 2, defaults: defaults)
+        XCTAssertEqual(two.lanesMode, .group)
+        XCTAssertEqual(two.foldedLanes, [])
+
+        defaults.set("bogus", forKey: "projects.boardLanes.1")
+        XCTAssertEqual(WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults).lanesMode, .group)
+        one.foldedLanes = []
+        XCTAssertEqual(WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults).foldedLanes, [])
     }
 }
