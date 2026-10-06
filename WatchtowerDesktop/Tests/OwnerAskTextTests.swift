@@ -144,6 +144,13 @@ final class OwnerAskTextTests: XCTestCase {
         let other = ChatQuestionCardView(card: card, answerText: nil, onAnswer: nil,
                                          draftPicks: .constant(["q": ChatQuestionAnswer.Entry(other: "Neither\nB")]), editable: false)
         XCTAssertTrue(try attributedTexts(other).contains { String($0.characters) == "Other: Neither\nB" })
+
+        let sent = OwnerAskMarginComments(
+            comments: [OwnerAskMarginComment(id: "c", draftID: nil, anchor: CommentAnchor(quote: "q", prefix: "", suffix: "", heading: ""),
+                                             body: "Reword\nthis", placed: false)],
+            rects: [nil], textExtent: nil, active: .constant(nil), setBody: { _, _ in }, remove: { _ in }
+        )
+        XCTAssertTrue(try attributedTexts(sent).contains { String($0.characters) == "Reword\nthis" }, "a sent margin comment")
     }
 
     // MARK: - Fields
