@@ -178,6 +178,27 @@ final class WorkbenchGroupPanelTests: XCTestCase {
         XCTAssertEqual(labels(shown), ["#2", "closed 1 open", "#3"])
     }
 
+    /// The header's count is the group's sub-tasks, not the rows drawn:
+    /// folding a nested group or a closed row never changes it.
+    func testSubtaskCountIgnoresTheFolds() throws {
+        let nested = node(try target(10, "Nested", status: "in_progress"), [try leaf(11, "todo"), try leaf(12, "done")])
+        let group = node(try target(1, "Group", status: "in_progress"), [
+            try leaf(2, "todo"), nested, try leaf(3, "done"), try leaf(4, "done", archived: true)
+        ])
+        func targetRows(_ collapsed: Set<Int>, _ unfolded: Set<Int>, _ archive: Bool) -> Int {
+            WorkbenchSubtaskTree.rows(of: group, collapsed: collapsed, unfoldedClosed: unfolded, showArchived: archive)
+                .filter { if case .target = $0 { true } else { false } }.count
+        }
+
+        XCTAssertEqual(WorkbenchSubtaskTree.count(of: group, showArchived: false), 5, "#2 #10 #11 #12 #3")
+        XCTAssertEqual(WorkbenchSubtaskTree.count(of: group, showArchived: true), 6, "and the archived #4")
+        for archive in [false, true] {
+            let count = WorkbenchSubtaskTree.count(of: group, showArchived: archive)
+            XCTAssertEqual(count, targetRows([], [1, 10], archive), "everything open: one row per sub-task")
+            XCTAssertNotEqual(count, targetRows([10], [], archive), "folds hide rows, not sub-tasks")
+        }
+    }
+
     func testRowIDsAreUniqueAcrossTargetAndFoldRows() throws {
         let nested = node(try target(10, "Nested", status: "in_progress"), [try leaf(11, "done")])
         let group = node(try target(1, "Group", status: "in_progress"), [nested, try leaf(2, "done")])

@@ -91,6 +91,14 @@ package enum WorkbenchSubtaskTree {
         return out
     }
 
+    /// The SUB-TASKS header's count: every sub-task of `group` at every
+    /// depth that the tree would show, whatever is folded — archived ones
+    /// only with the board's Archive toggle on.
+    package static func count(of group: WorkbenchBoardNode, showArchived: Bool) -> Int {
+        let shown = group.children.filter { showArchived || !$0.archived }
+        return shown.reduce(shown.count) { $0 + count(of: $1, showArchived: showArchived) }
+    }
+
     private struct Rules {
         let collapsed: Set<Int>
         let unfoldedClosed: Set<Int>

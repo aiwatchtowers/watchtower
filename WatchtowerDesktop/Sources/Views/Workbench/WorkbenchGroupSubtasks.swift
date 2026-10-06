@@ -49,7 +49,7 @@ struct WorkbenchGroupSubtasks: View {
         )
         VStack(alignment: .leading, spacing: 2) {
             WorkbenchDetailSectionHeader(title: "Sub-tasks", systemImage: "list.bullet.indent",
-                                         count: rows.filter { if case .target = $0 { true } else { false } }.count)
+                                         count: WorkbenchSubtaskTree.count(of: group, showArchived: showArchived))
                 .padding(.bottom, 6)
             if rows.isEmpty {
                 Text("Every sub-task is archived. Turn on Archive to see them.")
