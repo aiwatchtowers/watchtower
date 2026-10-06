@@ -21,12 +21,20 @@ final class WorkbenchBoardViewModel {
     /// The board's search field (board #207; `WorkbenchBoardSearch`): view
     /// state, not remembered.
     var searchText = ""
-    private(set) var selectedTargetID: Int?
+    /// The side panel's navigation stack (spec 2026-10-06 Part 3): target
+    /// ids, the open one last. A board click resets it (`select`), the parent
+    /// link and a sub-task click push, "‹" pops (`back`).
+    private(set) var panelPath: [Int] = []
+    var selectedTargetID: Int? { panelPath.last }
+    var canGoBack: Bool { panelPath.count > 1 }
     private(set) var selectedComments: [WorkbenchComment] = []
     /// The selected target's images (board target #117), read-only here.
     private(set) var selectedImages: [WorkbenchTargetImage] = []
     /// The selected target's owner asks, newest first (spec 2026-10-03 Part 8).
     private(set) var selectedAsks: [OwnerAskListItem] = []
+    /// The selected target's status changes, newest first; read with the
+    /// comments on selection and on reload.
+    private(set) var selectedHistory: [TargetStatusChange] = []
     private(set) var errorMessage: String?
 
     /// List or Kanban, remembered per project.
@@ -95,27 +103,30 @@ final class WorkbenchBoardViewModel {
     func load() {
         do {
             let pid = projectID
-            let selected = selectedTargetID
-            let (board, comments, images, asks, stamp) = try dbPool.read { db in
-                (
-                    try WorkbenchQueries.board(db, projectID: pid),
-                    try selected.map { try WorkbenchQueries.comments(db, targetID: Int64($0)) } ?? [],
-                    try selected.map { try WorkbenchQueries.images(db, targetID: Int64($0)) } ?? [],
-                    try selected.map { try OwnerAskQueries.targetAsks(db, projectID: pid, targetID: Int64($0)) } ?? [],
+            let requestedPath = panelPath
+            let (board, path, comments, images, asks, history, stamp) = try dbPool.read { db in
+                let board = try WorkbenchQueries.board(db, projectID: pid)
+                // A target gone from the board leaves the path: the panel
+                // falls back to the nearest surviving entry, or closes.
+                let path = requestedPath.filter { WorkbenchBoardOutline.find($0, in: board) != nil }
+                let selected = path.last.map(Int64.init)
+                return (
+                    board,
+                    path,
+                    try selected.map { try WorkbenchQueries.comments(db, targetID: $0) } ?? [],
+                    try selected.map { try WorkbenchQueries.images(db, targetID: $0) } ?? [],
+                    try selected.map { try OwnerAskQueries.targetAsks(db, projectID: pid, targetID: $0) } ?? [],
+                    try selected.map { Array(try TargetQueries.statusHistory(db, targetID: $0).reversed()) } ?? [],
                     try Self.fingerprint(db, projectID: pid)
                 )
             }
             roots = board
+            panelPath = path
             selectedComments = comments
             selectedImages = images
             selectedAsks = asks
+            selectedHistory = history
             fingerprint = stamp
-            if let selected, WorkbenchBoardOutline.find(selected, in: board) == nil {
-                selectedTargetID = nil
-                selectedComments = []
-                selectedImages = []
-                selectedAsks = []
-            }
         } catch {
             errorMessage = "Could not load the board: \(error.localizedDescription)"
         }
@@ -195,8 +206,29 @@ final class WorkbenchBoardViewModel {
 
     // MARK: - Selection
 
+    /// A board click (or the Session view's `boardFocus` handoff): the
+    /// panel opens `targetID` on a fresh path; nil closes it.
     func select(_ targetID: Int?) {
-        selectedTargetID = targetID
+        open(targetID.map { [$0] } ?? [])
+    }
+
+    /// The panel's parent link or a sub-task click: `targetID` opens on top
+    /// of the path, so "‹" returns. The open target itself adds no entry.
+    func push(_ targetID: Int) {
+        guard panelPath.last != targetID else { return }
+        open(panelPath + [targetID])
+    }
+
+    /// "‹": back to the previous entry. A no-op on a path of one.
+    func back() {
+        guard canGoBack else { return }
+        open(Array(panelPath.dropLast()))
+    }
+
+    /// Every panel navigation: the new path, a fresh read, and the open
+    /// target's agent comments marked read.
+    private func open(_ path: [Int]) {
+        panelPath = path
         errorMessage = nil
         load()
         guard let node = selectedNode, node.unreadForOwner > 0 else { return }
@@ -216,10 +248,11 @@ final class WorkbenchBoardViewModel {
     /// a failed write from the card (rename, status, comment) moves to the
     /// board's banner instead of vanishing with the card.
     func closeDetail() {
-        selectedTargetID = nil
+        panelPath = []
         selectedComments = []
         selectedImages = []
         selectedAsks = []
+        selectedHistory = []
         load()
     }
 
@@ -307,6 +340,17 @@ final class WorkbenchBoardViewModel {
         let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = selectedTargetID, !title.isEmpty else { return }
         write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
+    }
+
+    /// The panel's description editor (⌘↩ or focus loss). An unchanged
+    /// description writes nothing.
+    /// - Returns: whether the description is saved, so the editor keeps the
+    ///   owner's draft on a failure (`errorMessage` says why).
+    @discardableResult
+    func saveIntent(_ text: String) -> Bool {
+        guard let id = selectedTargetID, let node = selectedNode else { return false }
+        guard node.target.intent != text else { return true }
+        return write("save the description") { db in try TargetQueries.updateIntent(db, id: id, intent: text) }
     }
 
     /// - Returns: whether the comment was written, so the composer keeps the
