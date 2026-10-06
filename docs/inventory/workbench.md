@@ -1084,9 +1084,17 @@ other direction.
   the mark — like any earlier state — vouching for a prompt with no
   dialog, so the Return may confirm that dialog's default. When the
   owner's own Return during the pause really sent the line and the read
-  after the pause failed or a dialog appeared within the pause, the line
+  after the pause failed or a dialog is still shown at that read, the line
   counts as still typed and a (safe)
-  false "press Return" bar shows — the same as before the extension. Not seen, so
+  false "press Return" bar shows — the same as before the extension. The
+  reverse is not caught: a permission prompt that opened during the pause
+  and was answered by that same owner Return (the app's state still stale)
+  is gone by the read, so the line counts as sent — no bar, no tracked
+  draft — though its text may still sit in the input box, and the next
+  delivery's Return could send both as one message. It needs a prompt to
+  open and be answered within the 500 ms pause; for answers so since the
+  #388 fix, for hand-offs since its review round (accepted over the false
+  bar). Not seen, so
   the Return goes there: a permission prompt whose async hook write has not
   landed by the re-read after the 500 ms pause, and a TUI dialog the hooks
   do not report (not a permission prompt). A permission prompt declined or
