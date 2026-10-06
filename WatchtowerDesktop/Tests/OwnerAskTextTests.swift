@@ -79,13 +79,13 @@ final class OwnerAskTextTests: XCTestCase {
     /// before it renders, so none looks clickable and does nothing.
     func testLinkRoutes() throws {
         let file = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "a.go", line: 3, col: nil)))
-        XCTAssertEqual(OwnerAskLinks.route(file), .file(OpenQuicklyTarget(path: "a.go", line: 3, col: nil)))
+        XCTAssertEqual(OwnerAskLinks.askLinkRoute(file), .file(OpenQuicklyTarget(path: "a.go", line: 3, col: nil)))
         for url in ["https://example.com", "HTTP://example.com", "mailto:someone@example.com", "slack://channel?id=C1"] {
-            XCTAssertEqual(OwnerAskLinks.route(try XCTUnwrap(URL(string: url))), .system, url)
+            XCTAssertEqual(OwnerAskLinks.askLinkRoute(try XCTUnwrap(URL(string: url))), .system, url)
         }
         let escaping = try XCTUnwrap(URL(string: CodeLineLinks.url(path: "../x.go", line: 1, col: nil)))
         for url in ["file:///etc/hosts", "smb://host/x", escaping.absoluteString] {
-            XCTAssertEqual(OwnerAskLinks.route(try XCTUnwrap(URL(string: url))), .refused, url)
+            XCTAssertEqual(OwnerAskLinks.askLinkRoute(try XCTUnwrap(URL(string: url))), .refused, url)
         }
         let card = OwnerAskHeaderCard(ask: try ask(summary: "[hosts](file:///etc/hosts) or [share](smb://host/x)"))
         XCTAssertEqual(try links(card), [], "a refused scheme renders as plain text")
@@ -97,7 +97,7 @@ final class OwnerAskTextTests: XCTestCase {
         var opened: [OpenQuicklyTarget] = []
         var beeps = 0
         func click(_ url: String) throws -> String {
-            let result = OwnerAskLinks.handle(try XCTUnwrap(URL(string: url)), openFile: { opened.append($0) }, beep: { beeps += 1 })
+            let result = OwnerAskLinks.handleAskLink(try XCTUnwrap(URL(string: url)), openFile: { opened.append($0) }, beep: { beeps += 1 })
             return String(describing: result)
         }
         let handled = String(describing: OpenURLAction.Result.handled)

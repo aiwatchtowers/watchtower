@@ -126,7 +126,7 @@ struct OwnerAskDrawer: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            OwnerAskDrawerHeader(vm: vm, ask: ask)
             Divider()
             if ask.kind == .review {
                 reviewLayout
@@ -149,7 +149,7 @@ struct OwnerAskDrawer: View {
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .background(OwnerAskKeyCatcher(onKey: pressKey))
+        .background(OwnerAskKeyCatcher(onKey: pressAnswerKey))
         .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
         .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
         // "k of N ›" swaps the ask under the same drawer.
@@ -177,7 +177,7 @@ struct OwnerAskDrawer: View {
                 onAnswer: nil,
                 draftPicks: picksBinding,
                 editable: editable,
-                onKey: pressKey
+                onKey: pressAnswerKey
             )
         }
     }
@@ -215,7 +215,7 @@ struct OwnerAskDrawer: View {
     /// ⌘↩ / ⌘⇧↩ (`shift`) from a field or `OwnerAskKeyCatcher` (owner ask
     /// #90): the answer button the key names, pressed as a click would —
     /// nothing while it is off.
-    private func pressKey(_ shift: Bool) {
+    private func pressAnswerKey(_ shift: Bool) {
         asks.pressKey(on: ask, shift: shift)
     }
 
@@ -224,66 +224,6 @@ struct OwnerAskDrawer: View {
     private func focusAction(_ focus: OwnerAskFocus) -> (() -> Void)? {
         guard ask.kind == .review, let range = asks.reviewDocuments.range(of: focus, askID: ask.id) else { return nil }
         return { scrollTarget = DocumentScrollTarget(offset: range.location) }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        let stack = asks.stack(projectID: ask.projectID)
-        return HStack(spacing: 8) {
-            Image(systemName: OwnerAskPresentation.askKindIcon(ask.kind))
-                .foregroundStyle(Color.accentColor)
-                .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(ask.title).font(.headline).lineLimit(2)
-                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            if let position = stack.askPosition(of: ask.id), stack.count > 1 {
-                Button {
-                    Task { await vm.showNextAsk(after: ask.id, projectID: ask.projectID) }
-                } label: {
-                    Text("\(OwnerAskPresentation.positionLabel(position, of: stack.count)) ›").monospacedDigit()
-                }
-                .buttonStyle(.borderless)
-                .help("Next ask")
-            }
-            Button {
-                // The terminal under an expanded drawer is hidden: it must
-                // not keep the keystrokes.
-                // Only the terminal's focus goes; the note field keeps its caret.
-                if !asks.drawerExpanded, TerminalHostAttachment.terminalHasFocus(in: NSApp.keyWindow) {
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                }
-                asks.drawerExpanded.toggle()
-            } label: {
-                Image(systemName: asks.drawerExpanded
-                      ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.borderless)
-            .help(asks.drawerExpanded ? "Back beside the terminal" : "Expand")
-            .accessibilityLabel(asks.drawerExpanded ? "Collapse" : "Expand")
-            Button {
-                asks.closeDrawer(projectID: ask.projectID)
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.borderless)
-            .help("Close; your draft is kept")
-            .accessibilityLabel("Close")
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
-    /// Kind · #target · age.
-    private var caption: String {
-        let parts: [String?] = [
-            OwnerAskPresentation.askKindLabel(ask.kind),
-            ask.targetID.map { "#\($0)" },
-            TimeFormatting.shortAge(from: ask.createdAt, now: Date())
-        ]
-        return parts.compactMap(\.self).joined(separator: " · ")
     }
 
     private func noticeRow(_ notice: OwnerAsksViewModel.AnswerNotice) -> some View {
@@ -313,7 +253,7 @@ struct OwnerAskDrawer: View {
                 editable: editable,
                 mark: { id, state in asks.editDraft(ask.id) { $0.checks[id] = state } },
                 setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } },
-                onKey: pressKey
+                onKey: pressAnswerKey
             )
         case .question: EmptyView()
         }
@@ -327,8 +267,8 @@ struct OwnerAskDrawer: View {
                 placeholder: "Note for the agent (optional)",
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
-                onSubmit: { pressKey(false) },
-                onShiftSubmit: { pressKey(true) }
+                onSubmit: { pressAnswerKey(false) },
+                onShiftSubmit: { pressAnswerKey(true) }
             )
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
@@ -356,60 +296,6 @@ struct OwnerAskDrawer: View {
 
     private var note: String {
         ask.answer?.note ?? asks.drafts.askDraft(for: ask.id).note
-    }
-}
-
-/// Links in an ask's text (#394): a workbench path (`path:line`, or a
-/// link to a path) opens the file in Files — a beep when it is not a file
-/// of the folder — and any scheme of the app-wide allowlist (http(s),
-/// mailto, slack…) goes to the system. A link of any other scheme is
-/// never clickable: `MarkdownView` strips it before it renders. A
-/// modifier of its own: it is rebuilt only when the workbench changes,
-/// not on every keystroke into the draft (an `OpenURLAction` cannot be
-/// compared — `MarkdownView`).
-struct OwnerAskLinks: ViewModifier {
-    let vm: WorkbenchesViewModel
-    let projectID: Int64
-
-    enum Route: Equatable {
-        case file(OpenQuicklyTarget)
-        case system
-        /// A workbench link naming no file of the folder (`../x.go:3`),
-        /// or a scheme past the allowlist.
-        case refused
-    }
-
-    static func route(_ url: URL) -> Route {
-        if let target = CodeLineLinks.target(from: url) { return .file(target) }
-        return AllowedURLSchemes.permits(url) ? .system : .refused
-    }
-
-    /// What a click on `url` does: a file opens through `openFile`, an
-    /// allowlisted scheme goes to the system, anything else beeps.
-    static func handle(_ url: URL, openFile: (OpenQuicklyTarget) -> Void, beep: () -> Void) -> OpenURLAction.Result {
-        switch route(url) {
-        case let .file(target):
-            openFile(target)
-            return .handled
-        case .system:
-            return .systemAction
-        case .refused:
-            beep()
-            return .handled
-        }
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .environment(\.markdownCodeLinks, true)
-            .environment(\.openURL, OpenURLAction { [vm, projectID] url in
-                Self.handle(url, openFile: { target in
-                    // A beep when it names no file of the folder.
-                    Task {
-                        if !(await vm.openAskLink(target, projectID: projectID)) { NSSound.beep() }
-                    }
-                }, beep: NSSound.beep)
-            })
     }
 }
 
