@@ -5,7 +5,8 @@ import WatchtowerCore
 /// where to look (`focus`), and on a later review round what changed since
 /// the last one. `showDiff`, when given, adds "Show diff"; `focusAction`
 /// gives a focus item a link to its place in the document — nil for one
-/// whose place is not in the snapshot, listed without a link.
+/// whose place is not in the snapshot, listed without a link. The agent's
+/// text renders as markdown (#394); its links route by `OwnerAskLinks`.
 struct OwnerAskHeaderCard: View {
     let ask: OwnerAsk
     var showDiff: (() -> Void)?
@@ -15,9 +16,7 @@ struct OwnerAskHeaderCard: View {
         if hasContent {
             VStack(alignment: .leading, spacing: 8) {
                 if !ask.summary.isEmpty {
-                    Text(ask.summary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+                    MarkdownView(text: ask.summary)
                 }
                 if !ask.payload.focus.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -37,9 +36,7 @@ struct OwnerAskHeaderCard: View {
                             }
                         }
                         if !ask.changes.isEmpty {
-                            Text(ask.changes)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
+                            MarkdownView(text: ask.changes)
                         }
                     }
                 }
@@ -64,15 +61,15 @@ struct OwnerAskHeaderCard: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("•").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(item.text).fixedSize(horizontal: false, vertical: true)
+                MarkdownView(text: item.text)
                 if !place.isEmpty {
                     if let action = focusAction(item) {
-                        Button(place, action: action)
+                        Button(action: action) { Text(MarkdownView.inlineLabel(place)) }
                             .buttonStyle(.link)
                             .font(.caption)
                             .lineLimit(1)
                     } else {
-                        Text(place).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Text(MarkdownView.inlineLabel(place)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
             }

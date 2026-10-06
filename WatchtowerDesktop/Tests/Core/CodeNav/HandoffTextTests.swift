@@ -88,6 +88,29 @@ final class HandoffTextTests: XCTestCase {
         XCTAssertTrue(text.hasSuffix("References: a.go:3"), text)
     }
 
+    /// A markdown link to a workbench path cites the path it opens, not
+    /// its text; a link to anything else cites nothing.
+    func testALinkCitesTheFileItOpensNotItsText() throws {
+        let answer = "See [the plan](docs/plan.md) and `a.go:3`, [file.go:42](internal/x/file.go#L42), [site](https://example.com), [web](www.example.com)."
+        let text = try XCTUnwrap(HandoffText.conversation(
+            origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),
+            messages: [message("user", "q"), message("assistant", answer)]
+        ))
+        XCTAssertTrue(text.hasSuffix("References: docs/plan.md:1, a.go:3, internal/x/file.go:42"), text)
+    }
+
+    /// A link's text is kept only when it cites the line the link opens —
+    /// a range or a column after it stays as written; any other line
+    /// (`a.go:99`, `a.go:123` for line 12) gives way to the link's own.
+    func testALinksTextIsKeptOnlyForTheLineItOpens() throws {
+        let answer = "[a.go:99](a.go#L12), [a.go:123](a.go#L12), [a.go:12-14](a.go#L12), [a.go:12:5](a.go#L12)"
+        let text = try XCTUnwrap(HandoffText.conversation(
+            origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),
+            messages: [message("user", "q"), message("assistant", answer)]
+        ))
+        XCTAssertTrue(text.hasSuffix("References: a.go:12, a.go:12-14, a.go:12:5"), text)
+    }
+
     func testQuestionWithNoFileOpen() throws {
         let text = try XCTUnwrap(HandoffText.conversation(
             origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),

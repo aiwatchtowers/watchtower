@@ -103,16 +103,26 @@ package enum HandoffText {
         return "\(origin.path):\(selection.startLine)-\(selection.endLine)"
     }
 
-    private static let linkText = try? NSRegularExpression(
-        pattern: #"\[`?([^\]`]+)`?\]\("# + NSRegularExpression.escapedPattern(for: CodeLineLinks.scheme) + "://")
+    /// A code link: groups 1 its text, 2 its URL.
+    private static let codeLink = try? NSRegularExpression(
+        pattern: #"\[`?([^\]`]*)`?\]\(("# + NSRegularExpression.escapedPattern(for: CodeLineLinks.scheme) + #"://[^)\s]*)\)"#)
 
     /// The `path:line` citations of an answer, in order, by
     /// `CodeLineLinks`' own rules (fenced code and URLs are not citations).
+    /// Each is read off the link's URL; a citation's own text is kept when it
+    /// names that file at that line, so a range or a column stays as
+    /// written, while a link's text ("the plan", a folder-less name, another
+    /// line of the file) never stands in for it.
     private static func citations(in answer: String) -> [String] {
-        let linked = CodeLineLinks.linkified(answer)
-        let range = NSRange(linked.startIndex..., in: linked)
-        return (linkText?.matches(in: linked, range: range) ?? []).compactMap { match in
-            Range(match.range(at: 1), in: linked).map { String(linked[$0]) }
+        let linked = CodeLineLinks.linkified(answer) as NSString
+        let range = NSRange(location: 0, length: linked.length)
+        return (codeLink?.matches(in: linked as String, range: range) ?? []).compactMap { match in
+            guard let url = URL(string: linked.substring(with: match.range(at: 2))),
+                  let target = CodeLineLinks.target(from: url), let line = target.line else { return nil }
+            let text = linked.substring(with: match.range(at: 1))
+            let cited = "\(target.path):\(line)"
+            if text.hasPrefix(cited), text.dropFirst(cited.count).first?.isNumber != true { return text }
+            return "\(target.path):\(line)" + (target.col.map { ":\($0)" } ?? "")
         }
     }
 }

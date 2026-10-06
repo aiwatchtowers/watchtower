@@ -441,6 +441,29 @@ final class OwnerAsksViewModel {
         return true
     }
 
+    /// One of the drawer's answer buttons pressed — clicked, or by its key
+    /// (`pressKey`): `answer` with its verdict, only while the button is
+    /// enabled (`OwnerAskPresentation.canAnswer`), so a disabled one
+    /// changes nothing, not even the draft's verdict. Unstructured: a
+    /// view-bound task cancelled by navigation would surface as a failed
+    /// answer. Returns the answer's task, nil when the button is off.
+    @discardableResult
+    func press(_ action: OwnerAskPresentation.AnswerAction, on ask: OwnerAsk) -> Task<Void, Never>? {
+        let draft = drafts.askDraft(for: ask.id)
+        guard OwnerAskPresentation.canAnswer(ask, draft: draft, with: action, answering: isAnswering(ask.id)) else { return nil }
+        return Task { await answer(ask, verdict: action.verdict) }
+    }
+
+    /// ⌘↩ (`shift`: ⌘⇧↩) in an ask's drawer (owner ask #90): presses the
+    /// button the key names (`OwnerAskPresentation.keyAction`) as a click
+    /// would; nil when it names none or that button is off.
+    @discardableResult
+    func pressKey(on ask: OwnerAsk, shift: Bool) -> Task<Void, Never>? {
+        guard let action = OwnerAskPresentation.keyAction(for: ask, draft: drafts.askDraft(for: ask.id), shift: shift)
+        else { return nil }
+        return press(action, on: ask)
+    }
+
     /// Answers `ask` from its draft (spec 2026-10-03 Part 5, PROJ-12 as
     /// amended 2026-10-04): one guarded write, and only then the
     /// `OwnerAskPrompt` line to the ask's session (`deliver`) — pasted and

@@ -140,6 +140,37 @@ package enum MarkdownDocument {
         }
     }
 
+    /// `blocks` with every soft break a line break: for text the owner
+    /// wrote (a note, an answer, a comment), where one newline is a new
+    /// line, as in a GitHub comment. Code blocks and tables have none.
+    package static func withLineBreaks(_ blocks: [MarkdownBlock]) -> [MarkdownBlock] {
+        blocks.map(lineBroken)
+    }
+
+    private static func lineBroken(_ block: MarkdownBlock) -> MarkdownBlock {
+        switch block {
+        case let .heading(level, inlines): .heading(level: level, inlines: inlines.map(lineBroken))
+        case let .paragraph(inlines): .paragraph(inlines.map(lineBroken))
+        case let .list(list):
+            .list(MarkdownList(ordered: list.ordered, start: list.start, items: list.items.map {
+                MarkdownListItem(task: $0.task, blocks: $0.blocks.map(lineBroken))
+            }))
+        case let .quote(children): .quote(children.map(lineBroken))
+        case .code, .table, .rule: block
+        }
+    }
+
+    private static func lineBroken(_ inline: MarkdownInline) -> MarkdownInline {
+        switch inline {
+        case .softBreak: .lineBreak
+        case let .emphasis(children): .emphasis(children.map(lineBroken))
+        case let .strong(children): .strong(children.map(lineBroken))
+        case let .strikethrough(children): .strikethrough(children.map(lineBroken))
+        case let .link(destination, children): .link(destination: destination, children: children.map(lineBroken))
+        case .text, .code, .lineBreak: inline
+        }
+    }
+
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
         return value
