@@ -55,11 +55,14 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
             return true
         }
 
-        /// Nothing has the keyboard, or read-only text inside the drawer.
+        /// Nothing has the keyboard, or read-only text inside the drawer —
+        /// told by where its visible part's middle is. Clipped to its own
+        /// bounds: outside a scroll view a text view's `visibleRect` can
+        /// reach past them, over the drawer.
         private func takesKeys(in window: NSWindow) -> Bool {
             guard let responder = window.firstResponder, responder !== window else { return true }
             guard let text = responder as? NSTextView, !text.isEditable else { return false }
-            let visible = text.convert(text.visibleRect, to: nil)
+            let visible = text.convert(text.visibleRect.intersection(text.bounds), to: nil)
             return convert(bounds, to: nil).contains(NSPoint(x: visible.midX, y: visible.midY))
         }
     }

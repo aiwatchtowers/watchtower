@@ -179,8 +179,9 @@ final class OwnerAskKeysTests: XCTestCase {
         return view.subviews.flatMap { textViews(in: $0) }
     }
 
-    /// A field beside the drawer (a target comment), and in the drawer a
-    /// field of its own and read-only text (a review's document).
+    /// A field and read-only text beside the drawer (a target comment, a
+    /// chat transcript), and in the drawer a field of its own and read-only
+    /// text (a review's document).
     func testTheCatcherTakesTheKeysOnlyWhileNoFieldHasTheKeyboard() throws {
         var keys: [Bool] = []
         var outsideSent = 0
@@ -188,8 +189,11 @@ final class OwnerAskKeysTests: XCTestCase {
         // Labelled: a trailing closure would be `onFocus`.
         // swiftlint:disable trailing_closure
         let root = HStack(spacing: 0) {
-            CommentTextEditor(text: .constant(""), onSubmit: { outsideSent += 1 })
-                .frame(width: 200)
+            VStack {
+                CommentTextEditor(text: .constant(""), onSubmit: { outsideSent += 1 })
+                ReadOnlyText()
+            }
+            .frame(width: 200)
             VStack {
                 CommentTextEditor(text: .constant(""), onSubmit: { insideSent += 1 })
                 ReadOnlyText()
@@ -209,7 +213,8 @@ final class OwnerAskKeysTests: XCTestCase {
         let views = textViews(in: host)
         let outside = try XCTUnwrap(views.first { $0.isEditable && $0.convert($0.bounds, to: nil).minX < 200 })
         let inside = try XCTUnwrap(views.first { $0.isEditable && $0.convert($0.bounds, to: nil).minX >= 200 })
-        let document = try XCTUnwrap(views.first { !$0.isEditable })
+        let document = try XCTUnwrap(views.first { !$0.isEditable && $0.convert($0.bounds, to: nil).minX >= 200 })
+        let transcript = try XCTUnwrap(views.first { !$0.isEditable && $0.convert($0.bounds, to: nil).minX < 200 })
 
         window.makeFirstResponder(nil)
         XCTAssertTrue(window.performKeyEquivalent(with: try key(window, .command)))
@@ -220,6 +225,10 @@ final class OwnerAskKeysTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(document))
         XCTAssertTrue(window.performKeyEquivalent(with: try key(window, .command)))
         XCTAssertEqual(keys, [false, true, false], "the drawer's own read-only text")
+
+        XCTAssertTrue(window.makeFirstResponder(transcript))
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(window, .command)))
+        XCTAssertEqual(keys, [false, true, false], "read-only text outside the drawer keeps the key")
 
         XCTAssertTrue(window.makeFirstResponder(inside))
         XCTAssertTrue(window.performKeyEquivalent(with: try key(window, .command)))
