@@ -616,6 +616,41 @@ final class TerminalCenterTests: XCTestCase {
         let intoDialog = await center.submitPrompt("z", sessionID: s.id) { true }
         XCTAssertEqual(intoDialog, .submitted)
         XCTAssertEqual(sessions[0].inputs.last, [0x0D], "a key into the dialog left the Return to us")
+
+        // `\` then Return is Claude Code's line break, not a submit.
+        onSleep = { [weak self] in self?.sessions[0].onOwnerInput?(Array("a\\\r".utf8)) }
+        let before = sessions[0].inputs.count
+        let lineBreak = await center.submitPrompt("w", sessionID: s.id) { true }
+        XCTAssertEqual(lineBreak, .pasted)
+        XCTAssertEqual(Array(sessions[0].inputs.dropFirst(before)), [bracketedPasteBytes("w")], "no Return of ours")
+        XCTAssertTrue(center.pasteHints.contains(s.id))
+    }
+
+    /// Board #388 review (B1): the owner's Return counts as sending the line
+    /// only when the state read after the pause is clean. `inputAnswersDialog`
+    /// may be a second stale, so a Return into a permission prompt shown
+    /// during the pause looks like one into the prompt; with that prompt
+    /// read after the pause — or the read failed — the line stays typed:
+    /// a draft, the bar, and no Return of ours.
+    func testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped() async throws {
+        for (name, dialog, fresh) in [("a permission prompt", true, true), ("a failed read", false, false)] {
+            let center = makeCenter()
+            let s = try row()
+            center.start(s, fresh: true)
+            let session = try XCTUnwrap(sessions.last)
+            var approval = false
+            onSleep = {
+                session.onOwnerInput?([0x0D])
+                approval = dialog
+            }
+
+            let delivery = await center.submitPrompt("x", sessionID: s.id, refresh: { fresh }, submitIf: { !approval })
+
+            XCTAssertEqual(delivery, .pasted, name)
+            XCTAssertEqual(session.inputs, [bracketedPasteBytes("x")], "\(name): no Return of ours")
+            XCTAssertTrue(center.promptDrafts.contains(s.id), "\(name): the next line must not submit it")
+            XCTAssertTrue(center.pasteHints.contains(s.id), "\(name): the bar asks for Return")
+        }
     }
 
     /// PROJ-12: a line the app left without its Return is still in the
@@ -917,6 +952,44 @@ final class TerminalCenterTests: XCTestCase {
         onSleep = nil
         let next = await center.submitPrompt("y", sessionID: s.id) { true }
         XCTAssertEqual(next, .submitted)
+    }
+
+    /// Board #387: the line waiting out its pause is the old run's; a
+    /// relaunch during that pause starts with an empty prompt, so a line
+    /// into the new run — sent while the old pause still runs — is
+    /// submitted, and the old line gets no Return.
+    func testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted() async throws {
+        var second: TerminalCenter.HandoffDelivery?
+        var pauses = 0
+        var center: TerminalCenter!
+        var process: FakeTerminalSession!
+        let s = try row()
+        center = TerminalCenter(
+            makeProcess: {
+                process = FakeTerminalSession(pid: 0)
+                return process
+            },
+            signaller: ProcessGroupSignaller(
+                signal: { _, _ in }, isAlive: { _ in false },
+                sleep: { _ in
+                    pauses += 1
+                    guard pauses == 1 else { return }
+                    process.exit(0)
+                    center.start(s, fresh: false)
+                    second = await center.submitPrompt("y", sessionID: s.id) { true }
+                }
+            )
+        )
+        center.shell = { "/bin/zsh" }
+        center.transcriptExists = { _ in false }
+        center.start(s, fresh: true)
+
+        let first = await center.submitPrompt("x", sessionID: s.id) { true }
+
+        XCTAssertEqual(second, .submitted, "the new run's prompt held nothing")
+        XCTAssertEqual(first, .noSession)
+        XCTAssertEqual(process.inputs, [bracketedPasteBytes("x"), bracketedPasteBytes("y"), [0x0D]],
+                       "one Return, the new run's")
     }
 
     /// Board #389: a line the last run left without its Return is gone with
