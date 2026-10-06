@@ -287,6 +287,8 @@ struct WorkbenchTargetPanel: View {
             }
             if mode == .group {
                 WorkbenchGroupSubtasks(group: node, showArchived: vm.showArchived) { vm.push($0) }
+                    // Its folds are this group's own: another group starts unfolded.
+                    .id(node.id)
             }
             if !vm.selectedImages.isEmpty {
                 WorkbenchTargetImagesSection(images: vm.selectedImages)
