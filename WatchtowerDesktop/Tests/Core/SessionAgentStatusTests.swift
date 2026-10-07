@@ -177,17 +177,17 @@ final class SessionAgentStatusTests: XCTestCase {
     /// stamp, an unknown stored value or a session that is not live vouch
     /// for nothing.
     func testTheRunsMarkSaysTheHooksReportThisRun() {
-        func resolved(_ stored: String?, at: String?, live: Bool = true) -> SessionAgentStatus? {
+        func resolvedMarkStatus(_ stored: String?, at: String?, live: Bool = true) -> SessionAgentStatus? {
             SessionAgentStatus.resolve([row(stored, at: at)], liveIDs: live ? [1] : [], startedAt: [1: started])[1]
         }
-        let marked = resolved(nil, at: stamp(1))
+        let marked = resolvedMarkStatus(nil, at: stamp(1))
         XCTAssertEqual(marked?.state, .live(.running))
         XCTAssertNil(marked?.at, "no hook state")
         XCTAssertTrue(marked?.runMarked == true)
         XCTAssertTrue(marked?.hooksReported == true)
         XCTAssertFalse(marked?.isAtPrompt == true, "a hand-off still waits for a turn end")
-        XCTAssertTrue(resolved("waiting", at: stamp(1))?.hooksReported == true, "a hook state reports too")
-        XCTAssertFalse(resolved("waiting", at: stamp(1))?.runMarked == true)
+        XCTAssertTrue(resolvedMarkStatus("waiting", at: stamp(1))?.hooksReported == true, "a hook state reports too")
+        XCTAssertFalse(resolvedMarkStatus("waiting", at: stamp(1))?.runMarked == true)
         XCTAssertFalse(marked?.isTrusted(startedAt: started) == true, "a mark has no stamp to hold for a run")
 
         for (stored, at, live, name) in [
@@ -197,7 +197,7 @@ final class SessionAgentStatusTests: XCTestCase {
             ("waiting", stamp(-1), true, "an earlier run's state"),
             (nil, stamp(1), false, "not live")
         ] as [(String?, String?, Bool, String)] {
-            let status = resolved(stored, at: at, live: live)
+            let status = resolvedMarkStatus(stored, at: at, live: live)
             XCTAssertFalse(status?.hooksReported == true, name)
             XCTAssertFalse(status?.runMarked == true, name)
         }
