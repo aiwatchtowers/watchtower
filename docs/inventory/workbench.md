@@ -942,14 +942,17 @@ owner's and the agent's backs.
 
 ## PROJ-15 — an archived workbench target is hidden, never lost
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3)
 
-**Observable:** A workbench target is archived iff its workbench's
-`projects.archive_after_days` (migration `00103`, default 14, `CHECK` 0..365,
-0 = never) is above 0, it and every descendant on the same board are `done`
-or `dismissed`, and the newest close time among them (a target's latest
-`target_status_history.changed_at`, else its `updated_at`) is more than
-`archive_after_days` days old. The rule lives only in the SQLite view
+**Observable:** A workbench target is archived iff it and every descendant
+on the same board are `done` or `dismissed`, every close time among them
+parses, and either its workbench's `projects.archive_after_days` (migration
+`00103`, default 14, `CHECK` 0..365, 0 = never) is above 0 and the newest
+close time among them (a target's latest `target_status_history.changed_at`,
+else its `updated_at`) is more than `archive_after_days` days old, or the
+workbench's `projects.archived_through` (migration `00105`, set by the
+Desktop's "Archive Closed Targets Now", cleared by "Undo Archive Now") is
+set and that newest close time is not after it. The rule lives only in the SQLite view
 `workbench_target_archive`, read by Go (`GetWorkbenchBoard`,
 `IsWorkbenchTargetArchived`, `GetTargets` in a workbench session) and the
 Desktop (`WorkbenchQueries.board`) alike. Archiving writes nothing — no
@@ -960,7 +963,9 @@ and by search (the Desktop board search always matches archived targets;
 --archived`). Reopening restores it: any open status write (the Desktop, or
 `update_target`), an open sub-target created under an archived group, or
 open work re-parented under one (PROJ-09) takes it out of the archive on the
-next read, with the status change recorded like any other (PROJ-06). A group
+next read, with the status change recorded like any other (PROJ-06). A
+target closed or reopened after `archived_through` is judged by the age rule
+alone until the next Archive Now. A group
 is archived only whole: a target with an open descendant, or whose subtree
 closed last less than `archive_after_days` days ago, is never archived, and an
 archived target's whole subtree is archived. The drift check never skips an
@@ -977,10 +982,11 @@ other direction.
 
 **Test guards:**
 - `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_UnparseableCloseTimeKeepsTheChain`, `TestProj15_ReopenAndRecloseStartsThePeriodOver`, `TestProj15_LargeBoardReadIsFast`
-- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork`
+- `internal/db/proj15_archive_now_test.go` — `TestProj15_ArchiveNowArchivesEveryClosedSubtree`, `TestProj15_ArchiveNowGroupsGoWhole`, `TestProj15_ArchiveNowCloseAfterTheStampStays`, `TestProj15_ArchiveNowLaterCloseInAGroupKeepsTheGroup`, `TestProj15_ArchiveNowReopenRestores`, `TestProj15_ArchiveNowSameSecondIsArchived`, `TestProj15_ArchiveNowUnderNever`, `TestProj15_ArchiveNowUnparseableCloseTimeKeepsTheChain`, `TestProj15_ArchivedThroughMustParse`, `TestProj15_UndoArchiveNowRestoresOnlyWhatTheAgeRuleWouldNot`, `TestProj15_ArchiveNowWritesNothingPerTarget`, `TestProj15_ArchiveNowIsPerWorkbench`, `TestProj15_LargeBoardReadIsFastWithAStamp`
+- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases)
 - `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
 - `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift::testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardOutlineTests.swift::testSearchAlwaysMatchesArchivedTargets`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift::testSearchShowsArchivedLeaves`, `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne`
-- supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`)
+- supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/db/proj15_archive_now_test.go` (`TestMigration00105_ArchivedThroughStartsNull`, `TestArchiveNowWriters_UnknownWorkbench`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`, `TestWorkbenchBoard_ArchiveNowLeavesTheBoardSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`, `TestWorkbenchShowCmd_PrintsArchivedThrough`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`), Archive Now: `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift` (`testArchiveClosedTargetsNowStampsTheWorkbenchAndUndoForgetsIt`, `testArchiveNowWritersThrowForAnUnknownWorkbench`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testTheArchiveNowStampIsInTheFingerprint`, `WatchtowerDesktop/Tests/WorkbenchesViewModelTests.swift::testArchiveNowAndUndoWriteTheStampReloadAndReportAFailure`, `WatchtowerDesktop/Tests/WorkbenchHeaderControlsTests.swift::testArchiveNowAndUndoArchiveNow`
 
 **Locked since:** 2026-10-04
 
@@ -1139,9 +1145,13 @@ other direction.
   sizes; a 2000-target board is pinned by `TestProj15_LargeBoardReadIsFast`). Nothing is stored, so the Desktop
   board notices a target ageing into the archive only at its next reload
   (any board change, Refresh, reopening the pane), not at the exact minute.
-  Restore is reopening: there is no Unarchive action (owner decision D),
-  since a target taken out of the archive but still closed for longer than
-  the setting would be archived again on the next read. The setting is the
+  Restore is reopening: there is no per-target Unarchive action (owner
+  decision D), since a target taken out of the archive but still closed for
+  longer than the setting would be archived again on the next read. "Undo
+  Archive Now" (board #415) forgets the workbench's `archived_through`
+  moment as a whole — one moment per workbench, so it undoes every earlier
+  click, and what the age rule archives stays archived; a close in the
+  click's own second is archived with the rest (second precision, `<=`). The setting is the
   owner's (Desktop menu); the agent cannot change it. A close time that does
   not parse as a date (every writer stores ISO-8601 UTC, so none is known)
   keeps its target and every ancestor out of the archive, so an archived
@@ -1150,6 +1160,7 @@ other direction.
 
 ## Changelog
 
+- 2026-10-07 (board #415, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md`): **PROJ-15 amended 2026-10-07, approved by the owner in ask #106** (the spec §3 wording and all four §1 decisions as recommended) — "Archive Closed Targets Now". Migration `00105` adds `projects.archived_through` (a UTC moment, NULL = never pressed, `CHECK` it parses) and recreates `workbench_target_archive` with a second branch: a closed subtree whose newest close time is not after the moment is archived whatever `archive_after_days` says, including Never (decision 1); both `done` and `dismissed` count (decision 4). The Observable's first sentence is replaced and one sentence added after "Reopening restores it"; "hidden, never lost", groups-go-whole, restore-by-reopening and the drift guarantee are unchanged, and "Why locked" is unchanged — Undo is an extra, not the only way back. Writers: the Desktop's `WorkbenchQueries.archiveClosedTargetsNow`/`clearArchivedThrough` (the header's "Archive Closed Targets Now" / "Undo Archive Now") and the Go twins `db.ArchiveWorkbenchClosedNow`/`db.ClearWorkbenchArchivedThrough`; no CLI writer, no MCP tool. Every existing PROJ-15 guard runs unchanged (`TestProj15_PerWorkbenchSettingAndNever` still asserts that 0 archives nothing with no stamp); new guards in `internal/db/proj15_archive_now_test.go`, a stamp-only case in `TestProj15_DriftStillSeesArchivedUnmergedWork`. PROJ-05/06/07/09 untouched: the button writes only `projects`. v1 note "Board archive" extended.
 - 2026-10-07 (board #396, with #387/#388/#389; owner directive 2026-10-05 «send it right away», approved as an amendment of PROJ-12): **PROJ-12 amended** — an answer is also submitted into a session whose hooks have not written a state yet this run, when its SessionStart hook marked the run. Root cause: a relaunch or resume (`startup`/`resume`) cleared the row's state, so `SessionAgentStatus.at` was nil until the agent's next turn and the line was only pasted ("press Return to send") into an idle session; a compaction while idle continues the run and changed nothing. Now the SessionStart hook writes the run's mark (`MarkTerminalAgentRun`: no state, a stamp of this run) when the workbench's folder has the session state hooks (`workbenchHasStateHooks`), even with nothing to clear; without them `ClearTerminalAgentState` clears with no stamp (it used to stamp the clear), so a mark always means the state hooks run. The Desktop reads it as `SessionAgentStatus.runMarked`/`hooksReported`; the dot, `isAtPrompt` (hand-offs, ruling R52) and PROJ-11's states and notices are unchanged. The permission-dialog guard (`needsApproval` before the paste and after the pause, failed reads) and the owner-draft guard are unchanged. Also: the Return goes only into the process run the line was pasted into (`TerminalCenter.runs`; a relaunch reuses the process object, #387 — also for held answers and the read before the paste), the owner's submitting Return during the pause skips ours and leaves no bar (#388), a restart drops the last run's paste bar (#389), and the condition that withheld a Return is logged. Guards rewritten to the new rule, none relaxed: `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted` → `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted` (same assertions), `CodeHandoffCenterTests::testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted` → `testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted` (the earlier run's state kept, plus no row, an earlier run's mark and an unknown value; the bar asserted). New guards `testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn`, `testProj12_ACompactWhileIdleKeepsTheReturn`, `TestProj12_ANewRunWithTheStateHooksIsMarked`, `TestProj12_CompactWhileIdleKeepsTheRunsState`. Limit (h) rewritten. No hook setting changed (the SessionStart entry already ran for every source), so no Re-run Setup. PROJ-11's guards are unchanged; its "the SessionStart clear of a new run" is now the mark or the stampless clear.
 
 - 2026-10-04 (board #380, PR #165, owner-approved in ask #41): **PROJ-12 tightened**; heading, wording and guards unchanged. An answer's Return is also withheld while another line into the same session is still in its pause before its own Return (`TerminalCenter.pendingReturns`): when a second line (an answer or a code hand-off) arrives during that pause, both lines are only pasted and neither is submitted, so one line never submits the other. While such shared text sits in the prompt (`sharedPrompts`, cleared with `promptDrafts` by the owner's submitting Return, the process's start or close) the bars say Return sends both lines together.

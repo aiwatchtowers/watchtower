@@ -134,7 +134,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             )
             if row.node.archived {
                 WorkbenchBoardChip(text: "Archived", color: .secondary)
-                    .help("Archived: closed longer than the workbench's archive setting. Reopen it to bring it back.")
+                    .help("Archived: closed longer than the archive setting, or before the last Archive Now. Reopen it to bring it back.")
             }
             if let children = card.children {
                 counter("\(children.done)/\(children.total)", systemImage: "checklist", help: "Sub-tasks done")

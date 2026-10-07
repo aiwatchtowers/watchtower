@@ -51,6 +51,33 @@ package enum WorkbenchQueries {
         guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
     }
 
+    /// The header menu's "Archive Closed Targets Now" (board #415): stamps
+    /// `archived_through` with the database's now, so every target closed by
+    /// then archives at once; work closed later waits for the age rule.
+    /// Nothing is written per target.
+    ///
+    /// Dual path of Go `ArchiveWorkbenchClosedNow` (internal/db/workbenches.go);
+    /// undone by `clearArchivedThrough`.
+    package static func archiveClosedTargetsNow(_ db: Database, projectID: Int64) throws {
+        try db.execute(
+            sql: "UPDATE projects SET archived_through = \(now), updated_at = \(now) WHERE id = ?",
+            arguments: [projectID]
+        )
+        guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
+    }
+
+    /// The header menu's "Undo Archive Now" (board #415): forgets the stamp
+    /// `archiveClosedTargetsNow` set; what the age rule archives stays archived.
+    ///
+    /// Dual path of Go `ClearWorkbenchArchivedThrough` (internal/db/workbenches.go).
+    package static func clearArchivedThrough(_ db: Database, projectID: Int64) throws {
+        try db.execute(
+            sql: "UPDATE projects SET archived_through = NULL, updated_at = \(now) WHERE id = ?",
+            arguments: [projectID]
+        )
+        guard db.changesCount > 0 else { throw WorkbenchQueryError.workbenchNotFound }
+    }
+
     package static func summaries(_ db: Database) throws -> [WorkbenchSummary] {
         let projects = try fetchAll(db)
         let unread = try unreadCounts(db)

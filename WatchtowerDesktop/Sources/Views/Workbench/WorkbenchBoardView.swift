@@ -71,9 +71,11 @@ struct WorkbenchBoardView: View {
         // A target id in the Session view opens its card here.
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
         .onDisappear { viewModel?.stopPolling() }
-        // The header's "Archive Closed Targets After" applies at once, not at
-        // the next poll (board #301); load() reports a failed read.
+        // The header's "Archive Closed Targets After" and "Archive Closed
+        // Targets Now" / "Undo Archive Now" apply at once, not at the next poll
+        // (boards #301, #415); load() reports a failed read.
         .onChange(of: archiveAfterDays) { _, _ in viewModel?.load() }
+        .onChange(of: archivedThrough) { _, _ in viewModel?.load() }
         .task(id: projectID) {
             await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }
@@ -81,6 +83,10 @@ struct WorkbenchBoardView: View {
 
     private var archiveAfterDays: Int? {
         appState.workbenchesViewModel?.summaries.first { $0.id == projectID }?.project.archiveAfterDays
+    }
+
+    private var archivedThrough: String? {
+        appState.workbenchesViewModel?.summaries.first { $0.id == projectID }?.project.archivedThrough
     }
 
     /// One Esc from the panel, the path bar or the board: the rule is the
@@ -215,7 +221,7 @@ struct WorkbenchBoardView: View {
             Toggle("Archive (\(archived))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
-                .help("Show the targets closed longer than the workbench's archive setting (… menu). Reopen one to bring it back.")
+                .help("Show targets closed longer than the archive setting or before the last Archive Now. Reopen one to bring it back.")
         }
     }
 

@@ -44,6 +44,26 @@ func TestProj15_DriftStillSeesArchivedUnmergedWork(t *testing.T) {
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [done]`)
 	assert.Contains(t, brief, "0 done, 1 archived.")
+
+	// Archived by the Archive Now stamp alone (N = 14, closed an hour ago):
+	// the drift check still reports it.
+	require.NoError(t, database.SetWorkbenchArchiveDays(pid, 14))
+	db.BackdateTestWorkbenchClose(t, database, tid, time.Hour)
+	archived, err = database.IsWorkbenchTargetArchived(tid)
+	require.NoError(t, err)
+	require.False(t, archived, "precondition: the age rule alone keeps it")
+	require.NoError(t, database.ArchiveWorkbenchClosedNow(pid))
+	archived, err = database.IsWorkbenchTargetArchived(tid)
+	require.NoError(t, err)
+	require.True(t, archived, "precondition: the stamp archives it")
+
+	stdout, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	require.NoError(t, err)
+	rep = workbenchcheck.Report{}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
+	require.Len(t, rep.Findings, 1)
+	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
+	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 }
 
 func TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted(t *testing.T) {
@@ -148,6 +168,32 @@ func TestWorkbenchShowCmd_PrintsTheArchiveSetting(t *testing.T) {
 	out, _, err = runWorkbench(t, "show", id)
 	require.NoError(t, err)
 	assert.Contains(t, out, "Archive after: never\n")
+}
+
+func TestWorkbenchShowCmd_PrintsArchivedThrough(t *testing.T) {
+	database, pid, _ := archiveCmdBoard(t)
+	id := strconv.FormatInt(pid, 10)
+
+	out, _, err := runWorkbench(t, "show", id)
+	require.NoError(t, err)
+	assert.NotContains(t, out, "Archived through", "nothing when the stamp is not set")
+	out, _, err = runWorkbench(t, "show", id, "--json")
+	require.NoError(t, err)
+	assert.NotContains(t, out, "archived_through", "omitted when empty")
+
+	require.NoError(t, database.ArchiveWorkbenchClosedNow(pid))
+	w, err := database.GetWorkbench(pid)
+	require.NoError(t, err)
+	require.NotEmpty(t, w.ArchivedThrough)
+
+	out, _, err = runWorkbench(t, "show", id)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Archive after: 14 days\nArchived through: "+w.ArchivedThrough+"\n")
+	out, _, err = runWorkbench(t, "show", id, "--json")
+	require.NoError(t, err)
+	var view workbenchViewJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &view))
+	assert.Equal(t, w.ArchivedThrough, view.ArchivedThrough)
 }
 
 func TestArchiveAfterText(t *testing.T) {

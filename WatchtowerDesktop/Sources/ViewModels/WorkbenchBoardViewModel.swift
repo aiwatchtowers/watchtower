@@ -250,9 +250,10 @@ final class WorkbenchBoardViewModel {
 
     /// Counts plus the latest timestamps of everything the board renders. Any
     /// agent write (a new target, a status move, a comment, a resolve, a read
-    /// mark) changes at least one of them. The archive setting is in it too, so
-    /// a change applies at once; a target that merely ages into the archive
-    /// leaves at the next reload (spec 2026-10-04 decision 10, v1 limit).
+    /// mark) changes at least one of them. The archive setting and the Archive
+    /// Now stamp (board #415) are in it too, so a change applies at once; a
+    /// target that merely ages into the archive leaves at the next reload
+    /// (spec 2026-10-04 decision 10, v1 limit).
     nonisolated private static func fingerprint(_ db: Database, projectID: Int64) throws -> String {
         let targets = try Row.fetchOne(
             db,
@@ -287,7 +288,7 @@ final class WorkbenchBoardViewModel {
             arguments: [projectID]
         )
         let archive = try Row.fetchOne(
-            db, sql: "SELECT archive_after_days FROM projects WHERE id = ?", arguments: [projectID]
+            db, sql: "SELECT archive_after_days, archived_through FROM projects WHERE id = ?", arguments: [projectID]
         )
         return [targets, comments, images, asks, archive].map { $0?.description ?? "" }.joined(separator: "|")
     }

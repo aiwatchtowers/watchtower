@@ -672,4 +672,32 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.refreshIfChanged(), "a changed setting reloads the board")
         XCTAssertEqual(vm.archivedCount, 0)
     }
+
+    /// "Archive Closed Targets Now" (board #415): an open board drops the
+    /// closed targets at its next poll, no manual refresh; Undo brings them
+    /// back the same way.
+    func testTheArchiveNowStampIsInTheFingerprint() throws {
+        let (pid, open, closed) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let open = try Self.insertTarget(db, project: pid, text: "Open", status: "todo")
+            let closed = try Self.insertTarget(db, project: pid, text: "Closed", status: "done")
+            return (pid, open, closed)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.showDone = true
+        XCTAssertEqual(vm.archivedCount, 0)
+        XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(open), Int(closed)])
+
+        try dbManager.dbPool.write { try WorkbenchQueries.archiveClosedTargetsNow($0, projectID: pid) }
+        XCTAssertTrue(vm.refreshIfChanged(), "the stamp reloads the board")
+        XCTAssertEqual(vm.archivedCount, 1)
+        XCTAssertEqual(vm.rows.map(\.id), [Int(open)])
+        XCTAssertFalse(vm.refreshIfChanged())
+
+        try dbManager.dbPool.write { try WorkbenchQueries.clearArchivedThrough($0, projectID: pid) }
+        XCTAssertTrue(vm.refreshIfChanged(), "so does forgetting it")
+        XCTAssertEqual(vm.archivedCount, 0)
+        XCTAssertEqual(Set(vm.rows.map(\.id)), [Int(open), Int(closed)])
+    }
 }
