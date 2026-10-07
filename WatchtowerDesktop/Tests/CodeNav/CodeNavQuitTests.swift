@@ -48,12 +48,12 @@ final class CodeNavQuitTests: XCTestCase {
         return false
     }
 
-    func testQuitStopsTheSearchesOfOpenQuicklyDefinitionAndUsages() async {
+    func testQuitStopsTheSearchesOfOpenQuicklyDefinitionAndUsages() async throws {
         let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let openQuickly = OpenQuicklyCenter(codeIndex: codeIndex, presenter: SilentPresenter(), startSearch: stubStarter())
         let navigation = CodeNavigationCenter(codeIndex: codeIndex, startSearch: stubStarter()) {}
         let suite = "CodeNavQuitTests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let usages = CodeUsagesCenter(defaults: defaults, startSearch: stubStarter()) {}
 
