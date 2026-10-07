@@ -65,7 +65,8 @@ final class ChatSidebarRenderTests: XCTestCase {
     }
 
     /// The selected chat covers the panel's edge line at its row; another
-    /// row, the project row and the space below the list keep it. Right of
+    /// row, the project row, the New chat row and the space below the list
+    /// keep it. Right of
     /// the panel the conversation paints the detail backdrop.
     func testSelectedChatTabCoversThePanelEdgeLine() async throws {
         let ids = try await dbManager.dbPool.write { d in
@@ -90,11 +91,12 @@ final class ChatSidebarRenderTests: XCTestCase {
             let edge = Int(ChatSplitView.historyWidth) - 1
             let line = try probe.pixel(page, x: edge, y: 450)
             XCTAssertNotEqual(line, detail, "\(name): the edge line shows below the list")
-            // Rows under the "Chats" header: PROJECTS, acme, TODAY, then the
-            // chats (the newest first), about 26pt apart.
+            // Rows under the "Chats" header: New chat, PROJECTS, acme, TODAY,
+            // then the chats (the newest first), about 26pt apart.
             XCTAssertEqual(try probe.pixel(page, x: edge, y: Rows.second), detail, "\(name): the selected tab covers the line")
             XCTAssertEqual(try probe.pixel(page, x: edge, y: Rows.first), line, "\(name): another chat keeps the line")
             XCTAssertEqual(try probe.pixel(page, x: edge, y: Rows.project), line, "\(name): the closed project keeps the line")
+            XCTAssertEqual(try probe.pixel(page, x: edge, y: Rows.newChat), line, "\(name): New chat is never the tab")
             // Beside the tab, the conversation's backdrop.
             XCTAssertEqual(try probe.pixel(page, x: edge + 2, y: Rows.second), detail, "\(name): the conversation beside the tab")
             XCTAssertEqual(try probe.pixel(page, x: 600, y: 300), detail, "\(name): the conversation")
@@ -124,8 +126,9 @@ final class ChatSidebarRenderTests: XCTestCase {
 
     /// Row centres (y, in points) in the history column.
     private enum Rows {
-        static let project = 73
-        static let first = 127
-        static let second = 153
+        static let newChat = 47
+        static let project = 100
+        static let first = 154
+        static let second = 180
     }
 }
