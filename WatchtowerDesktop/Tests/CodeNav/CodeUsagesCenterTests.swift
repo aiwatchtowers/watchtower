@@ -307,12 +307,55 @@ final class CodeUsagesCenterTests: XCTestCase {
     }
 
     func testAnInspectorStoredByAnEarlierRunIsRead() {
-        defaults.set([Int64(project.id)], forKey: CodeUsagesCenter.shownInspectorsKey)
-        defaults.set(["\(project.id)": "questions", "12": "bogus"], forKey: CodeUsagesCenter.inspectorTabsKey)
+        defaults.set(["/ws/a.db": [Int64(project.id)]], forKey: CodeUsagesCenter.shownInspectorsKey)
+        defaults.set(
+            ["/ws/a.db": ["\(project.id)": "questions", "12": "bogus"]], forKey: CodeUsagesCenter.inspectorTabsKey
+        )
         let (center, _) = makeCenter()
+        center.useWorkspace("/ws/a.db")
         XCTAssertTrue(center.isInspectorShown(workbenchID: project.id))
         XCTAssertEqual(center.inspectorTab(workbenchID: project.id), .questions)
         XCTAssertEqual(center.inspectorTab(workbenchID: 12), .usages, "an unknown tab falls back to Usages")
+    }
+
+    func testWorkspacesKeepTheirOwnInspectorsForTheSameWorkbenchID() {
+        let (center, _) = makeCenter()
+        center.useWorkspace("/ws/a.db")
+        center.setInspectorShown(true, workbenchID: project.id)
+        center.selectInspectorTab(.questions, workbenchID: project.id)
+
+        center.useWorkspace("/ws/b.db")
+        XCTAssertFalse(center.isInspectorShown(workbenchID: project.id), "workspace B's workbench 9 is another workbench")
+        XCTAssertEqual(center.inspectorTab(workbenchID: project.id), .usages)
+        center.setInspectorShown(true, workbenchID: 10)
+
+        let (relaunched, _) = makeCenter()
+        relaunched.useWorkspace("/ws/a.db")
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: project.id))
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: project.id), .questions)
+        XCTAssertFalse(relaunched.isInspectorShown(workbenchID: 10))
+        relaunched.useWorkspace("/ws/b.db")
+        XCTAssertFalse(relaunched.isInspectorShown(workbenchID: project.id))
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: 10))
+    }
+
+    func testADeletedWorkbenchLeavesNoInspectorForTheNextOneWithItsID() {
+        let (center, _) = makeCenter()
+        center.useWorkspace("/ws/a.db")
+        center.setInspectorShown(true, workbenchID: project.id)
+        center.selectInspectorTab(.questions, workbenchID: project.id)
+        center.setInspectorShown(true, workbenchID: 10)
+
+        center.workbenchRemoved(project.id)
+        XCTAssertFalse(center.isInspectorShown(workbenchID: project.id))
+        XCTAssertEqual(center.inspectorTab(workbenchID: project.id), .usages)
+        XCTAssertTrue(center.isInspectorShown(workbenchID: 10), "the other workbench keeps its inspector")
+
+        let (relaunched, _) = makeCenter()
+        relaunched.useWorkspace("/ws/a.db")
+        XCTAssertFalse(relaunched.isInspectorShown(workbenchID: project.id))
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: project.id), .usages)
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: 10))
     }
 
     // MARK: The Files pane goes away

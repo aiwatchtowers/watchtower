@@ -217,6 +217,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
             sessionNotifier: RecordingSessionNotifier()
         )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
+        XCTAssertEqual(appState.codeUsagesCenter.workspace, pool.path, "the inspector state is this workspace's")
         await vm.reload()
         for s in [a, b, kept] { appState.terminalCenter.start(s, fresh: true) }
         XCTAssertEqual(appState.terminalCenter.liveIDs, [a.id, b.id, kept.id])

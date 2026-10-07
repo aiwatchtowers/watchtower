@@ -33,7 +33,8 @@ enum CodeInspectorTab: String, CaseIterable, Identifiable {
 /// All Usages…" end in `showUsages`: one `code search --word --case` per
 /// workbench, a new name cancelling the one before; the Files pane going
 /// away stops it and keeps what it found. Which workbenches show the
-/// inspector, and on which tab, is kept across launches (#401).
+/// inspector, and on which tab, is kept across launches (#401), per
+/// workspace: workbench ids come from the workspace's own database.
 @MainActor
 @Observable
 final class CodeUsagesCenter {
@@ -51,10 +52,14 @@ final class CodeUsagesCenter {
     @ObservationIgnored private var generations: [Int64: Int] = [:]
     @ObservationIgnored private var nextGeneration = 0
     @ObservationIgnored private let defaults: UserDefaults
+    /// The workspace whose inspector state is read and written: its database
+    /// path (`ChatView`'s `chat.lastWorkspace` precedent). AppState sets it
+    /// in `initWorkbenches`, before any Files pane shows.
+    @ObservationIgnored private(set) var workspace = ""
 
-    /// The workbench ids whose Files pane shows the inspector.
+    /// Workspace → the workbench ids whose Files pane shows the inspector.
     static let shownInspectorsKey = "workbench.code.inspector.shown"
-    /// Workbench id (as a string) → the inspector's tab.
+    /// Workspace → workbench id (as a string) → the inspector's tab.
     static let inspectorTabsKey = "workbench.code.inspector.tabs"
 
     init(
@@ -67,9 +72,20 @@ final class CodeUsagesCenter {
         self.defaults = defaults
         self.startSearch = startSearch
         self.beep = beep
-        let shown = defaults.array(forKey: Self.shownInspectorsKey) as? [Int64] ?? []
+        loadInspectorState()
+    }
+
+    /// Switches the inspector state to `workspace`'s.
+    func useWorkspace(_ workspace: String) {
+        guard workspace != self.workspace else { return }
+        self.workspace = workspace
+        loadInspectorState()
+    }
+
+    private func loadInspectorState() {
+        let shown = defaults.dictionary(forKey: Self.shownInspectorsKey)?[workspace] as? [Int64] ?? []
         shownInspectors = Set(shown)
-        let tabs = defaults.dictionary(forKey: Self.inspectorTabsKey) as? [String: String] ?? [:]
+        let tabs = defaults.dictionary(forKey: Self.inspectorTabsKey)?[workspace] as? [String: String] ?? [:]
         inspectorTabs = tabs.reduce(into: [:]) { result, entry in
             if let id = Int64(entry.key), let tab = CodeInspectorTab(rawValue: entry.value) { result[id] = tab }
         }
@@ -172,7 +188,7 @@ final class CodeUsagesCenter {
         } else {
             shownInspectors.remove(workbenchID)
         }
-        defaults.set(shownInspectors.sorted(), forKey: Self.shownInspectorsKey)
+        saveShownInspectors()
     }
 
     func inspectorTab(workbenchID: Int64) -> CodeInspectorTab {
@@ -182,7 +198,25 @@ final class CodeUsagesCenter {
     func selectInspectorTab(_ tab: CodeInspectorTab, workbenchID: Int64) {
         guard inspectorTabs[workbenchID] != tab else { return }
         inspectorTabs[workbenchID] = tab
-        let stored = inspectorTabs.reduce(into: [String: String]()) { $0[String($1.key)] = $1.value.rawValue }
+        saveInspectorTabs()
+    }
+
+    /// A deleted workbench's inspector state goes with it: a later workbench
+    /// may get its id.
+    func workbenchRemoved(_ workbenchID: Int64) {
+        if shownInspectors.remove(workbenchID) != nil { saveShownInspectors() }
+        if inspectorTabs.removeValue(forKey: workbenchID) != nil { saveInspectorTabs() }
+    }
+
+    private func saveShownInspectors() {
+        var stored = defaults.dictionary(forKey: Self.shownInspectorsKey) ?? [:]
+        stored[workspace] = shownInspectors.sorted()
+        defaults.set(stored, forKey: Self.shownInspectorsKey)
+    }
+
+    private func saveInspectorTabs() {
+        var stored = defaults.dictionary(forKey: Self.inspectorTabsKey) ?? [:]
+        stored[workspace] = inspectorTabs.reduce(into: [String: String]()) { $0[String($1.key)] = $1.value.rawValue }
         defaults.set(stored, forKey: Self.inspectorTabsKey)
     }
 }

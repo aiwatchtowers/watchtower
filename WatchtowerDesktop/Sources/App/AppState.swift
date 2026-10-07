@@ -1717,6 +1717,7 @@ final class AppState {
         openQuicklyCenter.workbenches = vm
         codeNavigationCenter.workbenches = vm
         vm.codeFiles.navigation = codeNavigationCenter
+        codeUsagesCenter.useWorkspace(dbPool.path)
         codeUsagesCenter.workbenches = vm
         codeUsagesCenter.navigation = codeNavigationCenter
         codeNavigationCenter.usages = codeUsagesCenter
@@ -1739,7 +1740,10 @@ final class AppState {
             guard let self else { return }
             codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
         }
-        vm.onWorkbenchRemoved = { [weak codeQuestionCenter] in codeQuestionCenter?.workbenchRemoved($0) }
+        vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
+            codeQuestionCenter?.workbenchRemoved($0)
+            codeUsagesCenter?.workbenchRemoved($0)
+        }
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)
