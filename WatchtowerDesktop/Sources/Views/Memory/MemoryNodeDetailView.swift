@@ -113,7 +113,7 @@ struct MemoryNodeDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("The memory marked this belief as unsettled. Only this view shows the mark — nothing else will bring it to you.")
+                Text("The memory marked this belief as unsettled. The Memory tab's badge counts these marks; nothing else brings them to you.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -287,8 +287,9 @@ struct MemoryFocusEditorSheet: View {
             }
             Text("""
             List people, channels or projects by name, one "- " bullet each: under Now they rank \
-            higher in memory, under Cooled lower. Takes effect on the next memory run, and only while \
-            focus is turned on (watchtower config set memory.focus.enabled true).
+            higher in the Important sort and in what is kept when old notes are archived, under Cooled \
+            lower. Takes effect on the next memory run, and only while focus is turned on \
+            (watchtower config set memory.focus.enabled true).
             """)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
