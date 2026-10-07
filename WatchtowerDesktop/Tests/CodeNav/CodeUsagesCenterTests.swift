@@ -339,7 +339,7 @@ final class CodeUsagesCenterTests: XCTestCase {
         XCTAssertTrue(relaunched.isInspectorShown(workbenchID: 10))
     }
 
-    func testADeletedWorkbenchLeavesNoInspectorForTheNextOneWithItsID() {
+    func testADeletedWorkbenchLeavesNoStoredInspector() {
         let (center, _) = makeCenter()
         center.useWorkspace("/ws/a.db")
         center.setInspectorShown(true, workbenchID: project.id)

@@ -217,7 +217,14 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
             sessionNotifier: RecordingSessionNotifier()
         )
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
-        XCTAssertEqual(appState.codeUsagesCenter.workspace, pool.path, "the inspector state is this workspace's")
+        let usages = appState.codeUsagesCenter
+        XCTAssertEqual(usages.workspace, pool.path, "the inspector state is this workspace's")
+        // AppState's center writes to the standard defaults: drop this run's
+        // workspace entries afterwards.
+        defer { Self.dropInspectorState(of: pool.path) }
+        usages.setInspectorShown(true, workbenchID: id)
+        usages.selectInspectorTab(.questions, workbenchID: id)
+        usages.setInspectorShown(true, workbenchID: other)
         await vm.reload()
         for s in [a, b, kept] { appState.terminalCenter.start(s, fresh: true) }
         XCTAssertEqual(appState.terminalCenter.liveIDs, [a.id, b.id, kept.id])
@@ -227,5 +234,21 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         XCTAssertTrue(ok)
         XCTAssertEqual(appState.terminalCenter.liveIDs, [kept.id])
         XCTAssertEqual(processes.map(\.detached), [true, true, false])
+        XCTAssertFalse(usages.isInspectorShown(workbenchID: id), "the deleted workbench's inspector is pruned")
+        XCTAssertEqual(usages.inspectorTab(workbenchID: id), .usages)
+        XCTAssertTrue(usages.isInspectorShown(workbenchID: other))
+        let relaunched = CodeUsagesCenter()
+        relaunched.useWorkspace(pool.path)
+        XCTAssertFalse(relaunched.isInspectorShown(workbenchID: id), "and gone from its defaults")
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: id), .usages)
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: other))
+    }
+
+    private static func dropInspectorState(of workspace: String) {
+        for key in [CodeUsagesCenter.shownInspectorsKey, CodeUsagesCenter.inspectorTabsKey] {
+            guard var stored = UserDefaults.standard.dictionary(forKey: key) else { continue }
+            stored[workspace] = nil
+            UserDefaults.standard.set(stored, forKey: key)
+        }
     }
 }

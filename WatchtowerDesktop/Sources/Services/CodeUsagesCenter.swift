@@ -201,8 +201,8 @@ final class CodeUsagesCenter {
         saveInspectorTabs()
     }
 
-    /// A deleted workbench's inspector state goes with it: a later workbench
-    /// may get its id.
+    /// A deleted workbench's inspector state goes with it, so stale entries
+    /// do not pile up in UserDefaults (ids are never reused).
     func workbenchRemoved(_ workbenchID: Int64) {
         if shownInspectors.remove(workbenchID) != nil { saveShownInspectors() }
         if inspectorTabs.removeValue(forKey: workbenchID) != nil { saveInspectorTabs() }
