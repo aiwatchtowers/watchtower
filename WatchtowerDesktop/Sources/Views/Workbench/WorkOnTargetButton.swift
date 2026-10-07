@@ -7,7 +7,7 @@ import WatchtowerCore
 /// title names the session in the panel; it never reaches the command line.
 struct WorkOnTargetButton: View {
     let target: Target
-    /// Icon only (a board card) or a labelled prominent button (the detail card).
+    /// Icon only (a board card) or a labelled prominent button (the side panel).
     let compact: Bool
     /// A card shows it on hover and when selected; hidden it takes no clicks.
     let isVisible: Bool
@@ -27,7 +27,7 @@ struct WorkOnTargetButton: View {
                 Label(title, systemImage: icon)
             }
         }
-        // The detail card's primary action; a card's icon stays borderless.
+        // The side panel's primary action; a card's icon stays borderless.
         Group {
             if compact {
                 button.buttonStyle(.borderless)

@@ -12,8 +12,10 @@ import WatchtowerCore
 /// as typed: a margin comment). `onShiftSubmit`, when set, takes ⌘⇧↩/⌃⇧↩
 /// from `onSubmit` (an ask's Request changes). `onFocus` runs
 /// when the field takes the keyboard or is clicked while it has it (a
-/// margin comment's card turning active). Text set through the binding
-/// from outside is not undoable (`updateNSView`).
+/// margin comment's card turning active). An `onCancel` takes Esc in this
+/// field (it never reaches the pane's Esc handling); an `onEndEditing`
+/// hears the field losing focus. Text set through the binding from outside
+/// is not undoable (`updateNSView`).
 struct CommentTextEditor: View {
     @Binding var text: String
     var placeholder = ""
@@ -25,6 +27,8 @@ struct CommentTextEditor: View {
     var onSubmit: (() -> Void)?
     var onShiftSubmit: (() -> Void)?
     var onFocus: (() -> Void)?
+    var onCancel: (() -> Void)?
+    var onEndEditing: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
 
@@ -37,7 +41,7 @@ struct CommentTextEditor: View {
     var body: some View {
         CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear,
                             leavesOnSubmit: leavesOnSubmit, onSubmit: onSubmit, onShiftSubmit: onShiftSubmit,
-                            onFocus: onFocus)
+                            onFocus: onFocus, onCancel: onCancel, onEndEditing: onEndEditing)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -73,6 +77,8 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     let onSubmit: (() -> Void)?
     let onShiftSubmit: (() -> Void)?
     let onFocus: (() -> Void)?
+    let onCancel: (() -> Void)?
+    let onEndEditing: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -98,6 +104,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.onSubmit = onSubmit
         textView.onShiftSubmit = onShiftSubmit
         textView.onFocus = onFocus
+        textView.onCancel = onCancel
 
         // A new width re-wraps the text: measure again.
         textView.postsFrameChangedNotifications = true
@@ -121,6 +128,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.onSubmit = onSubmit
         textView.onShiftSubmit = onShiftSubmit
         textView.onFocus = onFocus
+        textView.onCancel = onCancel
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
             // Text from outside (another ask's draft under the same field,
@@ -161,6 +169,14 @@ private struct CommentNSTextEditor: NSViewRepresentable {
             measure(textView)
         }
 
+        /// Posted inside AppKit's responder change, which may itself run
+        /// inside a SwiftUI update (a view removed, the panel switching):
+        /// the handler, which writes state, runs on the next turn.
+        func textDidEndEditing(_ notification: Notification) {
+            guard let onEndEditing = parent.onEndEditing else { return }
+            DispatchQueue.main.async { onEndEditing() }
+        }
+
         /// A new width re-wraps the text. It arrives mid-layout, so the
         /// height is written on the next turn; height-only changes (typing)
         /// are already measured by `textDidChange`.
@@ -188,6 +204,7 @@ private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onShiftSubmit: (() -> Void)?
     var onFocus: (() -> Void)?
+    var onCancel: (() -> Void)?
     var focusOnAppear = false
     var leavesOnSubmit = false
 
@@ -219,7 +236,14 @@ private final class SubmittingTextView: NSTextView {
 
     override func keyDown(with event: NSEvent) {
         if submits(event) { submit(event); return }
+        if let onCancel, cancels(event) { onCancel(); return }
         super.keyDown(with: event)
+    }
+
+    /// A bare Esc, never mid-IME-composition (it cancels the composition).
+    private func cancels(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        return event.keyCode == 53 && flags.isEmpty && !hasMarkedText()
     }
 
     /// ⌘-combinations reach the window as key equivalents before `keyDown`.

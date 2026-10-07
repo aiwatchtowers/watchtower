@@ -5,12 +5,15 @@ import WatchtowerCore
 /// its `#id`, priority/status chips, counters, and — for a parent — its children's
 /// progress and a collapse chevron. `trailing` is the card's action slot,
 /// told whether the pointer is over the card; `caption` is an extra line
-/// under the title (the kanban's parent chain).
+/// under the title (the kanban's parent chain). `wrapsText` shows the title
+/// and caption in full (kanban, spec 2026-10-06 Part 2); the list keeps
+/// them short.
 struct WorkbenchBoardCardView<Trailing: View>: View {
     let row: WorkbenchBoardRow
     let isSelected: Bool
     let isCollapsed: Bool
     var caption: String?
+    var wrapsText = false
     let onToggle: () -> Void
     @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
@@ -28,15 +31,15 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(card.title.isEmpty ? "Untitled" : card.title)
                     .font(row.hasChildren ? .callout.weight(.semibold) : .callout)
-                    .lineLimit(2)
+                    .lineLimit(wrapsText ? nil : 2)
                     .strikethrough(card.isDone)
                     .foregroundStyle(card.isClosed ? .secondary : .primary)
                 if let caption {
                     Text(caption)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .lineLimit(wrapsText ? nil : 1)
+                        .truncationMode(wrapsText ? .tail : .middle)
                         .help(caption)
                 }
                 chips(card)
@@ -179,7 +182,7 @@ enum WorkbenchBoardChevron {
     static let accessibilityID = "workbench-board-card-chevron"
 }
 
-/// A small tinted capsule: a card's priority or status, and the detail card's
+/// A small tinted capsule: a card's priority or status, and the side panel's
 /// drift findings.
 struct WorkbenchBoardChip: View {
     let text: String
@@ -225,7 +228,7 @@ enum WorkbenchBoardColors {
 }
 
 /// A board target's number as the agent writes it (`#163`, board #207), and
-/// the copy to the pasteboard behind the card menu and the detail card.
+/// the copy to the pasteboard behind the card menu and the side panel.
 enum WorkbenchTargetNumber {
     static func label(_ id: Int) -> String { "#\(id)" }
 
@@ -235,13 +238,22 @@ enum WorkbenchTargetNumber {
     }
 }
 
-/// The context menu of a board row or kanban card: copy the number, and
-/// "Move to…" another target or the top level (board #186).
+/// The context menu of a board row or kanban card: Open Group on a list row
+/// with children (spec 2026-10-06 Part 4), copy the number, and "Move to…"
+/// another target or the top level (board #186).
 struct WorkbenchTargetMenu: View {
     let target: Target
     let vm: WorkbenchBoardViewModel
+    /// The list's Open Group: enters `target` as the board scope. Nil hides
+    /// the item (kanban cards are leaves; the panel has its own button).
+    var onOpenGroup: ((Int) -> Void)?
 
     var body: some View {
+        if let onOpenGroup, let node = WorkbenchBoardOutline.find(target.id, in: vm.roots), !node.children.isEmpty {
+            Button("Open Group") { onOpenGroup(target.id) }
+                .disabled(vm.scopeNode?.target.id == target.id)
+            Divider()
+        }
         Button("Copy \(WorkbenchTargetNumber.label(target.id))") { WorkbenchTargetNumber.copy(target.id) }
         Divider()
         Menu("Move to") {

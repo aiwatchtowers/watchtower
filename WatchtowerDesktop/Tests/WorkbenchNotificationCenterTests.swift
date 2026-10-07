@@ -45,7 +45,7 @@ final class WorkbenchPersistedKeysTests: XCTestCase {
         defaults.set(42, forKey: "projects.boardKanbanFilter.7")
         let prefs = WorkbenchBoardPreferences(workbenchID: 7, defaults: defaults)
         XCTAssertEqual(prefs.mode, .kanban, "a board mode saved before the rename still reads")
-        XCTAssertEqual(prefs.kanbanFilterRootID, 42)
+        XCTAssertEqual(prefs.boardScopeID, 42)
     }
 }
 
