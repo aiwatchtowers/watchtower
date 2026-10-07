@@ -18,7 +18,7 @@ Watchtower is a native macOS app that turns your work sources into an actionable
                                                     People · Ideas · Memory · Knowledge search
 ```
 
-**Key principles:** your data is stored locally in SQLite; the only thing that leaves your machine is the AI prompts sent to the provider you pick (the Claude Code or Codex CLI, or nothing with a local Ollama-compatible server); nothing is posted to Slack, Jira or Confluence without your Approve.
+**Key principles:** your data is stored locally in SQLite; it leaves your machine only as AI prompts to the provider you pick (the Claude Code or Codex CLI, or none with a local Ollama-compatible server), as writes you approve (Slack messages, Jira, Confluence), and as calls to external MCP servers you add yourself. Nothing is posted to Slack, Jira or Confluence without your Approve.
 
 ## Features
 
@@ -67,13 +67,13 @@ Download from [Releases](https://github.com/aiwatchtowers/watchtower/releases) (
 
 ## Getting Started
 
-1. Open **Watchtower.app**. Setup takes three steps, and nothing in it is required:
-   - **Goals** — pick what you want Watchtower for (work communication, tasks & Jira, meetings, development in Workbench). Continue unlocks once the AI CLI check passes.
+1. Open **Watchtower.app**. Setup takes three steps; everything in them can be skipped except the AI check in the first:
+   - **Goals** — pick what you want Watchtower for (work communication, tasks & Jira, meetings, development in Workbench). Continue unlocks once the AI check passes.
    - **Connect** — connect Slack, Google (Gmail + Calendar) and Jira, or skip and do it later from Settings → Connections.
    - **About you** — your role, manager, reports and peers (shown once Slack is connected).
 2. The app starts the background daemon itself; data appears as the first sync runs.
 
-**Prerequisites:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the Codex CLI, installed and signed in (`watchtower ai test` must pass).
+**Prerequisites:** an AI provider that `watchtower ai test` accepts — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the Codex CLI, installed and signed in (setup checks for these), or a local Ollama-compatible server set up beforehand from the CLI (`watchtower config set ai.provider ollama`, then `watchtower config set ai.models.strong <model>`).
 
 ### Headless / CLI only
 
