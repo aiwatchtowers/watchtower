@@ -18,7 +18,7 @@ Watchtower is a native macOS app that turns your work sources into an actionable
                                                     People · Ideas · Memory · Knowledge search
 ```
 
-**Key principles:** all data stays on your machine; nothing is sent to Slack, Jira or Confluence without your Approve; AI runs via the Claude Code or Codex CLI (or a local Ollama-compatible server).
+**Key principles:** your data is stored locally in SQLite; the only thing that leaves your machine is the AI prompts sent to the provider you pick (the Claude Code or Codex CLI, or nothing with a local Ollama-compatible server); nothing is posted to Slack, Jira or Confluence without your Approve.
 
 ## Features
 
