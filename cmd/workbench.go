@@ -89,7 +89,7 @@ func init() {
 	for _, c := range []*cobra.Command{workbenchCreateCmd, workbenchListCmd, workbenchShowCmd, workbenchBoardCmd, workbenchDeleteCmd} {
 		c.Flags().BoolVar(&workbenchFlagJSON, "json", false, "output JSON")
 	}
-	workbenchBoardCmd.Flags().BoolVar(&workbenchBoardFlagArchived, "archived", false, "also print archived targets (closed longer than the workbench's archive period)")
+	workbenchBoardCmd.Flags().BoolVar(&workbenchBoardFlagArchived, "archived", false, "also print archived targets (closed long enough ago, or archived with Archive Now)")
 	workbenchCmd.AddCommand(workbenchCreateCmd, workbenchListCmd, workbenchShowCmd, workbenchBoardCmd, workbenchDeleteCmd)
 	rootCmd.AddCommand(workbenchCmd)
 }

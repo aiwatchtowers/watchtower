@@ -18,7 +18,7 @@ type listTargetsArgs struct {
 	Limit     int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 	// IncludeArchived has no effect outside a workbench session, which never
 	// sees workbench targets (PROJ-01).
-	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"workbench sessions: also list archived targets (closed longer than the workbench's archive period); without status it lists every target, open, closed and archived"`
+	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"workbench sessions: also list archived targets (closed long enough ago, or archived with Archive Now); without status it lists every target, open, closed and archived"`
 }
 
 type getTargetArgs struct {

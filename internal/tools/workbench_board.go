@@ -43,7 +43,7 @@ type workbenchBoardView struct {
 
 type workbenchBoardArgs struct {
 	IncludeClosed   bool `json:"include_closed,omitempty" jsonschema:"also list the closed (done/dismissed) targets with nothing open under them, as id, text, status and since only"`
-	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"also list the archived targets (closed longer than the workbench's archive period); implies include_closed"`
+	IncludeArchived bool `json:"include_archived,omitempty" jsonschema:"also list the archived targets (closed long enough ago, or archived with Archive Now); implies include_closed"`
 }
 
 // NewWorkbenchBoard returns the bound workbench's target tree with comment
