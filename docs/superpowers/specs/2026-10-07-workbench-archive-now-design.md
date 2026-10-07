@@ -1,6 +1,7 @@
 # Workbench board — Archive Closed Targets Now (board #415, 2026-10-07)
 
-Status: draft, waiting for the owner's decisions 1–4 (§1). Amends the board
+Status: approved by the owner on 2026-10-07 (ask #106) — all four §1
+decisions as recommended, and the §3 PROJ-15 amendment. Amends the board
 archive spec `2026-10-04-workbench-board-archive-design.md` (#301, PROJ-15).
 Migration number: 00105 (00104 is the code-question orphans migration).
 
