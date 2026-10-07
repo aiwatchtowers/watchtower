@@ -249,6 +249,7 @@ var knownConfigKeys = map[string]bool{
 	"memory.surfaces.day_plan":             true,
 	"memory.surfaces.meeting_prep":         true,
 	"memory.semantic.preferences":          true,
+	"memory.focus.enabled":                 true,
 	"claude_path":                          true,
 	"tracks.enabled":                       true,
 	"people.enabled":                       true,
