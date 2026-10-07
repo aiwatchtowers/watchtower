@@ -36,4 +36,20 @@ final class PersistedInspectorWidthTests: XCTestCase {
         XCTAssertEqual(PersistedInspectorWidth.widthToStore(412.4, range: range), 412)
         XCTAssertEqual(PersistedInspectorWidth.widthToStore(700, range: range), 560)
     }
+
+    func testASettledWidthIsStoredAndTheNextOpenReadsIt() {
+        PersistedInspectorWidth.store(412.4, key: "w", range: range, defaults: defaults)
+        XCTAssertEqual(defaults.object(forKey: "w") as? Double, 412)
+        XCTAssertEqual(PersistedInspectorWidth.storedWidth(defaults: defaults, key: "w", range: range, ideal: 300), 412)
+        PersistedInspectorWidth.store(700, key: "w", range: range, defaults: defaults)
+        XCTAssertEqual(defaults.object(forKey: "w") as? Double, 560, "clamped to the widest the column gets")
+    }
+
+    func testAnAnimationFrameNarrowerThanTheColumnIsNotStored() {
+        PersistedInspectorWidth.store(120, key: "w", range: range, defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "w"), "nothing stored yet")
+        PersistedInspectorWidth.store(410, key: "w", range: range, defaults: defaults)
+        PersistedInspectorWidth.store(0, key: "w", range: range, defaults: defaults)
+        XCTAssertEqual(defaults.object(forKey: "w") as? Double, 410, "closing keeps the last settled width")
+    }
 }
