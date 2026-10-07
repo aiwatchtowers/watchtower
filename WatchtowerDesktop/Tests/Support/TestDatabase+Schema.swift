@@ -1344,7 +1344,8 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
-    CHECK (archive_after_days BETWEEN 0 AND 365));
+    CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
+    CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL));
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1583,10 +1584,12 @@ WITH RECURSIVE
     )
 SELECT up.ancestor AS target_id,
        up.project_id AS project_id,
-       CASE WHEN p.archive_after_days > 0
-             AND MAX(up.open) = 0
+       CASE WHEN MAX(up.open) = 0
              AND COUNT(*) = COUNT(julianday(up.closed_at))
-             AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
+             AND ((p.archive_after_days > 0
+                   AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days)
+               OR (p.archived_through IS NOT NULL
+                   AND MAX(julianday(up.closed_at)) <= julianday(p.archived_through)))
             THEN 1 ELSE 0 END AS archived
 FROM up
 JOIN projects p ON p.id = up.project_id
