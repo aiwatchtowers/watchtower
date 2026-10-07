@@ -224,8 +224,9 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         // Pressing again moves the moment forward. The stamp has second
         // precision, so date the first one back before the second press.
         let earlier = "2000-01-01T00:00:00Z"
-        try await pool.write { try $0.execute(sql: "UPDATE projects SET archived_through = ? WHERE id = ?",
-                                              arguments: [earlier, p]) }
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE projects SET archived_through = ? WHERE id = ?", arguments: [earlier, p])
+        }
         await vm.reload()
         XCTAssertEqual(vm.summaries.first?.project.archivedThrough, earlier)
         try controls(vm, stamped).inspect().find(button: "Archive Closed Targets Now").tap()
