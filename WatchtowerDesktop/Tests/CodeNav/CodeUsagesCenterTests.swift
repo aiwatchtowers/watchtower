@@ -44,7 +44,7 @@ final class CodeUsagesCenterTests: XCTestCase {
     }
 
     private func makeCenter(startSearch: CodeSearchStarter? = nil) -> (CodeUsagesCenter, WorkbenchesViewModel) {
-        let center = CodeUsagesCenter(startSearch: startSearch ?? searches.start) { [weak self] in self?.beeps += 1 }
+        let center = CodeUsagesCenter(defaults: defaults, startSearch: startSearch ?? searches.start) { [weak self] in self?.beeps += 1 }
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         center.workbenches = vm
         vm.codeFiles.usages = center
@@ -280,6 +280,39 @@ final class CodeUsagesCenterTests: XCTestCase {
         center.setInspectorShown(false, workbenchID: project.id)
         XCTAssertFalse(center.isInspectorShown(workbenchID: project.id))
         XCTAssertEqual(center.inspectorTab(workbenchID: project.id), .questions)
+    }
+
+    func testTheInspectorAndItsTabSurviveANewCenter() {
+        let (center, _) = makeCenter()
+        center.setInspectorShown(true, workbenchID: project.id)
+        center.selectInspectorTab(.questions, workbenchID: project.id)
+        center.setInspectorShown(true, workbenchID: 10)
+        center.setInspectorShown(false, workbenchID: 10)
+
+        let (relaunched, _) = makeCenter()
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: project.id))
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: project.id), .questions)
+        XCTAssertFalse(relaunched.isInspectorShown(workbenchID: 10), "a closed inspector stays closed")
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: 10), .usages)
+    }
+
+    func testShowUsagesKeepsTheInspectorOpenOnUsagesAcrossLaunches() {
+        let (center, _) = makeCenter()
+        center.selectInspectorTab(.questions, workbenchID: project.id)
+        center.showUsages(of: "save", project: project)
+
+        let (relaunched, _) = makeCenter()
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: project.id))
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: project.id), .usages)
+    }
+
+    func testAnInspectorStoredByAnEarlierRunIsRead() {
+        defaults.set([Int64(project.id)], forKey: CodeUsagesCenter.shownInspectorsKey)
+        defaults.set(["\(project.id)": "questions", "12": "bogus"], forKey: CodeUsagesCenter.inspectorTabsKey)
+        let (center, _) = makeCenter()
+        XCTAssertTrue(center.isInspectorShown(workbenchID: project.id))
+        XCTAssertEqual(center.inspectorTab(workbenchID: project.id), .questions)
+        XCTAssertEqual(center.inspectorTab(workbenchID: 12), .usages, "an unknown tab falls back to Usages")
     }
 
     // MARK: The Files pane goes away

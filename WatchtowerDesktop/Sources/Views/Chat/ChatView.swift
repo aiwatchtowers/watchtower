@@ -130,7 +130,7 @@ struct ChatSplitView: View {
             set: { if !$0 { chatVM.closeInspector() } }
         )) {
             ChatInspectorContent(chatVM: chatVM)
-                .inspectorColumnWidth(min: 320, ideal: 460, max: 900)
+                .persistedInspectorColumnWidth(key: "chat.inspectorWidth", range: 320...900, ideal: 460)
         }
     }
 

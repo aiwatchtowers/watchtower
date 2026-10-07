@@ -12,9 +12,9 @@ struct ArtifactPanelView: View {
     var onClose: () -> Void
 
     @State private var notice: String?
-    /// The comment list is open. Survives new comments and versions; a click
-    /// on a highlight opens it on that thread.
-    @State private var showComments = true
+    /// The comment list is open. Survives new comments, versions and
+    /// launches; a click on a highlight opens it on that thread.
+    @AppStorage("chat.artifact.commentsVisible") private var showComments = true
 
     var body: some View {
         VStack(spacing: 0) {

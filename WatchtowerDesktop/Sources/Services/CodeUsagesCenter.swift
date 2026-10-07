@@ -32,7 +32,8 @@ enum CodeInspectorTab: String, CaseIterable, Identifiable {
 /// the cursor), the editor's context menu and the definition menu's "Show
 /// All Usages…" end in `showUsages`: one `code search --word --case` per
 /// workbench, a new name cancelling the one before; the Files pane going
-/// away stops it and keeps what it found.
+/// away stops it and keeps what it found. Which workbenches show the
+/// inspector, and on which tab, is kept across launches (#401).
 @MainActor
 @Observable
 final class CodeUsagesCenter {
@@ -49,15 +50,29 @@ final class CodeUsagesCenter {
     /// Per workbench: the live search; an older one's callbacks are dropped.
     @ObservationIgnored private var generations: [Int64: Int] = [:]
     @ObservationIgnored private var nextGeneration = 0
+    @ObservationIgnored private let defaults: UserDefaults
+
+    /// The workbench ids whose Files pane shows the inspector.
+    static let shownInspectorsKey = "workbench.code.inspector.shown"
+    /// Workbench id (as a string) → the inspector's tab.
+    static let inspectorTabsKey = "workbench.code.inspector.tabs"
 
     init(
+        defaults: UserDefaults = .standard,
         startSearch: @escaping CodeSearchStarter = { folder, options, onMatch, onDone in
             CodeSearchRun.start(folder: folder, options: options, onMatch: onMatch, onDone: onDone)
         },
         beep: @escaping @MainActor () -> Void = { NSSound.beep() }
     ) {
+        self.defaults = defaults
         self.startSearch = startSearch
         self.beep = beep
+        let shown = defaults.array(forKey: Self.shownInspectorsKey) as? [Int64] ?? []
+        shownInspectors = Set(shown)
+        let tabs = defaults.dictionary(forKey: Self.inspectorTabsKey) as? [String: String] ?? [:]
+        inspectorTabs = tabs.reduce(into: [:]) { result, entry in
+            if let id = Int64(entry.key), let tab = CodeInspectorTab(rawValue: entry.value) { result[id] = tab }
+        }
     }
 
     // MARK: Pages
@@ -115,8 +130,8 @@ final class CodeUsagesCenter {
         let generation = nextGeneration
         generations[workbenchID] = generation
         results[workbenchID] = UsagesModel(word: word)
-        shownInspectors.insert(workbenchID)
-        inspectorTabs[workbenchID] = .usages
+        setInspectorShown(true, workbenchID: workbenchID)
+        selectInspectorTab(.usages, workbenchID: workbenchID)
         let options = CodeSearchOptions(query: word, word: true, caseSensitive: true, context: 0)
         runs[workbenchID] = startSearch(project.folderURL, options, { [weak self] match in
             guard let self, generations[workbenchID] == generation else { return }
@@ -157,6 +172,7 @@ final class CodeUsagesCenter {
         } else {
             shownInspectors.remove(workbenchID)
         }
+        defaults.set(shownInspectors.sorted(), forKey: Self.shownInspectorsKey)
     }
 
     func inspectorTab(workbenchID: Int64) -> CodeInspectorTab {
@@ -164,7 +180,10 @@ final class CodeUsagesCenter {
     }
 
     func selectInspectorTab(_ tab: CodeInspectorTab, workbenchID: Int64) {
+        guard inspectorTabs[workbenchID] != tab else { return }
         inspectorTabs[workbenchID] = tab
+        let stored = inspectorTabs.reduce(into: [String: String]()) { $0[String($1.key)] = $1.value.rawValue }
+        defaults.set(stored, forKey: Self.inspectorTabsKey)
     }
 }
 

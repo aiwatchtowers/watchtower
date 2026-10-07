@@ -52,7 +52,10 @@ final class CodeNavQuitTests: XCTestCase {
         let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let openQuickly = OpenQuicklyCenter(codeIndex: codeIndex, presenter: SilentPresenter(), startSearch: stubStarter())
         let navigation = CodeNavigationCenter(codeIndex: codeIndex, startSearch: stubStarter()) {}
-        let usages = CodeUsagesCenter(startSearch: stubStarter()) {}
+        let suite = "CodeNavQuitTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite) ?? .standard
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let usages = CodeUsagesCenter(defaults: defaults, startSearch: stubStarter()) {}
 
         usages.showUsages(of: "save", project: project)
         // A file the index has not seen: the heuristic's text search runs.
