@@ -113,7 +113,7 @@ struct MemoryNodeDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text("The assistant flagged this for your attention — expect a dashboard item.")
+                Text("The memory marked this belief as unsettled. The Memory tab's badge counts these marks; nothing else brings them to you.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -286,8 +286,10 @@ struct MemoryFocusEditorSheet: View {
                     .foregroundStyle(.red)
             }
             Text("""
-            Bullets under Now/Cooled boost or cool matching memory nodes during consolidation. \
-            Saved edits are committed as owner-edit by the next memory run.
+            List people, channels or projects by name, one "- " bullet each: under Now they rank \
+            higher in the Important sort and in what is kept when old notes are archived, under Cooled \
+            lower. Takes effect on the next memory run, and only while focus is turned on \
+            (watchtower config set memory.focus.enabled true).
             """)
                 .font(.caption2)
                 .foregroundStyle(.secondary)

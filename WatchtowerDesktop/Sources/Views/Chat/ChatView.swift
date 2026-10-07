@@ -130,7 +130,7 @@ struct ChatSplitView: View {
             set: { if !$0 { chatVM.closeInspector() } }
         )) {
             ChatInspectorContent(chatVM: chatVM)
-                .inspectorColumnWidth(min: 320, ideal: 460, max: 900)
+                .persistedInspectorColumnWidth(key: "chat.inspectorWidth", range: 320...900, ideal: 460)
         }
     }
 
@@ -155,10 +155,15 @@ struct ChatSplitView: View {
                 .keyboardShortcut("k", modifiers: .command)
                 .help("Search Chats (⌘K)")
                 .accessibilityLabel("Search Chats (⌘K)")
-            Button(action: createNewChat) { Image(systemName: "square.and.pencil") }
+            // Labelled like the history column's row, so the action reads
+            // the same whether that column is open or closed.
+            Button(action: createNewChat) {
+                Label("New chat", systemImage: "square.and.pencil")
+                    .labelStyle(.titleAndIcon)
+            }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("New Chat (⌘N)")
-                .accessibilityLabel("New Chat (⌘N)")
+                .accessibilityLabel("New chat")
             Button {
                 Task { await appState.rerunOnboarding() }
             } label: { Image(systemName: "person.crop.circle.badge.questionmark") }

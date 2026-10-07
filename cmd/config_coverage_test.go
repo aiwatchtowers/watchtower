@@ -258,6 +258,7 @@ func TestKnownConfigKeys(t *testing.T) {
 		"memory.surfaces.chat",
 		"memory.surfaces.briefing",
 		"memory.surfaces.reflection",
+		"memory.focus.enabled",
 		"claude_path",
 	}
 

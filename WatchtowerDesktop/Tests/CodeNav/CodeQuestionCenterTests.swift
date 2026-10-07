@@ -593,7 +593,7 @@ final class CodeQuestionCenterTests: XCTestCase {
         let codeIndex = CodeIndexCenter { nil }
         AppState.stopCodeNavigationChildren(
             index: codeIndex, openQuickly: OpenQuicklyCenter(codeIndex: codeIndex), navigation: CodeNavigationCenter(codeIndex: codeIndex),
-            usages: CodeUsagesCenter(), questions: center)
+            usages: CodeUsagesCenter(defaults: defaults), questions: center)
         await stub.assertAllGroupsReaped()
         XCTAssertEqual(center.sessions[project.id]?.isSearchingUsages, false)
         XCTAssertTrue(ai.calls.isEmpty, "a stopped search sends nothing")
@@ -723,7 +723,7 @@ final class CodeQuestionCenterTests: XCTestCase {
     /// the same engine keeps answering, no second turn starts.
     func testPinMovesThePopoverConversationIntoTheInspector() async throws {
         let (center, _, buffer) = makeCenter()
-        let usages = CodeUsagesCenter()
+        let usages = CodeUsagesCenter(defaults: defaults)
         center.usages = usages
         await center.askAI(bufferID: buffer.id, project: project)
         center.quickAction(.explain, workbenchID: project.id)
@@ -736,6 +736,9 @@ final class CodeQuestionCenterTests: XCTestCase {
         XCTAssertEqual(center.inspectorQuestions[project.id], conversationID)
         XCTAssertTrue(usages.isInspectorShown(workbenchID: project.id))
         XCTAssertEqual(usages.inspectorTab(workbenchID: project.id), .questions)
+        let relaunched = CodeUsagesCenter(defaults: defaults)
+        XCTAssertTrue(relaunched.isInspectorShown(workbenchID: project.id), "a pinned question reopens the inspector")
+        XCTAssertEqual(relaunched.inspectorTab(workbenchID: project.id), .questions)
         let ref = try XCTUnwrap(center.questionRef(conversationID))
         XCTAssertTrue(center.engine(for: ref) === engine, "the same engine")
         XCTAssertTrue(engine.isStreaming, "the answer keeps streaming")

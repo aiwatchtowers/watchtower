@@ -3,52 +3,58 @@
 </p>
 
 <p align="center">
-  AI-powered Slack intelligence for macOS.<br/>
-  Syncs your workspace locally, generates briefings, tracks action items, and analyzes team dynamics.
+  A local AI assistant for your work on macOS.<br/>
+  Syncs Slack, Gmail, Calendar, Jira and Confluence locally, tells you what needs your attention, and works your tasks with you.
 </p>
 
 ## What is Watchtower?
 
-Watchtower is a native macOS app that turns your Slack workspace into an actionable knowledge base. A background daemon syncs messages into a local SQLite database, then AI pipelines distill them into briefings, digests, tracks, and people analytics — all without leaving your desktop.
+Watchtower is a native macOS app that turns your work sources into an actionable, searchable knowledge base. A background daemon syncs Slack, Gmail, Google Calendar, Jira and Confluence into a local SQLite database, then AI pipelines distill them into briefings, digests, tracks, people cards and a memory the assistant draws on — all without leaving your desktop.
 
 ```
-[Slack API] → [Local SQLite] → [AI Pipelines] → [Desktop App]
-                                      ↓
-                              Briefings · Digests
-                              Tracks · People · Chains
+[Slack · Gmail · Calendar · Jira · Confluence] → [Local SQLite] → [AI Pipelines] → [Desktop App]
+                                                                        ↓
+                                                    Briefings · Catch-Up · Digests · Tracks
+                                                    People · Ideas · Memory · Knowledge search
 ```
 
-**Key principles:** all data stays on your machine, read-only Slack access, AI runs via Claude CLI.
+**Key principles:** your data is stored locally in SQLite; it leaves your machine only as AI prompts to the provider you pick (the Claude Code or Codex CLI, or none with a local Ollama-compatible server), as writes you approve (Slack messages, Jira, Confluence), and as calls to external MCP servers you add yourself. Nothing is posted to Slack, Jira or Confluence without your Approve.
 
 ## Features
 
-- **Daily Briefings** — personalized morning overview: what needs attention, your tasks for the day, what happened, team pulse, coaching tips
-- **AI Chat** — ask questions about your workspace in natural language, with multi-turn conversations and model selection
-- **Tracks** — action items extracted from conversations: tasks, reviews, approvals, follow-ups with priority, status, and ownership
-- **Digests** — channel summaries, daily rollups, weekly trends with running context that preserves topic continuity
-- **Chains** — cross-channel discussion threads automatically linked by AI
-- **People Analytics** — communication styles, decision roles, activity patterns, team health metrics
-- **Full-text Search** — FTS5 search across all synced messages
-- **Self-improving AI** — feedback loop with prompt tuning based on your ratings
-- **Native Notifications** — alerts for new briefings, tracks, and digests
-- **MCP server:** `watchtower mcp` exposes your data to any MCP client (read-only). See [docs/mcp-server.md](docs/mcp-server.md).
+- **Daily Briefings** — a morning overview: what needs attention, your day, what happened
+- **Catch-Up** — a recap of the window you were away for
+- **Inbox** — a queue of decisions waiting on you: proposals from the chats and from Slack reaction commands (react with an emoji to turn a message into a task, idea or reminder)
+- **Targets** — your tasks, with an AI chat per target that proposes or applies changes
+- **Tracks** — narrative tracks of what is going on across conversations
+- **Digests** — channel summaries, daily rollups and weekly trends
+- **AI Chat** — ask about your work in natural language; it can draft and, after your Approve, send Slack messages or edit Confluence pages
+- **Workbench** — a folder-bound board that a Claude Code session works in an embedded terminal, with asks back to you and a code viewer
+- **Meetings** — recording, live transcription with speaker diarization, notes and meeting prep
+- **Ideas & Decisions** — ideas and decisions mined from your sources
+- **Memory** — a local vault of what the assistant has learned about your people, projects and work
+- **Knowledge search** — full-text search across messages, mail, Jira, Confluence pages, meetings and more
+- **Jira** — boards, workload, blockers, project map and releases
+- **People** — communication styles, roles and activity patterns
+- **Voice dictation** — dictate into the app's text fields, or capture a voice idea from anywhere with ⌃⌥D
+- **MCP server** — `watchtower mcp` exposes your data to any MCP client (read-only). See [docs/mcp-server.md](docs/mcp-server.md).
 
 ## Install
 
 ### One-liner (recommended)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aiwathctowers/watchtower/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scripts/install.sh | bash
 ```
 
 Installs the desktop app to `/Applications` and the `watchtower` CLI to your PATH.
 
 ### From source
 
-Requires Go 1.25+, Swift 5.10+, macOS 14+.
+Requires Go 1.25+, a Swift 6+ toolchain (Xcode 16+), macOS 14+.
 
 ```bash
-git clone https://github.com/aiwathctowers/watchtower.git
+git clone https://github.com/aiwatchtowers/watchtower.git
 cd watchtower
 make app          # Full release build → build/Watchtower.app (see "Rebuilding while the app runs")
 # or
@@ -57,35 +63,31 @@ make app-dev      # Fast dev build
 
 ### Pre-built binaries
 
-Download from [Releases](https://github.com/aiwathctowers/watchtower/releases) (macOS Apple Silicon).
+Download from [Releases](https://github.com/aiwatchtowers/watchtower/releases) (macOS Apple Silicon).
 
 ## Getting Started
 
+1. Open **Watchtower.app**. Setup takes three steps; everything in them can be skipped except the AI check in the first:
+   - **Goals** — pick what you want Watchtower for (work communication, tasks & Jira, meetings, development in Workbench). Continue unlocks once the AI check passes.
+   - **Connect** — connect Slack, Google (Gmail + Calendar) and Jira, or skip and do it later from Settings → Connections.
+   - **About you** — your role, manager, reports and peers (shown once Slack is connected).
+2. The app starts the background daemon itself; data appears as the first sync runs.
+
+**Prerequisites:** an AI provider that `watchtower ai test` accepts — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) or the Codex CLI, installed and signed in (setup checks for these), or a local Ollama-compatible server set up beforehand from the CLI (`watchtower config set ai.provider ollama`, then `watchtower config set ai.models.strong <model>`).
+
+### Headless / CLI only
+
 ```bash
-# 1. Login via Slack OAuth (opens browser)
-watchtower auth login
-
-# 2. Start the background daemon
-watchtower sync --daemon
-
-# 3. Open Watchtower.app — data appears automatically
+watchtower slack add                   # Connect a Slack workspace (OAuth in the browser)
+watchtower sync --daemon --detach      # Start the background daemon
+watchtower sync --stop                 # Stop it
 ```
-
-**Prerequisites:**
-- **Slack** — OAuth login handled automatically
-- **Claude CLI** — install [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for AI features (or set `ANTHROPIC_API_KEY`)
 
 ## How It Works
 
-The daemon (`watchtower sync --daemon`) polls Slack and runs five AI pipelines in sequence after each sync:
+The daemon (`watchtower sync --daemon`) polls Slack and the other connected sources, then runs its AI and indexing phases after each sync: channel digests, tracks and rollups, people cards, inbox detection, reaction commands, ideas, memory, the knowledge index, and the daily briefing (once per day). Each phase can be switched off from Settings → Features or `watchtower features`.
 
-1. **Digests** — channel summaries with running context
-2. **Tracks** — personal action items for the current user
-3. **Chains** — cross-channel discussion linking
-4. **People** — team member profiles from interaction patterns
-5. **Briefings** — daily aggregation of all above (once per day)
-
-The desktop app reads the same SQLite database via GRDB and updates in real-time.
+The desktop app reads the same SQLite database via GRDB and updates in real time.
 
 ## Configuration
 
@@ -96,15 +98,20 @@ sync:
   poll_interval: "15m"
   workers: 5
   initial_history_days: 30
+ai:
+  provider: "claude"      # claude | codex | ollama
+  models:
+    light: "haiku"        # optional per-tier overrides
+    strong: "opus"
 digest:
   enabled: true
-  model: "claude-haiku-4-5-20251001"
+  language: "English"
 briefing:
   enabled: true
   hour: 8
 ```
 
-Settings are also editable from the desktop app (Settings tab).
+Settings are also editable from the desktop app (Settings window).
 
 ## Data Storage
 
@@ -118,19 +125,29 @@ All data is local. SQLite with WAL mode for concurrent access. The desktop app a
 
 ## CLI Reference
 
-The CLI provides full access to all features and is required for the daemon:
+The CLI provides access to most features and is required for the daemon:
 
 ```bash
-watchtower sync [--daemon|--full]   # Sync Slack data
-watchtower ask "<question>"         # AI query
-watchtower digest                   # View digests
-watchtower tracks                   # View action items
-watchtower briefing                 # View daily briefing
-watchtower people [@user]           # People analytics
-watchtower chains                   # Discussion chains
-watchtower config set <key> <val>   # Configure
-watchtower feedback <good|bad> ...  # Rate AI output
-watchtower tune [--apply]           # Improve prompts via AI
+watchtower slack add                  # Connect a Slack workspace
+watchtower sync [--daemon|--full]     # Sync data
+watchtower ask "<question>"           # AI query
+watchtower briefing                   # View daily briefing
+watchtower catchup                    # Recap a window you were away for
+watchtower inbox                      # Messages awaiting your response
+watchtower targets                    # Your tasks
+watchtower tracks                     # Narrative tracks
+watchtower digest                     # View digests
+watchtower people                     # People analytics
+watchtower ideas                      # Ideas & decisions registry
+watchtower memory                     # Inspect the assistant memory vault
+watchtower jira                       # Jira sites and boards
+watchtower workbench                  # Folder-bound workbench boards
+watchtower features                   # Turn features on and off
+watchtower ai test                    # Check the AI provider
+watchtower mcp                        # Read-only MCP server over stdio
+watchtower config set <key> <val>     # Configure
+watchtower feedback <good|bad> ...    # Rate AI output
+watchtower tune [--apply]             # Improve prompts from your ratings
 ```
 
 ## Development
@@ -138,7 +155,7 @@ watchtower tune [--apply]           # Improve prompts via AI
 ```bash
 make build        # Build Go CLI only
 make test         # Go tests
-make test-swift   # Swift tests (395 tests)
+make test-swift   # Swift tests
 make lint-all     # Go + Swift linting
 make app-dev      # Fast dev build (CLI + desktop)
 make app          # Release build with notarization

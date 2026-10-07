@@ -25,10 +25,6 @@ struct ChatSidebarView: View {
             HStack {
                 Text("Chats").font(.headline)
                 Spacer()
-                Button(action: onNewChat) { Image(systemName: "square.and.pencil") }
-                    .buttonStyle(.borderless)
-                    .help("New Chat (⌘N)")
-                    .accessibilityLabel("New Chat (⌘N)")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -39,6 +35,7 @@ struct ChatSidebarView: View {
             // Labels are rows, not Section headers: a header draws the plain
             // list's band.
             List {
+                newChatRow
                 projectsSection
                 ForEach(historyVM.sections) { section in
                     sectionLabel(Text(section.kind.title.uppercased()))
@@ -81,6 +78,20 @@ struct ChatSidebarView: View {
         } message: {
             Text("This conversation will be permanently deleted.")
         }
+    }
+
+    /// A labelled row above PROJECTS, so a new chat does not hide behind ⌘N
+    /// or an icon. Same path as ⌘N and the toolbar's New chat (`onNewChat`).
+    private var newChatRow: some View {
+        Label("New chat", systemImage: "square.and.pencil")
+            .lineLimit(1)
+            .panelTab(isSelected: false)
+            .onTapGesture(perform: onNewChat)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onNewChat() }
+            .help("New Chat (⌘N)")
+            .accessibilityLabel("New chat")
+            .accessibilityHint("Opens the start page for a new chat. Shortcut: Command N.")
     }
 
     /// Projects above the history (spec §6.1). Opening one clears the
