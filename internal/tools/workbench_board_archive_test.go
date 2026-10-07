@@ -284,3 +284,49 @@ func TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall(t *testing.T) {
 	assert.Equal(t, 280, v.Closed)
 	assert.Zero(t, v.Archived)
 }
+
+// Archive Closed Targets Now (#415): after the stamp, the closed work of the
+// long board leaves the answer; only open work is listed and the rest is
+// counted as archived.
+func TestWorkbenchBoard_ArchiveNowLeavesTheBoardSmall(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	_, err := fx.d.Exec(`DELETE FROM targets WHERE project_id = ?`, fx.a)
+	require.NoError(t, err)
+	var items []db.WorkbenchTargetInput
+	for f := range 4 {
+		items = append(items, db.WorkbenchTargetInput{Title: fmt.Sprintf("Feature %d", f), Intent: "why"})
+		parent := len(items)
+		for k := range 3 {
+			items = append(items, db.WorkbenchTargetInput{Title: fmt.Sprintf("Task %d.%d", f, k), Intent: "why", BatchParent: parent})
+		}
+	}
+	var ids []int64
+	require.NoError(t, fx.d.WithTx(func(tx *sql.Tx) error {
+		ids, err = fx.d.CreateWorkbenchTargetsTx(tx, fx.a, items)
+		return err
+	}))
+	// Features 0–1 close whole; 2–3 keep their last task open.
+	for i, id := range ids {
+		f, k := i/4, i%4
+		if k > 0 && (f < 2 || k < 3) {
+			require.NoError(t, fx.d.UpdateTargetStatus(int(id), "done"))
+		}
+	}
+	var before workbenchBoardView
+	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, fx.a, "workbench_board", `{}`)), &before))
+	require.Zero(t, before.Archived, "precondition: nothing is old enough for the age rule")
+
+	require.NoError(t, fx.d.ArchiveWorkbenchClosedNow(fx.a))
+
+	got := callReadIn(t, reg, fx.a, "workbench_board", `{}`)
+	var v workbenchBoardView
+	require.NoError(t, json.Unmarshal([]byte(got), &v))
+	assert.Len(t, v.Targets, 2, "only the features with open work")
+	for _, f := range v.Targets {
+		assert.Len(t, f.Children, 1, "only the open task")
+		assert.Equal(t, 2, f.ArchivedChildren)
+	}
+	assert.Zero(t, v.Closed)
+	assert.Equal(t, 2*4+2*2, v.Archived)
+}

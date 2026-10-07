@@ -112,7 +112,8 @@ type workbenchSourceJSON struct {
 
 type workbenchViewJSON struct {
 	workbenchJSON
-	ArchiveAfterDays int                   `json:"archive_after_days"` // 0 = never (PROJ-15)
+	ArchiveAfterDays int                   `json:"archive_after_days"`         // 0 = never (PROJ-15)
+	ArchivedThrough  string                `json:"archived_through,omitempty"` // the Archive Now moment (UTC); omitted when never pressed
 	Sources          []workbenchSourceJSON `json:"sources"`
 	Counts           map[string]int        `json:"counts"` // targets per status, archived ones included
 }
@@ -326,7 +327,8 @@ func loadWorkbenchView(database *db.DB, id int64) (workbenchViewJSON, error) {
 	if err != nil {
 		return workbenchViewJSON{}, err
 	}
-	view := workbenchViewJSON{workbenchJSON: toWorkbenchJSON(*p), ArchiveAfterDays: p.ArchiveAfterDays,
+	view := workbenchViewJSON{workbenchJSON: toWorkbenchJSON(*p),
+		ArchiveAfterDays: p.ArchiveAfterDays, ArchivedThrough: p.ArchivedThrough,
 		Sources: make([]workbenchSourceJSON, 0, len(sources)), Counts: countBoardStatuses(board)}
 	for _, s := range sources {
 		view.Sources = append(view.Sources, workbenchSourceJSON{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
@@ -341,6 +343,9 @@ func printWorkbenchView(w io.Writer, v workbenchViewJSON) {
 	}
 	fmt.Fprintln(w, tools.BoardLanguageLine)
 	fmt.Fprintf(w, "Archive after: %s\n", archiveAfterText(v.ArchiveAfterDays))
+	if v.ArchivedThrough != "" {
+		fmt.Fprintf(w, "Archived through: %s\n", v.ArchivedThrough)
+	}
 	fmt.Fprintf(w, "Targets: %d in progress, %d in review, %d blocked, %d todo, %d done\n",
 		v.Counts["in_progress"], v.Counts["in_review"], v.Counts["blocked"], v.Counts["todo"], v.Counts["done"])
 	for _, s := range v.Sources {
