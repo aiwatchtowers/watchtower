@@ -83,7 +83,8 @@ struct WorkbenchHeaderControls: View {
         .accessibilityLabel(isSplit ? "Single Pane" : "Split")
     }
 
-    /// Repair install, Re-run Setup and Delete…, out of the header row.
+    /// Repair install, Re-run Setup, the archive items and Delete…, out of the
+    /// header row.
     private var moreMenu: some View {
         let status = vm.installStatus[project.id]
         let installing = vm.isInstalling(projectID: project.id)
@@ -103,6 +104,7 @@ struct WorkbenchHeaderControls: View {
             .disabled(installing)
             .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
             archiveMenu
+            archiveNowItems
             Divider()
             Button(role: .destructive) {
                 onDelete()
@@ -140,6 +142,27 @@ private extension WorkbenchHeaderControls {
             Label("Archive Closed Targets After", systemImage: "archivebox")
         }
         .help("How long a done or dismissed target stays on the board before it is archived")
+    }
+
+    /// "Archive Closed Targets Now" and, while its moment is remembered,
+    /// "Undo Archive Now" (board #415): every target closed by the click
+    /// leaves the board at once, whatever the setting above; Undo forgets
+    /// the moment. No confirmation — nothing is deleted and Undo is exact.
+    @ViewBuilder var archiveNowItems: some View {
+        Button {
+            Task { await vm.archiveClosedTargetsNow(projectID: project.id) }
+        } label: {
+            Label("Archive Closed Targets Now", systemImage: "archivebox.fill")
+        }
+        .help("Archive every done or dismissed target on this board now; work closed later stays")
+        if project.archivedThrough != nil {
+            Button {
+                Task { await vm.undoArchiveNow(projectID: project.id) }
+            } label: {
+                Label("Undo Archive Now", systemImage: "arrow.uturn.backward")
+            }
+            .help("Bring back what Archive Now archived, except targets the setting above archives anyway")
+        }
     }
 }
 

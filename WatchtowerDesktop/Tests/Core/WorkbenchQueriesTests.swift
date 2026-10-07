@@ -369,4 +369,57 @@ final class WorkbenchQueriesTests: XCTestCase {
             }
         }
     }
+
+    /// "Archive Closed Targets Now" (board #415): the stamp archives every
+    /// closed subtree at once — under Never too — and leaves open work; Undo
+    /// brings back only what the age rule would not archive.
+    func testArchiveClosedTargetsNowStampsTheWorkbenchAndUndoForgetsIt() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let other = try TestDatabase.insertWorkbench(d, name: "other", folder: "/tmp/other")
+            let open = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Open", status: "in_progress")
+            let done = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Done", status: "done")
+            let dismissed = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Dismissed", status: "dismissed")
+            let old = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Old", status: "done")
+            let elsewhere = try TestDatabase.insertWorkbenchTarget(d, projectID: other, text: "Elsewhere", status: "done")
+            try close(d, old, daysAgo: 20)
+            let archived = { (project: Int64, id: Int64) in
+                WorkbenchBoardOutline.find(Int(id), in: try WorkbenchQueries.board(d, projectID: project))?.archived
+            }
+            XCTAssertNil(try WorkbenchQueries.fetch(d, id: p)?.archivedThrough, "never pressed")
+            XCTAssertEqual(try archived(p, done), false)
+
+            try WorkbenchQueries.archiveClosedTargetsNow(d, projectID: p)
+            let stamp = try XCTUnwrap(try WorkbenchQueries.fetch(d, id: p)?.archivedThrough)
+            XCTAssertNotNil(stamp.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"#, options: .regularExpression),
+                            "the database's UTC now, second precision: \(stamp)")
+            XCTAssertNil(try WorkbenchQueries.fetch(d, id: other)?.archivedThrough, "per workbench")
+            XCTAssertEqual(try archived(p, done), true)
+            XCTAssertEqual(try archived(p, dismissed), true, "dismissed is closed too")
+            XCTAssertEqual(try archived(p, open), false)
+            XCTAssertEqual(try archived(other, elsewhere), false, "another workbench's stamp archives nothing here")
+
+            try WorkbenchQueries.setArchiveAfterDays(d, projectID: p, days: 0)
+            XCTAssertEqual(try archived(p, done), true, "Never means never by itself; the stamp still archives")
+            XCTAssertEqual(try archived(p, old), true)
+            try WorkbenchQueries.setArchiveAfterDays(d, projectID: p, days: 14)
+
+            try WorkbenchQueries.clearArchivedThrough(d, projectID: p)
+            XCTAssertNil(try WorkbenchQueries.fetch(d, id: p)?.archivedThrough)
+            XCTAssertEqual(try archived(p, done), false, "Undo brings recent closes back")
+            XCTAssertEqual(try archived(p, dismissed), false)
+            XCTAssertEqual(try archived(p, old), true, "the age rule archives it anyway")
+        }
+    }
+
+    func testArchiveNowWritersThrowForAnUnknownWorkbench() throws {
+        try db.write { d in
+            XCTAssertThrowsError(try WorkbenchQueries.archiveClosedTargetsNow(d, projectID: 999)) { error in
+                XCTAssertEqual(error as? WorkbenchQueryError, .workbenchNotFound)
+            }
+            XCTAssertThrowsError(try WorkbenchQueries.clearArchivedThrough(d, projectID: 999)) { error in
+                XCTAssertEqual(error as? WorkbenchQueryError, .workbenchNotFound)
+            }
+        }
+    }
 }
