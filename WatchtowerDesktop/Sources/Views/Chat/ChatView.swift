@@ -155,10 +155,15 @@ struct ChatSplitView: View {
                 .keyboardShortcut("k", modifiers: .command)
                 .help("Search Chats (⌘K)")
                 .accessibilityLabel("Search Chats (⌘K)")
-            Button(action: createNewChat) { Image(systemName: "square.and.pencil") }
+            // Labelled like the history column's row, so the action reads
+            // the same whether that column is open or closed.
+            Button(action: createNewChat) {
+                Label("New chat", systemImage: "square.and.pencil")
+                    .labelStyle(.titleAndIcon)
+            }
                 .keyboardShortcut("n", modifiers: .command)
                 .help("New Chat (⌘N)")
-                .accessibilityLabel("New Chat (⌘N)")
+                .accessibilityLabel("New chat")
             Button {
                 Task { await appState.rerunOnboarding() }
             } label: { Image(systemName: "person.crop.circle.badge.questionmark") }
