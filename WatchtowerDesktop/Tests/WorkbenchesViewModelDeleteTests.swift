@@ -184,7 +184,8 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
 
     /// AppState wiring: initWorkbenches hands the VM `TerminalCenter.closeAll`
     /// over the project's sessions, so a delete ends every terminal of that
-    /// project — and only those.
+    /// project — and only those. The same delete also prunes that workbench's
+    /// Files inspector state in `CodeUsagesCenter` (memory and defaults).
     func testInitProjectsWiresDeleteToTheTerminalCenter() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wt-delete-\(UUID().uuidString)")
