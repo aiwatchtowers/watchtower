@@ -21,49 +21,135 @@ final class WorkbenchBoardViewModel {
     /// The board's search field (board #207; `WorkbenchBoardSearch`): view
     /// state, not remembered.
     var searchText = ""
-    private(set) var selectedTargetID: Int?
+    /// The side panel's navigation stack (spec 2026-10-06 Part 3): target
+    /// ids, the open one last. A board click resets it (`select`), the parent
+    /// link and a sub-task click push, "‹" pops (`back`).
+    private(set) var panelPath: [Int] = []
+    var selectedTargetID: Int? { panelPath.last }
+    var canGoBack: Bool { panelPath.count > 1 }
     private(set) var selectedComments: [WorkbenchComment] = []
     /// The selected target's images (board target #117), read-only here.
     private(set) var selectedImages: [WorkbenchTargetImage] = []
     /// The selected target's owner asks, newest first (spec 2026-10-03 Part 8).
     private(set) var selectedAsks: [OwnerAskListItem] = []
+    /// The selected target's status changes, newest first; read with the
+    /// comments on selection and on reload.
+    private(set) var selectedHistory: [TargetStatusChange] = []
+    /// The target the `selected*` arrays above were read for: a failed
+    /// reload after a panel move clears them rather than show the previous
+    /// target's under the new header.
+    private var loadedTargetID: Int?
     private(set) var errorMessage: String?
+
+    /// Half-typed comments by target id (spec 2026-10-06 Part 3): the
+    /// composer edits the open target's entry only, so a draft never follows
+    /// the panel to another target, and it survives closing and reopening
+    /// its own. Session state, never remembered.
+    private var commentDrafts: [Int: String] = [:]
+
+    /// The open target's comment draft; empty with the panel closed, where
+    /// a write is ignored.
+    var commentDraft: String {
+        get { selectedTargetID.flatMap { commentDrafts[$0] } ?? "" }
+        set {
+            guard let id = selectedTargetID else { return }
+            commentDrafts[id] = newValue.isEmpty ? nil : newValue
+        }
+    }
 
     /// List or Kanban, remembered per project.
     var mode: WorkbenchBoardMode {
         didSet { preferences.mode = mode }
     }
 
-    /// The kanban parent filter (a top-level target id; nil = All),
-    /// remembered per project. A stale id shows as All.
-    var kanbanFilterRootID: Int? {
-        didSet { preferences.kanbanFilterRootID = kanbanFilterRootID }
+    /// The group the board is entered into (spec 2026-10-06 Part 4): any
+    /// target with children, at any depth; nil = the whole board. Kanban
+    /// and List alike, remembered per project; a stale id shows the whole
+    /// board (`WorkbenchBoardScope`). Changed through `enterScope` and
+    /// `leaveScope`.
+    private(set) var boardScopeID: Int? {
+        didSet { preferences.boardScopeID = boardScopeID }
     }
+
+    /// Kanban's "Lanes: By group | None", remembered per project.
+    var lanesMode: WorkbenchBoardLanesMode {
+        didSet { preferences.lanesMode = lanesMode }
+    }
+
+    /// What Kanban lays out: lanes under a totals row, or the flat columns.
+    enum KanbanLayout: Equatable {
+        case lanes
+        case columns
+    }
+
+    var kanbanLayout: KanbanLayout { lanesMode == .none ? .columns : .lanes }
+
+    /// Folded lanes as remembered (`Lane.id`, No group = 0), stale ids
+    /// included: a target that is a lane again folds again. Read through
+    /// `foldedLaneIDs(in:)`.
+    private var storedFoldedLanes: Set<Int>
+
+    /// Lanes whose folded Done the owner opened ("✓ N done — show"): this
+    /// session only, never remembered (spec 2026-10-06 Part 2).
+    private(set) var unfoldedDoneLanes: Set<Int> = []
 
     var kanban: WorkbenchBoardKanban {
         WorkbenchBoardKanban(
-            roots, filterRootID: kanbanFilterRootID, showDone: showDone, showArchived: showArchived, query: searchText
+            roots, scopeID: boardScopeID, showDone: showDone, showArchived: showArchived, query: searchText
         )
     }
 
     var rows: [WorkbenchBoardRow] {
         WorkbenchBoardOutline.rows(
-            roots, collapsed: collapsed, showDone: showDone, showArchived: showArchived, query: searchText
+            roots, collapsed: collapsed, showDone: showDone, showArchived: showArchived, query: searchText,
+            scopeID: boardScopeID
         )
     }
 
+    /// The scope as applied, top-level target first, the scope last: the
+    /// path bar. Empty at the board root, a stale scope included.
+    var scopePath: [WorkbenchBoardNode] {
+        WorkbenchBoardScope.resolve(boardScopeID, in: roots, showArchived: showArchived, query: searchText).path
+    }
+
+    /// The scope as applied (nil = the board root): `boardScopeID` unless
+    /// it is stale.
+    var scopeNode: WorkbenchBoardNode? { scopePath.last }
+
     /// The K of "Archive (K)": what the toggle adds in the current mode —
-    /// every archived target in the list, the archived leaf cards under the
-    /// parent filter in Kanban.
+    /// every archived target in the list, the archived leaf cards in
+    /// Kanban, both under the scope "Archive" on would apply.
     var archivedCount: Int {
-        mode == .kanban ? kanban.archivedCardCount : WorkbenchBoardOutline.archivedCount(roots)
+        guard mode == .list else { return kanban.archivedCardCount }
+        let scope = WorkbenchBoardScope.resolve(boardScopeID, in: roots, showArchived: true).node
+        return WorkbenchBoardOutline.archivedCount(scope?.children ?? roots)
+    }
+
+    /// What an empty board says when no search is active: the toggle that
+    /// would show more, never one that is already on.
+    var emptyBoardText: String {
+        if !showDone { return "Nothing open. Turn on Show done to see finished work." }
+        if !showArchived { return "Everything here is archived. Turn on Archive to see it." }
+        return "Nothing to show."
     }
 
     var selectedNode: WorkbenchBoardNode? {
         selectedTargetID.flatMap { WorkbenchBoardOutline.find($0, in: roots) }
     }
 
+    /// The open target's nearest parent: the panel's parent link. Nil at
+    /// the top level.
+    var selectedParent: WorkbenchBoardNode? {
+        selectedNode?.target.parentId.flatMap { WorkbenchBoardOutline.find($0, in: roots) }
+    }
+
     var threads: [WorkbenchCommentThread] { WorkbenchCommentThread.group(selectedComments) }
+
+    /// The board's banner: the error whenever the panel is not on screen —
+    /// the panel shows it in its own row otherwise. Keyed off the node the
+    /// panel draws, not the selected id: an id no longer on the board shows
+    /// no panel, so the banner must.
+    var boardBannerError: String? { selectedNode == nil ? errorMessage : nil }
 
     /// `WorkbenchesViewModel.onOwnerWrite`, set by the view: every successful owner
     /// write reports its target so the notification center never announces the
@@ -87,7 +173,9 @@ final class WorkbenchBoardViewModel {
         let preferences = WorkbenchBoardPreferences(workbenchID: projectID, defaults: defaults)
         self.preferences = preferences
         mode = preferences.mode
-        kanbanFilterRootID = preferences.kanbanFilterRootID
+        boardScopeID = preferences.boardScopeID
+        lanesMode = preferences.lanesMode
+        storedFoldedLanes = preferences.foldedLanes
     }
 
     // MARK: - Loading
@@ -95,29 +183,40 @@ final class WorkbenchBoardViewModel {
     func load() {
         do {
             let pid = projectID
-            let selected = selectedTargetID
-            let (board, comments, images, asks, stamp) = try dbPool.read { db in
-                (
-                    try WorkbenchQueries.board(db, projectID: pid),
-                    try selected.map { try WorkbenchQueries.comments(db, targetID: Int64($0)) } ?? [],
-                    try selected.map { try WorkbenchQueries.images(db, targetID: Int64($0)) } ?? [],
-                    try selected.map { try OwnerAskQueries.targetAsks(db, projectID: pid, targetID: Int64($0)) } ?? [],
+            let requestedPath = panelPath
+            let (board, path, comments, images, asks, history, stamp) = try dbPool.read { db in
+                let board = try WorkbenchQueries.board(db, projectID: pid)
+                // A target gone from the board leaves the path: the panel
+                // falls back to the nearest surviving entry, or closes.
+                let path = requestedPath.filter { WorkbenchBoardOutline.find($0, in: board) != nil }
+                let selected = path.last.map(Int64.init)
+                return (
+                    board,
+                    path,
+                    try selected.map { try WorkbenchQueries.comments(db, targetID: $0) } ?? [],
+                    try selected.map { try WorkbenchQueries.images(db, targetID: $0) } ?? [],
+                    try selected.map { try OwnerAskQueries.targetAsks(db, projectID: pid, targetID: $0) } ?? [],
+                    try selected.map { Array(try TargetQueries.statusHistory(db, targetID: $0).reversed()) } ?? [],
                     try Self.fingerprint(db, projectID: pid)
                 )
             }
             roots = board
+            panelPath = path
             selectedComments = comments
             selectedImages = images
             selectedAsks = asks
+            selectedHistory = history
+            loadedTargetID = path.last
             fingerprint = stamp
-            if let selected, WorkbenchBoardOutline.find(selected, in: board) == nil {
-                selectedTargetID = nil
+        } catch {
+            errorMessage = "Could not load the board: \(error.localizedDescription)"
+            if panelPath.last != loadedTargetID {
                 selectedComments = []
                 selectedImages = []
                 selectedAsks = []
+                selectedHistory = []
+                loadedTargetID = panelPath.last
             }
-        } catch {
-            errorMessage = "Could not load the board: \(error.localizedDescription)"
         }
     }
 
@@ -195,8 +294,36 @@ final class WorkbenchBoardViewModel {
 
     // MARK: - Selection
 
+    /// A board click (or the Session view's `boardFocus` handoff): the
+    /// panel opens `targetID` on a fresh path; nil closes it.
     func select(_ targetID: Int?) {
-        selectedTargetID = targetID
+        open(targetID.map { [$0] } ?? [])
+    }
+
+    /// The panel's parent link or a sub-task click: `targetID` opens on top
+    /// of the path, so "‹" returns. The open target itself adds no entry,
+    /// and a target already on the path cuts the path back to it (task →
+    /// parent → the same task again leaves `[task]`), so a path never holds
+    /// an id twice and "‹" never walks a loop.
+    func push(_ targetID: Int) {
+        guard panelPath.last != targetID else { return }
+        if let index = panelPath.firstIndex(of: targetID) {
+            open(Array(panelPath.prefix(through: index)))
+        } else {
+            open(panelPath + [targetID])
+        }
+    }
+
+    /// "‹": back to the previous entry. A no-op on a path of one.
+    func back() {
+        guard canGoBack else { return }
+        open(Array(panelPath.dropLast()))
+    }
+
+    /// Every panel navigation: the new path, a fresh read, and the open
+    /// target's agent comments marked read.
+    private func open(_ path: [Int]) {
+        panelPath = path
         errorMessage = nil
         load()
         guard let node = selectedNode, node.unreadForOwner > 0 else { return }
@@ -212,14 +339,15 @@ final class WorkbenchBoardViewModel {
         }
     }
 
-    /// Closes the detail card. Unlike `select(nil)` it keeps `errorMessage`:
-    /// a failed write from the card (rename, status, comment) moves to the
-    /// board's banner instead of vanishing with the card.
+    /// Closes the side panel. Unlike `select(nil)` it keeps `errorMessage`:
+    /// a failed write from the panel (rename, status, comment) moves to the
+    /// board's banner instead of vanishing with the panel.
     func closeDetail() {
-        selectedTargetID = nil
+        panelPath = []
         selectedComments = []
         selectedImages = []
         selectedAsks = []
+        selectedHistory = []
         load()
     }
 
@@ -237,12 +365,98 @@ final class WorkbenchBoardViewModel {
         }
     }
 
+    // MARK: - Scope
+
+    /// Enters the group `id` (Open group, the list's Open Group, a path bar
+    /// step); nil returns to the whole board. An id that is no group on
+    /// this board changes nothing; an archived group with Archive off and no
+    /// search is refused with a message. The panel stays as it is. A scope
+    /// entered under a search follows the stale rule once the search is
+    /// cleared (an archived one shows the board root, its id kept).
+    /// - Returns: whether `id` is the scope now.
+    @discardableResult
+    func enterScope(_ id: Int?) -> Bool {
+        guard let id else {
+            boardScopeID = nil
+            return true
+        }
+        if id == scopeNode?.target.id { return true }
+        guard WorkbenchBoardScope.resolve(id, in: roots, showArchived: showArchived, query: searchText).node != nil else {
+            if WorkbenchBoardScope.resolve(id, in: roots, showArchived: true).node != nil {
+                errorMessage = "This group is archived. Turn on Archive to open it."
+            }
+            return false
+        }
+        boardScopeID = id
+        return true
+    }
+
+    /// A lane header double-click: its first click opened the group in the
+    /// panel, so entering the group closes that panel again (ruling R15);
+    /// a panel open on another target stays.
+    /// - Returns: whether `id` is the scope now.
+    @discardableResult
+    func enterLane(_ id: Int) -> Bool {
+        guard enterScope(id) else { return false }
+        if selectedTargetID == id { closeDetail() }
+        return true
+    }
+
+    /// One Esc anywhere in the pane (spec 2026-10-06 Part 4): the panel
+    /// closes first; with it closed Esc leaves one scope level; at the
+    /// board root it does nothing.
+    /// - Returns: whether it did anything.
+    @discardableResult
+    func escape() -> Bool {
+        if selectedTargetID != nil {
+            closeDetail()
+            return true
+        }
+        guard scopeNode != nil else { return false }
+        leaveScope()
+        return true
+    }
+
+    /// "✕ Leave group" and Esc with the panel closed: one level up, to the
+    /// scope's parent group or, from a top-level group, the whole board.
+    func leaveScope() {
+        boardScopeID = scopePath.dropLast().last?.target.id
+    }
+
+    // MARK: - Lanes
+
+    /// The folded ones among `lanes` (the board on screen); a remembered id
+    /// that is no longer a lane is ignored, never dropped from storage.
+    func foldedLaneIDs(in lanes: [WorkbenchBoardKanban.Lane]) -> Set<Int> {
+        storedFoldedLanes.intersection(lanes.map(\.id))
+    }
+
+    /// The lane header's chevron: folds or opens the lane, remembered per
+    /// project. Stale ids already stored stay stored.
+    func toggleLane(_ laneID: Int) {
+        if storedFoldedLanes.remove(laneID) == nil { storedFoldedLanes.insert(laneID) }
+        preferences.foldedLanes = storedFoldedLanes
+    }
+
+    /// "✓ N done — show" and its "Hide done": this lane's Done only.
+    func toggleLaneDone(_ laneID: Int) {
+        if unfoldedDoneLanes.remove(laneID) == nil { unfoldedDoneLanes.insert(laneID) }
+    }
+
     // MARK: - Edits
 
-    /// The detail pane's status menu: the selected target.
+    /// The panel's status menu: the selected task. A group's status follows
+    /// its sub-tasks (PROJ-05) and is never written from the panel.
     func setStatus(_ status: String) {
-        guard let id = selectedTargetID else { return }
-        setStatus(status, for: id)
+        guard let node = selectedNode, node.children.isEmpty else { return }
+        setStatus(status, for: node.target.id)
+    }
+
+    /// A kanban card dropped into another lane's column: refused, and said
+    /// so — the column highlighted as a target, so a silent no-op reads as
+    /// a bug.
+    func refuseCrossLaneDrop() {
+        errorMessage = "A card moves within its own lane — use Move to… to change its group."
     }
 
     /// The one status writer — the detail menu and a kanban drop alike. A
@@ -307,6 +521,63 @@ final class WorkbenchBoardViewModel {
         let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = selectedTargetID, !title.isEmpty else { return }
         write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
+    }
+
+    /// The panel's description editor (⌘↩ or focus loss) on `id`, the
+    /// target the editor was opened on (nil = the open one): a focus loss
+    /// that lands after the panel moved on still saves to its own target.
+    /// The text is trimmed like a rename; a description unchanged once
+    /// trimmed writes nothing.
+    ///
+    /// `original` is the description the editor opened with: a draft equal
+    /// to it (once trimmed) writes nothing, even when the agent changed the
+    /// description meanwhile, and a changed draft over a description that
+    /// moved since then writes nothing either — the editor keeps the draft
+    /// and `errorMessage` says so. Nil skips both checks.
+    /// - Returns: whether the description is saved, so the editor keeps the
+    ///   owner's draft on a failure (`errorMessage` says why).
+    @discardableResult
+    func saveIntent(_ text: String, original: String? = nil, for id: Int? = nil) -> Bool {
+        let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Nothing open and no editor's target: nothing to save, nothing to say.
+        guard let id = id ?? selectedTargetID else { return false }
+        guard let node = WorkbenchBoardOutline.find(id, in: roots) else {
+            errorMessage = "Could not save the description: \(WorkbenchTargetNumber.label(id)) is no longer on this board."
+            return false
+        }
+        if let original, intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
+        guard node.target.intent != intent else { return true }
+        if let original, node.target.intent != original {
+            errorMessage = "The description changed while you were editing. Copy your text, press Esc and edit again."
+            return false
+        }
+        return write("save the description", target: id) { db in
+            try TargetQueries.updateIntent(db, id: id, intent: intent)
+        }
+    }
+
+    /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
+    /// the "Waiting for you" stack row's path, so a click never starts an
+    /// agent. When it opens nothing, `failure` names why (the asks'
+    /// `loadErrors`, a read error included); without a reason the ask is
+    /// gone. Either says so in the panel's error row.
+    func openAsk(
+        _ askID: Int64,
+        show: (Int64, Int64) async -> Bool,
+        failure: () -> String? = { nil }
+    ) async {
+        guard await !show(askID, projectID) else { return }
+        errorMessage = failure().map { "Could not open the ask: \($0)" } ?? "This ask is gone."
+    }
+
+    /// The composer's send: the open target's own draft, cleared once the
+    /// comment is saved; a failed write keeps it (`errorMessage` says why).
+    /// - Returns: whether the comment was written.
+    @discardableResult
+    func sendCommentDraft() -> Bool {
+        guard let id = selectedTargetID, addComment(commentDraft) else { return false }
+        commentDrafts[id] = nil
+        return true
     }
 
     /// - Returns: whether the comment was written, so the composer keeps the

@@ -432,7 +432,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(reported, 0)
     }
 
-    func testModeAndKanbanFilterAreRememberedPerProject() throws {
+    func testModeAndScopeAreRememberedPerProject() throws {
         let suite = "WorkbenchBoardViewModelTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -441,14 +441,14 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
         XCTAssertEqual(vm.mode, .list)
         vm.mode = .kanban
-        vm.kanbanFilterRootID = 7
+        WorkbenchBoardPreferences(workbenchID: pid, defaults: defaults).boardScopeID = 7
 
         let reopened = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
         XCTAssertEqual(reopened.mode, .kanban)
-        XCTAssertEqual(reopened.kanbanFilterRootID, 7)
+        XCTAssertEqual(reopened.boardScopeID, 7)
         let other = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid + 1, defaults: defaults)
         XCTAssertEqual(other.mode, .list)
-        XCTAssertNil(other.kanbanFilterRootID)
+        XCTAssertNil(other.boardScopeID)
     }
 
     // MARK: - Mark read

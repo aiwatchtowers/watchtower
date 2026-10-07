@@ -21,19 +21,28 @@ package enum WorkbenchBoardOutline {
     /// targets it matches, their whole subtrees and the ancestors leading to
     /// them; done, dismissed and archived targets are searched too and nothing
     /// is collapsed, so a match is never hidden by any of them.
+    ///
+    /// A `scopeID` (spec 2026-10-06 Part 4, `WorkbenchBoardScope`) shows that
+    /// group's subtree only, its children as the depth-0 rows; a stale one
+    /// shows the whole board. A search inside a scope stays inside it and
+    /// keeps what the same search on the whole board keeps there.
     package static func rows(
         _ roots: [WorkbenchBoardNode],
         collapsed: Set<Int>,
         showDone: Bool,
         showArchived: Bool = false,
-        query: String = ""
+        query: String = "",
+        scopeID: Int? = nil
     ) -> [WorkbenchBoardRow] {
         var out: [WorkbenchBoardRow] = []
+        let scope = WorkbenchBoardScope.resolve(scopeID, in: roots, showArchived: showArchived, query: query)
+        let nodes = scope.node?.children ?? roots
         if let search = WorkbenchBoardSearch(query) {
-            appendMatches(roots, depth: 0, search: search, ancestorMatched: false, into: &out)
+            let pathMatched = WorkbenchBoardScope.pathMatches(scope.path, search)
+            appendMatches(nodes, depth: 0, search: search, ancestorMatched: pathMatched, into: &out)
         } else {
             let filter = Filter(showDone: showDone, showArchived: showArchived)
-            append(roots, depth: 0, collapsed: collapsed, filter: filter, into: &out)
+            append(nodes, depth: 0, collapsed: collapsed, filter: filter, into: &out)
         }
         return out
     }
@@ -116,6 +125,44 @@ package enum WorkbenchBoardOutline {
 
     private static func isClosed(_ status: String) -> Bool {
         status == "done" || status == "dismissed"
+    }
+}
+
+/// The group the Board pane is entered into (spec 2026-10-06 Part 4): any
+/// target with children, at any depth, for both Kanban and List. Pure.
+package enum WorkbenchBoardScope {
+    /// The scope for a remembered `id`, with its path from the top-level
+    /// target down to the scope itself (a depth-3 group has a 3-entry path).
+    /// nil, a stale id (not on the board, now a leaf) or an id with an
+    /// archived target on its path while "Archive" is off resolves to the
+    /// board root: `(nil, [])`. A non-empty `query` counts as "Archive" on,
+    /// as the search shows archived targets.
+    package static func resolve(
+        _ id: Int?,
+        in roots: [WorkbenchBoardNode],
+        showArchived: Bool,
+        query: String = ""
+    ) -> (node: WorkbenchBoardNode?, path: [WorkbenchBoardNode]) {
+        let showArchived = showArchived || WorkbenchBoardSearch(query) != nil
+        guard let id, let path = path(to: id, in: roots), let node = path.last, !node.children.isEmpty,
+              showArchived || !path.contains(where: \.archived) else { return (nil, []) }
+        return (node, path)
+    }
+
+    /// Whether `search` matches a target on the scope's `path` (the scope
+    /// or an ancestor): then every leaf inside the scope matches too, as the
+    /// same search on the whole board keeps them. False without a search.
+    package static func pathMatches(_ path: [WorkbenchBoardNode], _ search: WorkbenchBoardSearch?) -> Bool {
+        guard let search else { return false }
+        return path.contains { search.matches($0.target) }
+    }
+
+    private static func path(to id: Int, in nodes: [WorkbenchBoardNode]) -> [WorkbenchBoardNode]? {
+        for n in nodes {
+            if n.target.id == id { return [n] }
+            if let below = path(to: id, in: n.children) { return [n] + below }
+        }
+        return nil
     }
 }
 
