@@ -146,8 +146,10 @@ private extension WorkbenchHeaderControls {
 
     /// "Archive Closed Targets Now" and, while its moment is remembered,
     /// "Undo Archive Now" (board #415): every target closed by the click
-    /// leaves the board at once, whatever the setting above; Undo forgets
-    /// the moment. No confirmation — nothing is deleted and Undo is exact.
+    /// leaves the board at once, whatever the setting above. Undo forgets
+    /// the moment, so it also brings back what earlier presses archived
+    /// (except what the setting archives anyway). No confirmation — nothing
+    /// is deleted.
     @ViewBuilder var archiveNowItems: some View {
         Button {
             Task { await vm.archiveClosedTargetsNow(projectID: project.id) }

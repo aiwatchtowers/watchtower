@@ -1,8 +1,9 @@
 -- +goose Up
 -- Archive Closed Targets Now (board #415, PROJ-15 amended). One remembered
 -- moment per workbench, not a per-target flag: the view still decides on
--- every read, so the click writes nothing per target, reopening still
--- restores and forgetting the moment ("Undo Archive Now") is exact.
+-- every read, so the click writes nothing per target and reopening still
+-- restores. "Undo Archive Now" forgets the moment, so it also brings back
+-- what earlier clicks archived (except what the age rule archives anyway).
 --
 -- archived_through: a UTC timestamp YYYY-MM-DDTHH:MM:SSZ written by SQL
 -- strftime('now') only; NULL = never pressed. Closed work whose newest close
