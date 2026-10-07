@@ -1,42 +1,66 @@
 # Watchtower on the phone: proof of concept (sub-projects A–C)
 
-**Date:** 2026-10-07 · **Board:** umbrella #420; A #423, B #424, C #425 · **Screens:** the owner-approved canvas https://claude.ai/artifact/Upy7STMTaizvSR75Z4Z2Qd · **Technical spec:** `2026-10-07-mobile-poc-design.md`
+**Date:** 2026-10-07 · **Board:** umbrella #420; A #423, B #424, C #425 · **Screens:** the owner-approved canvas https://claude.ai/artifact/Upy7STMTaizvSR75Z4Z2Qd (row 0 is Linking) · **Technical spec:** `2026-10-07-mobile-poc-design.md`
 
 ## The problem
 
 Claude Code sessions on the Mac stop and wait for you: a question, a review, a check, or the end of a task. Today you only find out when you are back at the Mac, so the work stands still while you are away. Meetings work the same way. If you are not at the Mac you cannot record one, and the recap waits until you sit down.
 
+## How the phone links to your Mac
+
+1. On the Mac, open Settings → Mobile, turn it on, and click **Use Watchtower on iPhone**. The Mac shows a QR code.
+2. On the phone, open the app. It asks you to scan that code.
+3. The phone shows **Linked to <your Mac>**, asks to send you notifications, and opens the Now tab.
+
+- **Same Apple ID on both devices:** the scan only confirms which Mac you mean. The data goes through your own iCloud.
+- **A different Apple ID on the phone** (for example a work Mac and a personal phone): the code also carries an iCloud share invitation from the Mac. The data then lives in the Mac's iCloud. There is still no server of ours.
+- **When linking fails, the app says why:**
+  - the phone is not signed into iCloud;
+  - the Mac can't show a code because Mobile is off or the Mac is asleep;
+  - iCloud is off or blocked by your organisation on that Mac, so mobile isn't available there;
+  - the code expired or was already used ("Show a new code on the Mac").
+- **Removing a phone:** from the Mac's phone list (Remove), or from the phone itself (Unlink this Mac).
+
 ## What you will see and do
 
 - **One push, only when a session asks you something.** If the question is simple, long-press the push and pick the recommended answer. Anything else opens the ask.
 - **Now tab:** what is waiting for you across all workbenches, your next meeting with a Record button, and a count of your sessions by state.
-- **Workbench tab:** the same panel as on the Mac. First the list of workbenches, then one workbench with its waiting-for-you cards and its sessions (state dot, report line, progress). A Sessions | Board switch shows the board.
-- **Session detail:** what the session is on, its open asks, its report, and a timeline of what happened. You can also tell the session something, but only if you turned that on for this phone. The raw transcript is never shown.
-- **Answer asks:** questions (with the recommended option marked), reviews (read the document, comment on a passage, Approve or Request changes) and checklists. Your answer travels the same way as an answer typed on the Mac.
-- **Board:** the target tree with filters (Open, In progress, Blocked, Archive). You can change status and priority, comment, add a new target, and start a session on a target. You choose whether the Mac brings the session window forward (off by default) and whether the agent plans first and asks you (on by default).
-- **Calendar:** the agenda, event details with prep and Join, and Record. Recording keeps going while the phone is locked. The Mac transcribes it with the same pipeline as a desktop recording. The recap and transcript then come back to the phone.
-- **When the Mac sleeps:** you can still read everything already on the phone. What you do is queued and applies when the Mac wakes, and the app tells you so. Sessions and transcription run only on the Mac.
+- **Workbench tab:** the same panel as on the Mac. The workbench list, each workbench's waiting cards and sessions, and a Sessions | Board switch.
+- **Session detail:** what the session is on, its asks, its report, and a timeline. You can tell the session something only if you turned that on for this phone and allowed it once on the Mac. The raw transcript is never shown.
+- **Asks:** answer questions, reviews and checklists. Your answer travels the same way as an answer typed on the Mac.
+- **Board:** change status and priority, comment, add a target, and start a session on a target. The session window does not jump forward on the Mac unless you ask, and the agent plans first and asks you (on by default).
+- **Calendar:** the agenda, event details with prep, Join, and Record. Recording keeps going while the phone is locked. The Mac transcribes it, and the recap and transcript then come back to the phone.
+- **When the Mac sleeps:** you can still read what is already on the phone. What you do waits and applies when the Mac wakes. Sessions and transcription run only on the Mac.
 
-## Decisions already made
+## Decisions made
 
-Product for everyone · your own iCloud, no server of ours · updates reach the phone 2–15 s after the Mac sees them, faster on session state changes · pushes only for new asks · typing into sessions is off by default and turned on per phone · the phone never answers Claude Code permission prompts (it says "needs approval on the Mac") · one iCloud container for every build. The Mac hub is off until you turn it on in Settings → Mobile. Corp builds show a one-line notice that work data goes to your personal iCloud · native iOS look, system blue accent, orange only for "waiting for you" · tabs Now, Workbench, Calendar, More (More = Settings for now).
+- Product for everyone, with no server of ours.
+- Updates arrive in 2–15 s, faster when a session changes state.
+- Pushes are sent only for new asks.
+- Typing into sessions is off by default. It needs this phone's toggle plus a one-time **Allow** on the Mac, and it falls under a new rule, PROJ-16.
+- The phone never answers Claude Code permission prompts.
+- Subagent steps stay out of the timeline for now.
+- One QR linking flow for everyone, built in A.
+- One iCloud container for every build. The Mac side is off until you turn it on, and corp builds show a notice that work data goes to your personal iCloud.
+- Native iOS look, orange only for "waiting for you". Tabs: Now, Workbench, Calendar, More.
 
-## Decisions still open (recommendation first)
+## Decisions still open
 
-1. **Rule for typing into a session from the phone.** This is a new promise and needs your approval. (a) **Recommended:** a new contract, PROJ-16. It covers only what is new: phone typing works only from a phone you allowed, only while the agent is idle, and never into a permission prompt. Delivery reuses the existing ask-answer rule (PROJ-12) unchanged. (b) Extend PROJ-12 itself to cover phone text.
-2. **Allowing a phone to type.** (a) **Recommended:** you turn it on on the phone, then confirm it once on the Mac ("Allow <phone name> to type into sessions?"). (b) The phone toggle alone. With (b), any device signed into your Apple ID could type into sessions.
-3. **Subagent steps in the session timeline.** The Mac does not record them today. Recording them needs new Claude Code hook entries (a "Re-run setup" for every workbench and an inventory change). (a) **Recommended:** leave them out of the proof of concept and add them later. (b) Add them now.
+None. A first test run with real devices and two Apple IDs comes before any building. It could still force a choice:
+
+- If iCloud sharing doesn't sync reliably, a phone on a different Apple ID may not be supported in this proof of concept.
+- On such a phone, ask notifications may arrive late.
 
 ## Out of scope
 
-- D, targets on the phone (#426): paused while the targets model is reworked. Only the board's targets are in B.
-- E, the old tabs redesigned (#427: Now in full, Catch up, AI Chat, digests, tracks, briefing, day plan, people, ideas): comes after A–C with its own spec.
-- #428, chat without the Mac (own API key or long-lived token): a separate brainstorm.
-- Also out: the raw session transcript, answering permission prompts, "Make target" from meeting action items (hidden until D), and Android or iPad layouts.
+- D, targets on the phone (#426): paused.
+- E, the old tabs (#427): their own spec after A–C.
+- #428, chat without the Mac: a separate brainstorm.
+- Also out: the raw transcript, permission prompts, "Make target" from meeting action items, and iPad and Android.
 
 ## How we know it is done
 
-- **A:** a signed Mac build and a real iPhone exchange data through your iCloud on day one of the build. The phone shows the Mac's status.
-- **B:** you answer an ask from the lock screen and the agent continues. You start a session from the board while the Mac's screen stays as it was. You see the session move to Finished within 15 s.
-- **C:** you record a meeting with the phone locked. The recap arrives on the phone after the Mac wakes and transcribes it.
-- **Every action you take while the Mac sleeps applies exactly once when it wakes.**
+- **A:** phones on the same Apple ID and on a different one each link by scanning, and show the Mac's status.
+- **B:** you answer an ask from the lock screen and the agent continues. You start a session while the Mac's screen stays as it was. You see the session finish within 15 s.
+- **C:** you record a meeting with the phone locked, and the recap arrives after the Mac transcribes it.
+- **Everything done while the Mac slept applies exactly once.**
