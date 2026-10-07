@@ -627,6 +627,33 @@ final class WorkbenchesViewModel {
         await reload()
     }
 
+    /// The header menu's "Archive Closed Targets Now" (board #415): every
+    /// target closed by now leaves the board. The board picks the stamp up
+    /// through its fingerprint; the reload shows "Undo Archive Now".
+    func archiveClosedTargetsNow(projectID: Int64) async {
+        do {
+            try await dbPool.write { try WorkbenchQueries.archiveClosedTargetsNow($0, projectID: projectID) }
+            archiveSettingErrors[projectID] = nil
+        } catch {
+            archiveSettingErrors[projectID] = "Could not archive closed targets: \(error.localizedDescription)"
+            return
+        }
+        await reload()
+    }
+
+    /// The header menu's "Undo Archive Now" (board #415): forgets the stamp,
+    /// so only the age rule archives again.
+    func undoArchiveNow(projectID: Int64) async {
+        do {
+            try await dbPool.write { try WorkbenchQueries.clearArchivedThrough($0, projectID: projectID) }
+            archiveSettingErrors[projectID] = nil
+        } catch {
+            archiveSettingErrors[projectID] = "Could not undo Archive Now: \(error.localizedDescription)"
+            return
+        }
+        await reload()
+    }
+
     func dismissResync(projectID: Int64) {
         resyncResults[projectID] = nil
         resyncErrors[projectID] = nil

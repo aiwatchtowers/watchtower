@@ -65,6 +65,38 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.summaries.first?.project.archiveAfterDays, 0)
     }
 
+    /// "Archive Closed Targets Now" / "Undo Archive Now" (board #415): each
+    /// write reloads the summaries (the menu shows Undo while the stamp is
+    /// set); a failed one says why for that workbench and skips the reload.
+    func testArchiveNowAndUndoWriteTheStampReloadAndReportAFailure() async throws {
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let vm = makeVM()
+        await vm.reload()
+        XCTAssertNil(vm.summaries.first?.project.archivedThrough)
+
+        await vm.archiveClosedTargetsNow(projectID: p)
+        XCTAssertNil(vm.archiveSettingErrors[p])
+        let stored = try await pool.read { try WorkbenchQueries.fetch($0, id: p)?.archivedThrough }
+        XCTAssertNotNil(stored)
+        XCTAssertEqual(vm.summaries.first?.project.archivedThrough, stored, "reloaded")
+
+        await vm.undoArchiveNow(projectID: p)
+        XCTAssertNil(vm.archiveSettingErrors[p])
+        XCTAssertNil(vm.summaries.first?.project.archivedThrough)
+
+        _ = try await pool.write { try TestDatabase.insertWorkbench($0, name: "beta", folder: "/tmp/beta") }
+        await vm.archiveClosedTargetsNow(projectID: 999)
+        XCTAssertEqual(vm.archiveSettingErrors[999]?.hasPrefix("Could not archive closed targets: "), true)
+        XCTAssertNil(vm.archiveSettingErrors[p], "only that workbench")
+        XCTAssertEqual(vm.summaries.count, 1, "a failed write skips the reload")
+        await vm.undoArchiveNow(projectID: 999)
+        XCTAssertEqual(vm.archiveSettingErrors[999]?.hasPrefix("Could not undo Archive Now: "), true)
+        XCTAssertEqual(vm.summaries.count, 1)
+
+        await vm.archiveClosedTargetsNow(projectID: p)
+        XCTAssertEqual(vm.summaries.count, 2, "the next good write reloads")
+    }
+
     /// Spec 2026-10-03 Part 8: the badge is open asks plus unread agent
     /// target comments, summed over the workbenches.
     func testTheBadgeCountsOpenAsksPlusUnreadAgentComments() async throws {

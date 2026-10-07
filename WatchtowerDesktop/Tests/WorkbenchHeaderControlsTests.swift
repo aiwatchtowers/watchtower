@@ -203,4 +203,28 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         try sut.inspect().find(button: "Delete…").tap()
         XCTAssertEqual(deletes, 1)
     }
+
+    /// "Archive Closed Targets Now" sets the stamp; "Undo Archive Now" shows
+    /// only while it is set and clears it (board #415).
+    func testArchiveNowAndUndoArchiveNow() async throws {
+        let s = try await seed()
+        let p = s.project.id
+        let vm = makeVM()
+        await vm.reload()
+        let stamp = { try await self.pool.read { try WorkbenchQueries.fetch($0, id: p)?.archivedThrough } }
+        XCTAssertThrowsError(try controls(vm, s.project).inspect().find(button: "Undo Archive Now"), "nothing to undo")
+
+        try controls(vm, s.project).inspect().find(button: "Archive Closed Targets Now").tap()
+        await waitUntil { vm.summaries.first?.project.archivedThrough != nil }
+        let stamped = try XCTUnwrap(vm.summaries.first?.project)
+        let stored = try await stamp()
+        XCTAssertNotNil(stored)
+        XCTAssertNoThrow(try controls(vm, stamped).inspect().find(button: "Archive Closed Targets Now"),
+                         "pressing again moves the moment")
+
+        try controls(vm, stamped).inspect().find(button: "Undo Archive Now").tap()
+        await waitUntil { vm.summaries.first?.project.archivedThrough == nil }
+        let cleared = try await stamp()
+        XCTAssertNil(cleared)
+    }
 }

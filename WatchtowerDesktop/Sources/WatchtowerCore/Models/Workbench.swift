@@ -52,6 +52,11 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
     /// (board #301, migration 00103). The owner's setting, written only by
     /// `WorkbenchQueries.setArchiveAfterDays`.
     package let archiveAfterDays: Int
+    /// The moment of the last "Archive Closed Targets Now" (board #415,
+    /// migration 00105), a UTC `YYYY-MM-DDTHH:MM:SSZ`; nil = never pressed or
+    /// undone. Written only by `WorkbenchQueries.archiveClosedTargetsNow` and
+    /// cleared by `WorkbenchQueries.clearArchivedThrough`.
+    package let archivedThrough: String?
 
     package init(row: Row) {
         id = row["id"]
@@ -61,6 +66,7 @@ package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Se
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
         archiveAfterDays = row["archive_after_days"] ?? Self.defaultArchiveAfterDays
+        archivedThrough = row["archived_through"]
     }
 
     package var folderURL: URL { URL(fileURLWithPath: folderPath, isDirectory: true) }
