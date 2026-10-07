@@ -109,4 +109,19 @@ final class MarkdownDocumentTests: XCTestCase {
             }
         }
     }
+
+    /// Owner-written text: one newline is a new line, at any depth; a
+    /// fenced block keeps its own text.
+    func testWithLineBreaksTurnsSoftBreaksIntoLineBreaks() {
+        XCTAssertEqual(MarkdownDocument.withLineBreaks(MarkdownDocument.parse("a\n**b\nc**\n> d\n> e\n\n- f\n  g\n\n```\nh\ni\n```")), [
+            .paragraph([.text("a"), .lineBreak, .strong([.text("b"), .lineBreak, .text("c")])]),
+            .quote([.paragraph([.text("d"), .lineBreak, .text("e")])]),
+            .list(MarkdownList(ordered: false, start: 1, items: [
+                MarkdownListItem(task: .none, blocks: [.paragraph([.text("f"), .lineBreak, .text("g")])])
+            ])),
+            .code(language: nil, code: "h\ni")
+        ])
+        XCTAssertEqual(MarkdownDocument.parse("a\nb"), [.paragraph([.text("a"), .softBreak, .text("b")])],
+                       "the agent's text keeps markdown's soft break")
+    }
 }

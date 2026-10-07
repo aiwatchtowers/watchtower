@@ -11,6 +11,8 @@ struct OwnerAskChecklistBody: View {
     let editable: Bool
     var mark: (String, OwnerAskAnswer.CheckState?) -> Void = { _, _ in }
     var setNote: (String, String) -> Void = { _, _ in }
+    /// ⌘↩ (false) / ⌘⇧↩ (true) in a note: the ask's answer buttons.
+    var onKey: (Bool) -> Void = { _ in }
 
     private static let states: [(OwnerAskAnswer.CheckState, String)] = [(.ok, "Ok"), (.broken, "Broken"), (.skipped, "Skipped")]
 
@@ -32,9 +34,9 @@ struct OwnerAskChecklistBody: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text("\(number).").foregroundStyle(.secondary).monospacedDigit()
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item.text).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    MarkdownView(text: item.text)
                     if !item.hint.isEmpty {
-                        Text(item.hint).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        MarkdownView(text: item.hint).font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -66,15 +68,16 @@ struct OwnerAskChecklistBody: View {
     private func noteView(_ item: OwnerAskCheckItem) -> some View {
         let state = marks[item.id]
         if editable {
-            TextField(
-                state == .broken ? "What broke? (required)" : "Note",
+            CommentTextEditor(
                 text: Binding(get: { notes[item.id] ?? "" }, set: { setNote(item.id, $0) }),
-                axis: .vertical
+                placeholder: state == .broken ? "What broke? (required)" : "Note",
+                minHeight: CommentTextEditor.formMinHeight,
+                maxHeight: CommentTextEditor.formMaxHeight,
+                onSubmit: { onKey(false) },
+                onShiftSubmit: { onKey(true) }
             )
-                .textFieldStyle(.roundedBorder)
-                .font(.callout)
         } else if let note = notes[item.id], !note.isEmpty {
-            Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            MarkdownView(text: note, lineBreaks: true).font(.callout).foregroundStyle(.secondary)
         }
     }
 

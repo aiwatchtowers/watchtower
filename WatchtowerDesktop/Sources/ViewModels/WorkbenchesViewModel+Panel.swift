@@ -303,6 +303,21 @@ extension WorkbenchesViewModel {
         await openFile(at: target, project: project, beside: true)
     }
 
+    /// A workbench path clicked in an ask's text (#394): the file in Files
+    /// at the line, beside the terminal (a terminal link's placement); an
+    /// expanded drawer goes back beside it so the file shows. The file
+    /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
+    /// False — and nothing opened — for a path that is not a file of the
+    /// folder or a workbench no longer listed.
+    @discardableResult
+    func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64) async -> Bool {
+        guard let project = summaries.first(where: { $0.id == projectID })?.project,
+              let path = WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) else { return false }
+        asks.drawerExpanded = false
+        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), project: project, beside: true)
+        return true
+    }
+
     /// Go to definition and back/forward (spec §8.2): `location` in the Files
     /// pane, the cursor on its line and column. A jump (`keepingTab`) opens
     /// a kept tab — keeping a preview tab it lands on; back/forward

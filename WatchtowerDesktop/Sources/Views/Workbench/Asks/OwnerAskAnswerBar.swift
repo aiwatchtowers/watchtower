@@ -4,7 +4,8 @@ import WatchtowerCore
 /// The drawer's footer (spec 2026-10-03 Part 8). An open ask: Later (closes
 /// the drawer, the draft stays) and the kind's answer buttons — Request
 /// changes / Approve, Send (naming the unmarked items), Answer — enabled per
-/// `OwnerAskPresentation.canAnswer`, with the reason when they are not.
+/// `OwnerAskPresentation.canAnswer`, with the reason when they are not;
+/// their keys (⌘↩, a review's Request changes ⌘⇧↩) in their help.
 /// A closed ask: what became of it, and Discard draft while a draft is kept
 /// (an ask withdrawn under the owner's answer).
 struct OwnerAskAnswerBar: View {
@@ -49,13 +50,12 @@ struct OwnerAskAnswerBar: View {
 
     @ViewBuilder
     private func answerButton(_ action: OwnerAskPresentation.AnswerAction, enabled: Bool) -> some View {
-        let button = Button(action.label) {
-            // Unstructured: a view-bound task cancelled by navigation would
-            // surface as a failed answer.
-            let (asks, ask) = (asks, ask)
-            Task { await asks.answer(ask, verdict: action.verdict) }
-        }
-        .disabled(!enabled)
+        let button = Button(action.label) { asks.press(action, on: ask) }
+            .disabled(!enabled)
+            // Not a `.keyboardShortcut`: SwiftUI runs one before the
+            // focused view, so it would take ⌘↩ from every field of the
+            // window. The drawer's fields and `OwnerAskKeyCatcher` press it.
+            .help("Shortcut: \(OwnerAskPresentation.keyLabel(action))")
         if action.isPrimary {
             button.buttonStyle(.borderedProminent)
         } else {

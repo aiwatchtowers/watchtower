@@ -214,13 +214,15 @@ package enum ChatQuestionAnswer {
     }
 
     /// "Answers:" then one line per question: `- <question> → <labels>` with
-    /// `Other: <text>` last.
+    /// `Other: <text>` last (its line breaks as spaces).
     package static func format(_ card: ChatQuestionCard, answers: [String: Entry]) -> String {
         let lines = card.questions.map { question -> String in
             let entry = answers[question.id] ?? Entry()
             var parts = entry.labels
             if let other = entry.other?.trimmingCharacters(in: .whitespacesAndNewlines), !other.isEmpty {
-                parts.append(otherPrefix + other)
+                // A multi-line answer stays on its question's line: the
+                // read-back finds each answer by its line.
+                parts.append(otherPrefix + other.split(whereSeparator: \.isNewline).joined(separator: " "))
             }
             return "- \(question.question)\(arrow)\(parts.joined(separator: ", "))"
         }

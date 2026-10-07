@@ -38,6 +38,20 @@ package enum OwnerAskPresentation {
         return actions.map { AnswerAction(label: "\($0.label) (\(unmarked) unmarked)", verdict: $0.verdict, isPrimary: $0.isPrimary) }
     }
 
+    /// The answer button a key presses (owner ask #90): ⌘↩ the primary
+    /// one — a review's Approve, a check's Send, a question's Answer — and
+    /// ⌘⇧↩ (`shift`) a review's Request changes; nil when the key names no
+    /// button of `ask`. Never inferred from the draft: whether it can
+    /// answer is still `canAnswer`'s.
+    package static func keyAction(for ask: OwnerAsk, draft: OwnerAskDraft, shift: Bool) -> AnswerAction? {
+        answerActions(for: ask, draft: draft).first { $0.isPrimary != shift }
+    }
+
+    /// The key that presses `action`, for its button's help.
+    package static func keyLabel(_ action: AnswerAction) -> String {
+        action.isPrimary ? "⌘↩" : "⌘⇧↩"
+    }
+
     /// Whether `action` may answer `ask` from `draft` now: the ask still
     /// open, no answer being written, and — with the button's verdict — an
     /// answer Go's reader takes (`OwnerAskDraft.problem`). A check answers

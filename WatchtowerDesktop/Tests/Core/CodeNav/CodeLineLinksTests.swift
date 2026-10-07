@@ -44,6 +44,45 @@ final class CodeLineLinksTests: XCTestCase {
         XCTAssertEqual(CodeLineLinks.linkified("![shot of a.swift:2](img.png)"), "![shot of a.swift:2](img.png)")
     }
 
+    /// A link written to a workbench path opens the file: at its line,
+    /// or the first one.
+    func testALinkToAPathOpensTheFile() {
+        XCTAssertEqual(CodeLineLinks.linkified("Read [the plan](docs/plan.md) first"),
+                       "Read [the plan](\(url("docs/plan.md", 1))) first")
+        XCTAssertEqual(CodeLineLinks.linkified("[run](cmd/run.go:40:3) and [x](a.go#L12-L14)"),
+                       "[run](\(url("cmd/run.go", 40, 3))) and [x](\(url("a.go", 12)))")
+        XCTAssertEqual(CodeLineLinks.linkified("[x](a.go:12) and [r](README.md)"),
+                       "[x](\(url("a.go", 12))) and [r](\(url("README.md", 1)))")
+    }
+
+    /// A schemeless web address or a version number written as a link
+    /// target is no file: it keeps its target.
+    func testALinkToAHostOrAVersionKeepsItsTarget() {
+        for text in ["[site](www.example.com)", "[s](example.com)", "[s](example.net/docs/a.md)", "[s](www.example.org)",
+                     "[s](Example.IO)", "[s](example.com:8080)", "[v](v1.2)", "[w](www.notes.md)"] {
+            XCTAssertEqual(CodeLineLinks.linkified(text), text)
+        }
+        XCTAssertEqual(CodeLineLinks.linkified("[n](docs/v1.2)"), "[n](\(url("docs/v1.2", 1)))",
+                       "only a whole target that is a number is refused")
+    }
+
+    /// An Org-mode file opens. The trade-off, kept on purpose: `org` is no
+    /// web domain, so a schemeless `example.org` (no `www.`) links as a
+    /// file too — an agent writes a web address with its scheme.
+    func testAnOrgFileIsAFile() {
+        XCTAssertEqual(CodeLineLinks.linkified("[notes](notes.org)"), "[notes](\(url("notes.org", 1)))")
+        XCTAssertEqual(CodeLineLinks.linkified("[s](example.org)"), "[s](\(url("example.org", 1)))")
+    }
+
+    /// Images, anchors, absolute paths, paths out of the folder and other
+    /// schemes keep their target.
+    func testALinkToAnythingElseKeepsItsTarget() {
+        for text in ["![shot](img.png)", "[top](#intro)", "[hosts](/etc/hosts)", "[up](../secret.txt)",
+                     "[mail](mailto:someone@example.com)", "[site](https://example.com/a.md)", "[name](README)"] {
+            XCTAssertEqual(CodeLineLinks.linkified(text), text)
+        }
+    }
+
     func testANameWithoutExtensionOrFolderIsNoCitation() {
         XCTAssertEqual(CodeLineLinks.linkified("at line:3 and time 10:30"), "at line:3 and time 10:30")
     }

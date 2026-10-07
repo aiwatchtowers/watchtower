@@ -7,9 +7,15 @@ import WatchtowerCore
 /// only while this field has focus), and — with `focusOnAppear` — the caret
 /// already blinking in it when it opens. Grows with its text from
 /// `minHeight` to `maxHeight`, then scrolls. A nil `onSubmit` (a draft that
-/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view. An `onCancel`
-/// takes Esc in this field (it never reaches the pane's Esc handling); an
-/// `onEndEditing` hears the field losing focus.
+/// is sent with its batch) leaves ⌘↩/⌃↩ to the text view; with
+/// `leavesOnSubmit` they leave the field instead (its text is already kept
+/// as typed: a margin comment). `onShiftSubmit`, when set, takes ⌘⇧↩/⌃⇧↩
+/// from `onSubmit` (an ask's Request changes). `onFocus` runs
+/// when the field takes the keyboard or is clicked while it has it (a
+/// margin comment's card turning active). An `onCancel` takes Esc in this
+/// field (it never reaches the pane's Esc handling); an `onEndEditing`
+/// hears the field losing focus. Text set through the binding from outside
+/// is not undoable (`updateNSView`).
 struct CommentTextEditor: View {
     @Binding var text: String
     var placeholder = ""
@@ -17,15 +23,25 @@ struct CommentTextEditor: View {
     var minHeight: CGFloat = 30
     var maxHeight: CGFloat = 120
     var cornerRadius: CGFloat = 6
+    var leavesOnSubmit = false
     var onSubmit: (() -> Void)?
+    var onShiftSubmit: (() -> Void)?
+    var onFocus: (() -> Void)?
     var onCancel: (() -> Void)?
     var onEndEditing: (() -> Void)?
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
 
+    /// A form field's heights (an ask's note, a check item's note, an
+    /// "Other…" answer; #394): about three lines from the start, so it
+    /// reads as room to write.
+    static let formMinHeight: CGFloat = 60
+    static let formMaxHeight: CGFloat = 180
+
     var body: some View {
         CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear,
-                            onSubmit: onSubmit, onCancel: onCancel, onEndEditing: onEndEditing)
+                            leavesOnSubmit: leavesOnSubmit, onSubmit: onSubmit, onShiftSubmit: onShiftSubmit,
+                            onFocus: onFocus, onCancel: onCancel, onEndEditing: onEndEditing)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -57,7 +73,10 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var contentHeight: CGFloat
     let focusOnAppear: Bool
+    let leavesOnSubmit: Bool
     let onSubmit: (() -> Void)?
+    let onShiftSubmit: (() -> Void)?
+    let onFocus: (() -> Void)?
     let onCancel: (() -> Void)?
     let onEndEditing: (() -> Void)?
 
@@ -81,7 +100,10 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.string = text
         textView.delegate = context.coordinator
         textView.focusOnAppear = focusOnAppear
+        textView.leavesOnSubmit = leavesOnSubmit
         textView.onSubmit = onSubmit
+        textView.onShiftSubmit = onShiftSubmit
+        textView.onFocus = onFocus
         textView.onCancel = onCancel
 
         // A new width re-wraps the text: measure again.
@@ -102,20 +124,21 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? SubmittingTextView else { return }
+        textView.leavesOnSubmit = leavesOnSubmit
         textView.onSubmit = onSubmit
+        textView.onShiftSubmit = onShiftSubmit
+        textView.onFocus = onFocus
         textView.onCancel = onCancel
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
-            // Through the undoable path: a plain `string =` leaves typing undo
-            // steps pointing into the text that was just replaced.
-            // The delegate stays out of it: this runs inside a SwiftUI update.
-            let all = NSRange(location: 0, length: (textView.string as NSString).length)
-            context.coordinator.applyingExternalText = true
-            if textView.shouldChangeText(in: all, replacementString: text) {
-                textView.replaceCharacters(in: all, with: text)
-                textView.didChangeText()
-            }
-            context.coordinator.applyingExternalText = false
+            // Text from outside (another ask's draft under the same field,
+            // a sent comment cleared) is not an edit: it is not undoable,
+            // and the typing undo steps of the text it replaces go with it,
+            // so ⌘Z never brings one draft's text into another. The typing
+            // run in progress ends with them: the next keystroke opens its
+            // own undo step instead of extending the one just removed.
+            textView.string = text
+            context.coordinator.undoManager.removeAllActions()
             textView.breakUndoCoalescing()
             DispatchQueue.main.async { context.coordinator.measure(textView) }
         }
@@ -127,15 +150,21 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CommentNSTextEditor
-        var applyingExternalText = false
+        /// The field's own undo history (not the window's), so text set
+        /// from outside can clear it without touching another field's.
+        let undoManager = UndoManager()
         private var measuredWidth: CGFloat?
 
         init(parent: CommentNSTextEditor) {
             self.parent = parent
         }
 
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            undoManager
+        }
+
         func textDidChange(_ notification: Notification) {
-            guard !applyingExternalText, let textView = notification.object as? NSTextView else { return }
+            guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
             measure(textView)
         }
@@ -166,14 +195,33 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     }
 }
 
-/// Sends on ⌘↩/⌃↩ while it is the first responder; everything else —
+/// Sends on ⌘↩/⌃↩ while it is the first responder (or, with
+/// `leavesOnSubmit`, resigns it in its own window); everything else —
 /// Return included — is ordinary editing. Decided on the key event, not in
 /// `doCommandBy` like the chat composer: ⌘↩ arrives as a key equivalent
 /// and never as `insertNewline:`, and ⌃↩ arrives as `insertLineBreak:`.
 private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onShiftSubmit: (() -> Void)?
+    var onFocus: (() -> Void)?
     var onCancel: (() -> Void)?
     var focusOnAppear = false
+    var leavesOnSubmit = false
+
+    override func becomeFirstResponder() -> Bool {
+        let took = super.becomeFirstResponder()
+        // Not inside AppKit's responder change: the callback writes SwiftUI state.
+        if took, let onFocus { DispatchQueue.main.async(execute: onFocus) }
+        return took
+    }
+
+    /// A click into the field while it already has the keyboard (its card
+    /// made inactive by a click elsewhere that took no focus) makes it
+    /// active again; `becomeFirstResponder` covers the other clicks.
+    override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder === self, let onFocus { DispatchQueue.main.async(execute: onFocus) }
+        super.mouseDown(with: event)
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -187,7 +235,7 @@ private final class SubmittingTextView: NSTextView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if submits(event) { onSubmit?(); return }
+        if submits(event) { submit(event); return }
         if let onCancel, cancels(event) { onCancel(); return }
         super.keyDown(with: event)
     }
@@ -201,15 +249,23 @@ private final class SubmittingTextView: NSTextView {
     /// ⌘-combinations reach the window as key equivalents before `keyDown`.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if window?.firstResponder === self, submits(event) {
-            onSubmit?()
+            submit(event)
             return true
         }
         return super.performKeyEquivalent(with: event)
     }
 
+    /// A held key's auto-repeat is taken and dropped: one press sends once.
+    private func submit(_ event: NSEvent) {
+        guard !event.isARepeat else { return }
+        let shift = event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.shift)
+        if shift, let onShiftSubmit { onShiftSubmit() } else { onSubmit?() }
+        if leavesOnSubmit { window?.makeFirstResponder(nil) }
+    }
+
     private func submits(_ event: NSEvent) -> Bool {
         // Never mid-IME-composition: the Return belongs to the input method.
-        guard onSubmit != nil, event.type == .keyDown, !hasMarkedText() else { return false }
+        guard onSubmit != nil || leavesOnSubmit, event.type == .keyDown, !hasMarkedText() else { return false }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         return CommentEditorKeys.submits(keyCode: event.keyCode, command: flags.contains(.command),
                                          control: flags.contains(.control))
