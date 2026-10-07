@@ -1279,3 +1279,12 @@ Entry format:
 - weak-dimension: 7. VM/Core coverage is strong, but the cross-surface counting rule (lane vs path bar vs panel "N of M") had a test pinning the divergent behaviour, and view-only Esc/close/flush rules had none.
 - rule-gap (candidate, Swift dim 6/9): *a view that holds an editor draft for a subject the surrounding view can switch ships a test (or a pure helper test) for draft on A → switch to B → empty → back to A → restored, and its save guard compares against the open-time text.* Candidate (process): *a multi-task SDD run lists its deferred minors against the spec's invariants section at the final review; a deferred minor that contradicts a binding spec line is re-rated, not carried.*
 - outcome: TBD
+
+## 2026-10-07 — feat/415-archive-now (board #415: migration 00105 `projects.archived_through` stamp + view OR-branch, Go/Swift twin writers, Desktop "Archive Closed Targets Now" / "Undo Archive Now", fingerprint, `workbench show`, PROJ-15 amended under owner approval; panel: prosecutor + 3 specialists, codex lane DOWN — CLI not installed; judge verified against b9905e99 by reading, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested (downgraded to nit, silent-failure M2): "Undo is exact" is false across two clicks (Undo clears the moment, so it restores the first click's archive too). The spec's decision 3 approves exactly this behaviour, so only the comment wording was wrong. Check a semantics finding against the spec's decisions before rating it. [6]
+- false-positive: fingerprint SQL hard-requires the new column on an unmigrated DB (Desktop and the CLI ship as one bundle; the 00103 precedent); a stale menu after a failed reload (the error is shown, and the poll catches up). [9]
+- miss: none unique, since codex was absent. Only the prosecutor grepped for the OLD definition text ("closed longer than the archive period") and found it in agent tool schemas and UI tooltips the PR left alone. [6]
+- weak-dimension: none materially. The #301 lessons (ancestor-level NULL guard, a test per combination of each flag) were applied, and every spec §4 case exists.
+- rule-gap (candidate, dim 6/8): *when a change amends the definition of a term (archived, done, waiting), grep the old definition's wording across tool jsonschema descriptions, `.help` strings, app-guide and inventory, and update each one in the same change.* The inventory supporting-test list should also be checked by grep for each test's real file.
+- outcome: TBD
