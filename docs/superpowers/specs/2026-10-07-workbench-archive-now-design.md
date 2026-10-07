@@ -159,7 +159,7 @@ added (§4). PROJ-05/06/07/09 untouched: the button writes only `projects`.
 
 ## 4. Tests
 
-Go `internal/db` (`proj15_board_archive_test.go`; times seeded from
+Go `internal/db` (`proj15_archive_now_test.go`; times seeded from
 `time.Now()`, the stamp from `ArchiveWorkbenchClosedNow`):
 - `TestProj15_ArchiveNowArchivesEveryClosedSubtree` — `done` and `dismissed`
   leaves closed minutes ago are archived after the call, open ones are not;
