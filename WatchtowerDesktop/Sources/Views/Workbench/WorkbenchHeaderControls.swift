@@ -154,7 +154,7 @@ private extension WorkbenchHeaderControls {
         } label: {
             Label("Archive Closed Targets Now", systemImage: "archivebox.fill")
         }
-        .help("Archive every done or dismissed target on this board now; work closed later stays")
+        .help("Archive every done or dismissed target now; one with an open sub-target stays, and so does work closed later")
         if project.archivedThrough != nil {
             Button {
                 Task { await vm.undoArchiveNow(projectID: project.id) }

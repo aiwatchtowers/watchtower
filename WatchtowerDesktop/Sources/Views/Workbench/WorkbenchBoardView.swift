@@ -221,7 +221,7 @@ struct WorkbenchBoardView: View {
             Toggle("Archive (\(archived))", isOn: Binding(get: { vm.showArchived }, set: { vm.showArchived = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
-                .help("Show the targets closed longer than the workbench's archive setting (… menu). Reopen one to bring it back.")
+                .help("Show targets closed longer than the archive setting or before the last Archive Now. Reopen one to bring it back.")
         }
     }
 
