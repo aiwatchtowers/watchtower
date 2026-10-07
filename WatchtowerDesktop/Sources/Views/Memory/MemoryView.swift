@@ -85,7 +85,7 @@ struct MemoryView: View {
                 } label: {
                     Label("Focus", systemImage: "scope")
                 }
-                .help("Edit focus.md — the Now/Cooled salience directives")
+                .help("Edit focus.md — what memory should rank higher (Now) or lower (Cooled)")
             }
         }
     }

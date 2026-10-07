@@ -572,6 +572,8 @@ watchtower config set memory.surfaces.meeting_prep true  # meeting prep reads it
 
 Turn on only what you want; the five switches have independent effects, and with all of them off the memory quietly builds itself without ever changing how day plans, meeting prep, or briefings look.
 
+**The Memory tab** — browse and search the vault's pages and beliefs, sorted by **Recent** or **Important**. A belief the memory marked as unsettled (it keeps flip-flopping, or new evidence contradicts something you said) carries a **Dispute pending** banner with the reason; only this tab shows that mark, nothing else brings it to you. **Focus** in the toolbar edits the vault's `focus.md`: list people, channels or projects by name as `- ` bullets under **Now** to rank them higher in memory (search, meeting prep, what is kept when old notes are archived) or under **Cooled** to rank them lower. A bullet matches pages whose name or title contains it, so keep bullets specific. Focus takes effect on the next memory run and only while it is turned on — `watchtower config set memory.focus.enabled true` (off by default); turning it off later undoes its effect.
+
 **Sources — what the memory learns from (all off by default):** by default the memory is built from Slack/Jira. A few more independent switches let it learn from more of your world:
 
 ```
