@@ -204,8 +204,9 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertEqual(deletes, 1)
     }
 
-    /// "Archive Closed Targets Now" sets the stamp; "Undo Archive Now" shows
-    /// only while it is set and clears it (board #415).
+    /// "Archive Closed Targets Now" sets the stamp and a second press moves
+    /// it forward; "Undo Archive Now" shows only while it is set and clears
+    /// it (board #415).
     func testArchiveNowAndUndoArchiveNow() async throws {
         let s = try await seed()
         let p = s.project.id
@@ -219,8 +220,19 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         let stamped = try XCTUnwrap(vm.summaries.first?.project)
         let stored = try await stamp()
         XCTAssertNotNil(stored)
-        XCTAssertNoThrow(try controls(vm, stamped).inspect().find(button: "Archive Closed Targets Now"),
-                         "pressing again moves the moment")
+
+        // Pressing again moves the moment forward. The stamp has second
+        // precision, so date the first one back before the second press.
+        let earlier = "2000-01-01T00:00:00Z"
+        try await pool.write { try $0.execute(sql: "UPDATE projects SET archived_through = ? WHERE id = ?",
+                                              arguments: [earlier, p]) }
+        await vm.reload()
+        XCTAssertEqual(vm.summaries.first?.project.archivedThrough, earlier)
+        try controls(vm, stamped).inspect().find(button: "Archive Closed Targets Now").tap()
+        await waitUntil { (vm.summaries.first?.project.archivedThrough ?? earlier) > earlier }
+        let restamped = try await stamp()
+        let moved = try XCTUnwrap(restamped, "pressing again keeps a stamp")
+        XCTAssertGreaterThan(moved, earlier, "pressing again moves the moment")
 
         try controls(vm, stamped).inspect().find(button: "Undo Archive Now").tap()
         await waitUntil { vm.summaries.first?.project.archivedThrough == nil }
