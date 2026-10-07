@@ -749,7 +749,7 @@ cried wolf — the owner must be able to trust that orange means their move.
 
 ## PROJ-12 — an ask's answer is submitted only into a session whose hooks reported this run, never into a permission prompt they reported nor over the owner's half-typed text
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»))
 
 **Observable:** When the owner answers an ask in the Desktop, the answer is
 stored first — one guarded `UPDATE owner_asks SET status='answered', answer,
@@ -768,9 +768,18 @@ follows only when, both before the pause and after it (the states re-read):
 both reads succeeded (`SessionAgentStateCenter.poll` returns whether it
 did; after a failed read the last good state vouches for nothing — a
 failed read before the paste holds the line, see below), the
-session's hooks wrote a state during its current run
-(`SessionAgentStatus.at`; no hooks, or none written yet, means the app
-cannot tell a permission prompt is on screen), that state is not
+session's hooks wrote during its current run
+(`SessionAgentStatus.hooksReported`): a state, or — since 2026-10-07
+(board #396) — the run's mark, which the SessionStart hook of a launch or
+a resume (source `startup`/`resume`) writes only when the workbench's
+folder has the session state hooks (`MarkTerminalAgentRun`: `agent_state`
+NULL with `agent_state_at` of this run; without them a new run is cleared
+with no stamp): the hooks run and the agent has not started a turn, so no
+permission dialog can be up. A compaction — `/compact`, or the one Claude
+Code runs by itself while idle — continues the run: its SessionStart
+(`compact`) keeps the run's state and stamp. No hooks, or only an earlier
+run's state or mark (or a stored value this build does not know), means
+the app cannot tell a permission prompt is on screen. The state is not
 `needsApproval`, and the session's Claude Code prompt held no text not
 submitted (`TerminalCenter.promptDrafts`): nothing the owner typed since
 their last submitting Return — only input ending in a plain CR not right
@@ -779,10 +788,22 @@ brackets skipped) is not `\`, submits; Claude Code's line-break keys (`\`
 then Return, Option+Return as ESC CR, Ctrl+J as LF, Shift+Return as an
 escape sequence) and anything else leave a draft — and no earlier line the app pasted there without its Return (an
 answer or a hand-off left typed). Keys sent while the session shows
-`needsApproval` answer the dialog and change nothing. Otherwise the line is
+`needsApproval` answer the dialog and change nothing. The Return goes only
+into the process run the line was pasted into (`TerminalCenter.runs`, a
+number per run: a relaunch reuses the process object), and an owner's
+submitting Return during the pause has sent the line, so none follows and
+no bar asks for one — withheld only when the state read after the pause
+failed or shows a permission prompt (`inputAnswersDialog`, asked again
+after that read: it may have been a second stale when the Return came, so
+that Return may have gone into a dialog); then the line counts as still
+typed, with its bar. The caller's other conditions (a hand-off's session
+no longer idle at its prompt, a cancelled request) do not count against
+it: the owner's Return itself starts a turn. Otherwise the line is
 only pasted, the session's prompt counts as holding a draft until the
-owner's submitting Return (or the process's start or close), and a bar over
-the terminal says to press Return. Nothing is typed while the session's
+owner's submitting Return (or the process's start or close, which also
+drop its bar), and a bar over the terminal says to press Return; the
+condition that withheld the Return is logged (`TerminalCenter`/`OwnerAsks`
+lines in the app's log). Nothing is typed while the session's
 agent waits on a permission prompt (`needsApproval`, PROJ-11, re-read right
 before the paste), or while that re-read fails (the last good state may
 miss a prompt shown since): the line is held in memory and goes on the
@@ -812,7 +833,9 @@ copied and never pasted, typed and never submitted) leaves the ask
 2026-10-04). An automatic Return could confirm whatever Claude Code's TUI
 shows at that moment without the owner seeing it: a permission dialog's
 default — hence the hold, the re-read before the paste and after the pause,
-a Return only where the hooks vouch for the state this run, and no
+a Return only where the hooks vouch for the state this run (a run they
+marked and the agent has not turned to has no dialog up: one comes only
+from a turn, and its hook would write `approval`), and no
 keystrokes without bracketed paste — or a half-typed prompt, which it would
 submit together with the answer — hence no Return over the owner's draft.
 Two lines pasted into one prompt would be submitted as one message — hence
@@ -822,14 +845,15 @@ would send the agent to read an answer that is not there — the
 `WorkbenchCommentPrompt` rule carried over to asks.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after), `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted` (at once and after a hold; a dialog key is no draft), `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted`, `testAPermissionPromptDuringThePauseLeavesTheLineTyped` (a line left typed keeps the next answer from submitting it, through a dialog key), `testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt`, `testAFailedStateReadAfterThePauseLeavesTheLineTyped`, `testAFailedStateReadBeforeThePasteHoldsTheLine`, `testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer`
+- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after), `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted` (at once and after a hold; a dialog key is no draft), `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted`, `testAPermissionPromptDuringThePauseLeavesTheLineTyped` (a line left typed keeps the next answer from submitting it, through a dialog key), `testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt`, `testAFailedStateReadAfterThePauseLeavesTheLineTyped`, `testAFailedStateReadBeforeThePasteHoldsTheLine`, `testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer`
 - `internal/asks/line_test.go::TestDeliveryLineFixtures`, `internal/asks/line_test.go::TestDeliveryLineIsOneLine`
 - `WatchtowerDesktop/Tests/Core/OwnerAskPromptTests.swift` (`testTheLineMatchesEveryGoFixture`, `testTheLineIsOneLineWithNoControlCharacters`)
 - `WatchtowerDesktop/Tests/TerminalCenterTests.swift` (`testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn` — the Return strictly after the pause, `testOverTheOwnersDraftSubmitPromptOnlyPastes`, `testTheOwnerTypingDuringThePauseStopsTheReturn`, `testALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt`, `testClaudeCodeLineBreakKeysLeaveTheDraft`, `testAFailedRefreshAfterThePauseStopsTheReturn`, `testWithoutBracketedPasteTheLineIsCopiedNotTyped`, `testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted`)
-- `WatchtowerDesktop/Tests/CodeNav/CodeHandoffCenterTests.swift` (`testAFailedStateReadAfterTheAnswersPauseLeavesTheLineTyped`, `testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted` — the wiring through a real `SessionAgentStateCenter`)
+- `WatchtowerDesktop/Tests/CodeNav/CodeHandoffCenterTests.swift` (`testAFailedStateReadAfterTheAnswersPauseLeavesTheLineTyped`, `testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted` — no state row, an earlier run's state or mark, an unknown value: only pasted, the bar asks for Return; `testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn` — the run's mark gets the Return and no bar, a relaunch's leftover state does not; `testProj12_ACompactWhileIdleKeepsTheReturn` — a mark, then a turn's `waiting`, each across a compaction's id move, read through the real stored-row query; all the wiring through a real `SessionAgentStateCenter`)
+- `cmd/workbench_brief_session_test.go::TestProj12_ANewRunWithTheStateHooksIsMarked` (startup and resume with the state hooks mark the run; without them, or for a nested `claude -p`, nothing is stamped), `cmd/workbench_brief_session_test.go::TestProj12_CompactWhileIdleKeepsTheRunsState` (a `compact` SessionStart onto the same or a new id keeps a turn's `waiting` or the run's mark and its stamp)
 - `WatchtowerDesktop/Tests/Core/OwnerAskQueriesTests.swift` (`testAnsweringAnAskWithdrawnMeanwhileThrowsNotOpenAndWritesNothing`)
 - `cmd/workbench_brief_test.go::TestProj12_AnsweredAskSurvivesAFullBoard`
-- supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`, `testTwoHeldAnswersToOneSessionGoOneAfterTheOther`, `testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext`, `testDismissingAHeldAnswerCancelsItsDelivery`, `testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted`, `testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting`); `TerminalCenterTests::testATypedAnswerHintStaysThroughKeysIntoAPermissionDialog`; `CodeHandoffCenterTests::testAnAnswerIntoASessionWaitingThisRunIsSubmitted`; `TerminalOwnerInputTests::testOnlyTheOwnersInputIsReported` (the owner's bytes, never the app's paste); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
+- supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`, `testTwoHeldAnswersToOneSessionGoOneAfterTheOther`, `testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext`, `testDismissingAHeldAnswerCancelsItsDelivery`, `testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted`, `testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting`); `TerminalCenterTests::testATypedAnswerHintStaysThroughKeysIntoAPermissionDialog`; `CodeHandoffCenterTests::testAnAnswerIntoASessionWaitingThisRunIsSubmitted`; `TerminalOwnerInputTests::testOnlyTheOwnersInputIsReported` (the owner's bytes, never the app's paste); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `SessionAgentStatusTests::testTheRunsMarkSaysTheHooksReportThisRun`; `TerminalCenterTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted`, `testTheOwnersReturnDuringThePauseSkipsOurs` — also `\` then Return is no submit, `testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped`, `testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition`, `testARestartDropsTheLastRunsPasteBar`); `cmd/workbench_brief_session_test.go::TestApplySessionStart_HooksReadErrorStillMovesTheID`; `OwnerAsksViewModelTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testARelaunchDuringTheReadBeforeThePasteTypesNothing`, `testTheOwnersReturnDuringThePauseSendsTheAnswer`); `internal/db/terminal_sessions_test.go` (`TestMarkTerminalAgentRun_NewRunStartsEmpty`, `TestClearTerminalAgentState_LeavesNoStamp`); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
 
 **Locked since:** 2026-10-03
 
@@ -1043,8 +1067,34 @@ other direction.
   mtime gate is whole seconds, so an edit in the same second as its last
   render waits for the next change or an explicit trigger. (h) Since
   2026-10-04 (board #379) the answer's Return trusts the hook state of the
-  current run: a session with none (a folder without the session state
-  hooks, or no hook written yet this run) only gets the paste. Not seen, so
+  current run: a session whose hooks wrote nothing this run (a folder
+  without the session state hooks) only gets the paste. Since 2026-10-07
+  (board #396) the SessionStart hook marks a launch or a resume with them,
+  so a fresh run counts as reported — the mark is written by the CLI
+  binary, no Re-run Setup needed, but a session started before the update
+  has no mark until its first hook state, and an answer in the second
+  between the launch and the app's first read after the mark only gets
+  the paste. A turn the agent starts by itself (no `UserPromptSubmit`: a
+  teammate message, a wakeup) leaves the mark until its first tool result;
+  an answer meanwhile is queued by Claude Code as with `working`, and a
+  permission prompt in that turn is reported by its `Notification` hook as
+  in any other. The residual risk of the 2026-10-07 extension: a hook
+  write that is lost, not only late (an `approval` write failing on
+  `SQLITE_BUSY` past its 1 s busy timeout, a hook process killed), leaves
+  the mark — like any earlier state — vouching for a prompt with no
+  dialog, so the Return may confirm that dialog's default. When the
+  owner's own Return during the pause really sent the line and the read
+  after the pause failed or a dialog is still shown at that read, the line
+  counts as still typed and a (safe)
+  false "press Return" bar shows — the same as before the extension. The
+  reverse is not caught: a permission prompt that opened during the pause
+  and was answered by that same owner Return (the app's state still stale)
+  is gone by the read, so the line counts as sent — no bar, no tracked
+  draft — though its text may still sit in the input box, and the next
+  delivery's Return could send both as one message. It needs a prompt to
+  open and be answered within the 500 ms pause; for answers so since the
+  #388 fix, for hand-offs since its review round (accepted over the false
+  bar). Not seen, so
   the Return goes there: a permission prompt whose async hook write has not
   landed by the re-read after the 500 ms pause, and a TUI dialog the hooks
   do not report (not a permission prompt). A permission prompt declined or
@@ -1099,6 +1149,8 @@ other direction.
   `TestProj15_UnparseableCloseTimeKeepsTheChain`).
 
 ## Changelog
+
+- 2026-10-07 (board #396, with #387/#388/#389; owner directive 2026-10-05 «send it right away», approved as an amendment of PROJ-12): **PROJ-12 amended** — an answer is also submitted into a session whose hooks have not written a state yet this run, when its SessionStart hook marked the run. Root cause: a relaunch or resume (`startup`/`resume`) cleared the row's state, so `SessionAgentStatus.at` was nil until the agent's next turn and the line was only pasted ("press Return to send") into an idle session; a compaction while idle continues the run and changed nothing. Now the SessionStart hook writes the run's mark (`MarkTerminalAgentRun`: no state, a stamp of this run) when the workbench's folder has the session state hooks (`workbenchHasStateHooks`), even with nothing to clear; without them `ClearTerminalAgentState` clears with no stamp (it used to stamp the clear), so a mark always means the state hooks run. The Desktop reads it as `SessionAgentStatus.runMarked`/`hooksReported`; the dot, `isAtPrompt` (hand-offs, ruling R52) and PROJ-11's states and notices are unchanged. The permission-dialog guard (`needsApproval` before the paste and after the pause, failed reads) and the owner-draft guard are unchanged. Also: the Return goes only into the process run the line was pasted into (`TerminalCenter.runs`; a relaunch reuses the process object, #387 — also for held answers and the read before the paste), the owner's submitting Return during the pause skips ours and leaves no bar (#388), a restart drops the last run's paste bar (#389), and the condition that withheld a Return is logged. Guards rewritten to the new rule, none relaxed: `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted` → `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted` (same assertions), `CodeHandoffCenterTests::testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted` → `testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted` (the earlier run's state kept, plus no row, an earlier run's mark and an unknown value; the bar asserted). New guards `testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn`, `testProj12_ACompactWhileIdleKeepsTheReturn`, `TestProj12_ANewRunWithTheStateHooksIsMarked`, `TestProj12_CompactWhileIdleKeepsTheRunsState`. Limit (h) rewritten. No hook setting changed (the SessionStart entry already ran for every source), so no Re-run Setup. PROJ-11's guards are unchanged; its "the SessionStart clear of a new run" is now the mark or the stampless clear.
 
 - 2026-10-04 (board #380, PR #165, owner-approved in ask #41): **PROJ-12 tightened**; heading, wording and guards unchanged. An answer's Return is also withheld while another line into the same session is still in its pause before its own Return (`TerminalCenter.pendingReturns`): when a second line (an answer or a code hand-off) arrives during that pause, both lines are only pasted and neither is submitted, so one line never submits the other. While such shared text sits in the prompt (`sharedPrompts`, cleared with `promptDrafts` by the owner's submitting Return, the process's start or close) the bars say Return sends both lines together.
 - 2026-10-04 (board #361, code navigation tails, owner-approved in ask #42): **PROJ-02 strengthened** — the delete also removes the workbench's code questions (they quote the folder's code and no surface listed them once the workbench was gone); `TestProj02_DeleteProjectLeavesNoRows` extended, none relaxed. Migration `00104` removes the ones earlier deletes left behind (ids are never reused, so a missing workbench id is a deleted one).

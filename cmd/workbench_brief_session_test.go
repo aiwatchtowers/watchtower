@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 )
 
 const (
@@ -74,6 +76,16 @@ func TestProjectBrief_HookRecordsTheSessionIDAfterClear(t *testing.T) {
 	}
 }
 
+// installBriefStateHooks gives the fixture workbench's folder the session
+// state hooks.
+func installBriefStateHooks(t *testing.T, database *db.DB, projectID int64) {
+	t.Helper()
+	wb, err := database.GetWorkbench(projectID)
+	require.NoError(t, err)
+	_, err = devpack.InstallStateHooks(wb.FolderPath, "watchtower", projectID)
+	require.NoError(t, err)
+}
+
 // storeAgentState gives the fixture row a state from a previous run.
 func storeAgentState(t *testing.T, database *db.DB, projectID, rowID int64, sessionID string) {
 	t.Helper()
@@ -86,31 +98,151 @@ func storeAgentState(t *testing.T, database *db.DB, projectID, rowID int64, sess
 // run's agent state goes — after the id moved, so a resume onto another
 // conversation clears too. /clear and compaction keep it (the same run), and
 // a nested `claude -p` (another id) clears nothing. The brief is unchanged.
+// Board #396: with the state hooks the new run is stamped (its mark),
+// without them it is left with no stamp.
 func TestProjectBrief_HookClearsTheAgentStateOnANewRun(t *testing.T) {
+	for _, hooks := range []bool{true, false} {
+		for _, tc := range []struct {
+			name, source, sessionID string
+			cleared                 bool
+		}{
+			{"startup", "startup", briefLaunchID, true},
+			{"resume", "resume", briefLaunchID, true},
+			{"resume onto another conversation", "resume", briefClearedID, true},
+			{"clear", "clear", briefClearedID, false},
+			{"compact", "compact", briefLaunchID, false},
+			{"nested session", "startup", briefClearedID, false},
+		} {
+			t.Run(fmt.Sprintf("%s hooks=%v", tc.name, hooks), func(t *testing.T) {
+				database, pid, row := briefSessionFixture(t)
+				if hooks {
+					installBriefStateHooks(t, database, pid)
+				}
+				storeAgentState(t, database, pid, row, briefLaunchID)
+				before, err := database.GetTerminalSession(row)
+				require.NoError(t, err)
+				t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+				want, _ := runBriefHook(t, pid, "") // the brief without a payload
+
+				out, errOut := runBriefHook(t, pid, hookPayload(tc.source, tc.sessionID))
+
+				s, err := database.GetTerminalSession(row)
+				require.NoError(t, err)
+				assert.Equal(t, !tc.cleared, s.AgentState.Valid, "agent state kept")
+				switch {
+				case !tc.cleared:
+					assert.Equal(t, before.AgentStateAt, s.AgentStateAt, "the run's stamp kept")
+				case hooks:
+					assert.True(t, s.AgentStateAt.After(before.AgentStateAt), "the new run is marked")
+				default:
+					assert.True(t, s.AgentStateAt.IsZero(), "no stamp without the state hooks")
+				}
+				assert.Equal(t, want, out, "the brief is byte-identical")
+				assert.Empty(t, errOut)
+			})
+		}
+	}
+}
+
+// PROJ-12 (amended 2026-10-07, board #396): a launch or a resume of a
+// session whose folder has the state hooks marks the run even with nothing
+// stored — agent_state NULL with a stamp of this run, the Desktop's sign
+// that the hooks run and no turn has started, so an ask's answer gets its
+// Return. Without the hooks nothing is stamped, and a nested `claude -p`
+// (another id) marks nothing.
+func TestProj12_ANewRunWithTheStateHooksIsMarked(t *testing.T) {
 	for _, tc := range []struct {
 		name, source, sessionID string
-		cleared                 bool
+		hooks, marked           bool
 	}{
-		{"startup", "startup", briefLaunchID, true},
-		{"resume", "resume", briefLaunchID, true},
-		{"resume onto another conversation", "resume", briefClearedID, true},
-		{"clear", "clear", briefClearedID, false},
-		{"compact", "compact", briefLaunchID, false},
-		{"nested session", "startup", briefClearedID, false},
+		{"startup", "startup", briefLaunchID, true, true},
+		{"resume", "resume", briefLaunchID, true, true},
+		{"startup without the state hooks", "startup", briefLaunchID, false, false},
+		{"resume without the state hooks", "resume", briefLaunchID, false, false},
+		{"nested session", "startup", briefClearedID, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database, pid, row := briefSessionFixture(t)
-			storeAgentState(t, database, pid, row, briefLaunchID)
+			if tc.hooks {
+				installBriefStateHooks(t, database, pid)
+			}
 			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-			want, _ := runBriefHook(t, pid, "") // the brief without a payload
+			start := time.Now().UTC().Truncate(time.Millisecond)
 
-			out, errOut := runBriefHook(t, pid, hookPayload(tc.source, tc.sessionID))
+			_, errOut := runBriefHook(t, pid, hookPayload(tc.source, tc.sessionID))
 
+			assert.Empty(t, errOut)
 			s, err := database.GetTerminalSession(row)
 			require.NoError(t, err)
-			assert.Equal(t, !tc.cleared, s.AgentState.Valid, "agent state kept")
-			assert.Equal(t, want, out, "the brief is byte-identical")
+			assert.False(t, s.AgentState.Valid, "a mark is no state")
+			if tc.marked {
+				assert.False(t, s.AgentStateAt.Before(start), "stamped during this run: %v", s.AgentStateAt)
+			} else {
+				assert.True(t, s.AgentStateAt.IsZero(), "nothing stamped: %v", s.AgentStateAt)
+			}
+		})
+	}
+}
+
+// Board #396 review: a failed read of the workbench's state hooks neither
+// marks nor clears the new run, yet a resume onto another conversation
+// still moves the row's id (board #160); the error is returned after.
+func TestApplySessionStart_HooksReadErrorStillMovesTheID(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	storeAgentState(t, database, pid, row, briefLaunchID)
+	_, err := database.Exec(`ALTER TABLE projects RENAME TO projects_gone`)
+	require.NoError(t, err)
+	t.Cleanup(func() { _, _ = database.Exec(`ALTER TABLE projects_gone RENAME TO projects`) })
+
+	err = applySessionStart(database, row, pid, briefClearedID, true, true)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "state hooks")
+	s, gerr := database.GetTerminalSession(row)
+	require.NoError(t, gerr)
+	assert.Equal(t, briefClearedID, s.ClaudeSessionID.String, "the id still moved")
+	assert.True(t, s.AgentState.Valid, "neither marked nor cleared")
+}
+
+// PROJ-12 (amended 2026-10-07, board #396): a compaction — a manual
+// /compact or the one Claude Code runs by itself while idle — continues the
+// run: its SessionStart ("compact", onto the same or a new id) keeps the
+// run's stored state and its stamp, a turn's `waiting` or a fresh run's
+// mark, so the session still gets an answer's Return.
+func TestProj12_CompactWhileIdleKeepsTheRunsState(t *testing.T) {
+	for _, tc := range []struct {
+		name, sessionID string
+		waiting         bool
+	}{
+		{"after a turn", briefLaunchID, true},
+		{"after a turn, onto a new id", briefClearedID, true},
+		{"before any turn", briefLaunchID, false},
+		{"before any turn, onto a new id", briefClearedID, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			installBriefStateHooks(t, database, pid)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			_, errOut := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
+			require.Empty(t, errOut)
+			if tc.waiting {
+				ok, err := database.SetTerminalAgentState(row, pid, briefLaunchID, "waiting", time.Now().Add(time.Second),
+					"", nil, false, db.AgentOrder{})
+				require.NoError(t, err)
+				require.True(t, ok)
+			}
+			before, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			require.False(t, before.AgentStateAt.IsZero())
+
+			_, errOut = runBriefHook(t, pid, hookPayload("compact", tc.sessionID))
+
 			assert.Empty(t, errOut)
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, tc.sessionID, s.ClaudeSessionID.String)
+			assert.Equal(t, before.AgentState, s.AgentState)
+			assert.True(t, before.AgentStateAt.Equal(s.AgentStateAt), "stamp %v, was %v", s.AgentStateAt, before.AgentStateAt)
 		})
 	}
 }
