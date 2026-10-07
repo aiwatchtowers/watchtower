@@ -2159,16 +2159,17 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     board_language TEXT NOT NULL DEFAULT '', -- unused: the board always follows the session language (00087, retired by board item #153)
-    archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365) -- closed targets older than this leave the board; 0 = never (00103)
+    archive_after_days INTEGER NOT NULL DEFAULT 14 CHECK (archive_after_days BETWEEN 0 AND 365), -- closed targets older than this leave the board; 0 = never (00103)
+    archived_through TEXT NULL CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL) -- "Archive Closed Targets Now" moment (UTC, second precision); closed work not closed after it leaves the board; NULL = never pressed (00105)
 );
 
--- Board archive (00103, PROJ-15): one row per workbench target; archived = 1
--- iff its workbench's archive_after_days > 0, the target and every descendant
--- on the same board are done/dismissed, and the newest close time among them
--- (latest target_status_history.changed_at, else updated_at) is older than
--- archive_after_days days; a close time that does not parse keeps the chain
--- on the board. Computed on every read; nothing is stored, so a reopened
--- target is back at once.
+-- Board archive (00103, amended 00105, PROJ-15): one row per workbench target;
+-- archived = 1 iff the target and every descendant on the same board are
+-- done/dismissed, and the newest close time among them (latest
+-- target_status_history.changed_at, else updated_at) is either older than
+-- archive_after_days days (when > 0) or not after archived_through (when set);
+-- a close time that does not parse keeps the chain on the board. Computed on
+-- every read; nothing is stored, so a reopened target is back at once.
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2187,10 +2188,12 @@ WITH RECURSIVE
     )
 SELECT up.ancestor AS target_id,
        up.project_id AS project_id,
-       CASE WHEN p.archive_after_days > 0
-             AND MAX(up.open) = 0
+       CASE WHEN MAX(up.open) = 0
              AND COUNT(*) = COUNT(julianday(up.closed_at))
-             AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days
+             AND ((p.archive_after_days > 0
+                   AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days)
+               OR (p.archived_through IS NOT NULL
+                   AND MAX(julianday(up.closed_at)) <= julianday(p.archived_through)))
             THEN 1 ELSE 0 END AS archived
 FROM up
 JOIN projects p ON p.id = up.project_id
