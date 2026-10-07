@@ -167,7 +167,8 @@ func TestProj15_ArchiveNowSameSecondIsArchived(t *testing.T) {
 	requireArchived(t, d, pid, map[int64]bool{same: true, later: false})
 }
 
-// Decision 1: "Never" means never by itself; the click still archives.
+// Decision 1: "Never" means never by itself; the click still archives, and
+// Undo brings everything back.
 func TestProj15_ArchiveNowUnderNever(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
@@ -180,6 +181,10 @@ func TestProj15_ArchiveNowUnderNever(t *testing.T) {
 	archiveNow(t, d, pid)
 
 	requireArchived(t, d, pid, map[int64]bool{recent: true, old: true, open: false})
+
+	// Undo under Never: nothing archives by age, so everything comes back.
+	require.NoError(t, d.ClearWorkbenchArchivedThrough(pid))
+	requireArchived(t, d, pid, map[int64]bool{recent: false, old: false, open: false})
 }
 
 // A close time that does not parse keeps the target and every ancestor on
