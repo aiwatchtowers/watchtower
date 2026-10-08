@@ -221,10 +221,12 @@ private func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
 final class SpikeSyncDelegate: CKSyncEngineDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var pendingRecords: [CKRecord.ID: CKRecord] = [:]
-    private(set) var fetchedByZone: [String: [CKRecord]] = [:]
-    private(set) var fetchedZones: Set<String> = []
-    private(set) var savedIDs: [CKRecord.ID] = []
-    private(set) var failedSaves: [(CKRecord.ID, CKError)] = []
+    private var _fetchedByZone: [String: [CKRecord]] = [:]
+    private var _fetchedZones: Set<String> = []
+    private var _savedIDs: [CKRecord.ID] = []
+    var fetchedByZone: [String: [CKRecord]] { lock.withLock { _fetchedByZone } }
+    var fetchedZones: Set<String> { lock.withLock { _fetchedZones } }
+    var savedIDs: [CKRecord.ID] { lock.withLock { _savedIDs } }
     /// Called inside the fetched-records event, while each record's asset file is still valid.
     var onFetchedRecord: ((CKRecord) -> Void)?
     var onState: ((CKSyncEngine.State.Serialization) -> Void)?
@@ -245,25 +247,22 @@ final class SpikeSyncDelegate: CKSyncEngineDelegate, @unchecked Sendable {
         case .fetchedDatabaseChanges(let changes):
             let names = changes.modifications.map { "\($0.zoneID.zoneName)@\($0.zoneID.ownerName)" }
             SpikeLog.shared.line("(\(item)) engine fetched database changes: zones=\(names) deletions=\(changes.deletions.count)")
-            lock.withLock { changes.modifications.forEach { fetchedZones.insert($0.zoneID.zoneName) } }
+            lock.withLock { changes.modifications.forEach { _fetchedZones.insert($0.zoneID.zoneName) } }
         case .fetchedRecordZoneChanges(let changes):
             for modification in changes.modifications {
                 let record = modification.record
                 onFetchedRecord?(record)
                 lock.withLock {
-                    fetchedByZone[record.recordID.zoneID.zoneName, default: []].append(record)
-                    fetchedZones.insert(record.recordID.zoneID.zoneName)
+                    _fetchedByZone[record.recordID.zoneID.zoneName, default: []].append(record)
+                    _fetchedZones.insert(record.recordID.zoneID.zoneName)
                 }
             }
             SpikeLog.shared.line("(\(item)) engine fetched record changes: +\(changes.modifications.count) -\(changes.deletions.count)")
         case .sentRecordZoneChanges(let sent):
             lock.withLock {
                 for record in sent.savedRecords {
-                    savedIDs.append(record.recordID)
+                    _savedIDs.append(record.recordID)
                     pendingRecords[record.recordID] = nil
-                }
-                for failure in sent.failedRecordSaves {
-                    failedSaves.append((failure.record.recordID, failure.error))
                 }
             }
             SpikeLog.shared.line("(\(item)) engine sent: saved=\(sent.savedRecords.count) failed=\(sent.failedRecordSaves.count)")

@@ -189,6 +189,11 @@ final class Harness: ObservableObject {
 
     // MARK: (b) Silent CKDatabaseSubscription on the shared database
 
+    /// Pushes count for (b) only if the Mac write they report happened after this moment.
+    private static let bSubscribedAtKey = "b.subscribedAt"
+    /// A (b) push must arrive within this long after the Mac's write.
+    private static let maxPushLatencyMillis: Int64 = 300_000
+
     func itemBRegister() async {
         let sw = Stopwatch()
         do {
@@ -197,6 +202,7 @@ final class Harness: ObservableObject {
             info.shouldSendContentAvailable = true
             subscription.notificationInfo = info
             _ = try await container.sharedCloudDatabase.save(subscription)
+            UserDefaults.standard.set(epochMillis(), forKey: Self.bSubscribedAtKey)
             await requestNotificationPermission()
             UIApplication.shared.registerForRemoteNotifications()
             log.step("b", "save silent CKDatabaseSubscription on .shared", ms: sw.ms, Spike.sharedDBSubscriptionID)
@@ -215,21 +221,43 @@ final class Harness: ObservableObject {
         }
         log.line("push: received subscriptionID=\(note.subscriptionID ?? "-") type=\(note.notificationType.rawValue) state=\(stateName)")
         guard note.subscriptionID == Spike.sharedDBSubscriptionID else { return }
-        var latency = "unknown"
+
+        var writtenAt: Int64?
+        var fetchError = ""
         if let zone = sharedZone(Spike.dataZone) {
             do {
                 let record = try await container.sharedCloudDatabase.record(for: CKRecord.ID(recordName: Spike.pushProbeRecord, zoneID: zone))
-                if let ms = latencyMillis(writtenAt: record, until: receivedAt) { latency = "\(ms) ms" }
+                writtenAt = record["writtenAt"] as? Int64
             } catch {
+                fetchError = SpikeLog.describe(error)
                 log.error("b", "fetch \(Spike.pushProbeRecord)", error)
             }
         }
-        if state == .background {
-            log.result("b", pass: true, "silent shared-DB push arrived in the background; Mac write → push latency=\(latency)")
-            await postLocal(title: "S0 (b) push received", body: "Background, latency \(latency)")
-        } else {
-            log.line("(b) push arrived with the app \(stateName) (latency=\(latency)) — not a (b) pass; background the app and retry")
+        let latency = writtenAt.map { epochMillis(receivedAt) - $0 }
+        let latencyText = latency.map { "\($0) ms" } ?? "unknown"
+        guard state == .background else {
+            log.line("(b) push arrived with the app \(stateName) (latency=\(latencyText)) — not a (b) pass; background the app and retry")
+            return
         }
+        let subscribedAt = UserDefaults.standard.object(forKey: Self.bSubscribedAtKey) as? Int64
+        let reason: String?
+        if subscribedAt == nil {
+            reason = "no subscription time saved — press \"b: Register\" first"
+        } else if writtenAt == nil {
+            reason = "could not read \(Spike.pushProbeRecord).writtenAt \(fetchError)"
+        } else if let written = writtenAt, let subscribed = subscribedAt, written <= subscribed {
+            reason = "\(Spike.pushProbeRecord) was written before the subscription — not caused by `write-data`"
+        } else if let latency, latency > Self.maxPushLatencyMillis {
+            reason = "latency \(latency) ms is over \(Self.maxPushLatencyMillis) ms — not attributable to the last `write-data`"
+        } else {
+            reason = nil
+        }
+        if let reason {
+            log.result("b", pass: false, "background push arrived but is not attributable to write-data: \(reason)")
+        } else {
+            log.result("b", pass: true, "silent shared-DB push arrived in the background; Mac write → push latency=\(latencyText)")
+        }
+        await postLocal(title: "S0 (b) push received", body: reason == nil ? "PASS, latency \(latencyText)" : "Not attributable — open the log")
     }
 
     // MARK: (c) Access after publicPermission = .none, and F2
@@ -239,36 +267,76 @@ final class Harness: ObservableObject {
             log.line("(\(item)) no link — scan the Mac's QR first"); return
         }
         let db = container.sharedCloudDatabase
-        func attempt(_ name: String, _ body: () async throws -> Void) async -> Bool {
+
+        // Precondition: the Mac really closed the public link on both shares.
+        var linkClosed = true
+        for zone in [dataZone, relayZone] {
+            let sw = Stopwatch()
+            do {
+                guard let share = try await db.record(for: Spike.shareID(zone: zone)) as? CKShare else {
+                    log.line("(\(item)) \(zone.zoneName): the share record is not a CKShare")
+                    linkClosed = false
+                    continue
+                }
+                let me = share.currentUserParticipant
+                log.step(item, "fetch \(zone.zoneName) share", ms: sw.ms,
+                         "publicPermission=\(share.publicPermission.rawValue) me: role=\(me?.role.rawValue ?? -1) "
+                         + "permission=\(me?.permission.rawValue ?? -1) status=\(me?.acceptanceStatus.rawValue ?? -1)")
+                if share.publicPermission != .none { linkClosed = false }
+            } catch {
+                log.step(item, "fetch \(zone.zoneName) share", ms: sw.ms, "FAILED \(SpikeLog.describe(error))")
+                linkClosed = false
+            }
+        }
+        if !linkClosed {
+            log.result(item, pass: false, "the public link is not closed (publicPermission != .none) or a share could not be read — close the link on the Mac first (`close-link`) and press again")
+            return
+        }
+
+        func attempt(_ name: String, _ body: () async throws -> Void) async -> Error? {
             let sw = Stopwatch()
             do {
                 try await body()
                 log.step(item, name, ms: sw.ms, "OK")
-                return true
+                return nil
             } catch {
                 log.step(item, name, ms: sw.ms, "FAILED \(SpikeLog.describe(error))")
-                return false
+                return error
             }
         }
         let readData = await attempt("read DataZone/\(Spike.seedDataRecord)") {
             _ = try await db.record(for: CKRecord.ID(recordName: Spike.seedDataRecord, zoneID: dataZone))
-        }
+        } == nil
         let readRelay = await attempt("read RelayZone/\(Spike.seedRelayRecord)") {
             _ = try await db.record(for: CKRecord.ID(recordName: Spike.seedRelayRecord, zoneID: relayZone))
-        }
+        } == nil
         let writeRelay = await attempt("write RelayZone record") {
             try await saveRecords([makeRecord("relay-check-\(UUID().uuidString)", zone: relayZone, kind: "probe")], in: db)
-        }
-        let writeData = await attempt("write DataZone record (expected to FAIL: read-only share)") {
+        } == nil
+        let dataWriteError = await attempt("write DataZone record (expected to FAIL with permissionFailure: read-only share)") {
             try await saveRecords([makeRecord("data-check-\(UUID().uuidString)", zone: dataZone, kind: "probe")], in: db)
         }
-        if writeData { log.line("(\(item)) WARNING: DataZone accepted a participant write — the read-only permission did not hold") }
-        let pass = readData && readRelay && writeRelay && !writeData
-        log.result(item, pass: pass, "readDataZone=\(readData) readRelayZone=\(readRelay) writeRelayZone=\(writeRelay) writeDataZoneRefused=\(!writeData)")
+        let writeDataRefused = dataWriteError.map(isPermissionFailure) ?? false
+        if dataWriteError == nil {
+            log.line("(\(item)) WARNING: DataZone accepted a participant write — the read-only permission did not hold")
+        } else if !writeDataRefused {
+            log.line("(\(item)) DataZone write failed with something other than permissionFailure — not proof of read-only")
+        }
+        let pass = readData && readRelay && writeRelay && writeDataRefused
+        log.result(item, pass: pass, "readDataZone=\(readData) readRelayZone=\(readRelay) writeRelayZone=\(writeRelay) writeDataZoneRefusedByPermission=\(writeDataRefused)")
         if !pass && item == "c" {
             let me = (try? await container.userRecordID().recordName) ?? "<run d first>"
             log.line("(c) F2 next: on the Mac run `f2 \(me)`, then press \"c (F2): Re-accept + check\" here")
         }
+    }
+
+    private func isPermissionFailure(_ error: Error) -> Bool {
+        guard let ck = error as? CKError else { return false }
+        if ck.code == .permissionFailure { return true }
+        if ck.code == .partialFailure, let partial = ck.partialErrorsByItemID, !partial.isEmpty {
+            return partial.values.allSatisfy { ($0 as? CKError)?.code == .permissionFailure }
+        }
+        return false
     }
 
     func itemCF2() async {
@@ -300,7 +368,22 @@ final class Harness: ObservableObject {
         }
     }
 
-    // MARK: (e) Visible alert from a CKQuerySubscription in a private custom zone
+    // MARK: (e) Visible alert in a private custom zone
+
+    /// Alerts count for (e) only if their trigger record was written after this moment.
+    private static let eSubscribedAtKey = "e.subscribedAt"
+    /// Clock-skew allowance when matching a zone notification to the record that caused it.
+    private static let skewMillis: Int64 = 5_000
+
+    /// The spec's production alert settings (§7), shared by both paths.
+    private func alertInfo() -> CKSubscription.NotificationInfo {
+        let info = CKSubscription.NotificationInfo()
+        info.alertLocalizationKey = "ASK_ALERT_GENERIC"
+        info.soundName = "default"
+        info.shouldSendMutableContent = true
+        info.category = "ASK"
+        return info
+    }
 
     func itemESubscribe() async {
         await requestNotificationPermission()
@@ -308,26 +391,33 @@ final class Harness: ObservableObject {
         if let owner = link?.ownerUser, let me = try? await container.userRecordID().recordName, me != owner {
             log.line("(e) WARNING: this iPhone is not on the Mac's Apple ID; (e) needs the same Apple ID (private database)")
         }
-        for zone in [Spike.dataZone, Spike.alertZone] {
-            let sw = Stopwatch()
-            do {
-                let subscription = CKQuerySubscription(
-                    recordType: Spike.recordType,
-                    predicate: NSPredicate(format: "kind == %@", "ask_alert"),
-                    subscriptionID: Spike.alertSubscriptionID(zone: zone),
-                    options: [.firesOnRecordCreation])
-                subscription.zoneID = Spike.zoneID(zone)
-                let info = CKSubscription.NotificationInfo()
-                info.title = "S0 (e) alert"
-                info.alertBody = "Query subscription in \(zone)"
-                info.soundName = "default"
-                subscription.notificationInfo = info
-                _ = try await container.privateCloudDatabase.save(subscription)
-                log.step("e", "save CKQuerySubscription (private, \(zone))", ms: sw.ms, subscription.subscriptionID)
-            } catch {
-                log.error("e", "save query subscription in \(zone)", error)
-            }
+        // Primary path: CKQuerySubscription in DataZone.
+        var sw = Stopwatch()
+        do {
+            let query = CKQuerySubscription(
+                recordType: Spike.recordType,
+                predicate: NSPredicate(format: "kind == %@", "ask_alert"),
+                subscriptionID: Spike.alertSubscriptionID(zone: Spike.dataZone),
+                options: [.firesOnRecordCreation])
+            query.zoneID = Spike.zoneID(Spike.dataZone)
+            query.notificationInfo = alertInfo()
+            _ = try await container.privateCloudDatabase.save(query)
+            log.step("e", "save CKQuerySubscription (private, DataZone)", ms: sw.ms, query.subscriptionID)
+        } catch {
+            log.error("e", "save query subscription in DataZone", error)
         }
+        // Fallback path: CKRecordZoneSubscription on AlertZone.
+        sw = Stopwatch()
+        do {
+            let zoneSub = CKRecordZoneSubscription(zoneID: Spike.zoneID(Spike.alertZone),
+                                                   subscriptionID: Spike.alertSubscriptionID(zone: Spike.alertZone))
+            zoneSub.notificationInfo = alertInfo()
+            _ = try await container.privateCloudDatabase.save(zoneSub)
+            log.step("e", "save CKRecordZoneSubscription (private, AlertZone)", ms: sw.ms, zoneSub.subscriptionID)
+        } catch {
+            log.error("e", "save record zone subscription on AlertZone", error)
+        }
+        UserDefaults.standard.set(epochMillis(), forKey: Self.eSubscribedAtKey)
         log.line("(e) now lock the iPhone and run `alert DataZone` and `alert AlertZone` on the Mac")
     }
 
@@ -339,26 +429,48 @@ final class Harness: ObservableObject {
         }
         for zone in [Spike.dataZone, Spike.alertZone] {
             log.result("e", pass: seen.contains(zone),
-                       "\(zone): \(seen.contains(zone) ? "visible alert delivered (latencies above)" : "no delivered alert found in Notification Center")")
+                       "\(zone): \(seen.contains(zone) ? "visible alert delivered after the subscribe, latency known (lines above)" : "no attributable alert in Notification Center (none, stale, or latency unknown)")")
         }
     }
 
-    /// Logs one CloudKit query-subscription alert and its Mac write → delivery latency; returns its zone.
+    /// Logs one CloudKit alert and its Mac write → delivery latency. Returns its zone only when the
+    /// trigger record was written after the subscribe time and the latency is known.
     @discardableResult
     func reportAlert(_ notification: UNNotification, path: String) async -> String? {
-        guard let note = CKNotification(fromRemoteNotificationDictionary: notification.request.content.userInfo) as? CKQueryNotification,
-              let recordID = note.recordID
-        else { return nil }
-        let zone = recordID.zoneID.zoneName
-        var latency = "unknown"
+        guard let note = CKNotification(fromRemoteNotificationDictionary: notification.request.content.userInfo) else { return nil }
+        let subscribedAt = UserDefaults.standard.object(forKey: Self.eSubscribedAtKey) as? Int64 ?? Int64.max
+        let deliveredAt = epochMillis(notification.date)
+        var zone: String?
+        var trigger: CKRecord?
         do {
-            let record = try await container.privateCloudDatabase.record(for: recordID)
-            if let ms = latencyMillis(writtenAt: record, until: notification.date) { latency = "\(ms) ms" }
+            if let query = note as? CKQueryNotification, let recordID = query.recordID {
+                zone = recordID.zoneID.zoneName
+                trigger = try await container.privateCloudDatabase.record(for: recordID)
+            } else if let zoneNote = note as? CKRecordZoneNotification, let zoneID = zoneNote.recordZoneID {
+                zone = zoneID.zoneName
+                trigger = try await newestAlertRecord(in: zoneID, notAfter: deliveredAt + Self.skewMillis)
+            } else {
+                return nil
+            }
         } catch {
-            log.error("e", "fetch \(recordID.recordName)", error)
+            log.error("e", "fetch the trigger record (\(zone ?? "?"))", error)
         }
-        log.line("(e) alert \(path): zone=\(zone) subscription=\(note.subscriptionID ?? "-") record=\(recordID.recordName) Mac write → delivery latency=\(latency)")
-        return zone
+        guard let zone else { return nil }
+        let written = trigger?["writtenAt"] as? Int64
+        let latencyText = written.map { "\(deliveredAt - $0) ms" } ?? "unknown"
+        let fresh = written.map { $0 > subscribedAt } ?? false
+        log.line("(e) alert \(path): zone=\(zone) subscription=\(note.subscriptionID ?? "-") record=\(trigger?.recordID.recordName ?? "-") "
+            + "Mac write → delivery latency=\(latencyText)\(fresh ? "" : " — NOT counted (written before the subscribe, or unknown)")")
+        return fresh ? zone : nil
+    }
+
+    /// A record-zone notification names no record: take the newest ask_alert written up to `notAfter`.
+    private func newestAlertRecord(in zoneID: CKRecordZone.ID, notAfter: Int64) async throws -> CKRecord? {
+        let changes = try await container.privateCloudDatabase.recordZoneChanges(inZoneWith: zoneID, since: nil)
+        let records = changes.modificationResultsByID.values.compactMap { try? $0.get().record }
+        return records
+            .filter { ($0["kind"] as? String) == "ask_alert" && (($0["writtenAt"] as? Int64) ?? .max) <= notAfter }
+            .max { (($0["writtenAt"] as? Int64) ?? 0) < (($1["writtenAt"] as? Int64) ?? 0) }
     }
 
     // MARK: Helpers

@@ -33,8 +33,8 @@ CKSpikeMac — S0 spike, owner side (the Mac's Apple ID)
   participants           list both shares' participants and the public permission
   open-link              publicPermission = readOnly (DataZone) / readWrite (RelayZone)
   close-link             (c) publicPermission = .none on both shares
-  f2 <recordName>        (c) fallback F2: add <recordName> as a named participant
-                         (LookupInfo(userRecordID:)) with the zone's permission, link closed
+  f2 <recordName>        (c) fallback F2, spec order: reopen the link, add <recordName> as a
+                         named participant (LookupInfo(userRecordID:)), close the link
   write-data             (b) rewrite DataZone/\(Spike.pushProbeRecord) — triggers the shared-DB push
   fetch-relay [--reset]  (a) CKSyncEngine on .private: fetch RelayZone, download and verify assets
   alert <DataZone|AlertZone>  (e) create an ask_alert record (fires the query subscription)
@@ -163,24 +163,54 @@ func setLink(open: Bool) async throws {
     }
 }
 
-/// Fallback F2: add the participant by userRecordID, with the zone's permission, and keep the link closed.
+/// Fallback F2 in the spec §2.3 production order, as separate timed saves:
+/// reopen the public link → add the named participant (LookupInfo(userRecordID:)) → close the link.
 func f2(recordName: String) async throws {
-    let shares = try await loadShares()
-    var updated: [CKShare] = []
-    for (share, permission) in [(shares.data, CKShare.ParticipantPermission.readOnly), (shares.relay, .readWrite)] {
-        let sw = Stopwatch()
-        let participant = try await lookupParticipant(recordName: recordName)
-        log.step("c", "F2 CKFetchShareParticipantsOperation (\(share.recordID.zoneID.zoneName))", ms: sw.ms)
-        participant.permission = permission
-        share.addParticipant(participant)
-        share.publicPermission = .none
-        updated.append(share)
+    func pair(_ shares: [CKShare]) throws -> (data: CKShare, relay: CKShare) {
+        guard let d = shares.first(where: { $0.recordID.zoneID == dataZoneID }),
+              let r = shares.first(where: { $0.recordID.zoneID == relayZoneID })
+        else { throw NSError(domain: "spike", code: 8, userInfo: [NSLocalizedDescriptionKey: "a share is missing after save"]) }
+        return (d, r)
     }
-    let sw = Stopwatch()
-    let saved = try await saveShares(updated)
-    log.step("c", "F2 save shares with the named participant", ms: sw.ms)
+
+    // 1. Reopen the public link, as the Mac does while a QR is on screen.
+    var sw = Stopwatch()
+    var shares = try await loadShares()
+    shares.data.publicPermission = .readOnly
+    shares.relay.publicPermission = .readWrite
+    shares = try pair(try await saveShares([shares.data, shares.relay]))
+    log.step("c-F2", "1/3 reopen the public link", ms: sw.ms)
+
+    // 2. Add the phone as a named participant with each zone's permission.
+    var participants: [(CKShare, CKShare.Participant)] = []
+    for (share, permission) in [(shares.data, CKShare.ParticipantPermission.readOnly), (shares.relay, .readWrite)] {
+        sw = Stopwatch()
+        do {
+            let participant = try await lookupParticipant(recordName: recordName)
+            log.step("c-F2", "CKFetchShareParticipantsOperation(LookupInfo(userRecordID:)) for \(share.recordID.zoneID.zoneName)", ms: sw.ms)
+            participant.permission = permission
+            participants.append((share, participant))
+        } catch {
+            log.step("c-F2", "CKFetchShareParticipantsOperation for \(share.recordID.zoneID.zoneName)", ms: sw.ms,
+                     "FAILED \(SpikeLog.describe(error))")
+            log.result("c-F2", pass: false, "LookupInfo(userRecordID: \(recordName)) returned no participant (user not discoverable, or a wrong record name) — F2 fails; F3 needs the owner's written OK")
+            try await setLink(open: false)
+            return
+        }
+    }
+    sw = Stopwatch()
+    participants.forEach { share, participant in share.addParticipant(participant) }
+    shares = try pair(try await saveShares([shares.data, shares.relay]))
+    log.step("c-F2", "2/3 save shares with the named participant (link still open)", ms: sw.ms)
+
+    // 3. Close the link.
+    sw = Stopwatch()
+    shares.data.publicPermission = .none
+    shares.relay.publicPermission = .none
+    let saved = try await saveShares([shares.data, shares.relay])
+    log.step("c-F2", "3/3 close the public link (publicPermission = .none)", ms: sw.ms)
     saved.forEach { log.line("  " + describe($0)) }
-    log.line("(c) now press \"c (F2): Re-accept + check\" on the second-Apple-ID iPhone")
+    log.line("(c-F2) now press \"c (F2): Re-accept + check\" on the second-Apple-ID iPhone")
 }
 
 func lookupParticipant(recordName: String) async throws -> CKShare.Participant {
