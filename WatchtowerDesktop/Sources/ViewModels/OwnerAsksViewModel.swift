@@ -188,7 +188,9 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
     init(
-        dbPool: DatabasePool, terminalCenter: TerminalCenter?, lineDelivery: SessionLineDelivery,
+        dbPool: DatabasePool,
+        terminalCenter: TerminalCenter?,
+        lineDelivery: SessionLineDelivery,
         defaults: UserDefaults = .standard
     ) {
         self.dbPool = dbPool

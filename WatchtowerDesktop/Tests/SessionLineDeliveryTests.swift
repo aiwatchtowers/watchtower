@@ -178,9 +178,13 @@ final class SessionLineDeliveryTests: XCTestCase {
     func testAHeldLineGoesOnTheNextSuccessfulReadNeverOnATimer() async throws {
         let (_, s, _) = try await seed()
         let gate = ReadGate()
+        let reader: SessionAgentStateCenter.Reader = { _ in
+            try gate.throwIfFailing()
+            return []
+        }
         let agentStates = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
-            defaults: defaults, notificationCenter: NotificationCenter(), read: { _ in try gate.throwIfFailing(); return [] }
+            defaults: defaults, notificationCenter: NotificationCenter(), read: reader
         )
         let vm = makeVM(agentStates: agentStates)
         var events: [SessionLineDelivery.HeldEvent] = []

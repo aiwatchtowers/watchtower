@@ -85,14 +85,16 @@ final class SessionLineDelivery {
     /// a held line goes later, and `onHeldEvent` hears each try. It is
     /// called only for a held line, never for the result returned here.
     func deliverLine(
-        _ line: String, key: LineKey, sessionID: Int64,
+        _ line: String,
+        key: LineKey,
+        sessionID: Int64,
         onHeldEvent: @escaping (HeldEvent) -> Void
     ) async -> Delivery {
         let delivery = await deliver(line, key: key, sessionID: sessionID)
         if delivery == .held || delivery == .queued {
             heldCount += 1
             queueHeldLine(HeldLine(order: heldCount, key: key, sessionID: sessionID, line: line,
-                             run: terminalCenter?.runs[sessionID], onEvent: onHeldEvent))
+                                   run: terminalCenter?.runs[sessionID], onEvent: onHeldEvent))
         }
         return delivery
     }
