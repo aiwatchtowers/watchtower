@@ -1,4 +1,4 @@
-# Copy of WatchtowerDesktop/.swiftlint.yml (rules must stay in sync — parent_config merges included paths, so inheritance is unusable here). Only included/excluded differ.
+# Copy of WatchtowerDesktop/.swiftlint.yml (rules must stay in sync — parent_config merges included paths, so inheritance is unusable here). Only included/excluded and the mobile-only custom_rules at the end differ.
 
 included:
   - Sources
@@ -161,5 +161,17 @@ type_name:
   max_length:
     warning: 50
     error: 60
+
+# Mobile-only (spec §14): orange is for waiting-for-you and ask elements
+# only, so under Sources/Features/ only PhoneTone.swift may name it; screens
+# use `PhoneTone.waitingForYou` or a session record's published tone.
+custom_rules:
+  orange_outside_phone_tone:
+    name: "Orange outside PhoneTone"
+    included: ".*/Sources/Features/.*\\.swift"
+    excluded: ".*/Sources/Features/Workbench/PhoneTone\\.swift"
+    regex: "\\.orange\\b|systemOrange"
+    message: "Orange is for waiting-for-you and asks only: use PhoneTone.waitingForYou (PhoneTone.swift)."
+    severity: error
 
 reporter: xcode

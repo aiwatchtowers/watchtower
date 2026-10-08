@@ -38,10 +38,10 @@ struct WorkbenchView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { switcher }
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    // Starting a session from the phone comes with the start flow.
-                } label: {
-                    Label("New session", systemImage: "plus")
+                // Starting a session and adding a target from the phone come
+                // with their own flows; until then the button is disabled.
+                Button {} label: {
+                    Label(segment == .board ? "New target" : "New session", systemImage: "plus")
                 }
                 .disabled(true)
             }
@@ -110,7 +110,8 @@ struct WorkbenchView: View {
                         .foregroundStyle(.secondary)
                     }
                 } header: {
-                    Text("Waiting for you · \(menu.waiting.count)")
+                    Text(menu.waitingHeader)
+                        .foregroundStyle(menu.waitingHeaderTone.color)
                 }
             }
             Section("Sessions") {

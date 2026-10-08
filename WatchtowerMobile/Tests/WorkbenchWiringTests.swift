@@ -31,6 +31,8 @@ final class WorkbenchWiringTests: XCTestCase {
         ])
         XCTAssertEqual(try XCTUnwrap(acme.progress), 1.0 / 8.0, accuracy: 0.0001)
         XCTAssertEqual(acme.countsLine, "3 in progress · 3 todo · 1 blocked · 1 done")
+        XCTAssertEqual(acme.pills.map(\.text), ["3 waiting", "1 error"])
+        XCTAssertEqual(try card(DemoSeed.websiteID).pills.map(\.text), [], "a working workbench is not idle")
     }
 
     func testAZeroOfZeroBoardHasNoProgressBar() throws {
@@ -38,6 +40,15 @@ final class WorkbenchWiringTests: XCTestCase {
         XCTAssertNil(notes.progress)
         XCTAssertEqual(notes.countsLine, "0 in progress · 0 todo · 0 done")
         XCTAssertTrue(notes.stateCounts.isEmpty)
+        XCTAssertEqual(notes.pills.map(\.text), ["idle"])
+    }
+
+    /// The Workbench tab's badge is the open-ask count; the others have none.
+    func testTheWorkbenchTabBadgeCountsOpenAsks() throws {
+        let snapshot = try demoSnapshot(now: now)
+        XCTAssertEqual(RootTabView.Tab.workbench.badge(snapshot), 3)
+        XCTAssertEqual(RootTabView.Tab.now.badge(snapshot), 0)
+        XCTAssertEqual(RootTabView.Tab.workbench.badge(WorkbenchReplicaSnapshot()), 0)
     }
 
     func testADetachedHeadReadsAsDetached() throws {
@@ -59,6 +70,7 @@ final class WorkbenchWiringTests: XCTestCase {
         XCTAssertEqual(menu.title, "Acme")
         XCTAssertEqual(menu.subline, "main · 3 in progress · 3 todo · 1 blocked")
         XCTAssertNil(menu.sessionsEmptyText)
+        XCTAssertEqual(menu.waitingHeader, "Waiting for you · 3")
         // Newest first.
         XCTAssertEqual(menu.waiting.map(\.id), [111, 109, 110])
         XCTAssertEqual(menu.waiting.map(\.kindLabel), ["CHECK", "ASK", "REVIEW"])
@@ -97,5 +109,6 @@ final class WorkbenchWiringTests: XCTestCase {
         XCTAssertEqual(model.snapshot.targets.count, 13)
         XCTAssertEqual(model.snapshot.comments.count, 2)
         XCTAssertEqual(model.snapshot.heartbeat?.macName, DemoSeed.macName)
+        XCTAssertEqual(model.snapshot.skippedRecords, [.workbench: 1])
     }
 }

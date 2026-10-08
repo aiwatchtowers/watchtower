@@ -5,7 +5,8 @@ import SwiftUI
 /// comes with sub-project C.
 struct NowView: View {
     @Environment(AppEnvironment.self) private var env
-    @State private var replica = WorkbenchReplicaModel()
+
+    private var replica: WorkbenchReplicaModel { env.workbenchReplica }
 
     var body: some View {
         NavigationStack {
@@ -16,7 +17,6 @@ struct NowView: View {
             .navigationTitle("Now")
             .refreshable { await env.refresh() }
         }
-        .task { replica.start(store: env.store) }
     }
 
     private func content(_ model: NowModel, date: Date) -> some View {
@@ -36,7 +36,7 @@ struct NowView: View {
                     .background(Color.secondary.opacity(0.12), in: Capsule())
                 }
             }
-            Section("Waiting for you") {
+            Section {
                 if let empty = model.emptyText {
                     Text(empty).foregroundStyle(.secondary)
                 } else {
@@ -47,6 +47,8 @@ struct NowView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+            } header: {
+                Text("Waiting for you").foregroundStyle(model.waitingHeaderTone.color)
             }
             Section("Sessions") {
                 if model.sessionChips.isEmpty {

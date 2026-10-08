@@ -34,8 +34,8 @@ enum BoardFilter: CaseIterable, Identifiable {
 struct BoardDetail: Equatable {
     let text: String
     let tone: PhoneTone
-    /// The open-ask count: an ask element, so it may be orange.
-    var isAsk = false
+    /// `.ask` for the open-ask count, the only detail that may be orange.
+    let role: ToneRole
 }
 
 /// One board row: status glyph, title, sub-line (asks, sessions, PR),
@@ -49,8 +49,11 @@ struct BoardRowModel: Equatable, Identifiable {
     /// "HIGH" or "LOW"; nil for medium, the default.
     let priorityLabel: String?
     let priorityTone: PhoneTone
-    /// "50%"; nil for a leaf with no progress yet.
+    /// "50%", or "done" for a done target; nil for a leaf with no
+    /// progress yet.
     let progressText: String?
+    /// A done target shown for context under Open: drawn greyed.
+    let isDimmed: Bool
 
     init(_ target: WorkbenchTarget, snapshot: WorkbenchReplicaSnapshot) {
         id = target.id
@@ -64,23 +67,28 @@ struct BoardRowModel: Equatable, Identifiable {
         default: nil
         }
         priorityTone = target.priority == .high ? .red : .secondary
-        progressText = target.childrenCount > 0 || target.progress > 0
-            ? "\(Int((min(1, max(0, target.progress)) * 100).rounded()))%"
-            : nil
+        isDimmed = target.status == .done
+        if target.status == .done {
+            progressText = "done"
+        } else if target.childrenCount > 0 || target.progress > 0 {
+            progressText = "\(Int((min(1, max(0, target.progress)) * 100).rounded()))%"
+        } else {
+            progressText = nil
+        }
 
         var details: [BoardDetail] = []
         if target.openAsks > 0 {
-            details.append(BoardDetail(text: target.openAsks == 1 ? "1 ask" : "\(target.openAsks) asks", tone: .orange, isAsk: true))
+            details.append(BoardDetail(text: target.openAsks == 1 ? "1 ask" : "\(target.openAsks) asks", tone: .waitingForYou, role: .ask))
         }
         let sessions = target.sessionIDs.compactMap(snapshot.session)
         if sessions.contains(where: { [.working, .running].contains($0.stateKind) }) {
-            details.append(BoardDetail(text: "Session working", tone: .green))
+            details.append(BoardDetail(text: "Session working", tone: .green, role: .info))
         } else if !target.sessionIDs.isEmpty {
             let count = target.sessionIDs.count + (target.sessionIDsMore ?? 0)
-            details.append(BoardDetail(text: count == 1 ? "1 session" : "\(count) sessions", tone: .secondary))
+            details.append(BoardDetail(text: count == 1 ? "1 session" : "\(count) sessions", tone: .secondary, role: .info))
         }
         if !target.pr.isEmpty {
-            details.append(BoardDetail(text: target.pr.allSatisfy(\.isNumber) ? "PR #\(target.pr)" : "PR", tone: .secondary))
+            details.append(BoardDetail(text: target.pr.allSatisfy(\.isNumber) ? "PR #\(target.pr)" : "PR", tone: .secondary, role: .info))
         }
         self.details = details
     }
@@ -91,7 +99,7 @@ struct BoardRowModel: Equatable, Identifiable {
         case .inProgress: ("circle.lefthalf.filled", .accent)
         case .inReview: ("circle.dotted.circle", .accent)
         case .blocked: ("exclamationmark.circle.fill", .red)
-        case .done: ("checkmark.circle.fill", .green)
+        case .done: ("checkmark.circle.fill", .secondary)
         case .dismissed: ("xmark.circle", .secondary)
         case .snoozed: ("moon.circle", .secondary)
         default: ("circle", .secondary)
@@ -112,10 +120,10 @@ struct BoardRowModel: Equatable, Identifiable {
     }
 
     var toneUses: [ToneUse] {
-        var uses = [ToneUse(element: "target \(id) status", tone: statusTone, isWaitingOrAsk: false)]
-        uses += details.map { ToneUse(element: "target \(id) \($0.text)", tone: $0.tone, isWaitingOrAsk: $0.isAsk) }
+        var uses = [ToneUse(element: "target \(id) status", tone: statusTone, role: .status)]
+        uses += details.map { ToneUse(element: "target \(id) \($0.text)", tone: $0.tone, role: $0.role) }
         if priorityLabel != nil {
-            uses.append(ToneUse(element: "target \(id) priority", tone: priorityTone, isWaitingOrAsk: false))
+            uses.append(ToneUse(element: "target \(id) priority", tone: priorityTone, role: .priority))
         }
         return uses
     }
@@ -132,7 +140,9 @@ struct BoardNode: Equatable, Identifiable {
 
 /// The board tree under one filter: the matching targets plus, for
 /// context, their ancestors from the same pool (archived or not), so a
-/// filter never mixes archived and live records.
+/// filter never mixes archived and live records. Under Open, a shown
+/// parent also keeps its done children (greyed), so a group reads whole;
+/// the chip counts stay open-only.
 struct BoardModel {
     let filter: BoardFilter
     let roots: [BoardNode]
@@ -152,6 +162,12 @@ struct BoardModel {
                 cursor = current.parentID.flatMap { byID[$0] }
             }
         }
+        if filter == .open {
+            let shownParents = visible
+            for target in pool where target.status == .done && target.parentID.map(shownParents.contains) == true {
+                visible.insert(target.id)
+            }
+        }
         visibleIDs = visible
 
         let shown = pool.filter { visible.contains($0.id) }.sorted(by: Self.boardOrder)
@@ -168,9 +184,33 @@ struct BoardModel {
         self.counts = counts
     }
 
-    /// Oldest first, then by id: the order targets were put on the board.
+    /// Sibling order of the board, as the Mac shows it: priority high,
+    /// medium, then anything else; then status in_progress, in_review,
+    /// blocked, todo, done, then anything else; then id. A twin of Core's
+    /// `WorkbenchBoardOrder` and Go's `boardSiblingOrder`
+    /// (`internal/db/workbench_board.go`); change all three together.
     static func boardOrder(_ lhs: WorkbenchTarget, _ rhs: WorkbenchTarget) -> Bool {
-        lhs.createdAt != rhs.createdAt ? lhs.createdAt < rhs.createdAt : lhs.id < rhs.id
+        (priorityRank(lhs.priority), statusRank(lhs.status), lhs.id)
+            < (priorityRank(rhs.priority), statusRank(rhs.status), rhs.id)
+    }
+
+    static func priorityRank(_ priority: WorkbenchTargetPriority) -> Int {
+        switch priority {
+        case .high: 0
+        case .medium: 1
+        default: 2
+        }
+    }
+
+    static func statusRank(_ status: WorkbenchTargetStatus) -> Int {
+        switch status {
+        case .inProgress: 0
+        case .inReview: 1
+        case .blocked: 2
+        case .todo: 3
+        case .done: 4
+        default: 5
+        }
     }
 
     /// The chip's count; nil for Archive, which carries none.

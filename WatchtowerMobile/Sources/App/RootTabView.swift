@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The four tabs (spec §13 A4): Now, Workbench, Calendar and More. Now and
 /// Workbench come from sub-project B; Calendar is filled by C and shows its
@@ -27,6 +28,12 @@ struct RootTabView: View {
             }
         }
 
+        /// The Workbench tab's badge is the open-ask count (orange, set in
+        /// `init`); 0 hides it. Other tabs carry none.
+        func badge(_ snapshot: WorkbenchReplicaSnapshot) -> Int {
+            self == .workbench ? snapshot.openAsks().count : 0
+        }
+
         /// Spec §3: 5 s while Now or Workbench is on screen, 30 s otherwise.
         var fetchInterval: Duration {
             switch self {
@@ -40,11 +47,17 @@ struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection: Tab = .now
 
+    init() {
+        // The only tab badge is the open-ask count: a waiting-for-you element.
+        UITabBarItem.appearance().badgeColor = PhoneTone.waitingBadgeColor
+    }
+
     var body: some View {
         TabView(selection: $selection) {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
+                    .badge(tab.badge(env.workbenchReplica.snapshot))
                     .tag(tab)
             }
         }

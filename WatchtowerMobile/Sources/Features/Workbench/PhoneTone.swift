@@ -1,11 +1,21 @@
 import SwiftUI
+import UIKit
 import WatchtowerKit
 
 /// Every colour the Workbench and Now screens draw (spec §14). Session tones
 /// map exactly to `SessionStatePresentation.Tone`; `accent` is system blue.
-/// Orange is for waiting-for-you and ask elements only.
+///
+/// Orange is for waiting-for-you and ask elements only. This file is the
+/// only place under `Sources/Features/` allowed to name it (SwiftLint
+/// `orange_outside_phone_tone`): screens get it as `waitingForYou` or from
+/// a session record's published tone.
 enum PhoneTone: Equatable, Sendable {
     case green, orange, blue, red, secondary, accent
+
+    /// The tone of every waiting-for-you and ask element.
+    static let waitingForYou = Self.orange
+    /// The tab bar's open-ask badge.
+    static let waitingBadgeColor = UIColor.systemOrange
 
     /// The Mac's published tone; one from a newer Mac draws secondary.
     init(_ tone: TerminalSessionState.Tone) {
@@ -30,66 +40,47 @@ enum PhoneTone: Equatable, Sendable {
     }
 }
 
-/// One coloured element of a screen model: what the view paints and whether
-/// it is a waiting-for-you or ask element (the only place orange may go).
+/// What a coloured element is, decided by the screen model from the data it
+/// shows and independent of the tone it paints. Only waiting and ask
+/// elements, and a session record in a waiting state, may be orange.
+enum ToneRole: Equatable {
+    case waiting
+    case ask
+    /// A session dot or label; `isWaiting` from the record's state kind and
+    /// open asks, never from its tone.
+    case session(isWaiting: Bool)
+    case status
+    case priority
+    case progress
+    case mac
+    case info
+}
+
+/// One coloured element of a screen model: what the view paints and what it
+/// is.
 struct ToneUse: Equatable {
     let element: String
     let tone: PhoneTone
-    let isWaitingOrAsk: Bool
-}
+    let role: ToneRole
 
-/// A short age: "now", "5m", "3h", "2d".
-enum CompactAge {
-    static func string(from date: Date, now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(date)))
-        switch seconds {
-        case ..<60: return "now"
-        case ..<3_600: return "\(seconds / 60)m"
-        case ..<86_400: return "\(seconds / 3_600)h"
-        default: return "\(seconds / 86_400)d"
+    var isWaitingOrAsk: Bool {
+        switch role {
+        case .waiting, .ask: true
+        case let .session(isWaiting): isWaiting
+        case .status, .priority, .progress, .mac, .info: false
         }
     }
 }
 
-/// One session-state count with its dot (Workbench card, Now chips).
-struct SessionStateCount: Equatable, Identifiable {
-    let label: String
-    let amount: Int
-    let tone: PhoneTone
-    /// Not-live states draw a ring, as a session row does.
-    let isRing: Bool
-    /// The waiting and needs-approval counts are waiting-for-you elements.
-    let isWaiting: Bool
-
-    var id: String { label }
-    var text: String { "\(amount) \(label)" }
-
-    /// The non-zero counts in a fixed order. "Not running" sessions are left
-    /// out: they are old sessions, not state worth a dot.
-    static func list(_ counts: Workbench.SessionCounts) -> [Self] {
-        [
-            Self(label: "working", amount: counts.working, tone: .green, isRing: false, isWaiting: false),
-            Self(label: "waiting for you", amount: counts.waiting, tone: .orange, isRing: false, isWaiting: true),
-            Self(label: "needs approval", amount: counts.needsApproval, tone: .orange, isRing: false, isWaiting: true),
-            Self(label: "finished", amount: counts.finished, tone: .blue, isRing: true, isWaiting: false),
-            Self(label: "failed", amount: counts.failed, tone: .red, isRing: true, isWaiting: false),
-            Self(label: "stopped", amount: counts.stopped, tone: .secondary, isRing: true, isWaiting: false)
-        ].filter { $0.amount > 0 }
-    }
-
-    static func sum(_ all: [Workbench.SessionCounts]) -> Workbench.SessionCounts {
-        Workbench.SessionCounts(
-            working: all.reduce(0) { $0 + $1.working },
-            waiting: all.reduce(0) { $0 + $1.waiting },
-            needsApproval: all.reduce(0) { $0 + $1.needsApproval },
-            finished: all.reduce(0) { $0 + $1.finished },
-            failed: all.reduce(0) { $0 + $1.failed },
-            stopped: all.reduce(0) { $0 + $1.stopped },
-            notRunning: all.reduce(0) { $0 + $1.notRunning }
-        )
-    }
-
-    var toneUse: ToneUse {
-        ToneUse(element: "session count \(label)", tone: tone, isWaitingOrAsk: isWaiting)
+/// A short age: "12s", "5m", "3h", "2d".
+enum CompactAge {
+    static func string(from date: Date, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        switch seconds {
+        case ..<60: return "\(seconds)s"
+        case ..<3_600: return "\(seconds / 60)m"
+        case ..<86_400: return "\(seconds / 3_600)h"
+        default: return "\(seconds / 86_400)d"
+        }
     }
 }

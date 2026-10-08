@@ -7,8 +7,8 @@ import WatchtowerSync
 
 /// Everything the Workbench and Now tabs draw, decoded from the replica in
 /// one database snapshot: the hub's resolved Workbench slices plus the
-/// heartbeat. An undecodable record is skipped (and logged once per read),
-/// so a newer Mac's reshaped record never breaks a screen.
+/// heartbeat. An undecodable record is skipped and counted in
+/// `skippedRecords`, so a newer Mac's reshaped record never breaks a screen.
 struct WorkbenchReplicaSnapshot: Equatable {
     var workbenches: [Workbench] = []
     var targets: [WorkbenchTarget] = []
@@ -16,25 +16,29 @@ struct WorkbenchReplicaSnapshot: Equatable {
     var asks: [OwnerAsk] = []
     var comments: [WorkbenchComment] = []
     var heartbeat: HeartbeatPayload?
-
-    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "WorkbenchReplicaSnapshot")
+    /// Undecodable records per kind in this read; kinds without any are
+    /// absent.
+    var skippedRecords: [SliceKind: Int] = [:]
 
     /// Reads from an ALREADY-OPEN database, so it runs inside a
     /// ValueObservation tracking closure.
     static func read(from db: Database, store: ReplicaStore) throws -> Self {
         var snapshot = Self()
-        snapshot.workbenches = try decodeAll(Workbench.self, store: store, from: db)
-        snapshot.targets = try decodeAll(WorkbenchTarget.self, store: store, from: db)
-        snapshot.sessions = try decodeAll(TerminalSessionState.self, store: store, from: db)
-        snapshot.asks = try decodeAll(OwnerAsk.self, store: store, from: db)
-        snapshot.comments = try decodeAll(WorkbenchComment.self, store: store, from: db)
-        if let payload = try store.payload(forRecordName: HeartbeatPayload.recordName, from: db) {
-            snapshot.heartbeat = try? RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: payload)
-        }
+        snapshot.workbenches = try snapshot.decodeAll(Workbench.self, store: store, from: db)
+        snapshot.targets = try snapshot.decodeAll(WorkbenchTarget.self, store: store, from: db)
+        snapshot.sessions = try snapshot.decodeAll(TerminalSessionState.self, store: store, from: db)
+        snapshot.asks = try snapshot.decodeAll(OwnerAsk.self, store: store, from: db)
+        snapshot.comments = try snapshot.decodeAll(WorkbenchComment.self, store: store, from: db)
+        snapshot.heartbeat = try SettingsSnapshot.decode(
+            HeartbeatPayload.self,
+            recordName: HeartbeatPayload.recordName,
+            store: store,
+            from: db
+        )
         return snapshot
     }
 
-    private static func decodeAll<T: SliceMirror>(_ type: T.Type, store: ReplicaStore, from db: Database) throws -> [T] {
+    private mutating func decodeAll<T: SliceMirror>(_ type: T.Type, store: ReplicaStore, from db: Database) throws -> [T] {
         var skipped = 0
         let decoded = try store.payloads(of: T.sliceKind, from: db).compactMap { payload -> T? in
             do {
@@ -45,7 +49,7 @@ struct WorkbenchReplicaSnapshot: Equatable {
             }
         }
         if skipped > 0 {
-            logger.warning("\(skipped) undecodable \(T.sliceKind.rawValue, privacy: .public) records skipped")
+            skippedRecords[T.sliceKind] = skipped
         }
         return decoded
     }
@@ -102,8 +106,19 @@ final class WorkbenchReplicaModel {
             scheduling: .async(onQueue: .main),
             onError: { Self.logger.error("workbench observation failed: \($0.localizedDescription, privacy: .public)") },
             onChange: { [weak self] value in
-                MainActor.assumeIsolated { self?.snapshot = value }
+                MainActor.assumeIsolated { self?.receive(value) }
             }
         )
+    }
+
+    /// Logs the skipped records only when their count changes, not on
+    /// every replica write.
+    private func receive(_ value: WorkbenchReplicaSnapshot) {
+        if value.skippedRecords != snapshot.skippedRecords {
+            for (kind, count) in value.skippedRecords.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+                Self.logger.warning("\(count) undecodable \(kind.rawValue, privacy: .public) records skipped")
+            }
+        }
+        snapshot = value
     }
 }

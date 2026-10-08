@@ -47,6 +47,9 @@ final class AppEnvironment {
     let transportKind: TransportKind
     let outbox: ActionOutbox
     let deviceSettings: DeviceSettings
+    /// The Workbench slices as the Now and Workbench tabs and the tab badge
+    /// draw them: one observation for the app's lifetime.
+    let workbenchReplica = WorkbenchReplicaModel()
 
     /// This phone's link, nil until the link flow (Task 12) sets one. The
     /// demo transport is linked to `DemoSeed.device`.
@@ -136,6 +139,7 @@ final class AppEnvironment {
         let settings = DeviceSettings(transport: transport, defaults: defaults)
         settings.linkedDevice = device
         deviceSettings = settings
+        workbenchReplica.start(store: store)
 
         bootstrapTask = Task { await bootstrap() }
     }

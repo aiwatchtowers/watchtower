@@ -38,11 +38,44 @@ final class BoardFilterTests: XCTestCase {
 
     func testOpenKeepsTheTreeAndHidesDone() throws {
         let open = try board(.open)
-        XCTAssertEqual(open.roots.map(\.id), [400, 420, 430, 431])
+        // The Mac's sibling order: priority, then status, then id.
+        XCTAssertEqual(open.roots.map(\.id), [400, 430, 420, 431])
         let archiveGroup = try XCTUnwrap(open.roots.first { $0.id == 400 })
-        XCTAssertEqual(archiveGroup.children.map(\.id), [415, 416])
+        XCTAssertEqual(archiveGroup.children.map(\.id), [415, 416], "the archived child stays under Archive")
+        // A shown group keeps its done child, greyed, for context.
         let hierarchy = try XCTUnwrap(open.roots.first { $0.id == 420 })
-        XCTAssertEqual(hierarchy.children.map(\.id), [421], "the done child is not open")
+        XCTAssertEqual(hierarchy.children.map(\.id), [421, 422])
+        let done = try XCTUnwrap(hierarchy.children.last).row
+        XCTAssertTrue(done.isDimmed)
+        XCTAssertEqual(done.progressText, "done")
+        XCTAssertFalse(try XCTUnwrap(hierarchy.children.first).row.isDimmed)
+    }
+
+    /// A done target with no shown parent stays out of Open, and the other
+    /// filters keep no done children.
+    func testDoneTargetsShowOnlyUnderAShownParentInOpen() throws {
+        XCTAssertFalse(try board(.inProgress).visibleIDs.contains(422))
+        XCTAssertEqual(try board(.blocked).roots.first?.children.map(\.id), [421])
+        let website = BoardModel(workbenchID: DemoSeed.websiteID, snapshot: try demoSnapshot(now: now), filter: .open)
+        XCTAssertEqual(website.visibleIDs, [500], "a top-level done target is not open")
+    }
+
+    /// Twin of Core's `WorkbenchBoardOrder` and Go's `boardSiblingOrder`.
+    func testSiblingOrderIsPriorityThenStatusThenID() throws {
+        func target(_ id: Int64, _ priority: String, _ status: String) throws -> WorkbenchTarget {
+            try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(id, workbench: 1, ["priority": priority, "status": status]))
+        }
+        let targets = [
+            try target(1, "low", "in_progress"),
+            try target(2, "medium", "todo"),
+            try target(3, "high", "todo"),
+            try target(4, "medium", "in_progress"),
+            try target(5, "medium", "blocked"),
+            try target(6, "medium", "in_review"),
+            try target(7, "high", "todo"),
+            try target(8, "medium", "done")
+        ]
+        XCTAssertEqual(targets.sorted(by: BoardModel.boardOrder).map(\.id), [3, 7, 4, 6, 5, 2, 8, 1])
     }
 
     func testBlockedKeepsItsAncestorsForContext() throws {

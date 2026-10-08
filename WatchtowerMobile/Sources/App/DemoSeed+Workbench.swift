@@ -157,7 +157,7 @@ extension DemoSeed {
                 "parent_id": 400, "text": "Archive view", "status": "done", "archived": true, "progress": 1,
                 "last_status_at": JSON.stamp(ago(864_000)), "last_status_actor": "owner"
             ]),
-            JSON.target(420, workbench: acmeID, ["text": "Board hierarchy", "children_count": 2]),
+            JSON.target(420, workbench: acmeID, ["text": "Board hierarchy", "children_count": 2, "progress": 0.5]),
             JSON.target(421, workbench: acmeID, [
                 "parent_id": 420, "text": "Lane totals", "status": "blocked", "priority": "high", "session_ids": [12, 15]
             ]),

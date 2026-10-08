@@ -14,12 +14,13 @@ struct BoardTargetRoute: Hashable {
 /// the same model, so it survives navigation.
 struct WorkbenchListView: View {
     @Environment(AppEnvironment.self) private var env
-    @State private var replica = WorkbenchReplicaModel()
+
+    private var replica: WorkbenchReplicaModel { env.workbenchReplica }
 
     var body: some View {
         NavigationStack {
             content
-                .navigationTitle("Workbench")
+                .navigationTitle("Workbenches")
                 .navigationDestination(for: WorkbenchRoute.self) { route in
                     WorkbenchView(replica: replica, workbenchID: route.id)
                 }
@@ -27,7 +28,6 @@ struct WorkbenchListView: View {
                     BoardTargetDetailView(replica: replica, targetID: route.id)
                 }
         }
-        .task { replica.start(store: env.store) }
     }
 
     @ViewBuilder
@@ -40,9 +40,17 @@ struct WorkbenchListView: View {
                 description: Text("Your Mac's workbenches show up here.")
             )
         } else {
-            List(workbenches) { workbench in
-                NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
-                    WorkbenchCardView(card: WorkbenchCardModel(workbench))
+            List {
+                Section {
+                    ForEach(workbenches) { workbench in
+                        NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
+                            WorkbenchCardView(card: WorkbenchCardModel(workbench))
+                        }
+                    }
+                } header: {
+                    Text(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
+                } footer: {
+                    Text("Workbenches are folders bound on the Mac. New ones are added there.")
                 }
             }
             .refreshable { await env.refresh() }
@@ -61,9 +69,7 @@ struct WorkbenchCardView: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                if card.waitingCount > 0 {
-                    CountPill(text: "\(card.waitingCount) waiting", tone: .orange)
-                }
+                ForEach(card.pills) { CountPill(text: $0.text, tone: $0.tone) }
             }
             Text([card.folder, card.branch].compactMap { $0 }.joined(separator: " · "))
                 .font(.caption.monospaced())
@@ -74,7 +80,7 @@ struct WorkbenchCardView: View {
                 FlowCounts(counts: card.stateCounts)
             }
             if let progress = card.progress {
-                ThinProgressBar(value: progress)
+                ThinProgressBar(value: progress, tone: card.progressTone)
             }
             Text(card.countsLine)
                 .font(.caption)

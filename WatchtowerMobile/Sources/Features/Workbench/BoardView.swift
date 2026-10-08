@@ -79,6 +79,7 @@ struct BoardRowView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.title)
                     .lineLimit(2)
+                    .foregroundStyle(row.isDimmed ? .secondary : .primary)
                 if !row.details.isEmpty {
                     HStack(spacing: 4) {
                         ForEach(Array(row.details.enumerated()), id: \.offset) { index, detail in

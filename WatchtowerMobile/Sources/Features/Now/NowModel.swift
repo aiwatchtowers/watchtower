@@ -14,6 +14,9 @@ struct NowModel {
     /// "Nothing is waiting for you" when no ask is open.
     let emptyText: String?
     let sessionChips: [SessionStateCount]
+    /// "Mac online · 12s", "Mac offline · 13m" or "Mac not connected".
+    let macChip: String
+    let waitingHeaderTone = PhoneTone.waitingForYou
 
     init(snapshot: WorkbenchReplicaSnapshot, now: Date) {
         macStatus = MacStatus(heartbeat: snapshot.heartbeat, now: now)
@@ -22,13 +25,11 @@ struct NowModel {
         waitingMore = max(0, open.count - Self.waitingLimit)
         emptyText = open.isEmpty ? "Nothing is waiting for you" : nil
         sessionChips = SessionStateCount.list(SessionStateCount.sum(snapshot.workbenches.map(\.sessionCounts)))
-    }
-
-    var macChip: String {
-        switch macStatus {
+        let age = snapshot.heartbeat.map { " · \(CompactAge.string(from: $0.updatedAt, now: now))" } ?? ""
+        macChip = switch macStatus {
         case .notConnected: "Mac not connected"
-        case .online: "Mac online"
-        case .offline: "Mac offline"
+        case .online: "Mac online" + age
+        case .offline: "Mac offline" + age
         }
     }
 
@@ -38,7 +39,10 @@ struct NowModel {
     }
 
     var toneUses: [ToneUse] {
-        [ToneUse(element: "mac chip", tone: macChipTone, isWaitingOrAsk: false)]
+        [
+            ToneUse(element: "mac chip", tone: macChipTone, role: .mac),
+            ToneUse(element: "waiting header", tone: waitingHeaderTone, role: .waiting)
+        ]
             + waiting.map(\.toneUse)
             + sessionChips.map(\.toneUse)
     }

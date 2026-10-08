@@ -20,9 +20,10 @@ struct SessionDot: View {
     }
 }
 
-/// A thin progress bar in the accent colour.
+/// A thin progress bar in the model's tone.
 struct ThinProgressBar: View {
     let value: Double
+    let tone: PhoneTone
     var height: CGFloat = 4
 
     var body: some View {
@@ -30,7 +31,7 @@ struct ThinProgressBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.secondary.opacity(0.2))
                 Capsule()
-                    .fill(PhoneTone.accent.color)
+                    .fill(tone.color)
                     .frame(width: proxy.size.width * min(1, max(0, value)))
             }
         }
@@ -39,7 +40,7 @@ struct ThinProgressBar: View {
     }
 }
 
-/// A small count pill: orange for waiting and asks, as spec §14 allows.
+/// A small count pill in the model's tone.
 struct CountPill: View {
     let text: String
     let tone: PhoneTone
@@ -68,7 +69,7 @@ struct SessionCountLabel: View {
     }
 }
 
-/// One Waiting-for-you card, orange-tinted.
+/// One Waiting-for-you card, tinted and bordered in the card's tone.
 struct WaitingCardView: View {
     let card: WaitingCardModel
 
@@ -76,7 +77,7 @@ struct WaitingCardView: View {
         VStack(alignment: .leading, spacing: 3) {
             Text(card.kindLabel)
                 .font(.caption2.monospaced().weight(.semibold))
-                .foregroundStyle(PhoneTone.orange.color)
+                .foregroundStyle(card.tone.color)
             Text(card.title)
                 .font(.subheadline.weight(.medium))
                 .lineLimit(2)
@@ -87,7 +88,8 @@ struct WaitingCardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(PhoneTone.orange.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+        .background(card.tone.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(card.tone.color.opacity(0.5), lineWidth: 1))
         .accessibilityElement(children: .combine)
     }
 }
@@ -121,7 +123,7 @@ struct SessionRowView: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                         if let progress = row.reportProgress {
-                            ThinProgressBar(value: progress, height: 3)
+                            ThinProgressBar(value: progress, tone: row.progressTone, height: 3)
                                 .frame(width: 40)
                         }
                     }
@@ -134,7 +136,7 @@ struct SessionRowView: View {
             }
             Spacer(minLength: 0)
             if row.openAsks > 0 {
-                CountPill(text: "\(row.openAsks)", tone: .orange)
+                CountPill(text: "\(row.openAsks)", tone: row.openAsksTone)
                     .accessibilityLabel(row.openAsks == 1 ? "1 open ask" : "\(row.openAsks) open asks")
             }
         }
