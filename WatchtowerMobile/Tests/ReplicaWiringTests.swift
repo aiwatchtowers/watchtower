@@ -56,14 +56,15 @@ final class ReplicaWiringTests: XCTestCase {
             transport: InMemoryCloudTransport(),
             replicaPath: path,
             transportKind: .inMemoryDemo,
-            defaults: try makeDefaults()
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory()
         ))
     }
 
     // MARK: - Boot and demo seed
 
     func testAppEnvironmentBootsAndHydratesExactlyTheDemoSeed() async throws {
-        let env = try managed(AppEnvironment())
+        let env = try managed(AppEnvironment(recordingsDirectory: try makeRecordingsDirectory()))
         try await poll { env.lastSyncAt != nil }
 
         for (kind, expected) in bootCounts {
@@ -189,7 +190,7 @@ final class ReplicaWiringTests: XCTestCase {
             CloudKitTransport.entitlementPresent(),
             "an unsigned simulator host must probe false, or the demo path is dead"
         )
-        let env = try managed(AppEnvironment())
+        let env = try managed(AppEnvironment(recordingsDirectory: try makeRecordingsDirectory()))
         XCTAssertEqual(env.transportKind, .inMemoryDemo)
         XCTAssertEqual(env.linkedDevice, DemoSeed.device)
     }
@@ -202,7 +203,8 @@ final class ReplicaWiringTests: XCTestCase {
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .cloudKit,
-            defaults: try makeDefaults()
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory()
         ))
         XCTAssertNil(env.linkedDevice)
 
@@ -220,7 +222,8 @@ final class ReplicaWiringTests: XCTestCase {
             try AppEnvironment(
                 transport: InMemoryCloudTransport(),
                 replicaPath: "/dev/null/sub/replica.sqlite",
-                defaults: try makeDefaults()
+                defaults: try makeDefaults(),
+                recordingsDirectory: try makeRecordingsDirectory()
             )
         )
     }

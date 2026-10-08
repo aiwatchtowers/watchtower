@@ -87,21 +87,24 @@ final class AppEnvironment {
     /// TRANSPORT SWITCH: a build carrying the iCloud entitlement (signed
     /// device or TestFlight build) goes live over CloudKit, in the app group
     /// container; anything else (unsigned simulator and CI builds) runs the
-    /// in-memory demo transport with DemoSeed.
-    convenience init() throws {
+    /// in-memory demo transport with DemoSeed. `recordingsDirectory` is for
+    /// tests: nil keeps the phone's own recordings folder.
+    convenience init(recordingsDirectory: URL? = nil) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
             let transportStore = try TransportStore(path: directory.appendingPathComponent("cloudkit-transport.sqlite").path)
             try self.init(
                 transport: CloudKitTransport(store: transportStore),
                 replicaPath: directory.appendingPathComponent("replica.sqlite").path,
-                transportKind: .cloudKit
+                transportKind: .cloudKit,
+                recordingsDirectory: recordingsDirectory
             )
         } else {
             try self.init(
                 transport: InMemoryCloudTransport(),
                 replicaPath: try Self.applicationSupportDirectory().appendingPathComponent("replica.sqlite").path,
-                transportKind: .inMemoryDemo
+                transportKind: .inMemoryDemo,
+                recordingsDirectory: recordingsDirectory
             )
         }
     }
