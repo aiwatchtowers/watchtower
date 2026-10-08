@@ -206,6 +206,60 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertEqual(applied.first?.result, ["delivery": .string("submitted")])
     }
 
+    /// A start sheet's "Mac picked it up" stage reads the last non-terminal
+    /// echo: `received` and `held` mark the still-pending row, and a later
+    /// `applied` still removes it and tells the observer its result.
+    func testReceivedEchoMarksThePendingRowAndAppliedStillRemovesIt() async throws {
+        let (_, store, outbox) = try makeFixtures()
+        let seen = OSAllocatedUnfairLock<[ActionRequestPayload]>(initialState: [])
+        await outbox.setAppliedObserver { action in seen.withLock { $0.append(action) } }
+        _ = try await outbox.enqueue(kind: .sessionStart, entityRecordName: "workbench_target-415")
+        XCTAssertNil(try XCTUnwrap(store.pendingActions().first).echoStatus, "no echo yet")
+
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .received
+        try await outbox.applyEcho(echo)
+        var row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.state, .pending)
+        XCTAssertEqual(row.echoStatus, .received)
+
+        echo.status = .held
+        try await outbox.applyEcho(echo)
+        row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.state, .pending)
+        XCTAssertEqual(row.echoStatus, .held, "the last non-terminal echo wins")
+
+        echo.status = .applied
+        echo.result = ["session_id": .integer(42), "stage": .string("starting")]
+        try await outbox.applyEcho(echo)
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+        XCTAssertEqual(seen.withLock { $0 }.map(\.result), [["session_id": .integer(42), "stage": .string("starting")]])
+    }
+
+    /// A `received` redelivered after a refusal never turns the failed row
+    /// back into an in-flight one; an unknown id stays a no-op.
+    func testReceivedEchoAfterAFailureLeavesTheFailedRow() async throws {
+        let (_, store, outbox) = try makeFixtures()
+        _ = try await outbox.enqueue(kind: .sessionStart, entityRecordName: "workbench_target-415")
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .failed
+        echo.reason = .claudeNotFound
+        echo.errorMessage = "Claude Code was not found"
+        try await outbox.applyEcho(echo)
+
+        echo.status = .received
+        try await outbox.applyEcho(echo)
+        var ghost = ActionRequestPayload(id: "ghost", kind: .sessionStart, entityID: "1", createdAt: base)
+        ghost.status = .received
+        try await outbox.applyEcho(ghost)
+
+        let rows = try store.pendingActions()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.state, .failed)
+        XCTAssertEqual(rows.first?.reason, .claudeNotFound)
+        XCTAssertNil(rows.first?.echoStatus)
+    }
+
     func testFailedEchoMarksRowFailedWithMessage() async throws {
         let (_, store, outbox) = try makeFixtures()
         _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-9")

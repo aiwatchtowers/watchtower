@@ -119,15 +119,19 @@ public actor ActionOutbox {
     /// `applied` removes the pending row (the authoritative slice change
     /// arrives via hydration); `failed`, `expired` and `cancelled` flip it
     /// with the desktop's message, reason and result; `received` and `held`
-    /// leave it pending.
+    /// leave it pending, recorded as its `echoStatus`.
     /// Echoes for unknown action_ids are no-ops — redelivery after a sweep
     /// removed the row, or the phantom case documented on `enqueue`. A
     /// still-`pending` payload is our own enqueue reflecting back: inert.
     public func applyEcho(_ action: ActionRequestPayload) throws {
         switch action.status {
-        case .pending, .received, .held:
-            // Still in flight on the Mac: the overlay stays pending.
+        case .pending:
+            // Our own enqueue reflecting back.
             break
+        case .received, .held:
+            // Still in flight on the Mac: the overlay stays pending and
+            // remembers how far the Mac got.
+            try store.markPendingActionEcho(id: action.id, status: action.status)
         case .applied:
             if try store.removePendingAction(id: action.id) {
                 appliedObserver?(action)

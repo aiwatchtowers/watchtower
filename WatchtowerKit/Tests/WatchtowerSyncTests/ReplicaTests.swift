@@ -688,7 +688,8 @@ final class ReplicaTests: XCTestCase {
     }
 
     /// A replica written before the overlay kept an echo's reason and result
-    /// opens with its rows intact and both columns added in place.
+    /// opens with its rows intact and the reason, result and echo status
+    /// columns added in place.
     func testOlderPendingActionsTableGainsReasonAndResult() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replica-pending-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -715,6 +716,7 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(row.errorMessage, "boom")
         XCTAssertNil(row.reason)
         XCTAssertNil(row.result)
+        XCTAssertNil(row.echoStatus)
 
         try store.markPendingActionFailed(id: "old", errorMessage: "conflict", reason: .conflict, result: ["current": .string("done")])
         let failed = try XCTUnwrap(ReplicaStore(path: path).pendingActions().first)

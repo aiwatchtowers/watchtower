@@ -65,6 +65,17 @@ extension ReplicaStore {
         }
     }
 
+    /// Records a non-terminal echo (`received`, `held`) on a still-pending
+    /// row. A failed row keeps its refusal, and unknown ids are a no-op.
+    func markPendingActionEcho(id: String, status: ActionStatus) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE pending_actions SET echo_status = ? WHERE action_id = ? AND state = 'pending'",
+                arguments: [status.rawValue, id]
+            )
+        }
+    }
+
     /// Flips one overlay row to `failed` (desktop echo), keeping the echo's
     /// `reason` and `result` (a conflict's `current`, say). Unknown ids are a
     /// no-op: the echo may be a redelivery for a row the sweep already
@@ -133,7 +144,8 @@ extension ReplicaStore {
                 reason: (row["reason"] as String?).flatMap(ActionReason.init(rawValue:)),
                 // An undecodable result reads as absent: the row still shows
                 // its message.
-                result: (row["result"] as Data?).flatMap { try? JSONDecoder().decode([String: JSONValue].self, from: $0) }
+                result: (row["result"] as Data?).flatMap { try? JSONDecoder().decode([String: JSONValue].self, from: $0) },
+                echoStatus: (row["echo_status"] as String?).flatMap(ActionStatus.init(rawValue:))
             ))
         }
         let newBadIDs = badIDs
@@ -179,4 +191,7 @@ public struct PendingAction: Equatable, Identifiable {
     /// The echo's result object (a conflict carries `current`); nil when the
     /// echo had none.
     public let result: [String: JSONValue]?
+    /// The last non-terminal echo the Mac wrote for a still-pending row
+    /// (`received` once the hub dequeued it, `held`); nil before any echo.
+    public let echoStatus: ActionStatus?
 }
