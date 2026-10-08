@@ -7,7 +7,6 @@ import WatchtowerKit
 struct EventDetailView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.openURL) private var openURL
-    @Environment(\.dismiss) private var dismiss
     let eventID: String
 
     var body: some View {
@@ -29,17 +28,6 @@ struct EventDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        // The canvas's back label is "Today", from Calendar and Now alike.
-        .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    dismiss()
-                } label: {
-                    Label("Today", systemImage: "chevron.left").labelStyle(.titleAndIcon)
-                }
-            }
-        }
     }
 
     private func content(_ model: EventDetailModel) -> some View {
