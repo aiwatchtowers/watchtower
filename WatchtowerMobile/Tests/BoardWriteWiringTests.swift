@@ -303,12 +303,18 @@ final class BoardWriteWiringTests: XCTestCase {
     // MARK: - Fix round 1
 
     /// A transport whose saves wait until released: the window before the
-    /// overlay row exists.
+    /// overlay row exists. `onSave` runs as each save starts waiting.
     private final class GatedTransport: CloudSyncTransport, @unchecked Sendable {
         private let lock = NSLock()
         private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var saveHook: (() -> Void)?
 
         var waiting: Int { lock.withLock { waiters.count } }
+
+        var onSave: (() -> Void)? {
+            get { lock.withLock { saveHook } }
+            set { lock.withLock { saveHook = newValue } }
+        }
 
         func release() {
             let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
@@ -320,7 +326,11 @@ final class BoardWriteWiringTests: XCTestCase {
 
         func save(_ records: [CloudRecord]) async throws {
             await withCheckedContinuation { continuation in
-                lock.withLock { waiters.append(continuation) }
+                let hook = lock.withLock { () -> (() -> Void)? in
+                    waiters.append(continuation)
+                    return saveHook
+                }
+                hook?()
             }
         }
 
@@ -339,24 +349,49 @@ final class BoardWriteWiringTests: XCTestCase {
         return (Fixture(store: store, outbox: outbox, writer: BoardWriter.sending(through: outbox, store: store)), transport)
     }
 
+    /// Starts `first` and waits (bounded) until its save is held at the gate.
+    private func holdFirstSave<T>(
+        _ transport: GatedTransport, _ first: @escaping @MainActor () async throws -> T
+    ) async -> Task<T, Error> {
+        let started = expectation(description: "the first save started")
+        transport.onSave = { started.fulfill() }
+        let task = Task { try await first() }
+        await fulfillment(of: [started], timeout: 2)
+        transport.onSave = nil
+        return task
+    }
+
+    /// Runs `second` while the first save is held and waits for it to return
+    /// within a bounded time: a missing guard makes it wait at the gate, so
+    /// the wait fails (instead of the test deadlocking).
+    private func runSecondWhileHeld<T>(_ second: @escaping @MainActor () async throws -> T) async -> Task<T, Error> {
+        let returned = expectation(description: "the second send returned without saving")
+        let task = Task {
+            defer { returned.fulfill() }
+            return try await second()
+        }
+        await fulfillment(of: [returned], timeout: 2)
+        return task
+    }
+
     func testADoubleTapOnSendPostsOneComment() async throws {
         let (fixture, transport) = try makeGatedFixture()
         let target = try target(415)
-        let first = Task { try await fixture.writer.addComment("Looks good.", on: target) }
-        try await poll({ transport.waiting == 1 }, "the first save never started")
+        let first = await holdFirstSave(transport) { try await fixture.writer.addComment("Looks good.", on: target) }
 
         let detail = try XCTUnwrap(BoardTargetDetailModel(
             targetID: 415, snapshot: try snapshot(fixture.store), now: now, inFlight: fixture.writer.inFlight
         ))
         XCTAssertTrue(detail.composerSending(replyRoot: nil), "Send is locked while the comment is on its way")
         XCTAssertFalse(detail.composerSending(replyRoot: 80))
-        let second = try await fixture.writer.addComment("Looks good.", on: target)
-        XCTAssertFalse(second)
+        let second = await runSecondWhileHeld { try await fixture.writer.addComment("Looks good.", on: target) }
+        XCTAssertEqual(transport.waiting, 1, "the second tap reached the transport")
 
         transport.release()
-        let sent = try await first.value
-        XCTAssertTrue(sent)
-        XCTAssertEqual(transport.waiting, 0)
+        let sentFirst = try await first.value
+        let sentSecond = try await second.value
+        XCTAssertTrue(sentFirst)
+        XCTAssertFalse(sentSecond)
         XCTAssertEqual(try fixture.store.pendingActions().count, 1)
         XCTAssertTrue(fixture.writer.inFlight.isEmpty)
     }
@@ -364,19 +399,19 @@ final class BoardWriteWiringTests: XCTestCase {
     func testTwoPicksOnOneFieldDuringTheSaveSendOneAction() async throws {
         let (fixture, transport) = try makeGatedFixture()
         let target = try target(415)
-        let first = Task { try await fixture.writer.setStatus(.done, on: target) }
-        try await poll({ transport.waiting == 1 }, "the first save never started")
+        let first = await holdFirstSave(transport) { try await fixture.writer.setStatus(.done, on: target) }
 
         let detail = try XCTUnwrap(BoardTargetDetailModel(
             targetID: 415, snapshot: try snapshot(fixture.store), now: now, inFlight: fixture.writer.inFlight
         ))
         XCTAssertFalse(detail.status.isEnabled, "the picker is locked while its write is on its way")
         XCTAssertTrue(detail.priority.isEnabled)
-        try await fixture.writer.setStatus(.blocked, on: target)
-        XCTAssertEqual(transport.waiting, 1, "the second pick sent nothing")
+        let second = await runSecondWhileHeld { try await fixture.writer.setStatus(.blocked, on: target) }
+        XCTAssertEqual(transport.waiting, 1, "the second pick reached the transport")
 
         transport.release()
         try await first.value
+        try await second.value
         let rows = try fixture.store.pendingActions()
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(try BoardTargetStatusParams(wireParams: try XCTUnwrap(rows.first).action.params).status, .done)
