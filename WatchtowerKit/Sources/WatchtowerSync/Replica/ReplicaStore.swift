@@ -122,6 +122,9 @@ public final class ReplicaStore: Sendable {
             if !columns.contains("event_id") {
                 try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN event_id TEXT")
             }
+            if !columns.contains("failure_kind") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
+            }
         }
         try upgradePhoneRecordingsStates()
     }
@@ -142,7 +145,8 @@ public final class ReplicaStore: Sendable {
             state TEXT NOT NULL
                 CHECK(state IN ('recording','waiting','uploading','delivered','failed')),
             error_message TEXT,
-            event_id TEXT
+            event_id TEXT,
+            failure_kind TEXT
         )
         """
     }
@@ -165,7 +169,7 @@ public final class ReplicaStore: Sendable {
             try db.inTransaction {
                 let columns = """
                     recording_id, file_path, started_at, ended_at, duration_sec,
-                    title_hint, sample_format, state, error_message, event_id
+                    title_hint, sample_format, state, error_message, event_id, failure_kind
                     """
                 try db.execute(sql: Self.phoneRecordingsTableSQL(name: "phone_recordings_upgrade", ifNotExists: false))
                 try db.execute(sql: "INSERT INTO phone_recordings_upgrade (\(columns)) SELECT \(columns) FROM phone_recordings")

@@ -4,9 +4,17 @@ import GRDB
 // MARK: - Phone recordings (local capture → relay upload ledger)
 
 /// One locally captured recording and where it stands on its way to the Mac.
-/// The audio file itself lives on disk at `fileURL`; this row is the durable
-/// upload ledger (`RecordingUploader` is the only writer).
+/// The audio file itself lives on disk (`fileURL(in:)`); this row is the
+/// durable upload ledger (`RecordingUploader` is the only writer).
 public struct PhoneRecording: Equatable, Identifiable, Sendable {
+    /// A failure on the phone itself that a retry can only repeat. nil on a
+    /// failure the Mac or the network caused, which offers Retry.
+    public enum LocalFailure: String, Sendable {
+        case missingFile = "missing_file"
+        case tooLarge = "too_large"
+        case unrecoverable
+    }
+
     public enum State: String, Sendable {
         /// The capture is still being written. A row left in this state at
         /// launch belongs to a capture cut short (kill, jetsam, crash) and is
@@ -25,7 +33,10 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     }
 
     public let id: String
-    public let fileURL: URL
+    /// The file's name inside the recordings folder, or an absolute path for
+    /// a file kept elsewhere. Stored relative because iOS may move the app's
+    /// container between launches (an app update does).
+    public let storedPath: String
     public let startedAt: Date
     public let endedAt: Date
     public let durationSec: Int
@@ -37,11 +48,22 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     /// "No meeting" voice note (spec §5.3).
     public let eventID: String?
 
+    /// Set with a `failed` state for a local failure; nil otherwise.
+    public let failure: LocalFailure?
+
     /// Retry is offered for a failure the Mac or the network caused. A local
     /// failure that a retry can only repeat (the file is gone, too large,
     /// or not recoverable) offers none.
     public var offersRetry: Bool {
-        state == .failed && !RecordingUploader.permanentLocalFailures.contains(errorMessage ?? "")
+        state == .failed && failure == nil
+    }
+
+    /// The audio file, resolved against the CURRENT recordings folder.
+    public func fileURL(in directory: URL?) -> URL {
+        if let directory, !storedPath.hasPrefix("/") {
+            return directory.appendingPathComponent(storedPath)
+        }
+        return URL(fileURLWithPath: storedPath)
     }
 }
 
@@ -63,7 +85,7 @@ extension ReplicaStore {
             guard let state = PhoneRecording.State(rawValue: row["state"]) else { return nil }
             return PhoneRecording(
                 id: row["recording_id"],
-                fileURL: URL(fileURLWithPath: row["file_path"]),
+                storedPath: row["file_path"],
                 startedAt: Date(timeIntervalSince1970: row["started_at"]),
                 endedAt: Date(timeIntervalSince1970: row["ended_at"]),
                 durationSec: row["duration_sec"],
@@ -71,7 +93,8 @@ extension ReplicaStore {
                 sampleFormat: row["sample_format"],
                 state: state,
                 errorMessage: row["error_message"],
-                eventID: row["event_id"]
+                eventID: row["event_id"],
+                failure: (row["failure_kind"] as String?).flatMap(PhoneRecording.LocalFailure.init(rawValue:))
             )
         }
     }
@@ -84,16 +107,16 @@ extension ReplicaStore {
                 sql: """
                     INSERT INTO phone_recordings
                         (recording_id, file_path, started_at, ended_at, duration_sec,
-                         title_hint, sample_format, state, error_message, event_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         title_hint, sample_format, state, error_message, event_id, failure_kind)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
-                    recording.id, recording.fileURL.path,
+                    recording.id, recording.storedPath,
                     recording.startedAt.timeIntervalSince1970,
                     recording.endedAt.timeIntervalSince1970,
                     recording.durationSec, recording.titleHint,
                     recording.sampleFormat, recording.state.rawValue,
-                    recording.errorMessage, recording.eventID
+                    recording.errorMessage, recording.eventID, recording.failure?.rawValue
                 ]
             )
             for offset in marks where offset >= 0 {
@@ -147,7 +170,7 @@ extension ReplicaStore {
                 sql: """
                     UPDATE phone_recordings
                     SET state = 'waiting', ended_at = ?, duration_sec = ?, title_hint = ?, event_id = ?,
-                        error_message = NULL
+                        error_message = NULL, failure_kind = NULL
                     WHERE recording_id = ?
                     """,
                 arguments: [endedAt.timeIntervalSince1970, durationSec, titleHint, eventID, id]
@@ -156,15 +179,27 @@ extension ReplicaStore {
     }
 
     /// Unknown ids are a no-op (the ack-after-delete degenerate branch).
+    /// `failure` is stored with a `failed` state and cleared otherwise.
     func setPhoneRecordingState(
         id: String,
         state: PhoneRecording.State,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        failure: PhoneRecording.LocalFailure? = nil
     ) throws {
         try writer.write { db in
             try db.execute(
-                sql: "UPDATE phone_recordings SET state = ?, error_message = ? WHERE recording_id = ?",
-                arguments: [state.rawValue, errorMessage, id]
+                sql: "UPDATE phone_recordings SET state = ?, error_message = ?, failure_kind = ? WHERE recording_id = ?",
+                arguments: [state.rawValue, errorMessage, failure?.rawValue, id]
+            )
+        }
+    }
+
+    /// Rewrites where a row's file is (the move to a relative name).
+    func setPhoneRecordingPath(id: String, storedPath: String) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE phone_recordings SET file_path = ? WHERE recording_id = ?",
+                arguments: [storedPath, id]
             )
         }
     }
