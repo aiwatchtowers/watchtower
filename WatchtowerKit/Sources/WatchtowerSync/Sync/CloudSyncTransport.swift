@@ -115,3 +115,16 @@ public protocol SweepingTransport: CloudSyncTransport {
     @discardableResult
     func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int
 }
+
+/// Transport-level conditions the owner of a transport must act on
+/// (mobile POC spec §9). Delivered through
+/// `CloudKitTransport.setEventHandler`.
+public enum TransportEvent: Equatable, Sendable {
+    /// `shared` scope only: the Mac's zones are gone for this participant —
+    /// a zone-deleted event, `.zoneNotFound`, or `.changeTokenExpired` on a
+    /// zone that no longer exists. The phone shows "This Mac removed this
+    /// phone", wipes its replica and returns to Welcome.
+    case unlinked
+    /// The iCloud owner's quota is full. Sends pause until `resume()`.
+    case quotaExceeded
+}
