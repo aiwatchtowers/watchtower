@@ -5,7 +5,8 @@ import WatchtowerCore
 /// The project page's Board pane: the target tree, one selected target's
 /// detail and its comment threads. Owner edits are direct GRDB writes through
 /// the same `TargetQueries` mutators the Targets tab uses (the targets
-/// dual-path precedent). Agent writes arrive from another process
+/// dual-path precedent); the status, priority, comment and reply writes go
+/// through `WorkbenchOwnerWrites`, which the mobile hub shares. Agent writes arrive from another process
 /// (`watchtower mcp --workbench N`), which ValueObservation cannot see, so the
 /// pane polls a cheap fingerprint while it is on screen.
 @MainActor
@@ -474,10 +475,7 @@ final class WorkbenchBoardViewModel {
         // write; they are the owner's doing too, so they never notify.
         var rolledUp: [Int64] = []
         let body: (Database) throws -> Void = { db in
-            let before = try WorkbenchQueries.ancestorStatuses(db, of: Int64(id))
-            try TargetQueries.updateStatus(db, id: id, status: status)
-            let after = try WorkbenchQueries.ancestorStatuses(db, of: Int64(id))
-            rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+            rolledUp = try WorkbenchOwnerWrites.setStatus(db, targetID: Int64(id), status: status).rolledUp
         }
         return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
@@ -515,7 +513,9 @@ final class WorkbenchBoardViewModel {
 
     func setPriority(_ priority: String) {
         guard let id = selectedTargetID, WorkbenchBoardCard.editablePriorities.contains(priority) else { return }
-        write("change the priority") { db in try TargetQueries.updatePriority(db, id: id, priority: priority) }
+        write("change the priority") { db in
+            _ = try WorkbenchOwnerWrites.setPriority(db, targetID: Int64(id), priority: priority)
+        }
     }
 
     func rename(_ text: String) {
@@ -589,7 +589,7 @@ final class WorkbenchBoardViewModel {
         guard let id = selectedTargetID, !text.isEmpty else { return false }
         let pid = projectID
         return write("add the comment") { db in
-            _ = try WorkbenchQueries.addOwnerComment(db, projectID: pid, targetID: Int64(id), body: text)
+            _ = try WorkbenchOwnerWrites.addComment(db, projectID: pid, targetID: Int64(id), body: text)
         }
     }
 
@@ -599,7 +599,7 @@ final class WorkbenchBoardViewModel {
     func reply(to rootID: Int64, body: String) -> Bool {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
-        return write("reply") { db in _ = try WorkbenchQueries.reply(db, to: rootID, body: text) }
+        return write("reply") { db in _ = try WorkbenchOwnerWrites.reply(db, to: rootID, body: text) }
     }
 
     func setThreadStatus(rootID: Int64, status: String) {

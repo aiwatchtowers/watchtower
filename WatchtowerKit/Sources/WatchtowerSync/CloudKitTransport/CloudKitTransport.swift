@@ -64,6 +64,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private var recordRejectedHandler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?
     /// The relaunch an account-change reset schedules (awaitable in tests).
     private(set) var restartTask: Task<Void, Never>?
+    /// Set by `stop()`, cleared only by the public `start()`: a reset's
+    /// queued relaunch must not bring back an engine the owner stopped.
+    private(set) var isStopped = false
 
     // Send-side error state (spec §9).
     private(set) var batchLimit = maxBatchSize
@@ -200,7 +203,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// and must degrade to store-only operation (records wait in the pending
     /// queue).
     public func start() async {
-        guard engine == nil else { return }
+        isStopped = false
+        await startEngine()
+    }
+
+    private func startEngine() async {
+        guard engine == nil, !isStopped else { return }
         guard entitlementCheck() else {
             lastError = "missing iCloud entitlement (unsigned dev build?)"
             return
@@ -240,6 +248,30 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
         lastError = nil
         nudgeEngine()
+    }
+
+    /// Stops syncing until the next `start()` (the Mac owner turned the hub
+    /// off): cancels the engine's operations and drops it, so nothing is
+    /// fetched or sent on pushes any more. Saves made meanwhile wait in the
+    /// store; the engine state stays in the store for the next start.
+    public func stop() async {
+        isStopped = true
+        retryTask?.cancel()
+        retryTask = nil
+        restartTask?.cancel()
+        restartTask = nil
+        // The throttle dies with its retry task: a restart must not wait out
+        // a deadline nothing is armed to end.
+        throttledUntil = nil
+        throttledSince = nil
+        nextBackoff = Self.initialBackoff
+        // Actor re-entrancy: an engine built while cancelOperations() was
+        // awaited is dropped too, unless a start() meanwhile un-stopped us.
+        while isStopped, let live = engine {
+            engine = nil
+            delegateBox = nil
+            await live.cancelOperations()
+        }
     }
 
     /// Manual fetch — poll loops call this; push wake calls it implicitly
@@ -561,7 +593,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         accountResetHandler?()
         // Relaunch with fresh state (loadEngineState is now empty). No-op on
         // unsigned dev builds — start() re-checks the entitlement and returns.
-        restartTask = Task { await start() }
+        restartTask = Task {
+            guard !Task.isCancelled else { return }
+            await startEngine()
+        }
     }
 
     func nextEngineBatch() -> CKSyncEngine.RecordZoneChangeBatch? {
@@ -1073,5 +1108,20 @@ private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Send
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         await transport?.nextEngineBatch()
+    }
+}
+
+// MARK: - Send now (the mobile hub's fast lane)
+
+extension CloudKitTransport {
+    /// Asks the engine to send the pending queue at once instead of waiting
+    /// for its own scheduling (mobile POC spec §4.5: the hub's fast lane
+    /// sends right after a fast diff saved something). The same path as a
+    /// throttle retry (`resend()`). No-op while stopped, without an engine,
+    /// unlinked, paused for quota, or inside a server-requested wait.
+    public func sendNow() async {
+        guard !isStopped, !isPaused else { return }
+        if let throttledUntil, now() < throttledUntil { return }
+        await resend()
     }
 }

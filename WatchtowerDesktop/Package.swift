@@ -110,6 +110,8 @@ let package = Package(
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ViewInspector", package: "ViewInspector"),
+                // The hub tests drive it on the Kit's InMemoryCloudTransport.
+                .product(name: "WatchtowerSync", package: "WatchtowerKit"),
             ],
             path: "Tests",
             exclude: ["Core", "Support", "OCRHelperTests"]

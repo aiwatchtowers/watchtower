@@ -1,7 +1,9 @@
 import SwiftUI
 import GRDB
 import Observation
+import os
 import WatchtowerCore
+import WatchtowerSync
 
 @MainActor
 @Observable
@@ -138,6 +140,11 @@ final class AppState {
     /// with no SwiftUI environment — the update notification's click handler.
     /// Set by the scene once `@Environment(\.openSettings)` is available.
     var openSettingsWindow: (() -> Void)?
+
+    /// Opens a main window (the `openQuickCapture` shape) for callers with
+    /// no SwiftUI environment — a phone start bringing its workbench forward
+    /// while no main window is open.
+    var openMainWindow: (() -> Void)?
 
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
@@ -295,6 +302,20 @@ final class AppState {
     private(set) var sessionReportCenter: SessionReportCenter?
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
+
+    /// The opt-in mobile hub (mobile POC spec §6.1): nil while
+    /// `mobileSyncEnabled` is off. Rebuilt whenever `initWorkbenches` re-runs,
+    /// because it holds the centers that function replaces.
+    private(set) var mobileHub: MobileHubService?
+    /// Why the hub's storage could not be opened, for Settings → Mobile.
+    private(set) var mobileHubInitError: String?
+    /// Where the toggle lives; tests pass a throwaway suite.
+    @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
+    /// Opens the hub's transport and sidecar; tests pass a stub.
+    @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
+    /// Built once per run and kept across hub rebuilds and toggles.
+    @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
+    @ObservationIgnored private var mobileHubPool: DatabasePool?
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
@@ -461,6 +482,23 @@ final class AppState {
     func navigateToWorkbench(_ route: WorkbenchRoute) {
         pendingWorkbenchRoute = route
         selectedDestination = .workbench
+    }
+
+    /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
+    /// the workbench's page on the main window, the app in front — before
+    /// the start, so its Work on it placement lands on that page.
+    func bringWorkbenchForward(projectID: Int64) {
+        selectedDestination = .workbench
+        workbenchesViewModel?.drill(into: projectID)
+        (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+        ActivationPolicyDecision.becomeRegularAndActivate()
+        let shown = NSApp.windows.first { TrayAppDelegate.isMainWindow($0) && ($0.isVisible || $0.isMiniaturized) }
+        if let shown {
+            if shown.isMiniaturized { shown.deminiaturize(nil) }
+            shown.makeKeyAndOrderFront(nil)
+        } else {
+            openMainWindow?()
+        }
     }
 
     private var isInitializing = false
@@ -639,6 +677,7 @@ final class AppState {
                     self?.sessionAgentStateCenter?.withdrawAllNotices()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    self?.mobileHub?.stop()
                 }
             }
         }
@@ -1779,6 +1818,152 @@ final class AppState {
         vm.asks.start()
         agentStates.start()
         reports.start()
+        initMobileHub(dbPool: dbPool)
+    }
+
+    private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
+
+    var isMobileSyncEnabled: Bool {
+        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
+    }
+
+    /// Tears down the previous hub and, while the toggle is on, builds and
+    /// starts a new one over the run's one transport and sidecar. Called at
+    /// the end of `initWorkbenches`. With the toggle off nothing is opened.
+    func initMobileHub(dbPool: DatabasePool) {
+        let previous = mobileHub
+        previous?.dispose()
+        mobileHub = nil
+        mobileHubPool = dbPool
+        guard isMobileSyncEnabled else { return }
+        let storage: MobileHubStorage
+        do {
+            storage = try mobileHubStorage ?? makeMobileHubStorage()
+            mobileHubStorage = storage
+            mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
+            mobileHubInitError = nil
+        } catch {
+            mobileHubInitError = error.localizedDescription
+            Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        let hub = mobileHub
+        Task {
+            // The replaced hub's relay pass ends first: two never overlap.
+            await previous?.waitUntilStopped()
+            await hub?.start()
+        }
+    }
+
+    /// The Settings → Mobile toggle: on starts the hub (building it on first
+    /// use), off stops it. The hub object is kept, so toggling never opens a
+    /// second transport.
+    func setMobileSyncEnabled(_ enabled: Bool) {
+        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
+        guard enabled else {
+            mobileHub?.disable()
+            return
+        }
+        if let hub = mobileHub {
+            Task { await hub.start() }
+        } else if let pool = mobileHubPool {
+            initMobileHub(dbPool: pool)
+        }
+    }
+
+    /// B registers its slice sources and dispatcher handlers here.
+    private func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
+        let dispatcher = MobileHubCommandDispatcher()
+        if let asks = workbenchesViewModel?.asks {
+            let askAnswers = AskAnswerHandler(dbPool: dbPool, sidecar: storage.sidecar) { [weak asks] ask, answer in
+                // A rebuilt workbench state rebuilds the hub too; until then
+                // nothing is written.
+                await asks?.answer(ask, with: answer) ?? .failed("The workbench is reloading on the Mac")
+            }
+            dispatcher.register(.askAnswer) { try await askAnswers.handle($0) }
+        }
+        // Board writes report through the board's own onOwnerWrite, so the
+        // Mac never announces the owner's phone edit (spec §6.1).
+        BoardHandlers(dbPool: dbPool, cli: workbenchesViewModel?.cli) { [weak vm = workbenchesViewModel] projectID, subject in
+            vm?.onOwnerWrite?(projectID, subject)
+        }.register(on: dispatcher)
+        // Starts take the Desktop's own start (Work on it's path) and stops
+        // `TerminalCenter.close` (spec §6.5). Every device has the spec's
+        // default grants (no typing, starts allowed) until the Mac decides
+        // them per device (A8).
+        SessionStartStopHandlers(
+            dbPool: dbPool, workbenches: workbenchesViewModel, terminalCenter: terminalCenter,
+            deviceGrant: { _ in .specDefaults },
+            bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
+        ).register(on: dispatcher)
+        // The folder's git status goes through the CLI (PROJ-10's git); no
+        // CLI, no refresher, and the workbench records carry no branch.
+        let gitRefresher = workbenchesViewModel?.cli.map { cli in
+            WorkbenchGitRefresher(
+                fetch: { try await cli.gitStatus(projectID: $0) },
+                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } }
+            )
+        }
+        // The terminals' liveness, copied by the fast lane for the session
+        // projection's off-main resolution.
+        let liveness = SessionLivenessBox()
+        let summaries = workbenchesViewModel?.cli.map { SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness) }
+        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
+        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
+        let sessions = TerminalSessionSlice(
+            liveness: { liveness.current },
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
+        )
+        // Each session's own report (`--session S --json`, scoped by the CLI,
+        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
+        let sidecar = storage.sidecar
+        let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
+        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports).register(on: dispatcher) }
+        let sources: [any SliceSource] = [
+            WorkbenchSlice(gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) }),
+            WorkbenchTargetSlice(),
+            WorkbenchCommentSlice(),
+            sessions,
+            OwnerAskSlice(),
+            AskAlertSlice(sidecar: storage.sidecar),
+            CalendarEventSlice(),
+            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
+            RecordingJobSlice(sidecar: storage.sidecar),
+            SessionTimelineSlice(sessions: sessions, sidecar: sidecar)
+        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
+        let transport = storage.transport
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
+            // Labelled: a trailing closure would bind to `clock`, the first
+            // closure parameter.
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
+        gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
+        summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
+        reports?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.sessionReport, .sessionTimeline]) }
+        recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
+        let fastLane = FastLane(
+            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
+            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
+            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
+                gitRefresher?.sessionStateChanged(workbenchID: workbench)
+                summaries?.sessionStateChanged(workbenchID: workbench)
+            },
+            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
+        )
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
+        let processor = RelayProcessor(
+            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            hubID: try storage.sidecar.ensureHubID(),
+            // Until A8 reads the linked devices, the default gate passes any upload naming one.
+            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
+        )
+        return MobileHubService(
+            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
+            hostInfo: .live(dbPool: dbPool, ownerUser: storage.ownerUser),
+            companions: companions
+        ) { [weak self] in self?.isMobileSyncEnabled ?? false }
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
