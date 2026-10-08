@@ -264,6 +264,25 @@ final class CloudKitTransportErrorTests: XCTestCase {
         XCTAssertTrue(try store.pendingBatch(limit: 10).saves.isEmpty, "no retry for ever")
     }
 
+    func testOneRecordRejectedThrownAndPerRecordIsReportedOnce() async throws {
+        // Halving is idempotent (it works from the sent size); the drop is
+        // not — the hub must clear the record's hash once.
+        let transport = await CloudKitTransport.testing(store: try .inMemory())
+        let rejectedNames = await rejected(transport)
+        try await transport.save(records(1))
+        let next = await transport.nextEngineBatch()
+        let batch = try XCTUnwrap(next)
+
+        await transport.handleSendError(CKError(.limitExceeded))
+        await transport.handleSentChanges(
+            saved: [], deleted: [],
+            failedSaves: batch.recordsToSave.map { ($0, CKError(.limitExceeded)) },
+            failedDeletes: [:]
+        )
+
+        XCTAssertEqual(rejectedNames.values, ["target-0"])
+    }
+
     func testLimitExceededThrownAndPerRecordShrinksOnce() async throws {
         let transport = await CloudKitTransport.testing(store: try .inMemory())
         try await transport.save(records(10))
