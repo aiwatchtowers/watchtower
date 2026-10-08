@@ -89,6 +89,11 @@ package struct TerminalLaunch: Equatable, Sendable {
         "Work on target #\(targetID) using the \(vocabulary.skillName) skill."
     }
 
+    /// Follows a session's brief when the owner asked for a plan first (a
+    /// start from the phone, mobile POC spec §6.5).
+    package static let planFirstSuffix =
+        "Plan first: put the plan on the board, then ask me with ask_owner before you change any code."
+
     /// The terminal pane's line after the session ends. 127 is the shell's
     /// "command not found": `exec claude` found no `claude` on the login
     /// shell's PATH, which a bare exit code would not tell the owner.

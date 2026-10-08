@@ -32,6 +32,29 @@ extension WorkbenchesViewModel {
         /// ⌘↵ in the go-to palette, beside this pane:
         /// `WorkspaceLayout.openBeside(_:keeping:)`.
         case beside(WorkspacePane)
+        /// Off screen (a start from the phone, mobile POC spec §6.5): the
+        /// process starts, but nothing the owner sees changes — no switch
+        /// ticket (an owner's switch under way stays the latest), no focus,
+        /// no layout change, no title refresh of the session left.
+        case background
+    }
+
+    /// Which session `startForTarget` opens.
+    enum TargetStartMode: Equatable {
+        /// Work on it's rule: the target's most recently active session,
+        /// else a new one.
+        case openExisting
+        /// Always a new session.
+        case new
+    }
+
+    enum TargetStartError: Error, Equatable {
+        /// The target is not on any workbench board.
+        case notOnBoard
+        /// A start for this target (here or a Work on it) is still running.
+        case inProgress
+        /// A read or write failed; the message says which.
+        case failed(String)
     }
 
     /// The selected project's sessions, most recently active first (the
@@ -198,49 +221,87 @@ extension WorkbenchesViewModel {
     func workOn(
         targetID: Int64, targetText: String, projectID: Int64? = nil, placement: Placement = .keeping(.board)
     ) async {
-        guard workingOnTarget.insert(targetID).inserted else { return }
+        // Every failure is on the page already (or logged, if superseded).
+        _ = try? await startTarget(
+            targetID, title: targetText, prompt: nil, mode: .openExisting, placement: placement,
+            askedIn: projectID ?? selectedWorkbenchID
+        )
+    }
+
+    /// A start on a board target from outside the board's own buttons (the
+    /// phone, mobile POC spec §6.5): Work on it's read, reuse rule and launch
+    /// path, with the session named after the target's stored text.
+    /// `prompt` replaces the work-on prompt, and `planFirst` follows either
+    /// with `TerminalLaunch.planFirstSuffix`; both apply only to a new
+    /// session (a reopened one resumes its conversation). With `.background`
+    /// a failure is thrown and logged, never put on the owner's page.
+    @discardableResult
+    func startForTarget(
+        targetID: Int64, prompt: String?, mode: TargetStartMode, placement: Placement, planFirst: Bool = false
+    ) async throws -> TerminalSession {
+        try await startTarget(
+            targetID, title: nil, prompt: prompt, mode: mode, placement: placement,
+            askedIn: selectedWorkbenchID, planFirst: planFirst
+        )
+    }
+
+    /// `title` nil = the target's stored text. `askedIn` keys the read's
+    /// switch ticket and errors (the target's workbench is known only after
+    /// the read; the page's is the one it almost always is).
+    private func startTarget(
+        _ targetID: Int64,
+        title: String?,
+        prompt: String?,
+        mode: TargetStartMode,
+        placement: Placement,
+        askedIn: Int64?,
+        planFirst: Bool = false
+    ) async throws -> TerminalSession {
+        guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
-        // The target's own workbench is known only after the read; the page's
-        // is the one it almost always is.
-        let askedIn = projectID ?? selectedWorkbenchID
-        var ticket = beginSwitch(projectID: askedIn)
+        var ticket = placement == .background ? nil : beginSwitch(projectID: askedIn)
         let found: TargetSessions?
         do {
             found = try await readTargetSessions(targetID)
         } catch {
-            reportSwitchError("Could not read the target: \(error.localizedDescription)", projectID: askedIn, ticket: ticket)
-            return
+            let message = "Could not read the target: \(error.localizedDescription)"
+            reportStartError(message, projectID: askedIn, ticket: ticket)
+            throw TargetStartError.failed(message)
         }
         guard let found else {
-            reportSwitchError("Target #\(targetID) is not on a workbench board.", projectID: askedIn, ticket: ticket)
-            return
+            reportStartError("Target #\(targetID) is not on a workbench board.", projectID: askedIn, ticket: ticket)
+            throw TargetStartError.notOnBoard
         }
-        if found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }
-        if let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
-            await open(existing, placement: placement, ticket: ticket)
-            return
+        if ticket != nil, found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }
+        if mode == .openExisting, let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
+            return try await reopen(existing, placement: placement, ticket: ticket)
         }
-        let text = targetText.trimmingCharacters(in: .whitespacesAndNewlines)
-        await createAndStart(
+        let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
+        let brief = prompt ?? TerminalLaunch.workOnTargetPrompt(
+            targetID: targetID, vocabulary: vocabulary(projectID: found.project.id)
+        )
+        return try await createAndActivate(
             .init(projectID: found.project.id, kind: .claude, title: text.isEmpty ? "Target #\(targetID)" : text,
                   targetID: targetID, folderPath: found.project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
-            prompt: TerminalLaunch.workOnTargetPrompt(targetID: targetID, vocabulary: vocabulary(projectID: found.project.id)),
+            prompt: planFirst ? "\(brief) \(TerminalLaunch.planFirstSuffix)" : brief,
             placement: placement,
             ticket: ticket
         )
     }
 
-    /// A target's own workbench and the sessions of that workbench working on it.
-    typealias TargetSessions = (project: Workbench, rows: [TerminalSession])
+    /// A target's own workbench, its text, and the sessions of that
+    /// workbench working on it.
+    typealias TargetSessions = (project: Workbench, targetText: String, rows: [TerminalSession])
 
     /// nil when the target is not on a workbench board.
     private func readTargetSessions(_ targetID: Int64) async throws -> TargetSessions? {
         try await dbPool.read { db in
-            guard let projectID = try TargetQueries.fetchByID(db, id: Int(targetID))?.workbenchID,
+            guard let target = try TargetQueries.fetchByID(db, id: Int(targetID)),
+                  let projectID = target.workbenchID,
                   let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
             let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
-            return (project, rows.filter { $0.projectID == projectID })
+            return (project, target.text, rows.filter { $0.projectID == projectID })
         }
     }
 
@@ -269,8 +330,15 @@ extension WorkbenchesViewModel {
     /// `ticket` is the switch's `beginSwitch` when the caller took it before
     /// an await of its own; otherwise it is taken here.
     func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
-        let ticket = ticket ?? beginSwitch(projectID: session.projectID)
-        clearSwitchError(projectID: session.projectID, ticket: ticket)
+        let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
+        // A failure is reported already (`reopen`).
+        _ = try? await reopen(session, placement: placement, ticket: ticket)
+    }
+
+    /// `open` past its ticket; nil only for `.background`. Throws
+    /// `TargetStartError.failed` once the failure is reported.
+    private func reopen(_ session: TerminalSession, placement: Placement, ticket: Int?) async throws -> TerminalSession {
+        if let ticket { clearSwitchError(projectID: session.projectID, ticket: ticket) }
         let row: TerminalSession
         do {
             row = try await dbPool.write { db in
@@ -281,11 +349,12 @@ extension WorkbenchesViewModel {
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
         } catch {
-            await failed(session, "Could not open the session", error, ticket: ticket)
-            return
+            await failed(session, "Could not open the session", error, ticket: ticket, background: ticket == nil)
+            throw TargetStartError.failed("Could not open the session: \(error.localizedDescription)")
         }
         resumeFailed.remove(row.id)
         await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
+        return row
     }
 
     /// "Start fresh" after a failed resume: a new Claude session id under the
@@ -444,33 +513,55 @@ extension WorkbenchesViewModel {
         return nil
     }
 
-    /// The created row, or nil when it could not be written.
+    /// The created row, or nil when it could not be written (the error is
+    /// reported already).
     @discardableResult
     private func createAndStart(
         _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show, ticket: Int
     ) async -> TerminalSession? {
-        clearSwitchError(projectID: new.projectID, ticket: ticket)
+        try? await createAndActivate(new, prompt: prompt, placement: placement, ticket: ticket)
+    }
+
+    /// `createAndStart` that throws `TargetStartError.failed` once the
+    /// failure is reported. `ticket` is nil only for `.background`.
+    private func createAndActivate(
+        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement, ticket: Int?
+    ) async throws -> TerminalSession {
+        if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
         let row: TerminalSession
         do {
             row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
-            reportSwitchError("Could not create a terminal session: \(error.localizedDescription)",
-                              projectID: new.projectID, ticket: ticket)
-            return nil
+            let message = "Could not create a terminal session: \(error.localizedDescription)"
+            reportStartError(message, projectID: new.projectID, ticket: ticket)
+            throw TargetStartError.failed(message)
         }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket)
         return row
+    }
+
+    /// An owner's switch reports on the page (`reportSwitchError`); a
+    /// background start (no ticket) only logs — its caller gets the error,
+    /// and the owner's page is not its to change.
+    private func reportStartError(_ message: String, projectID: Int64?, ticket: Int?) {
+        guard let ticket else {
+            NSLog("WorkbenchesViewModel: background session start failed: %@", message)
+            return
+        }
+        reportSwitchError(message, projectID: projectID, ticket: ticket)
     }
 
     /// Starts (unless running) and focuses `row`, refreshes its list, places
     /// it in its own project's layout, then titles the session the owner
     /// switched away from. A switch superseded by a later one (`beginSwitch`)
     /// only starts its session: the later switch decides what is focused
-    /// and on screen.
-    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int) async {
-        let isLatest = isLatestSwitch(ticket, projectID: row.projectID)
+    /// and on screen. A background start (`ticket` nil, `.background`) is
+    /// never the latest switch: it only starts its session and refreshes the
+    /// list.
+    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int?) async {
+        let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
-        notYetTitledStreak[row.id] = nil // the owner is back in it: ask again
+        if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
         if let center = terminalCenter {
             let mode = center.start(row, fresh: fresh, prompt: prompt)
             switch mode {
@@ -506,13 +597,20 @@ extension WorkbenchesViewModel {
         case .inPlace:
             break
         case let .beside(kept): updated.openBeside(.session(id), keeping: kept)
+        case .background:
+            break
         }
         return updated
     }
 
-    private func failed(_ session: TerminalSession, _ what: String, _ error: Error, ticket: Int? = nil) async {
+    /// `background`: logged, never on the page (`reportStartError`).
+    private func failed(
+        _ session: TerminalSession, _ what: String, _ error: Error, ticket: Int? = nil, background: Bool = false
+    ) async {
         let message = "\(what): \(error.localizedDescription)"
-        if let ticket {
+        if background {
+            reportStartError(message, projectID: session.projectID, ticket: nil)
+        } else if let ticket {
             reportSwitchError(message, projectID: session.projectID, ticket: ticket)
         } else {
             setSessionError(message, projectID: session.projectID)
