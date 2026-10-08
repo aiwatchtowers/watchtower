@@ -1861,7 +1861,7 @@ final class AppState {
     func setMobileSyncEnabled(_ enabled: Bool) {
         mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
         guard enabled else {
-            mobileHub?.stop()
+            mobileHub?.disable()
             return
         }
         if let hub = mobileHub {
@@ -1931,11 +1931,14 @@ final class AppState {
             sessions,
             OwnerAskSlice(),
             AskAlertSlice(sidecar: storage.sidecar),
-            CalendarEventSlice()
+            CalendarEventSlice(),
+            // phone_recording_id comes from the recording-upload sidecar
+            // (C-Task 4); until then every transcript reads as a Mac one.
+            MeetingTranscriptSlice()
         ]
         let transport = storage.transport
         let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources,
+            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
             // Labelled: a trailing closure would bind to `clock`, the first
             // closure parameter.
             sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure

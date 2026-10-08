@@ -28,6 +28,29 @@ enum SliceJSON {
         return try object(try Data(contentsOf: url), file: file, line: line)
     }
 
+    /// A Kit fixture written inline in a Kit test (no JSON file): the first
+    /// `#"…"#` literal after `func <test>(` in `WatchtowerKit/Tests/<file>`,
+    /// read from the repo so a mirror change shows on the hub side too.
+    static func kitInlineFixture(
+        _ file: String,
+        test: String,
+        sourceFile: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> Data {
+        let url = URL(fileURLWithPath: "\(#filePath)")
+            .deletingLastPathComponent() // MobileHub
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent()
+            .appendingPathComponent("WatchtowerKit/Tests")
+            .appendingPathComponent(file)
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "func \(test)("), "no \(test) in \(file)", file: sourceFile, line: line)
+        let open = try XCTUnwrap(source.range(of: "#\"", range: start.upperBound..<source.endIndex), file: sourceFile, line: line)
+        let close = try XCTUnwrap(source.range(of: "\"#", range: open.upperBound..<source.endIndex), file: sourceFile, line: line)
+        return Data(source[open.upperBound..<close.lowerBound].utf8)
+    }
+
     /// Every key at any depth (objects inside arrays included).
     static func allKeys(_ value: Any) -> Set<String> {
         if let object = value as? [String: Any] {

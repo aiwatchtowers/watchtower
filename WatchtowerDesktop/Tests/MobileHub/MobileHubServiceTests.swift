@@ -37,11 +37,13 @@ final class MobileHubServiceTests: XCTestCase {
         relayInterval: Duration = .milliseconds(20),
         dispatcher: MobileHubCommandDispatcher? = nil,
         companions: [any HubCompanion] = [],
+        assets: SliceAssetStore? = nil,
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
             dbPool: dbPool, state: sidecar, transport: transport, sources: [],
-            timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10))
+            timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10)),
+            assets: assets
         )
         let processor = RelayProcessor(
             transport: transport, sidecar: sidecar, dispatcher: dispatcher ?? MobileHubCommandDispatcher(), hubID: "hub-acme"
@@ -173,6 +175,46 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
         XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey))
         XCTAssertEqual(try sidecar.relayPhase("action-1"), .done, "phone UUIDs cannot collide across accounts")
+    }
+
+    private func stagedAssetStore() throws -> SliceAssetStore {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hub-assets-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let store = SliceAssetStore(directory: dir)
+        _ = try store.stage(SliceAsset(fileName: "segments.json", data: Data("[]".utf8)), recordName: "meeting_transcript-1")
+        return store
+    }
+
+    func testAccountResetRemovesTheStagedAssets() async throws {
+        let store = try stagedAssetStore()
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, assets: store)
+        await service.start()
+        defer { service.stop() }
+
+        transport.fireAccountReset()
+
+        XCTAssertFalse(store.isStaged(recordName: "meeting_transcript-1", fileName: "segments.json"))
+    }
+
+    func testDisableRemovesTheStagedAssetsAndStopStopsOnly() async throws {
+        let store = try stagedAssetStore()
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, assets: store)
+        await service.start()
+
+        service.stop()
+        XCTAssertTrue(store.isStaged(recordName: "meeting_transcript-1", fileName: "segments.json"), "a plain stop keeps them")
+        await service.start()
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertEqual(service.status, .off)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path))
+        XCTAssertThrowsError(
+            try store.stage(SliceAsset(fileName: "segments.json", data: Data()), recordName: "meeting_transcript-2"),
+            "no file is staged while the hub is off"
+        )
     }
 
     func testStopStopsTheTransport() async {

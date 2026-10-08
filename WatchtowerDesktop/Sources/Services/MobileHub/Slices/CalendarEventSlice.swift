@@ -128,6 +128,13 @@ struct CalendarEventSlice: SliceSource {
         }
     }
 
+    /// Every event id the calendar window holds (each copy of a
+    /// de-duplicated event included): `meeting_transcript` publishes the
+    /// transcripts of these events whatever their age (spec §4.11).
+    static func windowEventIDs(_ db: Database, now: Date, calendar: Calendar) throws -> Set<String> {
+        Set(try windowEvents(db, window: window(now: now, calendar: calendar), calendar: calendar).flatMap(\.members))
+    }
+
     // MARK: - Window and dedup
 
     private struct Group {
@@ -149,7 +156,8 @@ struct CalendarEventSlice: SliceSource {
             FROM calendar_events
             WHERE event_status != 'cancelled' AND start_time <= ? AND end_time >= ?
             """, arguments: [
-                stamp(window.end.addingTimeInterval(86_400)), stamp(window.start.addingTimeInterval(-86_400))
+                SliceDate.stamp(window.end.addingTimeInterval(86_400)),
+                SliceDate.stamp(window.start.addingTimeInterval(-86_400))
             ])
         var groups: [Group] = []
         var byKey: [String: Int] = [:]
@@ -291,18 +299,6 @@ struct CalendarEventSlice: SliceSource {
         var seen: Set<Int64> = []
         return lists.joined().filter { seen.insert($0.id).inserted }
     }
-
-    /// The DB's `YYYY-MM-DDTHH:MM:SSZ` form, for string comparison in SQL.
-    private static func stamp(_ date: Date) -> String {
-        stampFormatter.string(from: date)
-    }
-
-    private static let stampFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.timeZone = TimeZone(identifier: "UTC")
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
 
     private static func placeholders(_ count: Int) -> String {
         Array(repeating: "?", count: count).joined(separator: ",")

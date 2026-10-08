@@ -331,4 +331,152 @@ final class SlicePublisherTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(source.reads, settled, "no cycle runs after stop()")
     }
+
+    // MARK: - Asset-backed records
+
+    private func withAssetStore(_ body: (SliceAssetStore) async throws -> Void) async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("slice-assets-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try await body(SliceAssetStore(directory: dir))
+    }
+
+    private func assetPublisher(_ source: StubAssetSliceSource, store: SliceAssetStore?) -> SlicePublisher {
+        SlicePublisher(dbPool: dbPool, state: state, transport: transport, sources: [source], assets: store)
+    }
+
+    func testAnAssetRecordIsStagedAndSavedWithItsFile() async throws {
+        try await withAssetStore { store in
+            let source = StubAssetSliceSource()
+            source.set(id: "7", payload: #"{"id":7}"#, asset: "[1]")
+            let result = try await assetPublisher(source, store: store).publishOnce()
+
+            XCTAssertEqual(result.pushed, 1)
+            let saved = try XCTUnwrap(dataSaves().last?.record)
+            let file = try XCTUnwrap(saved.assetFileURL, "the asset rides as the record's CKAsset")
+            XCTAssertEqual(file, store.fileURL(recordName: "meeting_transcript-7", fileName: "segments.json"))
+            XCTAssertEqual(try Data(contentsOf: file), Data("[1]".utf8))
+            XCTAssertEqual(saved.payload, Data(#"{"id":7}"#.utf8), "the asset is not in the payload")
+        }
+    }
+
+    func testAChangedAssetAloneRepublishesAndReplacesTheFile() async throws {
+        try await withAssetStore { store in
+            let source = StubAssetSliceSource()
+            source.set(id: "7", payload: "{}", asset: "[1]")
+            let publisher = assetPublisher(source, store: store)
+            try await publisher.publishOnce()
+            let unchanged = try await publisher.publishOnce()
+            XCTAssertEqual(unchanged.pushed, 0, "same payload and asset: nothing sent")
+
+            source.set(id: "7", payload: "{}", asset: "[2]")
+            let changed = try await publisher.publishOnce()
+
+            XCTAssertEqual(changed.pushed, 1, "the hash covers the asset's content")
+            let file = store.fileURL(recordName: "meeting_transcript-7", fileName: "segments.json")
+            XCTAssertEqual(try Data(contentsOf: file), Data("[2]".utf8))
+            XCTAssertEqual(
+                try FileManager.default.contentsOfDirectory(atPath: file.deletingLastPathComponent().path), ["segments.json"],
+                "replaced in place, no second file"
+            )
+        }
+    }
+
+    func testARecordLeavingTheWindowRemovesItsStagedFile() async throws {
+        try await withAssetStore { store in
+            let source = StubAssetSliceSource()
+            source.set(id: "7", payload: "{}", asset: "[1]")
+            source.add(id: "8", payload: "{}", asset: "[2]")
+            let publisher = assetPublisher(source, store: store)
+            try await publisher.publishOnce()
+
+            source.set(id: "8", payload: "{}", asset: "[2]")
+            let result = try await publisher.publishOnce()
+
+            XCTAssertEqual(result.deleted, 1)
+            XCTAssertFalse(store.isStaged(recordName: "meeting_transcript-7", fileName: "segments.json"))
+            XCTAssertTrue(store.isStaged(recordName: "meeting_transcript-8", fileName: "segments.json"))
+        }
+    }
+
+    func testAMissingStagedFileIsPublishedAgain() async throws {
+        try await withAssetStore { store in
+            let source = StubAssetSliceSource()
+            source.set(id: "7", payload: "{}", asset: "[1]")
+            let publisher = assetPublisher(source, store: store)
+            try await publisher.publishOnce()
+
+            publisher.removeStagedAssets()
+            let result = try await publisher.publishOnce()
+
+            XCTAssertEqual(result.pushed, 1, "a matching hash without its file is not believed published")
+            XCTAssertTrue(store.isStaged(recordName: "meeting_transcript-7", fileName: "segments.json"))
+        }
+    }
+
+    func testAClosedStoreStagesNothingUntilStart() async throws {
+        try await withAssetStore { store in
+            let source = StubAssetSliceSource()
+            source.set(id: "7", payload: "{}", asset: "[1]")
+            let publisher = assetPublisher(source, store: store)
+            try await publisher.publishOnce()
+
+            publisher.closeStagedAssets()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path), "turning the hub off removes the files")
+            let closed = try await publisher.publishOnce()
+            XCTAssertEqual(closed.pushed, 0)
+            XCTAssertEqual(closed.skipped, ["meeting_transcript-7"], "skipped unhashed, retried later")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path), "a cycle after the close leaves no file")
+
+            publisher.start()
+            await awaitHubCondition("start reopens the store and the cycle restages the file") {
+                self.dataSaves().count == 2 && store.isStaged(recordName: "meeting_transcript-7", fileName: "segments.json")
+            }
+            publisher.stop()
+        }
+    }
+
+    func testAnAssetRecordWithoutAStoreIsSkipped() async throws {
+        let source = StubAssetSliceSource()
+        source.set(id: "7", payload: "{}", asset: "[1]")
+        let result = try await assetPublisher(source, store: nil).publishOnce()
+
+        XCTAssertEqual(result.pushed, 0)
+        XCTAssertEqual(result.skipped, ["meeting_transcript-7"])
+        XCTAssertTrue(try state.hashes(forKind: .meetingTranscript).isEmpty)
+    }
+
+    func testTheAssetHashIsThePayloadPlusTheAssetContent() {
+        let record = SliceRecord(kind: .meetingTranscript, id: "7", modifiedAt: Date(), payload: Data("{}".utf8))
+        XCTAssertEqual(SliceDiff.recordHash(record, asset: nil), SliceDiff.hashHex(record.payload), "no asset: the payload hash")
+        let one = SliceDiff.recordHash(record, asset: SliceAsset(fileName: "segments.json", data: Data("[1]".utf8)))
+        let two = SliceDiff.recordHash(record, asset: SliceAsset(fileName: "segments.json", data: Data("[2]".utf8)))
+        XCTAssertNotEqual(one, two)
+        XCTAssertNotEqual(one, SliceDiff.hashHex(record.payload))
+    }
+}
+
+/// An `AssetSliceSource` over `meeting_transcript` with settable records.
+private final class StubAssetSliceSource: AssetSliceSource, @unchecked Sendable {
+    let kind = SliceKind.meetingTranscript
+    private let lock = NSLock()
+    private var current: [AssetSliceRecord] = []
+
+    func set(id: String, payload: String, asset: String) {
+        lock.withLock { current = [Self.record(id: id, payload: payload, asset: asset)] }
+    }
+
+    func add(id: String, payload: String, asset: String) {
+        lock.withLock { current.append(Self.record(id: id, payload: payload, asset: asset)) }
+    }
+
+    func assetRecords(_ db: Database) throws -> [AssetSliceRecord] {
+        lock.withLock { current }
+    }
+
+    private static func record(id: String, payload: String, asset: String) -> AssetSliceRecord {
+        AssetSliceRecord(
+            record: SliceRecord(kind: .meetingTranscript, id: id, modifiedAt: Date(), payload: Data(payload.utf8)),
+            asset: SliceAsset(fileName: "segments.json", data: Data(asset.utf8))
+        )
+    }
 }

@@ -11,6 +11,12 @@ enum SliceDate {
         return whole.date(from: value) ?? fractional.date(from: value)
     }
 
+    /// The DB's `YYYY-MM-DDTHH:MM:SSZ` form of `date`, for string
+    /// comparison in SQL.
+    static func stamp(_ date: Date) -> String {
+        whole.string(from: date)
+    }
+
     /// For a required wire date: an unparsable stamp (never written by Go
     /// or the Desktop) becomes 1970 rather than a record the phone cannot
     /// decode, and is logged once per record and field, so a format drift

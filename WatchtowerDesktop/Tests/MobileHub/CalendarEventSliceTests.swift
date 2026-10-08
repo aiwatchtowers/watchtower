@@ -98,18 +98,9 @@ final class CalendarEventSliceTests: XCTestCase {
     /// The Kit fixture lives inline in the Kit mirror test (no JSON file):
     /// read that literal from the repo so a mirror change shows here too.
     private func kitCalendarFixture() throws -> [String: Any] {
-        let url = URL(fileURLWithPath: "\(#filePath)")
-            .deletingLastPathComponent() // MobileHub
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // WatchtowerDesktop
-            .deletingLastPathComponent()
-            .appendingPathComponent("WatchtowerKit/Tests/WatchtowerKitTests/CalendarMirrorFixtureTests.swift")
-        let source = try String(contentsOf: url, encoding: .utf8)
-        let test = try XCTUnwrap(source.range(of: "func testCalendarEventFixture()"))
-        let open = try XCTUnwrap(source.range(of: "#\"{", range: test.upperBound..<source.endIndex))
-        let close = try XCTUnwrap(source.range(of: "}\"#", range: open.upperBound..<source.endIndex))
-        let literal = "{" + source[open.upperBound..<close.lowerBound] + "}"
-        return try SliceJSON.object(Data(literal.utf8))
+        try SliceJSON.object(
+            try SliceJSON.kitInlineFixture("WatchtowerKitTests/CalendarMirrorFixtureTests.swift", test: "testCalendarEventFixture")
+        )
     }
 
     func testAnEventMatchesTheKitFixture() throws {

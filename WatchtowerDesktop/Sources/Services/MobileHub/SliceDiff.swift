@@ -48,9 +48,15 @@ enum SliceDiff {
 
     /// Diffs ready-made records (a `SliceSource`). A record of another kind
     /// is skipped: deletions are computed per kind, so it could never be
-    /// removed again.
+    /// removed again. `assets` (record name → asset) feeds each asset-backed
+    /// record's hash (`recordHash`).
     /// - Returns: upserts in `records` order; deletions sorted; skipped names.
-    static func compute(kind: SliceKind, records: [SliceRecord], knownHashes: [String: String]) -> Result {
+    static func compute(
+        kind: SliceKind,
+        records: [SliceRecord],
+        knownHashes: [String: String],
+        assets: [String: SliceAsset] = [:]
+    ) -> Result {
         var upserts: [SliceRecord] = []
         var skipped: [String] = []
         var seen = Set<String>()
@@ -60,12 +66,20 @@ enum SliceDiff {
                 continue
             }
             seen.insert(record.recordName)
-            if knownHashes[record.recordName] != hashHex(record.payload) {
+            if knownHashes[record.recordName] != recordHash(record, asset: assets[record.recordName]) {
                 upserts.append(record)
             }
         }
         let deletions = knownHashes.keys.filter { !seen.contains($0) }.sorted()
         return Result(upserts: upserts, deletions: deletions, skipped: skipped)
+    }
+
+    /// The hash recorded for a published record: its payload's, or for an
+    /// asset-backed record the payload plus the asset's content, so a change
+    /// in the asset alone (a renamed speaker in the segments) republishes.
+    static func recordHash(_ record: SliceRecord, asset: SliceAsset?) -> String {
+        guard let asset else { return hashHex(record.payload) }
+        return hashHex(record.payload + Data(SHA256.hash(data: asset.data)))
     }
 
     /// SHA-256 hex digest of `data`. Exposed `internal` so tests can reproduce hashes.

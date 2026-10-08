@@ -40,6 +40,9 @@ struct MobileHubStorage {
     /// The iCloud user record name for the heartbeat's `owner_user`. Kept
     /// with the transport, so a stub storage never reaches CloudKit.
     var ownerUser: @Sendable () async -> String? = { nil }
+    /// The staged CKAsset files of asset-backed slices (`SliceAssets/` in
+    /// the hub directory); nil in a stub storage.
+    var sliceAssets: SliceAssetStore?
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -55,7 +58,10 @@ struct MobileHubStorage {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
-        return Self(transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName)
+        return Self(
+            transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
+            sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true))
+        )
     }
 }
 
@@ -259,6 +265,8 @@ final class MobileHubService {
             } catch {
                 logger.error("account reset: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
             }
+            // The new account's zone gets every record again, restaged.
+            publisher.removeStagedAssets()
         }
         await transport.setRecordRejectedHandler { recordName, zone in
             guard zone == .data else { return }
@@ -288,6 +296,13 @@ final class MobileHubService {
         }
         epoch &+= 1
         status = .off
+    }
+
+    /// The Settings toggle turned off: stops, and removes the staged slice
+    /// assets (restaged and republished at the next start).
+    func disable() {
+        stop()
+        publisher.closeStagedAssets()
     }
 
     /// Terminal stop for a hub being replaced (an `initWorkbenches` re-run).

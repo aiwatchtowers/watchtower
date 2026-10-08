@@ -25,6 +25,11 @@ protocol SliceSource: Sendable {
 /// A poll, not ValueObservation: the Go daemon writes through its own
 /// connection, so observation never fires. Rows are diffed against the
 /// `HubSyncState` hashes so only changed records reach the transport.
+///
+/// Asset-backed records (`AssetSliceSource`): the asset is staged in the
+/// `SliceAssetStore` and rides as the record's CKAsset; the hash covers the
+/// payload plus the asset's content. A record whose staged file is missing
+/// (the hub was off, a reset) is published again even when its hash matches.
 final class SlicePublisher: Sendable {
     struct Timing: Equatable, Sendable {
         let tick: Duration
@@ -81,6 +86,9 @@ final class SlicePublisher: Sendable {
     /// The transport's immediate send (`HubTransport.sendNow`).
     private let sendNow: @Sendable () async -> Void
     private let fastCycles = OSAllocatedUnfairLock(initialState: 0)
+    /// Where asset-backed records' files are staged; nil: such records are
+    /// skipped (logged), never published without their asset.
+    private let assets: SliceAssetStore?
 
     init(
         dbPool: DatabasePool,
@@ -90,6 +98,7 @@ final class SlicePublisher: Sendable {
         timing: Timing = .standard,
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         now: @escaping @Sendable () -> Date = { Date() },
+        assets: SliceAssetStore? = nil,
         sendNow: @escaping @Sendable () async -> Void = {}
     ) {
         self.dbPool = dbPool
@@ -100,6 +109,7 @@ final class SlicePublisher: Sendable {
         self.clock = clock
         self.now = now
         self.sendNow = sendNow
+        self.assets = assets
     }
 
     /// Oversized warnings actually emitted (the throttle's observable).
@@ -127,48 +137,92 @@ final class SlicePublisher: Sendable {
         var outcome = Outcome()
         let startGen = try state.generation()
         for kind in SliceKind.allCases where kinds?.contains(kind) ?? true {
-            guard let diff = try currentDiff(for: kind) else { continue }
+            guard let current = try currentDiff(for: kind) else { continue }
+            let diff = current.diff
             let saveable = splitOversized(diff.upserts, skipped: &outcome.skipped)
             outcome.skipped.append(contentsOf: diff.skipped)
-            guard try await pushKind(saveable, deletions: diff.deletions, startGen: startGen, into: &outcome) else {
+            let pushed = try await pushKind(
+                saveable, assets: current.assets, deletions: diff.deletions, startGen: startGen, into: &outcome
+            )
+            guard pushed else {
                 logger.warning("publish: generation changed mid-cycle; aborted to avoid recording stale hashes")
                 return outcome
             }
+            if let names = current.assetKindNames { assets?.sweep(kind: kind, keeping: names) }
         }
         let finishedAt = now()
         lastPublish.withLock { $0 = finishedAt }
         return outcome
     }
 
+    private struct KindDiff {
+        let diff: SliceDiff.Result
+        /// Record name → asset, for the asset-backed records.
+        var assets: [String: SliceAsset] = [:]
+        /// For a kind with an asset source: every current record name (the
+        /// staged files to keep); nil otherwise.
+        var assetKindNames: Set<String>?
+    }
+
     /// nil when the kind has neither a SQL window nor a source.
-    private func currentDiff(for kind: SliceKind) throws -> SliceDiff.Result? {
-        let known = try state.hashes(forKind: kind)
+    private func currentDiff(for kind: SliceKind) throws -> KindDiff? {
+        var known = try state.hashes(forKind: kind)
         if let sql = Self.sliceSQL[kind] {
             let rows = try fetchRows(sql: sql).map { (id: Self.rowID($0), row: $0) }
-            return SliceDiff.compute(kind: kind, rows: rows, knownHashes: known, now: Date())
+            return KindDiff(diff: SliceDiff.compute(kind: kind, rows: rows, knownHashes: known, now: Date()))
         }
         let kindSources = sources.filter { $0.kind == kind }
         guard !kindSources.isEmpty else { return nil }
-        let records = try fetchRecords(kindSources)
-        return SliceDiff.compute(kind: kind, records: records, knownHashes: known)
+        let fetched = try fetchRecords(kindSources)
+        var assetsByName: [String: SliceAsset] = [:]
+        var unstageable: [String] = []
+        var records: [SliceRecord] = []
+        for item in fetched {
+            guard let asset = item.asset else {
+                records.append(item.record)
+                continue
+            }
+            let name = item.record.recordName
+            guard let store = assets else {
+                unstageable.append(name)
+                continue
+            }
+            assetsByName[name] = asset
+            records.append(item.record)
+            // A published record whose file is gone is sent again.
+            if !store.isStaged(recordName: name, fileName: asset.fileName) { known.removeValue(forKey: name) }
+        }
+        if !unstageable.isEmpty {
+            logger.warning("\(unstageable.count) asset-backed records skipped: no asset store")
+        }
+        let diff = SliceDiff.compute(kind: kind, records: records, knownHashes: known, assets: assetsByName)
+        let isAssetKind = kindSources.contains { $0 is any AssetSliceSource }
+        return KindDiff(
+            diff: SliceDiff.Result(upserts: diff.upserts, deletions: diff.deletions, skipped: diff.skipped + unstageable),
+            assets: assetsByName,
+            assetKindNames: isAssetKind ? Set(fetched.map(\.record.recordName)) : nil
+        )
     }
 
     /// Saves and deletes one kind's changes and records the new hashes.
     /// False when an account reset landed mid-cycle (nothing recorded).
     private func pushKind(
-        _ saveable: [SliceRecord],
+        _ upserts: [SliceRecord],
+        assets kindAssets: [String: SliceAsset],
         deletions: [String],
         startGen: Int,
         into outcome: inout Outcome
     ) async throws -> Bool {
-        if !saveable.isEmpty {
-            try await transport.save(saveable.map { CloudRecordFactory.record(for: $0) })
+        let staged = stage(upserts, assets: kindAssets, skipped: &outcome.skipped)
+        if !staged.isEmpty {
+            try await transport.save(staged.map(\.cloud))
             guard try state.generation() == startGen else { return false }
-            for record in saveable {
-                try state.setHash(SliceDiff.hashHex(record.payload), for: record.recordName)
-                oversizedWarned.withLock { _ = $0.removeValue(forKey: record.recordName) }
+            for (record, _) in staged {
+                let name = record.recordName
+                try state.setHash(SliceDiff.recordHash(record, asset: kindAssets[name]), for: name)
+                oversizedWarned.withLock { _ = $0.removeValue(forKey: name) }
             }
-            outcome.pushed += saveable.count
+            outcome.pushed += staged.count
         }
         if !deletions.isEmpty {
             try await transport.delete(recordNames: deletions, in: .data)
@@ -177,6 +231,59 @@ final class SlicePublisher: Sendable {
             outcome.deleted += deletions.count
         }
         return true
+    }
+
+    /// The cloud records to save. An asset-backed record's file is staged
+    /// first; one that cannot be staged (disk full, the hub turned off) is
+    /// skipped unhashed, so the next cycle retries it.
+    private func stage(
+        _ upserts: [SliceRecord],
+        assets kindAssets: [String: SliceAsset],
+        skipped: inout [String]
+    ) -> [(record: SliceRecord, cloud: CloudRecord)] {
+        upserts.compactMap { record in
+            guard let asset = kindAssets[record.recordName] else {
+                return (record, CloudRecordFactory.record(for: record))
+            }
+            do {
+                let url = try assets?.stage(asset, recordName: record.recordName)
+                return (record, Self.cloudRecord(for: record, assetFileURL: url))
+            } catch {
+                skipped.append(record.recordName)
+                logger.error("""
+                    staging the asset of \(record.recordName, privacy: .public) failed: \
+                    \(error.localizedDescription, privacy: .public)
+                    """)
+                return nil
+            }
+        }
+    }
+
+    /// `CloudRecordFactory.record(for:)` plus the staged asset file.
+    private static func cloudRecord(for slice: SliceRecord, assetFileURL: URL?) -> CloudRecord {
+        CloudRecord(
+            recordName: slice.recordName,
+            zone: .data,
+            kind: slice.kind.rawValue,
+            modifiedAt: slice.modifiedAt,
+            payload: slice.payload,
+            notifyLevel: slice.notifyLevel,
+            assetFileURL: assetFileURL
+        )
+    }
+
+    // MARK: - Staged assets
+
+    /// Removes every staged asset file; publishing goes on and restages
+    /// them (the account-change reset).
+    func removeStagedAssets() {
+        assets?.removeAll()
+    }
+
+    /// Removes every staged asset file and stops staging until the next
+    /// `start()` (the hub was turned off).
+    func closeStagedAssets() {
+        assets?.close()
     }
 
     private func splitOversized(_ upserts: [SliceRecord], skipped: inout [String]) -> [SliceRecord] {
@@ -227,8 +334,13 @@ final class SlicePublisher: Sendable {
         try dbPool.read { db in try Row.fetchAll(db, sql: sql) }
     }
 
-    private func fetchRecords(_ kindSources: [any SliceSource]) throws -> [SliceRecord] {
-        try dbPool.read { db in try kindSources.flatMap { try $0.records(db) } }
+    private func fetchRecords(_ kindSources: [any SliceSource]) throws -> [AssetSliceRecord] {
+        try dbPool.read { db in
+            try kindSources.flatMap { source -> [AssetSliceRecord] in
+                if let assetSource = source as? any AssetSliceSource { return try assetSource.assetRecords(db) }
+                return try source.records(db).map { AssetSliceRecord(record: $0, asset: nil) }
+            }
+        }
     }
 
     // MARK: - Fast lane
@@ -303,6 +415,7 @@ final class SlicePublisher: Sendable {
 
     /// Starts the loop; the first full cycle runs at once.
     func start() {
+        assets?.open()
         let task = Task { [weak self] in
             var nextTick = self?.clock() ?? .now
             while !Task.isCancelled {
