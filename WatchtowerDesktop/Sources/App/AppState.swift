@@ -1853,7 +1853,7 @@ final class AppState {
     private func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
         let dispatcher = MobileHubCommandDispatcher()
         if let asks = workbenchesViewModel?.asks {
-            let askAnswers = AskAnswerHandler(dbPool: dbPool) { [weak asks] ask, answer in
+            let askAnswers = AskAnswerHandler(dbPool: dbPool, sidecar: storage.sidecar) { [weak asks] ask, answer in
                 // A rebuilt workbench state rebuilds the hub too; until then
                 // nothing is written.
                 await asks?.answer(ask, with: answer) ?? .failed("The workbench is reloading on the Mac")

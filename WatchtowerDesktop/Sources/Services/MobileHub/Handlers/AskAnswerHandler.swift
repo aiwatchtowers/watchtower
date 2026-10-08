@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerCore
 import WatchtowerSync
 
@@ -10,10 +11,13 @@ import WatchtowerSync
 /// (`WHERE status = 'open'`), then delivered, held or left to the brief as
 /// a Desktop answer is (PROJ-12 unchanged).
 ///
-/// Idempotent: an ask already answered is `ask_not_open` before anything
-/// runs, so a second delivery of one action never stores twice nor types a
-/// second line. The handler owns its timeout (a hub stop cannot cut a hung
-/// await) and never calls back into the relay processor.
+/// Idempotent (spec §5.2): the guarded write stores one answer per ask, and
+/// a re-run of an action whose answer is already stored — its echo's save
+/// failed, or the hub stopped before the echo — is `applied` again with the
+/// delivery the sidecar kept, with no second write and no second line. Any
+/// other ask that is not open is `ask_not_open`. The handler owns its
+/// timeout (a hub stop cannot cut a hung await) and never calls back into
+/// the relay processor.
 @MainActor
 final class AskAnswerHandler {
     typealias Answer = @MainActor (OwnerAsk, OwnerAskAnswer) async -> OwnerAsksViewModel.AnswerOutcome
@@ -21,19 +25,23 @@ final class AskAnswerHandler {
     /// Ample for a delivery's state reads and its submit pause.
     nonisolated static let defaultTimeout: Duration = .seconds(30)
     static let timeoutMessage = "The Mac did not finish this answer in time — check the ask on the Mac"
+    private static let logger = Logger(subsystem: Constants.bundleID, category: "AskAnswerHandler")
 
     private let dbPool: DatabasePool
+    private let sidecar: HubSyncState
     private let answer: Answer
     private let timeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
 
     init(
         dbPool: DatabasePool,
+        sidecar: HubSyncState,
         timeout: Duration = AskAnswerHandler.defaultTimeout,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
         answer: @escaping Answer
     ) {
         self.dbPool = dbPool
+        self.sidecar = sidecar
         self.timeout = timeout
         self.sleep = sleep
         self.answer = answer
@@ -51,6 +59,11 @@ final class AskAnswerHandler {
               case let .object(fields)? = action.params["answer"] else {
             return .failed(.invalidParams, message: "ask_answer needs an ask id, workbench_id and answer")
         }
+        // Scope first (spec §5.2 rule 3). A read error is not "not found":
+        // it throws, echoed write_failed.
+        guard let ask = try await dbPool.read({ try OwnerAskQueries.ask($0, id: askID, projectID: workbenchID) }) else {
+            return .failed(.notFound, message: "No such ask on this workbench")
+        }
         let value: OwnerAskAnswer
         do {
             let data = try JSONEncoder().encode(JSONValue.object(fields))
@@ -58,12 +71,34 @@ final class AskAnswerHandler {
         } catch {
             return .failed(.invalidAnswer, message: "The answer could not be read: \(error.localizedDescription)")
         }
-        // A read error is not "not found": it throws, echoed write_failed.
-        guard let ask = try await dbPool.read({ try OwnerAskQueries.ask($0, id: askID, projectID: workbenchID) }) else {
-            return .failed(.notFound, message: "No such ask on this workbench")
+        guard ask.isOpen else { return try rerun(action, ask: ask, value: value) }
+        let outcome = await answer(ask, value)
+        if case let .stored(delivery) = outcome { remember(delivery, of: action) }
+        return Self.outcome(outcome)
+    }
+
+    /// An ask no longer open: `applied` again when it holds this very
+    /// answer (answered, or since delivered by the brief), echoing the
+    /// delivery the sidecar kept — none when the hub stopped before keeping
+    /// it; otherwise `ask_not_open`.
+    private func rerun(_ action: ActionRequestPayload, ask: OwnerAsk, value: OwnerAskAnswer) throws -> ActionOutcome {
+        guard ask.status == .answered || ask.status == .delivered,
+              ask.answer == value.normalized(for: ask) else { return .failed(.askNotOpen) }
+        guard let delivery = try sidecar.askAnswerDelivery(for: action.recordName) else { return .applied() }
+        return .applied(["delivery": .string(delivery)])
+    }
+
+    /// Kept right after the store, before the echo. A failure only costs a
+    /// re-run its `delivery` key; the answer itself is stored, so the
+    /// echo stays `applied`.
+    private func remember(_ delivery: OwnerAsksViewModel.Delivery, of action: ActionRequestPayload) {
+        do {
+            try sidecar.recordAskAnswerDelivery(Self.wire(delivery), for: action.recordName, at: Date())
+        } catch {
+            Self.logger.warning(
+                "ask answer \(action.recordName, privacy: .public): delivery not kept: \(error.localizedDescription, privacy: .public)"
+            )
         }
-        guard ask.isOpen else { return .failed(.askNotOpen) }
-        return Self.outcome(await answer(ask, value))
     }
 
     static func outcome(_ outcome: OwnerAsksViewModel.AnswerOutcome) -> ActionOutcome {

@@ -29,6 +29,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var pullHangs = false
     private var pullFails = false
     private var dataChangesFail = false
+    private var failingSaves = 0
     private let echoesOwnSaves: Bool
     private var ownPayloads: Set<Data> = []
 
@@ -61,6 +62,12 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     /// A pull that fails at once (CloudKit offline).
     func setPullFails(_ value: Bool) {
         lock.withLock { pullFails = value }
+    }
+
+    /// The next `count` saves throw before writing anything (a transient
+    /// CloudKit or network error).
+    func failNextSaves(_ count: Int) {
+        lock.withLock { failingSaves = count }
     }
 
     /// `changes(in: .data, …)` throws (a broken local buffer).
@@ -116,6 +123,12 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func save(_ records: [CloudRecord]) async throws {
+        let fails = lock.withLock {
+            guard failingSaves > 0 else { return false }
+            failingSaves -= 1
+            return true
+        }
+        if fails { throw URLError(.networkConnectionLost) }
         try await inner.save(records)
         let now = ContinuousClock.now
         let applied = records.compactMap { record -> String? in

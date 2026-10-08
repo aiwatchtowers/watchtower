@@ -37,6 +37,7 @@ final class AskAnswerHandlerTests: XCTestCase {
     private var center: TerminalCenter!
     /// The workbench models the handlers answer through, kept for the test.
     private var models: [WorkbenchesViewModel] = []
+    private var sidecar: HubSyncState!
 
     nonisolated private static let questions =
         #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
@@ -55,6 +56,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         processes = []
         models = []
+        sidecar = try HubSyncState.inMemory()
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = RecordingSession()
@@ -85,7 +87,7 @@ final class AskAnswerHandlerTests: XCTestCase {
 
     private func makeHandler(_ vm: WorkbenchesViewModel) -> AskAnswerHandler {
         models.append(vm)
-        return AskAnswerHandler(dbPool: pool) { [asks = vm.asks] ask, answer in await asks.answer(ask, with: answer) }
+        return AskAnswerHandler(dbPool: pool, sidecar: sidecar) { [asks = vm.asks] ask, answer in await asks.answer(ask, with: answer) }
     }
 
     /// A workbench with one session row and one open ask filed from it.
@@ -137,7 +139,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         let second = try await handler.handle(request)
 
         XCTAssertEqual(first, .applied(["delivery": .string("submitted")]))
-        XCTAssertEqual(second, .failed(.askNotOpen), "the guarded write ran once")
+        XCTAssertEqual(second, first, "a re-run is applied again, with the delivery kept")
         XCTAssertEqual(try stored(ask).answer, answeredFirst.answer, "stored once, never rewritten")
         XCTAssertEqual(typed.count, 2, "one paste and its Return")
     }
@@ -151,7 +153,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         let dispatcher = MobileHubCommandDispatcher()
         dispatcher.register(.askAnswer) { try await handler.handle($0) }
         let transport = StubHubTransport()
-        let processor = RelayProcessor(transport: transport, sidecar: try HubSyncState.inMemory(), dispatcher: dispatcher, hubID: "hub-acme")
+        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
         let record = try pendingActionRecord(
             kind: .askAnswer, entityID: String(ask), params: ["workbench_id": .integer(p), "answer": yes]
         )
@@ -166,6 +168,106 @@ final class AskAnswerHandlerTests: XCTestCase {
         XCTAssertEqual(echoes.first?.result, ["delivery": .string("submitted")])
         XCTAssertEqual(try stored(ask).status, "answered")
         XCTAssertEqual(typed.count, 2, "one paste and its Return")
+    }
+
+    /// The answer is stored and typed, then its echo's save fails (a
+    /// transient CloudKit error): the record stays pending, and the next
+    /// pass re-runs it — `applied` with the kept delivery, no second line.
+    func testARerunAfterAFailedEchoSaveIsAppliedWithTheKeptDelivery() async throws {
+        let (p, s, ask) = try await seed()
+        center.start(s, fresh: true)
+        let handler = makeHandler(makeVM())
+        let dispatcher = MobileHubCommandDispatcher()
+        dispatcher.register(.askAnswer) { try await handler.handle($0) }
+        let transport = StubHubTransport()
+        let processor = RelayProcessor(transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme")
+        let record = try pendingActionRecord(
+            kind: .askAnswer, entityID: String(ask), params: ["workbench_id": .integer(p), "answer": yes]
+        )
+        try await transport.save([record])
+
+        transport.failNextSaves(1)
+        do {
+            _ = try await processor.processOnce()
+            XCTFail("the echo's save failed, so the pass fails")
+        } catch {
+            XCTAssertTrue(error is URLError, "\(error)")
+        }
+        XCTAssertEqual(try stored(ask).status, "answered", "stored before the echo")
+        XCTAssertNotEqual(try sidecar.relayPhase(record.recordName), .done)
+        _ = try await processor.processOnce()
+
+        let echoes = try transport.saved.map { try decodeAction($0.record) }.filter { $0.status != .pending }
+        XCTAssertEqual(echoes.map(\.status), [.applied])
+        XCTAssertEqual(echoes.first?.result, ["delivery": .string("submitted")])
+        XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
+        XCTAssertEqual(typed.count, 2, "one paste and its Return")
+    }
+
+    /// The same answer already stored with no delivery kept for this
+    /// action (the hub stopped before keeping it): `applied`, the delivery
+    /// left out, nothing written or typed again.
+    func testARerunWithNoKeptDeliveryIsAppliedWithoutOne() async throws {
+        let (p, s, ask) = try await seed()
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let read = try await pool.read { try OwnerAskQueries.ask($0, id: ask, projectID: p) }
+        let openAsk = try XCTUnwrap(read)
+        _ = await vm.asks.answer(openAsk, with: OwnerAskAnswer(answers: [.init(id: "a", labels: ["Yes"])]))
+        let typedBefore = typed.count
+
+        let outcome = try await makeHandler(vm).handle(action(ask: ask, workbench: p))
+
+        XCTAssertEqual(outcome, .applied())
+        XCTAssertEqual(typed.count, typedBefore, "no second line")
+    }
+
+    // MARK: - Go's answer fixtures
+
+    /// `internal/asks/testdata/answers`, the wire Go, the Kit and the hub
+    /// share (spec §6.2), sent as the phone sends it.
+    private func goFixture(_ name: String) throws -> [String: JSONValue] {
+        let repo = URL(fileURLWithPath: "\(#filePath)")
+            .deletingLastPathComponent() // MobileHub
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent()
+        let url = repo.appendingPathComponent("internal/asks/testdata/answers").appendingPathComponent(name)
+        return try JSONDecoder().decode([String: JSONValue].self, from: Data(contentsOf: url))
+    }
+
+    private func seed(goFixture name: String) async throws -> (project: Int64, ask: Int64, answer: JSONValue, fixture: [String: JSONValue]) {
+        let fixture = try goFixture(name)
+        guard case let .string(kind)? = fixture["kind"], let payload = fixture["payload"], let answer = fixture["answer"] else {
+            XCTFail("malformed fixture \(name)")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let payloadJSON = try XCTUnwrap(String(bytes: try JSONEncoder().encode(payload), encoding: .utf8))
+        let seeded = try await seed(kind: kind, payload: payloadJSON)
+        return (seeded.project, seeded.ask, answer, fixture)
+    }
+
+    func testGosValidAnswerFixturesAreStoredAsTheirCanonicalForm() async throws {
+        let vm = makeVM()
+        for name in ["valid_question.json", "valid_review_changes.json"] {
+            let (p, ask, answer, fixture) = try await seed(goFixture: name)
+
+            let outcome = try await makeHandler(vm).handle(action(ask: ask, workbench: p, answer: answer))
+
+            XCTAssertEqual(outcome, .applied(["delivery": .string("no_session")]), name)
+            guard case let .string(canonical)? = fixture["canonical"] else { return XCTFail("\(name): no canonical") }
+            XCTAssertEqual(try stored(ask).answer, canonical, name)
+        }
+    }
+
+    func testGosInvalidAnswerFixtureIsInvalidAnswerWithGosMessage() async throws {
+        let (p, ask, answer, fixture) = try await seed(goFixture: "invalid_review_no_verdict.json")
+
+        let outcome = try await makeHandler(makeVM()).handle(action(ask: ask, workbench: p, answer: answer))
+
+        guard case let .string(message)? = fixture["error"] else { return XCTFail("no error in the fixture") }
+        XCTAssertEqual(outcome, .failed(.invalidAnswer, message: message))
+        XCTAssertEqual(try stored(ask).status, "open")
     }
 
     // MARK: - Deliveries
@@ -353,7 +455,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         // never returns on its own.
         let (entered, enter) = AsyncStream<Void>.makeStream()
         let handler = AskAnswerHandler(
-            dbPool: pool, timeout: .seconds(30),
+            dbPool: pool, sidecar: sidecar, timeout: .seconds(30),
             sleep: { _ in
                 for await _ in entered { return }
             },
@@ -374,7 +476,7 @@ final class AskAnswerHandlerTests: XCTestCase {
     func testAnAnswerFasterThanTheTimeoutIsItsOwnOutcome() async throws {
         let (p, _, ask) = try await seed()
         let handler = AskAnswerHandler(
-            dbPool: pool, timeout: .seconds(30),
+            dbPool: pool, sidecar: sidecar, timeout: .seconds(30),
             sleep: { _ in try? await Task.sleep(for: .seconds(3600)) },
             answer: { _, _ in .stored(.typed) }
         )

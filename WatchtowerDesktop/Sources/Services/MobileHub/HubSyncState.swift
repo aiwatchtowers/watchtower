@@ -5,8 +5,9 @@ import WatchtowerSync
 /// The hub's sidecar database (`hubstate.db`, mobile POC spec §3): what was
 /// last pushed per DataZone record (`slice_state`), small hub values
 /// (`hub_meta`), the exactly-once ledger of relay records
-/// (`relay_processed`, spec §5.2 rule 1) and the asks already alerted
-/// (`alerted_asks`, spec §4.7).
+/// (`relay_processed`, spec §5.2 rule 1), the asks already alerted
+/// (`alerted_asks`, spec §4.7) and where each phone answer's line went
+/// (`ask_answer_deliveries`, spec §5.2/§6.2).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -67,6 +68,11 @@ final class HubSyncState: Sendable {
                     phase TEXT NOT NULL CHECK (phase IN ('begun', 'done')),
                     outcome TEXT,
                     updated_at REAL NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS ask_answer_deliveries (
+                    record_name TEXT PRIMARY KEY,
+                    delivery TEXT NOT NULL,
+                    at REAL NOT NULL
                 );
                 """)
         }
@@ -222,6 +228,36 @@ final class HubSyncState: Sendable {
             try db.execute(
                 sql: "DELETE FROM relay_processed WHERE updated_at < ?",
                 arguments: [date.timeIntervalSince1970]
+            )
+            try db.execute(
+                sql: "DELETE FROM ask_answer_deliveries WHERE at < ?",
+                arguments: [date.timeIntervalSince1970]
+            )
+        }
+    }
+
+    // MARK: - Ask answer deliveries (spec §5.2, §6.2)
+
+    /// Where the line of the answer `recordName` stored went (the wire
+    /// `delivery`), written right after the store and before the echo: a
+    /// re-run of the same action (its echo's save failed, or the hub
+    /// stopped before it) echoes it again instead of storing twice.
+    func recordAskAnswerDelivery(_ delivery: String, for recordName: String, at date: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO ask_answer_deliveries (record_name, delivery, at) VALUES (?, ?, ?)
+                    ON CONFLICT(record_name) DO UPDATE SET delivery = excluded.delivery, at = excluded.at
+                    """,
+                arguments: [recordName, delivery, date.timeIntervalSince1970]
+            )
+        }
+    }
+
+    func askAnswerDelivery(for recordName: String) throws -> String? {
+        try queue.read { db in
+            try String.fetchOne(
+                db, sql: "SELECT delivery FROM ask_answer_deliveries WHERE record_name = ?", arguments: [recordName]
             )
         }
     }
