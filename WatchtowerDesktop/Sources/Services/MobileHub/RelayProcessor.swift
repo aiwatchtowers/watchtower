@@ -163,7 +163,7 @@ final class RelayProcessor: Sendable {
             case .ingest(let upload):
                 return { try await self.processUpload(upload, asset: record.assetFileURL, uploads: uploads) }
             case .reEchoReceived(let upload):
-                return { try await self.reEchoReceived(upload) }
+                return { try await self.reEchoReceived(upload, asset: record.assetFileURL) }
             }
         default:
             // Device records and future kinds have no relay work.
@@ -280,15 +280,18 @@ final class RelayProcessor: Sendable {
     }
 
     /// Rewrites an already-ingested upload `received` without its asset
-    /// again: no claim, no ingest, and the stash is never read. The phone's
-    /// `received` handling deletes its row, so this does not loop.
-    private func reEchoReceived(_ upload: RecordingUploadPayload) async throws {
+    /// again: no claim, no ingest, and the stash is never read — only the
+    /// re-fetched copy is deleted once the echo is saved (a failed save keeps
+    /// it; the next pass retries). The phone's `received` handling deletes
+    /// its row, so this does not loop.
+    private func reEchoReceived(_ upload: RecordingUploadPayload, asset: URL?) async throws {
         lastActivity.withLock { $0 = now() }
         var echoed = upload
         echoed.status = .received
         echoed.errorMessage = nil
         try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)])
         logger.info("recording upload \(upload.recordName, privacy: .public) re-saved pending after its ingest: echoed received again")
+        removeConsumedAsset(asset)
     }
 
     private func processUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads) async throws {
@@ -314,14 +317,17 @@ final class RelayProcessor: Sendable {
             logger.warning("recording upload \(name, privacy: .public) failed: \(ledger, privacy: .public)")
             return
         }
-        // The transport's received copy is consumed. Best-effort: a file left
-        // behind costs disk, never a second ingest (the ledger is `done`).
-        if let asset {
-            do {
-                try FileManager.default.removeItem(at: asset)
-            } catch {
-                logger.warning("ingested upload asset not removed: \(error.localizedDescription, privacy: .public)")
-            }
+        removeConsumedAsset(asset)
+    }
+
+    /// The transport's received copy is consumed. Best-effort: a file left
+    /// behind costs disk, never a second ingest (the ledger is `done`).
+    private func removeConsumedAsset(_ asset: URL?) {
+        guard let asset else { return }
+        do {
+            try FileManager.default.removeItem(at: asset)
+        } catch {
+            logger.warning("ingested upload asset not removed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
