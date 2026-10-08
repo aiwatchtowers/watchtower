@@ -1,0 +1,90 @@
+import Foundation
+import XCTest
+@testable import WatchtowerSync
+
+/// A data-zone record's CKAsset (the `meeting_transcript` `segments.json`,
+/// spec §4.11) is copied into the replica on apply, so the phone reads it
+/// after the transport's stash is gone. A file that cannot be read is kept
+/// as a visible failure, never as a missing body.
+final class ReplicaSliceAssetTests: XCTestCase {
+    private func tempFile(_ contents: String) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("slice-asset-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("segments.json")
+        try Data(contents.utf8).write(to: url)
+        return url
+    }
+
+    private func record(id: String, asset: URL?) -> CloudRecord {
+        CloudRecord(
+            recordName: SliceKind.meetingTranscript.recordName(id: id),
+            zone: .data,
+            kind: SliceKind.meetingTranscript.rawValue,
+            modifiedAt: Date(),
+            payload: Data("{}".utf8),
+            assetFileURL: asset
+        )
+    }
+
+    private func apply(_ store: ReplicaStore, _ records: [CloudRecord], deleted: [String] = [], token: Int) throws {
+        try store.apply(CloudChangeBatch(changed: records, deletedRecordNames: deleted, newToken: CloudChangeToken(value: token)))
+    }
+
+    func testAnAppliedAssetIsCopiedIntoTheReplica() throws {
+        let store = try ReplicaStore.inMemory()
+        let file = try tempFile("[1]")
+        try apply(store, [record(id: "1", asset: file)], token: 1)
+        // The transport's stash may be purged after apply.
+        try FileManager.default.removeItem(at: file)
+
+        let name = SliceKind.meetingTranscript.recordName(id: "1")
+        let asset = try store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) }
+        XCTAssertEqual(asset, .data(Data("[1]".utf8)))
+    }
+
+    func testARewriteWithoutAnAssetDropsTheStoredOne() throws {
+        let store = try ReplicaStore.inMemory()
+        try apply(store, [record(id: "1", asset: try tempFile("[1]"))], token: 1)
+        try apply(store, [record(id: "1", asset: nil)], token: 2)
+
+        let name = SliceKind.meetingTranscript.recordName(id: "1")
+        XCTAssertNil(try store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) })
+    }
+
+    func testADeletedRecordTakesItsAssetWithIt() throws {
+        let store = try ReplicaStore.inMemory()
+        try apply(store, [record(id: "1", asset: try tempFile("[1]"))], token: 1)
+        let name = SliceKind.meetingTranscript.recordName(id: "1")
+        try apply(store, [], deleted: [name], token: 2)
+
+        XCTAssertNil(try store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) })
+        let rows = try store.reader.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_assets") }
+        XCTAssertEqual(rows, 0)
+    }
+
+    func testAnUnreadableAssetIsKeptAsAFailureNotAsNoAsset() throws {
+        let store = try ReplicaStore.inMemory()
+        let gone = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID().uuidString).json")
+        try apply(store, [record(id: "1", asset: gone)], token: 1)
+
+        let name = SliceKind.meetingTranscript.recordName(id: "1")
+        let asset = try store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) }
+        guard case let .unreadable(reason) = asset else {
+            return XCTFail("expected an unreadable asset, got \(String(describing: asset))")
+        }
+        XCTAssertFalse(reason.isEmpty)
+        // The record itself still lands.
+        XCTAssertNotNil(try store.reader.read { db in try store.payload(forRecordName: name, from: db) })
+    }
+
+    func testAStaleBatchDoesNotTouchTheStoredAsset() throws {
+        let store = try ReplicaStore.inMemory()
+        try apply(store, [record(id: "1", asset: try tempFile("[2]"))], token: 5)
+        try apply(store, [record(id: "1", asset: nil)], token: 3)
+
+        let name = SliceKind.meetingTranscript.recordName(id: "1")
+        let asset = try store.reader.read { db in try store.sliceAsset(forRecordName: name, from: db) }
+        XCTAssertEqual(asset, .data(Data("[2]".utf8)))
+    }
+}

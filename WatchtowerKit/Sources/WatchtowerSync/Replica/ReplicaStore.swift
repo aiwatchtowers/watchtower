@@ -115,6 +115,7 @@ public final class ReplicaStore: Sendable {
                     offset_sec INTEGER NOT NULL CHECK(offset_sec >= 0),
                     PRIMARY KEY (recording_id, offset_sec)
                 );
+                \(Self.sliceAssetsTableSQL);
                 """)
             // A replica created before `event_id` existed keeps its ledger:
             // the column is added in place (CREATE IF NOT EXISTS skipped it).
@@ -201,6 +202,7 @@ public final class ReplicaStore: Sendable {
         // unreachable; skipping only the token persistence would just
         // re-read the zone next cycle (safe — upserts are idempotent).
         let tokenJSON = String(bytes: try JSONEncoder().encode(batch.newToken), encoding: .utf8)
+        let assets = Self.readAssets(of: batch.changed)
         return try writer.write { db in
             // Monotonic guard: a batch whose token is not newer than what we
             // already applied is a stale or overlapping read — e.g. a
@@ -231,9 +233,11 @@ public final class ReplicaStore: Sendable {
                         record.payload, record.modifiedAt.timeIntervalSince1970
                     ]
                 )
+                try storeAsset(assets[record.recordName].flatMap { $0 }, recordName: record.recordName, in: db)
             }
             for name in batch.deletedRecordNames {
                 try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
+                try db.execute(sql: "DELETE FROM slice_assets WHERE record_name = ?", arguments: [name])
             }
             if let tokenJSON {
                 try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
