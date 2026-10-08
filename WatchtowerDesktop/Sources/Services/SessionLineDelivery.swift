@@ -84,14 +84,14 @@ final class SessionLineDelivery {
     /// Sends `line` to the session now, or holds it (`.held`/`.queued`):
     /// a held line goes later, and `onHeldEvent` hears each try. It is
     /// called only for a held line, never for the result returned here.
-    func send(
+    func deliverLine(
         _ line: String, key: LineKey, sessionID: Int64,
         onHeldEvent: @escaping (HeldEvent) -> Void
     ) async -> Delivery {
         let delivery = await deliver(line, key: key, sessionID: sessionID)
         if delivery == .held || delivery == .queued {
             heldCount += 1
-            enqueue(HeldLine(order: heldCount, key: key, sessionID: sessionID, line: line,
+            queueHeldLine(HeldLine(order: heldCount, key: key, sessionID: sessionID, line: line,
                              run: terminalCenter?.runs[sessionID], onEvent: onHeldEvent))
         }
         return delivery
@@ -99,13 +99,16 @@ final class SessionLineDelivery {
 
     /// The session states changed or were read again
     /// (`SessionAgentStateCenter.onChange`/`onRead`): each held line whose
-    /// session no longer waits on a permission prompt goes now, oldest
-    /// first. One whose session stopped or started again meanwhile goes
-    /// nowhere — the session's brief has it.
+    /// session no longer waits on a permission prompt goes now — answers by
+    /// ask id (as before the extraction), then other lines oldest first.
+    /// One whose session stopped or started again meanwhile goes nowhere —
+    /// the session's brief has it.
     func deliverHeld() async {
-        let held = queues.values.joined().sorted { $0.order < $1.order }
+        let held = queues.values.joined().sorted {
+            ($0.key.askID ?? .max, $0.order) < ($1.key.askID ?? .max, $1.order)
+        }
         for line in held {
-            await retry(line)
+            await retryHeldLine(line)
         }
     }
 
@@ -124,17 +127,17 @@ final class SessionLineDelivery {
         return dropped.map(\.key)
     }
 
-    private func retry(_ held: HeldLine) async {
+    private func retryHeldLine(_ held: HeldLine) async {
         guard isQueued(held), !delivering.contains(held.sessionID) else { return }
         if needsApproval(held.sessionID) {
             held.onEvent(.awaitingApproval)
             return
         }
         // Taken before any wait, so an overlapping call never sends it twice.
-        remove(held)
+        removeHeldLine(held)
         let sameRun = terminalCenter?.runs[held.sessionID] == held.run
         let delivery = sameRun ? await deliver(held.line, key: held.key, sessionID: held.sessionID) : .noSession
-        if delivery == .held || delivery == .queued { enqueue(held) }
+        if delivery == .held || delivery == .queued { queueHeldLine(held) }
         held.onEvent(.tried(delivery))
     }
 
@@ -207,29 +210,34 @@ final class SessionLineDelivery {
 
     /// Back in its session's queue at its own place: a line held again
     /// keeps its turn.
-    private func enqueue(_ held: HeldLine) {
+    private func queueHeldLine(_ held: HeldLine) {
         var queue = queues[held.sessionID] ?? []
         let index = queue.firstIndex { $0.order > held.order } ?? queue.count
         queue.insert(held, at: index)
         queues[held.sessionID] = queue
     }
 
-    private func remove(_ held: HeldLine) {
+    private func removeHeldLine(_ held: HeldLine) {
         queues[held.sessionID]?.removeAll { $0.order == held.order }
         if queues[held.sessionID]?.isEmpty == true { queues[held.sessionID] = nil }
     }
 }
 
-private extension SessionLineDelivery.LineKey {
+extension SessionLineDelivery.LineKey {
+    /// The ask an answer's line is for; nil for another line.
+    var askID: Int64? {
+        if case let .ask(id) = self { id } else { nil }
+    }
+
     /// The app log's source: an answer's lines keep `OwnerAsks` (PROJ-12).
-    var logSource: String {
+    fileprivate var logSource: String {
         switch self {
         case .ask: "OwnerAsks"
         case .input: "SessionInput"
         }
     }
 
-    var logNoun: String {
+    fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
         case .input: "line"

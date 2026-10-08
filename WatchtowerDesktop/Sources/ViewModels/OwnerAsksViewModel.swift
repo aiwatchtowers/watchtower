@@ -521,7 +521,7 @@ final class OwnerAsksViewModel {
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         var delivery = Delivery.noSession
         if let sessionID = ask.sessionID {
-            delivery = await lineDelivery.send(line, key: .ask(askID), sessionID: sessionID) { [weak self] event in
+            delivery = await lineDelivery.deliverLine(line, key: .ask(askID), sessionID: sessionID) { [weak self] event in
                 self?.heldAnswerTried(event, askID: askID, sessionID: sessionID)
             }
         }
@@ -606,11 +606,5 @@ final class OwnerAsksViewModel {
 
     private func heldAskIDs(sessionID: Int64) -> Set<Int64> {
         Set(lineDelivery.heldKeys(sessionID: sessionID).compactMap(\.askID))
-    }
-}
-
-private extension SessionLineDelivery.LineKey {
-    var askID: Int64? {
-        if case let .ask(id) = self { id } else { nil }
     }
 }

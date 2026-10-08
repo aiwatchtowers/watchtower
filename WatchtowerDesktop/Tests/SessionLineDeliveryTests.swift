@@ -30,7 +30,7 @@ private final class ReadGate: @unchecked Sendable {
         set { lock.withLock { failing = newValue } }
     }
 
-    func check() throws {
+    func throwIfFailing() throws {
         if fails { throw CancellationError() }
     }
 }
@@ -129,7 +129,7 @@ final class SessionLineDeliveryTests: XCTestCase {
             XCTAssertEqual(typed.count, 1, "nothing of the answer yet")
         }
 
-        let sent = await vm.lineDelivery.send(Self.otherLine, key: .input("action-1"), sessionID: s.id) { _ in }
+        let sent = await vm.lineDelivery.deliverLine(Self.otherLine, key: .input("action-1"), sessionID: s.id) { _ in }
 
         XCTAssertEqual(sent, .submitted)
         XCTAssertEqual(answered, .queued)
@@ -154,7 +154,7 @@ final class SessionLineDeliveryTests: XCTestCase {
         var events: [SessionLineDelivery.HeldEvent] = []
         onPause = { [weak vm] in
             guard let vm, queued == nil else { return }
-            queued = await vm.lineDelivery.send(Self.otherLine, key: .input("action-2"), sessionID: s.id) {
+            queued = await vm.lineDelivery.deliverLine(Self.otherLine, key: .input("action-2"), sessionID: s.id) {
                 events.append($0)
             }
         }
@@ -180,12 +180,12 @@ final class SessionLineDeliveryTests: XCTestCase {
         let gate = ReadGate()
         let agentStates = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
-            defaults: defaults, notificationCenter: NotificationCenter(), read: { _ in try gate.check(); return [] }
+            defaults: defaults, notificationCenter: NotificationCenter(), read: { _ in try gate.throwIfFailing(); return [] }
         )
         let vm = makeVM(agentStates: agentStates)
         var events: [SessionLineDelivery.HeldEvent] = []
 
-        let delivery = await vm.lineDelivery.send(Self.otherLine, key: .input("action-3"), sessionID: s.id) {
+        let delivery = await vm.lineDelivery.deliverLine(Self.otherLine, key: .input("action-3"), sessionID: s.id) {
             events.append($0)
         }
 
@@ -218,7 +218,7 @@ final class SessionLineDeliveryTests: XCTestCase {
         var approval = true
         vm.lineDelivery.needsApproval = { _ in approval }
         var events: [SessionLineDelivery.HeldEvent] = []
-        let delivery = await vm.lineDelivery.send(Self.otherLine, key: .input("action-4"), sessionID: s.id) {
+        let delivery = await vm.lineDelivery.deliverLine(Self.otherLine, key: .input("action-4"), sessionID: s.id) {
             events.append($0)
         }
         XCTAssertEqual(delivery, .held)
@@ -233,6 +233,36 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertEqual(events, [.tried(.noSession)])
         XCTAssertTrue(typed.isEmpty)
         XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: s.id).isEmpty)
+    }
+
+    /// Held answers to one session go by ask id, as before the extraction:
+    /// a newer ask answered first still goes after the older one.
+    func testHeldAnswersGoInAskOrderWhateverTheAnswerOrder() async throws {
+        let (p, s, olderID) = try await seed()
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(60))
+        let newerID = try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions, createdAt: created)
+        }
+        XCTAssertLessThan(olderID, newerID)
+        let vm = makeVM()
+        var approval = true
+        vm.lineDelivery.needsApproval = { _ in approval }
+        let newer = try await answerableAsk(vm, project: p, id: newerID)
+        let older = try await answerableAsk(vm, project: p, id: olderID)
+        let first = await vm.asks.answer(newer)
+        let second = await vm.asks.answer(older)
+        XCTAssertEqual(first, .held)
+        XCTAssertEqual(second, .held)
+
+        approval = false
+        await vm.lineDelivery.deliverHeld()
+
+        XCTAssertEqual(typed.count, 4)
+        guard typed.count == 4 else { return }
+        XCTAssertTrue(typedText[0].contains("Ask #\(olderID) "), "the older ask first")
+        XCTAssertEqual(typed[1], [0x0D])
+        XCTAssertTrue(typedText[2].contains("Ask #\(newerID) "))
+        XCTAssertEqual(typed[3], [0x0D])
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
