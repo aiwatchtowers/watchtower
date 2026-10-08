@@ -1,0 +1,19 @@
+{
+  "archive_after_days": 14,
+  "blocked_targets": 1,
+  "branch": "feature/acme-export",
+  "changes": 3,
+  "description": "The acme exporter, rebuilt from scratch. A long description cut at the cap…",
+  "description_clipped": true,
+  "detached": false,
+  "done_targets": 5,
+  "folder_display": "~/Projects/acme",
+  "id": 7,
+  "in_progress_targets": 2,
+  "last_session_activity": 1700000000,
+  "name": "Acme",
+  "open_asks": 2,
+  "open_targets": 9,
+  "session_counts": {"failed": 0, "finished": 1, "needs_approval": 1, "not_running": 3, "stopped": 2, "waiting": 1, "working": 1},
+  "targets_more": 1
+}

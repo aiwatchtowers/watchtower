@@ -1,0 +1,22 @@
+{
+  "changes": "Step 2 now batches the rows.",
+  "created_at": 1700000000,
+  "doc_bytes": 2097152,
+  "doc_clipped": true,
+  "doc_path": "docs/plans/acme-rollout.md",
+  "doc_snapshot": "# Rollout\n\nStep 1: back up.\n",
+  "id": 14,
+  "kind": "review",
+  "payload": {
+    "checklist": [],
+    "focus": [{"heading": "Rollout", "quote": "migrate every row at once", "text": "Is the rollout order right?"}],
+    "questions": []
+  },
+  "previous_ask_id": 13,
+  "session_id": 31,
+  "status": "open",
+  "summary": "The rollout plan, second round.",
+  "title": "Review the rollout plan",
+  "workbench_id": 7,
+  "workbench_name": "Acme"
+}

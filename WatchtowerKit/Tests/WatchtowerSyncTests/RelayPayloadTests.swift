@@ -41,7 +41,11 @@ final class RelayPayloadTests: XCTestCase {
                 "situation_done", "situation_dismiss", "situation_snooze", "situation_keep_open",
                 "day_plan_item_done", "day_plan_item_skip",
                 "digest_read", "stream_digest_read",
-                "probe"
+                "probe",
+                "ask_answer", "board_target_status", "board_target_priority",
+                "board_comment_add", "board_comment_reply", "board_target_create",
+                "session_start", "session_input", "session_input_cancel",
+                "session_finish_request", "session_stop", "session_report_request"
             ]
         )
     }
