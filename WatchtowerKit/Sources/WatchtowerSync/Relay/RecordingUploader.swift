@@ -35,6 +35,13 @@ public actor RecordingUploader: RecordingUploadAcking {
     public static let maximumAssetBytes: Int64 = 90_000_000
     /// The ledger message for a file over the asset cap.
     public static let tooLargeMessage = "This recording is over 90 MB, too large to send to your Mac."
+    /// The ledger message for a row whose audio file is gone.
+    public static let missingFileMessage = "The local audio file is missing."
+    /// The ledger message for a capture cut short before any audio reached
+    /// the file.
+    public static let unrecoverableMessage = "The recording stopped before any audio was saved."
+    /// Local failures a retry can only repeat: no Retry is offered.
+    public static let permanentLocalFailures: Set<String> = [tooLargeMessage, missingFileMessage, unrecoverableMessage]
 
     private let transport: any CloudSyncTransport
     private let store: ReplicaStore
@@ -73,6 +80,8 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// or a duration under `minimumDurationSec`. Callers follow up with
     /// `uploadPending()` to hand the new row to the transport.
     ///
+    /// - `id`: the ledger id; a new UUID when nil (a fixed id keeps a demo
+    ///   row stable across launches).
     /// - `activeDuration`: the recorded audio length when the capture was
     ///   paused (an interruption or the Pause button); the wall-clock span
     ///   `endedAt - startedAt` is used when nil.
@@ -82,6 +91,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     ///   locally only.
     @discardableResult
     public func register(
+        id: String? = nil,
         fileURL: URL,
         startedAt: Date,
         endedAt: Date,
@@ -90,15 +100,10 @@ public actor RecordingUploader: RecordingUploadAcking {
         eventID: String? = nil,
         marks: [Int] = []
     ) throws -> PhoneRecording? {
-        let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
         let duration = activeDuration ?? endedAt.timeIntervalSince(startedAt)
-        guard size > 0, duration >= Self.minimumDurationSec else {
-            try? FileManager.default.removeItem(at: fileURL)
-            logger.notice("degenerate recording discarded (size \(size), \(duration, format: .fixed(precision: 2)) s)")
-            return nil
-        }
+        guard isUsableCapture(fileURL, duration: duration) else { return nil }
         let recording = PhoneRecording(
-            id: UUID().uuidString,
+            id: id ?? UUID().uuidString,
             fileURL: fileURL,
             startedAt: startedAt,
             endedAt: endedAt,
@@ -111,6 +116,153 @@ public actor RecordingUploader: RecordingUploadAcking {
         )
         try store.insertPhoneRecording(recording, marks: marks)
         return recording
+    }
+
+    /// false — and the file is deleted — for a missing or empty file or a
+    /// duration under `minimumDurationSec`.
+    private func isUsableCapture(_ fileURL: URL, duration: TimeInterval) -> Bool {
+        let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
+        guard size > 0, duration >= Self.minimumDurationSec else {
+            try? FileManager.default.removeItem(at: fileURL)
+            logger.notice("degenerate recording discarded (size \(size), \(duration, format: .fixed(precision: 2)) s)")
+            return false
+        }
+        return true
+    }
+
+    // MARK: - Capture lifecycle (a row from the first second)
+
+    /// Inserts the ledger row of a capture that is starting, in the
+    /// `recording` state, before any audio is written: a capture cut short
+    /// by a kill is then found at the next launch.
+    public func beginCapture(
+        fileURL: URL,
+        startedAt: Date,
+        titleHint: String?,
+        eventID: String?
+    ) throws -> PhoneRecording {
+        let recording = PhoneRecording(
+            id: UUID().uuidString,
+            fileURL: fileURL,
+            startedAt: startedAt,
+            endedAt: startedAt,
+            durationSec: 0,
+            titleHint: Self.nonBlank(titleHint),
+            sampleFormat: Self.sampleFormat,
+            state: .recording,
+            errorMessage: nil,
+            eventID: Self.nonBlank(eventID)
+        )
+        try store.insertPhoneRecording(recording)
+        return recording
+    }
+
+    /// Stores one mark-moment offset of a running capture as it is tapped.
+    public func addMark(id: String, offsetSec: Int) throws {
+        try store.insertPhoneRecordingMark(id: id, offsetSec: offsetSec)
+    }
+
+    /// Finalizes a capture the owner stopped: the row becomes `waiting`
+    /// with the recorded length, the final title and event, and every mark
+    /// (re-inserting a stored one is a no-op). Returns nil — removing the
+    /// row and the file — for a capture under `minimumDurationSec`.
+    @discardableResult
+    public func finishCapture(
+        id: String,
+        endedAt: Date,
+        activeDuration: TimeInterval,
+        titleHint: String?,
+        eventID: String?,
+        marks: [Int] = []
+    ) throws -> PhoneRecording? {
+        guard let row = try store.phoneRecording(id: id), row.state == .recording else { return nil }
+        guard isUsableCapture(row.fileURL, duration: activeDuration) else {
+            try store.removePhoneRecording(id: id)
+            return nil
+        }
+        for offset in marks {
+            try store.insertPhoneRecordingMark(id: id, offsetSec: offset)
+        }
+        try store.finalizePhoneRecording(
+            id: id,
+            endedAt: endedAt,
+            durationSec: Int(activeDuration.rounded()),
+            titleHint: Self.nonBlank(titleHint),
+            eventID: Self.nonBlank(eventID)
+        )
+        return try store.phoneRecording(id: id)
+    }
+
+    /// Launch recovery: every row still `recording` belongs to a capture
+    /// cut short (kill, jetsam, crash). Each is finalized from its file:
+    /// - the file plays → `waiting`, with the duration `durationOf` reads
+    ///   from it (audio up to the last written fragment);
+    /// - the file is gone → `failed` (missing file, no Retry);
+    /// - the file has no readable audio → `failed` (unrecoverable, no
+    ///   Retry), and the useless file is deleted;
+    /// - under a second of audio → removed, like a too-short stop.
+    /// `excluding` names a capture running right now, never touched.
+    /// Returns the recordings it made ready to upload.
+    @discardableResult
+    public func recoverInterruptedCaptures(
+        excluding runningID: String? = nil,
+        durationOf: @Sendable (URL) async -> TimeInterval?
+    ) async throws -> [PhoneRecording] {
+        let stranded = try store.phoneRecordings().filter { $0.state == .recording && $0.id != runningID }
+        var recovered: [PhoneRecording] = []
+        for row in stranded {
+            guard FileManager.default.fileExists(atPath: row.fileURL.path) else {
+                try store.setPhoneRecordingState(id: row.id, state: .failed, errorMessage: Self.missingFileMessage)
+                continue
+            }
+            guard let duration = await durationOf(row.fileURL) else {
+                try? FileManager.default.removeItem(at: row.fileURL)
+                try store.setPhoneRecordingState(id: row.id, state: .failed, errorMessage: Self.unrecoverableMessage)
+                continue
+            }
+            guard isUsableCapture(row.fileURL, duration: duration) else {
+                try store.removePhoneRecording(id: row.id)
+                continue
+            }
+            try store.finalizePhoneRecording(
+                id: row.id,
+                endedAt: row.startedAt.addingTimeInterval(duration),
+                durationSec: Int(duration.rounded()),
+                titleHint: row.titleHint,
+                eventID: row.eventID
+            )
+            logger.notice("recovered a capture cut short: \(row.id, privacy: .public), \(Int(duration)) s")
+            if let finalized = try store.phoneRecording(id: row.id) {
+                recovered.append(finalized)
+            }
+        }
+        return recovered
+    }
+
+    /// Deletes every file in `directory` that no ledger row points at (a
+    /// capture whose row never got written, or a leftover). Runs at launch,
+    /// after recovery. Returns the deleted files.
+    @discardableResult
+    public func sweepOrphanFiles(in directory: URL) throws -> [URL] {
+        let known = Set(try store.phoneRecordings().map { $0.fileURL.standardizedFileURL.path })
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var removed: [URL] = []
+        for file in files where !known.contains(file.standardizedFileURL.path) {
+            do {
+                try FileManager.default.removeItem(at: file)
+                removed.append(file)
+            } catch {
+                logger.warning("orphan recording not removed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        if !removed.isEmpty {
+            logger.notice("removed \(removed.count) orphan recording files")
+        }
+        return removed
     }
 
     private static func nonBlank(_ value: String?) -> String? {
@@ -139,10 +291,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         var sent = 0
         for row in rows {
             guard let size = try? FileManager.default.attributesOfItem(atPath: row.fileURL.path)[.size] as? Int64 else {
-                try store.setPhoneRecordingState(
-                    id: row.id, state: .failed,
-                    errorMessage: "The local audio file is missing."
-                )
+                try store.setPhoneRecordingState(id: row.id, state: .failed, errorMessage: Self.missingFileMessage)
                 continue
             }
             guard size <= maxAssetBytes else {
@@ -210,8 +359,9 @@ public actor RecordingUploader: RecordingUploadAcking {
     // MARK: - User affordances
 
     /// Flips a `failed` row back to `waiting` and reruns the upload pass.
+    /// A permanent local failure (`offersRetry` false) is left as it is.
     public func retryFailed(id: String) async throws {
-        guard let row = try store.phoneRecording(id: id), row.state == .failed else { return }
+        guard let row = try store.phoneRecording(id: id), row.offersRetry else { return }
         try store.setPhoneRecordingState(id: id, state: .waiting)
         _ = try await uploadPending()
     }

@@ -8,6 +8,10 @@ import GRDB
 /// upload ledger (`RecordingUploader` is the only writer).
 public struct PhoneRecording: Equatable, Identifiable, Sendable {
     public enum State: String, Sendable {
+        /// The capture is still being written. A row left in this state at
+        /// launch belongs to a capture cut short (kill, jetsam, crash) and is
+        /// finalized from its file.
+        case recording
         /// Finalized locally, not yet handed to the transport.
         case waiting
         /// Saved into the relay zone (the transport uploads it in the
@@ -32,6 +36,13 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     /// The calendar event the recording was started from; nil for a
     /// "No meeting" voice note (spec §5.3).
     public let eventID: String?
+
+    /// Retry is offered for a failure the Mac or the network caused. A local
+    /// failure that a retry can only repeat (the file is gone, too large,
+    /// or not recoverable) offers none.
+    public var offersRetry: Bool {
+        state == .failed && !RecordingUploader.permanentLocalFailures.contains(errorMessage ?? "")
+    }
 }
 
 extension ReplicaStore {
@@ -109,6 +120,39 @@ extension ReplicaStore {
             sql: "SELECT offset_sec FROM phone_recording_marks WHERE recording_id = ? ORDER BY offset_sec",
             arguments: [id]
         )
+    }
+
+    /// Adds one mark-moment offset (a duplicate is ignored). Written as the
+    /// owner taps, so marks survive a capture cut short.
+    func insertPhoneRecordingMark(id: String, offsetSec: Int) throws {
+        guard offsetSec >= 0 else { return }
+        try writer.write { db in
+            try db.execute(
+                sql: "INSERT OR IGNORE INTO phone_recording_marks (recording_id, offset_sec) VALUES (?, ?)",
+                arguments: [id, offsetSec]
+            )
+        }
+    }
+
+    /// Turns a `recording` row into a finalized `waiting` one.
+    func finalizePhoneRecording(
+        id: String,
+        endedAt: Date,
+        durationSec: Int,
+        titleHint: String?,
+        eventID: String?
+    ) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE phone_recordings
+                    SET state = 'waiting', ended_at = ?, duration_sec = ?, title_hint = ?, event_id = ?,
+                        error_message = NULL
+                    WHERE recording_id = ?
+                    """,
+                arguments: [endedAt.timeIntervalSince1970, durationSec, titleHint, eventID, id]
+            )
+        }
     }
 
     /// Unknown ids are a no-op (the ack-after-delete degenerate branch).
