@@ -372,6 +372,7 @@ struct WatchtowerApp: App {
                 appState.initialize()
                 appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
                 appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                appState.openMainWindow = { openWindow(id: TrayAppDelegate.mainWindowSceneID) }
                 appState.openSettingsWindow = {
                     // Accessory (tray-only) mode needs a menu bar for Settings.
                     ActivationPolicyDecision.becomeRegularAndActivate()
@@ -531,6 +532,7 @@ struct WatchtowerApp: App {
                 .onAppear {
                     appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
                     appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                    appState.openMainWindow = { openWindow(id: TrayAppDelegate.mainWindowSceneID) }
                     appState.openSettingsWindow = {
                         ActivationPolicyDecision.becomeRegularAndActivate()
                         openSettings()

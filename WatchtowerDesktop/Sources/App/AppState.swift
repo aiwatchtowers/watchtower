@@ -141,6 +141,11 @@ final class AppState {
     /// Set by the scene once `@Environment(\.openSettings)` is available.
     var openSettingsWindow: (() -> Void)?
 
+    /// Opens a main window (the `openQuickCapture` shape) for callers with
+    /// no SwiftUI environment — a phone start bringing its workbench forward
+    /// while no main window is open.
+    var openMainWindow: (() -> Void)?
+
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
     /// transcript rows are expanded across the app.
@@ -477,6 +482,23 @@ final class AppState {
     func navigateToWorkbench(_ route: WorkbenchRoute) {
         pendingWorkbenchRoute = route
         selectedDestination = .workbench
+    }
+
+    /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
+    /// the workbench's page on the main window, the app in front — before
+    /// the start, so its Work on it placement lands on that page.
+    func bringWorkbenchForward(projectID: Int64) {
+        selectedDestination = .workbench
+        workbenchesViewModel?.drill(into: projectID)
+        (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+        ActivationPolicyDecision.becomeRegularAndActivate()
+        let shown = NSApp.windows.first { TrayAppDelegate.isMainWindow($0) && ($0.isVisible || $0.isMiniaturized) }
+        if let shown {
+            if shown.isMiniaturized { shown.deminiaturize(nil) }
+            shown.makeKeyAndOrderFront(nil)
+        } else {
+            openMainWindow?()
+        }
     }
 
     private var isInitializing = false
@@ -1865,6 +1887,15 @@ final class AppState {
         BoardHandlers(dbPool: dbPool, cli: workbenchesViewModel?.cli) { [weak vm = workbenchesViewModel] projectID, subject in
             vm?.onOwnerWrite?(projectID, subject)
         }.register(on: dispatcher)
+        // Starts take the Desktop's own start (Work on it's path) and stops
+        // `TerminalCenter.close` (spec §6.5). Every device has the spec's
+        // default grants (no typing, starts allowed) until the Mac decides
+        // them per device (A8).
+        SessionStartStopHandlers(
+            dbPool: dbPool, workbenches: workbenchesViewModel, terminalCenter: terminalCenter,
+            deviceGrant: { _ in .specDefaults },
+            bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
+        ).register(on: dispatcher)
         // The folder's git status goes through the CLI (PROJ-10's git); no
         // CLI, no refresher, and the workbench records carry no branch.
         let gitRefresher = workbenchesViewModel?.cli.map { cli in
