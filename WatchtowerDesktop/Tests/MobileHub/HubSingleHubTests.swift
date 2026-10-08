@@ -192,7 +192,7 @@ final class HubSingleHubTests: XCTestCase {
         _ = try await identity.readHeartbeat(from: cloud)
         let enabledAt = try identity.ensureEnabledAt(now)
 
-        try sidecar.wipeSyncState()
+        try sidecar.wipeSyncState(now: Date())
 
         for key in HubIdentity.heartbeatReadKeys {
             XCTAssertNil(try sidecar.metaValue(forKey: key), key)

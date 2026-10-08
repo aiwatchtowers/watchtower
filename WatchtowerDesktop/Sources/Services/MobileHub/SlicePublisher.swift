@@ -219,18 +219,19 @@ final class SlicePublisher: Sendable {
         let staged = stage(upserts, assets: kindAssets, skipped: &outcome.skipped)
         if !staged.isEmpty {
             try await transport.save(staged.map(\.cloud))
-            guard try state.generation() == startGen else { return false }
+            let hashes = Dictionary(staged.map { record, _ in
+                (record.recordName, SliceDiff.recordHash(record, asset: kindAssets[record.recordName]))
+            }) { _, last in last }
+            guard try state.setHashes(hashes, ifGeneration: startGen) else { return false }
             for (record, _) in staged {
                 let name = record.recordName
-                try state.setHash(SliceDiff.recordHash(record, asset: kindAssets[name]), for: name)
                 oversizedWarned.withLock { _ = $0.removeValue(forKey: name) }
             }
             outcome.pushed += staged.count
         }
         if !deletions.isEmpty {
             try await transport.delete(recordNames: deletions, in: .data)
-            guard try state.generation() == startGen else { return false }
-            try state.removeHashes(deletions)
+            guard try state.removeHashes(deletions, ifGeneration: startGen) else { return false }
             outcome.deleted += deletions.count
         }
         return true

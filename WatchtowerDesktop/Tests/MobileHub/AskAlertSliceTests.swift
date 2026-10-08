@@ -127,7 +127,7 @@ final class AskAlertSliceTests: XCTestCase {
         let publisher = publisher(transport)
         try await publisher.publishOnce()
 
-        try sidecar.wipeSyncState()
+        try sidecar.wipeSyncState(now: Date())
         let before = savedAlerts(transport).count
         try await publisher.publishOnce()
         XCTAssertEqual(savedAlerts(transport).count, before, "the new zone gets no alert for an old ask")
@@ -141,7 +141,7 @@ final class AskAlertSliceTests: XCTestCase {
 
     func testMarkAlertedReturnsTheGenerationOfItsOwnTransaction() throws {
         XCTAssertEqual(try sidecar.markAlerted([], at: now).generation, 0)
-        try sidecar.wipeSyncState()
+        try sidecar.wipeSyncState(now: Date())
 
         let marked = try sidecar.markAlerted([7], at: now)
 
