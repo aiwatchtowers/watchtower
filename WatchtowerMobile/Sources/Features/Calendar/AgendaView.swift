@@ -4,23 +4,54 @@ import WatchtowerKit
 /// The Calendar tab: the week strip (Monday to Sunday, today filled in the
 /// accent colour), the selected day's agenda as "time | card" rows with the
 /// red now line on today, the current or next meeting highlighted with
-/// Record and Prep, and a red mic button for a voice note.
+/// Record and Prep, a red mic button for a voice note, and the
+/// "Recordings · 1 new" pill to the Recordings list.
 struct AgendaView: View {
     @Environment(AppEnvironment.self) private var env
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
-    @State private var path: [String] = []
 
     var body: some View {
-        NavigationStack(path: $path) {
+        @Bindable var navigation = env.navigation
+        NavigationStack(path: $navigation.calendarPath) {
             // The now line moves and past cards grey by the clock alone.
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 content(now: context.date)
             }
             .navigationTitle("Calendar")
-            .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
+            .navigationDestination(for: CalendarRoute.self) { route in
+                switch route {
+                case let .event(id): EventDetailView(eventID: id)
+                case .recordings: RecordingsListView()
+                case let .recap(id): RecapView(transcriptID: id)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { recordingsPill }
+            }
             .refreshable { await env.refresh() }
             .overlay(alignment: .bottomTrailing) { voiceNoteButton }
         }
+    }
+
+    private var recordingsPill: some View {
+        let list = RecordingsListModel(
+            recordings: env.phoneRecordings.snapshot,
+            replica: env.calendarReplica.snapshot,
+            seen: env.recordingsSeen.value,
+            now: Date(),
+            calendar: .current
+        )
+        return Button {
+            env.navigation.calendarPath.append(.recordings)
+        } label: {
+            Text(RecordingsListModel.pillText(newCount: list.newCount))
+                .font(.footnote.weight(.medium))
+                .padding(.horizontal, 12)
+                .frame(minHeight: 44)
+                .background(Color.secondary.opacity(0.14), in: Capsule().inset(by: 5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func content(now: Date) -> some View {
@@ -47,7 +78,7 @@ struct AgendaView: View {
                 ForEach(agenda.rows) { row in
                     switch row {
                     case let .event(card):
-                        AgendaEventRow(card: card) { path.append(card.id) }
+                        AgendaEventRow(card: card) { env.navigation.calendarPath.append(.event(card.id)) }
                     case let .nowLine(time):
                         NowLineView(time: time)
                     }

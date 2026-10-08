@@ -214,7 +214,7 @@ private struct RecordingSavedView: View {
                 Spacer()
 
                 Button {
-                    env.recorder.close()
+                    env.showRecordings()
                 } label: {
                     Text("See recordings").frame(maxWidth: .infinity)
                 }

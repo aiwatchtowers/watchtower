@@ -22,9 +22,27 @@ extension DemoSeed {
         try calendarSlices(now: now).map { kind, json in
             guard let id = json["id"].map({ "\($0)" }) else { throw DemoSeedError.missingID }
             let payload = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
-            return CloudRecordFactory.record(for: SliceRecord(kind: kind, id: id, modifiedAt: now, payload: payload))
+            let record = CloudRecordFactory.record(for: SliceRecord(kind: kind, id: id, modifiedAt: now, payload: payload))
+            guard kind == .meetingTranscript else { return record }
+            // The transcript body rides as the record's segments.json asset,
+            // as the hub publishes it. A fixed file name: one file however
+            // often the demo relaunches.
+            let asset = FileManager.default.temporaryDirectory.appendingPathComponent("demo-segments-\(id).json")
+            try RelayCoder.makeEncoder().encode(demoSegments).write(to: asset, options: .atomic)
+            return CloudRecord(
+                recordName: record.recordName, zone: record.zone, kind: record.kind,
+                modifiedAt: record.modifiedAt, payload: record.payload, assetFileURL: asset
+            )
         }
     }
+
+    /// The demo standup's speaker transcript.
+    static let demoSegments: [TranscriptSegment] = [
+        TranscriptSegment(startSec: 0, endSec: 42, speaker: "Colleague A", text: "Quick round: the release is still on for Friday."),
+        TranscriptSegment(startSec: 42, endSec: 118, speaker: "Colleague B", text: "The board archive migration lands first; I will check it today."),
+        TranscriptSegment(startSec: 118, endSec: 260, speaker: "Colleague A", text: "Then the release notes go out, and we book the review."),
+        TranscriptSegment(startSec: 260, endSec: 900, speaker: "Colleague B", text: "Agreed. Nothing else blocks Friday.")
+    ]
 
     /// Every calendar slice payload of the demo, in publish order.
     static func calendarSlices(now: Date) -> [(SliceKind, [String: Any])] {

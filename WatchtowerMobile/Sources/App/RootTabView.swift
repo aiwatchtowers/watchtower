@@ -45,7 +45,6 @@ struct RootTabView: View {
 
     @Environment(AppEnvironment.self) private var env
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selection: Tab = .now
 
     init() {
         // The only tab badge is the open-ask count: a waiting-for-you element.
@@ -53,7 +52,8 @@ struct RootTabView: View {
     }
 
     var body: some View {
-        TabView(selection: $selection) {
+        @Bindable var navigation = env.navigation
+        TabView(selection: $navigation.tab) {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
@@ -82,8 +82,8 @@ struct RootTabView: View {
         )) {
             RecordingView()
         }
-        .onChange(of: selection, initial: true) {
-            env.setFetchInterval(selection.fetchInterval)
+        .onChange(of: env.navigation.tab, initial: true) {
+            env.setFetchInterval(env.navigation.tab.fetchInterval)
         }
         // The fetch loop pauses in the background (a recording's audio
         // background mode must not keep it running) and resumes on return.

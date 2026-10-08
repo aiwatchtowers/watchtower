@@ -57,6 +57,10 @@ final class AppEnvironment {
     let recorder: PhoneRecorderController
     /// The phone's recordings and their way to the Mac.
     let phoneRecordings = PhoneRecordingsModel()
+    /// The ready recaps the owner has opened on this phone.
+    let recordingsSeen: RecordingsSeenStore
+    /// The selected tab and the Calendar stack.
+    let navigation = AppNavigation()
 
     /// This phone's link, nil until the link flow (Task 12) sets one. The
     /// demo transport is linked to `DemoSeed.device`.
@@ -168,6 +172,7 @@ final class AppEnvironment {
         let settings = DeviceSettings(transport: transport, defaults: defaults)
         settings.linkedDevice = device
         deviceSettings = settings
+        recordingsSeen = RecordingsSeenStore(defaults: defaults)
         workbenchReplica.start(store: store)
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
@@ -258,6 +263,13 @@ final class AppEnvironment {
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
         restartLoop()
+    }
+
+    /// The recorder's "See recordings": closes the finished recorder and
+    /// opens the Recordings list on the Calendar tab.
+    func showRecordings() {
+        recorder.close()
+        navigation.showRecordings()
     }
 
     /// The one place the phone's link changes (the link flow, Task 12, and
