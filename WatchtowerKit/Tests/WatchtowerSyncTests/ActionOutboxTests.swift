@@ -190,6 +190,44 @@ final class ActionOutboxTests: XCTestCase {
         let row = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(row.state, .failed)
         XCTAssertEqual(row.errorMessage, "targets row 9 not found")
+        XCTAssertNil(row.reason)
+        XCTAssertNil(row.result)
+    }
+
+    /// The overlay keeps a failed echo's reason and result (a conflict's
+    /// `current`), so the phone can offer "apply anyway".
+    func testFailedEchoKeepsReasonAndResult() async throws {
+        let (_, store, outbox) = try makeFixtures()
+        _ = try await outbox.enqueue(kind: .boardTargetStatus, entityRecordName: "workbench_target-415")
+
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .failed
+        echo.reason = .conflict
+        echo.result = ["current": .string("blocked"), "nested": .object(["n": .integer(3)])]
+        echo.errorMessage = "Changed on the Mac to blocked"
+        try await outbox.applyEcho(echo)
+
+        let row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.state, .failed)
+        XCTAssertEqual(row.reason, .conflict)
+        XCTAssertEqual(row.result, ["current": .string("blocked"), "nested": .object(["n": .integer(3)])])
+        XCTAssertEqual(row.errorMessage, "Changed on the Mac to blocked")
+    }
+
+    /// An expired echo keeps its reason too; one without a result stores none.
+    func testExpiredEchoKeepsReasonWithoutResult() async throws {
+        let (_, store, outbox) = try makeFixtures()
+        _ = try await outbox.enqueue(kind: .boardCommentAdd, entityRecordName: "workbench_target-415")
+
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .expired
+        echo.reason = .expired
+        try await outbox.applyEcho(echo)
+
+        let row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.reason, .expired)
+        XCTAssertNil(row.result)
+        XCTAssertEqual(row.errorMessage, "Failed on the desktop (no message)")
     }
 
     func testEchoForUnknownActionIDIsNoOp() async throws {

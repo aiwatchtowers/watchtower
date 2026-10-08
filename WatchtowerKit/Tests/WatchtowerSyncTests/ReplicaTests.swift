@@ -687,6 +687,41 @@ final class ReplicaTests: XCTestCase {
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.eventID, "evt-1")
     }
 
+    /// A replica written before the overlay kept an echo's reason and result
+    /// opens with its rows intact and both columns added in place.
+    func testOlderPendingActionsTableGainsReasonAndResult() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replica-pending-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("replica.sqlite").path
+        let old = ActionRequestPayload(id: "old", kind: .targetDone, entityID: "1", createdAt: Date(timeIntervalSince1970: 1_000))
+        let payload = try RelayCoder.makeEncoder().encode(old)
+        try await DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE pending_actions (
+                    action_id TEXT PRIMARY KEY, kind TEXT NOT NULL, entity_record_name TEXT,
+                    payload BLOB NOT NULL, created_at REAL NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN ('pending','failed')), error_message TEXT
+                );
+                """)
+            try db.execute(
+                sql: "INSERT INTO pending_actions VALUES ('old', 'target_done', 'target-1', ?, 1000, 'failed', 'boom')",
+                arguments: [payload]
+            )
+        }
+        let store = try ReplicaStore(path: path)
+        let row = try XCTUnwrap(store.pendingActions().first)
+        XCTAssertEqual(row.id, "old")
+        XCTAssertEqual(row.errorMessage, "boom")
+        XCTAssertNil(row.reason)
+        XCTAssertNil(row.result)
+
+        try store.markPendingActionFailed(id: "old", errorMessage: "conflict", reason: .conflict, result: ["current": .string("done")])
+        let failed = try XCTUnwrap(ReplicaStore(path: path).pendingActions().first)
+        XCTAssertEqual(failed.reason, .conflict)
+        XCTAssertEqual(failed.result, ["current": .string("done")])
+    }
+
     /// A ledger whose CHECK predates the `recording` state is rebuilt with
     /// its rows and marks, and then accepts a capture's row.
     func testLedgerWithoutTheRecordingStateIsRebuiltKeepingRowsAndMarks() async throws {

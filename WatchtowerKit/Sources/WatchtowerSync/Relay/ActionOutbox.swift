@@ -106,7 +106,8 @@ public actor ActionOutbox {
     /// Resolves the overlay from a desktop echo (called by `RelayFeed`):
     /// `applied` removes the pending row (the authoritative slice change
     /// arrives via hydration); `failed`, `expired` and `cancelled` flip it
-    /// with the desktop's message; `received` and `held` leave it pending.
+    /// with the desktop's message, reason and result; `received` and `held`
+    /// leave it pending.
     /// Echoes for unknown action_ids are no-ops — redelivery after a sweep
     /// removed the row, or the phantom case documented on `enqueue`. A
     /// still-`pending` payload is our own enqueue reflecting back: inert.
@@ -120,7 +121,9 @@ public actor ActionOutbox {
         case .failed, .expired, .cancelled:
             try store.markPendingActionFailed(
                 id: action.id,
-                errorMessage: action.errorMessage ?? "Failed on the desktop (no message)"
+                errorMessage: action.errorMessage ?? "Failed on the desktop (no message)",
+                reason: action.reason,
+                result: action.result
             )
         }
     }

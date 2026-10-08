@@ -62,14 +62,24 @@ extension ReplicaStore {
         }
     }
 
-    /// Flips one overlay row to `failed` (desktop echo). Unknown ids are a
+    /// Flips one overlay row to `failed` (desktop echo), keeping the echo's
+    /// `reason` and `result` (a conflict's `current`, say). Unknown ids are a
     /// no-op: the echo may be a redelivery for a row the sweep already
     /// removed, or an action whose pending insert never happened.
-    func markPendingActionFailed(id: String, errorMessage: String) throws {
+    func markPendingActionFailed(
+        id: String,
+        errorMessage: String,
+        reason: ActionReason? = nil,
+        result: [String: JSONValue]? = nil
+    ) throws {
+        let resultData = try result.map { try JSONEncoder().encode($0) }
         try writer.write { db in
             try db.execute(
-                sql: "UPDATE pending_actions SET state = 'failed', error_message = ? WHERE action_id = ?",
-                arguments: [errorMessage, id]
+                sql: """
+                    UPDATE pending_actions SET state = 'failed', error_message = ?, reason = ?, result = ?
+                    WHERE action_id = ?
+                    """,
+                arguments: [errorMessage, reason?.rawValue, resultData, id]
             )
         }
     }
@@ -115,7 +125,12 @@ extension ReplicaStore {
                 entityRecordName: row["entity_record_name"],
                 createdAt: Date(timeIntervalSince1970: row["created_at"]),
                 state: state,
-                errorMessage: row["error_message"]
+                errorMessage: row["error_message"],
+                // A code this build does not know reads as nil, as on the wire.
+                reason: (row["reason"] as String?).flatMap(ActionReason.init(rawValue:)),
+                // An undecodable result reads as absent: the row still shows
+                // its message.
+                result: (row["result"] as Data?).flatMap { try? JSONDecoder().decode([String: JSONValue].self, from: $0) }
             ))
         }
         let newBadIDs = badIDs
@@ -154,4 +169,11 @@ public struct PendingAction: Equatable, Identifiable {
     /// The desktop echo's message, or the silent-pending sweep text; nil
     /// while `state == .pending`.
     public let errorMessage: String?
+    /// The echo's closed reason code (`conflict`, `not_found`, …); nil while
+    /// pending, after the silent-pending sweep, or for a code this build
+    /// does not know.
+    public let reason: ActionReason?
+    /// The echo's result object (a conflict carries `current`); nil when the
+    /// echo had none.
+    public let result: [String: JSONValue]?
 }

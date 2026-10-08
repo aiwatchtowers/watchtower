@@ -106,7 +106,9 @@ public final class ReplicaStore: Sendable {
                     payload BLOB NOT NULL,
                     created_at REAL NOT NULL,
                     state TEXT NOT NULL CHECK(state IN ('pending','failed')),
-                    error_message TEXT
+                    error_message TEXT,
+                    reason TEXT,
+                    result BLOB
                 );
                 \(Self.phoneRecordingsTableSQL(name: "phone_recordings", ifNotExists: true));
                 CREATE TABLE IF NOT EXISTS phone_recording_marks (
@@ -125,6 +127,15 @@ public final class ReplicaStore: Sendable {
             }
             if !columns.contains("failure_kind") {
                 try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
+            }
+            // The same for an overlay written before it kept an echo's
+            // reason and result.
+            let pendingColumns = try db.columns(in: "pending_actions").map(\.name)
+            if !pendingColumns.contains("reason") {
+                try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN reason TEXT")
+            }
+            if !pendingColumns.contains("result") {
+                try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN result BLOB")
             }
         }
         try upgradePhoneRecordingsStates()
