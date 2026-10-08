@@ -21,7 +21,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         try Data([0x00]).write(to: phone)
         try #"{"eventID":"evt-phone","title":"Phone"}"#
             .write(to: metaSidecar(phone), atomically: true, encoding: .utf8)
-        let center = makeCenter(runner: nil)
+        let center = try makeCenter(runner: nil)
 
         center.restorePendingOnLaunch()
 
@@ -34,18 +34,31 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// Desktop recordings of the same second interleave chronologically.
     func testRecoveryScanOrdersMixedExtensionsChronologically() throws {
         let first = recordingsDir.appendingPathComponent("rec_20260803_100000.m4a")
-        let second = recordingsDir.appendingPathComponent("rec_20260803_100000-2.caf")
+        let second = recordingsDir.appendingPathComponent("rec_20260803_100000-2.m4a")
+        let third = recordingsDir.appendingPathComponent("rec_20260803_100000-3.caf")
         let tenth = recordingsDir.appendingPathComponent("rec_20260803_100000-10.m4a")
         let nextSecond = recordingsDir.appendingPathComponent("rec_20260803_100001.caf")
-        for audio in [nextSecond, tenth, second, first] {
+        for audio in [nextSecond, tenth, third, second, first] {
             try Data([0x00]).write(to: audio)
             try Data("{}".utf8).write(to: metaSidecar(audio))
         }
-        let center = makeCenter(runner: nil)
+        let center = try makeCenter(runner: nil)
 
         center.restorePendingOnLaunch()
 
-        XCTAssertEqual(center.recoverable.map(\.audioURL), [first, second, tenth, nextSecond])
+        XCTAssertEqual(center.recoverable.map(\.audioURL), [first, second, third, tenth, nextSecond])
+    }
+
+    /// `.caf` and `.m4a` are the same length, so the scan above cannot tell
+    /// `deletingPathExtension` from the old `dropLast(".caf".count)`; this pins
+    /// the key itself on extensions of other lengths.
+    func testRecoverySortKeyStripsAnExtensionOfAnyLength() {
+        XCTAssertEqual(MeetingRecorderCenter.recoverySortKey("rec_20260803_100000-2.m4a").0, "rec_20260803_100000")
+        XCTAssertEqual(MeetingRecorderCenter.recoverySortKey("rec_20260803_100000-2.m4a").1, 2)
+        XCTAssertEqual(MeetingRecorderCenter.recoverySortKey("rec_20260803_100000-10.flac").0, "rec_20260803_100000")
+        XCTAssertEqual(MeetingRecorderCenter.recoverySortKey("rec_20260803_100000-10.flac").1, 10)
+        XCTAssertEqual(MeetingRecorderCenter.recoverySortKey("rec_20260803_100000.aac").0, "rec_20260803_100000")
+        XCTAssertEqual(MeetingRecorderCenter.recoverySortKey("rec_20260803_100000.aac").1, 1)
     }
 
     /// `rec_X.caf` and `rec_X.m4a` would share every sidecar (`.meta`,
@@ -57,6 +70,14 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertEqual(base.pathExtension, "m4a")
         XCTAssertTrue(base.lastPathComponent.hasPrefix("rec_"))
         let stem = base.deletingPathExtension().lastPathComponent
+
+        // An existing phone recording pushes the next phone request to -2.
+        try Data([0x00]).write(to: base)
+        XCTAssertEqual(
+            MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: date, fileExtension: "m4a")
+                .lastPathComponent,
+            "\(stem)-2.m4a")
+        try FileManager.default.removeItem(at: base)
 
         // A saved Desktop recording (no sidecar) of the same second.
         try Data([0x00]).write(to: recordingsDir.appendingPathComponent("\(stem).caf"))
@@ -145,8 +166,8 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let runner = TranscriptCapturingRunner(stdout: recapOKEnvelope)
         // 12 windows of 0.1 s.
-        let center = makeCenter(runner: runner, decode: stubDecode(sampleCount: 19_200),
-                                texts: Array(repeating: "word", count: 12))
+        let center = try makeCenter(runner: runner, decode: stubDecode(sampleCount: 19_200),
+                                    texts: Array(repeating: "word", count: 12))
         var phases: [(URL, MeetingRecorderCenter.ProcessingJob.Phase)] = []
         center.onJobPhase = { url, phase in phases.append((url, phase)) }
         var finishes: [(URL, Int64)] = []
@@ -226,14 +247,141 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         XCTAssertTrue(center.jobs.isEmpty)
     }
 
+    // MARK: - Name reservation (concurrent writers)
+
+    /// Writers off the main actor racing for the same second: the exclusive
+    /// sidecar create gives each its own stem and no sidecar is overwritten.
+    func testConcurrentReservationsOfTheSameSecondGetDistinctNames() async throws {
+        let date = Date()
+        let directory: URL = recordingsDir
+        let urls = try await withThrowingTaskGroup(of: URL.self) { group in
+            for index in 0..<8 {
+                group.addTask {
+                    try MeetingRecorderCenter.reservePhoneRecording(
+                        eventID: nil, title: "title \(index)", in: directory, date: date)
+                }
+            }
+            return try await group.reduce(into: [URL]()) { $0.append($1) }
+        }
+
+        XCTAssertEqual(Set(urls).count, 8, "every writer gets its own name")
+        let titles = try urls.map { try sidecarTitle($0) }
+        XCTAssertEqual(Set(titles), Set((0..<8).map { "title \($0)" }), "no sidecar was overwritten")
+    }
+
+    /// Two uploads of one sync batch ingested together, same clock second.
+    func testConcurrentIngestsOfTheSameSecondBothLandAndQueue() async throws {
+        let first = try makeDummyAudioFile()
+        let second = try makeDummyAudioFile()
+        defer { for url in [first, second] { try? FileManager.default.removeItem(at: url) } }
+        let fixed = Date()
+        // No runner: both jobs fail at the save step, so their sidecars stay
+        // on disk to be inspected.
+        let center = try makeCenter(runner: nil) { fixed }
+        let config = singleWindowConfig()
+
+        async let one = center.ingestPhoneRecording(audioURL: first, eventID: "evt-a", title: "A", config: config)
+        async let two = center.ingestPhoneRecording(audioURL: second, eventID: "evt-b", title: "B", config: config)
+        let urls = try await [one, two]
+
+        XCTAssertNotEqual(urls[0], urls[1])
+        XCTAssertEqual(Set(center.jobs.map(\.audioURL)), Set(urls), "both jobs are enqueued")
+        XCTAssertEqual(try urls.map { try sidecarTitle($0) }, ["A", "B"], "each keeps its own sidecar")
+        for url in urls {
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        }
+        await waitUntil("both jobs to settle") { center.jobs.allSatisfy { $0.phase.isFailed } }
+    }
+
+    /// A Desktop recording of the same second already holds the stem: the
+    /// ingest moves to -2 and leaves the Desktop sidecar alone.
+    func testIngestSkipsADesktopRecordingOfTheSameSecond() async throws {
+        let source = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let fixed = Date()
+        let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: fixed)
+        try #"{"eventID":"evt-desk","title":"Desk"}"#
+            .write(to: metaSidecar(desktop), atomically: true, encoding: .utf8)
+        let center = try makeCenter(runner: nil) { fixed }
+
+        let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",
+                                                             config: singleWindowConfig())
+
+        let stem = desktop.deletingPathExtension().lastPathComponent
+        XCTAssertEqual(ingested.lastPathComponent, "\(stem)-2.m4a")
+        XCTAssertEqual(try sidecarTitle(desktop), "Desk", "the Desktop sidecar is untouched")
+        XCTAssertEqual(try sidecarTitle(ingested), "Phone")
+        await waitUntil("the job to settle") { center.jobs.allSatisfy { $0.phase.isFailed } }
+    }
+
+    /// A Desktop capture starting while an ingest arrives: both pick their
+    /// names on the main actor, so the stems differ and neither sidecar is
+    /// overwritten.
+    func testIngestRacingADesktopStartGetsADistinctName() async throws {
+        let source = try makeDummyAudioFile()
+        defer { try? FileManager.default.removeItem(at: source) }
+        let recorder = FakeRecorder()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: [])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { nil },
+            notifier: FakeNotifier(),
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+        var config = singleWindowConfig()
+        config.liveTranscription = false
+
+        async let start: Void = center.startRecording(eventID: "evt-desk", title: "Desk", config: config)
+        async let ingest = center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",
+                                                       config: config)
+        let ingested = try await ingest
+        await start
+
+        let desktop = try XCTUnwrap(recorder.lastStartURL)
+        XCTAssertNotEqual(desktop.deletingPathExtension().lastPathComponent,
+                          ingested.deletingPathExtension().lastPathComponent)
+        XCTAssertEqual(try sidecarTitle(desktop), "Desk")
+        XCTAssertEqual(try sidecarTitle(ingested), "Phone")
+
+        // Hygiene: end the capture so the parked ingest job runs out.
+        recorder.stopResult = RecordingResult(audioURL: desktop, durationSec: 1)
+        await center.stopAndProcess(config: config)
+        await waitUntil("both jobs to settle") { center.jobs.allSatisfy { $0.phase.isFailed } }
+    }
+
+    /// A copy that fails (the source is gone) throws, enqueues nothing and
+    /// leaves no sidecar behind.
+    func testFailedCopyLeavesNothingBehind() async throws {
+        let missing = recordingsDir.appendingPathComponent("missing-source.m4a")
+        let center = try makeCenter(runner: nil)
+
+        do {
+            try await center.ingestPhoneRecording(audioURL: missing, eventID: nil, title: "Gone",
+                                                  config: singleWindowConfig())
+            XCTFail("the ingest must throw")
+        } catch {}
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: recordingsDir.path)
+        XCTAssertFalse(names.contains { $0.hasPrefix("rec_") }, "got \(names)")
+        XCTAssertTrue(center.jobs.isEmpty)
+    }
+
+    private func sidecarTitle(_ audio: URL) throws -> String? {
+        struct Meta: Decodable { let title: String? }
+        return try JSONDecoder().decode(Meta.self, from: Data(contentsOf: metaSidecar(audio))).title
+    }
+
     // MARK: - Harness
 
     private func makeCenter(
         runner: CLIRunnerProtocol?,
         decode: @escaping @Sendable (URL) throws -> [Float] = { _ in [Float](repeating: 0, count: 4800) },
         texts: [String] = ["привет", "ответ"],
-        diarizer: FakeDiarizer = FakeDiarizer()
-    ) -> MeetingRecorderCenter {
+        diarizer: FakeDiarizer = FakeDiarizer(),
+        now: @escaping () -> Date = Date.init
+    ) throws -> MeetingRecorderCenter {
         MeetingRecorderCenter(
             recorderFactory: { FakeRecorder() },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: texts)) },
@@ -241,8 +389,9 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
             decode: decode,
             runnerResolver: { runner },
             notifier: FakeNotifier(),
-            defaults: (try? isolatedDefaults()) ?? .standard,
-            recordingsDirectory: recordingsDir
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir,
+            now: now
         )
     }
 

@@ -1671,8 +1671,9 @@ final class MeetingRecorderCenter {
     /// recording of that second). Plain lexicographic order gets a same-second
     /// pair backwards twice over — `-` sorts before `.`, so `rec_X-2.caf` would
     /// lead `rec_X.caf`, and `-10` would lead `-2` — which matters because the
-    /// recovered pill acts on `recoverable.first`.
-    private static func recoverySortKey(_ name: String) -> (String, Int) {
+    /// recovered pill acts on `recoverable.first`. Internal (not private) so the
+    /// extension-agnostic stripping is testable on its own.
+    static func recoverySortKey(_ name: String) -> (String, Int) {
         let base = (name as NSString).deletingPathExtension
         guard let dash = base.lastIndex(of: "-"),
               let suffix = Int(base[base.index(after: dash)...]) else { return (base, 1) }
@@ -1834,35 +1835,53 @@ final class MeetingRecorderCenter {
 
     // MARK: - Phone recording ingest (mobile hub)
 
-    /// Copies a phone recording into `directory` as a member of the `rec_*`
-    /// family: a unique `.m4a` name plus the `.meta` sidecar the recovery scan
-    /// keys on, so an app quit before the job runs leaves it recoverable on the
-    /// next launch. Unlike `writeMetaSidecar` (best-effort for a live capture)
-    /// every write here must land: on any failure both files are removed and
-    /// the error is thrown, so a disk-full ingest never leaves a half-written
-    /// `.m4a`. Copies rather than moves — the source belongs to the transport,
-    /// which deletes it only once the ingest succeeded. `nonisolated`: file
-    /// I/O runs off the main actor.
-    nonisolated static func writePhoneRecording(
-        from sourceURL: URL,
+    /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by creating its
+    /// `.meta` sidecar EXCLUSIVELY (`.withoutOverwriting`, i.e. `O_EXCL`):
+    /// when a concurrent writer took the name between the `uniqueRecordingURL`
+    /// check and the create, the create fails and the next `-N` is tried, so
+    /// no other recording's sidecar is ever overwritten. The sidecar is what
+    /// the recovery scan keys on, so a quit before the job runs leaves the
+    /// recording recoverable. Unlike `writeMetaSidecar` (best-effort for a
+    /// live capture) a failure here throws. Returns the reserved audio URL;
+    /// nothing exists there yet.
+    nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
         in directory: URL,
         date: Date = Date()
     ) throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a")
-        let meta = metaURL(for: audioURL)
+        let data = try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title))
+        while true {
+            let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a")
+            do {
+                try data.write(to: metaURL(for: audioURL), options: .withoutOverwriting)
+                return audioURL
+            } catch CocoaError.fileWriteFileExists {
+                // Lost the race for this name; the sidecar now exists, so the
+                // next `uniqueRecordingURL` moves past it.
+                continue
+            }
+        }
+    }
+
+    /// Copies the phone's audio into a name `reservePhoneRecording` reserved.
+    /// On failure only what this call created is removed — the partial audio
+    /// (never a file that already sat there) and the reserved sidecar — and
+    /// the error is thrown, so a disk-full ingest leaves nothing half-written.
+    /// Copies rather than moves: the source belongs to the transport, which
+    /// deletes it only once the ingest succeeded. `nonisolated`: the copy of a
+    /// long recording runs off the main actor.
+    nonisolated static func copyPhoneRecording(from sourceURL: URL, to audioURL: URL) throws {
         do {
-            // The sidecar first: it reserves the name, as at record start.
-            try JSONEncoder().encode(MetaSidecar(eventID: eventID, title: title)).write(to: meta, options: .atomic)
             try FileManager.default.copyItem(at: sourceURL, to: audioURL)
         } catch {
-            try? FileManager.default.removeItem(at: audioURL)
-            try? FileManager.default.removeItem(at: meta)
+            if (error as? CocoaError)?.code != .fileWriteFileExists {
+                try? FileManager.default.removeItem(at: audioURL)
+            }
+            try? FileManager.default.removeItem(at: metaURL(for: audioURL))
             throw error
         }
-        return audioURL
     }
 
     /// Ingests a recording made on the phone (AAC `.m4a`, mic only) and
@@ -1871,10 +1890,15 @@ final class MeetingRecorderCenter {
     /// `recoverable` list. The job queues behind whatever runs and, like any
     /// job, never claims the engine while the Mac is capturing (the
     /// single-engine invariant). `eventID` links the transcript and scopes
-    /// voice matching to the event's attendees. Returns the ingested audio
-    /// URL — the key `onJobPhase`/`onJobFinished` report under — without
-    /// awaiting the job. Throws when the copy fails (nothing is enqueued and
-    /// nothing is left behind).
+    /// voice matching to the event's attendees.
+    ///
+    /// The name is reserved on the main actor, the same actor `startRecording`
+    /// picks and reserves its `.caf` name on without suspending, so ingests and
+    /// a Desktop capture of the same second never share a stem (the exclusive
+    /// create also guards writers off this actor); only the copy runs off it.
+    /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
+    /// report under — without awaiting the job. Throws when the reservation or
+    /// the copy fails (nothing is enqueued and nothing is left behind).
     @discardableResult
     func ingestPhoneRecording(
         audioURL sourceURL: URL,
@@ -1882,9 +1906,10 @@ final class MeetingRecorderCenter {
         title: String?,
         config: TranscriptionConfig
     ) async throws -> URL {
-        let directory = recordingsDirectory
-        let audioURL = try await Task.detached {
-            try Self.writePhoneRecording(from: sourceURL, eventID: eventID, title: title, in: directory)
+        let audioURL = try Self.reservePhoneRecording(eventID: eventID, title: title,
+                                                      in: recordingsDirectory, date: clock())
+        try await Task.detached {
+            try Self.copyPhoneRecording(from: sourceURL, to: audioURL)
         }.value
         let job = ProcessingJob(audioURL: audioURL, eventID: eventID, title: title)
         jobs.append(job)
