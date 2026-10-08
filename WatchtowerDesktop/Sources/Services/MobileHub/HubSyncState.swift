@@ -6,8 +6,9 @@ import WatchtowerSync
 /// last pushed per DataZone record (`slice_state`), small hub values
 /// (`hub_meta`), the exactly-once ledger of relay records
 /// (`relay_processed`, spec §5.2 rule 1), the asks already alerted
-/// (`alerted_asks`, spec §4.7) and where each phone answer's line went
-/// (`ask_answer_deliveries`, spec §5.2/§6.2).
+/// (`alerted_asks`, spec §4.7), where each phone answer's line went
+/// (`ask_answer_deliveries`, spec §5.2/§6.2) and the phone recordings the
+/// hub ingested (`phone_recordings`, spec §6.4/§4.12).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -73,6 +74,15 @@ final class HubSyncState: Sendable {
                     record_name TEXT PRIMARY KEY,
                     delivery TEXT NOT NULL,
                     at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS phone_recordings (
+                    upload_id TEXT PRIMARY KEY,
+                    audio_path TEXT NOT NULL,
+                    transcript_id INTEGER,
+                    status TEXT NOT NULL,
+                    percent INTEGER,
+                    error TEXT,
+                    updated_at REAL NOT NULL
                 );
                 """)
         }
@@ -188,6 +198,39 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// The `begun` claim of a phone recording upload (spec §5.3): like
+    /// `claimRelay`, and it also takes over a record whose last attempt was
+    /// echoed `failed`. The phone's Retry re-sends the same record name, and
+    /// a failed ingest wrote nothing, so the retry is ingested; a `received`
+    /// record is never claimed again.
+    func claimRelayRetryingFailure(_ recordName: String, at date: Date) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO relay_processed (record_name, phase, outcome, updated_at)
+                    VALUES (?, 'begun', NULL, ?)
+                    ON CONFLICT(record_name) DO UPDATE SET
+                        phase = 'begun', outcome = NULL, updated_at = excluded.updated_at
+                    WHERE relay_processed.phase = 'done' AND relay_processed.outcome LIKE 'failed%'
+                    """,
+                arguments: [recordName, date.timeIntervalSince1970]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// The outcome a `done` record was marked with; nil for an unknown or
+    /// `begun` record.
+    func relayOutcome(_ recordName: String) throws -> String? {
+        try queue.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT outcome FROM relay_processed WHERE record_name = ?",
+                arguments: [recordName]
+            )
+        }
+    }
+
     /// Marks a record `begun` whatever it held (tests seed an interrupted
     /// apply with it; the hub itself claims through `claimRelay`).
     func markRelayBegun(_ recordName: String, at date: Date) throws {
@@ -258,6 +301,83 @@ final class HubSyncState: Sendable {
         try queue.read { db in
             try String.fetchOne(
                 db, sql: "SELECT delivery FROM ask_answer_deliveries WHERE record_name = ?", arguments: [recordName]
+            )
+        }
+    }
+
+    // MARK: - Phone recordings (spec §6.4, §4.12)
+
+    /// One phone upload the hub ingested and where its transcription stands:
+    /// the `recording_job` slice's source, and (through `transcript_id`) the
+    /// `meeting_transcript` slice's `phone_recording_id`.
+    struct PhoneRecordingJob: Equatable, Sendable {
+        /// The wire `recording_job.status` values (Kit `RecordingJobStatus`).
+        enum Status: String, Sendable {
+            case received, queued, transcribing, diarizing, summarizing, done, failed
+
+            var isFinished: Bool { self == .done || self == .failed }
+        }
+
+        /// The phone's recording upload id (`RecordingUploadPayload.id`).
+        let uploadID: String
+        /// The ingested `rec_*.m4a`: the key the transcriber's job callbacks
+        /// report under. Never published.
+        let audioPath: String
+        var status: Status
+        /// 0–100 while `transcribing`.
+        var percent: Int?
+        var transcriptID: Int64?
+        var error: String?
+        var updatedAt: Date
+    }
+
+    func savePhoneRecording(_ job: PhoneRecordingJob) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO phone_recordings (upload_id, audio_path, transcript_id, status, percent, error, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(upload_id) DO UPDATE SET
+                        audio_path = excluded.audio_path, transcript_id = excluded.transcript_id,
+                        status = excluded.status, percent = excluded.percent, error = excluded.error,
+                        updated_at = excluded.updated_at
+                    """,
+                arguments: [
+                    job.uploadID, job.audioPath, job.transcriptID, job.status.rawValue, job.percent, job.error,
+                    job.updatedAt.timeIntervalSince1970
+                ]
+            )
+        }
+    }
+
+    /// Every remembered phone recording, newest first. A row whose status
+    /// this build does not know reads as `queued`.
+    func phoneRecordings() throws -> [PhoneRecordingJob] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT upload_id, audio_path, transcript_id, status, percent, error, updated_at
+                FROM phone_recordings ORDER BY updated_at DESC, upload_id
+                """)
+            return rows.map { row in
+                PhoneRecordingJob(
+                    uploadID: row["upload_id"],
+                    audioPath: row["audio_path"],
+                    status: PhoneRecordingJob.Status(rawValue: row["status"] ?? "") ?? .queued,
+                    percent: row["percent"],
+                    transcriptID: row["transcript_id"],
+                    error: row["error"],
+                    updatedAt: Date(timeIntervalSince1970: row["updated_at"])
+                )
+            }
+        }
+    }
+
+    /// Forgets the phone recordings last updated before `date`.
+    func prunePhoneRecordings(olderThan date: Date) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM phone_recordings WHERE updated_at < ?",
+                arguments: [date.timeIntervalSince1970]
             )
         }
     }

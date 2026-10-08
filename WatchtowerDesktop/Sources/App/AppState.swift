@@ -1920,6 +1920,8 @@ final class AppState {
                 }
             }
         }
+        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
+        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
         let sessions = TerminalSessionSlice(
             liveness: { liveness.current },
             reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
@@ -1932,9 +1934,8 @@ final class AppState {
             OwnerAskSlice(),
             AskAlertSlice(sidecar: storage.sidecar),
             CalendarEventSlice(),
-            // phone_recording_id comes from the recording-upload sidecar
-            // (C-Task 4); until then every transcript reads as a Mac one.
-            MeetingTranscriptSlice()
+            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
+            RecordingJobSlice(sidecar: storage.sidecar)
         ]
         let transport = storage.transport
         let publisher = SlicePublisher(
@@ -1945,6 +1946,7 @@ final class AppState {
         )
         gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
         summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
+        recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
         let fastLane = FastLane(
             dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
             nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
@@ -1954,10 +1956,12 @@ final class AppState {
             }
         )
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
         let processor = RelayProcessor(
             transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
-            hubID: try storage.sidecar.ensureHubID()
+            hubID: try storage.sidecar.ensureHubID(),
+            // Until A8 reads the linked devices, the default gate passes any upload naming one.
+            recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
         )
         return MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,

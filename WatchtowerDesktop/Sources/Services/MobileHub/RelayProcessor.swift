@@ -14,10 +14,32 @@ import WatchtowerSync
 /// `begun` (the hub stopped mid-apply) is never re-applied but echoed
 /// `failed` / `outcome_unknown`. Idempotent kinds simply re-run.
 ///
+/// Phone recordings (§5.3, §6.4): a pending `recording_upload` from a linked
+/// device is claimed `begun`, its asset handed to `RecordingUploads.ingest` (the
+/// transcriber's phone ingest, under its own timeout) and the record
+/// rewritten `received` without the asset, or `failed` with a message. A
+/// failed upload wrote nothing, so the phone's Retry (the same record name,
+/// pending again) is ingested; a `received` one never is again. An upload
+/// found still `begun` is echoed `failed` / `outcome_unknown`, not re-ingested.
+///
 /// Backlog: one pass handles at most `batchLimit` records and reports the
 /// rest, so the hub re-runs at once instead of waiting for the next poll.
 /// The change token is persisted only once a pass leaves nothing behind.
 final class RelayProcessor: Sendable {
+    /// Lands one acked upload's audio with the transcriber (spec §6.4).
+    typealias RecordingIngest = @MainActor @Sendable (_ upload: RecordingUploadPayload, _ audio: URL) async throws -> Void
+
+    /// What the relay needs to ingest phone recordings. One value, not three
+    /// closure parameters, so callers' trailing `now` closure still binds.
+    struct RecordingUploads: Sendable {
+        let ingest: RecordingIngest
+        /// The device gate (§5.2 rule 4): an upload whose `device_id` is not
+        /// linked fails `device_not_linked`.
+        var isDeviceLinked: @Sendable (String) -> Bool = { !$0.isEmpty }
+        /// The ingest timeout's clock.
+        var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    }
+
     struct Pass: Equatable, Sendable {
         /// Records handled (echoed) in this pass.
         let handled: Int
@@ -46,12 +68,17 @@ final class RelayProcessor: Sendable {
     private static let sessionRequestKinds: Set<ActionKind> = [.sessionInput, .sessionFinishRequest, .sessionStart]
     /// The pre-POC Today/task kinds: refused until sub-project D.
     static let refusedKinds: Set<ActionKind> = [.targetDone, .targetSnooze, .taskCreate]
+    /// The recording ingest's own deadline (copying ≤ 90 MB plus a main-actor
+    /// hop): a hub stop waits for the record being applied.
+    static let recordingIngestTimeout: Duration = .seconds(300)
 
     private let transport: any CloudSyncTransport & Sendable
     private let sidecar: HubSyncState
     private let dispatcher: MobileHubCommandDispatcher
     private let hubID: String
     private let batchLimit: Int
+    /// nil: uploads are left pending for a hub that can ingest them.
+    private let recordingUploads: RecordingUploads?
     private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: Constants.bundleID, category: "RelayProcessor")
     private let lastActivity = OSAllocatedUnfairLock<Date?>(initialState: nil)
@@ -63,6 +90,7 @@ final class RelayProcessor: Sendable {
         dispatcher: MobileHubCommandDispatcher,
         hubID: String,
         batchLimit: Int = RelayProcessor.defaultBatchLimit,
+        recordingUploads: RecordingUploads? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -70,6 +98,7 @@ final class RelayProcessor: Sendable {
         self.dispatcher = dispatcher
         self.hubID = hubID
         self.batchLimit = batchLimit
+        self.recordingUploads = recordingUploads
         self.now = now
     }
 
@@ -99,8 +128,8 @@ final class RelayProcessor: Sendable {
         let batch = try await transport.changes(in: .relay, since: try storedToken())
         var handled = 0
         var remaining = 0
-        for record in batch.changed where record.kind == RelayRecordKind.action.rawValue {
-            guard let action = try pendingAction(in: record) else { continue }
+        for record in batch.changed {
+            guard let work = try pendingWork(in: record) else { continue }
             guard handled < batchLimit else {
                 remaining += 1
                 continue
@@ -110,7 +139,7 @@ final class RelayProcessor: Sendable {
             // stopping the hub ends a pass only between two records, so a
             // handler's cancellation-aware awaits (GRDB, sleeps, URLSession)
             // never turn a stop into a false `write_failed`.
-            try await Task { try await self.processAction(action) }.value
+            try await Task { try await work() }.value
             handled += 1
         }
         let left = remaining
@@ -119,6 +148,21 @@ final class RelayProcessor: Sendable {
             try persistToken(batch.newToken)
         }
         return Pass(handled: handled, remaining: remaining)
+    }
+
+    /// The work a record still needs; nil when there is none.
+    private func pendingWork(in record: CloudRecord) throws -> (@Sendable () async throws -> Void)? {
+        switch record.kind {
+        case RelayRecordKind.action.rawValue:
+            guard let action = try pendingAction(in: record) else { return nil }
+            return { try await self.processAction(action) }
+        case RelayRecordKind.recordingUpload.rawValue:
+            guard let uploads = recordingUploads, let upload = try pendingUpload(in: record) else { return nil }
+            return { try await self.processUpload(upload, asset: record.assetFileURL, uploads: uploads) }
+        default:
+            // Device records and future kinds have no relay work.
+            return nil
+        }
     }
 
     /// The record's action when it still needs work: decodable, not yet
@@ -199,6 +243,89 @@ final class RelayProcessor: Sendable {
     private static func ledgerOutcome(_ outcome: ActionOutcome) -> String {
         guard let reason = outcome.reason else { return outcome.status.rawValue }
         return "\(outcome.status.rawValue):\(reason.rawValue)"
+    }
+
+    // MARK: - Phone recordings (spec §5.3, §6.4)
+
+    /// The record's upload when it still needs work: decodable, still
+    /// `pending`, and not ingested yet (no ledger entry, a `begun` one, or a
+    /// failed attempt the phone is retrying).
+    private func pendingUpload(in record: CloudRecord) throws -> RecordingUploadPayload? {
+        let upload: RecordingUploadPayload
+        do {
+            upload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
+        } catch {
+            logger.warning("undecodable recording upload \(record.recordName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        guard upload.status == .pending else { return nil }
+        if try sidecar.relayPhase(upload.recordName) == .done {
+            return try sidecar.relayOutcome(upload.recordName)?.hasPrefix(ActionStatus.failed.rawValue) == true ? upload : nil
+        }
+        return upload
+    }
+
+    private func processUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads) async throws {
+        lastActivity.withLock { $0 = now() }
+        let name = upload.recordName
+        let outcome: ActionOutcome
+        if try sidecar.relayPhase(name) == .begun {
+            outcome = .failed(.outcomeUnknown, message: "Your Mac restarted while saving this recording. Send it again.")
+        } else if !(upload.deviceID.map(uploads.isDeviceLinked) ?? false) {
+            outcome = .failed(.deviceNotLinked, message: "This phone is not linked to this Mac.")
+        } else {
+            guard try sidecar.claimRelayRetryingFailure(name, at: now()) else { return }
+            outcome = await ingestUpload(upload, asset: asset, uploads: uploads)
+        }
+        var echoed = upload
+        echoed.status = outcome.status == .applied ? .received : .failed
+        echoed.errorMessage = outcome.errorMessage
+        // The rewrite carries no asset: that is what frees the iCloud storage.
+        try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)])
+        let ledger = echoed.status == .received ? RecordingUploadStatus.received.rawValue : Self.ledgerOutcome(outcome)
+        try sidecar.markRelayDone(name, outcome: ledger, at: now())
+        guard echoed.status == .received else {
+            logger.warning("recording upload \(name, privacy: .public) failed: \(ledger, privacy: .public)")
+            return
+        }
+        // The transport's received copy is consumed. Best-effort: a file left
+        // behind costs disk, never a second ingest (the ledger is `done`).
+        if let asset {
+            do {
+                try FileManager.default.removeItem(at: asset)
+            } catch {
+                logger.warning("ingested upload asset not removed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    /// Validates the asset and runs the ingest under its timeout. A failure
+    /// leaves nothing behind (the transcriber's phone ingest removes what it
+    /// created), so the phone keeps its file and may retry.
+    private func ingestUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads) async -> ActionOutcome {
+        guard let asset, FileManager.default.fileExists(atPath: asset.path) else {
+            return .failed(.notFound, message: "The recording's audio did not reach your Mac. Send it again.")
+        }
+        let size: Int64
+        do {
+            size = (try FileManager.default.attributesOfItem(atPath: asset.path)[.size] as? Int64) ?? 0
+        } catch {
+            return .failed(.writeFailed, message: "Your Mac could not read this recording: \(error.localizedDescription)")
+        }
+        guard size > 0 else {
+            return .failed(.notFound, message: "The recording's audio reached your Mac empty. Send it again.")
+        }
+        do {
+            return try await withHandlerTimeout(
+                Self.recordingIngestTimeout, sleep: uploads.sleep,
+                message: "Your Mac took too long to save this recording. Check Recordings on the Mac before sending it again."
+            ) {
+                try await uploads.ingest(upload, asset)
+                return .applied()
+            }
+        } catch {
+            return .failed(.writeFailed, message: "Your Mac could not save this recording: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Hygiene (relay retention)
