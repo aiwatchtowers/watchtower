@@ -17,7 +17,12 @@ final class ReplicaWiringTests: XCTestCase {
     /// DemoSeed's record tally per kind.
     private let seededCounts: [SliceKind: Int] = [
         .heartbeat: 1,
-        .deviceGrant: 1
+        .deviceGrant: 1,
+        .workbench: 3,
+        .terminalSession: 10,
+        .ownerAsk: 6,
+        .workbenchTarget: 13,
+        .workbenchComment: 2
     ]
 
     private func count(_ kind: SliceKind, in store: ReplicaStore) async throws -> Int {

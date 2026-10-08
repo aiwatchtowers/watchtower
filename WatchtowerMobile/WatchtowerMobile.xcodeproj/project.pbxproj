@@ -8,28 +8,46 @@
 
 /* Begin PBXBuildFile section */
 		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
+		055004AE372755F08479F977 /* WorkbenchReplicaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */; };
 		069F7E73436AE73C0D41AC77 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
+		151770A7D2209403DADBD038 /* NowModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2D287A1BE3B31FA6D711C52 /* NowModel.swift */; };
 		18536A303A19737F9757FE1E /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C8A95C95B93D99054219A43 /* RootTabView.swift */; };
+		1BA03E2FF0F8F0F44C9ED1AD /* NowWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF8889CE92604290450CD690 /* NowWiringTests.swift */; };
+		22E005323043FC1739040C9E /* SessionRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 213E158A5D0210D86957A491 /* SessionRowTests.swift */; };
 		27584DAE11AFC12EC9AB005B /* DeviceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED010731D72C66201D5B0A4C /* DeviceSettings.swift */; };
 		2EDD7B7533E80AD3C0747DC2 /* NotifyService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CE1581266064A628CA86BA7B /* NotifyService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
+		3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */; };
 		435FFB8059956A11F8DAE21B /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
 		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
 		51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D1C1D5173ED2758596AA8F /* SettingsView.swift */; };
+		539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43762D471529DE769FDD240A /* WorkbenchView.swift */; };
+		6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */; };
 		6E7B3F11235C858E711FE47D /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */; };
+		71A2CD9D94F2A18352A57702 /* WorkbenchComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */; };
+		724D4F6D764BE308D0DED2B7 /* BoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88CC35762ED750977196374 /* BoardView.swift */; };
+		7D5206DBFB791C53D0C5D0B0 /* PhoneTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3200FD0FDC1FE7323860CCCF /* PhoneTone.swift */; };
 		7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */; };
 		82E1B2966847B84D12131831 /* NotifyContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C3F9240000D56B30D4AB7332 /* NotifyContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		9BE46824C76328CE009F8E27 /* WorkbenchListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BDF7C4C729D997505169333 /* WorkbenchListView.swift */; };
+		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
+		AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */; };
 		B3EC881E10827862686ACBB0 /* SettingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */; };
 		B521C0A7CE08614B0B07701E /* RootTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E0130D4D7506019B5820AB5 /* RootTabTests.swift */; };
 		C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */; };
 		C5A4DBFA5BA08D2CEE2ABA22 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
+		CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */; };
 		DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */; };
+		E2D1DF70951969EA75CEBE0C /* WorkbenchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9759126D122152063D8BFFD8 /* WorkbenchModels.swift */; };
 		EA24F0F9A7FA7AC5481E8A53 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B73829BDCC72FD6095664C /* SettingsViewModel.swift */; };
+		EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */; };
 		ECBCFA171FBB2757D78073D8 /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 82E2DC2033E6312FAD9B717C /* WatchtowerSync */; };
+		EF815CB0B85756C4BAAE485A /* WorkbenchFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -73,14 +91,26 @@
 
 /* Begin PBXFileReference section */
 		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModel.swift; sourceTree = "<group>"; };
 		0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTestSupport.swift; sourceTree = "<group>"; };
+		1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardTargetDetailView.swift; sourceTree = "<group>"; };
+		213E158A5D0210D86957A491 /* SessionRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRowTests.swift; sourceTree = "<group>"; };
+		27F9F7B9E929C013BC8C456F /* NowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowView.swift; sourceTree = "<group>"; };
+		3200FD0FDC1FE7323860CCCF /* PhoneTone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTone.swift; sourceTree = "<group>"; };
 		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
 		3E0130D4D7506019B5820AB5 /* RootTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabTests.swift; sourceTree = "<group>"; };
+		43762D471529DE769FDD240A /* WorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchView.swift; sourceTree = "<group>"; };
 		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilterTests.swift; sourceTree = "<group>"; };
 		529DCD91B3058908D98062C3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		55D1C1D5173ED2758596AA8F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchWiringTests.swift; sourceTree = "<group>"; };
 		65A248911BCA77C513E94FC2 /* NotifyService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotifyService.entitlements; sourceTree = "<group>"; };
+		6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchFixtures.swift; sourceTree = "<group>"; };
+		73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchComponents.swift; sourceTree = "<group>"; };
+		7BDF7C4C729D997505169333 /* WorkbenchListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchListView.swift; sourceTree = "<group>"; };
 		84659903ACFF8DB646E65E9A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		9759126D122152063D8BFFD8 /* WorkbenchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchModels.swift; sourceTree = "<group>"; };
 		9830582A7A7341EA949DD972 /* NotifyContent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotifyContent.entitlements; sourceTree = "<group>"; };
 		9C8A95C95B93D99054219A43 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
@@ -88,15 +118,21 @@
 		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
 		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
 		C3F9240000D56B30D4AB7332 /* NotifyContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrangeToneTests.swift; sourceTree = "<group>"; };
+		CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Workbench.swift"; sourceTree = "<group>"; };
 		CE1581266064A628CA86BA7B /* NotifyService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE2FB594649A1BFF585627DD /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D88CC35762ED750977196374 /* BoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardView.swift; sourceTree = "<group>"; };
 		D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DD5811CC2EAE68324393DCDB /* WatchtowerKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerKit; path = ../WatchtowerKit; sourceTree = SOURCE_ROOT; };
+		DF8889CE92604290450CD690 /* NowWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowWiringTests.swift; sourceTree = "<group>"; };
 		ED010731D72C66201D5B0A4C /* DeviceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceSettings.swift; sourceTree = "<group>"; };
+		F2D287A1BE3B31FA6D711C52 /* NowModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowModel.swift; sourceTree = "<group>"; };
 		F5B73829BDCC72FD6095664C /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
 		F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWiringTests.swift; sourceTree = "<group>"; };
+		FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchReplicaModel.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -141,6 +177,15 @@
 			path = Sources;
 			sourceTree = "<group>";
 		};
+		10B92AF1A2ADDFE713651E9B /* Now */ = {
+			isa = PBXGroup;
+			children = (
+				F2D287A1BE3B31FA6D711C52 /* NowModel.swift */,
+				27F9F7B9E929C013BC8C456F /* NowView.swift */,
+			);
+			path = Now;
+			sourceTree = "<group>";
+		};
 		12FE0E567667D5510172D256 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -152,9 +197,14 @@
 		1C5ACBF8CC271AA4653F3151 /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */,
+				DF8889CE92604290450CD690 /* NowWiringTests.swift */,
+				CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
 				3E0130D4D7506019B5820AB5 /* RootTabTests.swift */,
+				213E158A5D0210D86957A491 /* SessionRowTests.swift */,
 				F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */,
+				5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */,
 				EEFE28A121A72623301B09B2 /* Support */,
 			);
 			path = Tests;
@@ -193,6 +243,22 @@
 			);
 			sourceTree = "<group>";
 		};
+		7509E4E9E453B73FC97C9B45 /* Workbench */ = {
+			isa = PBXGroup;
+			children = (
+				02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */,
+				1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */,
+				D88CC35762ED750977196374 /* BoardView.swift */,
+				3200FD0FDC1FE7323860CCCF /* PhoneTone.swift */,
+				73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */,
+				7BDF7C4C729D997505169333 /* WorkbenchListView.swift */,
+				9759126D122152063D8BFFD8 /* WorkbenchModels.swift */,
+				FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */,
+				43762D471529DE769FDD240A /* WorkbenchView.swift */,
+			);
+			path = Workbench;
+			sourceTree = "<group>";
+		};
 		802B65C47F0038840E7CBA70 /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -227,6 +293,7 @@
 			children = (
 				0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */,
 				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
+				CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */,
 				ED010731D72C66201D5B0A4C /* DeviceSettings.swift */,
 				9C8A95C95B93D99054219A43 /* RootTabView.swift */,
 				B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */,
@@ -237,7 +304,9 @@
 		CAACBBFD9417C7BE0E2A7C31 /* Features */ = {
 			isa = PBXGroup;
 			children = (
+				10B92AF1A2ADDFE713651E9B /* Now */,
 				D4E1DC259783359FE98A6301 /* Settings */,
+				7509E4E9E453B73FC97C9B45 /* Workbench */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -255,6 +324,7 @@
 			isa = PBXGroup;
 			children = (
 				0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */,
+				6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */,
 			);
 			path = Support;
 			sourceTree = "<group>";
@@ -398,12 +468,24 @@
 			buildActionMask = 2147483647;
 			files = (
 				0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */,
+				CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */,
+				AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */,
+				724D4F6D764BE308D0DED2B7 /* BoardView.swift in Sources */,
+				CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */,
 				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
 				27584DAE11AFC12EC9AB005B /* DeviceSettings.swift in Sources */,
+				151770A7D2209403DADBD038 /* NowModel.swift in Sources */,
+				9F28AD417086206121616519 /* NowView.swift in Sources */,
+				7D5206DBFB791C53D0C5D0B0 /* PhoneTone.swift in Sources */,
 				18536A303A19737F9757FE1E /* RootTabView.swift in Sources */,
 				51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */,
 				EA24F0F9A7FA7AC5481E8A53 /* SettingsViewModel.swift in Sources */,
 				DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */,
+				71A2CD9D94F2A18352A57702 /* WorkbenchComponents.swift in Sources */,
+				9BE46824C76328CE009F8E27 /* WorkbenchListView.swift in Sources */,
+				E2D1DF70951969EA75CEBE0C /* WorkbenchModels.swift in Sources */,
+				055004AE372755F08479F977 /* WorkbenchReplicaModel.swift in Sources */,
+				539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -411,10 +493,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */,
 				46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */,
+				1BA03E2FF0F8F0F44C9ED1AD /* NowWiringTests.swift in Sources */,
+				EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
 				B521C0A7CE08614B0B07701E /* RootTabTests.swift in Sources */,
+				22E005323043FC1739040C9E /* SessionRowTests.swift in Sources */,
 				B3EC881E10827862686ACBB0 /* SettingsWiringTests.swift in Sources */,
+				EF815CB0B85756C4BAAE485A /* WorkbenchFixtures.swift in Sources */,
+				6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

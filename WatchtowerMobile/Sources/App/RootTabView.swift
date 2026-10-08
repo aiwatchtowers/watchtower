@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The four tabs (spec §13 A4): Now, Workbench, Calendar and More. Now and
-/// Workbench are filled by sub-project B and Calendar by C; until then each
-/// shows its empty state. More holds Settings.
+/// Workbench come from sub-project B; Calendar is filled by C and shows its
+/// empty state until then. More holds Settings.
 struct RootTabView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case now, workbench, calendar, more
@@ -66,17 +66,9 @@ struct RootTabView: View {
     private func content(for tab: Tab) -> some View {
         switch tab {
         case .now:
-            EmptyTabView(
-                title: "Nothing needs you",
-                systemImage: "checkmark.circle",
-                message: "Asks and sessions from your Mac show up here."
-            )
+            NowView()
         case .workbench:
-            EmptyTabView(
-                title: "No workbenches yet",
-                systemImage: "hammer",
-                message: "Your Mac's workbenches show up here."
-            )
+            WorkbenchListView()
         case .calendar:
             EmptyTabView(
                 title: "No events",
