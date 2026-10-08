@@ -4,6 +4,13 @@ import Foundation
 
 /// Records what the transport asks of its CKSyncEngine, so scope and error
 /// handling are testable without the iCloud entitlement or a network.
+///
+/// It does not drive the real event plumbing: `sendChanges()` never calls
+/// `nextEngineBatch()` and nothing delivers `CKSyncEngine.Event`s, so
+/// `handleEngineEvent`'s mapping is untested here. Tests call the
+/// transport's internal entry points (`handleSentChanges`,
+/// `handleFetchEventError`, …) directly; `onFetch` lets a test deliver an
+/// event-path error while a fetch is in flight.
 final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     private let lock = NSLock()
     private var _databaseChanges: [CKSyncEngine.PendingDatabaseChange] = []
@@ -12,10 +19,25 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     private var _sendCount = 0
     private var fetchErrors: [Error]
     private let zones: Set<String>
+    private var zoneQueryErrors: [Error]
+    private var _zoneQueryCount = 0
+    private var _onFetch: (@Sendable () async -> Void)?
 
-    init(existingZones: Set<String> = Set(CloudZoneID.allCases.map(\.rawValue)), fetchErrors: [Error] = []) {
+    init(
+        existingZones: Set<String> = Set(CloudZoneID.allCases.map(\.rawValue)),
+        fetchErrors: [Error] = [],
+        zoneQueryErrors: [Error] = []
+    ) {
         zones = existingZones
         self.fetchErrors = fetchErrors
+        self.zoneQueryErrors = zoneQueryErrors
+    }
+
+    var zoneQueryCount: Int { lock.withLock { _zoneQueryCount } }
+
+    /// Runs once, inside the next `fetchChanges()`, before it returns or throws.
+    func onNextFetch(_ hook: @escaping @Sendable () async -> Void) {
+        lock.withLock { _onFetch = hook }
     }
 
     /// Every registered database change is a zone save or delete.
@@ -33,10 +55,13 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     }
 
     func fetchChanges() async throws {
-        let error: Error? = lock.withLock {
+        let (error, hook): (Error?, (@Sendable () async -> Void)?) = lock.withLock {
             _fetchCount += 1
-            return fetchErrors.isEmpty ? nil : fetchErrors.removeFirst()
+            let hook = _onFetch
+            _onFetch = nil
+            return (fetchErrors.isEmpty ? nil : fetchErrors.removeFirst(), hook)
         }
+        if let hook { await hook() }
         if let error { throw error }
     }
 
@@ -45,7 +70,12 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     }
 
     func existingZoneNames() async throws -> Set<String> {
-        zones
+        let error: Error? = lock.withLock {
+            _zoneQueryCount += 1
+            return zoneQueryErrors.isEmpty ? nil : zoneQueryErrors.removeFirst()
+        }
+        if let error { throw error }
+        return zones
     }
 }
 

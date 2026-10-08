@@ -100,6 +100,7 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let clock = TestClock()
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock, sleeps: sleeps)
+        try await transport.save(records(1))
 
         await transport.handleSendError(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 7.0]))
         let since = await transport.throttledSince
@@ -140,6 +141,7 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let sleeps = Collector<TimeInterval>()
         let transport = await CloudKitTransport.testing(store: store, clock: clock, sleeps: sleeps)
         let start = clock.now
+        try await transport.save(records(1)) // something waits, so each wait ends in a resend
 
         await transport.handleSendError(CKError(.zoneBusy))
         await transport.retryTask?.value
@@ -149,7 +151,6 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let held = await transport.throttledSince
         XCTAssertEqual(held, start, "the Settings line measures throttling from its first throttle")
 
-        try await transport.save(records(1))
         let next = await transport.nextEngineBatch()
         let batch = try XCTUnwrap(next)
         await transport.handleSentChanges(saved: batch.recordsToSave, deleted: [], failedSaves: [], failedDeletes: [:])
@@ -185,6 +186,7 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock) {
             try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
         }
+        addTeardownBlock { await transport.retryTask?.cancel() }
 
         try await transport.pull()
         try await transport.pull()
@@ -193,7 +195,70 @@ final class CloudKitTransportErrorTests: XCTestCase {
         clock.advance(31)
         try await transport.pull()
         XCTAssertEqual(engine.fetchCount, 2)
-        await transport.retryTask?.cancel()
+    }
+
+    func testThrottledSinceClearsWhenTheWaitEndsWithNothingPending() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 3.0])])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
+
+        try await transport.pull()
+        let during = await transport.throttledSince
+        XCTAssertNotNil(during)
+        await transport.retryTask?.value
+
+        let after = await transport.throttledSince
+        XCTAssertNil(after, "a fetch-only throttle must not leave the Settings line on for good")
+        XCTAssertEqual(engine.sendCount, 0, "nothing to resend")
+    }
+
+    func testThrottledSinceClearsAfterASuccessfulPull() async throws {
+        let clock = TestClock()
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])])
+        let store = try TransportStore.inMemory()
+        let transport = await CloudKitTransport.testing(store: store, engine: engine, clock: clock) {
+            try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
+        }
+        addTeardownBlock { await transport.retryTask?.cancel() }
+        try await transport.save(records(1))
+
+        try await transport.pull()
+        clock.advance(31)
+        try await transport.pull()
+
+        let since = await transport.throttledSince
+        XCTAssertNil(since)
+    }
+
+    func testRequestLevelLimitExceededHalvesTheBatch() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory())
+
+        await transport.handleSendError(CKError(.limitExceeded))
+        let once = await transport.batchLimit
+        await transport.handleSendError(CKError(.limitExceeded))
+        let twice = await transport.batchLimit
+
+        XCTAssertEqual([once, twice], [100, 50])
+        let lastError = await transport.lastError
+        XCTAssertNil(lastError, "a handled rejection is not an outage")
+    }
+
+    func testShrinkUsesTheSizeOfTheBatchThatFailed() async throws {
+        // A failure for a batch other than the one last built (the engine
+        // may build its own): its own size decides, never a stale one.
+        let store = try TransportStore.inMemory()
+        let transport = await CloudKitTransport.testing(store: store)
+        let rejectedNames = await rejected(transport)
+        try await transport.save(records(10))
+        let failed = records(10).map {
+            (CloudKitTransport.ckRecord(from: $0, in: CloudDatabaseScope.private.zoneID(for: .data), systemFields: nil),
+             CKError(.limitExceeded))
+        }
+
+        await transport.handleSentChanges(saved: [], deleted: [], failedSaves: failed, failedDeletes: [:])
+
+        let limit = await transport.batchLimit
+        XCTAssertEqual(limit, 5)
+        XCTAssertTrue(rejectedNames.values.isEmpty, "a 10-record batch never rejects a record as too large alone")
     }
 
     // MARK: - quotaExceeded

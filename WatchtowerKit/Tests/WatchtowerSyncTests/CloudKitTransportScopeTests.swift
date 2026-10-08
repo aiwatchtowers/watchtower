@@ -185,6 +185,119 @@ final class CloudKitTransportScopeTests: XCTestCase {
         XCTAssertEqual(collected.values, [.unlinked])
     }
 
+    func testUnlinkedIsTerminal() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let collected = await events(of: transport)
+        try await transport.save([record("action-1")])
+        let next = await transport.nextEngineBatch()
+        let batch = try XCTUnwrap(next)
+        let zoneGone = batch.recordsToSave.map { ($0, CKError(.zoneNotFound)) }
+
+        await transport.handleSentChanges(saved: [], deleted: [], failedSaves: zoneGone, failedDeletes: [:])
+        let nudgesAtUnlink = engine.recordZoneChanges.count
+
+        let afterUnlink = await transport.nextEngineBatch()
+        XCTAssertNil(afterUnlink, "no sends into a zone that is gone")
+        try await transport.save([record("action-2")])
+        XCTAssertEqual(engine.recordZoneChanges.count, nudgesAtUnlink, "no nudges after unlinked")
+        await transport.handleSentChanges(saved: [], deleted: [], failedSaves: zoneGone, failedDeletes: [:])
+        try await transport.pull()
+        XCTAssertEqual(engine.fetchCount, 0, "no fetches after unlinked")
+        let unlinked = await transport.isUnlinked
+        XCTAssertTrue(unlinked)
+        XCTAssertEqual(collected.values, [.unlinked])
+    }
+
+    func testForeignOwnersZoneNotFoundInPartialFailureDoesNotUnlink() async throws {
+        let stale = CKRecordZone.ID(zoneName: "RelayZone", ownerName: "_stale-owner")
+        let partial = CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [stale: CKError(.zoneNotFound)]])
+        let engine = FakeSyncEngine(fetchErrors: [partial])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let collected = await events(of: transport)
+
+        try await transport.pull()
+
+        XCTAssertTrue(collected.values.isEmpty, "another Mac's vanished zone never unlinks this link")
+    }
+
+    func testEventPathZoneNotFoundUnlinksOnlyForTheOwner() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared)
+        let collected = await events(of: transport)
+
+        await transport.handleFetchEventError(
+            CKError(.zoneNotFound),
+            zoneID: CKRecordZone.ID(zoneName: "DataZone", ownerName: "_stale-owner")
+        )
+        XCTAssertTrue(collected.values.isEmpty)
+
+        await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: shared.zoneID(for: .data))
+        XCTAssertEqual(collected.values, [.unlinked])
+    }
+
+    func testEventPathExpiredTokenRefetchesOnce() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+
+        await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: shared.zoneID(for: .relay))
+
+        XCTAssertEqual(engine.fetchCount, 1)
+        XCTAssertEqual(engine.zoneQueryCount, 1)
+    }
+
+    func testErrorBothThrownAndDeliveredAsAnEventIsHandledOnce() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.changeTokenExpired)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let zone = shared.zoneID(for: .relay)
+        engine.onNextFetch { await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: zone) }
+
+        try await transport.pull()
+
+        XCTAssertEqual(engine.fetchCount, 2, "the pull's fetch plus ONE re-fetch")
+        XCTAssertEqual(engine.zoneQueryCount, 1)
+    }
+
+    func testEventOnlyErrorDuringAPullIsHandledByThePull() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let collected = await events(of: transport)
+        let zone = shared.zoneID(for: .data)
+        engine.onNextFetch { await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: zone) }
+
+        try await transport.pull()
+
+        XCTAssertEqual(collected.values, [.unlinked])
+    }
+
+    func testPrivateScopeIgnoresEventPathErrors() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
+        let zone = CloudDatabaseScope.private.zoneID(for: .data)
+
+        await transport.handleFetchEventError(CKError(.networkFailure), zoneID: zone)
+        await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: zone)
+
+        let lastError = await transport.lastError
+        XCTAssertNil(lastError, "a transient automatic-fetch error must not flip availability()")
+        XCTAssertEqual(engine.fetchCount, 0, "unchanged: the engine retries its own fetches")
+    }
+
+    func testThrottleOnTheZoneCheckIsAThrottle() async throws {
+        let engine = FakeSyncEngine(
+            fetchErrors: [CKError(.changeTokenExpired)],
+            zoneQueryErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 4.0])]
+        )
+        let sleeps = Collector<TimeInterval>()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine, sleeps: sleeps)
+        let collected = await events(of: transport)
+
+        try await transport.pull()
+        await transport.retryTask?.value
+
+        XCTAssertEqual(sleeps.values, [4])
+        XCTAssertTrue(collected.values.isEmpty)
+    }
+
     func testPrivateScopeZoneNotFoundOnFetchIsRethrownNotUnlinked() async throws {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneNotFound)])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)

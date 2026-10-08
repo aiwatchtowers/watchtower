@@ -187,6 +187,9 @@ public final class TransportStore: Sendable {
     /// Removes a record from the send queue whatever its stamp: the
     /// transport gives up on a record CloudKit rejects even on its own
     /// (`.limitExceeded` on a one-record batch), instead of retrying forever.
+    /// The row goes whatever it holds: if the record was re-queued for
+    /// deletion after the failed send, that delete is dropped too. Harmless
+    /// for a record CloudKit refused to store.
     func dropPending(recordName: String, zone: CloudZoneID) throws {
         try queue.write { db in
             try db.execute(

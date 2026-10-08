@@ -53,7 +53,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private var engine: (any SyncEngineDriving)?
     private var delegateBox: DelegateBox?
     /// Last recorded failure (startup or store I/O), surfaced via availability().
-    private var lastError: String?
+    private(set) var lastError: String?
     /// Number of CloudKit account changes that forced a local reset. Read via
     /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
     public private(set) var accountResetCount = 0
@@ -67,8 +67,6 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     // Send-side error state (spec §9).
     private(set) var batchLimit = maxBatchSize
-    /// Saves + deletes in the batch last handed to the engine.
-    private var lastBatchSize = 0
     /// Start of the current throttling stretch; nil once a send succeeds.
     /// Settings shows "iCloud is slowing sync down" after 60 s of it.
     public private(set) var throttledSince: Date?
@@ -79,7 +77,20 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private(set) var retryTask: Task<Void, Never>?
     /// True after `.quotaExceeded`: nothing is sent until `resume()`.
     public private(set) var isPaused = false
-    private var unlinkedEmitted = false
+    /// `shared` scope: the owner's zones are gone (`TransportEvent.unlinked`
+    /// was emitted). Terminal for this transport's lifetime — nothing is
+    /// sent, nudged or fetched any more, and neither an account-change reset
+    /// nor anything else clears it. One transport serves one link: the phone
+    /// builds a new transport (and store scope) when it links again.
+    public private(set) var isUnlinked = false
+    /// An expired-token zone check + re-fetch is running (two concurrent
+    /// pulls, or a pull and the event path, must not both run one).
+    private var refetchInFlight = false
+    /// A `pull()` fetch is awaiting the engine. Fetch-error events that
+    /// arrive meanwhile are parked here and handled by `pull()` instead,
+    /// so one server failure is handled once.
+    private var manualFetchInFlight = false
+    private var parkedEventError: (error: CKError, zoneID: CKRecordZone.ID)?
 
     public init(
         store: TransportStore,
@@ -118,6 +129,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         self.sleep = sleep
     }
 
+    /// In `shared` scope an account switch does NOT emit `.unlinked`: the
+    /// transport wipes and relaunches on the new account's shared database
+    /// with the same `ownerName`. The phone decides (Task 12, spec §9) from
+    /// this handler whether the old link still stands.
     public func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) {
         accountResetHandler = handler
     }
@@ -213,16 +228,34 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     /// Manual fetch — poll loops call this; push wake calls it implicitly
-    /// when entitlements land. No-op while the engine is unavailable or the
-    /// server asked us to wait. Fetch errors the transport can act on
-    /// (unlinked, an expired token, throttling) are handled, not thrown.
+    /// when entitlements land. No-op while the engine is unavailable, the
+    /// server asked us to wait, or the link is gone. Fetch errors the
+    /// transport can act on (unlinked, an expired token, throttling) are
+    /// handled, not thrown. A successful fetch ends a throttling stretch.
     public func pull() async throws {
-        guard let engine else { return }
+        guard let engine, !isUnlinked else { return }
         if let throttledUntil, now() < throttledUntil { return }
+        manualFetchInFlight = true
+        parkedEventError = nil
         do {
             try await engine.fetchChanges()
+            manualFetchInFlight = false
+            if let parked = parkedEventError {
+                // The engine reported this fetch's failure as an event only.
+                parkedEventError = nil
+                try await handleFetchError(parked.error, zoneID: parked.zoneID, engine: engine)
+                return
+            }
+            clearThrottle()
         } catch let error as CKError {
-            try await handleFetchError(error, engine: engine)
+            // The thrown error supersedes any event-path copy of it.
+            manualFetchInFlight = false
+            parkedEventError = nil
+            try await handleFetchError(error, zoneID: nil, engine: engine)
+        } catch {
+            manualFetchInFlight = false
+            parkedEventError = nil
+            throw error
         }
     }
 
@@ -258,7 +291,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// nextRecordZoneChangeBatch. No-op while the engine is nil (CloudKit
     /// unavailable) — records simply wait in the store until start() succeeds.
     private func nudgeEngine() {
-        guard let engine else { return }
+        guard let engine, !isUnlinked else { return }
         do {
             let pending = try store.pendingBatch(limit: Self.maxBatchSize)
             var changes: [CKSyncEngine.PendingRecordZoneChange] = pending.saves.map {
@@ -293,7 +326,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // Not awaited here: a re-fetch from inside the engine's own
             // event delivery would wait on the fetch that is delivering.
             if let error = fetched.error {
-                Task { await self.handleFetchFailure(error) }
+                Task { await self.handleFetchEventError(error, zoneID: fetched.zoneID) }
             }
         case .accountChange(let change):
             handleAccountChange(change.changeType)
@@ -329,37 +362,81 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
     }
 
-    /// Acts on a fetch error. `shared` scope: `.zoneNotFound` (or the
-    /// owner's zone deleted) means unlinked. Both scopes: an expired change
-    /// token re-fetches once — unless, in `shared` scope, a zone is gone,
-    /// which is unlinked too; throttling waits. Anything else is rethrown.
-    func handleFetchError(_ error: CKError, engine: any SyncEngineDriving) async throws {
-        let errors = Self.flatten(error)
-        let codes = Set(errors.map(\.code))
-        if !scope.writesZones, !codes.isDisjoint(with: Self.zoneGoneCodes) {
+    /// Acts on a fetch error, `zoneID` being the zone it is about when
+    /// known (the event path). Per-zone errors of a `.partialFailure` carry
+    /// their own zone. Only this scope's zones count: in `shared` scope an
+    /// error about another (stale) owner's zone never touches this link.
+    /// - `shared`: `.zoneNotFound` / `.userDeletedZone` → unlinked.
+    /// - Both scopes: an expired change token re-fetches once (unless, in
+    ///   `shared` scope, a zone is gone: unlinked); throttling waits.
+    /// - Anything else is rethrown (`shared`: unless it is only about other
+    ///   owners' zones).
+    func handleFetchError(_ error: CKError, zoneID: CKRecordZone.ID?, engine: any SyncEngineDriving) async throws {
+        let mine = Self.flatten(error, zoneID: zoneID).filter { ownsZone($0.zoneID) }.map(\.error)
+        if !scope.writesZones, mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
             emitUnlinked(reason: "zone not found on fetch")
             return
         }
-        if codes.contains(.changeTokenExpired) {
-            if !scope.writesZones, try await !ownersZonesExist(engine: engine) {
-                emitUnlinked(reason: "change token expired on a missing zone")
-                return
-            }
-            // One re-fetch; a second failure surfaces to the caller.
-            try await engine.fetchChanges()
+        if mine.contains(where: { $0.code == .changeTokenExpired }) {
+            try await refetchAfterExpiredToken(engine: engine)
             return
         }
-        if applyThrottle(from: errors) { return }
+        if applyThrottle(from: mine) { return }
+        if !scope.writesZones, mine.isEmpty { return }
         throw error
     }
 
-    private func handleFetchFailure(_ error: CKError) async {
-        guard let engine else { return }
-        do {
-            try await handleFetchError(error, engine: engine)
-        } catch {
-            recordError(error)
+    /// The engine's report that fetching one zone failed. Private scope:
+    /// ignored, exactly as before scopes (the engine retries its own
+    /// automatic fetches; `pull()` handles manual ones). Shared scope: acts
+    /// only on "zone gone" and an expired token for this owner's zones.
+    /// While a `pull()` is awaiting the engine the error is parked for it.
+    func handleFetchEventError(_ error: CKError, zoneID: CKRecordZone.ID) async {
+        guard !scope.writesZones, let engine, !isUnlinked else { return }
+        if manualFetchInFlight {
+            parkedEventError = (error, zoneID)
+            return
         }
+        let mine = Self.flatten(error, zoneID: zoneID).filter { ownsZone($0.zoneID) }.map(\.error)
+        if mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
+            emitUnlinked(reason: "zone not found on an engine fetch")
+        } else if mine.contains(where: { $0.code == .changeTokenExpired }) {
+            do {
+                try await refetchAfterExpiredToken(engine: engine)
+            } catch {
+                recordError(error)
+            }
+        }
+    }
+
+    /// One zone check and re-fetch after `.changeTokenExpired`; a second
+    /// failure surfaces to the caller. A throttle on the zone check waits
+    /// like any throttle.
+    private func refetchAfterExpiredToken(engine: any SyncEngineDriving) async throws {
+        guard !refetchInFlight else { return }
+        refetchInFlight = true
+        defer { refetchInFlight = false }
+        if !scope.writesZones {
+            let exists: Bool
+            do {
+                exists = try await ownersZonesExist(engine: engine)
+            } catch let error as CKError {
+                if applyThrottle(from: Self.flatten(error, zoneID: nil).map(\.error)) { return }
+                throw error
+            }
+            guard exists else {
+                emitUnlinked(reason: "change token expired on a missing zone")
+                return
+            }
+        }
+        try await engine.fetchChanges()
+        clearThrottle()
+    }
+
+    /// nil (no zone context) counts as ours: the error may be about any zone.
+    private func ownsZone(_ zoneID: CKRecordZone.ID?) -> Bool {
+        guard let zoneID else { return true }
+        return scope.cloudZone(for: zoneID) != nil
     }
 
     private func ownersZonesExist(engine: any SyncEngineDriving) async throws -> Bool {
@@ -418,7 +495,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     func nextEngineBatch() -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard !isPaused else { return nil }
+        guard !isPaused, !isUnlinked else { return nil }
         if let throttledUntil, now() < throttledUntil { return nil }
         do {
             let pending = try store.pendingBatch(limit: batchLimit)
@@ -427,7 +504,6 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 batchLimit = Self.maxBatchSize
                 return nil
             }
-            lastBatchSize = pending.saves.count + pending.deletes.count
             let recordsToSave = try pending.saves.map {
                 Self.ckRecord(
                     from: $0,
@@ -572,7 +648,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 try store.deleteSystemFields(recordNames: [entry.name], zone: entry.zone)
             }
             try fixSystemFieldsForFailedSaves(failedSaves)
-            try shrinkBatch(after: failedSaves)
+            let batchSize = saved.count + deleted.count + failedSaves.count + failedDeletes.count
+            try shrinkBatch(after: failedSaves, batchSize: batchSize)
             lastError = nil
         } catch {
             recordError(error)
@@ -581,8 +658,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     /// An error from an engine send call itself rather than per record.
     func handleSendError(_ error: CKError) {
-        let errors = Self.flatten(error)
+        let errors = Self.flatten(error, zoneID: nil).map(\.error)
         applySendFailures(errors)
+        if errors.contains(where: { $0.code == .limitExceeded }) {
+            // A request-level rejection names no record: halve and retry.
+            batchLimit = max(1, batchLimit / 2)
+        }
         if !applyThrottle(from: errors), !errors.contains(where: { Self.handledSendCodes.contains($0.code) }) {
             recordError(error)
         }
@@ -630,11 +711,17 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private static let throttleCodes: Set<CKError.Code> = [.requestRateLimited, .zoneBusy]
     private static let handledSendCodes: Set<CKError.Code> = zoneGoneCodes.union([.quotaExceeded, .limitExceeded])
 
-    /// The per-item errors of a `.partialFailure`, or the error itself.
-    private static func flatten(_ error: CKError) -> [CKError] {
-        guard error.code == .partialFailure, let partial = error.partialErrorsByItemID else { return [error] }
-        let inner = partial.values.compactMap { $0 as? CKError }
-        return inner.isEmpty ? [error] : inner
+    /// The per-item errors of a `.partialFailure`, each with its zone when
+    /// the item key names one (a zone ID, or a record ID's zone), or the
+    /// error itself with `zoneID`.
+    private static func flatten(_ error: CKError, zoneID: CKRecordZone.ID?) -> [(zoneID: CKRecordZone.ID?, error: CKError)] {
+        guard error.code == .partialFailure, let partial = error.partialErrorsByItemID else { return [(zoneID, error)] }
+        let inner: [(zoneID: CKRecordZone.ID?, error: CKError)] = partial.compactMap { key, value in
+            guard let itemError = value as? CKError else { return nil }
+            let itemZone = (key as? CKRecordZone.ID) ?? (key as? CKRecord.ID)?.zoneID ?? zoneID
+            return (itemZone, itemError)
+        }
+        return inner.isEmpty ? [(zoneID, error)] : inner
     }
 
     /// Unlinked (`shared` scope) and the quota pause.
@@ -651,11 +738,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// `.limitExceeded`: halve the next batch and retry. A record that
     /// fails even alone is logged, dropped from the queue, and handed to
     /// the rejected-record handler, so it never retries forever.
-    private func shrinkBatch(after failures: [(record: CKRecord, error: CKError)]) throws {
+    private func shrinkBatch(after failures: [(record: CKRecord, error: CKError)], batchSize: Int) throws {
         let tooLarge = failures.filter { $0.error.code == .limitExceeded }
         guard !tooLarge.isEmpty else { return }
-        guard lastBatchSize <= 1 else {
-            batchLimit = max(1, lastBatchSize / 2)
+        guard batchSize <= 1 else {
+            batchLimit = max(1, batchSize / 2)
             return
         }
         for failure in tooLarge {
@@ -701,10 +788,24 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     private func throttleElapsed() async {
         throttledUntil = nil
-        guard !isPaused else { return }
+        guard !isPaused, !isUnlinked else { return }
+        let pending: (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)])
+        do {
+            pending = try store.pendingBatch(limit: 1)
+        } catch {
+            recordError(error)
+            return
+        }
+        guard !pending.saves.isEmpty || !pending.deletes.isEmpty else {
+            // Nothing waits to be sent (a fetch-only throttle): the stretch
+            // is over. The backoff stays until a request succeeds.
+            throttledSince = nil
+            return
+        }
         await resend()
     }
 
+    /// A request succeeded: the throttling stretch and its backoff end.
     private func clearThrottle() {
         throttledSince = nil
         throttledUntil = nil
@@ -719,15 +820,15 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     private func emitUnlinked(reason: String) {
-        guard !unlinkedEmitted else { return }
-        unlinkedEmitted = true
+        guard !isUnlinked else { return }
+        isUnlinked = true
         logger.notice("shared zones gone (\(reason, privacy: .public)); unlinked")
         eventHandler?(.unlinked)
     }
 
     /// Re-schedules the pending queue and asks the engine to send now.
     private func resend() async {
-        guard let engine else { return }
+        guard let engine, !isUnlinked else { return }
         nudgeEngine()
         do {
             try await engine.sendChanges()
