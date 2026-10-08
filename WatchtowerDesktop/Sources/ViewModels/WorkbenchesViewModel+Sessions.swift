@@ -33,9 +33,10 @@ extension WorkbenchesViewModel {
         /// `WorkspaceLayout.openBeside(_:keeping:)`.
         case beside(WorkspacePane)
         /// Off screen (a start from the phone, mobile POC spec §6.5): the
-        /// process starts, but nothing the owner sees changes — no switch
-        /// ticket (an owner's switch under way stays the latest), no focus,
-        /// no layout change, no title refresh of the session left.
+        /// process starts with no switch ticket (an owner's switch under way
+        /// stays the latest), no focus, no layout change and no title
+        /// refresh of the session left. Only a row found deleted on reopen
+        /// still leaves the layout, as on every path.
         case background
     }
 
@@ -52,6 +53,9 @@ extension WorkbenchesViewModel {
         /// The target is not on any workbench board.
         case notOnBoard
         /// A start for this target (here or a Work on it) is still running.
+        /// The guard is shared: an owner's Work on it on the same target
+        /// while a phone start is in flight is refused (silently, as a
+        /// double click is), and the owner can click again.
         case inProgress
         /// A read or write failed; the message says which.
         case failed(String)
@@ -259,6 +263,11 @@ extension WorkbenchesViewModel {
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
+        if placement == .background, terminalCenter == nil {
+            let message = "No terminal is available to start the session in."
+            reportStartError(message, projectID: askedIn, ticket: nil)
+            throw TargetStartError.failed(message)
+        }
         var ticket = placement == .background ? nil : beginSwitch(projectID: askedIn)
         let found: TargetSessions?
         do {
@@ -277,7 +286,9 @@ extension WorkbenchesViewModel {
             return try await reopen(existing, placement: placement, ticket: ticket)
         }
         let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
-        let brief = prompt ?? TerminalLaunch.workOnTargetPrompt(
+        // A blank brief is no brief: the work-on prompt goes instead.
+        let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let brief = given.flatMap { $0.isEmpty ? nil : $0 } ?? TerminalLaunch.workOnTargetPrompt(
             targetID: targetID, vocabulary: vocabulary(projectID: found.project.id)
         )
         return try await createAndActivate(
@@ -349,11 +360,13 @@ extension WorkbenchesViewModel {
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
         } catch {
-            await failed(session, "Could not open the session", error, ticket: ticket, background: ticket == nil)
-            throw TargetStartError.failed("Could not open the session: \(error.localizedDescription)")
+            throw TargetStartError.failed(
+                await failed(session, "Could not open the session", error, ticket: ticket, background: ticket == nil)
+            )
         }
         resumeFailed.remove(row.id)
         await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
+        if ticket == nil { try backgroundLaunchCheck(row) }
         return row
     }
 
@@ -537,7 +550,23 @@ extension WorkbenchesViewModel {
             throw TargetStartError.failed(message)
         }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket)
+        if ticket == nil { try backgroundLaunchCheck(row) }
         return row
+    }
+
+    /// No pane shows a background session, so a launch `TerminalCenter`
+    /// refused (`.unavailable`: the folder is gone, no valid Claude session
+    /// id) or could not make (no center) is the caller's failure, logged
+    /// and thrown, never a success.
+    private func backgroundLaunchCheck(_ row: TerminalSession) throws {
+        let failure: String? = switch terminalCenter?.states[row.id] {
+        case nil: "Session #\(row.id) did not start."
+        case let .unavailable(reason)?: reason
+        default: nil
+        }
+        guard let failure else { return }
+        reportStartError(failure, projectID: row.projectID, ticket: nil)
+        throw TargetStartError.failed(failure)
     }
 
     /// An owner's switch reports on the page (`reportSwitchError`); a
@@ -604,9 +633,11 @@ extension WorkbenchesViewModel {
     }
 
     /// `background`: logged, never on the page (`reportStartError`).
+    /// Returns the message it reported.
+    @discardableResult
     private func failed(
         _ session: TerminalSession, _ what: String, _ error: Error, ticket: Int? = nil, background: Bool = false
-    ) async {
+    ) async -> String {
         let message = "\(what): \(error.localizedDescription)"
         if background {
             reportStartError(message, projectID: session.projectID, ticket: nil)
@@ -619,6 +650,7 @@ extension WorkbenchesViewModel {
             forgetInLayout(session.id, projectID: projectID)
         }
         await loadSessions(projectID: session.projectID)
+        return message
     }
 
     private func forgetInLayout(_ sessionID: Int64, projectID: Int64) {

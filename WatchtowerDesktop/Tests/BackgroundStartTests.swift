@@ -219,6 +219,23 @@ final class BackgroundStartTests: XCTestCase {
         XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT= --dangerously-skip-permissions please")
     }
 
+    /// A blank brief is no brief: the work-on prompt goes, and plan first
+    /// follows it with no stray space.
+    func testABlankBriefFallsBackToTheWorkOnPrompt() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let vm = makeVM()
+
+        _ = try await vm.startForTarget(targetID: t, prompt: "  \n ", mode: .new, placement: .background)
+        _ = try await vm.startForTarget(targetID: t, prompt: "", mode: .new, placement: .background, planFirst: true)
+
+        let base = TerminalLaunch.workOnTargetPrompt(targetID: t, vocabulary: .current)
+        XCTAssertEqual(launches.map { $0.environment.last }, [
+            "WATCHTOWER_FIRST_PROMPT=\(base)",
+            "WATCHTOWER_FIRST_PROMPT=\(base) \(TerminalLaunch.planFirstSuffix)"
+        ])
+    }
+
     // MARK: - Failures
 
     func testATargetNotOnABoardFailsNotOnBoard() async throws {
@@ -232,5 +249,42 @@ final class BackgroundStartTests: XCTestCase {
             XCTAssertEqual(error, .notOnBoard)
         }
         XCTAssertTrue(launches.isEmpty)
+    }
+
+    /// The center refuses the launch (the workbench folder is gone): no pane
+    /// would show that, so the call fails — and the owner's page shows
+    /// nothing.
+    func testABackgroundStartWhoseLaunchIsRefusedThrows() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        try FileManager.default.removeItem(atPath: acme)
+        let vm = makeVM()
+
+        do {
+            _ = try await vm.startForTarget(targetID: t, prompt: nil, mode: .new, placement: .background)
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            guard case let .failed(reason) = error else { return XCTFail("got \(error)") }
+            XCTAssertTrue(reason.contains("no longer exists"), reason)
+        }
+        XCTAssertNil(vm.sessionErrors[p])
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    func testABackgroundStartWithNoTerminalCenterThrows() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: nil)
+
+        do {
+            _ = try await vm.startForTarget(targetID: t, prompt: nil, mode: .new, placement: .background)
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            guard case .failed = error else { return XCTFail("got \(error)") }
+        }
+        XCTAssertNil(vm.sessionErrors[p])
+        let stored = try await rows(p)
+        XCTAssertTrue(stored.isEmpty, "no row for a start that cannot run")
     }
 }
