@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check
+.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-archive
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -90,6 +90,66 @@ test-swift:
 kit-test:
 	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
+# iPhone app (WatchtowerMobile, an xcodegen project). Simulator device for
+# the mobile targets; override: make mobile-run SIM="iPhone 17e".
+SIM ?= iPhone 17 Pro
+MOBILE_PROJ := WatchtowerMobile/WatchtowerMobile.xcodeproj
+MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
+MOBILE_BUNDLE_ID := com.aiwatchtowers.watchtower.mobile
+# make mobile-test MOBILE_FILTER=SomeTestClass runs only that class; an
+# alternation (MOBILE_FILTER='ClassA|ClassB') becomes one -only-testing per class.
+MOBILE_ONLY := $(foreach t,$(subst |, ,$(MOBILE_FILTER)),-only-testing:WatchtowerMobileTests/$(t))
+
+# Regenerates WatchtowerMobile.xcodeproj from project.yml (never hand-edit it).
+mobile-gen:
+	cd WatchtowerMobile && xcodegen generate
+
+mobile-build:
+	xcodebuild build -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO
+
+# The test host shares one on-disk replica with the simulator's installed app
+# (spec §10), so the recipe boots the simulator and uninstalls the app first:
+# a stale replica would fail ReplicaWiringTests' exact counts.
+mobile-test:
+	xcrun simctl boot "$(SIM)" 2>/dev/null || true
+	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
+	xcodebuild test -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
+		-destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO $(MOBILE_ONLY)
+
+# Build, boot the simulator, install and launch: the mobile app-dev.
+mobile-run: mobile-build
+	xcrun simctl boot "$(SIM)" 2>/dev/null || true
+	open -a Simulator
+	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{d=$$3} / FULL_PRODUCT_NAME/{n=$$3} END{print d "/" n}')"
+	xcrun simctl launch "$(SIM)" $(MOBILE_BUNDLE_ID)
+
+# TestFlight archive: a Release archive for generic iOS plus an .ipa export
+# through the committed ExportOptions.plist. Needs the gitignored
+# WatchtowerMobile/Signing.xcconfig (a real DEVELOPMENT_TEAM). The upload
+# itself is manual (Xcode Organizer or Transporter).
+MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
+mobile-archive:
+	@if [ ! -f WatchtowerMobile/Signing.xcconfig ]; then \
+		echo "error: WatchtowerMobile/Signing.xcconfig not found; archiving needs a real signing identity."; \
+		echo ""; \
+		echo "  1. cp WatchtowerMobile/Signing.xcconfig.template WatchtowerMobile/Signing.xcconfig"; \
+		echo "  2. Fill in DEVELOPMENT_TEAM (developer.apple.com > Membership)."; \
+		echo "  3. One-time: open WatchtowerMobile/WatchtowerMobile.xcodeproj in Xcode with"; \
+		echo "     automatic signing so it registers the iCloud container, the app group"; \
+		echo "     and the provisioning profiles."; \
+		echo ""; \
+		echo "Signing.xcconfig is gitignored on purpose: never commit a team ID."; \
+		exit 1; \
+	fi
+	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
+		-configuration Release -destination 'generic/platform=iOS' \
+		-archivePath $(MOBILE_ARCHIVE)
+	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
+		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
+		-exportPath build/WatchtowerMobile-export
+	@echo "The .ipa is in build/WatchtowerMobile-export: upload it with Xcode Organizer or Transporter."
+
 # The suites that spawn child processes, on a one-thread Swift concurrency
 # pool: a blocking pipe read or waitUntilExit on a pool thread (instead of
 # ProcessPipes' own threads) hangs or times out here, as it did on the 3-core
@@ -128,6 +188,7 @@ lint-diff:
 lint-swift:
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
+	cd WatchtowerMobile && swiftlint lint --strict
 
 lint-all: lint lint-swift
 

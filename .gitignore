@@ -64,3 +64,9 @@ projects/-Users-user-PhpstormProjects-watchtower/
 
 # Monaco editor build, fetched by scripts/fetch-monaco.sh (code viewer POC)
 WatchtowerDesktop/Sources/CodeEditorWeb/vs/
+
+# iPhone app: local signing config (DEVELOPMENT_TEAM), see Signing.xcconfig.template
+WatchtowerMobile/Signing.xcconfig
+# Xcode per-user state (WatchtowerMobile.xcodeproj is committed; user data is not)
+xcuserdata/
+*.xcuserstate
