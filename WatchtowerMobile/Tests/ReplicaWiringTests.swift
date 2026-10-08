@@ -22,8 +22,16 @@ final class ReplicaWiringTests: XCTestCase {
         .terminalSession: 10,
         .ownerAsk: 6,
         .workbenchTarget: 13,
-        .workbenchComment: 2
+        .workbenchComment: 2,
+        .calendarEvent: 6,
+        .meetingTranscript: 1
     ]
+
+    /// A booted demo environment also has the job of the demo phone
+    /// recording (`DemoSeed.loadRecordingDemo`), which needs the ledger.
+    private var bootCounts: [SliceKind: Int] {
+        seededCounts.merging([.recordingJob: 1]) { _, new in new }
+    }
 
     private func count(_ kind: SliceKind, in store: ReplicaStore) async throws -> Int {
         try await store.reader.read { db in
@@ -58,14 +66,14 @@ final class ReplicaWiringTests: XCTestCase {
         let env = try managed(AppEnvironment())
         try await poll { env.lastSyncAt != nil }
 
-        for (kind, expected) in seededCounts {
+        for (kind, expected) in bootCounts {
             let rows = try await count(kind, in: env.store)
             XCTAssertEqual(rows, expected, "unexpected \(kind.rawValue) count after boot")
         }
         let total = try await env.store.reader.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
-        XCTAssertEqual(total, seededCounts.values.reduce(0, +), "a stale replica? uninstall the simulator app first")
+        XCTAssertEqual(total, bootCounts.values.reduce(0, +), "a stale replica? uninstall the simulator app first")
     }
 
     /// The seed in isolation, on a fresh store: same tally, no shared path.
@@ -125,7 +133,7 @@ final class ReplicaWiringTests: XCTestCase {
                 .online(macName: DemoSeed.macName),
                 "launch \(launch) must show the fresh heartbeat"
             )
-            for (kind, expected) in seededCounts {
+            for (kind, expected) in bootCounts {
                 let rows = try await count(kind, in: store)
                 XCTAssertEqual(rows, expected, "launch \(launch): unexpected \(kind.rawValue) count")
             }

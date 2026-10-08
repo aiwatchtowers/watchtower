@@ -2,8 +2,8 @@ import SwiftUI
 import UIKit
 
 /// The four tabs (spec §13 A4): Now, Workbench, Calendar and More. Now and
-/// Workbench come from sub-project B; Calendar is filled by C and shows its
-/// empty state until then. More holds Settings.
+/// Workbench come from sub-project B, Calendar from C. More holds Settings
+/// and the voice-note entry.
 struct RootTabView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case now, workbench, calendar, more
@@ -104,26 +104,9 @@ struct RootTabView: View {
         case .workbench:
             WorkbenchListView()
         case .calendar:
-            EmptyTabView(
-                title: "No events",
-                systemImage: "calendar",
-                message: "Your calendar from the Mac shows up here."
-            )
+            AgendaView()
         case .more:
             MoreView()
-        }
-    }
-}
-
-/// A tab's empty state, under its own navigation title.
-private struct EmptyTabView: View {
-    let title: String
-    let systemImage: String
-    let message: String
-
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView(title, systemImage: systemImage, description: Text(message))
         }
     }
 }

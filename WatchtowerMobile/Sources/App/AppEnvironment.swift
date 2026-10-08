@@ -50,6 +50,8 @@ final class AppEnvironment {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
+    /// The calendar slices as the Calendar and Now tabs draw them.
+    let calendarReplica = CalendarReplicaModel()
     /// The phone recorder (record a meeting or a voice note), owned for the
     /// app's lifetime so a capture survives any navigation.
     let recorder: PhoneRecorderController
@@ -158,6 +160,7 @@ final class AppEnvironment {
         settings.linkedDevice = device
         deviceSettings = settings
         workbenchReplica.start(store: store)
+        calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
         bootstrapTask = Task { await bootstrap() }
@@ -175,6 +178,7 @@ final class AppEnvironment {
                 // forgotten or the fresh seed never lands.
                 try store.resetSyncTokens()
                 try await DemoSeed.load(into: transport)
+                try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: Date())
             } catch {
                 Self.logger.error("DemoSeed failed: \(error.localizedDescription, privacy: .public)")
             }

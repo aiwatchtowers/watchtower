@@ -1,8 +1,7 @@
 import SwiftUI
 
-/// The Now tab: the date, the Mac chip, Waiting for you across every
-/// workbench and the session summary. Read-only; the next meeting card
-/// comes with sub-project C.
+/// The Now tab: the date, the Mac chip, the next meeting with Record,
+/// Waiting for you across every workbench and the session summary.
 struct NowView: View {
     @Environment(AppEnvironment.self) private var env
 
@@ -15,6 +14,7 @@ struct NowView: View {
                 content(NowModel(snapshot: replica.snapshot, now: context.date), date: context.date)
             }
             .navigationTitle("Now")
+            .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
             .refreshable { await env.refresh() }
         }
     }
@@ -34,6 +34,11 @@ struct NowView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(Color.secondary.opacity(0.12), in: Capsule())
+                }
+            }
+            if let next = NextMeetingCardModel(events: env.calendarReplica.snapshot.events, now: date, calendar: .current) {
+                Section {
+                    NextMeetingCardView(card: next)
                 }
             }
             Section {
@@ -59,5 +64,32 @@ struct NowView: View {
             }
         }
         .listStyle(.insetGrouped)
+    }
+}
+
+/// "Next · in 25 min", the title, "14:00–14:45 · 5 people · prep ready"
+/// and the red Record button; tap the card for the event.
+private struct NextMeetingCardView: View {
+    @Environment(AppEnvironment.self) private var env
+    let card: NextMeetingCardModel
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            NavigationLink(value: card.id) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(card.header).font(.caption.weight(.semibold)).foregroundStyle(PhoneTone.accent.color)
+                    Text(card.title).font(.headline)
+                    Text(card.line).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Button {
+                Task { await env.recorder.recordMeeting(card.meetingEvent) }
+            } label: {
+                Label("Record", systemImage: "record.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(PhoneTone.red.color)
+            .controlSize(.small)
+        }
     }
 }

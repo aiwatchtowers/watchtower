@@ -3,7 +3,7 @@ import WatchtowerKit
 
 /// The Now tab (spec §13 B2): the Mac chip, Waiting for you across every
 /// workbench (newest first, 20 shown) and the session summary chips. The
-/// next meeting card comes with sub-project C.
+/// next meeting card is `NextMeetingCardModel` (Calendar).
 struct NowModel {
     static let waitingLimit = 20
 

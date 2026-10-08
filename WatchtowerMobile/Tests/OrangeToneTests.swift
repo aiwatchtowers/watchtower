@@ -70,4 +70,34 @@ final class OrangeToneTests: XCTestCase {
         XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now).macChipTone, .orange)
         XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now.addingTimeInterval(800)).macChipTone, .orange)
     }
+
+    /// The calendar draws red (recording), purple (the Mac transcribing),
+    /// green and the accent; never orange (spec §14).
+    @MainActor
+    func testTheCalendarScreensNeverDrawOrange() async throws {
+        let now = Date()
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        try await DemoSeed.load(into: transport, now: now)
+        let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
+        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let calendar = try await store.reader.read { db in try CalendarReplicaSnapshot.read(from: db, store: store) }
+        let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
+
+        var uses: [ToneUse] = NextMeetingCardModel(events: calendar.events, now: now, calendar: .current)?.toneUses ?? []
+        for offset in -1...1 {
+            let day = Calendar.current.date(byAdding: .day, value: offset, to: now) ?? now
+            uses += AgendaDayModel(day: day, snapshot: calendar, recordings: recordings, now: now, calendar: .current)
+                .cards.flatMap(\.toneUses)
+        }
+        for event in calendar.events {
+            uses += try XCTUnwrap(EventDetailModel(
+                eventID: event.id, snapshot: calendar, recordings: recordings, now: now, calendar: .current
+            )).toneUses
+        }
+        XCTAssertTrue(uses.contains { $0.tone == .purple }, "the demo shows a recording the Mac is transcribing")
+        XCTAssertTrue(uses.contains { $0.tone == .red && $0.role == .recording })
+        XCTAssertFalse(uses.contains { $0.tone == .orange })
+    }
 }

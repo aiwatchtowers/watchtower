@@ -204,6 +204,7 @@ extension DemoSeed {
 
     enum DemoSeedError: Error {
         case missingID
+        case recordingNotRegistered
     }
 
     /// Payload builders: every required key with a neutral default, then the
