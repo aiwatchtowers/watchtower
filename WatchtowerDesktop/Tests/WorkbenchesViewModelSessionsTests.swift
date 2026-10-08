@@ -177,6 +177,102 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.last?.environment.last, "WATCHTOWER_FIRST_PROMPT=Work on target #\(second) using the watchtower-project skill.")
     }
 
+    /// A target with sub-targets on its workbench starts with the group
+    /// prompt (spec 2026-10-08); the group's session is its own row.
+    func testWorkOnAGroupStartsItsOwnSessionWithTheGroupPrompt() async throws {
+        let p = try await workbenchWithFolder()
+        let (group, child) = try await pool.write { db -> (Int64, Int64) in
+            let g = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Group")
+            let c = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Leaf", parentID: g)
+            return (g, c)
+        }
+        // A sub-task's own session does not stand in for the group's (spec decision 1).
+        _ = try await insertSession(.init(projectID: p, kind: .claude, title: "Leaf", targetID: child,
+                                          folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()))
+        let vm = makeVM()
+        await vm.reload()
+
+        await vm.workOn(targetID: group, targetText: "Group")
+        await vm.workOn(targetID: group, targetText: "Group")
+
+        let mine = try await rows(p).filter { $0.targetID == group }
+        XCTAssertEqual(mine.count, 1, "the second call reopens the group's session")
+        XCTAssertEqual(mine.first?.title, "Group")
+        XCTAssertEqual(launches.count, 1)
+        XCTAssertEqual(launches.first?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .current))")
+    }
+
+    /// The prompt is chosen at creation: a session started on a task keeps
+    /// its conversation once the target gains sub-targets.
+    func testATaskSessionStaysWhenTheTargetLaterBecomesAGroup() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
+        let vm = makeVM()
+        await vm.reload()
+        await vm.workOn(targetID: target, targetText: "Ship it")
+        _ = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Leaf", parentID: target) }
+
+        await vm.workOn(targetID: target, targetText: "Ship it")
+
+        let mine = try await rows(p).filter { $0.targetID == target }
+        XCTAssertEqual(mine.count, 1)
+        XCTAssertEqual(launches.count, 1)
+        XCTAssertEqual(launches.first?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
+    }
+
+    func testAChildInAnotherWorkbenchDoesNotMakeAGroup() async throws {
+        let p = try await workbenchWithFolder()
+        let other = try await workbenchWithFolder("other")
+        let target = try await pool.write { db -> Int64 in
+            let t = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Ship it")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: other, text: "Stray", parentID: t)
+            return t
+        }
+        let vm = makeVM()
+        await vm.reload()
+        await vm.workOn(targetID: target, targetText: "Ship it")
+        XCTAssertEqual(launches.first?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))")
+    }
+
+    func testAPhoneStartOnAGroupGetsTheGroupPromptAndThePlanFirstSuffix() async throws {
+        let p = try await workbenchWithFolder()
+        let group = try await pool.write { db -> Int64 in
+            let g = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Group")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Leaf", parentID: g)
+            return g
+        }
+        let vm = makeVM()
+        await vm.reload()
+        try await vm.startForTarget(targetID: group, prompt: nil, mode: .openExisting, placement: .background, planFirst: true)
+        let expected = "\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .current)) \(TerminalLaunch.planFirstSuffix)"
+        XCTAssertEqual(launches.first?.environment.last, "WATCHTOWER_FIRST_PROMPT=\(expected)")
+    }
+
+    /// A legacy folder's group prompt names the old skill, as the task prompt does.
+    func testWorkOnAGroupNamesTheLegacySkillOnceTheStatusSaysSo() async throws {
+        let p = try await workbenchWithFolder()
+        let group = try await pool.write { db -> Int64 in
+            let g = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Group")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: p, text: "Leaf", parentID: g)
+            return g
+        }
+        let status = #"{"skill":"missing","hook":true,"stop_hook":true,"mcp":true,"legacy":true,"legacy_skill":"unchanged"}"#
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data(status.utf8))),
+                                      defaults: defaults, terminalCenter: center)
+        vm.titleService = { _ in .init(title: "", written: false) }
+        await vm.reload()
+        await vm.refreshInstallStatus(projectID: p)
+        XCTAssertEqual(vm.vocabulary(projectID: p), .legacy)
+
+        await vm.workOn(targetID: group, targetText: "Group")
+
+        XCTAssertEqual(launches.last?.environment.last,
+                       "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.workOnGroupPrompt(targetID: group, vocabulary: .legacy))")
+    }
+
     /// Board #160: `/clear` moved Claude Code to a new session id, which the
     /// project's SessionStart hook stored on the row from another process.
     /// Opening it from a list loaded before that resumes the new id, not the

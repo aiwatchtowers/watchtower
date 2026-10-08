@@ -128,6 +128,7 @@ final class TerminalLaunchTests: XCTestCase {
         for vocabulary in [WorkbenchVocabulary.current, .legacy] {
             XCTAssertFalse(TerminalLaunch.firstRunPrompt(vocabulary).contains("'"))
             XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
+            XCTAssertFalse(TerminalLaunch.workOnGroupPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
         }
     }
 
@@ -143,8 +144,20 @@ final class TerminalLaunchTests: XCTestCase {
                        "Work on target #7 using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .legacy),
                        "Work on target #7 using the watchtower-project skill.")
+        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current),
+                       "Work on group #7 using the watchtower-workbench skill.")
+        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .legacy),
+                       "Work on group #7 using the watchtower-project skill.")
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, vocabulary: .current),
+                       TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current))
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, vocabulary: .current),
+                       TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .current))
         for vocabulary in [WorkbenchVocabulary.current, .legacy] {
-            for prompt in [TerminalLaunch.firstRunPrompt(vocabulary), TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary)] {
+            for prompt in [
+                TerminalLaunch.firstRunPrompt(vocabulary),
+                TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary),
+                TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary)
+            ] {
                 XCTAssertFalse(prompt.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
             }
         }
