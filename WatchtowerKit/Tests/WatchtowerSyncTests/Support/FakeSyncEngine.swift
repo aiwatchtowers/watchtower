@@ -17,6 +17,7 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     private var _recordZoneChanges: [CKSyncEngine.PendingRecordZoneChange] = []
     private var _fetchCount = 0
     private var _sendCount = 0
+    private var _cancelCount = 0
     private var fetchErrors: [Error]
     private let zones: Set<String>
     private var zoneQueryErrors: [Error]
@@ -45,6 +46,7 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     var recordZoneChanges: [CKSyncEngine.PendingRecordZoneChange] { lock.withLock { _recordZoneChanges } }
     var fetchCount: Int { lock.withLock { _fetchCount } }
     var sendCount: Int { lock.withLock { _sendCount } }
+    var cancelCount: Int { lock.withLock { _cancelCount } }
 
     func add(pendingDatabaseChanges changes: [CKSyncEngine.PendingDatabaseChange]) {
         lock.withLock { _databaseChanges += changes }
@@ -67,6 +69,10 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
 
     func sendChanges() async throws {
         lock.withLock { _sendCount += 1 }
+    }
+
+    func cancelOperations() async {
+        lock.withLock { _cancelCount += 1 }
     }
 
     func existingZoneNames() async throws -> Set<String> {

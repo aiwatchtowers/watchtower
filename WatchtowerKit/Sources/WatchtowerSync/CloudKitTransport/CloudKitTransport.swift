@@ -242,6 +242,21 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         nudgeEngine()
     }
 
+    /// Stops syncing until the next `start()` (the Mac owner turned the hub
+    /// off): cancels the engine's operations and drops it, so nothing is
+    /// fetched or sent on pushes any more. Saves made meanwhile wait in the
+    /// store; the engine state stays in the store for the next start.
+    public func stop() async {
+        retryTask?.cancel()
+        retryTask = nil
+        restartTask?.cancel()
+        restartTask = nil
+        let stopped = engine
+        engine = nil
+        delegateBox = nil
+        await stopped?.cancelOperations()
+    }
+
     /// Manual fetch — poll loops call this; push wake calls it implicitly
     /// when entitlements land. No-op while the engine is unavailable, the
     /// server asked us to wait, or the link is gone. Fetch errors the

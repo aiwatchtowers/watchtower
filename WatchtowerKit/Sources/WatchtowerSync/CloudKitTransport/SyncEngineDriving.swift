@@ -12,6 +12,9 @@ protocol SyncEngineDriving: AnyObject, Sendable {
     /// Names of this scope's zones that exist on the server (in `shared`
     /// scope: the zones of the owner shared with this participant).
     func existingZoneNames() async throws -> Set<String>
+    /// Cancels the engine's in-flight and scheduled operations (the owner
+    /// stopped the transport).
+    func cancelOperations() async
 }
 
 /// The production driver: a CKSyncEngine on the scope's database.
@@ -50,6 +53,10 @@ final class CKSyncEngineDriver: SyncEngineDriving, @unchecked Sendable {
 
     func sendChanges() async throws {
         try await engine.sendChanges()
+    }
+
+    func cancelOperations() async {
+        await engine.cancelOperations()
     }
 
     func existingZoneNames() async throws -> Set<String> {
