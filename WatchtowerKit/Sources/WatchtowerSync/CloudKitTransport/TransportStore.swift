@@ -75,6 +75,11 @@ public final class TransportStore: Sendable {
                     data BLOB NOT NULL,
                     PRIMARY KEY (record_name, zone)
                 );
+                CREATE TABLE IF NOT EXISTS scope (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    kind TEXT NOT NULL CHECK (kind IN ('private', 'shared')),
+                    owner_name TEXT
+                );
                 """)
             // notify_level (Plan 6) and asset_path (phone recording uploads)
             // arrived after store files could already exist on disk.
@@ -177,6 +182,21 @@ public final class TransportStore: Sendable {
             logger.warning("evicted \(orphanRowIDs.count, privacy: .public) pending rows with an unmappable zone")
         }
         return (saves, deletes)
+    }
+
+    /// Removes a record from the send queue whatever its stamp: the
+    /// transport gives up on a record CloudKit rejects even on its own
+    /// (`.limitExceeded` on a one-record batch), instead of retrying forever.
+    /// The row goes whatever it holds: if the record was re-queued for
+    /// deletion after the failed send, that delete is dropped too. Harmless
+    /// for a record CloudKit refused to store.
+    func dropPending(recordName: String, zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM pending WHERE record_name = ? AND zone = ?",
+                arguments: [recordName, zone.rawValue]
+            )
+        }
     }
 
     func clearPending(
@@ -369,19 +389,75 @@ public final class TransportStore: Sendable {
         }
     }
 
+    // MARK: - Database scope
+
+    /// The scope this store's state belongs to; nil for a store that never
+    /// recorded one (every store created before scopes existed was private).
+    public func storedScope() throws -> CloudDatabaseScope? {
+        try queue.read { db in try Self.readScope(db) }
+    }
+
+    func saveScope(_ scope: CloudDatabaseScope) throws {
+        try queue.write { db in try Self.writeScope(scope, db) }
+    }
+
+    /// Binds the store to `scope`. Engine state, system fields and buffered
+    /// events of one database mean nothing in the other, so a store that
+    /// recorded a DIFFERENT scope is wiped first. Returns whether it was.
+    /// A store with no recorded scope adopts this one and keeps its state.
+    @discardableResult
+    func adoptScope(_ scope: CloudDatabaseScope) throws -> Bool {
+        try queue.write { db in
+            let stored = try Self.readScope(db)
+            let wipe = stored != nil && stored != scope
+            if wipe { try Self.wipeState(db) }
+            try Self.writeScope(scope, db)
+            return wipe
+        }
+    }
+
+    private static func readScope(_ db: Database) throws -> CloudDatabaseScope? {
+        guard let row = try Row.fetchOne(db, sql: "SELECT kind, owner_name FROM scope WHERE id = 1") else { return nil }
+        switch row["kind"] as String {
+        case "shared":
+            return .shared(ownerName: row["owner_name"] ?? "")
+        default:
+            return .private
+        }
+    }
+
+    private static func writeScope(_ scope: CloudDatabaseScope, _ db: Database) throws {
+        let kind: String
+        let ownerName: String?
+        switch scope {
+        case .private: (kind, ownerName) = ("private", nil)
+        case .shared(let name): (kind, ownerName) = ("shared", name)
+        }
+        try db.execute(
+            sql: """
+                INSERT INTO scope (id, kind, owner_name) VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, owner_name = excluded.owner_name
+                """,
+            arguments: [kind, ownerName]
+        )
+    }
+
     // MARK: - Reset / retention / eviction
 
     /// Clears ALL adapter state in one transaction (schema stays). Called on
     /// a CloudKit account change: leaving stale system_fields behind would
     /// re-introduce the stale-change-tag wedge (a re-save of an old-account
     /// record carrying a change tag the new account's server never issued).
+    /// The recorded scope stays: it is link configuration, not account state.
     public func wipe() throws {
-        try queue.write { db in
-            try db.execute(sql: "DELETE FROM events")
-            try db.execute(sql: "DELETE FROM pending")
-            try db.execute(sql: "DELETE FROM system_fields")
-            try db.execute(sql: "DELETE FROM engine_state")
-        }
+        try queue.write { db in try Self.wipeState(db) }
+    }
+
+    private static func wipeState(_ db: Database) throws {
+        try db.execute(sql: "DELETE FROM events")
+        try db.execute(sql: "DELETE FROM pending")
+        try db.execute(sql: "DELETE FROM system_fields")
+        try db.execute(sql: "DELETE FROM engine_state")
     }
 
     /// Drops buffered events at or below a consumer's floor token for one zone.
