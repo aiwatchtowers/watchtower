@@ -29,7 +29,7 @@ final class FastLane: HubCompanion {
     /// observed as a whole: GRDB tracks tables, not `WHERE project_id IS NOT
     /// NULL`, and a personal target's write only costs one empty diff.
     nonisolated static let observedTables: [(table: String, kinds: Set<SliceKind>)] = [
-        ("owner_asks", [.ownerAsk, .terminalSession, .workbench, .workbenchTarget]),
+        ("owner_asks", [.ownerAsk, .askAlert, .terminalSession, .workbench, .workbenchTarget]),
         ("terminal_sessions", [.terminalSession, .workbench, .workbenchTarget]),
         ("project_comments", [.workbenchComment, .workbenchTarget]),
         ("targets", [.workbenchTarget, .workbench])

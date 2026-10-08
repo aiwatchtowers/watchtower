@@ -4,8 +4,9 @@ import WatchtowerSync
 
 /// The hub's sidecar database (`hubstate.db`, mobile POC spec §3): what was
 /// last pushed per DataZone record (`slice_state`), small hub values
-/// (`hub_meta`) and the exactly-once ledger of relay records
-/// (`relay_processed`, spec §5.2 rule 1).
+/// (`hub_meta`), the exactly-once ledger of relay records
+/// (`relay_processed`, spec §5.2 rule 1) and the asks already alerted
+/// (`alerted_asks`, spec §4.7).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -55,6 +56,11 @@ final class HubSyncState: Sendable {
                 CREATE TABLE IF NOT EXISTS hub_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS alerted_asks (
+                    ask_id INTEGER PRIMARY KEY,
+                    at REAL NOT NULL,
+                    generation INTEGER NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS relay_processed (
                     record_name TEXT PRIMARY KEY,
@@ -220,6 +226,61 @@ final class HubSyncState: Sendable {
         }
     }
 
+    // MARK: - Ask alerts (spec §4.7)
+
+    /// When an ask's `ask_alert` was first written, and in which sync
+    /// generation: an alert is published only in the generation that wrote
+    /// it, so a new account's zone never gets an alert for an old ask.
+    struct AlertedAsk: Equatable, Sendable {
+        let at: Date
+        let generation: Int
+    }
+
+    /// Remembers each of `askIDs` not alerted yet as alerted at `date` in
+    /// the current generation (a remembered one keeps its first stamp), and
+    /// returns every remembered ask. One write transaction, so two cycles
+    /// never alert one ask twice.
+    func markAlerted(_ askIDs: [Int64], at date: Date) throws -> [Int64: AlertedAsk] {
+        try queue.write { db in
+            let raw = try String.fetchOne(
+                db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [Self.generationKey]
+            )
+            let generation = raw.flatMap(Int.init) ?? 0
+            for id in askIDs {
+                try db.execute(
+                    sql: "INSERT INTO alerted_asks (ask_id, at, generation) VALUES (?, ?, ?) ON CONFLICT(ask_id) DO NOTHING",
+                    arguments: [id, date.timeIntervalSince1970, generation]
+                )
+            }
+            return try Self.fetchAlerted(db)
+        }
+    }
+
+    func alertedAsks() throws -> [Int64: AlertedAsk] {
+        try queue.read(Self.fetchAlerted)
+    }
+
+    /// Forgets the asks alerted before `date` that are not in `keeping` (the
+    /// asks still open): a closed ask never reopens, while an open one must
+    /// stay remembered, or it would alert a second time.
+    func pruneAlertedAsks(olderThan date: Date, keeping: Set<Int64>) throws {
+        try queue.write { db in
+            let stale = try Int64.fetchAll(
+                db, sql: "SELECT ask_id FROM alerted_asks WHERE at < ?", arguments: [date.timeIntervalSince1970]
+            )
+            for id in stale where !keeping.contains(id) {
+                try db.execute(sql: "DELETE FROM alerted_asks WHERE ask_id = ?", arguments: [id])
+            }
+        }
+    }
+
+    private static func fetchAlerted(_ db: Database) throws -> [Int64: AlertedAsk] {
+        let rows = try Row.fetchAll(db, sql: "SELECT ask_id, at, generation FROM alerted_asks")
+        return Dictionary(uniqueKeysWithValues: rows.map {
+            ($0["ask_id"] as Int64, AlertedAsk(at: Date(timeIntervalSince1970: $0["at"]), generation: $0["generation"]))
+        })
+    }
+
     // MARK: - Account-change reset
 
     /// Clears the sync state derived from the CloudKit account so the next
@@ -231,7 +292,8 @@ final class HubSyncState: Sendable {
     /// re-fetched zone still holds actions whose echo never reached the
     /// server — without the ledger they would be applied a second time
     /// (spec §8 I-3, §9). The hygiene stamp, the hub id and `enabled_at`
-    /// are kept too.
+    /// are kept too, and so are the alerted asks: the new account's zone
+    /// must not get an alert for an ask alerted before (spec §4.7).
     /// The generation counter is bumped so an in-flight publish cycle can
     /// detect the reset and abort before recording stale hashes.
     func wipeSyncState() throws {

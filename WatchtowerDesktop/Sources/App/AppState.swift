@@ -1884,7 +1884,9 @@ final class AppState {
             WorkbenchSlice(gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) }),
             WorkbenchTargetSlice(),
             WorkbenchCommentSlice(),
-            sessions
+            sessions,
+            OwnerAskSlice(),
+            AskAlertSlice(sidecar: storage.sidecar)
         ]
         let transport = storage.transport
         let publisher = SlicePublisher(

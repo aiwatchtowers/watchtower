@@ -293,6 +293,10 @@ final class FastLaneTests: XCTestCase {
         await awaitHubCondition("a target write nudges") { log.nudges.dropFirst(baseline).contains { $0.contains(.workbenchTarget) } }
         _ = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: bench.project) }
         await awaitHubCondition("an ask write nudges") { log.nudges.contains { $0.contains(.ownerAsk) } }
+        XCTAssertTrue(
+            log.nudges.contains { $0.isSuperset(of: [.ownerAsk, .askAlert]) },
+            "a new or closed ask nudges its alert with it"
+        )
         _ = try await pool.write { try TestDatabase.insertWorkbenchComment($0, projectID: bench.project, targetID: target) }
         await awaitHubCondition("a comment write nudges") { log.nudges.contains { $0.contains(.workbenchComment) } }
         let beforeSession = log.nudges.count
