@@ -66,6 +66,8 @@ final class SlicePublisher: Sendable {
     private let timing: Timing
     /// The fast lane's clock; tests pass fabricated instants.
     private let clock: @Sendable () -> ContinuousClock.Instant
+    /// Wall-clock stamps (`lastPublishAt`), the hub's injected clock.
+    private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: Constants.bundleID, category: "SlicePublisher")
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     private let lane = OSAllocatedUnfairLock(initialState: Lane())
@@ -81,7 +83,8 @@ final class SlicePublisher: Sendable {
         transport: any CloudSyncTransport & Sendable,
         sources: [any SliceSource],
         timing: Timing = .standard,
-        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
+        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.dbPool = dbPool
         self.state = state
@@ -89,6 +92,7 @@ final class SlicePublisher: Sendable {
         self.sources = sources
         self.timing = timing
         self.clock = clock
+        self.now = now
     }
 
     /// Oversized warnings actually emitted (the throttle's observable).
@@ -122,7 +126,8 @@ final class SlicePublisher: Sendable {
                 return outcome
             }
         }
-        lastPublish.withLock { $0 = Date() }
+        let finishedAt = now()
+        lastPublish.withLock { $0 = finishedAt }
         return outcome
     }
 

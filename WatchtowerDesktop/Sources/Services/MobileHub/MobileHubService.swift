@@ -79,6 +79,9 @@ final class MobileHubService {
     /// Bound on each CloudKit wait the heartbeat adds: the pull before the
     /// single-hub check and the iCloud user lookup.
     nonisolated static let defaultCloudTimeout: Duration = .seconds(30)
+    /// Heartbeat ticks failing in a row before the hub stops (3 × 300 s
+    /// outlasts the 720 s the phone waits before it shows the Mac offline).
+    nonisolated static let maxTickFailures = 3
 
     private(set) var status: HubStatus = .off
     /// The heartbeat's `sharing` field; the link center sets it once the
@@ -101,6 +104,8 @@ final class MobileHubService {
     @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
     /// The iCloud user record name, once looked up.
     @ObservationIgnored private var ownerUser: String?
+    /// Heartbeat ticks failed in a row; reset by a good tick and a start.
+    @ObservationIgnored private var tickFailures = 0
     @ObservationIgnored private let relayIdleInterval: Duration
     @ObservationIgnored private let relayActiveInterval: Duration
     @ObservationIgnored private let availabilityReprobeInterval: Duration
@@ -220,6 +225,7 @@ final class MobileHubService {
         case .claimed:
             break
         }
+        tickFailures = 0
         publisher.start()
         startRelayLoop()
         startHeartbeatLoop()
@@ -342,12 +348,21 @@ final class MobileHubService {
                 return false
             }
         }
-        if pulled == nil { logger.warning("heartbeat pull timed out; checking the buffered heartbeat") }
         guard status == .starting, epoch == startEpoch else { return nil }
         do {
+            // A pull that failed or timed out before this hub ever read the
+            // heartbeat leaves an empty buffer that proves nothing: claiming
+            // on it would silently take over a live hub (spec §8 I-1). Once
+            // a read completed, the buffered heartbeat decides.
+            if pulled != true, !takingOver, try !identity.hasReadHeartbeat() {
+                let why = pulled == nil ? "iCloud didn't answer in time" : "iCloud fetch failed"
+                logger.warning("single-hub check deferred: \(why, privacy: .public), no heartbeat read yet")
+                return .failed("Couldn't check which Mac is the hub: \(why)")
+            }
+            if pulled == nil { logger.warning("heartbeat pull timed out; checking the buffered heartbeat") }
             let hubID = try identity.hubID()
-            let read = try await identity.readHeartbeat(from: transport)
-            if !takingOver, let latest = read.latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {
+            let latest = try await identity.readHeartbeat(from: transport)
+            if !takingOver, let latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {
                 return .refused(macName: latest.macName)
             }
             await resolveOwnerUser()
@@ -371,28 +386,43 @@ final class MobileHubService {
         }
     }
 
-    /// One heartbeat tick: read the record first; another hub's live
-    /// heartbeat written since the last read stops this hub
-    /// (`.tookOver`), otherwise this hub's heartbeat is rewritten. Reads
-    /// only the local buffer the relay loop's pulls fill.
+    /// One heartbeat tick: read the record first. When the newest
+    /// heartbeat known is another hub's, live, and later than this hub's
+    /// own last write, that hub took over: this one stops (`.tookOver`).
+    /// Otherwise this hub's heartbeat is rewritten. Reads only the local
+    /// buffer the relay loop's pulls fill. `maxTickFailures` failures in a
+    /// row stop the hub as `.unavailable` (it could no longer see a take
+    /// over), and the reprobe loop restarts it through the full check.
     func heartbeatTick() async {
         guard status == .running else { return }
         let tickEpoch = epoch
         do {
             let hubID = try identity.hubID()
-            let read = try await identity.readHeartbeat(from: transport)
+            let latest = try await identity.readHeartbeat(from: transport)
             guard status == .running, epoch == tickEpoch else { return }
-            if let arrived = read.arrived, HubIdentity.isLiveForeign(arrived, hubID: hubID, now: now()) {
+            if let latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {
                 logger.notice("another Mac took over the hub; stopping")
                 stop()
-                status = .tookOver(arrived.macName)
+                status = .tookOver(latest.macName)
                 return
             }
             await resolveOwnerUser()
             guard status == .running, epoch == tickEpoch else { return }
             try await writeHeartbeat(hubID: hubID)
+            tickFailures = 0
         } catch {
-            logger.error("heartbeat tick failed: \(error.localizedDescription, privacy: .public)")
+            guard status == .running, epoch == tickEpoch else { return }
+            tickFailures += 1
+            // Logged on the first and the last failure of a run, not on every tick.
+            if tickFailures == 1 || tickFailures >= Self.maxTickFailures {
+                logger.error(
+                    "heartbeat tick failed (\(self.tickFailures, privacy: .public) in a row): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+            guard tickFailures >= Self.maxTickFailures else { return }
+            stop()
+            status = .unavailable("Couldn't check which Mac is the hub: \(error.localizedDescription)")
+            startReprobeLoop()
         }
     }
 
@@ -412,7 +442,9 @@ final class MobileHubService {
             ownerUser: ownerUser ?? "",
             sharing: sharing
         )
-        try await transport.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)])
+        let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)
+        try await transport.save([record])
+        try identity.remember(record.payload)
     }
 
     /// Looks the iCloud user up once (bounded); retried at the next write

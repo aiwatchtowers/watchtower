@@ -142,8 +142,20 @@ final class HubSingleHubTests: XCTestCase {
 
     func testAHungPullTimesOutAndTheBufferedHeartbeatDecides() async throws {
         let cloud = InMemoryCloudTransport()
+        let sidecar = try HubSyncState.inMemory()
+        _ = try await HubIdentity(sidecar: sidecar).readHeartbeat(from: cloud)  // an earlier run read the zone
         try await seed(foreignHeartbeat(age: 10, macName: "Mac B"), into: cloud)
         let transport = StubHubTransport(cloud: cloud)
+        transport.setPullHangs(true)
+        let hub = try makeHub(transport: transport, sidecar: sidecar, cloudTimeout: .milliseconds(50))
+
+        let result = await hub.enable()
+
+        XCTAssertEqual(result, .otherHub("Mac B"), "the check runs on the buffer once the pull times out")
+    }
+
+    func testAHungPullBeforeAnyHeartbeatReadDoesNotClaim() async throws {
+        let transport = StubHubTransport()
         transport.setPullHangs(true)
         let hub = try makeHub(
             transport: transport, sidecar: try HubSyncState.inMemory(), cloudTimeout: .milliseconds(50)
@@ -151,7 +163,25 @@ final class HubSingleHubTests: XCTestCase {
 
         let result = await hub.enable()
 
-        XCTAssertEqual(result, .otherHub("Mac B"), "the check runs on the buffer once the pull times out")
+        XCTAssertEqual(result, .unavailable("Couldn't check which Mac is the hub: iCloud didn't answer in time"))
+        XCTAssertFalse(hub.isPublishing)
+        XCTAssertTrue(try savedHeartbeats(transport).isEmpty, "an empty buffer is no proof that no hub is live")
+    }
+
+    func testAFailingPullBeforeAnyHeartbeatReadDoesNotClaim() async throws {
+        let transport = StubHubTransport()
+        transport.setPullFails(true)
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory())
+
+        let result = await hub.enable()
+
+        XCTAssertEqual(result, .unavailable("Couldn't check which Mac is the hub: iCloud fetch failed"))
+        XCTAssertFalse(hub.isPublishing)
+        XCTAssertTrue(try savedHeartbeats(transport).isEmpty)
+
+        transport.setPullFails(false)
+        let retried = await hub.enable()
+        XCTAssertEqual(retried, .running, "the next start with a good pull claims")
     }
 
     func testAnAccountResetForgetsTheHeartbeatReadState() async throws {
@@ -169,7 +199,7 @@ final class HubSingleHubTests: XCTestCase {
         }
         XCTAssertEqual(try identity.ensureEnabledAt(now.addingTimeInterval(60)), enabledAt, "enabled_at survives")
         let reread = try await identity.readHeartbeat(from: cloud)
-        XCTAssertEqual(reread.latest?.hubID, "hub-other", "re-read from the start")
+        XCTAssertEqual(reread?.hubID, "hub-other", "re-read from the start")
     }
 
     // MARK: - Take over
@@ -182,7 +212,10 @@ final class HubSingleHubTests: XCTestCase {
             transport: transportA, sidecar: try HubSyncState.inMemory(), host: testHostInfo(macName: "Mac A")
         )
         let sidecarB = try HubSyncState.inMemory()
-        let hubB = try makeHub(transport: transportB, sidecar: sidecarB, host: testHostInfo(macName: "Mac B"))
+        // B's clock runs a second later, so its take over is the later write.
+        let hubB = try makeHub(
+            transport: transportB, sidecar: sidecarB, host: testHostInfo(macName: "Mac B"), now: now.addingTimeInterval(1)
+        )
 
         let resultA = await hubA.enable()
         XCTAssertEqual(resultA, .running)
@@ -205,6 +238,88 @@ final class HubSingleHubTests: XCTestCase {
         await hubB.heartbeatTick()
         XCTAssertEqual(hubB.status, .running, "the new hub reads its own heartbeat and keeps running")
         XCTAssertEqual(try savedHeartbeats(transportB).count, 2)
+    }
+
+    func testATakenOverHubRestartsAtOnceOnATransportThatNeverEchoesItsOwnSaves() async throws {
+        let cloud = InMemoryCloudTransport()
+        let hubA = try makeHub(
+            transport: StubHubTransport(cloud: cloud), sidecar: try HubSyncState.inMemory(),
+            host: testHostInfo(macName: "Mac A")
+        )
+        let transportB = StubHubTransport(cloud: cloud, echoesOwnSaves: false)
+        let hubB = try makeHub(
+            transport: transportB, sidecar: try HubSyncState.inMemory(), host: testHostInfo(macName: "Mac B"),
+            now: now.addingTimeInterval(1)
+        )
+        await hubA.enable()
+        hubA.stop()
+        let refused = await hubB.enable()
+        XCTAssertEqual(refused, .otherHub("Mac A"))
+        let takeOver = await hubB.takeOver()
+        XCTAssertEqual(takeOver, .running)
+
+        hubB.stop()
+        await hubB.waitUntilStopped()
+        let restarted = await hubB.enable()
+
+        XCTAssertEqual(restarted, .running, "this hub's own heartbeat is the newest it knows, though never fetched back")
+        await hubB.heartbeatTick()
+        XCTAssertEqual(hubB.status, .running)
+    }
+
+    func testAForeignHeartbeatOlderThanThisHubsOwnArrivingLateKeepsItRunning() async throws {
+        let cloud = InMemoryCloudTransport()
+        let hub = try makeHub(transport: StubHubTransport(cloud: cloud, echoesOwnSaves: false), sidecar: try HubSyncState.inMemory())
+        let result = await hub.enable()
+        XCTAssertEqual(result, .running)
+
+        // The old hub's last write, made before this hub claimed, reaches the buffer late.
+        try await seed(foreignHeartbeat(age: 10, macName: "Mac B"), into: cloud)
+        await hub.heartbeatTick()
+        XCTAssertEqual(hub.status, .running, "an earlier write never beats this hub's later one")
+
+        // A write after this hub's own is a real take over.
+        try await seed(foreignHeartbeat(age: -5, macName: "Mac B"), into: cloud)
+        await hub.heartbeatTick()
+        XCTAssertEqual(hub.status, .tookOver("Mac B"))
+    }
+
+    func testThreeFailedTicksInARowStopTheHubAsUnavailable() async throws {
+        let transport = StubHubTransport()
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory())
+        await hub.enable()
+        XCTAssertEqual(MobileHubService.maxTickFailures, 3)
+
+        transport.setDataChangesFail(true)
+        await hub.heartbeatTick()
+        await hub.heartbeatTick()
+        transport.setDataChangesFail(false)
+        await hub.heartbeatTick()
+        transport.setDataChangesFail(true)
+        await hub.heartbeatTick()
+        await hub.heartbeatTick()
+        XCTAssertEqual(hub.status, .running, "a good tick resets the count")
+
+        await hub.heartbeatTick()
+
+        guard case .unavailable(let message) = hub.status else {
+            return XCTFail("expected .unavailable, got \(hub.status)")
+        }
+        XCTAssertTrue(message.hasPrefix("Couldn't check which Mac is the hub"), message)
+        XCTAssertFalse(hub.isPublishing)
+    }
+
+    func testLastPublishAtComesFromTheInjectedClock() async throws {
+        let instant = now
+        let clock: @Sendable () -> Date = { instant }
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: StubHubTransport(), sources: [], now: clock
+        )
+        XCTAssertNil(publisher.lastPublishAt)
+
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(publisher.lastPublishAt, instant)
     }
 
     func testAStaleForeignHeartbeatReadWhileRunningDoesNotStopTheHub() async throws {

@@ -18,14 +18,6 @@ struct HubIdentity: Sendable {
     /// A heartbeat under this age is a live hub (spec §3: 720 s).
     static let liveWindow = TimeInterval(RelayFeed.heartbeatStaleAfter.components.seconds)
 
-    /// What one heartbeat read found.
-    struct HeartbeatRead: Equatable {
-        /// The newest heartbeat this hub knows of, its own or a foreign one.
-        let latest: HeartbeatPayload?
-        /// The heartbeat written since the previous read, if one was.
-        let arrived: HeartbeatPayload?
-    }
-
     let sidecar: HubSyncState
     private let logger = Logger(subsystem: Constants.bundleID, category: "HubIdentity")
 
@@ -46,25 +38,25 @@ struct HubIdentity: Sendable {
         return Date(timeIntervalSince1970: seconds)
     }
 
-    /// Reads DataZone changes since the stored cursor and remembers the
-    /// newest `heartbeat` among them. An undecodable heartbeat (a newer
-    /// Mac's format) is logged and leaves the last decoded one in place.
-    func readHeartbeat(from transport: any CloudSyncTransport) async throws -> HeartbeatRead {
+    /// Reads DataZone changes since the stored cursor and returns the
+    /// newest heartbeat this hub knows of, its own included (by
+    /// `updated_at`: a heartbeat older than the one remembered never
+    /// replaces it, so a late-arriving write loses to a later one). An
+    /// undecodable heartbeat (a newer Mac's format) is logged and leaves
+    /// the remembered one in place.
+    func readHeartbeat(from transport: any CloudSyncTransport) async throws -> HeartbeatPayload? {
         let cursor = try sidecar.metaValue(forKey: Self.heartbeatCursorKey)
             .flatMap(Int.init)
             .map(CloudChangeToken.init(value:))
         let batch = try await transport.changes(in: .data, since: cursor)
         var latest = try storedHeartbeat()
-        var arrived: HeartbeatPayload?
         if let record = batch.changed.first(where: { $0.recordName == HeartbeatPayload.recordName }) {
             do {
                 let heartbeat = try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: record.payload)
-                guard let raw = String(bytes: record.payload, encoding: .utf8) else {
-                    throw HubIdentityError.corruptValue(Self.heartbeatSeenKey)
+                if latest.map({ heartbeat.updatedAt > $0.updatedAt }) ?? true {
+                    try remember(record.payload)
+                    latest = heartbeat
                 }
-                try sidecar.setMetaValue(raw, forKey: Self.heartbeatSeenKey)
-                latest = heartbeat
-                arrived = heartbeat
             } catch {
                 logger.warning("undecodable heartbeat skipped: \(error.localizedDescription, privacy: .public)")
             }
@@ -73,7 +65,24 @@ struct HubIdentity: Sendable {
             latest = nil
         }
         try sidecar.setMetaValue(String(batch.newToken.value), forKey: Self.heartbeatCursorKey)
-        return HeartbeatRead(latest: latest, arrived: arrived)
+        return latest
+    }
+
+    /// Stores `payload` (RelayCoder JSON) as the newest heartbeat known.
+    /// The hub calls it with each heartbeat it writes: CloudKit never
+    /// fetches a device's own saves back into its buffer, so the read
+    /// alone would keep the previous hub's heartbeat as the newest.
+    func remember(_ payload: Data) throws {
+        guard let raw = String(bytes: payload, encoding: .utf8) else {
+            throw HubIdentityError.corruptValue(Self.heartbeatSeenKey)
+        }
+        try sidecar.setMetaValue(raw, forKey: Self.heartbeatSeenKey)
+    }
+
+    /// Whether a heartbeat read ever completed in this account (the cursor
+    /// exists). Until then an empty buffer proves nothing.
+    func hasReadHeartbeat() throws -> Bool {
+        try sidecar.metaValue(forKey: Self.heartbeatCursorKey) != nil
     }
 
     private func storedHeartbeat() throws -> HeartbeatPayload? {
