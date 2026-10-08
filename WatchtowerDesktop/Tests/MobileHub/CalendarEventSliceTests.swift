@@ -162,6 +162,20 @@ final class CalendarEventSliceTests: XCTestCase {
         XCTAssertEqual(try ids(), ["evt-b"])
     }
 
+    func testCopiesThatBothHaveAConferenceLinkKeepTheLowestID() throws {
+        let start = now.addingTimeInterval(7200)
+        try insertEvent(
+            "evt-b", start: start, icalUID: "uid-1@example.com", conferenceURL: "https://meet.example.com/b",
+            calendarID: "cal-b"
+        )
+        try insertEvent(
+            "evt-a", start: start, icalUID: "uid-1@example.com", conferenceURL: "https://meet.example.com/a",
+            calendarID: "cal-a"
+        )
+        XCTAssertEqual(try ids(), ["evt-a"])
+        XCTAssertEqual(try payload("evt-a")["conference_url"] as? String, "https://meet.example.com/a")
+    }
+
     func testCopiesWithoutAConferenceLinkKeepTheLowestID() throws {
         let start = now.addingTimeInterval(7200)
         try insertEvent("evt-b", start: start, icalUID: "uid-1@example.com", calendarID: "cal-b")
@@ -258,6 +272,32 @@ final class CalendarEventSliceTests: XCTestCase {
         XCTAssertEqual((payload["attendees_more"] as? NSNumber)?.intValue, 1)
     }
 
+    /// Go stores a nil attendee slice as `null` (an event without guests):
+    /// an empty list, not an unreadable one.
+    func testNullOrEmptyAttendeesAreAnEmptyListWithoutAWarning() throws {
+        try insertEvent("evt-null", attendees: "null")
+        try insertEvent("evt-empty", attendees: "")
+        let before = CalendarEventSlice.warningCount
+        for (id, json) in [("evt-null", "null"), ("evt-empty", "")] {
+            XCTAssertEqual((try payload(id)["attendees"] as? [Any])?.count, 0)
+            XCTAssertFalse(CalendarEventSlice.hasWarned(.attendees, id: id, content: json))
+        }
+        XCTAssertEqual(CalendarEventSlice.warningCount, before)
+    }
+
+    func testUnreadableAttendeesWarnOncePerContent() throws {
+        let id = "evt-bad-\(UUID().uuidString)"
+        try insertEvent(id, attendees: #"{"email":"a@example.com"}"#)
+        let before = CalendarEventSlice.warningCount
+        XCTAssertEqual((try payload(id)["attendees"] as? [Any])?.count, 0)
+        _ = try payloads()
+        XCTAssertTrue(CalendarEventSlice.hasWarned(.attendees, id: id, content: #"{"email":"a@example.com"}"#))
+        XCTAssertEqual(CalendarEventSlice.warningCount, before + 1, "a second tick does not warn again")
+        try dbPool.write { try $0.execute(sql: "UPDATE calendar_events SET attendees = '[1]' WHERE id = ?", arguments: [id]) }
+        _ = try payloads()
+        XCTAssertEqual(CalendarEventSlice.warningCount, before + 2, "changed content warns again")
+    }
+
     func testTitleAndLocationClipAtThreeHundred() throws {
         try insertEvent("evt-1", title: String(repeating: "t", count: 301))
         try dbPool.write {
@@ -308,12 +348,17 @@ final class CalendarEventSliceTests: XCTestCase {
         XCTAssertEqual(bullet.last, "…")
     }
 
-    func testUnreadablePrepIsLeftOut() throws {
-        try insertEvent("evt-1")
-        try dbPool.write { try TestDatabase.insertMeetingPrep($0, eventID: "evt-1", resultJSON: "not json") }
-        let payload = try payload("evt-1")
+    func testUnreadablePrepIsLeftOutAndWarnsOnce() throws {
+        let id = "evt-prep-\(UUID().uuidString)"
+        try insertEvent(id)
+        try dbPool.write { try TestDatabase.insertMeetingPrep($0, eventID: id, resultJSON: "not json") }
+        let before = CalendarEventSlice.warningCount
+        let payload = try payload(id)
+        _ = try payloads()
         XCTAssertEqual(payload["prep_bullets"] as? [String], [])
         XCTAssertNil(payload["prep_generated_at"])
+        XCTAssertTrue(CalendarEventSlice.hasWarned(.prep, id: id, content: "not json"))
+        XCTAssertEqual(CalendarEventSlice.warningCount, before + 1)
     }
 
     // MARK: - Linked targets
@@ -335,6 +380,17 @@ final class CalendarEventSliceTests: XCTestCase {
         let linked = try XCTUnwrap(try payload("evt-1")["linked_targets"] as? [[String: Any]])
         XCTAssertEqual(linked.compactMap { ($0["id"] as? NSNumber)?.int64Value }, [personal], "board target \(board) and a deleted id drop out")
         XCTAssertEqual(linked.first?["status"] as? String, "in_progress")
+    }
+
+    func testUnreadableChaptersWarnOnceAndLinkNothing() throws {
+        try insertEvent("evt-1")
+        let transcript = Int64.random(in: 1_000_000...9_000_000)
+        try dbPool.write { try TestDatabase.insertMeetingTranscript($0, id: transcript, eventID: "evt-1", chaptersJSON: "{oops") }
+        let before = CalendarEventSlice.warningCount
+        XCTAssertEqual((try payload("evt-1")["linked_targets"] as? [Any])?.count, 0)
+        _ = try payloads()
+        XCTAssertTrue(CalendarEventSlice.hasWarned(.chapters, id: String(transcript), content: "{oops"))
+        XCTAssertEqual(CalendarEventSlice.warningCount, before + 1)
     }
 
     func testLinkedTargetsCapAtTwentyAndClipTheirText() throws {

@@ -8,7 +8,7 @@ import WatchtowerSync
 /// `calendar_event-<calendar_events.id>`: a capped projection of each event
 /// in the window, never the raw row (`raw_json` is not even read).
 ///
-/// Window: events overlapping local today 00:00 − 1 day … now + 14 days
+/// Window: events overlapping local today 00:00 − 1 day … now + 14 calendar days
 /// (the `CalendarQueries.fetchEvents` overlap rule, so an event running
 /// over midnight into the first day is kept), not `cancelled`, ≤ 500,
 /// earliest first. An all-day event is placed by its stored calendar day
@@ -247,8 +247,11 @@ struct CalendarEventSlice: SliceSource {
             """, arguments: StatementArguments(eventIDs)) {
             let eventID: String = row["event_id"]
             let json: String = row["result_json"]
-            guard let result = try? JSONDecoder().decode(PrepResult.self, from: Data(json.utf8)) else {
-                logger.warning("unreadable meeting prep for event \(eventID, privacy: .public) left out")
+            let result: PrepResult
+            do {
+                result = try JSONDecoder().decode(PrepResult.self, from: Data(json.utf8))
+            } catch {
+                warnOnce(.prep, id: eventID, content: json, error: error)
                 continue
             }
             let bullets = (result.talkingPoints ?? []).compactMap(\.text) + (result.suggestedPrep ?? [])
@@ -267,11 +270,18 @@ struct CalendarEventSlice: SliceSource {
         guard !eventIDs.isEmpty else { return [:] }
         var converted: [(event: String, target: Int64)] = []
         for row in try Row.fetchAll(db, sql: """
-            SELECT event_id, chapters_json FROM meeting_transcripts
-            WHERE chapters_json IS NOT NULL AND event_id IN (\(placeholders(eventIDs.count)))
+            SELECT id, event_id, chapters_json FROM meeting_transcripts
+            WHERE chapters_json IS NOT NULL AND chapters_json != '' AND event_id IN (\(placeholders(eventIDs.count)))
             ORDER BY created_at, id
             """, arguments: StatementArguments(eventIDs)) {
-            guard let chapters = MeetingChapters.decode(row["chapters_json"]) else { continue }
+            let json: String = row["chapters_json"]
+            let chapters: MeetingChapters
+            do {
+                chapters = try JSONDecoder().decode(MeetingChapters.self, from: Data(json.utf8))
+            } catch {
+                warnOnce(.chapters, id: String(row["id"] as Int64), content: json, error: error)
+                continue
+            }
             let event: String = row["event_id"]
             for item in chapters.chapters.flatMap(\.actionItems) {
                 if let target = item.convertedTargetID { converted.append((event, target)) }
@@ -334,16 +344,49 @@ struct CalendarEventSlice: SliceSource {
         )
     }
 
-    /// The stored attendees JSON reduced to three keys; an unreadable list
-    /// is logged and published empty.
+    /// The stored attendees JSON reduced to three keys. `null` (Go's nil
+    /// slice, an event without guests) and "" are an empty list; an
+    /// unreadable list is logged and published empty.
     private static func attendees(_ event: CalendarEvent) -> [Attendee] {
+        let json = event.attendees
+        guard !json.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         do {
-            return try JSONDecoder().decode([Attendee].self, from: Data(event.attendees.utf8))
+            return try JSONDecoder().decode([Attendee]?.self, from: Data(json.utf8)) ?? []
         } catch {
-            logger.warning("unreadable attendees on event \(event.id, privacy: .public) published empty")
+            warnOnce(.attendees, id: event.id, content: json, error: error)
             return []
         }
     }
 
+    // MARK: - Warnings
+
+    enum Unreadable: String {
+        case prep = "meeting prep"
+        case attendees
+        case chapters = "chapters_json"
+    }
+
+    /// Logs an unreadable source once per row and content: the 10 s tick
+    /// re-reads it, and a changed value warns again.
+    private static func warnOnce(_ what: Unreadable, id: String, content: String, error: Error) {
+        guard warned.withLock({ $0.insert(warnKey(what, id: id, content: content)).inserted }) else { return }
+        logger.warning(
+            "unreadable \(what.rawValue, privacy: .public) on \(id, privacy: .public) left out: \(String(describing: error), privacy: .public)"
+        )
+    }
+
+    /// Whether `warnOnce` logged this row's content (the test seam).
+    static func hasWarned(_ what: Unreadable, id: String, content: String) -> Bool {
+        warned.withLock { $0.contains(warnKey(what, id: id, content: content)) }
+    }
+
+    /// How many distinct warnings were logged (the test seam).
+    static var warningCount: Int { warned.withLock { $0.count } }
+
+    private static func warnKey(_ what: Unreadable, id: String, content: String) -> String {
+        "\(what.rawValue)\u{0}\(id)\u{0}\(content.hashValue)"
+    }
+
+    private static let warned = OSAllocatedUnfairLock<Set<String>>(initialState: [])
     private static let logger = Logger(subsystem: Constants.bundleID, category: "CalendarEventSlice")
 }
