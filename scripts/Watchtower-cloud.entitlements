@@ -8,7 +8,9 @@
          entitlements, and amfid kills an ad-hoc signed app that carries them,
          so `make app-dev` keeps the base file. Keep the base keys below in
          sync with Watchtower.entitlements (scripts/tests/test-build-app-cloud.sh
-         checks it). One container for every build flavor. -->
+         checks it). One container for every build flavor. The application and
+         team identifiers are merged in at sign time from the provisioning
+         profile (build-app.sh provision-profile-check), never written here. -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
     <key>com.apple.security.network.client</key>
@@ -25,6 +27,11 @@
     <array>
         <string>CloudKit</string>
     </array>
+    <!-- Xcode adds this on a Developer ID export; a hand-signed build must
+         carry it so CloudKit talks to the Production environment the phone
+         uses. -->
+    <key>com.apple.developer.icloud-container-environment</key>
+    <string>Production</string>
     <!-- CKSyncEngine pushes. macOS spells the key with the
          com.apple.developer. prefix; Developer ID signing needs production. -->
     <key>com.apple.developer.aps-environment</key>

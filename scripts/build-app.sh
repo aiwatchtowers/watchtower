@@ -56,6 +56,58 @@ ENTITLEMENTS="$SCRIPT_DIR/Watchtower.entitlements"
 # Mobile hub (iCloud/CloudKit + push): restricted entitlements, used only on
 # the real-identity branch with an embedded provisioning profile (app-codesign).
 ENTITLEMENTS_CLOUD="$SCRIPT_DIR/Watchtower-cloud.entitlements"
+# CFBundleIdentifier of the app (Info.plist below). Every flavor shares it, so
+# one provisioning profile serves them all.
+BUNDLE_ID="com.watchtower.desktop"
+
+# BEGIN provision-profile-check (extracted verbatim by scripts/tests/test-build-app-cloud.sh)
+# WATCHTOWER_PROVISION_PROFILE (optional; usually set in the build profile)
+# names a Developer ID provisioning profile for App ID $BUNDLE_ID that grants
+# the mobile hub's iCloud container. It is checked here, before the long Swift
+# build, so a wrong profile fails fast. A hand-signed app with restricted
+# entitlements must also carry com.apple.application-identifier and
+# com.apple.developer.team-identifier matching the profile (Xcode adds them;
+# codesign does not), so they are copied out of the profile into a temporary
+# copy of the cloud entitlements — the team id is never written in the repo.
+# Sets PROVISION_PROFILE and SIGNED_CLOUD_ENTITLEMENTS (both empty without a
+# profile); app-codesign embeds and uses them on the real-identity branch.
+HUB_CONTAINER="iCloud.com.aiwatchtowers.watchtower"
+PROVISION_PROFILE=""
+SIGNED_CLOUD_ENTITLEMENTS=""
+if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ]; then
+    case "$WATCHTOWER_PROVISION_PROFILE" in
+        /*) PROVISION_PROFILE="$WATCHTOWER_PROVISION_PROFILE" ;;
+        *) PROVISION_PROFILE="$PROJECT_ROOT/$WATCHTOWER_PROVISION_PROFILE" ;;
+    esac
+    if [ ! -f "$PROVISION_PROFILE" ]; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' not found — refusing to build without the mobile hub it asked for" >&2
+        exit 1
+    fi
+    PROFILE_WORK_DIR=$(mktemp -d)
+    trap 'rm -rf "$PROFILE_WORK_DIR"' EXIT
+    PROFILE_PLIST="$PROFILE_WORK_DIR/profile.plist"
+    if ! security cms -D -i "$PROVISION_PROFILE" > "$PROFILE_PLIST" 2> "$PROFILE_WORK_DIR/cms.err"; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' could not be decoded (security cms -D): $(cat "$PROFILE_WORK_DIR/cms.err")" >&2
+        exit 1
+    fi
+    PROFILE_APP_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$PROFILE_PLIST" 2>/dev/null || true)
+    PROFILE_TEAM_ID=$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.team-identifier' "$PROFILE_PLIST" 2>/dev/null || true)
+    if [ -z "$PROFILE_TEAM_ID" ] || [ "$PROFILE_APP_ID" != "$PROFILE_TEAM_ID.$BUNDLE_ID" ]; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' is for App ID '${PROFILE_APP_ID:-<none>}' (team '${PROFILE_TEAM_ID:-<none>}'); the app is <TEAM>.$BUNDLE_ID — make a Developer ID profile for that App ID" >&2
+        exit 1
+    fi
+    if ! /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.icloud-container-identifiers' "$PROFILE_PLIST" 2>/dev/null \
+        | sed -E 's/^[[:space:]]+//' | grep -qxF "$HUB_CONTAINER"; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' does not grant the iCloud container $HUB_CONTAINER" >&2
+        exit 1
+    fi
+    SIGNED_CLOUD_ENTITLEMENTS="$PROFILE_WORK_DIR/Watchtower-cloud.entitlements"
+    cp "$ENTITLEMENTS_CLOUD" "$SIGNED_CLOUD_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $PROFILE_APP_ID" "$SIGNED_CLOUD_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $PROFILE_TEAM_ID" "$SIGNED_CLOUD_ENTITLEMENTS"
+    echo "==> Provisioning profile OK: $PROFILE_APP_ID with $HUB_CONTAINER"
+fi
+# END provision-profile-check
 
 # Parse flags
 DEV_MODE=false
@@ -256,7 +308,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
     <key>CFBundleExecutable</key>
     <string>WatchtowerDesktop</string>
     <key>CFBundleIdentifier</key>
-    <string>com.watchtower.desktop</string>
+    <string>$BUNDLE_ID</string>
     <key>CFBundleName</key>
     <string>Watchtower</string>
     <key>CFBundleDisplayName</key>
@@ -415,28 +467,21 @@ fi
 # END signing-identity-selection
 
 # BEGIN app-codesign (extracted verbatim by scripts/tests/test-build-app-cloud.sh)
-# The mobile hub needs the iCloud container, CloudKit and push entitlements
-# (Watchtower-cloud.entitlements). They are restricted: they take effect only
-# with a real identity and an embedded Developer ID provisioning profile that
-# grants them (WATCHTOWER_PROVISION_PROFILE → Contents/embedded.provisionprofile;
-# a relative path resolves against the project root). Without a profile the
-# bundle signs with the base entitlements and the hub reports "Needs a signed
-# build". Ad-hoc never gets them: amfid kills an ad-hoc app that carries
-# restricted entitlements. Every flavor uses the same container.
+# The mobile hub needs the iCloud container, CloudKit and push entitlements.
+# They are restricted: they take effect only with a real identity and an
+# embedded Developer ID provisioning profile that grants them, checked and
+# merged by provision-profile-check (PROVISION_PROFILE →
+# Contents/embedded.provisionprofile, SIGNED_CLOUD_ENTITLEMENTS). Without a
+# profile the bundle signs with the base entitlements and the hub reports
+# "Needs a signed build". Ad-hoc never gets them: amfid kills an ad-hoc app
+# that carries restricted entitlements. The block has no flavor logic on
+# purpose — every flavor uses the same container.
 if [ "$SIGN_IDENTITY" != "-" ]; then
     echo "==> Code signing with: $SIGN_IDENTITY"
     BUNDLE_ENTITLEMENTS="$ENTITLEMENTS"
-    if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ]; then
-        case "$WATCHTOWER_PROVISION_PROFILE" in
-            /*) PROVISION_PROFILE="$WATCHTOWER_PROVISION_PROFILE" ;;
-            *) PROVISION_PROFILE="$PROJECT_ROOT/$WATCHTOWER_PROVISION_PROFILE" ;;
-        esac
-        if [ ! -f "$PROVISION_PROFILE" ]; then
-            echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' not found — refusing to sign without the mobile hub it asked for" >&2
-            exit 1
-        fi
+    if [ -n "$PROVISION_PROFILE" ]; then
         cp "$PROVISION_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
-        BUNDLE_ENTITLEMENTS="$ENTITLEMENTS_CLOUD"
+        BUNDLE_ENTITLEMENTS="$SIGNED_CLOUD_ENTITLEMENTS"
         echo "    Embedded provisioning profile: $PROVISION_PROFILE (iCloud/CloudKit + push entitlements)"
     else
         echo "    WARNING: mobile hub disabled: no provisioning profile (set WATCHTOWER_PROVISION_PROFILE) — signing with the base entitlements."
@@ -447,6 +492,9 @@ if [ "$SIGN_IDENTITY" != "-" ]; then
 else
     echo "==> Ad-hoc code signing..."
     echo "    WARNING: $ADHOC_REASON"
+    if [ -n "$PROVISION_PROFILE" ]; then
+        echo "    NOTE: provisioning profile ignored: ad-hoc signing (the mobile hub needs a real identity)."
+    fi
     echo "    Signing ad-hoc: TCC permission grants (microphone, system audio) will"
     echo "    NOT survive rebuilds — the grant is pinned to the bundle's cdhash,"
     echo "    which changes every build."
