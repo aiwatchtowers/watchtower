@@ -281,11 +281,11 @@ final class TerminalCenter {
 
     /// The pause between a hand-off's paste and its Return, so the TUI has
     /// taken the paste in before the key arrives.
-    static let submitDelay: Duration = .milliseconds(150)
+    nonisolated static let submitDelay: Duration = .milliseconds(150)
     /// The same pause for an ask's answer (board #379): longer, since an
     /// answer is not urgent and the re-read after it then also sees a
     /// permission prompt whose async hook landed a little late.
-    static let answerSubmitDelay: Duration = .milliseconds(500)
+    nonisolated static let answerSubmitDelay: Duration = .milliseconds(500)
 
     /// How a hand-off reached the session.
     enum HandoffDelivery: Equatable {
