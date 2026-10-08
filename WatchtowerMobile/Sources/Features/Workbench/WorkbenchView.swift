@@ -3,7 +3,7 @@ import SwiftUI
 /// The Workbench tab, level 2: a title switcher over the workbenches, New
 /// session (wired with the start flow), the mono subline and the Sessions |
 /// Board segment. Sessions holds the Waiting-for-you stack, its closed asks
-/// and the SESSIONS list. Read-only.
+/// and the SESSIONS list. On Board, + opens New target.
 struct WorkbenchView: View {
     enum Segment: String, CaseIterable, Identifiable {
         case sessions = "Sessions"
@@ -13,19 +13,22 @@ struct WorkbenchView: View {
     }
 
     let replica: WorkbenchReplicaModel
+    let writer: BoardWriter
     @State private var workbenchID: Int64
     @State private var segment = Segment.sessions
     @State private var showClosed = false
+    @State private var addingTarget = false
 
-    init(replica: WorkbenchReplicaModel, workbenchID: Int64) {
+    init(replica: WorkbenchReplicaModel, writer: BoardWriter, workbenchID: Int64) {
         self.replica = replica
+        self.writer = writer
         _workbenchID = State(initialValue: workbenchID)
     }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             if let menu = WorkbenchMenuModel(workbenchID: workbenchID, snapshot: replica.snapshot, now: context.date) {
-                content(menu)
+                content(menu, now: context.date)
             } else {
                 ContentUnavailableView(
                     "Workbench not found",
@@ -38,13 +41,18 @@ struct WorkbenchView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { switcher }
             ToolbarItem(placement: .topBarTrailing) {
-                // Starting a session and adding a target from the phone come
-                // with their own flows; until then the button is disabled.
-                Button {} label: {
+                // Starting a session from the phone comes with its own
+                // flow; until then New session is disabled.
+                Button {
+                    addingTarget = true
+                } label: {
                     Label(segment == .board ? "New target" : "New session", systemImage: "plus")
                 }
-                .disabled(true)
+                .disabled(segment != .board || replica.snapshot.workbench(workbenchID) == nil)
             }
+        }
+        .sheet(isPresented: $addingTarget) {
+            NewBoardTargetSheet(replica: replica, writer: writer, workbenchID: workbenchID)
         }
     }
 
@@ -68,7 +76,7 @@ struct WorkbenchView: View {
         .accessibilityLabel("Switch workbench")
     }
 
-    private func content(_ menu: WorkbenchMenuModel) -> some View {
+    private func content(_ menu: WorkbenchMenuModel, now: Date) -> some View {
         VStack(spacing: 8) {
             Text(menu.subline)
                 .font(.caption.monospaced())
@@ -82,7 +90,7 @@ struct WorkbenchView: View {
             .padding(.horizontal, 16)
             switch segment {
             case .sessions: sessions(menu)
-            case .board: BoardView(replica: replica, workbenchID: menu.id)
+            case .board: BoardView(replica: replica, writer: writer, workbenchID: menu.id, now: now)
             }
         }
     }

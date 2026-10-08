@@ -1,15 +1,26 @@
 import SwiftUI
 
 /// The board segment: filter chips (Open, In progress, Blocked, Archive)
-/// over the target tree. Read-only; a row opens the target's detail.
+/// over the target tree; a row opens the target's detail. New targets the
+/// phone sent show on top until the Mac has added them.
 struct BoardView: View {
     let replica: WorkbenchReplicaModel
+    let writer: BoardWriter
     let workbenchID: Int64
+    let now: Date
     @State private var filter = BoardFilter.open
+    @State private var sendError: String?
 
     var body: some View {
-        let board = BoardModel(workbenchID: workbenchID, snapshot: replica.snapshot, filter: filter)
+        let board = BoardModel(workbenchID: workbenchID, snapshot: replica.snapshot, filter: filter, now: now)
         List {
+            if !board.pendingCreates.isEmpty {
+                Section("New targets") {
+                    ForEach(board.pendingCreates) { row in
+                        BoardWriteRowView(row: row, onApplyAnyway: { _ in }, onDismiss: dismiss)
+                    }
+                }
+            }
             Section {
                 if board.roots.isEmpty {
                     Text(filter == .archive ? "Nothing archived" : "No targets here")
@@ -24,6 +35,19 @@ struct BoardView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .alert("Couldn't dismiss", isPresented: Binding(get: { sendError != nil }, set: { if !$0 { sendError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(sendError ?? "")
+        }
+    }
+
+    private func dismiss(_ row: BoardWriteRow) {
+        do {
+            try writer.dismiss(row)
+        } catch {
+            sendError = BoardWriteText.sendError(error)
+        }
     }
 
     private func chips(_ board: BoardModel) -> some View {

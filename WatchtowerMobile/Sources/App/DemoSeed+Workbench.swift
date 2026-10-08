@@ -5,7 +5,7 @@ import WatchtowerSync
 /// The Workbench part of the demo replica (spec §13 B2): three workbenches
 /// (one with no sessions and an empty board), sessions in every resolved
 /// state, open asks of the three kinds plus closed ones, a board tree with
-/// archived targets, and two comments. The Kit mirrors have no public
+/// archived targets, and a comment thread plus a resolved root. The Kit mirrors have no public
 /// inits, so every record is built as the JSON the hub would publish.
 extension DemoSeed {
     static let acmeID: Int64 = 1
@@ -187,6 +187,10 @@ extension DemoSeed {
             ]),
             JSON.comment(81, workbench: acmeID, target: 415, [
                 "parent_id": 80, "author": "owner", "body": "Answered in the ask.", "read": true, "created_at": JSON.stamp(ago(1_200))
+            ]),
+            JSON.comment(82, workbench: acmeID, target: 421, [
+                "author": "agent", "agent_label": "claude", "body": "Blocked on the lane layout; resolved for now.",
+                "status": "resolved", "read": true, "created_at": JSON.stamp(ago(7_200))
             ])
         ]
     }

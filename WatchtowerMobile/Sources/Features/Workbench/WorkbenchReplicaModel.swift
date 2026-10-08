@@ -16,6 +16,9 @@ struct WorkbenchReplicaSnapshot: Equatable {
     var asks: [OwnerAsk] = []
     var comments: [WorkbenchComment] = []
     var heartbeat: HeartbeatPayload?
+    /// The outbox overlay: the phone's actions the Mac has not yet applied
+    /// (pending) or refused (failed), oldest first.
+    var pending: [PendingAction] = []
     /// Undecodable records per kind in this read; kinds without any are
     /// absent.
     var skippedRecords: [SliceKind: Int] = [:]
@@ -35,6 +38,7 @@ struct WorkbenchReplicaSnapshot: Equatable {
             store: store,
             from: db
         )
+        snapshot.pending = try store.pendingActions(from: db)
         return snapshot
     }
 

@@ -22,10 +22,10 @@ struct WorkbenchListView: View {
             content
                 .navigationTitle("Workbenches")
                 .navigationDestination(for: WorkbenchRoute.self) { route in
-                    WorkbenchView(replica: replica, workbenchID: route.id)
+                    WorkbenchView(replica: replica, writer: env.boardWriter, workbenchID: route.id)
                 }
                 .navigationDestination(for: BoardTargetRoute.self) { route in
-                    BoardTargetDetailView(replica: replica, targetID: route.id)
+                    BoardTargetDetailView(replica: replica, writer: env.boardWriter, targetID: route.id)
                 }
                 .navigationDestination(for: SessionRoute.self) { route in
                     SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)

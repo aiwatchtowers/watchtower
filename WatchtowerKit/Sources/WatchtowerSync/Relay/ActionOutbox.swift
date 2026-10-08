@@ -24,6 +24,8 @@ public actor ActionOutbox {
     /// Overlay error text for actions the desktop never echoed.
     static let silentPendingMessage =
         "No response from your Mac — the action may not have been applied."
+    /// Overlay error text for a failed echo that carried no message.
+    public static let noMessageFallback = "Failed on the desktop (no message)"
 
     /// Plain internet-date-time UTC ("2026-07-10T12:00:00Z"). Thread-safe
     /// per Apple's docs, so a shared instance is fine.
@@ -121,7 +123,7 @@ public actor ActionOutbox {
         case .failed, .expired, .cancelled:
             try store.markPendingActionFailed(
                 id: action.id,
-                errorMessage: action.errorMessage ?? "Failed on the desktop (no message)",
+                errorMessage: action.errorMessage ?? Self.noMessageFallback,
                 reason: action.reason,
                 result: action.result
             )

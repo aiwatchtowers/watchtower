@@ -49,6 +49,8 @@ final class AppEnvironment {
     /// `session_report_request` on opening a session detail, throttled per
     /// session for the app's lifetime.
     let reportRequests: SessionReportRequester
+    /// The phone's board writes (status, priority, comments, new targets).
+    let boardWriter: BoardWriter
     let deviceSettings: DeviceSettings
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
@@ -149,6 +151,7 @@ final class AppEnvironment {
         let outbox = ActionOutbox(transport: transport, store: store, deviceID: device?.deviceID)
         self.outbox = outbox
         reportRequests = SessionReportRequester.sending(through: outbox)
+        boardWriter = BoardWriter.sending(through: outbox, store: store)
         // An `applied` echo clears the queued row; hydrating right behind it
         // lands the Mac's authoritative change at the same moment.
         let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in

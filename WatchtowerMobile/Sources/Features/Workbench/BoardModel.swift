@@ -147,10 +147,17 @@ struct BoardModel {
     let filter: BoardFilter
     let roots: [BoardNode]
     let visibleIDs: Set<Int64>
+    /// New targets the phone asked this workbench's Mac to add, until
+    /// hydration delivers them (or the Mac refuses).
+    let pendingCreates: [BoardWriteRow]
     private let counts: [BoardFilter: Int]
 
-    init(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter) {
+    init(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter, now: Date = Date()) {
         self.filter = filter
+        pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.action.kind == .boardTargetCreate
+                && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
+        }
         let board = snapshot.targets.filter { $0.workbenchID == workbenchID }
         let pool = board.filter { $0.archived == (filter == .archive) }
         let byID = Dictionary(pool.map { ($0.id, $0) }) { first, _ in first }
@@ -223,84 +230,5 @@ struct BoardModel {
             nodes.flatMap { $0.row.toneUses + walk($0.children) }
         }
         return walk(roots)
-    }
-}
-
-/// A board target's read-only detail: status, priority, progress, intent,
-/// branch and PR, sub-targets, linked sessions, open asks and comments.
-struct BoardTargetDetailModel {
-    struct CommentRow: Equatable, Identifiable {
-        let id: Int64
-        let author: String
-        let body: String
-        let age: String
-        let isReply: Bool
-        let isResolved: Bool
-    }
-
-    let id: Int64
-    let title: String
-    let statusLabel: String
-    let row: BoardRowModel
-    let intent: String
-    let branch: String
-    let pr: String
-    let children: [BoardRowModel]
-    let sessions: [SessionRowModel]
-    let asks: [WaitingCardModel]
-    let comments: [CommentRow]
-
-    init?(targetID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date) {
-        guard let target = snapshot.targets.first(where: { $0.id == targetID }) else { return nil }
-        id = target.id
-        title = target.text
-        statusLabel = BoardRowModel.statusLabel(target.status)
-        row = BoardRowModel(target, snapshot: snapshot)
-        intent = target.intent
-        branch = target.branch
-        pr = target.pr
-        // A live target's archived children stay under Archive.
-        children = snapshot.targets
-            .filter { $0.parentID == target.id && $0.archived == target.archived }
-            .sorted(by: BoardModel.boardOrder)
-            .map { BoardRowModel($0, snapshot: snapshot) }
-        sessions = target.sessionIDs.compactMap(snapshot.session).map { SessionRowModel($0, now: now) }
-        asks = snapshot.openAsks(in: target.workbenchID)
-            .filter { $0.targetID == target.id }
-            .map { WaitingCardModel($0, snapshot: snapshot, now: now) }
-        comments = Self.thread(snapshot.comments.filter { $0.targetID == target.id }, now: now)
-    }
-
-    /// Roots oldest first, each followed by its whole thread oldest first.
-    private static func thread(_ comments: [WorkbenchComment], now: Date) -> [CommentRow] {
-        let ordered = comments.sorted { $0.createdAt != $1.createdAt ? $0.createdAt < $1.createdAt : $0.id < $1.id }
-        let byID = Dictionary(ordered.map { ($0.id, $0) }) { first, _ in first }
-        // A comment whose parent is not shown is a root.
-        func rootID(of comment: WorkbenchComment) -> Int64 {
-            var current = comment
-            var seen: Set<Int64> = [current.id]
-            while let parent = current.parentID.flatMap({ byID[$0] }), seen.insert(parent.id).inserted {
-                current = parent
-            }
-            return current.id
-        }
-        let threads = Dictionary(grouping: ordered, by: rootID)
-        let roots = ordered.filter { rootID(of: $0) == $0.id }
-        return roots.flatMap { root in
-            (threads[root.id] ?? [root]).map { comment in
-                CommentRow(
-                    id: comment.id,
-                    author: comment.author == .owner ? "You" : (comment.agentLabel.isEmpty ? "Agent" : comment.agentLabel),
-                    body: comment.body,
-                    age: CompactAge.string(from: comment.createdAt, now: now),
-                    isReply: comment.id != root.id,
-                    isResolved: comment.status == .resolved
-                )
-            }
-        }
-    }
-
-    var toneUses: [ToneUse] {
-        row.toneUses + children.flatMap(\.toneUses) + sessions.flatMap(\.toneUses) + asks.map(\.toneUse)
     }
 }
