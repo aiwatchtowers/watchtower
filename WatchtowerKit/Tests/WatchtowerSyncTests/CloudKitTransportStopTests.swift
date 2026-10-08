@@ -43,4 +43,53 @@ final class CloudKitTransportStopTests: XCTestCase {
         XCTAssertEqual(log.built.count, 2, "start() after stop() builds a new engine")
         XCTAssertFalse(log.built[1].recordZoneChanges.isEmpty, "the waiting save is scheduled on the new engine")
     }
+
+    func testAQueuedResetRelaunchNeverRevivesAStoppedTransport() async throws {
+        let log = EngineFactoryLog()
+        let transport = CloudKitTransport(
+            store: try .inMemory(), scope: .private, entitlementPresent: { true },
+            engineFactory: { _, _ in log.make() }, now: { Date() }, sleep: { _ in }
+        )
+        await transport.start()
+
+        // An account change schedules a relaunch; the owner turns the hub off
+        // before it ran.
+        await transport.resetForAccountChange()
+        let relaunch = await transport.restartTask
+        await transport.stop()
+        await relaunch?.value
+
+        let stopped = await transport.isStopped
+        XCTAssertTrue(stopped)
+        try await transport.save([record("workbench-1")])
+        for engine in log.built {
+            XCTAssertTrue(engine.recordZoneChanges.isEmpty, "no live engine is left after stop()")
+        }
+        XCTAssertTrue(log.built.dropFirst().allSatisfy { $0.cancelCount > 0 }, "an engine the relaunch built is cancelled")
+
+        await transport.start()
+        let afterStart = await transport.isStopped
+        XCTAssertFalse(afterStart, "only the public start() clears the stop")
+        XCTAssertFalse(try XCTUnwrap(log.built.last).recordZoneChanges.isEmpty, "the restarted engine takes the waiting save")
+    }
+
+    func testStopClearsTheThrottleSoARestartSendsAtOnce() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), sleep: { _ in
+            // The retry never fires: only stop()/start() may end the throttle.
+            try? await Task.sleep(for: .seconds(3_600))
+        })
+        try await transport.save([record("workbench-1")])
+        await transport.handleSendError(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 600.0]))
+        let throttled = await transport.nextEngineBatch()
+        XCTAssertNil(throttled, "throttled: nothing is sent")
+
+        await transport.stop()
+        await transport.start()
+
+        let batch = await transport.nextEngineBatch()
+        XCTAssertNotNil(batch, "after a restart the pending save goes out without waiting for an old deadline")
+        let since = await transport.throttledSince
+        XCTAssertNil(since)
+    }
 }
+

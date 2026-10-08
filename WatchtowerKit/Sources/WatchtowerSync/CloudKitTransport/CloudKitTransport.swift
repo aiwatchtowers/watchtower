@@ -64,6 +64,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private var recordRejectedHandler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?
     /// The relaunch an account-change reset schedules (awaitable in tests).
     private(set) var restartTask: Task<Void, Never>?
+    /// Set by `stop()`, cleared only by the public `start()`: a reset's
+    /// queued relaunch must not bring back an engine the owner stopped.
+    private(set) var isStopped = false
 
     // Send-side error state (spec §9).
     private(set) var batchLimit = maxBatchSize
@@ -200,7 +203,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// and must degrade to store-only operation (records wait in the pending
     /// queue).
     public func start() async {
-        guard engine == nil else { return }
+        isStopped = false
+        await startEngine()
+    }
+
+    private func startEngine() async {
+        guard engine == nil, !isStopped else { return }
         guard entitlementCheck() else {
             lastError = "missing iCloud entitlement (unsigned dev build?)"
             return
@@ -247,14 +255,23 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// fetched or sent on pushes any more. Saves made meanwhile wait in the
     /// store; the engine state stays in the store for the next start.
     public func stop() async {
+        isStopped = true
         retryTask?.cancel()
         retryTask = nil
         restartTask?.cancel()
         restartTask = nil
-        let stopped = engine
-        engine = nil
-        delegateBox = nil
-        await stopped?.cancelOperations()
+        // The throttle dies with its retry task: a restart must not wait out
+        // a deadline nothing is armed to end.
+        throttledUntil = nil
+        throttledSince = nil
+        nextBackoff = Self.initialBackoff
+        // Actor re-entrancy: an engine built while cancelOperations() was
+        // awaited is dropped too, unless a start() meanwhile un-stopped us.
+        while isStopped, let live = engine {
+            engine = nil
+            delegateBox = nil
+            await live.cancelOperations()
+        }
     }
 
     /// Manual fetch — poll loops call this; push wake calls it implicitly
@@ -576,7 +593,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         accountResetHandler?()
         // Relaunch with fresh state (loadEngineState is now empty). No-op on
         // unsigned dev builds — start() re-checks the entitlement and returns.
-        restartTask = Task { await start() }
+        restartTask = Task {
+            guard !Task.isCancelled else { return }
+            await startEngine()
+        }
     }
 
     func nextEngineBatch() -> CKSyncEngine.RecordZoneChangeBatch? {
