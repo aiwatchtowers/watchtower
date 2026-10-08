@@ -136,6 +136,9 @@ final class TerminalLaunchTests: XCTestCase {
     /// (spec 2026-10-02 §5.3); the prompts name what the folder has, and stay
     /// one line without control characters.
     func testPromptsNameTheFoldersSkill() {
+        // The skill's "Working a target" / "Working a group" sections key on the
+        // "Work on target #" / "Work on group #" prefixes: keep them in step with
+        // internal/devpack/workbench_skill_tools_test.go TestWorkbenchSkill_ExplainsBothWorkOnPrompts.
         XCTAssertEqual(TerminalLaunch.firstRunPrompt(.current),
                        "Set up this Watchtower workbench using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.firstRunPrompt(.legacy),

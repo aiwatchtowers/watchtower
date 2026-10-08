@@ -53,8 +53,8 @@ sessions on the group; changing how a task's session is found.
   session is found from the group only; sessions of its sub-tasks are not matched, which is
   decision 1's recommended behaviour. A session created for a task that later grew
   sub-tasks is reopened as is (no new prompt).
-- The pure choice is a `TerminalSessionPolicy` (or `TerminalLaunch`) function
-  `firstPrompt(targetID:hasChildren:vocabulary:)` so it is unit-tested in `Tests/Core`.
+- The pure choice is the function
+  `TerminalLaunch.workOnPrompt(targetID:isGroup:vocabulary:)` so it is unit-tested in `Tests/Core`.
 - **Group panel** (`WorkbenchTargetPanel`, `case .group`): `WorkOnTargetButton(compact:
   false)` as the prominent button; **Open group** becomes a bordered secondary button, same
   disabled rule and help text.
@@ -105,7 +105,7 @@ no contract changes. The hierarchy spec's panel decision is amended by a dated n
 ### Tests
 
 - `TerminalLaunchTests`: the group prompt's exact string, both vocabularies; no quote.
-- `TerminalSessionPolicyTests` (or Core): `firstPrompt` picks group vs task.
+- `TerminalSessionPolicyTests` (or Core): `TerminalLaunch.workOnPrompt` picks group vs task.
 - `WorkbenchesViewModelSessionsTests`: Work on It on a group creates a session with
   `target_id` = group, title = group text, group prompt; a second call opens the same
   session; a group with a sub-task session still creates its own.

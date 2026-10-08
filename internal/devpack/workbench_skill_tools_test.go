@@ -76,6 +76,8 @@ func skillToolsSectionNames(content string) map[string]bool {
 
 // Spec 2026-10-08: the Desktop starts a group's session with "Work on group
 // #<id>"; the skill must say what that means, and keep the task wording.
+// The wording is TerminalLaunch.workOnGroupPrompt / workOnTargetPrompt in
+// WatchtowerDesktop/Sources/WatchtowerCore/Services/TerminalLaunch.swift.
 func TestWorkbenchSkill_ExplainsBothWorkOnPrompts(t *testing.T) {
 	_, body := devpack.WorkbenchSkill()
 	content := string(body)

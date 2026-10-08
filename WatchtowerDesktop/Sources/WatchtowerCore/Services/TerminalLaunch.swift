@@ -95,6 +95,7 @@ package struct TerminalLaunch: Equatable, Sendable {
         "Work on group #\(targetID) using the \(vocabulary.skillName) skill."
     }
 
+    /// The first prompt of a Work on It session: the group wording when the target has sub-targets.
     package static func workOnPrompt(targetID: Int64, isGroup: Bool, vocabulary: WorkbenchVocabulary) -> String {
         isGroup ? workOnGroupPrompt(targetID: targetID, vocabulary: vocabulary)
             : workOnTargetPrompt(targetID: targetID, vocabulary: vocabulary)
