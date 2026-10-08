@@ -8,8 +8,10 @@ extension OwnerAskAnswer {
     /// applies the rules `OwnerAskDraft.isAnswerable` applies — a verdict
     /// for a review, a label or an Other for every question, labels among
     /// the options, known check items, non-empty comment bodies — and a
-    /// blank comment is refused, not dropped. A draft's answer comes back
-    /// unchanged. Pure.
+    /// blank comment is refused, not dropped. Likewise a verdict or comments
+    /// on an ask that is not a review are refused (`verdictNotAllowed`,
+    /// `commentsNotAllowed`), where a draft silently drops them. A draft's
+    /// answer comes back unchanged. Pure.
     package func normalized(for ask: OwnerAsk) -> OwnerAskAnswer {
         let marked = Set(checklist.map(\.id))
         return OwnerAskAnswer(
