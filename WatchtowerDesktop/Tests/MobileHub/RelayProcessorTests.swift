@@ -389,4 +389,3 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
     }
 }
-
