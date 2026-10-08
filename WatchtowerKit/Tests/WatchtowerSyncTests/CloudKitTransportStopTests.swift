@@ -74,10 +74,10 @@ final class CloudKitTransportStopTests: XCTestCase {
     }
 
     func testStopClearsTheThrottleSoARestartSendsAtOnce() async throws {
-        let transport = await CloudKitTransport.testing(store: try .inMemory(), sleep: { _ in
+        let transport = await CloudKitTransport.testing(store: try .inMemory()) { _ in
             // The retry never fires: only stop()/start() may end the throttle.
             try? await Task.sleep(for: .seconds(3_600))
-        })
+        }
         try await transport.save([record("workbench-1")])
         await transport.handleSendError(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 600.0]))
         let throttled = await transport.nextEngineBatch()
@@ -92,4 +92,3 @@ final class CloudKitTransportStopTests: XCTestCase {
         XCTAssertNil(since)
     }
 }
-
