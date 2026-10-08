@@ -15,7 +15,7 @@ struct WorkOnTargetButton: View {
 
     var body: some View {
         let vm = appState.workbenchesViewModel
-        let existing = hasSession(vm)
+        let existing = Self.hasSession(target, in: vm)
         let title = existing ? "Open Its Session" : "Work on It"
         let icon = existing ? "arrow.right.circle" : "play.circle"
         let button = Button {
@@ -42,7 +42,9 @@ struct WorkOnTargetButton: View {
         .accessibilityHidden(!isVisible)
     }
 
-    private func hasSession(_ vm: WorkbenchesViewModel?) -> Bool {
+    /// Whether `target` already has a session in its workbench: the button
+    /// and the target menu label themselves "Open Its Session" then.
+    static func hasSession(_ target: Target, in vm: WorkbenchesViewModel?) -> Bool {
         guard let vm, let projectID = target.workbenchID else { return false }
         return TerminalSessionPolicy.sessionForTarget(Int64(target.id), in: vm.terminalSessions[projectID] ?? []) != nil
     }

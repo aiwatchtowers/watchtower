@@ -107,18 +107,19 @@ struct WorkbenchTargetPanel: View {
                 WorkbenchBoardChip(text: "GROUP", color: .secondary)
             }
             Spacer(minLength: 0)
-            switch mode {
-            case .task:
-                WorkOnTargetButton(target: target, compact: false, isVisible: true)
-                    .fixedSize()
-            case .group:
+            WorkOnTargetButton(target: target, compact: false, isVisible: true)
+                .fixedSize()
+            if mode == .group {
+                // Icon only: with the labelled Work on It beside it, a label
+                // would overflow the panel's minimum width.
                 Button { onOpenGroup(target.id) } label: {
-                    Label("Open group", systemImage: "arrow.down.right.square")
+                    Image(systemName: "arrow.down.right.square")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .fixedSize()
                 .disabled(vm.scopeNode?.target.id == target.id)
                 .help("Show only this group on the board")
+                .accessibilityLabel("Open group")
             }
             moreMenu
             closeButton

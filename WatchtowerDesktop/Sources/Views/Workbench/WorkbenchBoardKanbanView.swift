@@ -120,10 +120,10 @@ private enum WorkbenchBoardKanbanLayout {
     }
 }
 
-/// One lane: a header (fold chevron, `#id`, title, progress, status) over the
-/// board's columns filled with this lane's cards. Clicking the header opens
-/// the group in the panel, a double-click enters it; the chevron folds the
-/// lane.
+/// One lane: a header (fold chevron, `#id`, title, progress, status, and on
+/// a group lane Work on It) over the board's columns filled with this lane's
+/// cards. Clicking the header opens the group in the panel, a double-click
+/// enters it; the chevron folds the lane.
 private struct WorkbenchBoardKanbanLaneView: View {
     let lane: WorkbenchBoardKanban.Lane
     let columnCount: Int
@@ -192,6 +192,12 @@ private struct WorkbenchBoardKanbanLaneView: View {
             .accessibilityLabel(isFolded ? "Show lane" : "Fold lane")
             .accessibilityValue(isFolded ? "Folded" : "Expanded")
             summary
+            // Beside `summary`, not inside it: its tap and simultaneous
+            // double-tap would also fire on a click here, and VoiceOver
+            // would merge the button into the header's combined element.
+            if let root = lane.root, !root.children.isEmpty {
+                WorkOnTargetButton(target: root.target, compact: true, isVisible: true)
+            }
         }
         .padding(.vertical, 4)
         .padding(.trailing, 10)
