@@ -45,7 +45,7 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     }
 
     private let fetch: Fetch
-    private let workbenchIDs: @Sendable () async throws -> [Int64]
+    private let workbenches: @Sendable () async throws -> Workbenches
     private let timing: Timing
     private let clock: @Sendable () -> ContinuousClock.Instant
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
@@ -56,17 +56,24 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     private let generation = OSAllocatedUnfairLock(initialState: 0)
     private let logger = Logger(subsystem: Constants.bundleID, category: "SessionReportSummaryRunner")
 
-    /// - Parameters:
-    ///   - workbenchIDs: the workbenches with a live `claude` session (the
-    ///     60 s cadence); a requested workbench runs whether listed or not.
+    /// The workbenches a pass works over.
+    struct Workbenches: Sendable {
+        /// With a live `claude` session: the 60 s cadence.
+        let live: [Int64]
+        /// Published (`WorkbenchSlice.publishedWorkbenches`): a requested
+        /// workbench runs while listed here; one that leaves it is forgotten
+        /// with its summaries.
+        let published: Set<Int64>
+    }
+
     init(
         fetch: @escaping Fetch,
-        workbenchIDs: @escaping @Sendable () async throws -> [Int64],
+        workbenches: @escaping @Sendable () async throws -> Workbenches,
         timing: Timing = .standard,
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.fetch = fetch
-        self.workbenchIDs = workbenchIDs
+        self.workbenches = workbenches
         self.timing = timing
         self.clock = clock
     }
@@ -94,6 +101,8 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
 
     /// A session of `workbenchID` changed state: run it at the next wake,
     /// but no sooner than `minSpacing` after its last run.
+    /// A workbench that is not published when the next pass lists them is
+    /// dropped with the request.
     func sessionStateChanged(workbenchID: Int64) {
         entries.withLock { $0[workbenchID, default: Entry()].requested = true }
     }
@@ -105,16 +114,16 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
     @discardableResult
     func runDue() async -> Set<Int64> {
         let passGeneration = generation.withLock { $0 }
-        let live: [Int64]
+        let listed: Workbenches
         do {
-            live = try await workbenchIDs()
+            listed = try await workbenches()
         } catch {
             logger.error("session report summary: listing workbenches failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
         guard isCurrent(passGeneration) else { return [] }
         var attempted: Set<Int64> = []
-        var unfinished = takeDue(live: live, now: clock())
+        var unfinished = takeDue(listed, now: clock())
         while let next = unfinished.first {
             guard !Task.isCancelled, isCurrent(passGeneration) else { break }
             attempted.insert(next.id)
@@ -130,9 +139,12 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
         generation.withLock { $0 == passGeneration }
     }
 
-    private func takeDue(live: [Int64], now: ContinuousClock.Instant) -> [Taken] {
+    /// Forgets workbenches no longer published, and stamps the due ones as
+    /// attempted now.
+    private func takeDue(_ listed: Workbenches, now: ContinuousClock.Instant) -> [Taken] {
         entries.withLock { [timing] entries in
-            let liveSet = Set(live)
+            entries = entries.filter { listed.published.contains($0.key) }
+            let liveSet = Set(listed.live).intersection(listed.published)
             let candidates = Array(Set(entries.keys).union(liveSet)).sorted()
             var due: [Taken] = []
             for id in candidates {
@@ -192,8 +204,9 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
 
     private func store(_ summaries: [Int64: SessionReportSummary], for id: Int64) {
         let changed = entries.withLock { entries -> Bool in
-            guard entries[id]?.summaries != summaries else { return false }
-            entries[id, default: Entry()].summaries = summaries
+            // The workbench may have been forgotten while the run was out.
+            guard entries[id] != nil, entries[id]?.summaries != summaries else { return false }
+            entries[id]?.summaries = summaries
             return true
         }
         if changed { onChange.withLock { $0 }?() }

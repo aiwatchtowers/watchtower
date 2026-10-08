@@ -23,6 +23,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var lifecycleLog: [String] = []
     private var appliedIDs: [String] = []
     private var savedLog: [Saved] = []
+    private var sendNowCount = 0
     private var resetHandler: (@Sendable () -> Void)?
     private var rejectedHandler: (@Sendable (String, CloudZoneID) -> Void)?
     private var pullHangs = false
@@ -49,6 +50,8 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     /// save, so a test polls an O(1) value instead of re-decoding the log.
     var appliedEchoIDs: [String] { lock.withLock { appliedIDs } }
     var saved: [Saved] { lock.withLock { savedLog } }
+    /// How many times the hub asked for an immediate send.
+    var sendNowCalls: Int { lock.withLock { sendNowCount } }
 
     /// A pull that never returns until it is cancelled (a hung CloudKit fetch).
     func setPullHangs(_ value: Bool) {
@@ -92,6 +95,10 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
             lifecycleLog.append("stop")
         }
     }
+    func sendNow() async {
+        lock.withLock { sendNowCount += 1 }
+    }
+
     func pull() async throws {
         let (hangs, fails) = lock.withLock { (pullHangs, pullFails) }
         if fails { throw URLError(.notConnectedToInternet) }

@@ -1868,7 +1868,12 @@ final class AppState {
                 fetch: SessionReportSummaryRunner.cliFetch(cli.runner)
             ) { [liveness] in
                 let live = liveness.current.liveIDs
-                return try await dbPool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: live) }
+                return try await dbPool.read { db in
+                    SessionReportSummaryRunner.Workbenches(
+                        live: try TerminalSessionSlice.liveWorkbenchIDs(db, liveIDs: live),
+                        published: Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+                    )
+                }
             }
         }
         let sessions = TerminalSessionSlice(
@@ -1881,7 +1886,13 @@ final class AppState {
             WorkbenchCommentSlice(),
             sessions
         ]
-        let publisher = SlicePublisher(dbPool: dbPool, state: storage.sidecar, transport: storage.transport, sources: sources)
+        let transport = storage.transport
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources,
+            // Labelled: a trailing closure would bind to `clock`, the first
+            // closure parameter.
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
         gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
         summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
         let fastLane = FastLane(

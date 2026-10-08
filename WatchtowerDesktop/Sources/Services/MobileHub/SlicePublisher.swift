@@ -18,7 +18,9 @@ protocol SliceSource: Sendable {
 /// §4). One loop does both cadences, so two sends never interleave:
 /// - the full diff tick (10 s) over every kind;
 /// - the fast lane: `nudge(kinds:)` coalesces for 1 s, then diffs only the
-///   nudged kinds, with at least 2 s between two fast sends.
+///   nudged kinds, with at least 2 s between two fast sends. A fast cycle
+///   that saved or deleted something then asks the transport to send at
+///   once (`sendNow`, spec §4.5); the tick leaves that to CKSyncEngine.
 ///
 /// A poll, not ValueObservation: the Go daemon writes through its own
 /// connection, so observation never fires. Rows are diffed against the
@@ -76,6 +78,9 @@ final class SlicePublisher: Sendable {
     private let oversizedWarned = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
     private let warningCount = OSAllocatedUnfairLock(initialState: 0)
     private let lastPublish = OSAllocatedUnfairLock<Date?>(initialState: nil)
+    /// The transport's immediate send (`HubTransport.sendNow`).
+    private let sendNow: @Sendable () async -> Void
+    private let fastCycles = OSAllocatedUnfairLock(initialState: 0)
 
     init(
         dbPool: DatabasePool,
@@ -84,7 +89,8 @@ final class SlicePublisher: Sendable {
         sources: [any SliceSource],
         timing: Timing = .standard,
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        sendNow: @escaping @Sendable () async -> Void = {}
     ) {
         self.dbPool = dbPool
         self.state = state
@@ -93,6 +99,7 @@ final class SlicePublisher: Sendable {
         self.timing = timing
         self.clock = clock
         self.now = now
+        self.sendNow = sendNow
     }
 
     /// Oversized warnings actually emitted (the throttle's observable).
@@ -107,6 +114,8 @@ final class SlicePublisher: Sendable {
     /// Test seams: the loop's stored sleep handle and the loop task.
     var currentSleepForTesting: Task<Void, Never>? { lane.withLock { $0.sleep } }
     var loopTaskForTesting: Task<Void, Never>? { loopTask.withLock { $0 } }
+    /// Fast cycles that finished, the immediate send included (a test seam).
+    var fastCyclesCompleted: Int { fastCycles.withLock { $0 } }
 
     // MARK: - Publishing
 
@@ -303,7 +312,7 @@ final class SlicePublisher: Sendable {
                     await self.runCycle(kinds: nil)
                     nextTick = self.clock() + self.timing.tick
                 } else if let kinds = self.takeDueFastKinds(now: now) {
-                    await self.runCycle(kinds: kinds)
+                    await self.runFastCycle(kinds: kinds)
                 } else {
                     await self.sleepUntilNextDeadline(tick: nextTick)
                 }
@@ -317,15 +326,29 @@ final class SlicePublisher: Sendable {
         lane.withLock { $0.sleep?.cancel() }
     }
 
-    private func runCycle(kinds: Set<SliceKind>?) async {
+    /// One cycle; nil when it failed.
+    @discardableResult
+    private func runCycle(kinds: Set<SliceKind>?) async -> Outcome? {
         do {
             let outcome = try await publishOnce(kinds: kinds)
             if !outcome.skipped.isEmpty {
                 logger.debug("publish cycle skipped \(outcome.skipped.count) records")
             }
+            return outcome
         } catch {
             logger.error("publish cycle failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
+    }
+
+    /// A fast cycle, then the immediate send when it changed the zone. The
+    /// lane's ≥ 2 s spacing bounds the send rate; the transport itself
+    /// honours a throttle wait or a stop.
+    private func runFastCycle(kinds: Set<SliceKind>) async {
+        if let outcome = await runCycle(kinds: kinds), outcome.pushed + outcome.deleted > 0 {
+            await sendNow()
+        }
+        fastCycles.withLock { $0 += 1 }
     }
 
     func stop() {

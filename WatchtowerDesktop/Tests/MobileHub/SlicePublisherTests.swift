@@ -288,6 +288,35 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(other.reads, 1, "a fast send diffs only the nudged kinds")
     }
 
+    /// Spec §4.5: a fast cycle that saved something asks the transport to
+    /// send at once; a fast cycle with an empty diff and the regular tick
+    /// leave the timing to CKSyncEngine.
+    func testOnlyAFastCycleThatSavedAsksForAnImmediateSend() async throws {
+        let source = StubSliceSource(kind: .workbench)
+        source.setPayload(Data(#"{"v":1}"#.utf8))
+        let transport = try XCTUnwrap(self.transport)
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: state, transport: transport, sources: [source],
+            timing: .init(tick: .seconds(60), fastWindow: .milliseconds(50), fastSpacing: .milliseconds(100)),
+            sendNow: { await transport.sendNow() } // swiftlint:disable:this trailing_closure
+        )
+        publisher.start()
+        defer { publisher.stop() }
+        await awaitHubCondition("the start cycle (the tick) publishes") { self.dataSaves().count == 1 && publisher.lastPublishAt != nil }
+        XCTAssertEqual(transport.sendNowCalls, 0, "the tick leaves the send to CKSyncEngine")
+
+        publisher.nudge(kinds: [.workbench])
+        await awaitHubCondition("an unchanged fast cycle finished") { publisher.fastCyclesCompleted == 1 }
+        XCTAssertEqual(source.reads, 2)
+        XCTAssertEqual(transport.sendNowCalls, 0, "an empty fast diff sends nothing")
+
+        source.setPayload(Data(#"{"v":2}"#.utf8))
+        publisher.nudge(kinds: [.workbench])
+        await awaitHubCondition("the changed record is sent at once") { transport.sendNowCalls == 1 }
+        XCTAssertEqual(dataSaves().count, 2)
+        XCTAssertEqual(transport.sendNowCalls, 1, "exactly one immediate send")
+    }
+
     func testStopEndsTheLoop() async throws {
         let source = StubSliceSource(kind: .workbench)
         let publisher = makePublisher([source], timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10)))

@@ -21,6 +21,7 @@ final class FastLaneTests: XCTestCase {
     private var centers: [SessionAgentStateCenter] = []
     private var lanes: [FastLane] = []
     private var defaults: UserDefaults!
+    private var suiteName = ""
     private let started = Date().addingTimeInterval(-600)
 
     override func setUpWithError() throws {
@@ -30,7 +31,8 @@ final class FastLaneTests: XCTestCase {
         processes = []
         centers = []
         lanes = []
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "FastLaneTests-\(UUID().uuidString)"))
+        suiteName = "FastLaneTests-\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         terminals = TerminalCenter { [weak self] in
             let process = FakeTerminalSession(pid: 0)
             self?.processes.append(process)
@@ -44,6 +46,7 @@ final class FastLaneTests: XCTestCase {
     override func tearDown() {
         lanes.forEach { $0.stop() }
         centers.forEach { $0.stop() }
+        defaults.removePersistentDomain(forName: suiteName)
         try? FileManager.default.removeItem(at: folder)
         TestDatabase.cleanup(path: path)
         super.tearDown()
@@ -299,12 +302,16 @@ final class FastLaneTests: XCTestCase {
         }
 
         lane.stop()
+        XCTAssertEqual(lane.observedTables, 0)
+        // The positive control: a live lane over the same pool sees the same
+        // write; once it has, the stopped lane would have seen it too.
+        let control = NudgeLog()
+        let live = makeLane(nil) { control.record($0) }
+        live.start()
+        await awaitHubCondition("the control lane observes") { live.observedTables == FastLane.observedTables.count }
         let stopped = log.nudges.count
         _ = try await pool.write { try TestDatabase.insertOwnerAsk($0, projectID: bench.project) }
-        // A further write's observation would land on the main queue; one
-        // main-actor round trip after a DB read is enough for it to show.
-        _ = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM owner_asks") }
-        await Task.yield()
+        await awaitHubCondition("the live lane sees the write") { control.nudges.contains { $0.contains(.ownerAsk) } }
         XCTAssertEqual(log.nudges.count, stopped, "a stopped lane observes nothing")
     }
 

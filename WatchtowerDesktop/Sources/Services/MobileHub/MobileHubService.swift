@@ -12,6 +12,9 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     func availability() async -> CloudAvailability
     /// Stops syncing until the next `start()` (the hub was turned off).
     func stop() async
+    /// Sends the pending queue at once (the fast lane, spec §4.5); a no-op
+    /// while stopped, unlinked, paused or throttled.
+    func sendNow() async
     /// Set the account-change reset callback before `start()`.
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async
     /// A record CloudKit rejects even alone (`.limitExceeded`, spec §9).

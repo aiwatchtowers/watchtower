@@ -277,7 +277,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 if failing.withLock({ $0 }) { throw CLIRunnerError.launchFailed(underlying: CancellationError()) }
                 return try await cliFetch(id)
             },
-            workbenchIDs: { [project] },
+            workbenches: { .init(live: [project], published: [project]) },
             clock: { clock.now }
         )
         let changes = OSAllocatedUnfairLock(initialState: 0)
@@ -315,7 +315,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 calls.withLock { $0 += 1 }
                 return []
             },
-            workbenchIDs: { [7] },
+            workbenches: { .init(live: [7], published: [7, 9]) },
             clock: { clock.now }
         )
         await summaries.runDue()
@@ -348,7 +348,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 try await Task.sleep(for: .seconds(30))
                 return [SessionReportSummary(sessionID: 1, done: 9, total: 9)]
             },
-            workbenchIDs: { [7] },
+            workbenches: { .init(live: [7], published: [7, 9]) },
             timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .milliseconds(50), wake: .seconds(5))
         )
         await summaries.runDue()
@@ -363,7 +363,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 await gate.enter(id)
                 return []
             },
-            workbenchIDs: { [1, 2, 3] },
+            workbenches: { .init(live: [1, 2, 3], published: [1, 2, 3]) },
             clock: { clock.now }
         )
         let pass = Task { await summaries.runDue() }
@@ -374,5 +374,32 @@ final class TerminalSessionSliceTests: XCTestCase {
 
         await summaries.runDue()
         XCTAssertEqual(gate.calls, [1, 1, 2, 3], "nothing the stop cut waits for the next 60 s")
+    }
+
+    /// Review M3: a workbench that is no longer published is forgotten, its
+    /// summaries and any pending request with it.
+    func testAWorkbenchThatLeavesThePublishedListIsForgotten() async throws {
+        let calls = OSAllocatedUnfairLock(initialState: [Int64]())
+        let published = OSAllocatedUnfairLock(initialState: Set<Int64>([7]))
+        let clock = TestInstant()
+        let summaries = SessionReportSummaryRunner(
+            fetch: { id in
+                calls.withLock { $0.append(id) }
+                return [SessionReportSummary(sessionID: 1, done: 1, total: 2)]
+            },
+            workbenches: { .init(live: [], published: published.withLock { $0 }) },
+            clock: { clock.now }
+        )
+        summaries.sessionStateChanged(workbenchID: 7)
+        await summaries.runDue()
+        XCTAssertNotNil(summaries.summary(workbenchID: 7, sessionID: 1))
+
+        published.withLock { $0 = [] }
+        summaries.sessionStateChanged(workbenchID: 7)
+        clock.advance(by: .seconds(10))
+        await summaries.runDue()
+
+        XCTAssertNil(summaries.summary(workbenchID: 7, sessionID: 1), "its summaries are dropped")
+        XCTAssertEqual(calls.withLock { $0 }, [7], "and its pending request runs nothing")
     }
 }
