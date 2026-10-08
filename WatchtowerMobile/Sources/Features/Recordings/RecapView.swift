@@ -1,4 +1,3 @@
-import os
 import SwiftUI
 import WatchtowerKit
 
@@ -10,12 +9,10 @@ struct RecapView: View {
 
     @Environment(AppEnvironment.self) private var env
     @State private var tab: Tab = .recap
-    @State private var loaded: RecapLoader.Loaded?
+    @State private var bodyModel = RecapBodyModel()
     /// The line a jump point asked for; consumed by the scroll reader.
     @State private var jumpTarget: Int?
     @State private var highlighted: Int?
-
-    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RecapView")
 
     enum Tab: String, CaseIterable, Identifiable {
         case recap = "Recap"
@@ -30,8 +27,11 @@ struct RecapView: View {
     var body: some View {
         Group {
             if let transcript {
+                let phoneID = env.phoneRecordings.snapshot.phoneRecordingID(forTranscript: transcript)
                 content(transcript)
-                    .task(id: transcript.updatedAt) { await load(transcript) }
+                    .task(id: phoneID) {
+                        bodyModel.observe(transcript: transcript, phoneRecordingID: phoneID, store: env.store)
+                    }
             } else {
                 ContentUnavailableView(
                     "Recording not on this phone",
@@ -44,16 +44,8 @@ struct RecapView: View {
         .onAppear { env.recordingsSeen.markOpened(transcriptID) }
     }
 
-    private func load(_ transcript: MeetingTranscript) async {
-        do {
-            loaded = try await RecapLoader.load(transcript: transcript, recordings: env.phoneRecordings.snapshot, store: env.store)
-        } catch {
-            Self.logger.error("recap load failed: \(error.localizedDescription, privacy: .public)")
-            loaded = RecapLoader.Loaded(body: .unreadable(error.localizedDescription), marks: [])
-        }
-    }
-
     private func content(_ transcript: MeetingTranscript) -> some View {
+        let loaded = bodyModel.loaded
         let model = RecapModel(
             transcript: transcript,
             body: loaded?.body ?? .segments([]),
@@ -164,6 +156,9 @@ struct RecapView: View {
                 Label(notice, systemImage: "scissors")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            if let empty = model.emptyTranscriptText {
+                Text(empty).foregroundStyle(.secondary)
             }
             if let error = model.transcriptError {
                 Label(error, systemImage: "exclamationmark.triangle")

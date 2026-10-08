@@ -40,7 +40,8 @@ enum RecordingEntryState: Equatable {
     var tone: PhoneTone {
         switch self {
         case .recordingOnPhone, .sendFailed, .macFailed: .red
-        case .sending, .waitingForMac: .secondary
+        case .sending: .accent
+        case .waitingForMac: .secondary
         case .onMac: .purple
         case .ready: .green
         }
@@ -164,7 +165,10 @@ struct RecordingsListModel {
             entries.append(Self.entry(recording, transcript: transcript, recordings: recordings, seen: seen, now: now, format: format))
         }
         for transcript in replica.transcripts where !claimed.contains(transcript.id) {
-            entries.append(Self.entry(transcript, origin: "recorded on Mac", seen: seen, format: format))
+            // A phone upload whose ledger row was removed still names it.
+            let fromPhone = recordings.phoneRecordingID(forTranscript: transcript) != nil
+            let origin = fromPhone ? (transcript.eventID == nil ? "voice note" : "from this phone") : "recorded on Mac"
+            entries.append(Self.entry(transcript, origin: origin, seen: seen, format: format))
         }
         let newestFirst: (RecordingEntry, RecordingEntry) -> Bool = { lhs, rhs in
             lhs.sortDate != rhs.sortDate ? lhs.sortDate > rhs.sortDate : lhs.id < rhs.id
@@ -218,6 +222,8 @@ struct RecordingsListModel {
     ) -> RecordingEntry {
         let created = TranscriptDates.parse(transcript.createdAt) ?? .distantPast
         var parts = [format.when(created), format.duration(transcript.durationSec), origin]
+        let speakers = transcript.speakers.count + (transcript.speakersMore ?? 0)
+        if speakers > 0 { parts.append(speakers == 1 ? "1 speaker" : "\(speakers) speakers") }
         if transcript.summary != nil { parts.append("recap") }
         return RecordingEntry(
             id: "transcript-\(transcript.id)",

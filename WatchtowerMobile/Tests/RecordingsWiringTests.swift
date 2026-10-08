@@ -98,6 +98,7 @@ final class RecordingsWiringTests: XCTestCase {
         let entry = try XCTUnwrap(list(recordings).inProgress.first)
         XCTAssertEqual(entry.id, "phone-\(recording.id)")
         XCTAssertEqual(entry.statusText, "Sending")
+        XCTAssertEqual(entry.tone, .accent, "Sending is drawn in the accent colour, as on the canvas")
         XCTAssertNil(entry.transcriptID, "nothing to open yet")
     }
 
@@ -146,7 +147,18 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertEqual(entry.statusText, "Ready")
         XCTAssertEqual(entry.transcriptID, 5)
         XCTAssertTrue(entry.subtitle.contains("recorded on Mac"), entry.subtitle)
+        XCTAssertTrue(entry.subtitle.contains("2 speakers"), entry.subtitle)
         XCTAssertEqual(list(PhoneRecordingsSnapshot()).emptyText, "No recordings yet")
+    }
+
+    /// The ledger row was removed, but the transcript still names the phone
+    /// upload it came from.
+    func testAPhoneTranscriptWithoutItsLedgerRowStaysFromThisPhone() throws {
+        let entry = try XCTUnwrap(list(
+            PhoneRecordingsSnapshot(), transcripts: [transcript(id: 6, eventID: "evt-1", phoneRecordingID: "gone")]
+        ).earlier.first)
+        XCTAssertTrue(entry.subtitle.contains("from this phone"), entry.subtitle)
+        XCTAssertFalse(entry.subtitle.contains("recorded on Mac"), entry.subtitle)
     }
 
     func testAFailedUploadOffersRetry() async throws {
@@ -257,6 +269,20 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertEqual(recap.jumpPoints.first?.lineID, 2)
     }
 
+    func testDecodedEmptySegmentsSayThereIsNoTranscriptText() {
+        let empty = RecapModel(
+            transcript: transcript(id: 1), body: TranscriptBody.load(asset: .data(Data("[]".utf8))),
+            marks: [], calendar: calendar, now: now
+        )
+        XCTAssertTrue(empty.lines.isEmpty)
+        XCTAssertNil(empty.transcriptError)
+        XCTAssertEqual(empty.emptyTranscriptText, "No transcript text")
+        let filled = RecapModel(
+            transcript: transcript(id: 1), body: .segments(segments([(0, 10)])), marks: [], calendar: calendar, now: now
+        )
+        XCTAssertNil(filled.emptyTranscriptText)
+    }
+
     func testAnUndecodableSegmentsAssetIsShownAsAnError() {
         let broken = TranscriptBody.load(asset: .data(Data("not json".utf8)))
         guard case .unreadable = broken else { return XCTFail("expected unreadable, got \(broken)") }
@@ -298,6 +324,35 @@ final class RecordingsWiringTests: XCTestCase {
         let loaded = try await RecapLoader.load(transcript: decoded, recordings: recordings, store: store)
         XCTAssertEqual(loaded.body, .segments(body))
         XCTAssertEqual(loaded.marks, [125])
+    }
+
+    /// The open recap follows the replica: a republished record with new
+    /// segments (same `updated_at`) and a new mark both reach it.
+    func testTheOpenRecapReloadsOnARepublishAndANewMark() async throws {
+        let (store, recording, uploader) = try await ledger(marks: [10])
+        let transport = InMemoryCloudTransport()
+        let dir = try makeRecordingsDirectory()
+        let mirror = transcript(id: 9, phoneRecordingID: recording.id)
+        let publish: ([TranscriptSegment]) async throws -> Void = { body in
+            let asset = dir.appendingPathComponent("segments-\(UUID().uuidString).json")
+            try RelayCoder.makeEncoder().encode(body).write(to: asset)
+            try await transport.save([CloudRecord(
+                recordName: mirror.recordName, zone: .data, kind: SliceKind.meetingTranscript.rawValue, modifiedAt: Date(),
+                payload: try RelayCoder.makeEncoder().encode(mirror), assetFileURL: asset
+            )])
+            _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        }
+        try await publish(segments([(0, 60)]))
+
+        let model = RecapBodyModel()
+        model.observe(transcript: mirror, phoneRecordingID: recording.id, store: store)
+        try await poll { model.loaded?.body == .segments(self.segments([(0, 60)])) }
+
+        try await publish(segments([(0, 60), (60, 120)]))
+        try await poll({ model.loaded?.body == .segments(self.segments([(0, 60), (60, 120)])) }, "a republish must reload")
+
+        try await uploader.addMark(id: recording.id, offsetSec: 70)
+        try await poll({ model.loaded?.marks == [10, 70] }, "a new mark must reload")
     }
 
     func testTheDemoTranscriptCarriesItsSegments() async throws {

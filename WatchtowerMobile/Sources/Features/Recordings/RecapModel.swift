@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import Observation
 import os
 import WatchtowerKit
 import WatchtowerSync
@@ -51,10 +52,48 @@ enum RecapLoader {
         let phoneID = recordings.phoneRecordingID(forTranscript: transcript)
         let recordName = transcript.recordName
         return try await store.reader.read { db in
-            let body = TranscriptBody.load(asset: try store.sliceAsset(forRecordName: recordName, from: db))
-            let marks = try phoneID.map { try store.phoneRecordingMarks(id: $0, from: db) } ?? []
-            return Loaded(body: body, marks: marks)
+            try read(recordName: recordName, phoneRecordingID: phoneID, store: store, from: db)
         }
+    }
+
+    /// Reads from an ALREADY-OPEN database, so it runs inside a
+    /// ValueObservation tracking closure.
+    static func read(recordName: String, phoneRecordingID: String?, store: ReplicaStore, from db: Database) throws -> Loaded {
+        let body = TranscriptBody.load(asset: try store.sliceAsset(forRecordName: recordName, from: db))
+        let marks = try phoneRecordingID.map { try store.phoneRecordingMarks(id: $0, from: db) } ?? []
+        return Loaded(body: body, marks: marks)
+    }
+}
+
+/// The open recap's body and marks, observed: a republished record (new
+/// segments under the same `updated_at`) or a new mark re-reads them.
+@MainActor
+@Observable
+final class RecapBodyModel {
+    private(set) var loaded: RecapLoader.Loaded?
+    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
+    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RecapBodyModel")
+
+    func observe(transcript: MeetingTranscript, phoneRecordingID: String?, store: ReplicaStore) {
+        cancellable?.cancel()
+        loaded = nil
+        let recordName = transcript.recordName
+        let observation = ValueObservation.tracking { db in
+            try RecapLoader.read(recordName: recordName, phoneRecordingID: phoneRecordingID, store: store, from: db)
+        }
+        cancellable = observation.start(
+            in: store.reader,
+            scheduling: .async(onQueue: .main),
+            onError: { [weak self] error in
+                Self.logger.error("recap observation failed: \(error.localizedDescription, privacy: .public)")
+                MainActor.assumeIsolated {
+                    self?.loaded = RecapLoader.Loaded(body: .unreadable(error.localizedDescription), marks: [])
+                }
+            },
+            onChange: { [weak self] value in
+                MainActor.assumeIsolated { self?.loaded = value }
+            }
+        )
     }
 }
 
@@ -106,6 +145,8 @@ struct RecapModel {
     let lines: [TranscriptLine]
     let clippedNotice: String?
     let transcriptError: String?
+    /// Segments that decoded to nothing (every one deleted on the Mac).
+    let emptyTranscriptText: String?
     let jumpPoints: [JumpPoint]
 
     static let clippedText = "Transcript shortened — the full text is on the Mac"
@@ -165,6 +206,7 @@ struct RecapModel {
             ))
         }
         self.lines = lines
+        emptyTranscriptText = lines.isEmpty && transcriptError == nil ? "No transcript text" : nil
         clippedNotice = transcript.segmentsClipped == true ? Self.clippedText : nil
         jumpPoints = Set(marks).sorted().map { offset in
             JumpPoint(
@@ -192,7 +234,7 @@ struct RecapModel {
 
     /// Every visible string, for the tests.
     var allStrings: [String] {
-        [title, subtitle] + [summary, recapEmptyText, clippedNotice, transcriptError].compactMap { $0 }
+        [title, subtitle] + [summary, recapEmptyText, clippedNotice, transcriptError, emptyTranscriptText].compactMap { $0 }
             + sections.flatMap { [$0.title] + $0.items + [$0.moreText].compactMap { $0 } }
             + lines.flatMap { [$0.speaker, $0.time, $0.text].compactMap { $0 } }
             + jumpPoints.map(\.label)
