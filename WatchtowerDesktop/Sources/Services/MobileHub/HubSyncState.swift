@@ -7,8 +7,10 @@ import WatchtowerSync
 /// (`hub_meta`), the exactly-once ledger of relay records
 /// (`relay_processed`, spec §5.2 rule 1), the asks already alerted
 /// (`alerted_asks`, spec §4.7), where each phone answer's line went
-/// (`ask_answer_deliveries`, spec §5.2/§6.2) and the phone recordings the
-/// hub ingested (`phone_recordings`, spec §6.4/§4.12).
+/// (`ask_answer_deliveries`, spec §5.2/§6.2), the phone recordings the
+/// hub ingested (`phone_recordings`, spec §6.4/§4.12), the last capped
+/// session reports (`session_reports`, spec §4.8) and the hub-observed
+/// session state milestones (`session_milestones`, spec §4.9).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -84,6 +86,19 @@ final class HubSyncState: Sendable {
                     error TEXT,
                     updated_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS session_reports (
+                    session_id INTEGER PRIMARY KEY,
+                    payload BLOB NOT NULL,
+                    fetched_at REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS session_milestones (
+                    session_id INTEGER NOT NULL,
+                    at REAL NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind = 'state'),
+                    text TEXT NOT NULL,
+                    ref INTEGER
+                );
+                CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
                 """)
         }
     }
@@ -380,6 +395,117 @@ final class HubSyncState: Sendable {
                 arguments: [date.timeIntervalSince1970]
             )
         }
+    }
+
+    // MARK: - Session reports (spec §4.8)
+
+    /// One session's last good report, capped and encoded for the wire.
+    struct StoredSessionReport: Equatable, Sendable {
+        let payload: Data
+        let fetchedAt: Date
+    }
+
+    /// Stores `payload` as the session's report; whether it differed from
+    /// the stored one (an unchanged report keeps its first stamp).
+    @discardableResult
+    func saveSessionReport(_ payload: Data, sessionID: Int64, at date: Date) throws -> Bool {
+        try queue.write { db in
+            let current = try Data.fetchOne(
+                db, sql: "SELECT payload FROM session_reports WHERE session_id = ?", arguments: [sessionID]
+            )
+            guard current != payload else { return false }
+            try db.execute(
+                sql: """
+                    INSERT INTO session_reports (session_id, payload, fetched_at) VALUES (?, ?, ?)
+                    ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at
+                    """,
+                arguments: [sessionID, payload, date.timeIntervalSince1970]
+            )
+            return true
+        }
+    }
+
+    func sessionReports() throws -> [Int64: StoredSessionReport] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(db, sql: "SELECT session_id, payload, fetched_at FROM session_reports")
+            return Dictionary(uniqueKeysWithValues: rows.map {
+                ($0["session_id"] as Int64, StoredSessionReport(payload: $0["payload"], fetchedAt: Date(timeIntervalSince1970: $0["fetched_at"])))
+            })
+        }
+    }
+
+    /// Forgets the reports of every session not in `keeping` (sessions that
+    /// left the report window).
+    func removeSessionReports(keeping: Set<Int64>) throws {
+        try queue.write { db in
+            let stored = try Int64.fetchAll(db, sql: "SELECT session_id FROM session_reports")
+            for id in stored where !keeping.contains(id) {
+                try db.execute(sql: "DELETE FROM session_reports WHERE session_id = ?", arguments: [id])
+            }
+        }
+    }
+
+    // MARK: - Session milestones (spec §4.9)
+
+    /// A hub-observed resolved state transition of a session ("Working",
+    /// "Needs approval", …). The table holds `state` milestones only: the
+    /// other timeline kinds are read from their own rows, and subagent
+    /// events have no source at all (OD-3).
+    struct StateMilestone: Equatable, Sendable {
+        let sessionID: Int64
+        let at: Date
+        let text: String
+    }
+
+    static let milestonesPerSession = 100
+    static let milestoneLifetime: TimeInterval = 14 * 86_400
+
+    /// Records one state milestone, then keeps the session's newest 100.
+    func addStateMilestone(_ milestone: StateMilestone) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO session_milestones (session_id, at, kind, text, ref) VALUES (?, ?, 'state', ?, NULL)",
+                arguments: [milestone.sessionID, milestone.at.timeIntervalSince1970, milestone.text]
+            )
+            try Self.trimMilestones(db, sessionID: milestone.sessionID)
+        }
+    }
+
+    /// Every stored state milestone by session, newest first.
+    func stateMilestones() throws -> [Int64: [StateMilestone]] {
+        try queue.read { db in
+            let rows = try Row.fetchAll(
+                db, sql: "SELECT session_id, at, text FROM session_milestones ORDER BY session_id, at DESC, rowid DESC"
+            )
+            return Dictionary(grouping: rows.map {
+                StateMilestone(sessionID: $0["session_id"], at: Date(timeIntervalSince1970: $0["at"]), text: $0["text"])
+            }, by: \.sessionID)
+        }
+    }
+
+    /// Drops the milestones older than `date` (14 days before now) and any
+    /// past a session's newest 100.
+    func pruneSessionMilestones(olderThan date: Date) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM session_milestones WHERE at < ?", arguments: [date.timeIntervalSince1970])
+            try Self.trimMilestones(db, sessionID: nil)
+        }
+    }
+
+    /// Keeps the newest `milestonesPerSession` of one session (nil: of every
+    /// session).
+    private static func trimMilestones(_ db: Database, sessionID: Int64?) throws {
+        try db.execute(
+            sql: """
+                DELETE FROM session_milestones WHERE rowid IN (
+                    SELECT rowid FROM (
+                        SELECT rowid, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY at DESC, rowid DESC) AS rank
+                        FROM session_milestones WHERE ?1 IS NULL OR session_id = ?1
+                    ) WHERE rank > ?2
+                )
+                """,
+            arguments: [sessionID, milestonesPerSession]
+        )
     }
 
     // MARK: - Ask alerts (spec §4.7)

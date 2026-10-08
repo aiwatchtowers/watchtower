@@ -10,8 +10,10 @@ import WatchtowerSync
 /// - `SessionAgentStateCenter.onChange` and `onRead`, chained onto the
 ///   closures `initWorkbenches` set (the PROJ-12 held-answer wiring), never
 ///   replacing them. A change nudges `terminal_session` and `workbench`
-///   (its `session_counts`) and asks the changed sessions' workbenches for
-///   a git and a report-summary refresh;
+///   (its `session_counts`), asks the changed sessions' workbenches for
+///   a git and a report-summary refresh, and tells the session report
+///   runner (which resolves the state milestones and the per-session report
+///   runs); a liveness change seen on an unchanged read tells it too;
 /// - GRDB `ValueObservation` over `owner_asks`, `terminal_sessions`,
 ///   `project_comments` and `targets`. It sees only the Desktop's own
 ///   writes: Go writes through another connection, and those reach the
@@ -44,6 +46,7 @@ final class FastLane: HubCompanion {
     private let liveness: SessionLivenessBox
     private let nudge: @Sendable (Set<SliceKind>) -> Void
     private let sessionStateChanged: (Int64) -> Void
+    private let sessionStatesChanged: () -> Void
     private let logger = Logger(subsystem: Constants.bundleID, category: "FastLane")
 
     private var previousOnChange: (() -> Void)?
@@ -58,13 +61,16 @@ final class FastLane: HubCompanion {
     ///   - nudge: the publisher's `nudge(kinds:)`.
     ///   - sessionStateChanged: a session of this workbench changed state
     ///     (the git refresher and the report summary runner).
+    ///   - sessionStatesChanged: some session's state or liveness changed
+    ///     (the session report runner).
     init(
         dbPool: DatabasePool,
         agentStates: SessionAgentStateCenter?,
         terminalCenter: TerminalCenter?,
         liveness: SessionLivenessBox,
         nudge: @escaping @Sendable (Set<SliceKind>) -> Void,
-        sessionStateChanged: @escaping (Int64) -> Void
+        sessionStateChanged: @escaping (Int64) -> Void,
+        sessionStatesChanged: @escaping () -> Void = {}
     ) {
         self.dbPool = dbPool
         self.agentStates = agentStates
@@ -72,6 +78,7 @@ final class FastLane: HubCompanion {
         self.liveness = liveness
         self.nudge = nudge
         self.sessionStateChanged = sessionStateChanged
+        self.sessionStatesChanged = sessionStatesChanged
     }
 
     // MARK: - HubCompanion
@@ -137,6 +144,7 @@ final class FastLane: HubCompanion {
         lastStatuses = next
         copyLiveness()
         workbenches.sorted().forEach(sessionStateChanged)
+        sessionStatesChanged()
         nudge(Self.sessionStateKinds)
     }
 
@@ -144,6 +152,7 @@ final class FastLane: HubCompanion {
     /// not show (a session not among them).
     private func statesRead() {
         guard isRunning, copyLiveness() else { return }
+        sessionStatesChanged()
         nudge(Self.sessionStateKinds)
     }
 

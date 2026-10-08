@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import os
 import WatchtowerCore
 
@@ -76,6 +77,20 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
         self.workbenches = workbenches
         self.timing = timing
         self.clock = clock
+    }
+
+    /// The hub's runner: the CLI through `runner`, over the published
+    /// workbenches and those with a live session per `liveness`.
+    static func live(_ runner: any CLIRunnerProtocol, dbPool: DatabasePool, liveness: SessionLivenessBox) -> SessionReportSummaryRunner {
+        SessionReportSummaryRunner(fetch: cliFetch(runner)) { [liveness] in
+            let live = liveness.current.liveIDs
+            return try await dbPool.read { db in
+                Workbenches(
+                    live: try TerminalSessionSlice.liveWorkbenchIDs(db, liveIDs: live),
+                    published: Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
+                )
+            }
+        }
     }
 
     /// The CLI run and its decode, as `SessionReportCenter.runSummary`.

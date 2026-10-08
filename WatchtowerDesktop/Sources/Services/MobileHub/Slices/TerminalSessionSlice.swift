@@ -249,7 +249,7 @@ struct TerminalSessionSlice: SliceSource {
 
     /// When the current state was reported: the trusted hook stamp, else a
     /// finished session's `finished_at`; nil when unknown.
-    private static func stateAt(_ item: Published) -> Date? {
+    static func stateAt(_ item: Published) -> Date? {
         if let at = item.status?.at { return SliceDate.parse(at) }
         if item.state.kind == .finished, let finished = item.row?.finishedAt { return SliceDate.parse(finished) }
         return nil

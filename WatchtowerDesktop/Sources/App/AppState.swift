@@ -1907,25 +1907,18 @@ final class AppState {
         // The terminals' liveness, copied by the fast lane for the session
         // projection's off-main resolution.
         let liveness = SessionLivenessBox()
-        let summaries = workbenchesViewModel?.cli.map { cli in
-            SessionReportSummaryRunner(
-                fetch: SessionReportSummaryRunner.cliFetch(cli.runner)
-            ) { [liveness] in
-                let live = liveness.current.liveIDs
-                return try await dbPool.read { db in
-                    SessionReportSummaryRunner.Workbenches(
-                        live: try TerminalSessionSlice.liveWorkbenchIDs(db, liveIDs: live),
-                        published: Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
-                    )
-                }
-            }
-        }
+        let summaries = workbenchesViewModel?.cli.map { SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness) }
         let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
         let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
         let sessions = TerminalSessionSlice(
             liveness: { liveness.current },
             reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
         )
+        // Each session's own report (`--session S --json`, scoped by the CLI,
+        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
+        let sidecar = storage.sidecar
+        let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
+        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports).register(on: dispatcher) }
         let sources: [any SliceSource] = [
             WorkbenchSlice(gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) }),
             WorkbenchTargetSlice(),
@@ -1935,8 +1928,9 @@ final class AppState {
             AskAlertSlice(sidecar: storage.sidecar),
             CalendarEventSlice(),
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
-            RecordingJobSlice(sidecar: storage.sidecar)
-        ]
+            RecordingJobSlice(sidecar: storage.sidecar),
+            SessionTimelineSlice(sessions: sessions, sidecar: sidecar)
+        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
         let transport = storage.transport
         let publisher = SlicePublisher(
             dbPool: dbPool, state: storage.sidecar, transport: transport, sources: sources, assets: storage.sliceAssets,
@@ -1946,6 +1940,7 @@ final class AppState {
         )
         gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
         summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
+        reports?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.sessionReport, .sessionTimeline]) }
         recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
         let fastLane = FastLane(
             dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
@@ -1953,9 +1948,10 @@ final class AppState {
             sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
                 gitRefresher?.sessionStateChanged(workbenchID: workbench)
                 summaries?.sessionStateChanged(workbenchID: workbench)
-            }
+            },
+            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
         )
-        let optional: [(any HubCompanion)?] = [gitRefresher, summaries]
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports]
         let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
         let processor = RelayProcessor(
             transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
