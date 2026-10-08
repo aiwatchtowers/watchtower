@@ -224,22 +224,29 @@ final class SlicePublisherTests: XCTestCase {
         XCTAssertEqual(publisher.fastDeadline, clock.origin + .seconds(11), "the spacing has long passed")
     }
 
-    func testStartWithoutStopKeepsNudgesWakingTheLoop() async throws {
+    func testStartWithoutStopCancelsTheOldSleepAndKeepsTheNewHandle() async throws {
         let source = StubSliceSource(kind: .workbench)
         let publisher = makePublisher(
-            [source], timing: .init(tick: .seconds(60), fastWindow: .milliseconds(20), fastSpacing: .milliseconds(20))
+            [source], timing: .init(tick: .seconds(3_600), fastWindow: .seconds(1), fastSpacing: .seconds(2))
         )
         publisher.start()
-        await awaitHubCondition("the first loop runs its start cycle") { source.reads == 1 }
-        publisher.start()
         defer { publisher.stop() }
-        await awaitHubCondition("the restarted loop runs its start cycle") { source.reads == 2 }
-        // Let the old loop's cancelled sleep return before nudging.
-        try await Task.sleep(for: .milliseconds(100))
+        await awaitHubCondition("the first loop sleeps") { publisher.currentSleepForTesting != nil }
+        let oldSleep = try XCTUnwrap(publisher.currentSleepForTesting)
+        let oldLoop = try XCTUnwrap(publisher.loopTaskForTesting)
+
+        publisher.start()
+
+        XCTAssertTrue(oldSleep.isCancelled, "a restart cancels the old loop's sleep at once")
+        await awaitHubCondition("the new loop sleeps") {
+            publisher.currentSleepForTesting.map { $0 != oldSleep } ?? false
+        }
+        let newSleep = try XCTUnwrap(publisher.currentSleepForTesting)
+        await oldLoop.value
+        XCTAssertEqual(publisher.currentSleepForTesting, newSleep, "the old loop's exit leaves the new handle alone")
 
         publisher.nudge(kinds: [.workbench])
-
-        await awaitHubCondition("a nudge still wakes the restarted loop", timeout: 5) { source.reads == 3 }
+        XCTAssertTrue(newSleep.isCancelled, "a nudge still wakes the new loop")
     }
 
     func testANudgeReadsOnlyTheNudgedKinds() async throws {

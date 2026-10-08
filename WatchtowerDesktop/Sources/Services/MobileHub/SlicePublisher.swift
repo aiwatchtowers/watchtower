@@ -95,6 +95,10 @@ final class SlicePublisher: Sendable {
 
     var isRunning: Bool { loopTask.withLock { $0 != nil } }
 
+    /// Test seams: the loop's stored sleep handle and the loop task.
+    var currentSleepForTesting: Task<Void, Never>? { lane.withLock { $0.sleep } }
+    var loopTaskForTesting: Task<Void, Never>? { loopTask.withLock { $0 } }
+
     // MARK: - Publishing
 
     /// One push cycle over `kinds` (nil: every kind). Oversized records are

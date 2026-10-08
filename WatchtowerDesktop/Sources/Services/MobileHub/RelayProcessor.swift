@@ -85,8 +85,10 @@ final class RelayProcessor: Sendable {
 
     /// One pass over the relay zone. Passes are single-flight across every
     /// processor sharing this sidecar: a second call waits for the running
-    /// one. One bad action becomes its own failed echo and never stops the
-    /// rest; a transport error or cancellation (checked between records,
+    /// one. A handler must never call back into the processor (the gate is
+    /// not re-entrant: the pass would wait on itself), and each handler owns
+    /// its own timeout — a stop waits for the record being applied. One bad
+    /// action becomes its own failed echo and never stops the rest; a transport error or cancellation (checked between records,
     /// never mid-apply) aborts the pass — the token stays, so the next pass
     /// re-reads, and the ledger keeps that safe.
     func processOnce() async throws -> Pass {
@@ -104,7 +106,11 @@ final class RelayProcessor: Sendable {
                 continue
             }
             try Task.checkCancellation()
-            try await processAction(action)
+            // An unstructured task does not inherit the loop's cancellation:
+            // stopping the hub ends a pass only between two records, so a
+            // handler's cancellation-aware awaits (GRDB, sleeps, URLSession)
+            // never turn a stop into a false `write_failed`.
+            try await Task { try await self.processAction(action) }.value
             handled += 1
         }
         let left = remaining

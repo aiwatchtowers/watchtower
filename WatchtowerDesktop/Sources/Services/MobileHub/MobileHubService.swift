@@ -178,10 +178,13 @@ final class MobileHubService {
         relay?.cancel()
         let previous = teardown
         let transport = self.transport
+        // The transport stops first, so a hung CloudKit fetch in the
+        // cancelled cycle is cancelled rather than awaited; the pass then
+        // ends after the record it is applying (its echo waits in the store).
         teardown = Task {
             await previous?.value
-            await relay?.value
             await transport.stop()
+            await relay?.value
         }
         epoch &+= 1
         status = .off

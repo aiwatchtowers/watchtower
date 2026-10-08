@@ -343,7 +343,10 @@ final class RelayProcessorTests: XCTestCase {
         let latch = HandlerLatch()
         dispatcher.register(.boardCommentAdd) { action in
             await latch.enter(action)
-            return .applied()
+            // A cancellation-aware await inside the apply, as GRDB's async
+            // write or a sleep would be.
+            try Task.checkCancellation()
+            return .applied(["comment_id": .integer(1)])
         }
         let records = try (0..<2).map { _ in try pendingActionRecord(kind: .boardCommentAdd, entityID: "7") }
         try await transport.save(records)
@@ -360,7 +363,10 @@ final class RelayProcessorTests: XCTestCase {
         } catch is CancellationError {}
         XCTAssertEqual(latch.entries, 1, "the record being applied finishes; the next one is left")
         let done = try records.filter { try sidecar.relayPhase($0.recordName) == .done }
-        XCTAssertEqual(done.count, 1, "the applied record is echoed and done; the other is untouched")
+        XCTAssertEqual(done.count, 1, "the applied record is done; the other is untouched")
+        let echo = try XCTUnwrap(try echoes(of: try XCTUnwrap(done.first).recordName).last)
+        XCTAssertEqual(echo.status, .applied, "a stop never reaches into the apply")
+        XCTAssertNil(echo.reason)
 
         // The next pass picks up the record that was left, once.
         _ = try await processor.processOnce()
