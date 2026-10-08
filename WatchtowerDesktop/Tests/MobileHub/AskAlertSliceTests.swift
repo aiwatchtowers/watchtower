@@ -15,7 +15,11 @@ final class AskAlertSliceTests: XCTestCase {
     private var dbPath: String!
     private var dbPool: DatabasePool!
     private var sidecar: HubSyncState!
-    private let clock = OSAllocatedUnfairLock(initialState: Date())
+    // A whole second, so a stamp 7 days later round-trips the sidecar's
+    // seconds-since-1970 REAL exactly at the lifetime boundary.
+    private let clock = OSAllocatedUnfairLock(
+        initialState: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+    )
     private let day: TimeInterval = 86_400
     private var enabledAt: Date!
 
