@@ -7,6 +7,7 @@ import WatchtowerKit
 struct EventDetailView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
     let eventID: String
 
     var body: some View {
@@ -28,6 +29,17 @@ struct EventDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // The canvas's back label is "Today", from Calendar and Now alike.
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Today", systemImage: "chevron.left").labelStyle(.titleAndIcon)
+                }
+            }
+        }
     }
 
     private func content(_ model: EventDetailModel) -> some View {
@@ -39,6 +51,7 @@ struct EventDetailView: View {
                 }
                 if let line = model.attendeesLine {
                     HStack(spacing: 10) {
+                        // The line next to it says the same for VoiceOver.
                         HStack(spacing: -6) {
                             ForEach(model.attendees) { attendee in
                                 Text(attendee.initials)
@@ -48,6 +61,7 @@ struct EventDetailView: View {
                                     .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
                             }
                         }
+                        .accessibilityHidden(true)
                         Text(line).font(.caption).foregroundStyle(.secondary)
                     }
                 }

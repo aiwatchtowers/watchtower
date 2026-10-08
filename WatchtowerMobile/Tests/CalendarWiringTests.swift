@@ -5,10 +5,12 @@ import XCTest
 
 /// The phone calendar (spec §13 C1): the agenda day with its week strip,
 /// event cards, the now line and the current or next meeting; the event
-/// detail; the Now tab's next-meeting card. Times are seeded from now.
+/// detail; the Now tab's next-meeting card. The models take `now`, so the
+/// tests pin it at local noon today: an offset of a few hours never crosses
+/// midnight, whatever the hour the suite runs at.
 @MainActor
 final class CalendarWiringTests: XCTestCase {
-    private let now = Date()
+    private let now = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
     private var calendar: Calendar { .current }
 
     // MARK: - Fixtures
@@ -173,6 +175,30 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(detail.recordingText, "Transcribing on Mac · 37%")
     }
 
+    /// A new phone recording of an event that already has a recap shows
+    /// the Mac's progress on it, not the older recap.
+    func testAnInProgressRecordingWinsOverAnOlderRecap() async throws {
+        let now = now
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
+        try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: 37)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+        let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
+
+        let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
+        let olderRecap = MeetingTranscript(
+            id: 9, eventID: recorded.id, title: "Earlier take", durationSec: 600,
+            createdAt: Self.iso.string(from: now.addingTimeInterval(-86_400)),
+            updatedAt: Self.iso.string(from: now.addingTimeInterval(-86_400)), speakers: [], summary: "Old.",
+            keyDecisions: [], actionItems: ["One"], openQuestions: []
+        )
+        let agenda = AgendaDayModel(
+            day: now, snapshot: snapshot([recorded], transcripts: [olderRecap]), recordings: recordings, now: now, calendar: calendar
+        )
+        XCTAssertEqual(agenda.cards.first?.pills.map(\.text), ["Transcribing on Mac · 37%"])
+    }
+
     func testARecapReadyCardShowsRecapAndActionItems() throws {
         let past = event("e1", start: now.addingTimeInterval(-7_200))
         let transcript = MeetingTranscript(
@@ -212,7 +238,7 @@ final class CalendarWiringTests: XCTestCase {
         }
         // Today with no events still draws the line.
         let empty = AgendaDayModel(day: now, snapshot: snapshot([]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar)
-        XCTAssertEqual(empty.nowLineText, MeetingEvent.timeRange(now, now).components(separatedBy: "–").first)
+        XCTAssertEqual(empty.nowLineText, CalendarFormat(calendar: calendar).time(now))
     }
 
     func testTheCurrentOrNextMeetingIsHighlightedWithRecordAndPrep() throws {
@@ -223,12 +249,9 @@ final class CalendarWiringTests: XCTestCase {
             day: now, snapshot: snapshot([later, next, ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         )
         let highlighted = agenda.cards.filter(\.isHighlighted)
-        // A day that crosses midnight may push `next` to tomorrow.
-        if calendar.isDate(next.startDate, inSameDayAs: now) {
-            XCTAssertEqual(highlighted.map(\.id), ["next"])
-            XCTAssertEqual(highlighted.first?.actionTitles, ["Record", "Prep"])
-            XCTAssertNotNil(highlighted.first?.meetingEvent)
-        }
+        XCTAssertEqual(highlighted.map(\.id), ["next"])
+        XCTAssertEqual(highlighted.first?.actionTitles, ["Record", "Prep"])
+        XCTAssertNotNil(highlighted.first?.meetingEvent)
         XCTAssertFalse(agenda.cards.first { $0.id == "ended" }?.showsRecord ?? true)
     }
 
@@ -283,6 +306,12 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(strip.days.map(\.letter), ["M", "T", "W", "T", "F", "S", "S"])
         XCTAssertEqual(strip.days.filter(\.isToday).count, 1)
         XCTAssertEqual(calendar.component(.weekday, from: try XCTUnwrap(strip.days.first).date), 2, "Monday first")
+
+        let today = try XCTUnwrap(strip.days.first(where: \.isToday))
+        XCTAssertEqual(today.spokenLabel, CalendarFormat(calendar: calendar).spokenDay(now) + ", today")
+        let marked = WeekStripModel(selected: now, today: now, eventDays: [calendar.startOfDay(for: now)], calendar: calendar)
+        XCTAssertTrue(try XCTUnwrap(marked.days.first(where: \.isToday)).spokenLabel.hasSuffix(", today, has events"))
+        XCTAssertFalse(CalendarFormat(calendar: calendar).spokenDay(now).isEmpty)
     }
 
     // MARK: - Replica read

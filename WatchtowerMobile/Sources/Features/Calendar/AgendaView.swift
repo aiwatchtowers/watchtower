@@ -88,18 +88,27 @@ private struct WeekStripView: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            Button { shiftWeek(-1) } label: { Image(systemName: "chevron.left") }
+            Button { shiftWeek(-1) } label: { chevron("chevron.left") }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Previous week")
             ForEach(strip.days) { day in
                 Button { select(day.date) } label: { dayCell(day) }
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity)
+                    .accessibilityLabel(day.spokenLabel)
+                    .accessibilityAddTraits(day.isSelected ? .isSelected : [])
             }
-            Button { shiftWeek(1) } label: { Image(systemName: "chevron.right") }
+            Button { shiftWeek(1) } label: { chevron("chevron.right") }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Next week")
         }
+    }
+
+    /// A 44 × 44 hit target.
+    private func chevron(_ name: String) -> some View {
+        Image(systemName: name)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
     }
 
     private func dayCell(_ day: WeekStripModel.Day) -> some View {
@@ -158,7 +167,9 @@ private struct AgendaEventRow: View {
                         }
                         Button("Prep", action: open).buttonStyle(.bordered)
                     }
-                    .controlSize(.small)
+                    // Regular size: a hit target of at least 44 pt.
+                    .controlSize(.regular)
+                    .frame(minHeight: 44)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

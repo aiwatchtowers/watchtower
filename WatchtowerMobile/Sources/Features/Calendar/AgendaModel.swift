@@ -10,11 +10,13 @@ struct CalendarFormat {
     let calendar: Calendar
     private let clock: DateFormatter
     private let dayLabel: DateFormatter
+    private let spokenDayLabel: DateFormatter
 
     init(calendar: Calendar) {
         self.calendar = calendar
         clock = Self.formatter("HH:mm", calendar)
         dayLabel = Self.formatter("EEE, MMM d", calendar)
+        spokenDayLabel = Self.formatter("EEEE, MMMM d", calendar)
     }
 
     private static func formatter(_ format: String, _ calendar: Calendar) -> DateFormatter {
@@ -30,6 +32,9 @@ struct CalendarFormat {
 
     /// "Wed, Oct 7".
     func day(_ date: Date) -> String { dayLabel.string(from: date) }
+
+    /// "Wednesday, October 7", for VoiceOver.
+    func spokenDay(_ date: Date) -> String { spokenDayLabel.string(from: date) }
 
     /// "14:00–14:45", or "All day".
     func timeRange(_ event: CalendarEvent) -> String {
@@ -80,7 +85,15 @@ struct EventRecordingStatus: Equatable {
         "Not recorded yet. A recording here is attached to this event; the Mac transcribes it and writes the recap."
 
     init(event: CalendarEvent, snapshot: CalendarReplicaSnapshot, recordings: PhoneRecordingsSnapshot, now: Date) {
-        if let transcript = snapshot.transcript(forEvent: event.id) {
+        // The newest phone recording made for this event (the ledger is
+        // newest first). While it is on its way or on the Mac, its state
+        // wins over an older recap of the same event.
+        let phone = recordings.recordings.first { $0.eventID == event.id }
+            .map { Self.phonePill($0, recordings: recordings, now: now) }
+        if let phone, phone.inFlight {
+            pills = [phone.pill]
+            text = phone.pill.text
+        } else if let transcript = snapshot.transcript(forEvent: event.id) {
             var pills: [EventPill] = []
             let recap = transcript.summary != nil
             pills.append(EventPill(text: recap ? "Recap ready" : "Transcript ready", tone: .green, role: .status))
@@ -90,32 +103,36 @@ struct EventRecordingStatus: Equatable {
             }
             self.pills = pills
             text = transcript.summary ?? "Transcript ready"
-            return
-        }
-        // The newest phone recording made for this event (the ledger is
-        // newest first).
-        guard let recording = recordings.recordings.first(where: { $0.eventID == event.id }) else {
+        } else if let phone {
+            pills = [phone.pill]
+            text = phone.pill.text
+        } else {
             pills = []
             text = nil
-            return
         }
-        let pill: EventPill
+    }
+
+    /// One phone recording's pill; `inFlight` while the upload or the Mac's
+    /// job is still running (a delivered recording without a job yet, or
+    /// one whose job aged out, defers to the transcript).
+    private static func phonePill(
+        _ recording: PhoneRecording,
+        recordings: PhoneRecordingsSnapshot,
+        now: Date
+    ) -> (pill: EventPill, inFlight: Bool) {
         if let job = recordings.jobs[recording.id] {
             switch PhoneTranscriptStage(job: job) {
-            case let .inProgress(label): pill = EventPill(text: label, tone: .purple, role: .progress)
-            case .ready, .notStarted: pill = EventPill(text: "Transcript ready", tone: .green, role: .status)
-            case let .failed(message): pill = EventPill(text: message, tone: .red, role: .status)
-            }
-        } else {
-            let stage = PhoneUploadStage(recording: recording, heartbeat: recordings.heartbeat, now: now)
-            if case .failed = stage {
-                pill = EventPill(text: stage.label, tone: .red, role: .status)
-            } else {
-                pill = EventPill(text: stage.label, tone: .secondary, role: .info)
+            case let .inProgress(label): return (EventPill(text: label, tone: .purple, role: .progress), true)
+            case .ready, .notStarted: return (EventPill(text: "Transcript ready", tone: .green, role: .status), false)
+            case let .failed(message): return (EventPill(text: message, tone: .red, role: .status), false)
             }
         }
-        pills = [pill]
-        text = pill.text
+        let stage = PhoneUploadStage(recording: recording, heartbeat: recordings.heartbeat, now: now)
+        switch stage {
+        case .failed: return (EventPill(text: stage.label, tone: .red, role: .status), true)
+        case .delivered: return (EventPill(text: stage.label, tone: .secondary, role: .info), false)
+        case .recording, .sending, .waitingForMac: return (EventPill(text: stage.label, tone: .secondary, role: .info), true)
+        }
     }
 }
 
@@ -246,6 +263,8 @@ struct WeekStripModel {
         let isToday: Bool
         let isSelected: Bool
         let hasEvents: Bool
+        /// "Wednesday, October 7, today, has events".
+        let spokenLabel: String
         var id: Date { date }
     }
 
@@ -258,15 +277,20 @@ struct WeekStripModel {
         let back = (calendar.component(.weekday, from: selectedStart) + 5) % 7
         let monday = calendar.date(byAdding: .day, value: -back, to: selectedStart) ?? selectedStart
         let letters = ["M", "T", "W", "T", "F", "S", "S"]
+        let format = CalendarFormat(calendar: calendar)
         days = (0..<7).map { offset in
             let date = calendar.date(byAdding: .day, value: offset, to: monday) ?? monday
+            let isToday = calendar.isDate(date, inSameDayAs: today)
+            let hasEvents = eventDays.contains(date)
             return Day(
                 date: date,
                 letter: letters[offset],
                 number: String(calendar.component(.day, from: date)),
-                isToday: calendar.isDate(date, inSameDayAs: today),
+                isToday: isToday,
                 isSelected: calendar.isDate(date, inSameDayAs: selectedStart),
-                hasEvents: eventDays.contains(date)
+                hasEvents: hasEvents,
+                spokenLabel: ([format.spokenDay(date)] + (isToday ? ["today"] : []) + (hasEvents ? ["has events"] : []))
+                    .joined(separator: ", ")
             )
         }
     }

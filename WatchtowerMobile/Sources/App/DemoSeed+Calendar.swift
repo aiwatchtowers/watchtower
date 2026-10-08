@@ -105,14 +105,14 @@ extension DemoSeed {
 
     // MARK: - The phone recording the Mac is transcribing
 
-    /// A delivered phone recording for `recordedEventID` and its
-    /// `recording_job` at `percent`. The ledger row is made once and reused
-    /// on every relaunch, so the job keeps one record. The audio stand-in
-    /// is deleted by the `received` echo, as for a real upload.
     /// The demo recording's fixed ledger id: one row and one job record
     /// across relaunches.
     static let recordingID = "demo-phone-recording"
 
+    /// A delivered phone recording for `recordedEventID` and its
+    /// `recording_job` at `percent`. The ledger row is made once and reused
+    /// on every relaunch. The audio stand-in is deleted by the `received`
+    /// echo, as for a real upload, or here when the uploader refuses it.
     static func loadRecordingDemo(
         uploader: RecordingUploader,
         store: ReplicaStore,
@@ -133,7 +133,11 @@ extension DemoSeed {
                 endedAt: now.addingTimeInterval(-4_500),
                 titleHint: "Board lanes design review",
                 eventID: recordedEventID
-            ) else { throw DemoSeedError.recordingNotRegistered }
+            ) else {
+                // Best effort: register already deletes a degenerate file.
+                try? FileManager.default.removeItem(at: file)
+                throw DemoSeedError.recordingNotRegistered
+            }
             try await uploader.applyEcho(RecordingUploadPayload(
                 id: row.id, startedAt: row.startedAt, endedAt: row.endedAt, durationSec: row.durationSec,
                 sampleFormat: row.sampleFormat, status: .received, errorMessage: nil, deviceID: device.deviceID

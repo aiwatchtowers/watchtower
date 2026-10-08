@@ -89,7 +89,9 @@ private struct NextMeetingCardView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(PhoneTone.red.color)
-            .controlSize(.small)
+            // Regular size: a hit target of at least 44 pt.
+            .controlSize(.regular)
+            .frame(minHeight: 44)
         }
     }
 }
