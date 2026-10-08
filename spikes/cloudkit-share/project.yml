@@ -1,0 +1,62 @@
+# Throwaway S0 spike (mobile POC A, Task 1). Generate with ./spike.sh gen — never by hand:
+# spike.sh exports DEVELOPMENT_TEAM and the bundle ids that this file expands.
+name: CKSpike
+options:
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
+    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.0.1"
+targets:
+  CKSpikeMac:
+    type: application
+    platform: macOS
+    sources: [Shared, Mac]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${SPIKE_MAC_BUNDLE_ID}
+        PRODUCT_NAME: CKSpikeMac
+        ENABLE_HARDENED_RUNTIME: NO
+    info:
+      path: Mac/Info.plist
+      properties:
+        CFBundleDisplayName: CKSpikeMac
+        LSUIElement: true
+    entitlements:
+      path: Mac/CKSpikeMac.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.com.aiwatchtowers.watchtower]
+        com.apple.developer.icloud-services: [CloudKit]
+        com.apple.developer.aps-environment: development
+  CKSpikeiOS:
+    type: application
+    platform: iOS
+    sources: [Shared, iOS]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ${SPIKE_IOS_BUNDLE_ID}
+        PRODUCT_NAME: CKSpike
+        TARGETED_DEVICE_FAMILY: "1"
+    info:
+      path: iOS/Info.plist
+      properties:
+        CFBundleDisplayName: CKSpike
+        UILaunchScreen: {}
+        UIBackgroundModes: [remote-notification]
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleURLTypes:
+          - CFBundleURLName: spike-link
+            CFBundleURLSchemes: [ckspike]
+    entitlements:
+      path: iOS/CKSpike.entitlements
+      properties:
+        com.apple.developer.icloud-container-identifiers: [iCloud.com.aiwatchtowers.watchtower]
+        com.apple.developer.icloud-services: [CloudKit]
+        aps-environment: development
