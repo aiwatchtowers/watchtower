@@ -35,6 +35,7 @@ final class MobileHubServiceTests: XCTestCase {
     private func makeService(
         transport: StubHubTransport,
         relayInterval: Duration = .milliseconds(20),
+        dispatcher: MobileHubCommandDispatcher? = nil,
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
@@ -42,7 +43,7 @@ final class MobileHubServiceTests: XCTestCase {
             timing: .init(tick: .milliseconds(20), fastWindow: .milliseconds(10), fastSpacing: .milliseconds(10))
         )
         let processor = RelayProcessor(
-            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+            transport: transport, sidecar: sidecar, dispatcher: dispatcher ?? MobileHubCommandDispatcher(), hubID: "hub-acme"
         )
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
@@ -89,10 +90,10 @@ final class MobileHubServiceTests: XCTestCase {
         await service.start()
         defer { service.stop() }
 
-        try await awaitHubCondition("500 probes are echoed in one relay cycle", timeout: 20) {
-            try appliedEchoes(transport).count >= 500
+        await awaitHubCondition("500 probes are echoed in one relay cycle", timeout: 20) {
+            transport.appliedEchoIDs.count >= 500 && service.relayBacklog == 0
         }
-        let echoed = try appliedEchoes(transport).map(\.id)
+        let echoed = transport.appliedEchoIDs
         XCTAssertEqual(echoed.count, 500)
         XCTAssertEqual(Set(echoed).count, 500, "each probe is echoed exactly once")
         XCTAssertEqual(service.relayBacklog, 0)
@@ -140,8 +141,9 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(transport.starts, 0)
     }
 
-    func testAccountResetWipesTheSyncState() async throws {
+    func testAccountResetWipesHashesAndTokenButKeepsTheLedger() async throws {
         try sidecar.setHash("hash", for: "workbench-1")
+        try sidecar.setMetaValue("{}", forKey: RelayProcessor.relayTokenKey)
         try sidecar.markRelayDone("action-1", outcome: "applied", at: Date())
         let transport = StubHubTransport()
         let service = makeService(transport: transport)
@@ -151,7 +153,60 @@ final class MobileHubServiceTests: XCTestCase {
         transport.fireAccountReset()
 
         XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
-        XCTAssertNil(try sidecar.relayPhase("action-1"))
+        XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey))
+        XCTAssertEqual(try sidecar.relayPhase("action-1"), .done, "phone UUIDs cannot collide across accounts")
+    }
+
+    func testStopStopsTheTransport() async {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+        await service.start()
+
+        service.stop()
+        await service.waitUntilStopped()
+
+        XCTAssertEqual(transport.stops, 1, "toggle off stops CloudKit syncing too")
+    }
+
+    func testOffThenOnWhileAPassRunsAppliesNoRecordTwice() async throws {
+        let latch = HandlerLatch()
+        let dispatcher = MobileHubCommandDispatcher()
+        dispatcher.register(.boardCommentAdd) { action in
+            await latch.enter(action)
+            return .applied()
+        }
+        let transport = StubHubTransport()
+        let records = try (0..<3).map { _ in try pendingActionRecord(kind: .boardCommentAdd, entityID: "7") }
+        try await transport.save(records)
+        let service = makeService(transport: transport, dispatcher: dispatcher)
+        await service.start()
+        await awaitHubCondition("the first pass is inside a handler") { latch.entries == 1 }
+
+        service.stop()
+        let restart = Task { await service.start() }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(latch.entries, 1, "the new loop waits for the old pass")
+        latch.release()
+        await restart.value
+
+        await awaitHubCondition("every record is applied") { transport.appliedEchoIDs.count == 3 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(latch.calls.count, 3)
+        XCTAssertTrue(latch.calls.values.allSatisfy { $0 == 1 }, "no record is applied twice: \(latch.calls)")
+        XCTAssertEqual(Set(transport.appliedEchoIDs).count, 3)
+        service.stop()
+    }
+
+    func testADisposedHubNeverStarts() async {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+
+        service.dispose()
+        await service.start()
+
+        XCTAssertEqual(service.status, .off)
+        XCTAssertEqual(transport.starts, 0, "a start() queued before the hub was replaced does nothing")
     }
 
     func testRejectedDataRecordClearsItsHash() async throws {

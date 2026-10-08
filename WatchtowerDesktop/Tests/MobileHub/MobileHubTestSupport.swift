@@ -17,6 +17,8 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var currentAvailability: CloudAvailability
     private var startCount = 0
+    private var stopCount = 0
+    private var appliedIDs: [String] = []
     private var savedLog: [Saved] = []
     private var resetHandler: (@Sendable () -> Void)?
     private var rejectedHandler: (@Sendable (String, CloudZoneID) -> Void)?
@@ -26,6 +28,10 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     var starts: Int { lock.withLock { startCount } }
+    var stops: Int { lock.withLock { stopCount } }
+    /// Ids of every `applied` action echo saved, in order — counted here, on
+    /// save, so a test polls an O(1) value instead of re-decoding the log.
+    var appliedEchoIDs: [String] { lock.withLock { appliedIDs } }
     var saved: [Saved] { lock.withLock { savedLog } }
 
     func setAvailability(_ value: CloudAvailability) {
@@ -43,6 +49,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func start() async { lock.withLock { startCount += 1 } }
+    func stop() async { lock.withLock { stopCount += 1 } }
     func pull() async throws {}
     func availability() async -> CloudAvailability { lock.withLock { currentAvailability } }
 
@@ -57,7 +64,15 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func save(_ records: [CloudRecord]) async throws {
         try await inner.save(records)
         let now = ContinuousClock.now
-        lock.withLock { savedLog.append(contentsOf: records.map { Saved(record: $0, at: now) }) }
+        let applied = records.compactMap { record -> String? in
+            guard record.kind == RelayRecordKind.action.rawValue,
+                  let action = try? decodeAction(record), action.status == .applied else { return nil }
+            return action.id
+        }
+        lock.withLock {
+            savedLog.append(contentsOf: records.map { Saved(record: $0, at: now) })
+            appliedIDs.append(contentsOf: applied)
+        }
     }
 
     func delete(recordNames: [String], in zone: CloudZoneID) async throws {
@@ -133,4 +148,28 @@ func pendingActionRecord(
 
 func decodeAction(_ record: CloudRecord) throws -> ActionRequestPayload {
     try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
+}
+
+/// Parks a handler until the test releases it; counts entries per action.
+@MainActor
+final class HandlerLatch {
+    private(set) var calls: [String: Int] = [:]
+    private var isOpen = false
+    private var parked: [CheckedContinuation<Void, Never>] = []
+
+    var entries: Int { calls.values.reduce(0, +) }
+
+    /// Called by the handler: records the action, then waits while closed.
+    func enter(_ action: ActionRequestPayload) async {
+        calls[action.id, default: 0] += 1
+        guard !isOpen else { return }
+        await withCheckedContinuation { parked.append($0) }
+    }
+
+    func release() {
+        isOpen = true
+        let waiting = parked
+        parked = []
+        waiting.forEach { $0.resume() }
+    }
 }

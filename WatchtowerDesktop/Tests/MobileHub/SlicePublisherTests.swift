@@ -153,48 +153,93 @@ final class SlicePublisherTests: XCTestCase {
 
     // MARK: - Fast lane
 
-    func testNudgesInsideTheWindowCoalesceIntoOneSend() async throws {
-        let source = StubSliceSource(kind: .workbench)
-        source.setPayload(Data(#"{"v":0}"#.utf8))
-        let publisher = makePublisher([source], timing: .init(tick: .seconds(60), fastWindow: .seconds(1), fastSpacing: .seconds(2)))
-        publisher.start()
-        defer { publisher.stop() }
-        await awaitHubCondition("the start cycle publishes") { dataSaves().count == 1 }
+    /// The fast lane's decisions on a fabricated clock: no wall-clock timing.
+    private final class FakeClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var current = ContinuousClock.now
+        let origin: ContinuousClock.Instant
 
-        source.setPayload(Data(#"{"v":1}"#.utf8))
-        publisher.nudge(kinds: [.workbench])
-        try await Task.sleep(for: .milliseconds(300))
-        source.setPayload(Data(#"{"v":2}"#.utf8))
-        publisher.nudge(kinds: [.workbench])
+        init() { origin = current }
 
-        await awaitHubCondition("the fast lane sends") { dataSaves().count == 2 }
-        try await Task.sleep(for: .milliseconds(2_500))
-        let saves = dataSaves()
-        XCTAssertEqual(saves.count, 2, "two nudges inside the window are one send")
-        XCTAssertEqual(saves.last?.record.payload, Data(#"{"v":2}"#.utf8), "the send carries the latest state")
+        var now: ContinuousClock.Instant { lock.withLock { current } }
+
+        func set(_ offset: Duration) {
+            lock.withLock { current = origin + offset }
+        }
     }
 
-    func testTwoNudgesOneAndAHalfSecondsApartAreSentAtLeastTwoSecondsApart() async throws {
+    private func makeLanePublisher(_ clock: FakeClock) -> SlicePublisher {
+        SlicePublisher(
+            dbPool: dbPool, state: state, transport: transport, sources: [], timing: .standard
+        ) { clock.now }
+    }
+
+    func testNudgesInsideTheWindowCoalesceIntoOneSend() {
+        let clock = FakeClock()
+        let publisher = makeLanePublisher(clock)
+
+        publisher.nudge(kinds: [.workbench])
+        clock.set(.milliseconds(300))
+        publisher.nudge(kinds: [.ownerAsk])
+
+        XCTAssertEqual(publisher.fastDeadline, clock.origin + .seconds(1), "the window runs from the first nudge")
+        XCTAssertNil(publisher.takeDueFastKinds(now: clock.origin + .milliseconds(999)), "nothing is sent inside the window")
+        XCTAssertEqual(
+            publisher.takeDueFastKinds(now: clock.origin + .seconds(1)), [.workbench, .ownerAsk],
+            "both nudges go out in one send"
+        )
+        XCTAssertNil(publisher.takeDueFastKinds(now: clock.origin + .seconds(5)), "and only one")
+        XCTAssertNil(publisher.fastDeadline)
+    }
+
+    func testTwoNudgesOneAndAHalfSecondsApartAreSentAtLeastTwoSecondsApart() {
+        let clock = FakeClock()
+        let publisher = makeLanePublisher(clock)
+
+        publisher.nudge(kinds: [.workbench])
+        let firstSend = clock.origin + .seconds(1)
+        XCTAssertEqual(publisher.takeDueFastKinds(now: firstSend), [.workbench])
+
+        clock.set(.milliseconds(1_500))
+        publisher.nudge(kinds: [.workbench])
+
+        XCTAssertEqual(publisher.fastDeadline, firstSend + .seconds(2), "the spacing outlasts the second window")
+        XCTAssertNil(
+            publisher.takeDueFastKinds(now: clock.origin + .milliseconds(2_500)),
+            "the second window has ended, but the 2 s spacing has not"
+        )
+        XCTAssertNil(publisher.takeDueFastKinds(now: firstSend + .milliseconds(1_999)))
+        XCTAssertEqual(publisher.takeDueFastKinds(now: firstSend + .seconds(2)), [.workbench], "sent 2 s after the first")
+    }
+
+    func testANudgeAfterAQuietSpellWaitsOnlyForItsWindow() {
+        let clock = FakeClock()
+        let publisher = makeLanePublisher(clock)
+        publisher.nudge(kinds: [.workbench])
+        XCTAssertNotNil(publisher.takeDueFastKinds(now: clock.origin + .seconds(1)))
+
+        clock.set(.seconds(10))
+        publisher.nudge(kinds: [.workbench])
+
+        XCTAssertEqual(publisher.fastDeadline, clock.origin + .seconds(11), "the spacing has long passed")
+    }
+
+    func testStartWithoutStopKeepsNudgesWakingTheLoop() async throws {
         let source = StubSliceSource(kind: .workbench)
-        source.setPayload(Data(#"{"v":0}"#.utf8))
-        let publisher = makePublisher([source], timing: .init(tick: .seconds(60), fastWindow: .seconds(1), fastSpacing: .seconds(2)))
+        let publisher = makePublisher(
+            [source], timing: .init(tick: .seconds(60), fastWindow: .milliseconds(20), fastSpacing: .milliseconds(20))
+        )
+        publisher.start()
+        await awaitHubCondition("the first loop runs its start cycle") { source.reads == 1 }
         publisher.start()
         defer { publisher.stop() }
-        await awaitHubCondition("the start cycle publishes") { dataSaves().count == 1 }
+        await awaitHubCondition("the restarted loop runs its start cycle") { source.reads == 2 }
+        // Let the old loop's cancelled sleep return before nudging.
+        try await Task.sleep(for: .milliseconds(100))
 
-        let firstNudge = ContinuousClock.now
-        source.setPayload(Data(#"{"v":1}"#.utf8))
-        publisher.nudge(kinds: [.workbench])
-        try await Task.sleep(until: firstNudge + .milliseconds(1_500), clock: .continuous)
-        let secondNudge = ContinuousClock.now
-        source.setPayload(Data(#"{"v":2}"#.utf8))
         publisher.nudge(kinds: [.workbench])
 
-        await awaitHubCondition("both fast sends land", timeout: 8) { dataSaves().count == 3 }
-        let saves = dataSaves()
-        XCTAssertGreaterThanOrEqual(saves[1].at - firstNudge, .seconds(1), "a nudge waits out the 1 s window")
-        XCTAssertGreaterThanOrEqual(saves[2].at - saves[1].at, .seconds(2), "fast sends are at least 2 s apart")
-        XCTAssertGreaterThanOrEqual(saves[2].at - secondNudge, .seconds(1))
+        await awaitHubCondition("a nudge still wakes the restarted loop", timeout: 5) { source.reads == 3 }
     }
 
     func testANudgeReadsOnlyTheNudgedKinds() async throws {

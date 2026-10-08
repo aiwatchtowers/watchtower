@@ -10,6 +10,8 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     func start() async
     func pull() async throws
     func availability() async -> CloudAvailability
+    /// Stops syncing until the next `start()` (the hub was turned off).
+    func stop() async
     /// Set the account-change reset callback before `start()`.
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async
     /// A record CloudKit rejects even alone (`.limitExceeded`, spec §9).
@@ -82,6 +84,13 @@ final class MobileHubService {
     @ObservationIgnored private var reprobeTask: Task<Void, Never>?
     /// Bumped by stop() so a start() suspended before it detects it lost.
     @ObservationIgnored private var epoch = 0
+    /// What the last stop() left running: the cancelled relay loop (its
+    /// pass ends between two records) and the transport stop. start()
+    /// awaits it, so two relay passes never overlap.
+    @ObservationIgnored private var teardown: Task<Void, Never>?
+    /// Set by dispose(): a replaced hub never starts again, even from a
+    /// start() queued before it was replaced.
+    @ObservationIgnored private var disposed = false
     @ObservationIgnored private let logger = Logger(subsystem: Constants.bundleID, category: "MobileHubService")
 
     init(
@@ -118,10 +127,12 @@ final class MobileHubService {
     /// Starts the transport, gates on availability, then spins up the loops.
     /// Safe to call again after `.unavailable` or `stop()`.
     func start() async {
-        guard isEnabled() else { return }
+        guard !disposed, isEnabled() else { return }
         guard status != .running, status != .starting else { return }
         status = .starting
         let startEpoch = epoch
+        await teardown?.value
+        guard status == .starting, epoch == startEpoch else { return }
         await installTransportHandlers()
         await transport.start()
         let availability = await transport.availability()
@@ -160,12 +171,32 @@ final class MobileHubService {
 
     func stop() {
         publisher.stop()
-        relayTask?.cancel()
-        relayTask = nil
         reprobeTask?.cancel()
         reprobeTask = nil
+        let relay = relayTask
+        relayTask = nil
+        relay?.cancel()
+        let previous = teardown
+        let transport = self.transport
+        teardown = Task {
+            await previous?.value
+            await relay?.value
+            await transport.stop()
+        }
         epoch &+= 1
         status = .off
+    }
+
+    /// Terminal stop for a hub being replaced (an `initWorkbenches` re-run).
+    func dispose() {
+        disposed = true
+        stop()
+    }
+
+    /// Returns once the last stop() has drained (relay pass ended,
+    /// transport stopped).
+    func waitUntilStopped() async {
+        await teardown?.value
     }
 
     // MARK: - Loops

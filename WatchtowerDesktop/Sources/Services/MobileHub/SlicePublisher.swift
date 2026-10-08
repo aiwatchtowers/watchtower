@@ -64,6 +64,8 @@ final class SlicePublisher: Sendable {
     private let transport: any CloudSyncTransport & Sendable
     private let sources: [any SliceSource]
     private let timing: Timing
+    /// The fast lane's clock; tests pass fabricated instants.
+    private let clock: @Sendable () -> ContinuousClock.Instant
     private let logger = Logger(subsystem: Constants.bundleID, category: "SlicePublisher")
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     private let lane = OSAllocatedUnfairLock(initialState: Lane())
@@ -77,13 +79,15 @@ final class SlicePublisher: Sendable {
         state: HubSyncState,
         transport: any CloudSyncTransport & Sendable,
         sources: [any SliceSource],
-        timing: Timing = .standard
+        timing: Timing = .standard,
+        clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now }
     ) {
         self.dbPool = dbPool
         self.state = state
         self.transport = transport
         self.sources = sources
         self.timing = timing
+        self.clock = clock
     }
 
     /// Oversized warnings actually emitted (the throttle's observable).
@@ -104,7 +108,7 @@ final class SlicePublisher: Sendable {
             guard let diff = try currentDiff(for: kind) else { continue }
             let saveable = splitOversized(diff.upserts, skipped: &outcome.skipped)
             outcome.skipped.append(contentsOf: diff.skipped)
-            guard try await push(saveable, deletions: diff.deletions, startGen: startGen, into: &outcome) else {
+            guard try await pushKind(saveable, deletions: diff.deletions, startGen: startGen, into: &outcome) else {
                 logger.warning("publish: generation changed mid-cycle; aborted to avoid recording stale hashes")
                 return outcome
             }
@@ -127,7 +131,7 @@ final class SlicePublisher: Sendable {
 
     /// Saves and deletes one kind's changes and records the new hashes.
     /// False when an account reset landed mid-cycle (nothing recorded).
-    private func push(
+    private func pushKind(
         _ saveable: [SliceRecord],
         deletions: [String],
         startGen: Int,
@@ -210,10 +214,17 @@ final class SlicePublisher: Sendable {
     func nudge(kinds: Set<SliceKind>) {
         guard !kinds.isEmpty else { return }
         lane.withLock { lane in
-            if lane.pendingKinds.isEmpty { lane.firstNudgeAt = .now }
+            if lane.pendingKinds.isEmpty { lane.firstNudgeAt = clock() }
             lane.pendingKinds.formUnion(kinds)
             lane.sleep?.cancel()
         }
+    }
+
+    /// When the pending nudges may be sent: the end of the 1 s window, but
+    /// no sooner than 2 s after the previous fast send. nil with nothing
+    /// pending.
+    var fastDeadline: ContinuousClock.Instant? {
+        lane.withLock { [timing] in Self.fastDeadline($0, timing: timing) }
     }
 
     private static func fastDeadline(_ lane: Lane, timing: Timing) -> ContinuousClock.Instant? {
@@ -225,7 +236,7 @@ final class SlicePublisher: Sendable {
 
     /// The nudged kinds when their deadline has passed (taken, and the send
     /// stamped now); nil otherwise.
-    private func takeDueFastKinds(now: ContinuousClock.Instant) -> Set<SliceKind>? {
+    func takeDueFastKinds(now: ContinuousClock.Instant) -> Set<SliceKind>? {
         lane.withLock { [timing] lane in
             guard let deadline = Self.fastDeadline(lane, timing: timing), now >= deadline else { return nil }
             let kinds = lane.pendingKinds
@@ -246,7 +257,10 @@ final class SlicePublisher: Sendable {
         // stop() may have cancelled the loop before this sleep existed.
         if Task.isCancelled { sleep.cancel() }
         await sleep.value
-        lane.withLock { $0.sleep = nil }
+        // Only our own handle: a restarted loop may have stored its own.
+        lane.withLock { lane in
+            if lane.sleep == sleep { lane.sleep = nil }
+        }
     }
 
     // MARK: - Loop
@@ -254,13 +268,13 @@ final class SlicePublisher: Sendable {
     /// Starts the loop; the first full cycle runs at once.
     func start() {
         let task = Task { [weak self] in
-            var nextTick = ContinuousClock.now
+            var nextTick = self?.clock() ?? .now
             while !Task.isCancelled {
                 guard let self else { return }
-                let now = ContinuousClock.now
+                let now = self.clock()
                 if now >= nextTick {
                     await self.runCycle(kinds: nil)
-                    nextTick = ContinuousClock.now + self.timing.tick
+                    nextTick = self.clock() + self.timing.tick
                 } else if let kinds = self.takeDueFastKinds(now: now) {
                     await self.runCycle(kinds: kinds)
                 } else {
@@ -272,6 +286,8 @@ final class SlicePublisher: Sendable {
             current?.cancel()
             current = task
         }
+        // A start() without stop(): the old loop's sleep must not outlive it.
+        lane.withLock { $0.sleep?.cancel() }
     }
 
     private func runCycle(kinds: Set<SliceKind>?) async {

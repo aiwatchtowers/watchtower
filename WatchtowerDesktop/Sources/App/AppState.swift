@@ -1,6 +1,7 @@
 import SwiftUI
 import GRDB
 import Observation
+import os
 import WatchtowerCore
 import WatchtowerSync
 
@@ -1798,6 +1799,8 @@ final class AppState {
         initMobileHub(dbPool: dbPool)
     }
 
+    private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
+
     var isMobileSyncEnabled: Bool {
         mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
     }
@@ -1806,7 +1809,8 @@ final class AppState {
     /// starts a new one over the run's one transport and sidecar. Called at
     /// the end of `initWorkbenches`. With the toggle off nothing is opened.
     func initMobileHub(dbPool: DatabasePool) {
-        mobileHub?.stop()
+        let previous = mobileHub
+        previous?.dispose()
         mobileHub = nil
         mobileHubPool = dbPool
         guard isMobileSyncEnabled else { return }
@@ -1818,11 +1822,15 @@ final class AppState {
             mobileHubInitError = nil
         } catch {
             mobileHubInitError = error.localizedDescription
-            print("[AppState] mobile hub unavailable: \(error.localizedDescription)")
+            Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
             return
         }
         let hub = mobileHub
-        Task { await hub?.start() }
+        Task {
+            // The replaced hub's relay pass ends first: two never overlap.
+            await previous?.waitUntilStopped()
+            await hub?.start()
+        }
     }
 
     /// The Settings → Mobile toggle: on starts the hub (building it on first

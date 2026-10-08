@@ -21,6 +21,9 @@ final class HubSyncState: Sendable {
     private static let generationKey = "sync_generation"
 
     private let queue: DatabaseQueue
+    /// One relay pass at a time over this ledger, whichever processor runs
+    /// it (a rebuilt hub shares the sidecar with the one it replaces).
+    let relayGate = RelayPassGate()
 
     init(path: String) throws {
         queue = try DatabaseQueue(path: path)
@@ -148,7 +151,25 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Committed BEFORE a non-idempotent kind touches the main DB or a PTY.
+    /// The atomic `begun` claim of a non-idempotent kind, committed BEFORE
+    /// it touches the main DB or a PTY: true only for the one caller whose
+    /// insert created the row, so two passes can never both apply it.
+    func claimRelay(_ recordName: String, at date: Date) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO relay_processed (record_name, phase, outcome, updated_at)
+                    VALUES (?, 'begun', NULL, ?)
+                    ON CONFLICT(record_name) DO NOTHING
+                    """,
+                arguments: [recordName, date.timeIntervalSince1970]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// Marks a record `begun` whatever it held (tests seed an interrupted
+    /// apply with it; the hub itself claims through `claimRelay`).
     func markRelayBegun(_ recordName: String, at date: Date) throws {
         try queue.write { db in
             try db.execute(
@@ -193,17 +214,20 @@ final class HubSyncState: Sendable {
 
     // MARK: - Account-change reset
 
-    /// Clears all sync state derived from the CloudKit account so the next
+    /// Clears the sync state derived from the CloudKit account so the next
     /// publish/relay cycle starts clean against the new account: slice
-    /// hashes, the relay change token and the exactly-once ledger. The
-    /// hygiene stamp and the hub id are kept — neither is account-specific.
+    /// hashes and the relay change token. The exactly-once ledger is KEPT:
+    /// relay record names carry phone-generated UUIDs, so they cannot
+    /// collide across accounts, and on a same-Apple-ID sign-out/sign-in the
+    /// re-fetched zone still holds actions whose echo never reached the
+    /// server — without the ledger they would be applied a second time
+    /// (spec §8 I-3, §9). The hygiene stamp and the hub id are kept too.
     /// The generation counter is bumped so an in-flight publish cycle can
     /// detect the reset and abort before recording stale hashes.
     func wipeSyncState() throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM slice_state")
             try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [RelayProcessor.relayTokenKey])
-            try db.execute(sql: "DELETE FROM relay_processed")
             try db.execute(
                 sql: """
                     INSERT INTO hub_meta (key, value)

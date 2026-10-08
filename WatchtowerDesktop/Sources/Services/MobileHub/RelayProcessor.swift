@@ -18,7 +18,7 @@ import WatchtowerSync
 /// rest, so the hub re-runs at once instead of waiting for the next poll.
 /// The change token is persisted only once a pass leaves nothing behind.
 final class RelayProcessor: Sendable {
-    struct Pass: Equatable {
+    struct Pass: Equatable, Sendable {
         /// Records handled (echoed) in this pass.
         let handled: Int
         /// Records still waiting; > 0 means "run again now".
@@ -83,11 +83,17 @@ final class RelayProcessor: Sendable {
 
     // MARK: - Processing
 
-    /// One pass over the relay zone. One bad action becomes its own failed
-    /// echo and never stops the rest; a transport error aborts the pass
-    /// (the token stays, so the next pass re-reads, and the ledger keeps
-    /// that safe).
+    /// One pass over the relay zone. Passes are single-flight across every
+    /// processor sharing this sidecar: a second call waits for the running
+    /// one. One bad action becomes its own failed echo and never stops the
+    /// rest; a transport error or cancellation (checked between records,
+    /// never mid-apply) aborts the pass — the token stays, so the next pass
+    /// re-reads, and the ledger keeps that safe.
     func processOnce() async throws -> Pass {
+        try await sidecar.relayGate.exclusively { try await self.processPass() }
+    }
+
+    private func processPass() async throws -> Pass {
         let batch = try await transport.changes(in: .relay, since: try storedToken())
         var handled = 0
         var remaining = 0
@@ -97,7 +103,8 @@ final class RelayProcessor: Sendable {
                 remaining += 1
                 continue
             }
-            try await handle(action)
+            try Task.checkCancellation()
+            try await processAction(action)
             handled += 1
         }
         let left = remaining
@@ -124,17 +131,19 @@ final class RelayProcessor: Sendable {
         return action
     }
 
-    private func handle(_ action: ActionRequestPayload) async throws {
+    private func processAction(_ action: ActionRequestPayload) async throws {
         lastActivity.withLock { $0 = now() }
         let outcome: ActionOutcome
         if try sidecar.relayPhase(action.recordName) == .begun {
             outcome = .failed(.outcomeUnknown, message: "The Mac restarted while applying this")
         } else if isExpired(action) {
             outcome = .expired
+        } else if let applied = try await applyAction(action) {
+            outcome = applied
         } else {
-            outcome = try await run(action)
+            return
         }
-        try await echo(action, outcome)
+        try await writeEcho(action, outcome)
         try sidecar.markRelayDone(action.recordName, outcome: Self.ledgerOutcome(outcome), at: now())
     }
 
@@ -143,16 +152,17 @@ final class RelayProcessor: Sendable {
         return now().timeIntervalSince(action.createdAt) > maxAge
     }
 
-    private func run(_ action: ActionRequestPayload) async throws -> ActionOutcome {
+    /// nil when another pass already claimed the record (it echoes it).
+    private func applyAction(_ action: ActionRequestPayload) async throws -> ActionOutcome? {
         if action.kind == .probe { return probeOutcome(action) }
         guard !Self.refusedKinds.contains(action.kind), await dispatcher.handles(action.kind) else {
             return .failed(.unsupportedInPOC)
         }
         if Self.nonIdempotentKinds.contains(action.kind) {
-            try sidecar.markRelayBegun(action.recordName, at: now())
+            guard try sidecar.claimRelay(action.recordName, at: now()) else { return nil }
         }
         if Self.receivedEchoKinds.contains(action.kind), action.status == .pending {
-            try await echo(action, ActionOutcome(status: .received, reason: nil, result: nil, errorMessage: nil))
+            try await writeEcho(action, ActionOutcome(status: .received, reason: nil, result: nil, errorMessage: nil))
         }
         do {
             return try await dispatcher.dispatch(action) ?? .failed(.unsupportedInPOC)
@@ -171,7 +181,7 @@ final class RelayProcessor: Sendable {
     }
 
     /// Rewrites the phone's record with the outcome (§5.2 rule 6).
-    private func echo(_ action: ActionRequestPayload, _ outcome: ActionOutcome) async throws {
+    private func writeEcho(_ action: ActionRequestPayload, _ outcome: ActionOutcome) async throws {
         var echoed = action
         echoed.status = outcome.status
         echoed.reason = outcome.reason
@@ -195,6 +205,10 @@ final class RelayProcessor: Sendable {
     /// after the record pass, and never past the stored token, so an
     /// unconsumed event survives) and the ledger is pruned.
     func runHygieneIfDue() async throws {
+        try await sidecar.relayGate.exclusively { try await self.runHygienePass() }
+    }
+
+    private func runHygienePass() async throws {
         let current = now()
         if let raw = try sidecar.metaValue(forKey: Self.hygieneStampKey),
            let last = TimeInterval(raw),
@@ -258,5 +272,41 @@ final class RelayProcessor: Sendable {
         let data = try JSONEncoder().encode(token)
         guard let raw = String(bytes: data, encoding: .utf8) else { return }
         try sidecar.setMetaValue(raw, forKey: Self.relayTokenKey)
+    }
+}
+
+/// A FIFO async mutex: one relay pass (or hygiene pass) at a time. A caller
+/// arriving while one runs waits for it, then runs its own.
+actor RelayPassGate {
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func exclusively<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
+        await acquire()
+        do {
+            let value = try await operation()
+            release()
+            return value
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        guard busy else {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    /// Hands the gate straight to the next waiter (it stays busy).
+    private func release() {
+        if waiters.isEmpty {
+            busy = false
+        } else {
+            waiters.removeFirst().resume()
+        }
     }
 }

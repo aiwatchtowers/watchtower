@@ -287,4 +287,106 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertNil(try sidecar.relayPhase("action-ancient"), "the processed set is pruned past the window")
         XCTAssertNotNil(try sidecar.metaValue(forKey: RelayProcessor.hygieneStampKey))
     }
+
+    // MARK: - One pass at a time (I-3)
+
+    func testConcurrentPassesApplyEachNonIdempotentRecordOnce() async throws {
+        let latch = HandlerLatch()
+        dispatcher.register(.boardCommentAdd) { action in
+            await latch.enter(action)
+            return .applied()
+        }
+        let records = try (0..<3).map { _ in try pendingActionRecord(kind: .boardCommentAdd, entityID: "7") }
+        try await transport.save(records)
+        let processor = makeProcessor()
+
+        let first = Task { try await processor.processOnce() }
+        let second = Task { try await processor.processOnce() }
+        await awaitHubCondition("a pass is inside the handler") { latch.entries == 1 }
+        latch.release()
+        _ = try await first.value
+        _ = try await second.value
+
+        XCTAssertEqual(latch.calls.count, 3)
+        XCTAssertTrue(latch.calls.values.allSatisfy { $0 == 1 }, "each record is applied once: \(latch.calls)")
+    }
+
+    func testTwoProcessorsSharingTheSidecarApplyEachRecordOnce() async throws {
+        let latch = HandlerLatch()
+        dispatcher.register(.boardCommentAdd) { action in
+            await latch.enter(action)
+            return .applied()
+        }
+        let records = try (0..<3).map { _ in try pendingActionRecord(kind: .boardCommentAdd, entityID: "7") }
+        try await transport.save(records)
+        let old = makeProcessor()
+        let rebuilt = makeProcessor()
+
+        let first = Task { try await old.processOnce() }
+        let second = Task { try await rebuilt.processOnce() }
+        await awaitHubCondition("a pass is inside the handler") { latch.entries == 1 }
+        latch.release()
+        _ = try await first.value
+        _ = try await second.value
+
+        XCTAssertTrue(latch.calls.values.allSatisfy { $0 == 1 }, "\(latch.calls)")
+        XCTAssertEqual(latch.calls.count, 3)
+    }
+
+    func testClaimIsAtomic() throws {
+        XCTAssertTrue(try sidecar.claimRelay("action-x", at: Date()))
+        XCTAssertFalse(try sidecar.claimRelay("action-x", at: Date()), "a second claim of the same record fails")
+        XCTAssertEqual(try sidecar.relayPhase("action-x"), .begun)
+    }
+
+    func testCancellationStopsThePassBetweenRecordsNeverMidApply() async throws {
+        let latch = HandlerLatch()
+        dispatcher.register(.boardCommentAdd) { action in
+            await latch.enter(action)
+            return .applied()
+        }
+        let records = try (0..<2).map { _ in try pendingActionRecord(kind: .boardCommentAdd, entityID: "7") }
+        try await transport.save(records)
+        let processor = makeProcessor()
+
+        let pass = Task { try await processor.processOnce() }
+        await awaitHubCondition("the first record is inside the handler") { latch.entries == 1 }
+        pass.cancel()
+        latch.release()
+
+        do {
+            _ = try await pass.value
+            XCTFail("a cancelled pass throws")
+        } catch is CancellationError {}
+        XCTAssertEqual(latch.entries, 1, "the record being applied finishes; the next one is left")
+        let done = try records.filter { try sidecar.relayPhase($0.recordName) == .done }
+        XCTAssertEqual(done.count, 1, "the applied record is echoed and done; the other is untouched")
+
+        // The next pass picks up the record that was left, once.
+        _ = try await processor.processOnce()
+        XCTAssertEqual(latch.calls.count, 2)
+        XCTAssertTrue(latch.calls.values.allSatisfy { $0 == 1 })
+    }
+
+    // MARK: - Account reset (I-3, spec §9)
+
+    func testAccountResetKeepsTheLedgerSoADoneRecordIsNotReapplied() async throws {
+        var calls = 0
+        dispatcher.register(.boardCommentAdd) { _ in
+            calls += 1
+            return .applied()
+        }
+        let record = try pendingActionRecord(kind: .boardCommentAdd, entityID: "7")
+        try await transport.save([record])
+        _ = try await makeProcessor().processOnce()
+
+        try sidecar.wipeSyncState()
+        // Same Apple ID back: the zone is re-fetched and the echo never landed.
+        try await transport.save([record])
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertEqual(calls, 1, "a reset never re-applies a done record")
+        XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
+    }
 }
+
