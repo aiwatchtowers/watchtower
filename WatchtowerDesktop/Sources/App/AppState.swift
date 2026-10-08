@@ -1918,7 +1918,7 @@ final class AppState {
         // PROJ-14) and the timeline's state milestones; no CLI, no reports.
         let sidecar = storage.sidecar
         let reports = workbenchesViewModel?.cli.map { SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar) }
-        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports).register(on: dispatcher) }
+        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
         let sources: [any SliceSource] = [
             WorkbenchSlice(gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) }),
             WorkbenchTargetSlice(),

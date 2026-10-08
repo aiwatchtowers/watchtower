@@ -19,7 +19,8 @@ import WatchtowerSync
 /// **Caps:** `on_you` 30, `now` 20, `next` 20, `phases` 30 with ≤ 50 items
 /// each, `prs` 10 (`<list>_more` for the rest); every free text 500 (no
 /// per-text `_clipped`, the Kit mirror has none); the whole payload
-/// ≤ 128 KiB, dropping phase items oldest phase first and setting
+/// ≤ 128 KiB, dropping phase items oldest phase first (a phase not started
+/// yet counts as the newest) and setting
 /// `phases_clipped`.
 ///
 /// Wire shape: the Kit mirror `WatchtowerKit.SessionReport`.
@@ -318,11 +319,16 @@ struct SessionReportSlice: SliceSource {
         return data
     }
 
-    /// Phase indices, oldest first: by `started_at` ("" first), then board
-    /// order.
+    /// Phase indices, oldest first: by `started_at`, then board order. A
+    /// phase not started yet ("") counts as the newest, so its items go last.
     private static func oldestFirst(_ phases: [Payload.Phase]) -> [Int] {
         phases.indices.sorted { lhs, rhs in
-            phases[lhs].startedAt == phases[rhs].startedAt ? lhs < rhs : phases[lhs].startedAt < phases[rhs].startedAt
+            let left = phases[lhs].startedAt
+            let right = phases[rhs].startedAt
+            guard left != right else { return lhs < rhs }
+            if left.isEmpty { return false }
+            if right.isEmpty { return true }
+            return left < right
         }
     }
 
