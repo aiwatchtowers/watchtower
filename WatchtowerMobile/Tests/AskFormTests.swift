@@ -192,6 +192,7 @@ final class AskFormTests: XCTestCase {
         let model = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer)
         let document = try XCTUnwrap(try formOf(model, snapshot).review?.document)
         XCTAssertFalse(try formOf(model, snapshot).canSend, "a review needs a verdict")
+        XCTAssertTrue(try formOf(model, snapshot).canSendVerdict, "which Approve and Request changes give")
 
         XCTAssertNil(model.addComment(on: NSRange(location: 3, length: 0), in: document, body: "x"), "an empty selection")
         let id = try XCTUnwrap(model.addComment(on: NSRange(location: 6, length: 4), in: document, body: ""))

@@ -145,6 +145,9 @@ struct AskFormModel {
     let status: Status
     let isEditable: Bool
     let canSend: Bool
+    /// A review: Approve and Request changes (which set the verdict, then
+    /// send) would send.
+    let canSendVerdict: Bool
 
     init?(
         askID: Int64,
@@ -170,6 +173,9 @@ struct AskFormModel {
         focus = (payload?.focus ?? []).map(\.text)
         isEditable = open && !clipped && !isSending && applied == nil && !Self.isPending(status)
         canSend = isEditable && draft.isAnswerable(for: ask) && !Self.isNotOpen(status)
+        var withVerdict = draft
+        withVerdict.verdict = .approved
+        canSendVerdict = ask.kind == .review && isEditable && withVerdict.isAnswerable(for: ask) && !Self.isNotOpen(status)
 
         let questions = open && !clipped ? payload?.questions ?? [] : []
         let shown = questions.isEmpty ? 0 : min(max(page, 0), questions.count - 1)

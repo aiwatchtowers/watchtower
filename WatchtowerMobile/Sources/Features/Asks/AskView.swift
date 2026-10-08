@@ -178,7 +178,7 @@ private struct AskSendBar: View {
                         .accessibilityHint("Sends the answer approved")
                 }
                 .controlSize(.large)
-                .disabled(!form.isEditable)
+                .disabled(!form.canSendVerdict)
             } else if let page = form.question, !page.isLast {
                 Button(AskText.next) { model.next(of: page.count) }
                     .buttonStyle(.borderedProminent)
