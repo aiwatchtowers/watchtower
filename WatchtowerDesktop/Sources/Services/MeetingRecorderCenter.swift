@@ -457,8 +457,9 @@ final class MeetingRecorderCenter {
     /// when parking and when taking from the warm slot, so a Settings change
     /// between the two invalidates the parked engine instead of serving it.
     private let engineKey: () -> String
-    /// Injectable clock for the warm-policy poll (the MeetingReminderCenter
-    /// convention).
+    /// Injectable clock (the MeetingReminderCenter convention) for the
+    /// warm-policy poll and for the timestamp that names an ingested phone
+    /// recording (`ingestPhoneRecording`).
     private let clock: () -> Date
     /// Reads the meeting window the warm policy decides against. The default
     /// stub sees no meetings (the Center is constructed before the DB pool
