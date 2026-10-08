@@ -92,7 +92,7 @@ If CloudKit refuses the directly started binary (an entitlement or "missing cont
 2. iPhone 2: go to the Home Screen or lock the phone. **Do not force-quit the app** from the app switcher, because iOS blocks silent pushes to a force-quit app. Keep the phone on Wi-Fi and Low Power Mode off.
 3. Mac: run `spike write-data`. It prints `writtenAt=…`. Repeat it up to three times, about a minute apart.
 4. Pass: the iPhone shows a local notification "S0 (b) push received". Open the app. The log has `RESULT (b): PASS — silent shared-DB push arrived in the background; Mac write → push latency=… ms`.
-   - A push counts only when `probe-push.writtenAt` is later than the moment you tapped **b: Register**, and the latency is known and at most 300 s.
+   - A push counts only when `probe-push.writtenAt` is later than the moment you tapped **b: Register**, and the latency is known and between -5 s (clock skew) and 300 s.
    - A background push that fails these checks logs `RESULT (b): FAIL — background push arrived but is not attributable to write-data: <reason>`. This happens, for example, with a delayed delivery or a change from (a). Run `write-data` again.
    - Fail: no `RESULT (b): PASS` line within five minutes of three writes.
    - A `(b) push arrived with the app active` line is not a pass. Background the app and retry.
@@ -105,8 +105,9 @@ Run (c) after (a) and (b), because closing the link may cut access.
 2. Mac: run `spike close-link`. Both shares print `publicPermission=1` (none).
 3. iPhone 2: tap **c: Check access (after close-link)**.
    1. The phone first fetches both share records and requires `publicPermission=1` (none) on both. It logs its own participant entry (`me: role=… permission=… status=…`). Copy this line into the PR: it shows whether the phone is a public user or a named participant.
-   2. If the link is still open, you get `RESULT (c): FAIL — the public link is not closed … close the link on the Mac first`. Run `spike close-link` and tap again. Do not count this as a (c) failure.
-   3. The phone then reads both zones, writes RelayZone, and tries a DataZone write. The DataZone write passes the check only when it is refused with `CKError.permissionFailure`. Any other error is a FAIL and is logged.
+   2. If a share was read but its link is still open, you get `RESULT (c): FAIL — precondition miss, not a (c) verdict: the public link is still open … close the link on the Mac first`. Run `spike close-link` and tap again. Do not count this as a (c) failure.
+   3. If the phone **cannot read** a share record (for example permissionFailure, unknownItem or zoneNotFound), that is a real (c) failure: closing the link dropped the participant. You get `RESULT (c): FAIL — the participant can no longer read a share after the link closed — <error>`, followed by the F2 hint (step 4).
+   4. The phone then reads both zones, writes RelayZone, and tries a DataZone write. The DataZone write passes the check only when it is refused with `CKError.permissionFailure`. Any other error is a FAIL and is logged.
    - Pass: `RESULT (c): PASS — readDataZone=true readRelayZone=true writeRelayZone=true writeDataZoneRefusedByPermission=true`.
 4. **Only on a real FAIL, run F2 in the same session.** The phone prints the exact Mac command.
    1. Mac: run `spike f2 <recordName from the phone>`. It follows the spec §2.3 production order, as three timed saves:
@@ -114,7 +115,8 @@ Run (c) after (a) and (b), because closing the link may cut access.
       2. it adds the phone as a named participant, from `CKFetchShareParticipantsOperation` with `LookupInfo(userRecordID:)` (readOnly on DataZone, readWrite on RelayZone);
       3. it closes the link.
    2. If the lookup finds no participant (the user is not discoverable, or the record name is wrong), the Mac prints `RESULT (c-F2): FAIL — LookupInfo(userRecordID: …) returned no participant …` and closes the link again. That is an F2 failure.
-   3. iPhone 2: tap **c (F2): Re-accept + check**. It fetches the metadata again from the saved URLs, accepts, and repeats the whole (c) check, the closed-link precondition included.
+   3. If a later share save fails, the Mac prints `RESULT (c-F2): FAIL — a share save failed after the link was reopened`, closes the link and exits 1. Either way the link is never left open.
+   4. iPhone 2: tap **c (F2): Re-accept + check**. It fetches the metadata again from the saved URLs, accepts, and repeats the whole (c) check, the closed-link precondition included.
    - Pass: `RESULT (c-F2): PASS — …`. If c-F2 also fails, F3 needs the owner's written OK in the S0 PR.
 5. Optional: `spike open-link` reopens the link for retests.
 
@@ -139,7 +141,11 @@ There are two paths, and both use the spec §7 alert settings: `alertLocalizatio
 4. Pass: the lock screen shows "A session is waiting for you" twice, once per path. Leave the notifications in Notification Center. Open CKSpike and tap **e: Read delivered alerts**:
    - you see `(e) alert delivered: zone=DataZone … Mac write → delivery latency=… ms`, one line per alert;
    - you see `RESULT (e): PASS — DataZone: visible alert delivered after the subscribe …`, and the same for `AlertZone`.
-   - An alert counts only when its trigger record was written after you tapped **Subscribe** and its latency is known. A leftover alert from an earlier round is logged with `NOT counted`.
+   - An alert counts only when all of these hold:
+     - it is that zone's expected notification: a query notification from `spike-ask-alerts-DataZone`, or a record-zone notification from `spike-ask-alerts-AlertZone`;
+     - its trigger record was written after that path's subscription save succeeded;
+     - its latency is known.
+   - Anything else, such as a leftover alert from an earlier round, is logged with `NOT counted`. A path whose subscription save failed can never pass.
    - If only AlertZone passes, the A3 decision is the `AlertZone` fallback.
 
 ### Latency of each path, for the S0 PR

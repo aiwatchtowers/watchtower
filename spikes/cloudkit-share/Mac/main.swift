@@ -150,7 +150,7 @@ func participants() async throws {
     log.line("  " + describe(shares.relay))
 }
 
-func setLink(open: Bool) async throws {
+func setLink(open: Bool, hint: Bool = true) async throws {
     let sw = Stopwatch()
     let shares = try await loadShares()
     shares.data.publicPermission = open ? .readOnly : .none
@@ -158,7 +158,7 @@ func setLink(open: Bool) async throws {
     let saved = try await saveShares([shares.data, shares.relay])
     log.step("c", open ? "open public link" : "close public link (publicPermission = .none)", ms: sw.ms)
     saved.forEach { log.line("  " + describe($0)) }
-    if !open {
+    if !open && hint {
         log.line("(c) now press \"c: Check access\" on the second-Apple-ID iPhone")
     }
 }
@@ -194,23 +194,31 @@ func f2(recordName: String) async throws {
             log.step("c-F2", "CKFetchShareParticipantsOperation for \(share.recordID.zoneID.zoneName)", ms: sw.ms,
                      "FAILED \(SpikeLog.describe(error))")
             log.result("c-F2", pass: false, "LookupInfo(userRecordID: \(recordName)) returned no participant (user not discoverable, or a wrong record name) — F2 fails; F3 needs the owner's written OK")
-            try await setLink(open: false)
+            try await setLink(open: false, hint: false)
             return
         }
     }
-    sw = Stopwatch()
-    participants.forEach { share, participant in share.addParticipant(participant) }
-    shares = try pair(try await saveShares([shares.data, shares.relay]))
-    log.step("c-F2", "2/3 save shares with the named participant (link still open)", ms: sw.ms)
+    do {
+        sw = Stopwatch()
+        participants.forEach { share, participant in share.addParticipant(participant) }
+        shares = try pair(try await saveShares([shares.data, shares.relay]))
+        log.step("c-F2", "2/3 save shares with the named participant (link still open)", ms: sw.ms)
 
-    // 3. Close the link.
-    sw = Stopwatch()
-    shares.data.publicPermission = .none
-    shares.relay.publicPermission = .none
-    let saved = try await saveShares([shares.data, shares.relay])
-    log.step("c-F2", "3/3 close the public link (publicPermission = .none)", ms: sw.ms)
-    saved.forEach { log.line("  " + describe($0)) }
-    log.line("(c-F2) now press \"c (F2): Re-accept + check\" on the second-Apple-ID iPhone")
+        // 3. Close the link.
+        sw = Stopwatch()
+        shares.data.publicPermission = .none
+        shares.relay.publicPermission = .none
+        let saved = try await saveShares([shares.data, shares.relay])
+        log.step("c-F2", "3/3 close the public link (publicPermission = .none)", ms: sw.ms)
+        saved.forEach { log.line("  " + describe($0)) }
+        log.line("(c-F2) now press \"c (F2): Re-accept + check\" on the second-Apple-ID iPhone")
+    } catch {
+        log.step("c-F2", "save", ms: sw.ms, "FAILED \(SpikeLog.describe(error))")
+        log.result("c-F2", pass: false, "a share save failed after the link was reopened — closing the link again")
+        // Never leave the bearer link open: refetch the shares and close it.
+        try await setLink(open: false, hint: false)
+        throw error
+    }
 }
 
 func lookupParticipant(recordName: String) async throws -> CKShare.Participant {

@@ -249,6 +249,8 @@ final class Harness: ObservableObject {
             reason = "\(Spike.pushProbeRecord) was written before the subscription — not caused by `write-data`"
         } else if let latency, latency > Self.maxPushLatencyMillis {
             reason = "latency \(latency) ms is over \(Self.maxPushLatencyMillis) ms — not attributable to the last `write-data`"
+        } else if let latency, latency < -Self.skewMillis {
+            reason = "latency \(latency) ms is below -\(Self.skewMillis) ms — the write is from the future, check the clocks"
         } else {
             reason = nil
         }
@@ -269,27 +271,34 @@ final class Harness: ObservableObject {
         let db = container.sharedCloudDatabase
 
         // Precondition: the Mac really closed the public link on both shares.
-        var linkClosed = true
+        // A share that is still open is a missed step; a share the phone cannot read is a real FAIL.
+        var linkOpen = false
+        var shareFetchFailure: String?
         for zone in [dataZone, relayZone] {
             let sw = Stopwatch()
             do {
                 guard let share = try await db.record(for: Spike.shareID(zone: zone)) as? CKShare else {
                     log.line("(\(item)) \(zone.zoneName): the share record is not a CKShare")
-                    linkClosed = false
+                    shareFetchFailure = shareFetchFailure ?? "\(zone.zoneName) share record is not a CKShare"
                     continue
                 }
                 let me = share.currentUserParticipant
                 log.step(item, "fetch \(zone.zoneName) share", ms: sw.ms,
                          "publicPermission=\(share.publicPermission.rawValue) me: role=\(me?.role.rawValue ?? -1) "
                          + "permission=\(me?.permission.rawValue ?? -1) status=\(me?.acceptanceStatus.rawValue ?? -1)")
-                if share.publicPermission != .none { linkClosed = false }
+                if share.publicPermission != .none { linkOpen = true }
             } catch {
                 log.step(item, "fetch \(zone.zoneName) share", ms: sw.ms, "FAILED \(SpikeLog.describe(error))")
-                linkClosed = false
+                shareFetchFailure = shareFetchFailure ?? "\(zone.zoneName) share: \(SpikeLog.describe(error))"
             }
         }
-        if !linkClosed {
-            log.result(item, pass: false, "the public link is not closed (publicPermission != .none) or a share could not be read — close the link on the Mac first (`close-link`) and press again")
+        if let shareFetchFailure {
+            log.result(item, pass: false, "the participant can no longer read a share after the link closed — \(shareFetchFailure)")
+            await logNextStepAfterFail(item: item)
+            return
+        }
+        if linkOpen {
+            log.result(item, pass: false, "precondition miss, not a (c) verdict: the public link is still open (publicPermission != .none) — close the link on the Mac first (`close-link`) and press again")
             return
         }
 
@@ -324,9 +333,15 @@ final class Harness: ObservableObject {
         }
         let pass = readData && readRelay && writeRelay && writeDataRefused
         log.result(item, pass: pass, "readDataZone=\(readData) readRelayZone=\(readRelay) writeRelayZone=\(writeRelay) writeDataZoneRefusedByPermission=\(writeDataRefused)")
-        if !pass && item == "c" {
+        if !pass { await logNextStepAfterFail(item: item) }
+    }
+
+    private func logNextStepAfterFail(item: String) async {
+        if item == "c" {
             let me = (try? await container.userRecordID().recordName) ?? "<run d first>"
             log.line("(c) F2 next: on the Mac run `f2 \(me)`, then press \"c (F2): Re-accept + check\" here")
+        } else {
+            log.line("(\(item)) F2 failed too — F3 needs the owner's written OK in the S0 PR")
         }
     }
 
@@ -370,8 +385,14 @@ final class Harness: ObservableObject {
 
     // MARK: (e) Visible alert in a private custom zone
 
-    /// Alerts count for (e) only if their trigger record was written after this moment.
-    private static let eSubscribedAtKey = "e.subscribedAt"
+    /// Per path: alerts count for (e) only if their trigger record was written after that path's
+    /// subscription save succeeded.
+    private static func eSubscribedAtKey(zone: String) -> String { "e.subscribedAt.\(zone)" }
+
+    private func markSubscribed(zone: String, ok: Bool) {
+        let key = Self.eSubscribedAtKey(zone: zone)
+        if ok { UserDefaults.standard.set(epochMillis(), forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+    }
     /// Clock-skew allowance when matching a zone notification to the record that caused it.
     private static let skewMillis: Int64 = 5_000
 
@@ -402,8 +423,10 @@ final class Harness: ObservableObject {
             query.zoneID = Spike.zoneID(Spike.dataZone)
             query.notificationInfo = alertInfo()
             _ = try await container.privateCloudDatabase.save(query)
+            markSubscribed(zone: Spike.dataZone, ok: true)
             log.step("e", "save CKQuerySubscription (private, DataZone)", ms: sw.ms, query.subscriptionID)
         } catch {
+            markSubscribed(zone: Spike.dataZone, ok: false)
             log.error("e", "save query subscription in DataZone", error)
         }
         // Fallback path: CKRecordZoneSubscription on AlertZone.
@@ -413,11 +436,12 @@ final class Harness: ObservableObject {
                                                    subscriptionID: Spike.alertSubscriptionID(zone: Spike.alertZone))
             zoneSub.notificationInfo = alertInfo()
             _ = try await container.privateCloudDatabase.save(zoneSub)
+            markSubscribed(zone: Spike.alertZone, ok: true)
             log.step("e", "save CKRecordZoneSubscription (private, AlertZone)", ms: sw.ms, zoneSub.subscriptionID)
         } catch {
+            markSubscribed(zone: Spike.alertZone, ok: false)
             log.error("e", "save record zone subscription on AlertZone", error)
         }
-        UserDefaults.standard.set(epochMillis(), forKey: Self.eSubscribedAtKey)
         log.line("(e) now lock the iPhone and run `alert DataZone` and `alert AlertZone` on the Mac")
     }
 
@@ -433,12 +457,13 @@ final class Harness: ObservableObject {
         }
     }
 
-    /// Logs one CloudKit alert and its Mac write → delivery latency. Returns its zone only when the
-    /// trigger record was written after the subscribe time and the latency is known.
+    /// Logs one CloudKit alert and its Mac write → delivery latency. Returns its zone only when it is
+    /// that zone's expected notification (DataZone: query notification from its query subscription;
+    /// AlertZone: record-zone notification from its zone subscription), and the trigger record was
+    /// written after that path's subscribe time with a known latency.
     @discardableResult
     func reportAlert(_ notification: UNNotification, path: String) async -> String? {
         guard let note = CKNotification(fromRemoteNotificationDictionary: notification.request.content.userInfo) else { return nil }
-        let subscribedAt = UserDefaults.standard.object(forKey: Self.eSubscribedAtKey) as? Int64 ?? Int64.max
         let deliveredAt = epochMillis(notification.date)
         var zone: String?
         var trigger: CKRecord?
@@ -456,6 +481,15 @@ final class Harness: ObservableObject {
             log.error("e", "fetch the trigger record (\(zone ?? "?"))", error)
         }
         guard let zone else { return nil }
+        let expectedType: CKNotification.NotificationType = zone == Spike.dataZone ? .query : .recordZone
+        let expected = (zone == Spike.dataZone || zone == Spike.alertZone)
+            && note.notificationType == expectedType
+            && note.subscriptionID == Spike.alertSubscriptionID(zone: zone)
+        guard expected else {
+            log.line("(e) alert \(path): zone=\(zone) type=\(note.notificationType.rawValue) subscription=\(note.subscriptionID ?? "-") — NOT counted (not this zone's expected path)")
+            return nil
+        }
+        let subscribedAt = UserDefaults.standard.object(forKey: Self.eSubscribedAtKey(zone: zone)) as? Int64 ?? Int64.max
         let written = trigger?["writtenAt"] as? Int64
         let latencyText = written.map { "\(deliveredAt - $0) ms" } ?? "unknown"
         let fresh = written.map { $0 > subscribedAt } ?? false
