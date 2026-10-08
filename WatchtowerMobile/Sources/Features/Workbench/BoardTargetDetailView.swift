@@ -65,7 +65,10 @@ struct BoardTargetDetailView: View {
             }
             if !detail.asks.isEmpty {
                 Section("Waiting for you") {
-                    ForEach(detail.asks) { WaitingCardView(card: $0).listRowSeparator(.hidden) }
+                    ForEach(detail.asks) { card in
+                        NavigationLink(value: AskRoute(id: card.id)) { WaitingCardView(card: card) }
+                            .listRowSeparator(.hidden)
+                    }
                 }
             }
             if !detail.children.isEmpty || !detail.isReadOnly {

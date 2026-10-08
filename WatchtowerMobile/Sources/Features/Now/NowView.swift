@@ -15,6 +15,9 @@ struct NowView: View {
             }
             .navigationTitle("Now")
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
+            .navigationDestination(for: AskRoute.self) { route in
+                AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
+            }
             .refreshable { await env.refresh() }
         }
     }
@@ -45,7 +48,10 @@ struct NowView: View {
                 if let empty = model.emptyText {
                     Text(empty).foregroundStyle(.secondary)
                 } else {
-                    ForEach(model.waiting) { WaitingCardView(card: $0).listRowSeparator(.hidden) }
+                    ForEach(model.waiting) { card in
+                        NavigationLink(value: AskRoute(id: card.id)) { WaitingCardView(card: card) }
+                            .listRowSeparator(.hidden)
+                    }
                     if model.waitingMore > 0 {
                         Text("\(model.waitingMore) more on your Mac")
                             .font(.caption)

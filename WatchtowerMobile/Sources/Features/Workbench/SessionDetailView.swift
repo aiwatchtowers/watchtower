@@ -8,7 +8,7 @@ struct SessionRoute: Hashable {
 /// One session (spec §13 B3): the header (title, target, branch, agent and
 /// age, the Mac's state), its open asks on top, the report's progress and
 /// summary, and the timeline. Opening it asks the Mac for a fresh report.
-/// Read-only: answering asks, Stop and Finish come with their own flows.
+/// Its asks open their forms; Stop and Finish come with their own flows.
 struct SessionDetailView: View {
     /// "Tell the session…" arrives with session input (PROJ-16); until then
     /// the bar is built but not shown.
@@ -178,8 +178,7 @@ private struct ApprovalNoticeView: View {
     }
 }
 
-/// "Waiting for you" with the session's open asks. The rows open nothing
-/// yet: answering from the phone comes with the answer flow.
+/// "Waiting for you" with the session's open asks; a row opens its form.
 private struct SessionAsksBox: View {
     let asks: [WaitingCardModel]
     let since: String?
@@ -198,17 +197,25 @@ private struct SessionAsksBox: View {
             .padding(.bottom, 4)
             ForEach(asks) { ask in
                 Divider()
-                HStack(spacing: 12) {
-                    Text(ask.kindLabel)
-                        .font(.caption2.monospaced().weight(.semibold))
-                        .foregroundStyle(ask.tone.color)
-                        .frame(width: 56, alignment: .leading)
-                    Text(ask.title)
-                        .font(.subheadline)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
+                NavigationLink(value: AskRoute(id: ask.id)) {
+                    HStack(spacing: 12) {
+                        Text(ask.kindLabel)
+                            .font(.caption2.monospaced().weight(.semibold))
+                            .foregroundStyle(ask.tone.color)
+                            .frame(width: 56, alignment: .leading)
+                        Text(ask.title)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
                 }
-                .frame(minHeight: 44)
+                .buttonStyle(.plain)
                 .accessibilityElement(children: .combine)
             }
         }

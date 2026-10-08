@@ -120,18 +120,34 @@ extension DemoSeed {
                     "options": [["label": "Archive Closed Targets Now", "recommended": true], ["label": "Archive Now", "recommended": false]]
                 ]
             ]),
+            // The second round of #107 (superseded), its snapshot cut by the hub.
             JSON.ask(110, workbench: acmeID, [
                 "session_id": 14, "target_id": 431, "kind": "review", "title": "Review the ask guard plan",
                 "summary": "The plan for the second ask guard prompt.", "created_at": JSON.stamp(ago(3_600)),
-                "doc_path": "docs/plans/ask-guard-v2.md", "doc_snapshot": "# Ask guard v2\n\nStep 1: block the stop.\n"
+                "previous_ask_id": 107, "changes": "Step 2 now names the Stop hook.",
+                "payload": ["focus": [["text": "Is the stop blocked early enough?", "heading": "Steps"]]],
+                "doc_path": "docs/plans/ask-guard-v2.md",
+                "doc_snapshot": "# Ask guard v2\n\n## Steps\n\nStep 1: block the stop.\n\nStep 2: the Stop hook asks the owner first.\n",
+                "doc_clipped": true, "doc_bytes": 412_000
             ]),
             JSON.ask(111, workbench: acmeID, [
                 "session_id": 11, "target_id": 415, "kind": "check", "title": "Check the archive menu",
-                "summary": "Open the header menu and archive the closed targets.", "created_at": JSON.stamp(ago(300))
+                "summary": "Open the header menu and archive the closed targets.", "created_at": JSON.stamp(ago(300)),
+                "payload": ["checklist": [
+                    ["id": "1", "text": "Open the header menu"],
+                    ["id": "2", "text": "Choose Archive Closed Targets Now", "hint": "The closed targets leave the board"]
+                ]]
             ]),
             JSON.ask(105, workbench: acmeID, [
                 "session_id": 11, "target_id": 415, "kind": "question", "status": "delivered", "title": "Keep the counter?",
-                "created_at": JSON.stamp(ago(86_400)), "answered_at": JSON.stamp(ago(80_000)), "delivered_at": JSON.stamp(ago(79_000))
+                "created_at": JSON.stamp(ago(86_400)), "answered_at": JSON.stamp(ago(80_000)), "delivered_at": JSON.stamp(ago(79_000)),
+                "payload": ["questions": [[
+                    "id": "counter", "question": "Keep the archived counter?", "options": [["label": "Keep it"], ["label": "Drop it"]]
+                ]]],
+                "answer": [
+                    "verdict": "", "answers": [["id": "counter", "labels": ["Drop it"], "other": ""]],
+                    "checklist": [Any](), "comments": [Any](), "note": "Not needed on the board."
+                ]
             ]),
             JSON.ask(106, workbench: acmeID, [
                 "session_id": 11, "kind": "check", "status": "answered", "title": "Check the undo",

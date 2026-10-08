@@ -24,6 +24,11 @@ final class OrangeToneTests: XCTestCase {
         for target in snapshot.targets {
             uses += try XCTUnwrap(BoardTargetDetailModel(targetID: target.id, snapshot: snapshot, now: now)).toneUses
         }
+        for ask in snapshot.asks {
+            uses += try XCTUnwrap(AskFormModel(
+                askID: ask.id, snapshot: snapshot, draft: AskDraft(), page: 0, now: now, applied: nil, isSending: false
+            )).toneUses
+        }
         let details = DemoSeed.sessionDetailSlices(now: now)
         func payload(_ kind: SliceKind, _ id: Int64) -> [String: Any]? {
             details.first { $0.0 == kind && $0.1 == id }?.2

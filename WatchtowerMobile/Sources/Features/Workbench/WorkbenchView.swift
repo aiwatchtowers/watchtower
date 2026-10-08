@@ -100,17 +100,19 @@ struct WorkbenchView: View {
             if !menu.waiting.isEmpty || menu.closedLabel != nil {
                 Section {
                     ForEach(menu.waiting) { card in
-                        WaitingCardView(card: card)
+                        NavigationLink(value: AskRoute(id: card.id)) { WaitingCardView(card: card) }
                             .listRowSeparator(.hidden)
                     }
                     if let closed = menu.closedLabel {
                         DisclosureGroup(closed, isExpanded: $showClosed) {
                             ForEach(menu.closedAsks) { ask in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(ask.title).font(.subheadline)
-                                    Text(ask.status.rawValue.capitalized)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                NavigationLink(value: AskRoute(id: ask.id)) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(ask.title).font(.subheadline).foregroundStyle(.primary)
+                                        Text(AskText.status(ask))
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                             }
                         }
