@@ -314,6 +314,17 @@ public final class ReplicaStore: Sendable {
         )
     }
 
+    /// Every stored payload of one data-zone kind (the WatchtowerKit slice
+    /// mirrors decode them), from an ALREADY-OPEN database so it runs inside
+    /// a ValueObservation tracking closure. Ordered by record name.
+    public func payloads(of kind: SliceKind, from db: Database) throws -> [Data] {
+        try Data.fetchAll(
+            db,
+            sql: "SELECT payload FROM slice_records WHERE kind = ? ORDER BY record_name",
+            arguments: [kind.rawValue]
+        )
+    }
+
     /// Undecodable-heartbeat warnings emitted so far (for tests).
     func undecodableHeartbeatLogCount() -> Int {
         undecodableHeartbeatLogs.withLock { $0 }
