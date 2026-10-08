@@ -68,7 +68,7 @@ func driftWorkbench(t *testing.T, database *db.DB, folder, branch string) (int64
 	require.NoError(t, err)
 	var ids []int64
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-		ids, err = database.CreateWorkbenchTargetsTx(tx, pid, db.ActorAgent, []db.WorkbenchTargetInput{{Title: "Feature", Branch: branch}})
+		ids, err = database.CreateWorkbenchTargetsTx(tx, pid, []db.WorkbenchTargetInput{{Title: "Feature", Branch: branch}})
 		return err
 	}))
 	require.NoError(t, database.UpdateTargetStatus(int(ids[0]), "in_progress"))

@@ -178,7 +178,7 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	var ids []int64
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = database.CreateWorkbenchTargetsTx(tx, pid, db.ActorAgent, []db.WorkbenchTargetInput{
+		ids, err = database.CreateWorkbenchTargetsTx(tx, pid, []db.WorkbenchTargetInput{
 			{Title: "feature", Priority: "high"}, {Title: "task 1", BatchParent: 1},
 		})
 		return err
