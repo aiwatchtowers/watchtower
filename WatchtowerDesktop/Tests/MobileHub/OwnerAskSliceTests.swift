@@ -170,6 +170,32 @@ final class OwnerAskSliceTests: XCTestCase {
         XCTAssertEqual(clipped.clipped, true)
     }
 
+    /// The shared anchor fixture's clipped case (spec §6.2) is what the
+    /// slice's cut leaves at the end of a long snapshot, and the anchor
+    /// made on that whole shown text is the fixture's: the phone anchors on
+    /// the clipped snapshot as published.
+    func testTheAnchorFixturesClippedCaseIsTheEndOfASnapshotTheSliceCut() throws {
+        let fixture = try XCTUnwrap(try CommentAnchorFixtures.load().cases.first(where: \.docClipped))
+        let filler = "Filler paragraph for the acme snapshot.\n\n"
+        let fillerCount = (OwnerAskSlice.maxSnapshotBytes - fixture.markdown.utf8.count) / filler.utf8.count
+        let shown = String(repeating: filler, count: fillerCount) + fixture.markdown
+        let full = shown + String(repeating: "z", count: OwnerAskSlice.maxSnapshotBytes - shown.utf8.count + 100)
+
+        let clipped = OwnerAskSlice.clipSnapshot(full)
+
+        XCTAssertEqual(clipped.text, shown, "cut right after the fixture's last shown line")
+        XCTAssertEqual(clipped.clipped, true)
+        let doc = DocumentRendering.render(clipped.text)
+        let fillerLength = doc.text.utf16.count - fixture.text.utf16.count
+        XCTAssertTrue(doc.text.hasSuffix(fixture.text))
+        let selection = NSRange(location: fillerLength + fixture.selection.location, length: fixture.selection.length)
+        let anchor = try XCTUnwrap(OwnerAskReviewText.anchor(selection: selection, in: doc))
+        XCTAssertEqual(
+            CommentAnchorFixtures.Anchor(quote: anchor.quote, prefix: anchor.prefix, suffix: anchor.suffix, heading: anchor.heading),
+            fixture.anchor
+        )
+    }
+
     func testASnapshotOfExactly256KiBIsNotClipped() throws {
         let full = String(repeating: "a", count: 256 * kib)
         let payload = try payload(try insertReview(snapshot: full))
