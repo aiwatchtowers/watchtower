@@ -1,0 +1,178 @@
+name: WatchtowerMobile
+
+# Generated project: `make mobile-gen` regenerates WatchtowerMobile.xcodeproj
+# from this file. Never edit the .xcodeproj by hand.
+
+options:
+  bundleIdPrefix: com.aiwatchtowers.watchtower
+  deploymentTarget:
+    iOS: "17.0"
+  # Off on purpose: with configFiles present, intermediate-group creation
+  # emits an orphaned TEMP_<uuid> PBXGroup that changes on every generate,
+  # which is nondeterministic churn in the committed pbxproj. Each target's
+  # sources are grouped per directory anyway, so nothing is lost.
+  createIntermediateGroups: false
+  xcodeVersion: "16.0"
+
+packages:
+  WatchtowerKit:
+    path: ../WatchtowerKit
+  # GRDB is transitive through WatchtowerKit, but the app and its tests use
+  # its types directly (`ValueObservation`, `Database`). A testability build
+  # dead-strips the autolink hint, so the app would fail with undefined GRDB
+  # symbols: declare it explicitly. Same URL and version as the Kit's
+  # dependency, so SPM dedupes it.
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "7.0.0"
+
+# Signing lives in Base.xcconfig (unsigned defaults plus an optional
+# `#include? "Signing.xcconfig"` for device and archive signing), wired to
+# every target through `configFiles`, NOT through `settings`: pbxproj build
+# settings override xcconfig values, so keeping the signing keys out of
+# settings is what lets the gitignored Signing.xcconfig flip them.
+# GUARD: the unsigned-by-default invariant is encoded PER TARGET. Any new
+# target added here MUST get the same `configFiles` block.
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "1.0"
+    # Bump for every App Store Connect upload. The extensions inherit it, so
+    # their versions always match the app's.
+    CURRENT_PROJECT_VERSION: "1"
+
+targets:
+  WatchtowerMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+    configFiles:
+      Debug: Base.xcconfig
+      Release: Base.xcconfig
+    dependencies:
+      - package: WatchtowerKit
+        product: WatchtowerKit
+      - package: WatchtowerKit
+        product: WatchtowerSync
+      - package: GRDB
+        product: GRDB
+      # App extensions are embedded into the app's PlugIns folder.
+      - target: NotifyService
+      - target: NotifyContent
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobile
+        PRODUCT_NAME: WatchtowerMobile
+        INFOPLIST_KEY_CFBundleDisplayName: Watchtower
+        # The desktop's AppIcon, exported as a single-size iOS icon.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        # Merged with the generated Info.plist: carries the URL scheme, the
+        # camera usage string and UIBackgroundModes (array keys have no
+        # INFOPLIST_KEY_ build-setting form).
+        INFOPLIST_FILE: Info.plist
+        # iCloud container, CloudKit, aps-environment and the app group.
+        # Harmless while unsigned (entitlements are embedded at signing
+        # time); live once Signing.xcconfig enables signing. The container
+        # id must match WatchtowerCloud.containerID.
+        CODE_SIGN_ENTITLEMENTS: WatchtowerMobile.entitlements
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+      configs:
+        # @testable import needs testability in the Debug config the Test
+        # action builds; scoped to Debug so Release stays lean.
+        Debug:
+          ENABLE_TESTABILITY: YES
+
+  # Notification Service Extension (spec §2.1). Task 13 gives it its job;
+  # until then it delivers the notification unchanged.
+  NotifyService:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: NotifyService
+    configFiles:
+      Debug: Base.xcconfig
+      Release: Base.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobile.notify-service
+        PRODUCT_NAME: NotifyService
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NotifyService/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Watchtower Notifications
+        CODE_SIGN_ENTITLEMENTS: NotifyService/NotifyService.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  # Notification Content Extension (spec §2.1, category ASK_QUICK). Task 13
+  # gives it the quick-answer options; until then it shows the body.
+  NotifyContent:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: NotifyContent
+    configFiles:
+      Debug: Base.xcconfig
+      Release: Base.xcconfig
+    dependencies:
+      - sdk: UserNotificationsUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobile.notify-content
+        PRODUCT_NAME: NotifyContent
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: NotifyContent/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: Watchtower Ask
+        CODE_SIGN_ENTITLEMENTS: NotifyContent/NotifyContent.entitlements
+        APPLICATION_EXTENSION_API_ONLY: YES
+
+  # Unit-test bundle hosted in the app. Proves the app WIRING (environment
+  # boot, demo seed, Settings, tabs); the replica logic itself is covered by
+  # the Kit's own tests.
+  WatchtowerMobileTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests
+    configFiles:
+      Debug: Base.xcconfig
+      Release: Base.xcconfig
+    # Depending on the app target makes xcodegen wire TEST_HOST and
+    # BUNDLE_LOADER.
+    dependencies:
+      - target: WatchtowerMobile
+      - package: WatchtowerKit
+        product: WatchtowerKit
+      - package: WatchtowerKit
+        product: WatchtowerSync
+      - package: GRDB
+        product: GRDB
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobileTests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  WatchtowerMobile:
+    build:
+      targets:
+        WatchtowerMobile: all
+        WatchtowerMobileTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - WatchtowerMobileTests
+    archive:
+      config: Release

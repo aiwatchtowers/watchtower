@@ -1,0 +1,23 @@
+// Signing.xcconfig.template — copy to Signing.xcconfig (same directory) and
+// fill in. Signing.xcconfig is GITIGNORED: never commit a team ID or any
+// App Store Connect identifier.
+//
+// The file is pulled in through the optional include at the bottom of
+// Base.xcconfig (`#include? "Signing.xcconfig"`), so unsigned simulator/CI
+// builds keep working when it is absent.
+//
+// USER GATE (one-time): after filling this in, open
+// WatchtowerMobile/WatchtowerMobile.xcodeproj in Xcode with automatic signing
+// to mint the iCloud container + provisioning profiles on the developer portal.
+
+// Your Apple Developer Team ID — developer.apple.com > Membership.
+DEVELOPMENT_TEAM =
+
+// Let Xcode manage certificates and provisioning profiles.
+CODE_SIGN_STYLE = Automatic
+
+// Re-enable signing (Base.xcconfig disables it for the unsigned default).
+// Makefile simulator targets still pass CODE_SIGNING_ALLOWED=NO on the CLI,
+// so `make mobile-build`/`mobile-test` stay unsigned even with this file.
+CODE_SIGNING_ALLOWED = YES
+CODE_SIGNING_REQUIRED = YES
