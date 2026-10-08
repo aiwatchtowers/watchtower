@@ -20,15 +20,19 @@ final class FakeClock {
 
 /// An audio engine that records nothing: `begin` writes a small stand-in
 /// file, and every call is counted. `fileDuration` is what the "file"
-/// plays (nil: unreadable), `holdFinish` keeps `finish` suspended until
-/// `releaseFinish()`, and `fail(_:)` reports a dead capture.
+/// plays (`unclamped` by default, so the recorded time decides; nil:
+/// unreadable), `holdFinish` keeps `finish` suspended until
+/// `releaseFinish()`, `resumeError` makes `resume` throw, and `fail(_:)`
+/// reports a dead capture.
 @MainActor
 final class FakeAudioEngine: AudioCaptureEngine {
     var onFailure: (@MainActor (String) -> Void)?
     var permissionGranted = true
     var levelValue: Float = 0.5
-    var fileDuration: TimeInterval?
+    static let unclamped: TimeInterval = 1_000_000_000
+    var fileDuration: TimeInterval? = FakeAudioEngine.unclamped
     var holdFinish = false
+    var resumeError: (any Error)?
     private(set) var begunURLs: [URL] = []
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
@@ -49,6 +53,7 @@ final class FakeAudioEngine: AudioCaptureEngine {
     }
 
     func resume() throws {
+        if let resumeError { throw resumeError }
         resumeCount += 1
     }
 
@@ -105,6 +110,7 @@ extension XCTestCase {
     func makeRecorderRig(
         deviceID: String? = "device-a",
         sharing earlier: RecorderRig? = nil,
+        directory movedDirectory: URL? = nil,
         tickInterval: Duration? = nil
     ) throws -> RecorderRig {
         let store = try earlier?.store ?? ReplicaStore.inMemory()
@@ -112,11 +118,10 @@ extension XCTestCase {
         let engine = FakeAudioEngine()
         let clock = FakeClock()
         let notifications = NotificationCenter()
-        let directory = try earlier?.directory ?? makeRecordingsDirectory()
+        let directory = try movedDirectory ?? earlier?.directory ?? makeRecordingsDirectory()
         let controller = PhoneRecorderController(
-            uploader: RecordingUploader(transport: transport, store: store, deviceID: deviceID),
+            uploader: RecordingUploader(transport: transport, store: store, directory: directory, deviceID: deviceID),
             engine: engine,
-            directory: directory,
             notificationCenter: notifications,
             now: { clock.now },
             tickInterval: tickInterval

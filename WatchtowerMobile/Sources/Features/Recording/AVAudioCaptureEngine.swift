@@ -18,6 +18,12 @@ import os
 /// Presentation times count written frames, so a pause or an interruption
 /// leaves no gap in the file. The `audio` background mode keeps the
 /// capture running with the screen locked.
+///
+/// A route or configuration change (AirPods, a wired headset, CarPlay)
+/// stops an `AVAudioEngine` and usually changes the input format. For the
+/// POC the capture ends there with a notice and what was written is saved
+/// (`CaptureEndWatch`): the tap is never left silent while the timer runs,
+/// and never restarted at a mismatched format.
 @MainActor
 final class AVAudioCaptureEngine: AudioCaptureEngine {
     var onFailure: (@MainActor (String) -> Void)?
@@ -27,30 +33,20 @@ final class AVAudioCaptureEngine: AudioCaptureEngine {
     private var audioEngine: AVAudioEngine?
     private var writer: AVAssetWriter?
     private var sink: TapSink?
-    private var resetObserver: (any NSObjectProtocol)?
+    /// The format the tap was installed with; a resume at any other input
+    /// format ends the capture instead.
+    private var tapFormat: AVAudioFormat?
+    private var watch: CaptureEndWatch?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AVAudioCaptureEngine")
 
     private enum CaptureError: LocalizedError {
         case writerFailed(String)
+        case microphoneChanged
 
         var errorDescription: String? {
             switch self {
             case let .writerFailed(reason): "The recording file could not be written: \(reason)"
-            }
-        }
-    }
-
-    init() {
-        // A media-services reset kills the engine and the writer under us:
-        // the capture ends there, and the controller saves what was written.
-        resetObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.mediaServicesWereResetNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.writer != nil else { return }
-                self.onFailure?("Audio services restarted, so the recording stopped here.")
+            case .microphoneChanged: CaptureEndWatch.microphoneChangedMessage
             }
         }
     }
@@ -91,6 +87,10 @@ final class AVAudioCaptureEngine: AudioCaptureEngine {
             self.writer = writer
             self.audioEngine = engine
             self.sink = sink
+            self.tapFormat = format
+            watch = CaptureEndWatch(engine: engine) { [weak self] message in
+                self?.onFailure?(message)
+            }
         } catch {
             try? session.setActive(false, options: .notifyOthersOnDeactivation)
             throw error
@@ -104,18 +104,28 @@ final class AVAudioCaptureEngine: AudioCaptureEngine {
 
     func resume() throws {
         // An interruption deactivated the session; the writer keeps going
-        // into the same file.
+        // into the same file, but only at the format the tap was made for
+        // (starting a tap at a stale format raises an uncatchable exception).
         try AVAudioSession.sharedInstance().setActive(true)
-        try audioEngine?.start()
+        guard let audioEngine, let tapFormat else { return }
+        let current = audioEngine.inputNode.outputFormat(forBus: 0)
+        guard current.sampleRate == tapFormat.sampleRate, current.channelCount == tapFormat.channelCount else {
+            throw CaptureError.microphoneChanged
+        }
+        try audioEngine.start()
         sink?.setPaused(false)
     }
 
     func finish() async {
-        sink?.setPaused(true)
+        watch?.cancel()
+        watch = nil
+        // After this no buffer is appended, even one already in the tap.
+        sink?.finish()
         audioEngine?.inputNode.removeTap(onBus: 0)
         audioEngine?.stop()
         audioEngine = nil
         sink = nil
+        tapFormat = nil
         if let writer {
             self.writer = nil
             if writer.status == .writing {
@@ -148,6 +158,8 @@ private final class TapSink: @unchecked Sendable {
         var paused = false
         var level: Float = 0
         var failed = false
+        /// Set by `finish()`: no append after it, ever.
+        var finished = false
     }
 
     private let input: AVAssetWriterInput
@@ -169,27 +181,32 @@ private final class TapSink: @unchecked Sendable {
         state.withLock { $0.paused = paused }
     }
 
+    /// Waits out an append in progress, then refuses every later one: the
+    /// writer may be finished right after this returns.
+    func finish() {
+        state.withLock { $0.finished = true }
+    }
+
     func append(_ buffer: AVAudioPCMBuffer) {
-        let (frames, skip) = state.withLock { ($0.frames, $0.paused || $0.failed) }
-        guard !skip, buffer.frameLength > 0 else { return }
+        guard buffer.frameLength > 0 else { return }
         let level = Self.level(of: buffer)
-        // A writer that cannot take more right now drops this buffer rather
-        // than blocking the audio thread.
-        guard input.isReadyForMoreMediaData else { return }
-        let pts = CMTime(value: frames, timescale: CMTimeScale(sampleRate.rounded()))
-        guard let sample = Self.sampleBuffer(buffer, pts: pts), input.append(sample) else {
-            let firstFailure = state.withLock { current -> Bool in
-                defer { current.failed = true }
-                return !current.failed
+        // The check and the append run under one lock, so `finish()` can
+        // never slip between them and an append never follows
+        // `markAsFinished`. A writer that cannot take more right now drops
+        // this buffer rather than blocking the audio thread.
+        let failedNow = state.withLockUnchecked { current -> Bool in
+            guard !current.paused, !current.failed, !current.finished, input.isReadyForMoreMediaData else { return false }
+            let pts = CMTime(value: current.frames, timescale: CMTimeScale(sampleRate.rounded()))
+            guard let sample = Self.sampleBuffer(buffer, pts: pts), input.append(sample) else {
+                current.failed = true
+                return true
             }
-            if firstFailure {
-                report("The recording could not be encoded, so it stopped here.")
-            }
-            return
+            current.frames += Int64(buffer.frameLength)
+            current.level = level
+            return false
         }
-        state.withLock {
-            $0.frames += Int64(buffer.frameLength)
-            $0.level = level
+        if failedNow {
+            report("Recording stopped: the audio could not be encoded.")
         }
     }
 
@@ -246,5 +263,42 @@ private final class TapSink: @unchecked Sendable {
             bufferList: buffer.audioBufferList
         ) == noErr else { return nil }
         return sample
+    }
+}
+
+/// Ends a capture when the audio stack changes under it: an
+/// `AVAudioEngineConfigurationChange` from this capture's engine (a route
+/// change, such as AirPods connecting) or a media-services reset. The
+/// owner sees the notice; the controller saves what was written.
+@MainActor
+final class CaptureEndWatch {
+    nonisolated static let microphoneChangedMessage = "Recording stopped: the microphone changed."
+    nonisolated static let servicesResetMessage = "Recording stopped: audio services restarted."
+
+    private let center: NotificationCenter
+    private var observers: [any NSObjectProtocol] = []
+
+    init(center: NotificationCenter = .default, engine: AnyObject, onEnd: @escaping @MainActor (String) -> Void) {
+        self.center = center
+        observers.append(center.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { onEnd(Self.microphoneChangedMessage) }
+        })
+        observers.append(center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { onEnd(Self.servicesResetMessage) }
+        })
+    }
+
+    /// Stops watching (the capture finished).
+    func cancel() {
+        observers.forEach(center.removeObserver)
+        observers = []
     }
 }

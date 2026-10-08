@@ -120,6 +120,11 @@ extension DemoSeed {
         now: Date,
         percent: Int = 60
     ) async throws {
+        // A replica from before the fixed id holds the demo row under a
+        // random id: replace it rather than adding a second one.
+        for stale in try store.phoneRecordings() where stale.eventID == recordedEventID && stale.id != recordingID {
+            try store.removePhoneRecording(id: stale.id)
+        }
         let recording: PhoneRecording
         if let existing = try store.phoneRecording(id: recordingID) {
             recording = existing

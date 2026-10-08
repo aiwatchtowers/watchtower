@@ -14,6 +14,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let transport: InMemoryCloudTransport
         let engine: FakeAudioEngine
         let clock: FakeClock
+        let directory: URL
     }
 
     private func makeWired() async throws -> Wired {
@@ -25,12 +26,12 @@ final class RecordingUploadWiringTests: XCTestCase {
             transport: transport,
             replicaPath: try makeReplicaPath(),
             transportKind: .inMemoryDemo,
-            defaults: try makeDefaults()
+            defaults: try makeDefaults(),
+            recordingsDirectory: directory
         ) { uploader in
             PhoneRecorderController(
                 uploader: uploader,
                 engine: engine,
-                directory: directory,
                 notificationCenter: NotificationCenter(),
                 now: { clock.now },
                 tickInterval: nil
@@ -38,7 +39,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         }
         addTeardownBlock { @MainActor in env.stop() }
         try await poll { env.isLooping }
-        return Wired(env: env, transport: transport, engine: engine, clock: clock)
+        return Wired(env: env, transport: transport, engine: engine, clock: clock, directory: directory)
     }
 
     /// Records 30 s and stops; returns the saved ledger row.
@@ -93,12 +94,12 @@ final class RecordingUploadWiringTests: XCTestCase {
     func testReceivedEchoDeletesTheLocalFile() async throws {
         let wired = try await makeWired()
         let recording = try await recordAndStop(wired)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path))
 
         try await echo(recording, status: .received, in: wired.transport)
         await wired.env.refresh()
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: recording.fileURL.path), "received → the local copy goes")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "received → the local copy goes")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
         XCTAssertEqual(row.state, .delivered)
         XCTAssertEqual(PhoneUploadStage(recording: row, heartbeat: nil, now: Date()).label, "Sent to your Mac")
@@ -111,7 +112,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         try await echo(recording, status: .failed, error: "The Mac could not save the recording.", in: wired.transport)
         await wired.env.refresh()
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL.path), "failed → the only copy is kept")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "failed → the only copy is kept")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
         let stage = PhoneUploadStage(recording: row, heartbeat: nil, now: Date())
         XCTAssertEqual(stage, .failed("The Mac could not save the recording.", retryable: true))

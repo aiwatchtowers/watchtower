@@ -157,17 +157,19 @@ final class PhoneRecorderController {
 
     /// - `tickInterval`: how often the timer, waveform and cap advance;
     ///   nil in tests, which call `tick()` themselves.
+    /// The recordings folder is the uploader's, so the ledger and the files
+    /// can never disagree on where captures live.
     init(
         uploader: RecordingUploader,
         engine: any AudioCaptureEngine,
-        directory: URL,
         notificationCenter: NotificationCenter = .default,
         now: @escaping @MainActor () -> Date = { Date() },
         tickInterval: Duration? = .milliseconds(100)
     ) {
         self.uploader = uploader
         self.engine = engine
-        self.directory = directory
+        self.directory = uploader.directory
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("phone-recordings", isDirectory: true)
         self.now = now
         self.tickInterval = tickInterval
         engine.onFailure = { [weak self] message in
@@ -378,8 +380,10 @@ final class PhoneRecorderController {
             spanStart = now()
             phase = .recording
         } catch {
+            // The microphone cannot continue this file (for example, it
+            // changed while paused): end here and save what was written.
             Self.logger.error("recording resume failed: \(error.localizedDescription, privacy: .public)")
-            phase = .paused(.user)
+            engineFailed(error.localizedDescription)
         }
     }
 
@@ -415,10 +419,18 @@ final class PhoneRecorderController {
         self.fileURL = nil
         self.startedAt = nil
         await engine.finish()
-        var duration = min(accumulated, Self.maximumDuration)
-        if let written = await engine.recordedDuration(of: fileURL) {
-            duration = min(duration, written)
+        // The saved length is never more than the file holds; a file with
+        // no readable audio is not uploaded at all.
+        guard let written = await engine.recordedDuration(of: fileURL) else {
+            do {
+                try await uploader.failCapture(id: captureID)
+            } catch {
+                Self.logger.error("recording failure not stored: \(error.localizedDescription, privacy: .public)")
+            }
+            phase = .failed(RecordingUploader.unrecoverableMessage)
+            return
         }
+        let duration = min(accumulated, Self.maximumDuration, written)
         elapsed = duration
         let (title, eventID) = finalTitleAndEvent(startedAt: startedAt)
         do {
@@ -458,13 +470,15 @@ final class PhoneRecorderController {
     /// files no row points at. A capture running right now is left alone.
     func recoverOnLaunch() async {
         do {
-            let recovered = try await uploader.recoverInterruptedCaptures(excluding: captureID) { [engine] url in
+            // Captures begun in this run are skipped by the uploader itself,
+            // so a Record tap during this recovery is never claimed.
+            let recovered = try await uploader.recoverInterruptedCaptures { [engine] url in
                 await engine.recordedDuration(of: url)
             }
             if !recovered.isEmpty {
                 Self.logger.notice("recovered \(recovered.count) recordings cut short")
             }
-            try await uploader.sweepOrphanFiles(in: directory)
+            try await uploader.sweepOrphanFiles()
         } catch {
             Self.logger.error("recording recovery failed: \(error.localizedDescription, privacy: .public)")
         }

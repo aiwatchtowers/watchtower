@@ -116,6 +116,7 @@ final class AppEnvironment {
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
         defaults: UserDefaults = .standard,
+        recordingsDirectory: URL? = nil,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil
     ) throws {
         assert(
@@ -146,7 +147,12 @@ final class AppEnvironment {
                 Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        let uploader = RecordingUploader(transport: transport, store: store, deviceID: device?.deviceID)
+        let uploader = RecordingUploader(
+            transport: transport,
+            store: store,
+            directory: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory(),
+            deviceID: device?.deviceID
+        )
         self.uploader = uploader
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
         feed = RelayFeed(
@@ -209,11 +215,7 @@ final class AppEnvironment {
     /// The device recorder: the microphone, recordings in Application
     /// Support, and a local notification for the 3-hour cap notice.
     private static func liveRecorder(_ uploader: RecordingUploader) throws -> PhoneRecorderController {
-        let recorder = PhoneRecorderController(
-            uploader: uploader,
-            engine: AVAudioCaptureEngine(),
-            directory: try PhoneRecorderController.defaultDirectory()
-        )
+        let recorder = PhoneRecorderController(uploader: uploader, engine: AVAudioCaptureEngine())
         recorder.onCapNotice = { RecorderNotices.postCapNotice() }
         return recorder
     }

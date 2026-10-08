@@ -1,3 +1,4 @@
+import AVFoundation
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -100,7 +101,7 @@ final class RecorderTests: XCTestCase {
         let rows = try rig.store.phoneRecordings()
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(rows.first?.durationSec, 90)
-        XCTAssertEqual(rows.first?.fileURL, rig.engine.begunURLs.first)
+        XCTAssertEqual(rows.first?.fileURL(in: rig.directory), rig.engine.begunURLs.first)
     }
 
     func testAnInterruptionEndingWithoutResumeWaitsForTheOwner() async throws {
@@ -233,7 +234,7 @@ final class RecorderTests: XCTestCase {
         await rig.controller.recordMeeting(meeting(start: rig.clock.now))
         let row = try XCTUnwrap(try rig.store.phoneRecordings().first)
         XCTAssertEqual(row.state, .recording)
-        XCTAssertEqual(row.fileURL, rig.engine.begunURLs.first)
+        XCTAssertEqual(row.fileURL(in: rig.directory), rig.engine.begunURLs.first)
         XCTAssertEqual(row.eventID, "evt-1")
         rig.clock.advance(5)
         rig.controller.markMoment()
@@ -349,5 +350,125 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(rig.controller.currentTickInterval, .seconds(1))
         rig.controller.setForeground(true)
         XCTAssertEqual(rig.controller.currentTickInterval, .milliseconds(100))
+    }
+
+    // MARK: - Round 2: moved container, live capture, microphone change
+
+    /// iOS moves the app's container (an app update): the recordings folder
+    /// has a new absolute base. Nothing is deleted; recovery and the upload
+    /// still find every file.
+    func testAMovedContainerKeepsEveryRecording() async throws {
+        let first = try makeRecorderRig()
+        await first.controller.recordVoiceNote()
+        first.clock.advance(30)
+        await first.controller.stop()
+        let saved = try XCTUnwrap(first.controller.savedRecording)
+        await first.controller.recordVoiceNote()
+        first.clock.advance(20)
+        let strandedID = try XCTUnwrap(try first.store.phoneRecordings().first { $0.state == .recording }?.id)
+        // The process dies here; the next one runs in a moved container.
+
+        let container = FileManager.default.temporaryDirectory.appendingPathComponent("container-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: container) }
+        let moved = container.appendingPathComponent(first.directory.lastPathComponent, isDirectory: true)
+        try FileManager.default.moveItem(at: first.directory, to: moved)
+
+        let relaunched = try makeRecorderRig(sharing: first, directory: moved)
+        relaunched.engine.fileDuration = 20
+        await relaunched.controller.recoverOnLaunch()
+        await relaunched.controller.uploadPending()
+
+        let files = try FileManager.default.contentsOfDirectory(atPath: moved.path)
+        XCTAssertEqual(files.count, 2, "nothing is swept: \(files)")
+        XCTAssertEqual(try relaunched.store.phoneRecording(id: strandedID)?.state, .uploading)
+        XCTAssertEqual(try relaunched.store.phoneRecording(id: saved.id)?.state, .uploading)
+        let batch = try await relaunched.transport.changes(in: .relay, since: nil)
+        let assets = batch.changed.compactMap(\.assetFileURL)
+        XCTAssertEqual(assets.count, 2)
+        XCTAssertTrue(assets.allSatisfy { $0.path.hasPrefix(moved.path) && FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    /// Record is tapped while launch recovery runs: the new capture is never
+    /// claimed, even though its file holds no readable audio yet.
+    func testRecordTappedDuringLaunchRecoveryKeepsTheNewCapture() async throws {
+        let rig = try makeRecorderRig()
+        await rig.controller.recordVoiceNote()
+        let liveID = try XCTUnwrap(try rig.store.phoneRecordings().first?.id)
+        rig.engine.fileDuration = nil
+
+        await rig.controller.recoverOnLaunch()
+
+        XCTAssertEqual(try rig.store.phoneRecording(id: liveID)?.state, .recording)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(rig.engine.begunURLs.first).path))
+        rig.engine.fileDuration = FakeAudioEngine.unclamped
+        rig.clock.advance(30)
+        await rig.controller.stop()
+        XCTAssertEqual(rig.controller.savedRecording?.durationSec, 30)
+    }
+
+    func testAMicrophoneChangeStopsAndSavesWithANotice() async throws {
+        let rig = try makeRecorderRig()
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(45)
+        rig.engine.fail(CaptureEndWatch.microphoneChangedMessage)
+        rig.clock.advance(300)
+        try await poll { rig.controller.savedRecording != nil }
+        XCTAssertEqual(rig.controller.savedRecording?.durationSec, 45, "the timer never runs over a silent tap")
+        XCTAssertEqual(rig.controller.endNotice, "Recording stopped: the microphone changed.")
+    }
+
+    /// A resume the microphone cannot continue (it changed while paused)
+    /// ends the capture and saves it, instead of leaving it paused forever.
+    func testAResumeTheMicrophoneCannotContinueSavesTheCapture() async throws {
+        struct MicrophoneChanged: LocalizedError {
+            var errorDescription: String? { CaptureEndWatch.microphoneChangedMessage }
+        }
+        let rig = try makeRecorderRig()
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(25)
+        rig.controller.pause()
+        rig.engine.resumeError = MicrophoneChanged()
+        rig.controller.resume()
+        try await poll { rig.controller.savedRecording != nil }
+        XCTAssertEqual(rig.controller.savedRecording?.durationSec, 25)
+        XCTAssertEqual(rig.controller.endNotice, CaptureEndWatch.microphoneChangedMessage)
+    }
+
+    /// The watch the device engine uses: this engine's configuration change
+    /// and a media-services reset end the capture; another engine's change
+    /// does not; a cancelled watch is silent.
+    func testTheCaptureEndWatchMapsTheAudioStackNotifications() {
+        let center = NotificationCenter()
+        let engine = NSObject()
+        var ended: [String] = []
+        let watch = CaptureEndWatch(center: center, engine: engine) { ended.append($0) }
+
+        center.post(name: .AVAudioEngineConfigurationChange, object: NSObject())
+        XCTAssertTrue(ended.isEmpty, "another engine's change is not ours")
+        center.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        center.post(name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+        XCTAssertEqual(ended, [CaptureEndWatch.microphoneChangedMessage, CaptureEndWatch.servicesResetMessage])
+
+        watch.cancel()
+        center.post(name: .AVAudioEngineConfigurationChange, object: engine)
+        XCTAssertEqual(ended.count, 2)
+    }
+
+    /// A file with no readable audio after Stop is not uploaded: it fails
+    /// as unrecoverable, with no Retry.
+    func testAStopWithNoReadableAudioFailsWithoutUploading() async throws {
+        let rig = try makeRecorderRig()
+        rig.engine.fileDuration = nil
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(60)
+        await rig.controller.stop()
+
+        XCTAssertEqual(rig.controller.phase, .failed(RecordingUploader.unrecoverableMessage))
+        let row = try XCTUnwrap(try rig.store.phoneRecordings().first)
+        XCTAssertEqual(row.failure, .unrecoverable)
+        XCTAssertFalse(row.offersRetry)
+        let uploads = try await relayUploads(in: rig.transport)
+        XCTAssertTrue(uploads.isEmpty)
     }
 }
