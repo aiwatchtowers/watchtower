@@ -209,6 +209,28 @@ final class AskFormTests: XCTestCase {
         ], "the blank comment is dropped, the other anchored as Core anchors it")
     }
 
+    /// Typing rebuilds the form on every keystroke: the snapshot is
+    /// rendered once per ask and snapshot, not once per build.
+    func testTheSnapshotRendersOncePerAskAndSnapshot() async throws {
+        let fixture = try await makeFixture()
+        let renders = Counter()
+        let model = AskViewModel(askID: 130, drafts: fixture.drafts, answerer: fixture.answerer) { markdown in
+            renders.count += 1
+            return PlainTextRendering.render(markdown)
+        }
+        let snapshot = try replica([try makeAsk(130, Self.review)])
+        for text in ["a", "ab", "abc"] {
+            model.setNote(text)
+            XCTAssertNotNil(try formOf(model, snapshot).review?.document)
+        }
+        XCTAssertEqual(renders.count, 1)
+
+        var revised = Self.review
+        revised["doc_snapshot"] = "# Plan\n\nShip it.\n"
+        XCTAssertEqual(try formOf(model, try replica([try makeAsk(130, revised)])).review?.document?.text, "Plan\n\nShip it.\n\n")
+        XCTAssertEqual(renders.count, 2, "a new snapshot renders again")
+    }
+
     // MARK: - Check
 
     func testABrokenStepNeedsANoteAndUnmarkedStepsGoAsSkipped() async throws {
@@ -232,6 +254,20 @@ final class AskFormTests: XCTestCase {
         let answer = try AskAnswerParams(wireParams: try XCTUnwrap(try fixture.store.pendingActions().first).action.params).answer
         XCTAssertEqual(answer.checklist, [.init(id: "1", state: .broken, note: "The menu is empty"), .init(id: "2", state: .ok)])
         XCTAssertNil(answer.verdict)
+    }
+
+    func testANoteOverTheBoundSaysWhySendIsOff() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        let snapshot = try replica([ask])
+        model.setNote(String(repeating: "a", count: 4_000))
+        XCTAssertNil(try formOf(model, snapshot).noteHint)
+        XCTAssertTrue(try formOf(model, snapshot).canSend)
+
+        model.setNote(String(repeating: "a", count: 4_001))
+        XCTAssertEqual(try formOf(model, snapshot).noteHint, "The note is over 4000 characters — shorten it to send")
+        XCTAssertFalse(try formOf(model, snapshot).canSend)
     }
 
     // MARK: - Payload clipped, closed asks
@@ -317,6 +353,26 @@ final class AskFormTests: XCTestCase {
 
         model.dismiss(rowID: rowID, snapshot: try replica([ask], store: fixture.store))
         XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
+    }
+
+    /// A resend after a refusal: once it is queued the refused row goes, so
+    /// the later `applied` shows its delivery, never the old refusal.
+    func testAResendAfterARefusalShowsTheAppliedDeliveryAndNoStaleRow() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        model.setNote("All good")
+        await model.send(ask)
+        try await echo(fixture, .failed, reason: .invalidAnswer, message: "note: at most 4000 characters")
+
+        await model.send(ask)
+        let rows = try fixture.store.pendingActions()
+        XCTAssertEqual(rows.map(\.state), [.pending], "the refused row went once the resend was queued")
+        try await echo(fixture, .applied, result: ["delivery": .string("submitted")])
+        try await poll { fixture.answerer.applied[140] != nil }
+
+        XCTAssertTrue(try fixture.store.pendingActions().isEmpty, "no red row is left")
+        XCTAssertEqual(try formOf(model, try replica([ask], store: fixture.store)).status, .applied("Sent to the session"))
     }
 
     /// Review Focus 3: the owner drafts on a review the agent replaced with
@@ -416,6 +472,8 @@ final class AskFormTests: XCTestCase {
         let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
 
         let first = Task { try await answerer.send(ask) }
+        // Released on every path, so a failing assertion leaks no waiter.
+        defer { Task { await gate.release() } }
         try await poll(timeout: 2) { sent.count == 1 }
         XCTAssertTrue(answerer.isSending(140))
 

@@ -25,11 +25,21 @@ final class AskViewModel {
 
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let answerer: AskAnswerer
+    @ObservationIgnored private let render: (String) -> PlainTextDocument
+    /// The last rendered snapshot: typing rebuilds the form on every
+    /// keystroke, and a 256 KB snapshot takes a tenth of a second to render.
+    @ObservationIgnored private var rendered: (askID: Int64, markdown: String, document: PlainTextDocument)?
 
-    init(askID: Int64, drafts: AskDraftStore, answerer: AskAnswerer) {
+    init(
+        askID: Int64,
+        drafts: AskDraftStore,
+        answerer: AskAnswerer,
+        render: @escaping (String) -> PlainTextDocument = PlainTextRendering.render
+    ) {
         self.askID = askID
         self.drafts = drafts
         self.answerer = answerer
+        self.render = render
     }
 
     var draft: AskDraft { drafts.draft(for: askID) }
@@ -42,8 +52,17 @@ final class AskViewModel {
             page: page,
             now: now,
             applied: answerer.applied[askID],
-            isSending: answerer.isSending(askID)
+            isSending: answerer.isSending(askID),
+            render: document
         )
+    }
+
+    /// The snapshot as plain text, rendered once per ask and snapshot.
+    private func document(_ markdown: String) -> PlainTextDocument {
+        if let rendered, rendered.askID == askID, rendered.markdown == markdown { return rendered.document }
+        let document = render(markdown)
+        rendered = (askID, markdown, document)
+        return document
     }
 
     // MARK: - Questions

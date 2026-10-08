@@ -66,10 +66,16 @@ struct AskView: View {
                     CheckAskView(rows: form.checks, model: model, isEditable: form.isEditable)
                 }
                 if form.question?.isLast ?? true {
-                    Section("Note") {
+                    Section {
                         TextField("Anything else for the agent (optional)", text: noteBinding, axis: .vertical)
                             .lineLimit(2...8)
                             .disabled(!form.isEditable)
+                    } header: {
+                        Text("Note")
+                    } footer: {
+                        if let hint = form.noteHint {
+                            Text(hint).foregroundStyle(PhoneTone.red.color)
+                        }
                     }
                 }
             }

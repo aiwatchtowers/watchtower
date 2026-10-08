@@ -14,6 +14,7 @@ enum AskText {
     static let requestChanges = "Request changes"
     static let appliedWithoutDelivery = "Answer saved on the Mac"
     static let genericFailure = "Your Mac could not take this answer"
+    static let noteTooLong = "The note is over 4000 characters — shorten it to send"
     static let carriedNotice = "This ask was replaced by a newer round. Your earlier draft is in the note."
 
     /// "Showing the first 256 KB of 2.1 MB" for a snapshot the hub cut.
@@ -139,6 +140,8 @@ struct AskFormModel {
     let review: Review?
     let checks: [CheckRow]
     let note: String
+    /// Why Send is off when it is the note's length.
+    let noteHint: String?
     /// A closed ask: its status and its stored answer, read-only.
     let closedStatus: String?
     let closedLines: [String]
@@ -156,7 +159,8 @@ struct AskFormModel {
         page: Int,
         now: Date,
         applied: AppliedAnswer?,
-        isSending: Bool
+        isSending: Bool,
+        render: (String) -> PlainTextDocument = PlainTextRendering.render
     ) {
         guard let ask = snapshot.asks.first(where: { $0.id == askID }) else { return nil }
         self.askID = askID
@@ -183,9 +187,10 @@ struct AskFormModel {
         var header = "ASK #\(ask.id) · \(AskText.kind(ask.kind))"
         if questions.count > 1 { header += " · \(shown + 1) OF \(questions.count)" }
         self.header = header
-        review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft) : nil
+        review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft, render: render) : nil
         checks = open && !clipped ? (payload?.checklist ?? []).map { Self.checkRow($0, draft: draft) } : []
         note = draft.note
+        noteHint = AskDraft.trimmed(draft.note).unicodeScalars.count > AskDraft.noteLimit ? AskText.noteTooLong : nil
         closedStatus = open ? nil : AskText.status(ask)
         closedLines = open ? [] : Self.closedLines(ask)
     }
@@ -229,12 +234,12 @@ struct AskFormModel {
         )
     }
 
-    private static func review(_ ask: OwnerAsk, draft: AskDraft) -> Review {
+    private static func review(_ ask: OwnerAsk, draft: AskDraft, render: (String) -> PlainTextDocument) -> Review {
         let count = draft.comments.count
         let noun = count == 1 ? "1 comment" : "\(count) comments"
         return Review(
             docPath: ask.docPath,
-            document: ask.docSnapshot.map(PlainTextRendering.render),
+            document: ask.docSnapshot.map(render),
             clippedNotice: ask.docClipped == true ? AskText.clipped(docBytes: ask.docBytes) : nil,
             comments: draft.comments.map { Comment(id: $0.id, quote: $0.anchor.quote, body: $0.body) },
             verdict: draft.verdict,

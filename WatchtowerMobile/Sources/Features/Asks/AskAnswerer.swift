@@ -47,13 +47,21 @@ final class AskAnswerer {
 
     @ObservationIgnored private let enqueue: Enqueue
     @ObservationIgnored private let remove: (String) throws -> Void
+    /// The ids of an ask's failed `ask_answer` rows (its record name).
+    @ObservationIgnored private let failedRows: (String) throws -> [String]
     @ObservationIgnored private let drafts: AskDraftStore
     @ObservationIgnored private let sendGuard = SendGuard()
 
-    init(drafts: AskDraftStore, enqueue: @escaping Enqueue, remove: @escaping (String) throws -> Void) {
+    init(
+        drafts: AskDraftStore,
+        enqueue: @escaping Enqueue,
+        remove: @escaping (String) throws -> Void,
+        failedRows: @escaping (String) throws -> [String] = { _ in [] }
+    ) {
         self.drafts = drafts
         self.enqueue = enqueue
         self.remove = remove
+        self.failedRows = failedRows
     }
 
     /// The app's answerer: answers through the outbox, Dismiss on the
@@ -64,7 +72,12 @@ final class AskAnswerer {
             enqueue: { entity, params in
                 try await outbox.enqueue(kind: .askAnswer, entityRecordName: entity, params: params)
             },
-            remove: { try store.removePendingAction(id: $0) }
+            remove: { try store.removePendingAction(id: $0) },
+            failedRows: { entity in
+                try store.pendingActions(forEntity: entity)
+                    .filter { $0.state == .failed && $0.action.kind == .askAnswer }
+                    .map(\.id)
+            }
         )
     }
 
@@ -87,13 +100,21 @@ final class AskAnswerer {
 
     /// Sends the draft's answer; nothing (false) while the draft is not one
     /// the Mac would take, or an answer to the ask is already on its way.
+    /// Once it is queued, the ask's older refused answers go (as
+    /// `BoardWriter` drops a field's), so a later `applied` is never hidden
+    /// behind a stale refusal.
     @discardableResult
     func send(_ ask: OwnerAsk) async throws -> Bool {
         let draft = drafts.draft(for: ask.id)
         guard draft.isAnswerable(for: ask), let answer = draft.answer(for: ask) else { return false }
         let params = try AskAnswerParams(workbenchID: ask.workbenchID, answer: answer).wireParams()
         let entity = Self.recordName(ask.id)
-        return try await sendGuard.run(entity) { try await enqueue(entity, params) }
+        let stale = try failedRows(entity)
+        guard try await sendGuard.run(entity, { try await enqueue(entity, params) }) else { return false }
+        for id in stale {
+            try remove(id)
+        }
+        return true
     }
 
     /// An `applied` echo: keeps its delivery and drops the ask's draft.
