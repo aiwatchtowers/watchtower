@@ -2,6 +2,7 @@ import SwiftUI
 import GRDB
 import Observation
 import WatchtowerCore
+import WatchtowerSync
 
 @MainActor
 @Observable
@@ -295,6 +296,20 @@ final class AppState {
     private(set) var sessionReportCenter: SessionReportCenter?
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
+
+    /// The opt-in mobile hub (mobile POC spec §6.1): nil while
+    /// `mobileSyncEnabled` is off. Rebuilt whenever `initWorkbenches` re-runs,
+    /// because it holds the centers that function replaces.
+    private(set) var mobileHub: MobileHubService?
+    /// Why the hub's storage could not be opened, for Settings → Mobile.
+    private(set) var mobileHubInitError: String?
+    /// Where the toggle lives; tests pass a throwaway suite.
+    @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
+    /// Opens the hub's transport and sidecar; tests pass a stub.
+    @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
+    /// Built once per run and kept across hub rebuilds and toggles.
+    @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
+    @ObservationIgnored private var mobileHubPool: DatabasePool?
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
@@ -639,6 +654,7 @@ final class AppState {
                     self?.sessionAgentStateCenter?.withdrawAllNotices()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    self?.mobileHub?.stop()
                 }
             }
         }
@@ -1779,6 +1795,63 @@ final class AppState {
         vm.asks.start()
         agentStates.start()
         reports.start()
+        initMobileHub(dbPool: dbPool)
+    }
+
+    var isMobileSyncEnabled: Bool {
+        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
+    }
+
+    /// Tears down the previous hub and, while the toggle is on, builds and
+    /// starts a new one over the run's one transport and sidecar. Called at
+    /// the end of `initWorkbenches`. With the toggle off nothing is opened.
+    func initMobileHub(dbPool: DatabasePool) {
+        mobileHub?.stop()
+        mobileHub = nil
+        mobileHubPool = dbPool
+        guard isMobileSyncEnabled else { return }
+        let storage: MobileHubStorage
+        do {
+            storage = try mobileHubStorage ?? makeMobileHubStorage()
+            mobileHubStorage = storage
+            mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
+            mobileHubInitError = nil
+        } catch {
+            mobileHubInitError = error.localizedDescription
+            print("[AppState] mobile hub unavailable: \(error.localizedDescription)")
+            return
+        }
+        let hub = mobileHub
+        Task { await hub?.start() }
+    }
+
+    /// The Settings → Mobile toggle: on starts the hub (building it on first
+    /// use), off stops it. The hub object is kept, so toggling never opens a
+    /// second transport.
+    func setMobileSyncEnabled(_ enabled: Bool) {
+        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
+        guard enabled else {
+            mobileHub?.stop()
+            return
+        }
+        if let hub = mobileHub {
+            Task { await hub.start() }
+        } else if let pool = mobileHubPool {
+            initMobileHub(dbPool: pool)
+        }
+    }
+
+    /// B registers its slice sources and dispatcher handlers here.
+    private func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
+        let dispatcher = MobileHubCommandDispatcher()
+        let publisher = SlicePublisher(dbPool: dbPool, state: storage.sidecar, transport: storage.transport, sources: [])
+        let processor = RelayProcessor(
+            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            hubID: try storage.sidecar.ensureHubID()
+        )
+        return MobileHubService(
+            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar
+        ) { [weak self] in self?.isMobileSyncEnabled ?? false }
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
