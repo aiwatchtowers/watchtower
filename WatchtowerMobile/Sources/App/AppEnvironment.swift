@@ -55,6 +55,8 @@ final class AppEnvironment {
     let askDrafts = AskDraftStore()
     /// The phone's ask answers and what the Mac did with them.
     let askAnswerer: AskAnswerer
+    /// The phone's session starts (with their progress) and stops.
+    let sessionStarts: SessionStarter
     let deviceSettings: DeviceSettings
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
@@ -157,6 +159,7 @@ final class AppEnvironment {
         reportRequests = SessionReportRequester.sending(through: outbox)
         boardWriter = BoardWriter.sending(through: outbox, store: store)
         askAnswerer = AskAnswerer.sending(through: outbox, store: store, drafts: askDrafts)
+        sessionStarts = SessionStarter.sending(through: outbox, store: store)
         // An `applied` echo clears the queued row; hydrating right behind it
         // lands the Mac's authoritative change at the same moment.
         let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in
@@ -195,8 +198,14 @@ final class AppEnvironment {
     /// Demo seed or engine start, a first fetch so the screens have content
     /// at once, then the fetch loop.
     private func bootstrap() async {
-        // Before any fetch, so no applied echo goes unseen.
-        await askAnswerer.observeApplied(on: outbox)
+        // Before any fetch, so no applied echo goes unseen: an ask answer's
+        // delivery, a start's session id.
+        await outbox.setAppliedObserver { [weak askAnswerer, weak sessionStarts] action in
+            Task { @MainActor in
+                askAnswerer?.receiveApplied(action)
+                sessionStarts?.receiveApplied(action)
+            }
+        }
         switch transportKind {
         case .inMemoryDemo:
             #if DEBUG

@@ -7,6 +7,7 @@ import WatchtowerKit
 /// writes show in place until the Mac applies them. An archived target is
 /// read-only.
 struct BoardTargetDetailView: View {
+    @Environment(AppEnvironment.self) private var env
     let replica: WorkbenchReplicaModel
     let writer: BoardWriter
     let targetID: Int64
@@ -14,6 +15,9 @@ struct BoardTargetDetailView: View {
     /// The root a reply goes under; nil for a new comment.
     @State private var replyTo: BoardTargetDetailModel.CommentRow?
     @State private var addingSubTarget = false
+    @State private var startingSession = false
+    /// The session the start sheet's Open session or Open it goes to.
+    @State private var openSession: SessionRoute?
     @State private var sendError: String?
     @FocusState private var composerFocused: Bool
 
@@ -43,6 +47,9 @@ struct BoardTargetDetailView: View {
     private func content(_ detail: BoardTargetDetailModel) -> some View {
         List {
             header(detail)
+            if !detail.isReadOnly {
+                workOnIt(detail)
+            }
             if !detail.writes.isEmpty {
                 Section("Changes") {
                     ForEach(detail.writes) { row in
@@ -102,6 +109,12 @@ struct BoardTargetDetailView: View {
         .sheet(isPresented: $addingSubTarget) {
             NewBoardTargetSheet(replica: replica, writer: writer, workbenchID: detail.target.workbenchID, parentID: detail.id)
         }
+        .sheet(isPresented: $startingSession) {
+            StartSessionSheet(workbenchID: detail.target.workbenchID, target: detail.target, fixed: true) { openSession = SessionRoute(id: $0) }
+        }
+        .navigationDestination(item: $openSession) { route in
+            SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
+        }
     }
 
     @ViewBuilder
@@ -128,6 +141,29 @@ struct BoardTargetDetailView: View {
                 } else {
                     pickers(detail)
                 }
+            }
+        }
+    }
+
+    /// "Work on it in a session", with the start's stage under it while one
+    /// is on its way.
+    private func workOnIt(_ detail: BoardTargetDetailModel) -> some View {
+        Section {
+            Button {
+                startingSession = true
+            } label: {
+                Label("Work on it in a session", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.borderedProminent)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            if let progress = StartProgressModel.of(
+                targetID: detail.id, attempt: env.sessionStarts.attempts[detail.id], snapshot: replica.snapshot, now: .now
+            ) {
+                Text(progress.caption)
+                    .font(.caption)
+                    .foregroundStyle(progress.failure == nil ? Color.secondary : PhoneTone.red.color)
+                    .accessibilityLabel("Session start: \(progress.caption)")
             }
         }
     }

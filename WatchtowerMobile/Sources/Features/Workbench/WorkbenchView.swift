@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The Workbench tab, level 2: a title switcher over the workbenches, New
-/// session (wired with the start flow), the mono subline and the Sessions |
-/// Board segment. Sessions holds the Waiting-for-you stack, its closed asks
+/// session (the start sheet with a target picker), the mono subline and the
+/// Sessions | Board segment. Sessions holds the Waiting-for-you stack, its closed asks
 /// and the SESSIONS list. On Board, + opens New target.
 struct WorkbenchView: View {
     enum Segment: String, CaseIterable, Identifiable {
@@ -12,12 +12,15 @@ struct WorkbenchView: View {
         var id: Self { self }
     }
 
+    @Environment(AppEnvironment.self) private var env
     let replica: WorkbenchReplicaModel
     let writer: BoardWriter
     @State private var workbenchID: Int64
     @State private var segment = Segment.sessions
     @State private var showClosed = false
     @State private var addingTarget = false
+    @State private var startingSession = false
+    @State private var openSession: SessionRoute?
 
     init(replica: WorkbenchReplicaModel, writer: BoardWriter, workbenchID: Int64) {
         self.replica = replica
@@ -41,18 +44,26 @@ struct WorkbenchView: View {
         .toolbar {
             ToolbarItem(placement: .principal) { switcher }
             ToolbarItem(placement: .topBarTrailing) {
-                // Starting a session from the phone comes with its own
-                // flow; until then New session is disabled.
                 Button {
-                    addingTarget = true
+                    if segment == .board {
+                        addingTarget = true
+                    } else {
+                        startingSession = true
+                    }
                 } label: {
                     Label(segment == .board ? "New target" : "New session", systemImage: "plus")
                 }
-                .disabled(segment != .board || replica.snapshot.workbench(workbenchID) == nil)
+                .disabled(replica.snapshot.workbench(workbenchID) == nil)
             }
         }
         .sheet(isPresented: $addingTarget) {
             NewBoardTargetSheet(replica: replica, writer: writer, workbenchID: workbenchID)
+        }
+        .sheet(isPresented: $startingSession) {
+            StartSessionSheet(workbenchID: workbenchID, target: nil, fixed: false) { openSession = SessionRoute(id: $0) }
+        }
+        .navigationDestination(item: $openSession) { route in
+            SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
         }
     }
 

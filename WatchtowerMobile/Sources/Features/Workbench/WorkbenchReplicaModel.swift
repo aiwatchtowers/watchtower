@@ -16,6 +16,9 @@ struct WorkbenchReplicaSnapshot: Equatable {
     var asks: [OwnerAsk] = []
     var comments: [WorkbenchComment] = []
     var heartbeat: HeartbeatPayload?
+    /// The hub's `device_grant` records (spec §4.13); `grant(for:)` picks
+    /// this phone's. An undecodable one is left out.
+    var grants: [DeviceGrant] = []
     /// The outbox overlay: the phone's actions the Mac has not yet applied
     /// (pending) or refused (failed), oldest first.
     var pending: [PendingAction] = []
@@ -38,6 +41,8 @@ struct WorkbenchReplicaSnapshot: Equatable {
             store: store,
             from: db
         )
+        let decoder = RelayCoder.makeDecoder()
+        snapshot.grants = try store.payloads(of: .deviceGrant, from: db).compactMap { try? decoder.decode(DeviceGrant.self, from: $0) }
         snapshot.pending = try store.pendingActions(from: db)
         return snapshot
     }
@@ -73,6 +78,11 @@ struct WorkbenchReplicaSnapshot: Equatable {
 
     func workbench(_ id: Int64) -> Workbench? {
         workbenches.first { $0.id == id }
+    }
+
+    /// This phone's grant; nil while unlinked or before the hub wrote one.
+    func grant(for deviceID: String?) -> DeviceGrant? {
+        deviceID.flatMap { id in grants.first { $0.deviceID == id } }
     }
 
     func session(_ id: Int64) -> TerminalSessionState? {

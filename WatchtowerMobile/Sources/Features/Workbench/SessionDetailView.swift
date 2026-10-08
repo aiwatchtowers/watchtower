@@ -8,14 +8,18 @@ struct SessionRoute: Hashable {
 /// One session (spec §13 B3): the header (title, target, branch, agent and
 /// age, the Mac's state), its open asks on top, the report's progress and
 /// summary, and the timeline. Opening it asks the Mac for a fresh report.
-/// Its asks open their forms; Stop and Finish come with their own flows.
+/// Its asks open their forms. The actions menu stops a live session on the
+/// Mac after a confirmation; Finish comes with session input.
 struct SessionDetailView: View {
     /// "Tell the session…" arrives with session input (PROJ-16); until then
     /// the bar is built but not shown.
     static let showsTellBar = false
 
+    @Environment(AppEnvironment.self) private var env
     let replica: WorkbenchReplicaModel
     @State private var viewModel: SessionDetailViewModel
+    @State private var confirmingStop = false
+    @State private var sendError: String?
 
     init(replica: WorkbenchReplicaModel, sessionID: Int64, store: ReplicaStore, requester: SessionReportRequester) {
         self.replica = replica
@@ -46,13 +50,64 @@ struct SessionDetailView: View {
                 TellSessionBar()
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if let actions = actions(now: .now), actions.hasActions {
+                    Menu {
+                        if actions.canStop {
+                            Button("Stop", systemImage: "stop.fill", role: .destructive) { confirmingStop = true }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44)
+                    }
+                    .accessibilityLabel("Session actions")
+                }
+            }
+        }
+        .confirmationDialog(SessionStartText.stopConfirm, isPresented: $confirmingStop, titleVisibility: .visible) {
+            Button("Stop", role: .destructive) { stop() }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Couldn't send", isPresented: Binding(get: { sendError != nil }, set: { if !$0 { sendError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(sendError ?? "")
+        }
         .task { await viewModel.opened() }
+    }
+
+    private func actions(now: Date) -> SessionActionsModel? {
+        replica.snapshot.session(viewModel.sessionID).map {
+            SessionActionsModel(session: $0, snapshot: replica.snapshot, inFlight: env.sessionStarts.inFlight, now: now)
+        }
+    }
+
+    private func stop() {
+        let sessionID = viewModel.sessionID
+        Task {
+            do {
+                try await env.sessionStarts.stop(sessionID: sessionID)
+            } catch {
+                sendError = BoardWriteText.sendError(error)
+            }
+        }
+    }
+
+    private func dismissStop(_ row: PendingAction) {
+        do {
+            try env.sessionStarts.dismiss(row)
+        } catch {
+            sendError = BoardWriteText.sendError(error)
+        }
     }
 
     private func content(_ detail: SessionDetailModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(detail)
+                if let actions = actions(now: .now) {
+                    ForEach(actions.stopRows) { StopRowView(row: $0, onDismiss: dismissStop) }
+                }
                 if let notice = detail.approvalNotice {
                     ApprovalNoticeView(text: notice)
                 }
@@ -136,6 +191,36 @@ struct SessionDetailView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+/// The phone's Stop until the Mac applies it, or the Mac's refusal with
+/// Dismiss.
+private struct StopRowView: View {
+    let row: SessionActionsModel.StopRow
+    let onDismiss: (PendingAction) -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            switch row.state {
+            case let .sending(caption):
+                Label("Stop · \(caption)", systemImage: "clock")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            case let .failed(message):
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(PhoneTone.red.color)
+                Spacer(minLength: 8)
+                Button("Dismiss") { onDismiss(row.pending) }
+                    .font(.subheadline)
+                    .frame(minHeight: 44)
+                    .accessibilityLabel("Dismiss the failed stop")
+            }
+        }
+        .frame(minHeight: 44)
+        .buttonStyle(.borderless)
     }
 }
 
