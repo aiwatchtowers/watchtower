@@ -118,7 +118,9 @@ struct WorkbenchView: View {
                 if let empty = menu.sessionsEmptyText {
                     Text(empty).foregroundStyle(.secondary)
                 } else {
-                    ForEach(menu.sessions) { SessionRowView(row: $0) }
+                    ForEach(menu.sessions) { row in
+                        NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row) }
+                    }
                 }
             }
         }

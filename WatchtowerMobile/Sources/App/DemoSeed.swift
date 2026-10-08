@@ -67,6 +67,6 @@ enum DemoSeed {
         return [
             try CloudRecordFactory.record(for: heartbeat, modifiedAt: now),
             try CloudRecordFactory.record(for: grant, modifiedAt: now)
-        ] + (try workbenchRecords(now: now)) + (try calendarRecords(now: now))
+        ] + (try workbenchRecords(now: now)) + (try sessionDetailRecords(now: now)) + (try calendarRecords(now: now))
     }
 }

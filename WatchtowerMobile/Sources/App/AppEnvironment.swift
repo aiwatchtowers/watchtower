@@ -46,6 +46,9 @@ final class AppEnvironment {
     let store: ReplicaStore
     let transportKind: TransportKind
     let outbox: ActionOutbox
+    /// `session_report_request` on opening a session detail, throttled per
+    /// session for the app's lifetime.
+    let reportRequests: SessionReportRequester
     let deviceSettings: DeviceSettings
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
@@ -145,6 +148,7 @@ final class AppEnvironment {
         self.hydrator = hydrator
         let outbox = ActionOutbox(transport: transport, store: store, deviceID: device?.deviceID)
         self.outbox = outbox
+        reportRequests = SessionReportRequester.sending(through: outbox)
         // An `applied` echo clears the queued row; hydrating right behind it
         // lands the Mac's authoritative change at the same moment.
         let hydrateAfterEcho: @Sendable () async -> Void = { [hydrator] in

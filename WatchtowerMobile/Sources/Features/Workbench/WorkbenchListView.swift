@@ -27,6 +27,9 @@ struct WorkbenchListView: View {
                 .navigationDestination(for: BoardTargetRoute.self) { route in
                     BoardTargetDetailView(replica: replica, targetID: route.id)
                 }
+                .navigationDestination(for: SessionRoute.self) { route in
+                    SessionDetailView(replica: replica, sessionID: route.id, store: env.store, requester: env.reportRequests)
+                }
         }
     }
 

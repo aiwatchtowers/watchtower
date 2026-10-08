@@ -54,7 +54,7 @@ extension DemoSeed {
                 "report_target_id": 430, "report_done": 1, "report_total": 3
             ]),
             JSON.session(11, workbench: acmeID, [
-                "title": "Archive closed targets", "state_kind": "waiting_on_ask",
+                "title": "Archive closed targets", "created_at": JSON.stamp(ago(4_000)), "state_kind": "waiting_on_ask",
                 "state_caption": "Waiting for you · ask #109 · 2 asks", "state_tone": "orange", "state_glyph": "questionmark",
                 "open_asks": 2, "oldest_ask_id": 109, "closed_asks": 2, "target_id": 415, "last_active_at": JSON.stamp(ago(120)),
                 "report_target_id": 415, "report_done": 1, "report_total": 2, "report_pr_line": "PR #175 open"

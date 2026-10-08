@@ -69,7 +69,9 @@ struct BoardTargetDetailView: View {
             }
             if !detail.sessions.isEmpty {
                 Section("Sessions") {
-                    ForEach(detail.sessions) { SessionRowView(row: $0) }
+                    ForEach(detail.sessions) { row in
+                        NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row) }
+                    }
                 }
             }
             if !detail.comments.isEmpty {

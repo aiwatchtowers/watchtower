@@ -24,6 +24,17 @@ final class OrangeToneTests: XCTestCase {
         for target in snapshot.targets {
             uses += try XCTUnwrap(BoardTargetDetailModel(targetID: target.id, snapshot: snapshot, now: now)).toneUses
         }
+        let details = DemoSeed.sessionDetailSlices(now: now)
+        func payload(_ kind: SliceKind, _ id: Int64) -> [String: Any]? {
+            details.first { $0.0 == kind && $0.1 == id }?.2
+        }
+        for session in snapshot.sessions {
+            let report = try payload(.sessionReport, session.id).map { try mirror(SessionReport.self, $0) }
+            let timeline = try payload(.sessionTimeline, session.id).map { try mirror(SessionTimeline.self, $0) }
+            uses += try XCTUnwrap(SessionDetailModel(
+                sessionID: session.id, snapshot: snapshot, report: report, timeline: timeline, now: now
+            )).toneUses
+        }
 
         let orange = uses.filter { $0.tone == .orange }
         XCTAssertFalse(orange.isEmpty, "the demo must draw orange somewhere, or this test proves nothing")
