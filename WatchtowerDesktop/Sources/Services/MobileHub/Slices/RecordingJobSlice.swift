@@ -1,5 +1,7 @@
 import Foundation
 import GRDB
+import os
+import WatchtowerCore
 import WatchtowerSync
 
 /// The `recording_job` slice (mobile POC spec §4.12), record name
@@ -22,6 +24,7 @@ struct RecordingJobSlice: SliceSource {
 
     let sidecar: HubSyncState
     let now: @Sendable () -> Date
+    private static let logger = Logger(subsystem: Constants.bundleID, category: "RecordingJobSlice")
 
     init(sidecar: HubSyncState, now: @escaping @Sendable () -> Date = { Date() }) {
         self.sidecar = sidecar
@@ -46,7 +49,12 @@ struct RecordingJobSlice: SliceSource {
     /// Reads the sidecar, not `db`: the jobs are the hub's own state.
     func records(_ db: Database) throws -> [SliceRecord] {
         let stamp = now()
-        try sidecar.prunePhoneRecordings(olderThan: stamp.addingTimeInterval(-Self.sidecarRetention))
+        do {
+            try sidecar.prunePhoneRecordings(olderThan: stamp.addingTimeInterval(-Self.sidecarRetention))
+        } catch {
+            // Housekeeping only: the jobs still publish, and the next tick prunes.
+            Self.logger.warning("phone recording prune failed: \(error.localizedDescription, privacy: .public)")
+        }
         let shown = try sidecar.phoneRecordings().filter {
             !$0.status.isFinished || stamp.timeIntervalSince($0.updatedAt) <= Self.keptAfterEnd
         }

@@ -19,7 +19,8 @@ import WatchtowerSync
 /// transcriber's phone ingest, under its own timeout) and the record
 /// rewritten `received` without the asset, or `failed` with a message. A
 /// failed upload wrote nothing, so the phone's Retry (the same record name,
-/// pending again) is ingested; a `received` one never is again. An upload
+/// pending again) is ingested; a `received` one never is again (a phone save
+/// that put it back to `pending` only gets `received` echoed again). An upload
 /// found still `begun` is echoed `failed` / `outcome_unknown`, not re-ingested.
 ///
 /// Backlog: one pass handles at most `batchLimit` records and reports the
@@ -157,8 +158,13 @@ final class RelayProcessor: Sendable {
             guard let action = try pendingAction(in: record) else { return nil }
             return { try await self.processAction(action) }
         case RelayRecordKind.recordingUpload.rawValue:
-            guard let uploads = recordingUploads, let upload = try pendingUpload(in: record) else { return nil }
-            return { try await self.processUpload(upload, asset: record.assetFileURL, uploads: uploads) }
+            guard let uploads = recordingUploads, let pending = try pendingUpload(in: record) else { return nil }
+            switch pending {
+            case .ingest(let upload):
+                return { try await self.processUpload(upload, asset: record.assetFileURL, uploads: uploads) }
+            case .reEchoReceived(let upload):
+                return { try await self.reEchoReceived(upload) }
+            }
         default:
             // Device records and future kinds have no relay work.
             return nil
@@ -247,10 +253,18 @@ final class RelayProcessor: Sendable {
 
     // MARK: - Phone recordings (spec §5.3, §6.4)
 
-    /// The record's upload when it still needs work: decodable, still
-    /// `pending`, and not ingested yet (no ledger entry, a `begun` one, or a
-    /// failed attempt the phone is retrying).
-    private func pendingUpload(in record: CloudRecord) throws -> RecordingUploadPayload? {
+    private enum PendingUpload {
+        /// Not ingested yet: no ledger entry, a `begun` one, or a failed
+        /// attempt the phone is retrying.
+        case ingest(RecordingUploadPayload)
+        /// Already ingested, but the record reads `pending` again: the phone
+        /// re-saved it (with its asset) before it fetched the `received`
+        /// echo, and its save won. Echo `received` once more.
+        case reEchoReceived(RecordingUploadPayload)
+    }
+
+    /// The work a decodable, still `pending` upload needs; nil for none.
+    private func pendingUpload(in record: CloudRecord) throws -> PendingUpload? {
         let upload: RecordingUploadPayload
         do {
             upload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
@@ -259,10 +273,22 @@ final class RelayProcessor: Sendable {
             return nil
         }
         guard upload.status == .pending else { return nil }
-        if try sidecar.relayPhase(upload.recordName) == .done {
-            return try sidecar.relayOutcome(upload.recordName)?.hasPrefix(ActionStatus.failed.rawValue) == true ? upload : nil
-        }
-        return upload
+        guard try sidecar.relayPhase(upload.recordName) == .done else { return .ingest(upload) }
+        let outcome = try sidecar.relayOutcome(upload.recordName)
+        if outcome == RecordingUploadStatus.received.rawValue { return .reEchoReceived(upload) }
+        return outcome?.hasPrefix(ActionStatus.failed.rawValue) == true ? .ingest(upload) : nil
+    }
+
+    /// Rewrites an already-ingested upload `received` without its asset
+    /// again: no claim, no ingest, and the stash is never read. The phone's
+    /// `received` handling deletes its row, so this does not loop.
+    private func reEchoReceived(_ upload: RecordingUploadPayload) async throws {
+        lastActivity.withLock { $0 = now() }
+        var echoed = upload
+        echoed.status = .received
+        echoed.errorMessage = nil
+        try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)])
+        logger.info("recording upload \(upload.recordName, privacy: .public) re-saved pending after its ingest: echoed received again")
     }
 
     private func processUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads) async throws {

@@ -156,13 +156,13 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     // MARK: - Duplicate
 
-    func testDuplicateDeliveryAfterReceivedIngestsNothing() async throws {
+    func testDuplicateDeliveryAfterReceivedIngestsNothingAndEchoesReceivedAgain() async throws {
         let record = try await send(uploadPayload(), asset: try makeAsset())
         let processor = try makeProcessor()
         _ = try await processor.processOnce()
 
-        // The stale pending version arrives again (re-fetch, push twice),
-        // with its asset restashed.
+        // The phone re-saved `pending` (with its asset) before it fetched
+        // the hub's `received`, and its save won.
         let again = try CloudRecordFactory.record(for: uploadPayload(), modifiedAt: now, assetFileURL: try makeAsset("again.m4a"))
         try await transport.save([again])
         _ = try await processor.processOnce()
@@ -170,7 +170,11 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(enqueued.count, 1, "a received upload is ingested once")
         XCTAssertEqual(recordingFiles().count, 2)
-        XCTAssertEqual(try echoes(of: record.recordName).map(\.payload.status), [.received])
+        let echoes = try echoes(of: record.recordName)
+        XCTAssertEqual(echoes.map(\.payload.status), [.received, .received], "the stale pending converges to received")
+        XCTAssertNil(echoes.last?.record.assetFileURL, "the re-echo drops the asset again")
+        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "received")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: again.assetFileURL?.path ?? ""), "the re-echo never reads the stash")
     }
 
     // MARK: - Missing asset
@@ -316,6 +320,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     func testAnIngestThatOutlivesItsTimeoutFailsOutcomeUnknown() async throws {
         let parked = Parked()
+        defer { parked.release() }
         jobs = try PhoneRecordingJobs(
             sidecar: sidecar, dbPool: dbPool, events: nil, now: { [now] in now },
             enqueue: { _, _, _ in try await parked.wait() }
@@ -327,7 +332,6 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(try echoes(of: record.recordName).first?.payload.status, .failed)
         XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:outcome_unknown")
-        parked.release()
     }
 
     func testAHubWithoutAnIngestLeavesUploadsPending() async throws {
