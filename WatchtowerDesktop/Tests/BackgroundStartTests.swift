@@ -287,4 +287,62 @@ final class BackgroundStartTests: XCTestCase {
         let stored = try await rows(p)
         XCTAssertTrue(stored.isEmpty, "no row for a start that cannot run")
     }
+
+    /// Bring forward (`.keeping(.board)`) gets the same launch check: the
+    /// caller is never told a refused launch started.
+    func testABroughtForwardStartWhoseLaunchIsRefusedThrows() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        try FileManager.default.removeItem(atPath: acme)
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+
+        do {
+            _ = try await vm.startForTarget(targetID: t, prompt: nil, mode: .new, placement: .keeping(.board))
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            guard case let .failed(reason) = error else { return XCTFail("got \(error)") }
+            XCTAssertTrue(reason.contains("no longer exists"), reason)
+        }
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    func testABroughtForwardStartWithNoTerminalCenterThrows() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: nil)
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+
+        do {
+            _ = try await vm.startForTarget(targetID: t, prompt: nil, mode: .new, placement: .keeping(.board))
+            XCTFail("expected a failure")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            guard case .failed = error else { return XCTFail("got \(error)") }
+        }
+        let stored = try await rows(p)
+        XCTAssertTrue(stored.isEmpty)
+    }
+
+    /// The owner's Work on it is unchanged: a refused launch is not an
+    /// error on the page — the session is on screen and its pane shows why.
+    func testWorkOnWithARefusedLaunchShowsThePaneAsBefore() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        try FileManager.default.removeItem(atPath: acme)
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+
+        await vm.workOn(targetID: t, targetText: "Ship it")
+
+        let stored = try await rows(p)
+        let row = try XCTUnwrap(stored.first { $0.targetID == t })
+        guard case .unavailable? = center.states[row.id] else { return XCTFail("got \(String(describing: center.states[row.id]))") }
+        XCTAssertEqual(vm.layout(projectID: p).primary, .session(row.id))
+        XCTAssertEqual(center.focusOrder.last, row.id)
+        XCTAssertNil(vm.sessionErrors[p])
+    }
 }

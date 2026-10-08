@@ -237,21 +237,27 @@ extension WorkbenchesViewModel {
     /// path, with the session named after the target's stored text.
     /// `prompt` replaces the work-on prompt, and `planFirst` follows either
     /// with `TerminalLaunch.planFirstSuffix`; both apply only to a new
-    /// session (a reopened one resumes its conversation). With `.background`
-    /// a failure is thrown and logged, never put on the owner's page.
+    /// session (a reopened one resumes its conversation). Under every
+    /// placement a launch that did not run (no terminal center, or one
+    /// `TerminalCenter` refused) throws, so the caller never reports a
+    /// session that is not running. With `.background` a failure is only
+    /// logged, never put on the owner's page; otherwise a switch error shows
+    /// there as for Work on it (a refused launch shows in the pane).
     @discardableResult
     func startForTarget(
         targetID: Int64, prompt: String?, mode: TargetStartMode, placement: Placement, planFirst: Bool = false
     ) async throws -> TerminalSession {
         try await startTarget(
             targetID, title: nil, prompt: prompt, mode: mode, placement: placement,
-            askedIn: selectedWorkbenchID, planFirst: planFirst
+            askedIn: selectedWorkbenchID, planFirst: planFirst, checkLaunch: true
         )
     }
 
     /// `title` nil = the target's stored text. `askedIn` keys the read's
     /// switch ticket and errors (the target's workbench is known only after
-    /// the read; the page's is the one it almost always is).
+    /// the read; the page's is the one it almost always is). `checkLaunch`:
+    /// a launch that did not run throws (`startForTarget`); Work on it leaves
+    /// that to the pane.
     private func startTarget(
         _ targetID: Int64,
         title: String?,
@@ -259,11 +265,12 @@ extension WorkbenchesViewModel {
         mode: TargetStartMode,
         placement: Placement,
         askedIn: Int64?,
-        planFirst: Bool = false
+        planFirst: Bool = false,
+        checkLaunch: Bool = false
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
-        if placement == .background, terminalCenter == nil {
+        if checkLaunch, terminalCenter == nil {
             let message = "No terminal is available to start the session in."
             reportStartError(message, projectID: askedIn, ticket: nil)
             throw TargetStartError.failed(message)
@@ -283,7 +290,7 @@ extension WorkbenchesViewModel {
         }
         if ticket != nil, found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }
         if mode == .openExisting, let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
-            return try await reopen(existing, placement: placement, ticket: ticket)
+            return try await reopen(existing, placement: placement, ticket: ticket, checkLaunch: checkLaunch)
         }
         let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
         // A blank brief is no brief: the work-on prompt goes instead.
@@ -297,7 +304,8 @@ extension WorkbenchesViewModel {
                   claudeSessionID: Self.newClaudeSessionID()),
             prompt: planFirst ? "\(brief) \(TerminalLaunch.planFirstSuffix)" : brief,
             placement: placement,
-            ticket: ticket
+            ticket: ticket,
+            checkLaunch: checkLaunch
         )
     }
 
@@ -343,12 +351,15 @@ extension WorkbenchesViewModel {
     func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
         let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
         // A failure is reported already (`reopen`).
-        _ = try? await reopen(session, placement: placement, ticket: ticket)
+        _ = try? await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)
     }
 
     /// `open` past its ticket; nil only for `.background`. Throws
-    /// `TargetStartError.failed` once the failure is reported.
-    private func reopen(_ session: TerminalSession, placement: Placement, ticket: Int?) async throws -> TerminalSession {
+    /// `TargetStartError.failed` once the failure is reported, and with
+    /// `checkLaunch` also when the launch did not run (`launchCheck`).
+    private func reopen(
+        _ session: TerminalSession, placement: Placement, ticket: Int?, checkLaunch: Bool
+    ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: session.projectID, ticket: ticket) }
         let row: TerminalSession
         do {
@@ -366,7 +377,7 @@ extension WorkbenchesViewModel {
         }
         resumeFailed.remove(row.id)
         await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
-        if ticket == nil { try backgroundLaunchCheck(row) }
+        if checkLaunch { try launchCheck(row) }
         return row
     }
 
@@ -532,13 +543,14 @@ extension WorkbenchesViewModel {
     private func createAndStart(
         _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show, ticket: Int
     ) async -> TerminalSession? {
-        try? await createAndActivate(new, prompt: prompt, placement: placement, ticket: ticket)
+        try? await createAndActivate(new, prompt: prompt, placement: placement, ticket: ticket, checkLaunch: false)
     }
 
     /// `createAndStart` that throws `TargetStartError.failed` once the
-    /// failure is reported. `ticket` is nil only for `.background`.
+    /// failure is reported, and with `checkLaunch` also when the launch did
+    /// not run (`launchCheck`). `ticket` is nil only for `.background`.
     private func createAndActivate(
-        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement, ticket: Int?
+        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement, ticket: Int?, checkLaunch: Bool
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
         let row: TerminalSession
@@ -550,22 +562,23 @@ extension WorkbenchesViewModel {
             throw TargetStartError.failed(message)
         }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket)
-        if ticket == nil { try backgroundLaunchCheck(row) }
+        if checkLaunch { try launchCheck(row) }
         return row
     }
 
-    /// No pane shows a background session, so a launch `TerminalCenter`
-    /// refused (`.unavailable`: the folder is gone, no valid Claude session
-    /// id) or could not make (no center) is the caller's failure, logged
-    /// and thrown, never a success.
-    private func backgroundLaunchCheck(_ row: TerminalSession) throws {
+    /// A launch `TerminalCenter` refused (`.unavailable`: the folder is
+    /// gone, no valid Claude session id) or could not make (no center) is
+    /// the caller's failure, thrown, never a success. It is only logged: a
+    /// background session has no pane to show it, and an on-screen one
+    /// shows `.unavailable` in its pane already.
+    private func launchCheck(_ row: TerminalSession) throws {
         let failure: String? = switch terminalCenter?.states[row.id] {
         case nil: "Session #\(row.id) did not start."
         case let .unavailable(reason)?: reason
         default: nil
         }
         guard let failure else { return }
-        reportStartError(failure, projectID: row.projectID, ticket: nil)
+        NSLog("WorkbenchesViewModel: session %lld did not launch: %@", row.id, failure)
         throw TargetStartError.failed(failure)
     }
 
