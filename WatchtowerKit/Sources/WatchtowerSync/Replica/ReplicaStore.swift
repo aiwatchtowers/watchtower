@@ -118,9 +118,22 @@ public final class ReplicaStore: Sendable {
                     sample_format TEXT NOT NULL,
                     state TEXT NOT NULL
                         CHECK(state IN ('waiting','uploading','delivered','failed')),
-                    error_message TEXT
+                    error_message TEXT,
+                    event_id TEXT
+                );
+                CREATE TABLE IF NOT EXISTS phone_recording_marks (
+                    recording_id TEXT NOT NULL
+                        REFERENCES phone_recordings(recording_id) ON DELETE CASCADE,
+                    offset_sec INTEGER NOT NULL CHECK(offset_sec >= 0),
+                    PRIMARY KEY (recording_id, offset_sec)
                 );
                 """)
+            // A replica created before `event_id` existed keeps its ledger:
+            // the column is added in place (CREATE IF NOT EXISTS skipped it).
+            let columns = try db.columns(in: "phone_recordings").map(\.name)
+            if !columns.contains("event_id") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN event_id TEXT")
+            }
         }
     }
 

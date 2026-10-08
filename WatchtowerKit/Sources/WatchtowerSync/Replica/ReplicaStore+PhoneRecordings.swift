@@ -29,6 +29,9 @@ public struct PhoneRecording: Equatable, Identifiable, Sendable {
     public let sampleFormat: String
     public let state: State
     public let errorMessage: String?
+    /// The calendar event the recording was started from; nil for a
+    /// "No meeting" voice note (spec §5.3).
+    public let eventID: String?
 }
 
 extension ReplicaStore {
@@ -56,19 +59,22 @@ extension ReplicaStore {
                 titleHint: row["title_hint"],
                 sampleFormat: row["sample_format"],
                 state: state,
-                errorMessage: row["error_message"]
+                errorMessage: row["error_message"],
+                eventID: row["event_id"]
             )
         }
     }
 
-    func insertPhoneRecording(_ recording: PhoneRecording) throws {
+    /// Inserts one ledger row and its mark-moment offsets in a single
+    /// transaction. Duplicate offsets collapse to one mark.
+    func insertPhoneRecording(_ recording: PhoneRecording, marks: [Int] = []) throws {
         try writer.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO phone_recordings
                         (recording_id, file_path, started_at, ended_at, duration_sec,
-                         title_hint, sample_format, state, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         title_hint, sample_format, state, error_message, event_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
                     recording.id, recording.fileURL.path,
@@ -76,10 +82,33 @@ extension ReplicaStore {
                     recording.endedAt.timeIntervalSince1970,
                     recording.durationSec, recording.titleHint,
                     recording.sampleFormat, recording.state.rawValue,
-                    recording.errorMessage
+                    recording.errorMessage, recording.eventID
                 ]
             )
+            for offset in marks where offset >= 0 {
+                try db.execute(
+                    sql: "INSERT OR IGNORE INTO phone_recording_marks (recording_id, offset_sec) VALUES (?, ?)",
+                    arguments: [recording.id, offset]
+                )
+            }
         }
+    }
+
+    /// The recording's mark-moment offsets in seconds of recorded audio,
+    /// ascending. They stay on the phone (jump points in the transcript
+    /// view) and never travel in the upload payload (spec §5.3).
+    public func phoneRecordingMarks(id: String) throws -> [Int] {
+        try writer.read { db in try phoneRecordingMarks(id: id, from: db) }
+    }
+
+    /// `phoneRecordingMarks(id:)` against an ALREADY-OPEN database (for
+    /// ValueObservation tracking closures).
+    public func phoneRecordingMarks(id: String, from db: Database) throws -> [Int] {
+        try Int.fetchAll(
+            db,
+            sql: "SELECT offset_sec FROM phone_recording_marks WHERE recording_id = ? ORDER BY offset_sec",
+            arguments: [id]
+        )
     }
 
     /// Unknown ids are a no-op (the ack-after-delete degenerate branch).
@@ -103,9 +132,13 @@ extension ReplicaStore {
     }
 
     /// Removes one ledger row (the phone's "Remove" affordance on delivered/
-    /// failed rows). The audio file is the caller's to delete.
+    /// failed rows) and, by cascade, its marks. The audio file is the
+    /// caller's to delete.
     public func removePhoneRecording(id: String) throws {
         try writer.write { db in
+            // Explicit as well as the FK cascade, so a connection opened
+            // without foreign keys never leaves orphan marks.
+            try db.execute(sql: "DELETE FROM phone_recording_marks WHERE recording_id = ?", arguments: [id])
             try db.execute(
                 sql: "DELETE FROM phone_recordings WHERE recording_id = ?",
                 arguments: [id]

@@ -31,20 +31,39 @@ public actor RecordingUploader: RecordingUploadAcking {
     public static let minimumDurationSec: TimeInterval = 1
     /// The capture format descriptor stamped into the wire payload.
     public static let sampleFormat = "aac-64k-mono"
+    /// The asset cap (spec §3): 3 h of 64 kbps AAC is about 86 MB.
+    public static let maximumAssetBytes: Int64 = 90_000_000
+    /// The ledger message for a file over the asset cap.
+    public static let tooLargeMessage = "This recording is over 90 MB, too large to send to your Mac."
 
     private let transport: any CloudSyncTransport
     private let store: ReplicaStore
+    private let maxAssetBytes: Int64
     private let now: @Sendable () -> Date
+    /// The linked phone's device id, stamped on every upload. nil until
+    /// linking finishes (or after an unlink): uploads then wait, because the
+    /// hub fails a record without one as `device_not_linked`.
+    private var deviceID: String?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RecordingUploader")
 
     public init(
         transport: any CloudSyncTransport,
         store: ReplicaStore,
+        deviceID: String? = nil,
+        maxAssetBytes: Int64 = RecordingUploader.maximumAssetBytes,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.store = store
+        self.deviceID = deviceID
+        self.maxAssetBytes = maxAssetBytes
         self.now = now
+    }
+
+    /// Called by the link flow once the device is linked, and with nil on
+    /// unlink. Waiting recordings go out on the next `uploadPending`.
+    public func setDeviceID(_ deviceID: String?) {
+        self.deviceID = deviceID
     }
 
     // MARK: - Register (capture finalized)
@@ -53,34 +72,50 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// and deletes the file — for degenerate captures: a missing/empty file
     /// or a duration under `minimumDurationSec`. Callers follow up with
     /// `uploadPending()` to hand the new row to the transport.
+    ///
+    /// - `activeDuration`: the recorded audio length when the capture was
+    ///   paused (an interruption or the Pause button); the wall-clock span
+    ///   `endedAt - startedAt` is used when nil.
+    /// - `eventID`: the calendar event a "Record this meeting" capture
+    ///   belongs to; nil (or blank) for a voice note.
+    /// - `marks`: mark-moment offsets in seconds of recorded audio, stored
+    ///   locally only.
     @discardableResult
     public func register(
         fileURL: URL,
         startedAt: Date,
         endedAt: Date,
-        titleHint: String?
+        activeDuration: TimeInterval? = nil,
+        titleHint: String?,
+        eventID: String? = nil,
+        marks: [Int] = []
     ) throws -> PhoneRecording? {
         let size = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int64) ?? 0
-        let duration = endedAt.timeIntervalSince(startedAt)
+        let duration = activeDuration ?? endedAt.timeIntervalSince(startedAt)
         guard size > 0, duration >= Self.minimumDurationSec else {
             try? FileManager.default.removeItem(at: fileURL)
             logger.notice("degenerate recording discarded (size \(size), \(duration, format: .fixed(precision: 2)) s)")
             return nil
         }
-        let trimmedTitle = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines)
         let recording = PhoneRecording(
             id: UUID().uuidString,
             fileURL: fileURL,
             startedAt: startedAt,
             endedAt: endedAt,
             durationSec: Int(duration.rounded()),
-            titleHint: (trimmedTitle?.isEmpty ?? true) ? nil : trimmedTitle,
+            titleHint: Self.nonBlank(titleHint),
             sampleFormat: Self.sampleFormat,
             state: .waiting,
-            errorMessage: nil
+            errorMessage: nil,
+            eventID: Self.nonBlank(eventID)
         )
-        try store.insertPhoneRecording(recording)
+        try store.insertPhoneRecording(recording, marks: marks)
         return recording
+    }
+
+    private static func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 
     // MARK: - Upload
@@ -90,28 +125,40 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// flips the row to `uploading`. Re-sending an `uploading` row is the
     /// relaunch/push-failure retry — the save upserts the same recordName and
     /// the hub's processed-set absorbs duplicates. A transport throw leaves
-    /// the row untouched for the next pass; a vanished local file fails the
-    /// row locally (there is nothing left to upload). Returns how many rows
-    /// were handed to the transport.
+    /// the row untouched for the next pass; a vanished local file, or one
+    /// over the asset cap, fails the row locally (it can never be sent).
+    /// Without a linked device nothing is sent and every row keeps waiting.
+    /// Returns how many rows were handed to the transport.
     @discardableResult
     public func uploadPending() async throws -> Int {
+        guard let deviceID else {
+            logger.notice("recording uploads wait: this phone is not linked")
+            return 0
+        }
         let rows = try store.phoneRecordings().filter { $0.state == .waiting || $0.state == .uploading }
         var sent = 0
         for row in rows {
-            guard FileManager.default.fileExists(atPath: row.fileURL.path) else {
+            guard let size = try? FileManager.default.attributesOfItem(atPath: row.fileURL.path)[.size] as? Int64 else {
                 try store.setPhoneRecordingState(
                     id: row.id, state: .failed,
                     errorMessage: "The local audio file is missing."
                 )
                 continue
             }
+            guard size <= maxAssetBytes else {
+                try store.setPhoneRecordingState(id: row.id, state: .failed, errorMessage: Self.tooLargeMessage)
+                continue
+            }
+            // Marks are deliberately absent: they stay on the phone.
             let payload = RecordingUploadPayload(
                 id: row.id,
                 startedAt: row.startedAt,
                 endedAt: row.endedAt,
                 durationSec: row.durationSec,
                 titleHint: row.titleHint,
-                sampleFormat: row.sampleFormat
+                sampleFormat: row.sampleFormat,
+                eventID: row.eventID,
+                deviceID: deviceID
             )
             do {
                 let record = try CloudRecordFactory.record(

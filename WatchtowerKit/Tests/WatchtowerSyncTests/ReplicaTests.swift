@@ -651,4 +651,39 @@ final class ReplicaTests: XCTestCase {
         await hydrator.stop()
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).count, 1)
     }
+
+    // MARK: - Phone recordings ledger upgrade
+
+    /// A replica written before `event_id` existed opens with its ledger
+    /// intact and the column added in place.
+    func testOlderPhoneRecordingsLedgerGainsEventID() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("replica-upgrade-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("replica.sqlite").path
+        try await DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE phone_recordings (
+                    recording_id TEXT PRIMARY KEY, file_path TEXT NOT NULL,
+                    started_at REAL NOT NULL, ended_at REAL NOT NULL, duration_sec INTEGER NOT NULL,
+                    title_hint TEXT, sample_format TEXT NOT NULL, state TEXT NOT NULL, error_message TEXT
+                );
+                INSERT INTO phone_recordings VALUES ('old', '/tmp/old.m4a', 0, 60, 60, NULL, 'aac-64k-mono', 'waiting', NULL);
+                """)
+        }
+        let store = try ReplicaStore(path: path)
+        let rows = try store.phoneRecordings()
+        XCTAssertEqual(rows.map(\.id), ["old"])
+        XCTAssertNil(rows.first?.eventID)
+
+        let audio = dir.appendingPathComponent("new.m4a")
+        try Data(repeating: 1, count: 16).write(to: audio)
+        let ended = Date()
+        let uploader = RecordingUploader(transport: InMemoryCloudTransport(), store: store)
+        let registered = try await uploader.register(
+            fileURL: audio, startedAt: ended.addingTimeInterval(-30), endedAt: ended, titleHint: nil, eventID: "evt-1"
+        )
+        let recording = try XCTUnwrap(registered)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.eventID, "evt-1")
+    }
 }
