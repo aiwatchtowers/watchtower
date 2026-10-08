@@ -38,6 +38,15 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
     public var status: RecordingUploadStatus
     /// Set by the desktop on `failed` write-backs; absent otherwise.
     public var errorMessage: String?
+    /// The calendar event the recording was started from (spec §5.3); nil
+    /// for a "No meeting" voice note, encoded as an ABSENT key. An upload
+    /// written before this field existed decodes to nil.
+    public let eventID: String?
+    /// The linked phone that recorded it (spec §5.2 rule 4, the device
+    /// gate). nil encodes to an absent key, like `ActionRequestPayload`'s;
+    /// the hub fails an upload without a linked device as
+    /// `device_not_linked`.
+    public let deviceID: String?
 
     public var recordName: String { "recupload-\(id)" }
 
@@ -53,6 +62,10 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
         case sampleFormat
         case status
         case errorMessage
+        // convertFromSnakeCase maps "event_id" -> "eventId" (lowercase d),
+        // so these stringValues use that form to round-trip.
+        case eventID = "eventId"
+        case deviceID = "deviceId"
     }
 
     public init(
@@ -63,7 +76,9 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
         titleHint: String? = nil,
         sampleFormat: String,
         status: RecordingUploadStatus = .pending,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        eventID: String? = nil,
+        deviceID: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -73,5 +88,7 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
         self.sampleFormat = sampleFormat
         self.status = status
         self.errorMessage = errorMessage
+        self.eventID = eventID
+        self.deviceID = deviceID
     }
 }

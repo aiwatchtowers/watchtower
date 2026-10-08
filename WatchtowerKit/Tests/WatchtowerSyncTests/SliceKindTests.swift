@@ -4,8 +4,8 @@ import XCTest
 @testable import WatchtowerSync
 
 /// SliceKind raw values are wire format (mobile POC spec §4): the pre-POC
-/// kinds stay in the enum unpublished, `heartbeat` and `device_grant` are
-/// new, and a kind this build does not know is stored but never surfaced.
+/// kinds stay in the enum unpublished, `heartbeat`, `device_grant` and
+/// `recording_job` are new, and a kind this build does not know is stored but never surfaced.
 final class SliceKindTests: XCTestCase {
 
     func testRawValuesAreFrozen() {
@@ -16,7 +16,7 @@ final class SliceKindTests: XCTestCase {
                 "calendar_event", "person_card", "situation", "meeting_transcript",
                 "day_plan", "day_plan_item", "feature_state", "stream_digest",
                 "slack_account", "google_account", "jira_account",
-                "heartbeat", "device_grant"
+                "heartbeat", "device_grant", "recording_job"
             ]
         )
     }
