@@ -113,7 +113,7 @@ final class KitFixtureTests: XCTestCase {
         XCTAssertEqual(decoded.status, .failed)
     }
 
-    // MARK: - recording_upload (kept)
+    // MARK: - recording_upload (kept, plus event_id and device_id)
 
     func testRecordingUploadFixture() throws {
         let upload = RecordingUploadPayload(
@@ -121,11 +121,14 @@ final class KitFixtureTests: XCTestCase {
             startedAt: t0,
             endedAt: t0.addingTimeInterval(10),
             durationSec: 10,
-            sampleFormat: "aac-64k-mono"
+            sampleFormat: "aac-64k-mono",
+            eventID: "evt-1",
+            deviceID: "D1"
         )
         try assertFixture(
             upload,
-            #"{"duration_sec":10,"ended_at":1700000010,"id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending"}"#
+            // swiftlint:disable:next line_length
+            #"{"device_id":"D1","duration_sec":10,"ended_at":1700000010,"event_id":"evt-1","id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending"}"#
         )
     }
 

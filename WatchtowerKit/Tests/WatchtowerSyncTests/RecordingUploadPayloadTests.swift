@@ -12,30 +12,49 @@ final class RecordingUploadPayloadTests: XCTestCase {
             endedAt: Date(timeIntervalSince1970: 1_700_000_754),
             durationSec: 754,
             titleHint: "Standup",
-            sampleFormat: "aac-64k-mono"
+            sampleFormat: "aac-64k-mono",
+            eventID: "evt-1",
+            deviceID: "D1"
         )
         let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(upload), encoding: .utf8))
         // swiftlint:disable:next line_length
-        XCTAssertEqual(json, #"{"duration_sec":754,"ended_at":1700000754,"id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending","title_hint":"Standup"}"#)
+        XCTAssertEqual(json, #"{"device_id":"D1","duration_sec":754,"ended_at":1700000754,"event_id":"evt-1","id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending","title_hint":"Standup"}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: Data(json.utf8)), upload)
         XCTAssertEqual(upload.recordName, "recupload-R1")
     }
 
-    func testNilTitleHintOmitsTheKey() throws {
-        // Absent-key discipline: a hint-less upload must carry NO title_hint
-        // key, so old and new builds interoperate without a wire change.
+    func testNilTitleHintAndEventIDOmitTheKeys() throws {
+        // Absent-key discipline: a hint-less "No meeting" voice note must
+        // carry NO title_hint and NO event_id key, so old and new builds
+        // interoperate without a wire change.
         let upload = RecordingUploadPayload(
             id: "R2",
             startedAt: Date(timeIntervalSince1970: 1_700_000_000),
             endedAt: Date(timeIntervalSince1970: 1_700_000_060),
             durationSec: 60,
             titleHint: nil,
-            sampleFormat: "aac-64k-mono"
+            sampleFormat: "aac-64k-mono",
+            eventID: nil,
+            deviceID: "D1"
         )
         let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(upload), encoding: .utf8))
         // swiftlint:disable:next line_length
-        XCTAssertEqual(json, #"{"duration_sec":60,"ended_at":1700000060,"id":"R2","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending"}"#)
-        XCTAssertNil(try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: Data(json.utf8)).titleHint)
+        XCTAssertEqual(json, #"{"device_id":"D1","duration_sec":60,"ended_at":1700000060,"id":"R2","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending"}"#)
+        let decoded = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.titleHint)
+        XCTAssertNil(decoded.eventID)
+        XCTAssertEqual(decoded, upload)
+    }
+
+    func testFixtureWithoutEventIDDecodesToNil() throws {
+        // An upload written before event_id existed (the old branch always
+        // sent none) still decodes; its event link is nil.
+        // swiftlint:disable:next line_length
+        let json = #"{"device_id":"D1","duration_sec":754,"ended_at":1700000754,"id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"pending","title_hint":"Standup"}"#
+        let decoded = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.eventID)
+        XCTAssertEqual(decoded.deviceID, "D1")
+        XCTAssertEqual(decoded.titleHint, "Standup")
     }
 
     func testReceivedWriteBackWireFormatIsFrozen() throws {
@@ -45,12 +64,14 @@ final class RecordingUploadPayloadTests: XCTestCase {
             endedAt: Date(timeIntervalSince1970: 1_700_000_754),
             durationSec: 754,
             titleHint: "Standup",
-            sampleFormat: "aac-64k-mono"
+            sampleFormat: "aac-64k-mono",
+            eventID: "evt-1",
+            deviceID: "D1"
         )
         upload.status = .received
         let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(upload), encoding: .utf8))
         // swiftlint:disable:next line_length
-        XCTAssertEqual(json, #"{"duration_sec":754,"ended_at":1700000754,"id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"received","title_hint":"Standup"}"#)
+        XCTAssertEqual(json, #"{"device_id":"D1","duration_sec":754,"ended_at":1700000754,"event_id":"evt-1","id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"received","title_hint":"Standup"}"#)
     }
 
     func testFailedWriteBackWireFormatIsFrozen() throws {
@@ -60,13 +81,14 @@ final class RecordingUploadPayloadTests: XCTestCase {
             endedAt: Date(timeIntervalSince1970: 1_700_000_010),
             durationSec: 10,
             titleHint: nil,
-            sampleFormat: "aac-64k-mono"
+            sampleFormat: "aac-64k-mono",
+            deviceID: "D1"
         )
         upload.status = .failed
         upload.errorMessage = "recording asset is missing"
         let json = try XCTUnwrap(String(data: try RelayCoder.makeEncoder().encode(upload), encoding: .utf8))
         // swiftlint:disable:next line_length
-        XCTAssertEqual(json, #"{"duration_sec":10,"ended_at":1700000010,"error_message":"recording asset is missing","id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"failed"}"#)
+        XCTAssertEqual(json, #"{"device_id":"D1","duration_sec":10,"ended_at":1700000010,"error_message":"recording asset is missing","id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"failed"}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: Data(json.utf8)), upload)
     }
 
