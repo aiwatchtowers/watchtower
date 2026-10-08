@@ -26,6 +26,18 @@ public enum CloudRecordFactory {
         )
     }
 
+    /// The hub's answer to one phone (spec §4.13), `device_grant-<device_id>`
+    /// in DataZone, RelayCoder JSON like the heartbeat.
+    public static func record(for grant: DeviceGrant, modifiedAt: Date) throws -> CloudRecord {
+        CloudRecord(
+            recordName: grant.recordName,
+            zone: .data,
+            kind: SliceKind.deviceGrant.rawValue,
+            modifiedAt: modifiedAt,
+            payload: try RelayCoder.makeEncoder().encode(grant)
+        )
+    }
+
     /// `assetFileURL` carries the audio as a `CKAsset`: the phone passes its
     /// local `.m4a`; the desktop's status write-back passes nil, which
     /// REMOVES the asset from the record (frees the iCloud storage).

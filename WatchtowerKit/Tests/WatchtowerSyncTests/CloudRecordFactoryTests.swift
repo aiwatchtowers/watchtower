@@ -25,6 +25,26 @@ final class CloudRecordFactoryTests: XCTestCase {
         XCTAssertEqual(record.zone, .data)
     }
 
+    /// The hub's `device_grant` answer lives in DataZone under
+    /// `device_grant-<device_id>`, RelayCoder JSON (spec §4.13).
+    func testDeviceGrantRecordIdentityAndPayload() throws {
+        let grant = DeviceGrant(
+            deviceID: "dev-1",
+            hubID: "hub-1",
+            name: "Acme iPhone",
+            scope: .private,
+            linked: true,
+            linkedAt: stamp,
+            typingAllowed: false,
+            startSessionsAllowed: true
+        )
+        let record = try CloudRecordFactory.record(for: grant, modifiedAt: stamp)
+        XCTAssertEqual(record.recordName, "device_grant-dev-1")
+        XCTAssertEqual(record.kind, "device_grant")
+        XCTAssertEqual(record.zone, .data)
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: record.payload), grant)
+    }
+
     func testSliceRecordMapsKindAndZone() {
         let slice = SliceRecord(kind: .target, id: "9", modifiedAt: stamp, payload: Data("{}".utf8))
         let record = CloudRecordFactory.record(for: slice)

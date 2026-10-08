@@ -223,6 +223,21 @@ public final class ReplicaStore: Sendable {
         return token
     }
 
+    /// Forgets both change tokens (data and relay), so the next hydration
+    /// and relay cycle re-read their zones from scratch; the stored rows
+    /// stay and are upserted again. For a transport whose cursor restarts
+    /// with the process (the phone's in-memory demo): without the reset its
+    /// fresh tokens never pass the monotonic guard of a persisted replica.
+    /// The alert watermark is kept.
+    public func resetSyncTokens() throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "DELETE FROM replica_meta WHERE key IN (?, ?)",
+                arguments: [Self.dataTokenKey, Self.relayTokenKey]
+            )
+        }
+    }
+
     // MARK: - Relay token (RelayFeed state) + heartbeat
 
     /// RelayFeed's persisted relay-zone cursor. Internal BY DESIGN (Plan 4
@@ -286,6 +301,17 @@ public final class ReplicaStore: Sendable {
             return nil
         }
         return .seconds(now.timeIntervalSince(stamp.updatedAt))
+    }
+
+    /// The stored payload of one data-zone record (`heartbeat`,
+    /// `device_grant-<id>`), from an ALREADY-OPEN database so it runs inside
+    /// a ValueObservation tracking closure; nil when the record is absent.
+    public func payload(forRecordName recordName: String, from db: Database) throws -> Data? {
+        try Data.fetchOne(
+            db,
+            sql: "SELECT payload FROM slice_records WHERE record_name = ?",
+            arguments: [recordName]
+        )
     }
 
     /// Undecodable-heartbeat warnings emitted so far (for tests).
