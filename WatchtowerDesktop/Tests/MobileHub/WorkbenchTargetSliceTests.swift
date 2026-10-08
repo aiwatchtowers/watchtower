@@ -117,7 +117,7 @@ final class WorkbenchTargetSliceTests: XCTestCase {
 
     // MARK: - PROJ-01
 
-    func testProj01APersonalTargetIsNeverPublished() throws {
+    func testAPersonalTargetIsNeverPublished() throws {
         let (board, personal) = try dbPool.write { db -> (Int64, Int64) in
             let project = try TestDatabase.insertWorkbench(db)
             let board = try TestDatabase.insertWorkbenchTarget(db, projectID: project)
