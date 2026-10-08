@@ -108,11 +108,6 @@ public actor ReplicaHydrator {
         // apply ignores relay records, so count only what actually landed.
         let dataRecords = batch.changed.filter { $0.zone == .data }
 
-        // The replica now holds the assets' bytes: the transport's copies of
-        // them (and of deleted records) are consumed. Only after a committed
-        // apply: a failed one needs them on the next cycle.
-        await discardConsumedAssets(dataRecords, deleted: batch.deletedRecordNames)
-
         // Post-batch hook, AFTER persist (and compaction — both belong to the
         // applied cycle): surface what landed so the app can raise local
         // notifications for tagged rows. See the doc on `onRecordsApplied`.
@@ -131,19 +126,6 @@ public actor ReplicaHydrator {
             }
         }
         return (applied: dataRecords.count, deleted: batch.deletedRecordNames.count)
-    }
-
-    private func discardConsumedAssets(_ records: [CloudRecord], deleted: [String]) async {
-        for url in records.compactMap(\.assetFileURL) where FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                logger.warning("consumed asset not removed: \(error.localizedDescription, privacy: .public)")
-            }
-        }
-        if let stashing = transport as? any AssetStashingTransport {
-            await stashing.discardStashedAssets(recordNames: records.map(\.recordName) + deleted)
-        }
     }
 
     // MARK: - Poll loop

@@ -308,12 +308,15 @@ public final class TransportStore: Sendable {
     /// directory, named after the record so a re-fetch overwrites rather
     /// than accumulates. Returns the stashed URL, or nil when there is
     /// nowhere to stash (in-memory store) or the copy failed — callers keep
-    /// the original (temporary) URL in that case, best-effort. The consumer
-    /// deletes the stashed file once ingested: the desktop hub for a
-    /// recording upload, the phone's replica hydrator for a data-zone asset
-    /// (`discardStashedAsset`).
+    /// the original (temporary) URL in that case, best-effort. A relay
+    /// upload's consumer (the desktop hub) deletes the stashed file once
+    /// ingested; a data-zone stash goes at `compactEvents(in: .data, …)`.
     func stashAsset(from url: URL, recordName: String) -> URL? {
-        guard let assetsDirectory, let destination = stashURL(recordName: recordName) else { return nil }
+        guard let assetsDirectory else { return nil }
+        // Record names are `recupload-<uuid>` shaped, but sanitize anyway:
+        // a path separator in a name must not escape the stash directory.
+        let safeName = recordName.replacingOccurrences(of: "/", with: "_")
+        let destination = assetsDirectory.appendingPathComponent(safeName)
         do {
             try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destination.path) {
@@ -328,25 +331,6 @@ public final class TransportStore: Sendable {
                 """)
             return nil
         }
-    }
-
-    /// Removes a record's stashed asset, if any (a no-op otherwise).
-    func discardStashedAsset(recordName: String) {
-        guard let url = stashURL(recordName: recordName), FileManager.default.fileExists(atPath: url.path) else { return }
-        do {
-            try FileManager.default.removeItem(at: url)
-        } catch {
-            logger.warning("""
-                failed to discard stashed asset for \(recordName, privacy: .public): \
-                \(error.localizedDescription, privacy: .public)
-                """)
-        }
-    }
-
-    /// Record names are `recupload-<uuid>` shaped, but sanitize anyway: a
-    /// path separator in a name must not escape the stash directory.
-    private func stashURL(recordName: String) -> URL? {
-        assetsDirectory?.appendingPathComponent(recordName.replacingOccurrences(of: "/", with: "_"))
     }
 
     // MARK: - CK system fields
@@ -481,12 +465,52 @@ public final class TransportStore: Sendable {
     /// Safe because `changes(since:)` only ever reads `seq > token`, so a
     /// consumer sitting at `token` sees identical results before and after —
     /// the consumed prefix is dead weight. Owners call it with their own floor.
+    ///
+    /// Data zone: the consumer (the phone's replica) has copied the assets
+    /// of the compacted events, so their stashed files go too — except a
+    /// path a remaining (newer) event still references: the stash is named
+    /// after the record, so a re-fetch after the batch was read overwrites
+    /// the same file. Deleted records are covered: their earlier change
+    /// events are compacted. Only files inside the stash directory are
+    /// removed. Runs on the transport actor, so no fetch interleaves.
     public func compactEvents(in zone: CloudZoneID, keepSince token: CloudChangeToken) throws {
-        try queue.write { db in
+        let consumed = try queue.write { db -> [String] in
+            var consumed: [String] = []
+            if zone == .data {
+                consumed = try String.fetchAll(
+                    db,
+                    sql: """
+                        SELECT DISTINCT asset_path FROM events
+                        WHERE zone = ? AND seq <= ? AND asset_path IS NOT NULL
+                          AND asset_path NOT IN (
+                              SELECT asset_path FROM events
+                              WHERE zone = ? AND seq > ? AND asset_path IS NOT NULL
+                          )
+                        """,
+                    arguments: [zone.rawValue, token.value, zone.rawValue, token.value]
+                )
+            }
             try db.execute(
                 sql: "DELETE FROM events WHERE zone = ? AND seq <= ?",
                 arguments: [zone.rawValue, token.value]
             )
+            return consumed
+        }
+        removeStashedFiles(atPaths: consumed)
+    }
+
+    /// Removes the files among `paths` that live in the stash directory.
+    private func removeStashedFiles(atPaths paths: [String]) {
+        guard let stash = assetsDirectory?.standardizedFileURL else { return }
+        for path in paths {
+            let url = URL(fileURLWithPath: path)
+            guard url.deletingLastPathComponent().standardizedFileURL == stash,
+                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                logger.warning("consumed stash not removed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

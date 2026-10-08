@@ -91,20 +91,79 @@ final class TransportAssetTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: restashed), Data("newer-bytes".utf8))
     }
 
-    func testDiscardStashedAssetRemovesTheFile() throws {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("transport-stash-tests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-        let store = try TransportStore(path: dir.appendingPathComponent("store.sqlite").path)
-        let source = dir.appendingPathComponent("staged.json")
-        try Data("[]".utf8).write(to: source)
-        let stashed = try XCTUnwrap(store.stashAsset(from: source, recordName: "meeting_transcript-1"))
+    // MARK: - Data-zone stash cleanup at compaction
 
-        store.discardStashedAsset(recordName: "meeting_transcript-1")
+    /// A file-backed store in a throwaway folder, plus that folder.
+    private func fileStore() throws -> (TransportStore, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("transport-compact-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return (try TransportStore(path: dir.appendingPathComponent("store.sqlite").path), dir)
+    }
+
+    /// Stashes `contents` for `name` the way a fetch does, then buffers the
+    /// change pointing at the stash.
+    private func bufferFetched(_ store: TransportStore, dir: URL, name: String, contents: String) throws -> URL {
+        let staged = dir.appendingPathComponent("staged-\(UUID().uuidString).json")
+        try Data(contents.utf8).write(to: staged)
+        let stashed = try XCTUnwrap(store.stashAsset(from: staged, recordName: name))
+        try store.bufferChanged([CloudRecord(
+            recordName: name, zone: .data, kind: "meeting_transcript", modifiedAt: stamp,
+            payload: Data("{}".utf8), assetFileURL: stashed
+        )])
+        return stashed
+    }
+
+    func testCompactingConsumedDataEventsRemovesTheirStash() throws {
+        let (store, dir) = try fileStore()
+        let stashed = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
+        let batch = try store.changes(in: .data, since: nil)
+
+        try store.compactEvents(in: .data, keepSince: batch.newToken)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stashed.path), "the consumer holds the bytes now")
+    }
+
+    /// The race: a newer change to the same record is restashed (same path)
+    /// after the batch was read. Its event is not compacted, so its file
+    /// stays and the next cycle reads it.
+    func testANewerRestashOfTheSameRecordSurvivesCompaction() throws {
+        let (store, dir) = try fileStore()
+        let name = "meeting_transcript-1"
+        _ = try bufferFetched(store, dir: dir, name: name, contents: "[1]")
+        let first = try store.changes(in: .data, since: nil)
+        let restashed = try bufferFetched(store, dir: dir, name: name, contents: "[2]")
+
+        try store.compactEvents(in: .data, keepSince: first.newToken)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: restashed.path))
+        let next = try store.changes(in: .data, since: first.newToken)
+        let url = try XCTUnwrap(next.changed.first?.assetFileURL)
+        XCTAssertEqual(try Data(contentsOf: url), Data("[2]".utf8))
+    }
+
+    func testADeletedRecordsStashGoesWithItsCompactedChange() throws {
+        let (store, dir) = try fileStore()
+        let name = "meeting_transcript-1"
+        let stashed = try bufferFetched(store, dir: dir, name: name, contents: "[1]")
+        try store.bufferDeleted(recordNames: [name], zone: .data)
+        let batch = try store.changes(in: .data, since: nil)
+
+        try store.compactEvents(in: .data, keepSince: batch.newToken)
         XCTAssertFalse(FileManager.default.fileExists(atPath: stashed.path))
-        // Idempotent: a name without a stash is a no-op.
-        store.discardStashedAsset(recordName: "meeting_transcript-1")
+    }
+
+    func testCompactionNeverRemovesAFileOutsideTheStash() throws {
+        let (store, dir) = try fileStore()
+        let outside = dir.appendingPathComponent("not-a-stash.json")
+        try Data("[1]".utf8).write(to: outside)
+        try store.bufferChanged([CloudRecord(
+            recordName: "meeting_transcript-1", zone: .data, kind: "meeting_transcript", modifiedAt: stamp,
+            payload: Data("{}".utf8), assetFileURL: outside
+        )])
+        let batch = try store.changes(in: .data, since: nil)
+
+        try store.compactEvents(in: .data, keepSince: batch.newToken)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
     }
 
     func testStashAssetOnInMemoryStoreReturnsNil() throws {
