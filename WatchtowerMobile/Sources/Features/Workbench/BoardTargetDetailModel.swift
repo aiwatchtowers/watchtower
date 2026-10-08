@@ -70,8 +70,12 @@ struct BoardTargetDetailModel {
     let asks: [WaitingCardModel]
     let comments: [CommentRow]
     let thread: [ThreadItem]
+    /// `BoardWriter.inFlight` when the model was built.
+    private let inFlight: Set<String>
 
-    init?(targetID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date) {
+    /// `inFlight` is `BoardWriter.inFlight`: a field or composer whose send
+    /// is still on its way to the outbox is locked like a pending one.
+    init?(targetID: Int64, snapshot: WorkbenchReplicaSnapshot, now: Date, inFlight: Set<String> = []) {
         guard let target = snapshot.targets.first(where: { $0.id == targetID }) else { return nil }
         id = target.id
         self.target = target
@@ -85,6 +89,9 @@ struct BoardTargetDetailModel {
         pr = target.pr
 
         let entity = SliceKind.workbenchTarget.recordName(id: String(target.id))
+        self.inFlight = inFlight
+        let statusSending = inFlight.contains(BoardWriter.key(.boardTargetStatus, entity))
+        let prioritySending = inFlight.contains(BoardWriter.key(.boardTargetPriority, entity))
         let fieldWrites = BoardWriteRow.rows(in: snapshot, now: now) {
             $0.entityRecordName == entity && [.boardTargetStatus, .boardTargetPriority].contains($0.action.kind)
         }
@@ -98,13 +105,13 @@ struct BoardTargetDetailModel {
         status = BoardFieldPicker(
             selection: pendingStatus ?? target.status,
             options: Self.options(WorkbenchTargetStatus.editable, keeping: pendingStatus ?? target.status),
-            isEnabled: !target.archived && !isGroup && pendingStatus == nil,
+            isEnabled: !target.archived && !isGroup && pendingStatus == nil && !statusSending,
             caption: isGroup ? BoardWriteText.groupCaption : nil
         )
         priority = BoardFieldPicker(
             selection: pendingPriority ?? target.priority,
             options: Self.options(WorkbenchTargetPriority.knownValues, keeping: pendingPriority ?? target.priority),
-            isEnabled: !target.archived && pendingPriority == nil,
+            isEnabled: !target.archived && pendingPriority == nil && !prioritySending,
             caption: nil
         )
 
@@ -121,13 +128,44 @@ struct BoardTargetDetailModel {
 
         let threads = Self.threads(Self.comments(of: target, in: snapshot), canReply: !target.archived, now: now)
         comments = threads.flatMap(\.rows)
-        let replies = BoardWriteRow.rows(in: snapshot, now: now) { $0.action.kind == .boardCommentReply }
+        let replies = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.action.kind == .boardCommentReply && Self.replyTarget(of: $0, in: snapshot) == target.id
+        }
         let added = BoardWriteRow.rows(in: snapshot, now: now) { $0.action.kind == .boardCommentAdd && $0.entityRecordName == entity }
-        thread = threads.flatMap { group in
+        let rootNames = Set(threads.map { SliceKind.workbenchComment.recordName(id: String($0.rootID)) })
+        var items: [ThreadItem] = []
+        for group in threads {
             let rootName = SliceKind.workbenchComment.recordName(id: String(group.rootID))
-            return group.rows.map(ThreadItem.comment)
-                + replies.filter { $0.pending.entityRecordName == rootName }.map { ThreadItem.write($0, isReply: true) }
-        } + added.map { ThreadItem.write($0, isReply: false) }
+            items += group.rows.map(ThreadItem.comment)
+            items += replies.filter { $0.pending.entityRecordName == rootName }.map { ThreadItem.write($0, isReply: true) }
+        }
+        // A reply whose root is not a shown thread's (pruned from the
+        // replica, say) still shows, so a failure can be dismissed.
+        items += replies.filter { !rootNames.contains($0.pending.entityRecordName ?? "") }.map { ThreadItem.write($0, isReply: true) }
+        items += added.map { ThreadItem.write($0, isReply: false) }
+        thread = items
+    }
+
+    /// Whether the composer's send is still on its way to the outbox: a
+    /// comment on this target, or a reply under `replyRoot`.
+    func composerSending(replyRoot: Int64?) -> Bool {
+        let key = if let replyRoot {
+            BoardWriter.key(.boardCommentReply, SliceKind.workbenchComment.recordName(id: String(replyRoot)))
+        } else {
+            BoardWriter.key(.boardCommentAdd, SliceKind.workbenchTarget.recordName(id: String(id)))
+        }
+        return inFlight.contains(key)
+    }
+
+    /// The target a reply belongs to: its root's, or else a sibling reply's
+    /// (the root itself may have been pruned from the replica); nil when
+    /// the replica has neither.
+    static func replyTarget(of action: PendingAction, in snapshot: WorkbenchReplicaSnapshot) -> Int64? {
+        guard let rootID = action.action.entityID.flatMap(Int64.init) else { return nil }
+        if let root = snapshot.comments.first(where: { $0.id == rootID }), let targetID = root.targetID {
+            return targetID
+        }
+        return snapshot.comments.first { $0.parentID == rootID && $0.targetID != nil }?.targetID
     }
 
     /// The editable values, plus the shown one when it is not among them
@@ -183,7 +221,10 @@ struct BoardTargetDetailModel {
                     isReply: comment.id != root.id,
                     isResolved: comment.status == .resolved,
                     rootID: root.id,
-                    canReply: canReply && comment.id == root.id
+                    // The hub replies only under a real root (no parent): a
+                    // reply whose root was pruned is shown as a root but
+                    // offers no Reply.
+                    canReply: canReply && comment.id == root.id && comment.parentID == nil
                 )
             })
         }

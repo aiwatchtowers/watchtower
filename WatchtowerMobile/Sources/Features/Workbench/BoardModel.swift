@@ -150,6 +150,9 @@ struct BoardModel {
     /// New targets the phone asked this workbench's Mac to add, until
     /// hydration delivers them (or the Mac refuses).
     let pendingCreates: [BoardWriteRow]
+    /// The phone's replies on this workbench whose thread is not in the
+    /// replica at all, so no target can show them.
+    let unplacedReplies: [BoardWriteRow]
     private let counts: [BoardFilter: Int]
 
     init(workbenchID: Int64, snapshot: WorkbenchReplicaSnapshot, filter: BoardFilter, now: Date = Date()) {
@@ -157,6 +160,11 @@ struct BoardModel {
         pendingCreates = BoardWriteRow.rows(in: snapshot, now: now) {
             $0.action.kind == .boardTargetCreate
                 && (try? BoardTargetCreateParams(wireParams: $0.action.params).workbenchID) == workbenchID
+        }
+        unplacedReplies = BoardWriteRow.rows(in: snapshot, now: now) {
+            $0.action.kind == .boardCommentReply
+                && (try? BoardCommentReplyParams(wireParams: $0.action.params).workbenchID) == workbenchID
+                && BoardTargetDetailModel.replyTarget(of: $0, in: snapshot) == nil
         }
         let board = snapshot.targets.filter { $0.workbenchID == workbenchID }
         let pool = board.filter { $0.archived == (filter == .archive) }

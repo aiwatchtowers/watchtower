@@ -300,6 +300,134 @@ final class BoardWriteWiringTests: XCTestCase {
         XCTAssertEqual(try fixture.store.pendingActions().count, 1)
     }
 
+    // MARK: - Fix round 1
+
+    /// A transport whose saves wait until released: the window before the
+    /// overlay row exists.
+    private final class GatedTransport: CloudSyncTransport, @unchecked Sendable {
+        private let lock = NSLock()
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        var waiting: Int { lock.withLock { waiters.count } }
+
+        func release() {
+            let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                defer { waiters = [] }
+                return waiters
+            }
+            pending.forEach { $0.resume() }
+        }
+
+        func save(_ records: [CloudRecord]) async throws {
+            await withCheckedContinuation { continuation in
+                lock.withLock { waiters.append(continuation) }
+            }
+        }
+
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
+        }
+    }
+
+    private func makeGatedFixture() throws -> (Fixture, GatedTransport) {
+        let store = try ReplicaStore.inMemory()
+        let transport = GatedTransport()
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
+        addTeardownBlock { transport.release() }
+        return (Fixture(store: store, outbox: outbox, writer: BoardWriter.sending(through: outbox, store: store)), transport)
+    }
+
+    func testADoubleTapOnSendPostsOneComment() async throws {
+        let (fixture, transport) = try makeGatedFixture()
+        let target = try target(415)
+        let first = Task { try await fixture.writer.addComment("Looks good.", on: target) }
+        try await poll({ transport.waiting == 1 }, "the first save never started")
+
+        let detail = try XCTUnwrap(BoardTargetDetailModel(
+            targetID: 415, snapshot: try snapshot(fixture.store), now: now, inFlight: fixture.writer.inFlight
+        ))
+        XCTAssertTrue(detail.composerSending(replyRoot: nil), "Send is locked while the comment is on its way")
+        XCTAssertFalse(detail.composerSending(replyRoot: 80))
+        let second = try await fixture.writer.addComment("Looks good.", on: target)
+        XCTAssertFalse(second)
+
+        transport.release()
+        let sent = try await first.value
+        XCTAssertTrue(sent)
+        XCTAssertEqual(transport.waiting, 0)
+        XCTAssertEqual(try fixture.store.pendingActions().count, 1)
+        XCTAssertTrue(fixture.writer.inFlight.isEmpty)
+    }
+
+    func testTwoPicksOnOneFieldDuringTheSaveSendOneAction() async throws {
+        let (fixture, transport) = try makeGatedFixture()
+        let target = try target(415)
+        let first = Task { try await fixture.writer.setStatus(.done, on: target) }
+        try await poll({ transport.waiting == 1 }, "the first save never started")
+
+        let detail = try XCTUnwrap(BoardTargetDetailModel(
+            targetID: 415, snapshot: try snapshot(fixture.store), now: now, inFlight: fixture.writer.inFlight
+        ))
+        XCTAssertFalse(detail.status.isEnabled, "the picker is locked while its write is on its way")
+        XCTAssertTrue(detail.priority.isEnabled)
+        try await fixture.writer.setStatus(.blocked, on: target)
+        XCTAssertEqual(transport.waiting, 1, "the second pick sent nothing")
+
+        transport.release()
+        try await first.value
+        let rows = try fixture.store.pendingActions()
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try BoardTargetStatusParams(wireParams: try XCTUnwrap(rows.first).action.params).status, .done)
+    }
+
+    func testANewerPickDropsTheFieldsOldConflict() async throws {
+        let fixture = try makeFixture()
+        try await fixture.writer.setStatus(.done, on: try target(415))
+        try await fail(fixture, reason: .conflict, result: ["current": .string("blocked")], message: "Changed on the Mac to blocked")
+        try await fixture.writer.setPriority(.low, on: try target(415))
+
+        try await fixture.writer.setStatus(.todo, on: try target(415))
+
+        let rows = try fixture.store.pendingActions()
+        XCTAssertEqual(rows.map(\.action.kind), [.boardTargetPriority, .boardTargetStatus], "only the status conflict went")
+        XCTAssertEqual(rows.map(\.state), [.pending, .pending])
+        XCTAssertEqual(try BoardTargetStatusParams(wireParams: rows[1].action.params).status, .todo)
+    }
+
+    func testAReplyIsOfferedOnlyOnARealRoot() throws {
+        var pruned = try demoSnapshot(now: now)
+        pruned.comments.removeAll { $0.id == 80 }
+        let thread = try detail(415, pruned).thread
+        guard case let .comment(orphan)? = thread.first else { return XCTFail("no comment on #415") }
+        XCTAssertEqual(orphan.id, 81)
+        XCTAssertFalse(orphan.isReply, "shown as a root")
+        XCTAssertFalse(orphan.canReply, "but the hub would refuse a reply under it")
+    }
+
+    func testAReplyWhoseRootIsNotShownStillShowsAndCanBeDismissed() async throws {
+        let fixture = try makeFixture()
+        try await fixture.writer.reply("Thanks", toRoot: 80, workbenchID: DemoSeed.acmeID)
+        try await fail(fixture, reason: .notFound, message: "This comment no longer exists on the Mac")
+
+        var pruned = try snapshot(fixture.store)
+        pruned.comments.removeAll { $0.id == 80 }
+        let thread = try detail(415, pruned).thread
+        guard case let .write(row, _)? = thread.last else { return XCTFail("the reply is not in the thread") }
+        XCTAssertEqual(row.state, .failed("This comment no longer exists on the Mac"))
+        try fixture.writer.dismiss(row)
+        XCTAssertTrue(try fixture.store.pendingActions().isEmpty)
+
+        // With no trace of its thread in the replica, the board shows it.
+        let other = try makeFixture()
+        try await other.writer.reply("Thanks", toRoot: 999, workbenchID: DemoSeed.acmeID)
+        let orphaned = try snapshot(other.store)
+        XCTAssertFalse(try detail(415, orphaned).thread.contains { if case .write = $0 { true } else { false } })
+        XCTAssertEqual(BoardModel(workbenchID: DemoSeed.acmeID, snapshot: orphaned, filter: .open).unplacedReplies.map(\.title), ["Thanks"])
+        XCTAssertTrue(BoardModel(workbenchID: DemoSeed.websiteID, snapshot: orphaned, filter: .open).unplacedReplies.isEmpty)
+    }
+
     // MARK: - Breadcrumb
 
     func testTheBreadcrumbFollowsTheParentChainInsideTheReplica() throws {

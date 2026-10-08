@@ -21,6 +21,13 @@ struct BoardView: View {
                     }
                 }
             }
+            if !board.unplacedReplies.isEmpty {
+                Section("Replies") {
+                    ForEach(board.unplacedReplies) { row in
+                        BoardWriteRowView(row: row, onApplyAnyway: { _ in }, onDismiss: dismiss)
+                    }
+                }
+            }
             Section {
                 if board.roots.isEmpty {
                     Text(filter == .archive ? "Nothing archived" : "No targets here")

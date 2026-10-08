@@ -19,7 +19,9 @@ struct BoardTargetDetailView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            if let detail = BoardTargetDetailModel(targetID: targetID, snapshot: replica.snapshot, now: context.date) {
+            if let detail = BoardTargetDetailModel(
+                targetID: targetID, snapshot: replica.snapshot, now: context.date, inFlight: writer.inFlight
+            ) {
                 content(detail)
             } else {
                 ContentUnavailableView(
@@ -108,6 +110,8 @@ struct BoardTargetDetailView: View {
                         ForEach(detail.breadcrumb) { crumb in
                             NavigationLink(value: BoardTargetRoute(id: crumb.id)) {
                                 Text("\(crumb.title) ›").lineLimit(1)
+                                    .frame(minHeight: 44)
+                                    .contentShape(Rectangle())
                             }
                         }
                     }
@@ -239,7 +243,7 @@ struct BoardTargetDetailView: View {
                     Image(systemName: "arrow.up.circle.fill").font(.title2)
                 }
                 .frame(minWidth: 44, minHeight: 44)
-                .disabled(!draft.canSend)
+                .disabled(!draft.canSend || detail.composerSending(replyRoot: replyTo?.rootID))
                 .accessibilityLabel(replyTo == nil ? "Send comment" : "Send reply")
             }
         }
