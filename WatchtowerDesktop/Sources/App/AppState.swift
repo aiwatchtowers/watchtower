@@ -1860,13 +1860,40 @@ final class AppState {
                 workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } }
             )
         }
+        // The terminals' liveness, copied by the fast lane for the session
+        // projection's off-main resolution.
+        let liveness = SessionLivenessBox()
+        let summaries = workbenchesViewModel?.cli.map { cli in
+            SessionReportSummaryRunner(
+                fetch: SessionReportSummaryRunner.cliFetch(cli.runner)
+            ) { [liveness] in
+                let live = liveness.current.liveIDs
+                return try await dbPool.read { try TerminalSessionSlice.liveWorkbenchIDs($0, liveIDs: live) }
+            }
+        }
+        let sessions = TerminalSessionSlice(
+            liveness: { liveness.current },
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
+        )
         let sources: [any SliceSource] = [
-            WorkbenchSlice { gitRefresher?.status(for: $0) },
+            WorkbenchSlice(gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) }),
             WorkbenchTargetSlice(),
-            WorkbenchCommentSlice()
+            WorkbenchCommentSlice(),
+            sessions
         ]
         let publisher = SlicePublisher(dbPool: dbPool, state: storage.sidecar, transport: storage.transport, sources: sources)
         gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
+        summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
+        let fastLane = FastLane(
+            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
+            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
+            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
+                gitRefresher?.sessionStateChanged(workbenchID: workbench)
+                summaries?.sessionStateChanged(workbenchID: workbench)
+            }
+        )
+        let optional: [(any HubCompanion)?] = [gitRefresher, summaries]
+        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane]
         let processor = RelayProcessor(
             transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID()
@@ -1874,7 +1901,7 @@ final class AppState {
         return MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
             hostInfo: .live(dbPool: dbPool, ownerUser: storage.ownerUser),
-            companions: gitRefresher.map { [$0] } ?? []
+            companions: companions
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
     }
 
