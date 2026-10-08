@@ -27,7 +27,7 @@ public enum CloudAvailability: Equatable, Sendable {
 /// handles the transport errors of spec §9: batch halving on
 /// `.limitExceeded`, retry-after backoff on `.requestRateLimited` /
 /// `.zoneBusy`, the quota pause, and "unlinked" when a share vanishes.
-public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
+public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, SweepingTransport, AssetStashingTransport {
     static let recordType = "WatchtowerRecord"
     /// Records per send batch; `.limitExceeded` halves it (spec §9).
     static let maxBatchSize = 200
@@ -183,6 +183,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
         try store.compactEvents(in: zone, keepSince: token)
+    }
+
+    public func discardStashedAssets(recordNames: [String]) async {
+        for name in recordNames {
+            store.discardStashedAsset(recordName: name)
+        }
     }
 
     @discardableResult

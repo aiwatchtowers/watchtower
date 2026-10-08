@@ -309,13 +309,11 @@ public final class TransportStore: Sendable {
     /// than accumulates. Returns the stashed URL, or nil when there is
     /// nowhere to stash (in-memory store) or the copy failed — callers keep
     /// the original (temporary) URL in that case, best-effort. The consumer
-    /// (the desktop hub) deletes the stashed file once ingested.
+    /// deletes the stashed file once ingested: the desktop hub for a
+    /// recording upload, the phone's replica hydrator for a data-zone asset
+    /// (`discardStashedAsset`).
     func stashAsset(from url: URL, recordName: String) -> URL? {
-        guard let assetsDirectory else { return nil }
-        // Record names are `recupload-<uuid>` shaped, but sanitize anyway:
-        // a path separator in a name must not escape the stash directory.
-        let safeName = recordName.replacingOccurrences(of: "/", with: "_")
-        let destination = assetsDirectory.appendingPathComponent(safeName)
+        guard let assetsDirectory, let destination = stashURL(recordName: recordName) else { return nil }
         do {
             try FileManager.default.createDirectory(at: assetsDirectory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: destination.path) {
@@ -330,6 +328,25 @@ public final class TransportStore: Sendable {
                 """)
             return nil
         }
+    }
+
+    /// Removes a record's stashed asset, if any (a no-op otherwise).
+    func discardStashedAsset(recordName: String) {
+        guard let url = stashURL(recordName: recordName), FileManager.default.fileExists(atPath: url.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            logger.warning("""
+                failed to discard stashed asset for \(recordName, privacy: .public): \
+                \(error.localizedDescription, privacy: .public)
+                """)
+        }
+    }
+
+    /// Record names are `recupload-<uuid>` shaped, but sanitize anyway: a
+    /// path separator in a name must not escape the stash directory.
+    private func stashURL(recordName: String) -> URL? {
+        assetsDirectory?.appendingPathComponent(recordName.replacingOccurrences(of: "/", with: "_"))
     }
 
     // MARK: - CK system fields

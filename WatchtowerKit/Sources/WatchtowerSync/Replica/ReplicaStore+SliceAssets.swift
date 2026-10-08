@@ -11,6 +11,10 @@ public enum SliceAsset: Equatable, Sendable {
 }
 
 extension ReplicaStore {
+    /// The hub clips `segments.json` at 20 MB (spec §4.11); a larger file is
+    /// refused unread, so a batch never pulls an oversized file into memory.
+    public static let maxAssetBytes = 20 * 1_024 * 1_024
+
     static let sliceAssetsTableSQL = """
         CREATE TABLE IF NOT EXISTS slice_assets (
             record_name TEXT PRIMARY KEY,
@@ -30,6 +34,11 @@ extension ReplicaStore {
                 continue
             }
             do {
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= maxAssetBytes else {
+                    assets[record.recordName] = .unreadable("too large")
+                    continue
+                }
                 assets[record.recordName] = .data(try Data(contentsOf: url))
             } catch {
                 assets[record.recordName] = .unreadable(error.localizedDescription)

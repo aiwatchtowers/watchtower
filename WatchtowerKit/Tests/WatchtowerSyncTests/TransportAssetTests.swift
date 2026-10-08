@@ -91,6 +91,22 @@ final class TransportAssetTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: restashed), Data("newer-bytes".utf8))
     }
 
+    func testDiscardStashedAssetRemovesTheFile() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("transport-stash-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let store = try TransportStore(path: dir.appendingPathComponent("store.sqlite").path)
+        let source = dir.appendingPathComponent("staged.json")
+        try Data("[]".utf8).write(to: source)
+        let stashed = try XCTUnwrap(store.stashAsset(from: source, recordName: "meeting_transcript-1"))
+
+        store.discardStashedAsset(recordName: "meeting_transcript-1")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stashed.path))
+        // Idempotent: a name without a stash is a no-op.
+        store.discardStashedAsset(recordName: "meeting_transcript-1")
+    }
+
     func testStashAssetOnInMemoryStoreReturnsNil() throws {
         let store = try TransportStore.inMemory()
         XCTAssertNil(store.stashAsset(from: URL(fileURLWithPath: "/tmp/x.m4a"), recordName: "recupload-X"))

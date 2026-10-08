@@ -99,6 +99,15 @@ public protocol CompactingTransport: CloudSyncTransport {
     func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
 }
 
+/// Transport extension for a transport that keeps durable copies of
+/// fetched assets (CloudKitTransport's stash). Kept off the seam like
+/// `CompactingTransport`. The data-zone consumer (the phone's replica
+/// hydrator) discards a record's copy once the replica holds the bytes, and
+/// a deleted record's copy with it.
+public protocol AssetStashingTransport: CloudSyncTransport {
+    func discardStashedAssets(recordNames: [String]) async
+}
+
 /// Transport extension for age-based retention of the local event buffer —
 /// like `CompactingTransport`, kept off the seam so conformers that don't
 /// buffer need not implement it. Intended caller: the desktop relay hygiene,
