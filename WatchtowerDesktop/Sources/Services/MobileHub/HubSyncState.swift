@@ -579,22 +579,31 @@ final class HubSyncState: Sendable {
     /// (spec §8 I-3, §9). The hygiene stamp, the hub id and `enabled_at`
     /// are kept too, and so are the alerted asks whose alert has a recorded
     /// hash: the new account's zone must not get an alert for an ask alerted
-    /// before (spec §4.7). An alerted ask without one (its cycle aborted or
+    /// before (spec §4.7). An alert of the generation being wiped, written
+    /// within the alert lifetime of `now`, without one (its cycle aborted or
     /// its save failed) is forgotten, so the next cycle stamps it in the new
-    /// generation and publishes it. Accepted trade-off: an alert saved
-    /// before its hash was recorded may alert once more in the new zone —
-    /// a duplicate beats a lost alert.
+    /// generation and publishes it; older-generation and expired rows stay.
+    /// Accepted trade-off — a duplicate beats a lost alert: an alert saved
+    /// before its hash was recorded, or one whose record left the zone with
+    /// its workbench, may alert once more in the new zone.
     /// The generation counter is bumped so an in-flight publish cycle can
     /// detect the reset and abort before recording stale hashes.
-    func wipeSyncState() throws {
+    func wipeSyncState(now: Date = Date()) throws {
         try queue.write { db in
+            let raw = try String.fetchOne(
+                db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [Self.generationKey]
+            )
             try db.execute(
                 sql: """
-                    DELETE FROM alerted_asks WHERE NOT EXISTS (
+                    DELETE FROM alerted_asks WHERE generation = ? AND at >= ? AND NOT EXISTS (
                         SELECT 1 FROM slice_state WHERE record_name = ? || alerted_asks.ask_id
                     )
                     """,
-                arguments: [SliceKind.askAlert.recordName(id: "")]
+                arguments: [
+                    raw.flatMap(Int.init) ?? 0,
+                    now.addingTimeInterval(-AskAlertSlice.lifetime).timeIntervalSince1970,
+                    SliceKind.askAlert.recordName(id: "")
+                ]
             )
             try db.execute(sql: "DELETE FROM slice_state")
             for key in [RelayProcessor.relayTokenKey] + HubIdentity.heartbeatReadKeys {

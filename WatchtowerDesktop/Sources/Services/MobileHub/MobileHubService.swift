@@ -259,9 +259,10 @@ final class MobileHubService {
         let sidecar = self.sidecar
         let publisher = self.publisher
         let logger = self.logger
+        let now = self.now
         await transport.setAccountResetHandler {
             do {
-                try sidecar.wipeSyncState()
+                try sidecar.wipeSyncState(now: now())
             } catch {
                 logger.error("account reset: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
             }
