@@ -195,6 +195,10 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(latch.calls.count, 3)
         XCTAssertTrue(latch.calls.values.allSatisfy { $0 == 1 }, "no record is applied twice: \(latch.calls)")
         XCTAssertEqual(Set(transport.appliedEchoIDs).count, 3)
+        XCTAssertEqual(
+            transport.lifecycle, ["start", "stop", "start"],
+            "the old teardown's transport stop lands before the restart starts it again"
+        )
         service.stop()
     }
 

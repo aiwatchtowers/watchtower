@@ -18,6 +18,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var currentAvailability: CloudAvailability
     private var startCount = 0
     private var stopCount = 0
+    private var lifecycleLog: [String] = []
     private var appliedIDs: [String] = []
     private var savedLog: [Saved] = []
     private var resetHandler: (@Sendable () -> Void)?
@@ -29,6 +30,8 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
 
     var starts: Int { lock.withLock { startCount } }
     var stops: Int { lock.withLock { stopCount } }
+    /// "start" / "stop", in call order.
+    var lifecycle: [String] { lock.withLock { lifecycleLog } }
     /// Ids of every `applied` action echo saved, in order — counted here, on
     /// save, so a test polls an O(1) value instead of re-decoding the log.
     var appliedEchoIDs: [String] { lock.withLock { appliedIDs } }
@@ -48,8 +51,19 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
         handler?(recordName, zone)
     }
 
-    func start() async { lock.withLock { startCount += 1 } }
-    func stop() async { lock.withLock { stopCount += 1 } }
+    func start() async {
+        lock.withLock {
+            startCount += 1
+            lifecycleLog.append("start")
+        }
+    }
+
+    func stop() async {
+        lock.withLock {
+            stopCount += 1
+            lifecycleLog.append("stop")
+        }
+    }
     func pull() async throws {}
     func availability() async -> CloudAvailability { lock.withLock { currentAvailability } }
 
