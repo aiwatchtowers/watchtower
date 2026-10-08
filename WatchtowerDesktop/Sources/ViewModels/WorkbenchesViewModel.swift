@@ -18,10 +18,6 @@ final class WorkbenchesViewModel {
     let codeFiles: CodeFilesCenter
     /// The owner asks: open lists, drafts and answers (spec 2026-10-03 Part 8).
     let asks: OwnerAsksViewModel
-    /// Every line the app types into a session's prompt — an ask's answer,
-    /// later the phone's input — one queue per session (PROJ-12). AppState
-    /// passes its own; nil = one of the VM's own over `terminalCenter`.
-    let lineDelivery: SessionLineDelivery
 
     private(set) var summaries: [WorkbenchSummary] = []
     /// The workbench switcher's rows (board #250), read when its popover opens.
@@ -257,8 +253,7 @@ final class WorkbenchesViewModel {
         cli: WorkbenchCLI?,
         defaults: UserDefaults = .standard,
         terminalCenter: TerminalCenter? = nil,
-        agentStates: SessionAgentStateCenter? = nil,
-        lineDelivery: SessionLineDelivery? = nil
+        agentStates: SessionAgentStateCenter? = nil
     ) {
         self.dbPool = dbPool
         self.cli = cli
@@ -267,9 +262,7 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
-        let lineDelivery = lineDelivery ?? SessionLineDelivery(terminalCenter: terminalCenter)
-        self.lineDelivery = lineDelivery
-        asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
+        asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
@@ -286,24 +279,24 @@ final class WorkbenchesViewModel {
         }
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
-        // A line (an answer's) is held while its session waits on a permission
+        // An answer's line is held while its session waits on a permission
         // prompt and goes once the states show it answered (PROJ-12).
-        lineDelivery.needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
+        asks.needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
         // Its Return only into a session whose hooks reported this run (a
         // state, or the mark of a run not yet turned to — board #396).
-        lineDelivery.hasHookState = { [weak agentStates] id in agentStates?.statuses[id]?.hooksReported == true }
+        asks.hasHookState = { [weak agentStates] id in agentStates?.statuses[id]?.hooksReported == true }
         // Keys typed into a permission dialog leave no draft in the prompt.
         terminalCenter?.inputAnswersDialog = { [weak agentStates] id in
             agentStates?.statuses[id]?.state.kind == .needsApproval
         }
         // A failed read (or no states at all) vouches for nothing: no Return.
-        lineDelivery.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
-        agentStates?.onChange = { [weak lineDelivery] in
-            Task { await lineDelivery?.deliverHeld() }
+        asks.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
+        agentStates?.onChange = { [weak asks] in
+            Task { await asks?.deliverHeldAnswers() }
         }
-        // Also on an unchanged read: a line held because a read failed.
-        agentStates?.onRead = { [weak lineDelivery] in
-            Task { await lineDelivery?.deliverHeld() }
+        // Also on an unchanged read: an answer held because a read failed.
+        agentStates?.onRead = { [weak asks] in
+            Task { await asks?.deliverHeldAnswers() }
         }
     }
 
