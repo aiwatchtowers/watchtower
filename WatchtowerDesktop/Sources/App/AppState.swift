@@ -1930,7 +1930,8 @@ final class AppState {
             WorkbenchCommentSlice(),
             sessions,
             OwnerAskSlice(),
-            AskAlertSlice(sidecar: storage.sidecar)
+            AskAlertSlice(sidecar: storage.sidecar),
+            CalendarEventSlice()
         ]
         let transport = storage.transport
         let publisher = SlicePublisher(
