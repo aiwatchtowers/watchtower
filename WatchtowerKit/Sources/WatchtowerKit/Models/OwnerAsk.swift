@@ -80,6 +80,7 @@ public struct OwnerAsk: SliceMirror, Identifiable {
     public let targetID: Int64?
     public let kind: Kind
     public let status: Status
+    /// nil unless withdrawn; a stored "" also reads as nil.
     public let withdrawnReason: WithdrawnReason?
     /// The ask this review round follows.
     public let previousAskID: Int64?
@@ -123,6 +124,39 @@ public struct OwnerAsk: SliceMirror, Identifiable {
         case previousAskID = "previousAskId"
         case createdAt, answeredAt, deliveredAt, title, titleClipped, summary, summaryClipped, changes, changesClipped
         case payload, payloadClipped, docPath, docPathClipped, docSnapshot, docClipped, docBytes, answer, quick
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        workbenchID = try c.decode(Int64.self, forKey: .workbenchID)
+        workbenchName = try c.decode(String.self, forKey: .workbenchName)
+        sessionID = try c.decodeIfPresent(Int64.self, forKey: .sessionID)
+        targetID = try c.decodeIfPresent(Int64.self, forKey: .targetID)
+        kind = try c.decode(Kind.self, forKey: .kind)
+        status = try c.decode(Status.self, forKey: .status)
+        // The DB's '' (not withdrawn) is no reason.
+        withdrawnReason = try c.decodeIfPresent(WithdrawnReason.self, forKey: .withdrawnReason)
+            .flatMap { $0.rawValue.isEmpty ? nil : $0 }
+        previousAskID = try c.decodeIfPresent(Int64.self, forKey: .previousAskID)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        answeredAt = try c.decodeIfPresent(Date.self, forKey: .answeredAt)
+        deliveredAt = try c.decodeIfPresent(Date.self, forKey: .deliveredAt)
+        title = try c.decode(String.self, forKey: .title)
+        titleClipped = try c.decodeIfPresent(Bool.self, forKey: .titleClipped)
+        summary = try c.decode(String.self, forKey: .summary)
+        summaryClipped = try c.decodeIfPresent(Bool.self, forKey: .summaryClipped)
+        changes = try c.decode(String.self, forKey: .changes)
+        changesClipped = try c.decodeIfPresent(Bool.self, forKey: .changesClipped)
+        payload = try c.decodeIfPresent(OwnerAskPayload.self, forKey: .payload)
+        payloadClipped = try c.decodeIfPresent(Bool.self, forKey: .payloadClipped)
+        docPath = try c.decode(String.self, forKey: .docPath)
+        docPathClipped = try c.decodeIfPresent(Bool.self, forKey: .docPathClipped)
+        docSnapshot = try c.decodeIfPresent(String.self, forKey: .docSnapshot)
+        docClipped = try c.decodeIfPresent(Bool.self, forKey: .docClipped)
+        docBytes = try c.decodeIfPresent(Int.self, forKey: .docBytes)
+        answer = try c.decodeIfPresent(OwnerAskAnswer.self, forKey: .answer)
+        quick = try c.decodeIfPresent(Quick.self, forKey: .quick)
     }
 }
 

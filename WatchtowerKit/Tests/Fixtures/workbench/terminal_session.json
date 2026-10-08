@@ -16,7 +16,7 @@
   "report_total": 2,
   "state_at": 1699999990,
   "state_caption": "Waiting for you · ask #12",
-  "state_glyph": "questionmark.bubble",
+  "state_glyph": "questionmark",
   "state_kind": "waiting_on_ask",
   "state_tone": "orange",
   "target_id": 415,

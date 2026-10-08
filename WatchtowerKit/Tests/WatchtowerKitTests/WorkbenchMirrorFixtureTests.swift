@@ -181,7 +181,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.stateKind, .waitingOnAsk)
         XCTAssertEqual(session.stateCaption, "Waiting for you · ask #12")
         XCTAssertEqual(session.stateTone, .orange)
-        XCTAssertEqual(session.stateGlyph, "questionmark.bubble")
+        XCTAssertEqual(session.stateGlyph, "questionmark")
         XCTAssertFalse(session.isRing)
         XCTAssertEqual(session.openAsks, 1)
         XCTAssertEqual(session.oldestAskID, 12)
@@ -445,6 +445,10 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(decodedAsk.quick)
         XCTAssertNil(decodedAsk.sessionID)
 
+        var withdrawn = try object("owner_ask_closed")
+        withdrawn["withdrawn_reason"] = ""
+        XCTAssertNil(try OwnerAsk.decode(payload: try data(withdrawn)).withdrawnReason, "\"\" is no reason")
+
         var comment = try object("workbench_comment")
         comment["target_id"] = nil
         comment["parent_id"] = nil
@@ -472,8 +476,10 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
         var milestone = try object("session_timeline")
         milestone["milestones_more"] = nil
+        milestone["session_id"] = nil
         let decodedTimeline = try SessionTimeline.decode(payload: try data(milestone))
         XCTAssertNil(decodedTimeline.milestonesMore)
+        XCTAssertNil(decodedTimeline.sessionID)
         XCTAssertNil(decodedTimeline.milestones.last?.ref)
     }
 

@@ -46,7 +46,11 @@ public enum JSONValue: Hashable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         // Encoding a JSONValue cannot fail: every case is plain JSON.
-        return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+        guard let data = try? encoder.encode(value), let text = String(data: data, encoding: .utf8) else {
+            assertionFailure("JSONValue failed to encode")
+            return "null"
+        }
+        return text
     }
 }
 

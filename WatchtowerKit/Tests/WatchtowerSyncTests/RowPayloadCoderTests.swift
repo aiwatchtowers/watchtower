@@ -82,4 +82,22 @@ final class RowPayloadCoderTests: XCTestCase {
             #"{"alpha":"x","mid":2.5,"zebra":1}"#
         )
     }
+
+    /// JSONValue's decode order: a row's 0/1 stays an integer, only a JSON
+    /// bool is `.bool`, and a valid `$blob` object stays a blob (not an object).
+    func testJSONValueDecodeOrder() throws {
+        let json = #"{"one":1,"zero":0,"yes":true,"no":false,"raw":{"$blob":"Ynl0ZXM="},"obj":{"a":1},"list":[true,2]}"#
+        let decoded = try JSONDecoder().decode([String: JSONValue].self, from: Data(json.utf8))
+        XCTAssertEqual(decoded["one"], .integer(1))
+        XCTAssertEqual(decoded["zero"], .integer(0))
+        XCTAssertEqual(decoded["yes"], .bool(true))
+        XCTAssertEqual(decoded["no"], .bool(false))
+        XCTAssertEqual(decoded["raw"], .blob(Data("bytes".utf8)))
+        XCTAssertEqual(decoded["obj"], .object(["a": .integer(1)]))
+        XCTAssertEqual(decoded["list"], .array([.bool(true), .integer(2)]))
+
+        let row = try RowPayloadCoder.row(from: Data(#"{"flag":1,"off":0}"#.utf8))
+        XCTAssertEqual(row["flag"] as Int64?, 1)
+        XCTAssertEqual(row["off"] as Int64?, 0)
+    }
 }

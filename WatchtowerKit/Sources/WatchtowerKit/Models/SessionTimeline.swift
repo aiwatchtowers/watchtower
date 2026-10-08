@@ -54,7 +54,9 @@ public struct SessionTimeline: SliceMirror {
         }
     }
 
-    public let sessionID: Int64
+    /// The session (also the record id); optional so a payload without the
+    /// key still decodes.
+    public let sessionID: Int64?
     /// Newest first. Cap 100.
     public let milestones: [Milestone]
     public let milestonesMore: Int?
