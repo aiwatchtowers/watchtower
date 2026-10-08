@@ -29,12 +29,14 @@ enum SliceJSON {
     }
 
     /// A Kit fixture written inline in a Kit test (no JSON file): the first
-    /// `#"…"#` literal after `func <test>(` in `WatchtowerKit/Tests/<file>`,
-    /// read from the repo so a mirror change shows on the hub side too.
+    /// `#"…"#` literal after `func <test>(` in `WatchtowerKit/Tests/<kitFile>`,
+    /// read from the repo so a mirror change shows on the hub side too. The
+    /// repo is located from this helper's own path; `file`/`line` only
+    /// attribute a failure to the caller.
     static func kitInlineFixture(
-        _ file: String,
+        _ kitFile: String,
         test: String,
-        sourceFile: StaticString = #filePath,
+        file: StaticString = #filePath,
         line: UInt = #line
     ) throws -> Data {
         let url = URL(fileURLWithPath: "\(#filePath)")
@@ -43,11 +45,11 @@ enum SliceJSON {
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent()
             .appendingPathComponent("WatchtowerKit/Tests")
-            .appendingPathComponent(file)
+            .appendingPathComponent(kitFile)
         let source = try String(contentsOf: url, encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "func \(test)("), "no \(test) in \(file)", file: sourceFile, line: line)
-        let open = try XCTUnwrap(source.range(of: "#\"", range: start.upperBound..<source.endIndex), file: sourceFile, line: line)
-        let close = try XCTUnwrap(source.range(of: "\"#", range: open.upperBound..<source.endIndex), file: sourceFile, line: line)
+        let start = try XCTUnwrap(source.range(of: "func \(test)("), "no \(test) in \(kitFile)", file: file, line: line)
+        let open = try XCTUnwrap(source.range(of: "#\"", range: start.upperBound..<source.endIndex), file: file, line: line)
+        let close = try XCTUnwrap(source.range(of: "\"#", range: open.upperBound..<source.endIndex), file: file, line: line)
         return Data(source[open.upperBound..<close.lowerBound].utf8)
     }
 

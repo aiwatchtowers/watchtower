@@ -181,7 +181,7 @@ final class MobileHubServiceTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hub-assets-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
         let store = SliceAssetStore(directory: dir)
-        _ = try store.stage(SliceAsset(fileName: "segments.json", data: Data("[]".utf8)), recordName: "meeting_transcript-1")
+        _ = try store.stage(Data("[]".utf8), fileName: "segments.json", recordName: "meeting_transcript-1")
         return store
     }
 
@@ -212,7 +212,7 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(service.status, .off)
         XCTAssertFalse(FileManager.default.fileExists(atPath: store.directory.path))
         XCTAssertThrowsError(
-            try store.stage(SliceAsset(fileName: "segments.json", data: Data()), recordName: "meeting_transcript-2"),
+            try store.stage(Data(), fileName: "segments.json", recordName: "meeting_transcript-2"),
             "no file is staged while the hub is off"
         )
     }

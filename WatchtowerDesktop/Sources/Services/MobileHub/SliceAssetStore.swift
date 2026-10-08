@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import os
@@ -10,7 +11,25 @@ import WatchtowerSync
 struct SliceAsset: Equatable, Sendable {
     /// The staged file's name, e.g. `segments.json`.
     let fileName: String
-    let data: Data
+    /// SHA-256 of the content; part of the record's hash.
+    let digest: Data
+    /// The content; nil when the staged file already holds `digest` (the
+    /// source skipped the build).
+    let data: Data?
+
+    init(fileName: String, digest: Data, data: Data?) {
+        self.fileName = fileName
+        self.digest = digest
+        self.data = data
+    }
+
+    init(fileName: String, data: Data) {
+        self.init(fileName: fileName, digest: Self.digest(of: data), data: data)
+    }
+
+    static func digest(of data: Data) -> Data {
+        Data(SHA256.hash(data: data))
+    }
 }
 
 /// One record of an `AssetSliceSource`; `asset` nil means a record without
@@ -20,15 +39,23 @@ struct AssetSliceRecord {
     let asset: SliceAsset?
 }
 
-/// A `SliceSource` whose records carry an asset. The publisher reads
-/// `assetRecords`; `records` is derived from it.
+/// A `SliceSource` whose records carry an asset, read in two phases so the
+/// expensive part stays out of the publisher's read transaction:
+/// `assetRecords` runs inside the read and returns the build, which the
+/// publisher runs after the read ended. `stagedDigest(recordName, fileName)`
+/// is the SHA-256 of the record's staged file (nil: none); a record whose
+/// staged file already holds its asset may come back without `data`.
 protocol AssetSliceSource: SliceSource {
-    func assetRecords(_ db: Database) throws -> [AssetSliceRecord]
+    func assetRecords(
+        _ db: Database,
+        stagedDigest: @escaping (_ recordName: String, _ fileName: String) -> Data?
+    ) throws -> () throws -> [AssetSliceRecord]
 }
 
 extension AssetSliceSource {
+    /// Both phases at once, every asset built.
     func records(_ db: Database) throws -> [SliceRecord] {
-        try assetRecords(db).map(\.record)
+        try assetRecords(db) { _, _ in nil }().map(\.record)
     }
 }
 
@@ -40,8 +67,13 @@ extension AssetSliceSource {
 ///
 /// `close()` removes every file and refuses new ones until `open()`: a
 /// publish cycle still running after the hub was turned off cannot leave a
-/// file behind.
-final class SliceAssetStore: Sendable {
+/// file behind. The staged files' digests are remembered (a file found on
+/// disk at launch is hashed once), so an unchanged record is neither
+/// rebuilt nor rewritten.
+///
+/// `@unchecked Sendable`: every mutable field is guarded by `lock`, an
+/// `NSLock` because the critical sections span disk I/O (a 20 MB write).
+final class SliceAssetStore: @unchecked Sendable {
     enum StoreError: Error, LocalizedError {
         case closed
 
@@ -49,9 +81,10 @@ final class SliceAssetStore: Sendable {
     }
 
     let directory: URL
-    /// Whether staging is allowed. Held over every file write and removal,
-    /// so a close never interleaves with a stage.
-    private let isOpen = OSAllocatedUnfairLock(initialState: true)
+    private let lock = NSLock()
+    private var isOpen = true
+    /// Staged file path → SHA-256 of its content.
+    private var digests: [String: Data] = [:]
     private let logger = Logger(subsystem: Constants.bundleID, category: "SliceAssetStore")
 
     init(directory: URL) {
@@ -62,17 +95,35 @@ final class SliceAssetStore: Sendable {
         recordDirectory(recordName).appendingPathComponent(fileName)
     }
 
-    /// Writes `asset` for `recordName` (atomically replacing an earlier
+    /// Writes `data` for `recordName` (atomically replacing an earlier
     /// version) and returns the staged file.
-    func stage(_ asset: SliceAsset, recordName: String) throws -> URL {
-        try isOpen.withLock { isOpen in
+    func stage(_ data: Data, fileName: String, recordName: String) throws -> URL {
+        try lock.withLock {
             guard isOpen else { throw StoreError.closed }
-            let url = fileURL(recordName: recordName, fileName: asset.fileName)
+            let url = fileURL(recordName: recordName, fileName: fileName)
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true
             )
-            try asset.data.write(to: url, options: .atomic)
+            try data.write(to: url, options: .atomic)
+            digests[url.path] = SliceAsset.digest(of: data)
             return url
+        }
+    }
+
+    /// The SHA-256 of the staged file; nil when there is none.
+    func stagedDigest(recordName: String, fileName: String) -> Data? {
+        lock.withLock {
+            let url = fileURL(recordName: recordName, fileName: fileName)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                digests.removeValue(forKey: url.path)
+                return nil
+            }
+            if let known = digests[url.path] { return known }
+            // A file staged by an earlier run: hashed once.
+            guard let data = try? Data(contentsOf: url) else { return nil }
+            let digest = SliceAsset.digest(of: data)
+            digests[url.path] = digest
+            return digest
         }
     }
 
@@ -83,9 +134,17 @@ final class SliceAssetStore: Sendable {
     /// Removes the files of `kind`'s records not in `keeping` (records that
     /// left the zone, or leftovers of an aborted cycle).
     func sweep(kind: SliceKind, keeping: Set<String>) {
-        isOpen.withLock { _ in
+        lock.withLock {
             let prefix = kind.recordName(id: "")
-            let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+            let names: [String]
+            do {
+                names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            } catch CocoaError.fileReadNoSuchFile {
+                return
+            } catch {
+                logger.error("listing staged assets failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
             for name in names where name.hasPrefix(prefix) && !keeping.contains(name) {
                 remove(directory.appendingPathComponent(name, isDirectory: true))
             }
@@ -94,20 +153,20 @@ final class SliceAssetStore: Sendable {
 
     /// Removes every staged file; staging goes on (an account reset).
     func removeAll() {
-        isOpen.withLock { _ in remove(directory) }
+        lock.withLock { remove(directory) }
     }
 
     /// Removes every staged file and refuses new ones until `open()` (the
     /// hub was turned off).
     func close() {
-        isOpen.withLock { isOpen in
+        lock.withLock {
             isOpen = false
             remove(directory)
         }
     }
 
     func open() {
-        isOpen.withLock { $0 = true }
+        lock.withLock { isOpen = true }
     }
 
     /// Record names are `<kind>-<id>`; a path separator in an id must not
@@ -116,9 +175,11 @@ final class SliceAssetStore: Sendable {
         directory.appendingPathComponent(recordName.replacingOccurrences(of: "/", with: "_"), isDirectory: true)
     }
 
-    /// Under the `isOpen` lock. A missing file is fine; any other failure is logged
-    /// (the next sweep retries).
+    /// Under `lock`; forgets the digests below `url`. A missing file is
+    /// fine; any other failure is logged (the next sweep retries).
     private func remove(_ url: URL) {
+        let prefix = url.path + "/"
+        digests = digests.filter { !$0.key.hasPrefix(prefix) }
         do {
             try FileManager.default.removeItem(at: url)
         } catch CocoaError.fileNoSuchFile {

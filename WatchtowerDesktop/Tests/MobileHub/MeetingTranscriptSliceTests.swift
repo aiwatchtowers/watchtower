@@ -45,7 +45,8 @@ final class MeetingTranscriptSliceTests: XCTestCase {
 
     private func records(_ slice: MeetingTranscriptSlice? = nil) throws -> [AssetSliceRecord] {
         let slice = slice ?? self.slice()
-        let records = try dbPool.read { try slice.assetRecords($0) }
+        let build = try dbPool.read { try slice.assetRecords($0) { _, _ in nil } }
+        let records = try build()
         XCTAssertTrue(records.allSatisfy { $0.record.kind == .meetingTranscript })
         XCTAssertTrue(records.allSatisfy { $0.asset?.fileName == "segments.json" })
         return records
@@ -57,7 +58,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
 
     private func published(_ id: Int64, _ slice: MeetingTranscriptSlice? = nil) throws -> (payload: [String: Any], asset: [[String: Any]]) {
         let record = try XCTUnwrap(try records(slice).first { $0.record.id == String(id) }, "transcript \(id) is not published")
-        let asset = try JSONSerialization.jsonObject(with: try XCTUnwrap(record.asset).data)
+        let asset = try JSONSerialization.jsonObject(with: try XCTUnwrap(record.asset?.data))
         return (try SliceJSON.object(record.record.payload), try XCTUnwrap(asset as? [[String: Any]]))
     }
 
@@ -283,7 +284,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         let record = try XCTUnwrap(try records().first { $0.record.id == String(id) })
         let (payload, asset) = try published(id)
         XCTAssertEqual(asset.map { $0["text"] as? String }, ["Kept one.", "Kept two."])
-        XCTAssertFalse(utf8(try XCTUnwrap(record.asset).data).contains("Deleted secret."))
+        XCTAssertFalse(utf8(try XCTUnwrap(record.asset?.data)).contains("Deleted secret."))
         XCTAssertEqual(payload["speakers"] as? [String], ["Colleague A"], "a speaker only in deleted segments is not listed")
     }
 
@@ -296,7 +297,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         let text = String(repeating: "x", count: 1_000_000)
         let id = try insertTranscript(segmentsJSON: segmentsJSON((0..<21).map { _ in ("Colleague A", text, false) }))
         let record = try XCTUnwrap(try records().first { $0.record.id == String(id) })
-        let data = try XCTUnwrap(record.asset).data
+        let data = try XCTUnwrap(record.asset?.data)
 
         XCTAssertEqual(MeetingTranscriptSlice.maxAssetBytes, 20 * 1024 * 1024)
         XCTAssertLessThanOrEqual(data.count, MeetingTranscriptSlice.maxAssetBytes)
@@ -337,7 +338,7 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         )
         let record = try XCTUnwrap(try records().first { $0.record.id == String(id) })
         let payload = try SliceJSON.object(record.record.payload)
-        let asset = try JSONSerialization.jsonObject(with: try XCTUnwrap(record.asset).data)
+        let asset = try JSONSerialization.jsonObject(with: try XCTUnwrap(record.asset?.data))
         let keys = SliceJSON.allKeys(payload).union(SliceJSON.allKeys(asset))
         for hidden in ["audio_path", "speakers_json", "notes_md", "embedding", "transcript_text", "summary_json", "chapters_json"] {
             XCTAssertFalse(keys.contains(hidden), hidden)
@@ -404,5 +405,44 @@ final class MeetingTranscriptSliceTests: XCTestCase {
         XCTAssertFalse(transport.saved.dropFirst(2).contains { $0.record.recordName == "meeting_transcript-\(unchanged)" })
         let third = try await publisher.publishOnce()
         XCTAssertEqual(third.pushed, 0, "nothing changed")
+    }
+
+    func testAnUnchangedSecondCycleBuildsNoAsset() async throws {
+        try insertEvent("evt-1", start: now.addingTimeInterval(-7200))
+        let first = try insertTranscript(eventID: "evt-1", segmentsJSON: segmentsJSON([("Speaker 1", "Morning.", false)]))
+        try insertTranscript(segmentsJSON: segmentsJSON([("Speaker 1", "Hi.", false)]))
+        try insertRecap(eventID: "evt-1", summary: "First recap")
+        let transport = StubHubTransport()
+        let slice = slice()
+        let publisher = SlicePublisher(
+            dbPool: dbPool, state: try HubSyncState.inMemory(), transport: transport, sources: [slice],
+            assets: SliceAssetStore(directory: assetDir)
+        )
+        try await publisher.publishOnce()
+        XCTAssertEqual(slice.assetBuilds, 2)
+
+        let unchanged = try await publisher.publishOnce()
+        XCTAssertEqual(unchanged.pushed, 0)
+        XCTAssertEqual(slice.assetBuilds, 2, "an unchanged cycle decodes and encodes nothing")
+
+        let recapJSON = #"{"summary":"Second recap","key_decisions":[],"action_items":[],"open_questions":[]}"#
+        let recapUpdatedAt = dbStamp(now)
+        try await dbPool.write { db in
+            try db.execute(
+                sql: "UPDATE meeting_recaps SET recap_json = ?, updated_at = ? WHERE event_id = 'evt-1'",
+                arguments: [recapJSON, recapUpdatedAt]
+            )
+        }
+        let recapChanged = try await publisher.publishOnce()
+        XCTAssertEqual(recapChanged.pushed, 1, "a new recap version rebuilds and republishes its transcript")
+        XCTAssertEqual(slice.assetBuilds, 3)
+        let saved = try SliceJSON.object(try XCTUnwrap(transport.saved.last?.record.payload))
+        XCTAssertEqual(saved["id"] as? Int64, first)
+        XCTAssertEqual(saved["summary"] as? String, "Second recap")
+
+        publisher.removeStagedAssets()
+        let restaged = try await publisher.publishOnce()
+        XCTAssertEqual(restaged.pushed, 2, "a missing staged file is rebuilt and sent again")
+        XCTAssertEqual(slice.assetBuilds, 5)
     }
 }

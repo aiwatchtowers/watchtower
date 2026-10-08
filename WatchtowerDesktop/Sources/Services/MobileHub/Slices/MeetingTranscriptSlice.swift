@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import GRDB
 import os
@@ -89,20 +90,105 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         let text: String
     }
 
-    func assetRecords(_ db: Database) throws -> [AssetSliceRecord] {
+    /// Each transcript's derived record, kept while its fingerprint holds:
+    /// an unchanged transcript whose staged file still holds its asset is
+    /// neither decoded nor encoded again.
+    let cache = BuildCache()
+
+    /// Assets built so far (the test seam for "an unchanged cycle builds
+    /// nothing").
+    var assetBuilds: Int { cache.builds }
+
+    /// Inside the read: the window, the chosen recaps and each row's
+    /// fingerprint (SHA-256 of the raw columns, the chosen recap's id and
+    /// `updated_at`, and the phone recording id). Outside it (the returned
+    /// build): the asset and payload of every row whose fingerprint changed
+    /// or whose staged file no longer holds its asset.
+    func assetRecords(
+        _ db: Database,
+        stagedDigest: @escaping (_ recordName: String, _ fileName: String) -> Data?
+    ) throws -> () throws -> [AssetSliceRecord] {
         let stamp = now()
-        let rows = try Self.windowRows(db, now: stamp, calendar: calendar())
-        let recaps = try Self.recaps(db, rows: rows)
-        let encoder = RelayCoder.makeEncoder()
-        return try rows.map { row in
+        let window = try Self.window(db, now: stamp, calendar: calendar())
+        let recaps = try Self.recaps(db, window: window)
+        var planned: [Planned] = []
+        for row in try Self.rows(db, ids: window.map(\.id)) {
+            let recap = recaps.byTranscript[row.id] ?? row.eventID.flatMap { recaps.byEvent[$0] }
+            let phone = phoneRecordingID(row.id)
+            let fingerprint = Self.fingerprint(row, recap: recap, phone: phone)
+            let name = kind.recordName(id: String(row.id))
+            if let hit = cache.entry(row.id), hit.fingerprint == fingerprint,
+               stagedDigest(name, Self.assetFileName) == hit.digest {
+                planned.append(.ready(AssetSliceRecord(
+                    record: SliceRecord(kind: kind, id: String(row.id), modifiedAt: stamp, payload: hit.payload),
+                    asset: SliceAsset(fileName: Self.assetFileName, digest: hit.digest, data: nil)
+                )))
+            } else {
+                planned.append(.build(row, recap: recap?.content, phone: phone, fingerprint: fingerprint))
+            }
+        }
+        let ids = Set(window.map(\.id))
+        return { [self] in
+            let records = try planned.map { try build($0, stamp: stamp) }
+            cache.prune(keeping: ids)
+            return records
+        }
+    }
+
+    private enum Planned {
+        case ready(AssetSliceRecord)
+        case build(TranscriptRow, recap: MeetingRecap.Content?, phone: String?, fingerprint: Data)
+    }
+
+    private func build(_ planned: Planned, stamp: Date) throws -> AssetSliceRecord {
+        switch planned {
+        case .ready(let record):
+            return record
+        case let .build(row, recap, phone, fingerprint):
+            let encoder = RelayCoder.makeEncoder()
             let segments = Self.segments(row)
             let asset = try Self.encodeAsset(segments, encoder: encoder)
-            let recap = recaps.byTranscript[row.id] ?? row.eventID.flatMap { recaps.byEvent[$0] } ?? row.ownSummary
-            let payload = makePayload(row, recap: recap, speakers: Self.speakers(segments), segmentsClipped: asset.clipped)
+            let ownSummary = Self.decodeRecap(row.summaryJSON, what: "summary_json of transcript \(row.id)")
+            let payload = try encoder.encode(makePayload(
+                row, recap: recap ?? ownSummary, phone: phone, speakers: Self.speakers(segments), segmentsClipped: asset.clipped
+            ))
+            let digest = SliceAsset.digest(of: asset.data)
+            cache.store(row.id, BuildCache.Entry(fingerprint: fingerprint, payload: payload, digest: digest))
             return AssetSliceRecord(
-                record: SliceRecord(kind: kind, id: String(row.id), modifiedAt: stamp, payload: try encoder.encode(payload)),
-                asset: SliceAsset(fileName: Self.assetFileName, data: asset.data)
+                record: SliceRecord(kind: kind, id: String(row.id), modifiedAt: stamp, payload: payload),
+                asset: SliceAsset(fileName: Self.assetFileName, digest: digest, data: asset.data)
             )
+        }
+    }
+
+    /// `@unchecked Sendable`: every field is guarded by `lock`.
+    final class BuildCache: @unchecked Sendable {
+        struct Entry {
+            let fingerprint: Data
+            let payload: Data
+            let digest: Data
+        }
+
+        private let lock = NSLock()
+        private var entries: [Int64: Entry] = [:]
+        private var buildCount = 0
+
+        var builds: Int { lock.withLock { buildCount } }
+
+        func entry(_ id: Int64) -> Entry? {
+            lock.withLock { entries[id] }
+        }
+
+        func store(_ id: Int64, _ entry: Entry) {
+            lock.withLock {
+                entries[id] = entry
+                buildCount += 1
+            }
+        }
+
+        /// Forgets transcripts that left the window.
+        func prune(keeping ids: Set<Int64>) {
+            lock.withLock { entries = entries.filter { ids.contains($0.key) } }
         }
     }
 
@@ -113,104 +199,151 @@ struct MeetingTranscriptSlice: AssetSliceSource {
         let eventID: String?
         let title: String
         let durationSec: Int
-        let transcriptText: String
         let segmentsJSON: String?
+        /// `transcript_text`, read only when `segments_json` is NULL or not
+        /// valid JSON (the legacy fallback).
+        let legacyText: String?
+        let summaryJSON: String?
         let chaptersJSON: String?
         let createdAt: String
         let updatedAt: String
-        /// The decoded `summary_json`; nil when absent or unreadable.
-        let ownSummary: MeetingRecap.Content?
     }
 
-    private static func windowRows(_ db: Database, now: Date, calendar: Calendar) throws -> [TranscriptRow] {
+    /// The window's transcripts, newest first: id and event id only.
+    private static func window(_ db: Database, now: Date, calendar: Calendar) throws -> [(id: Int64, eventID: String?)] {
         let since = SliceDate.stamp(now.addingTimeInterval(-Double(windowDays) * 86_400))
         let eventIDs = Array(try CalendarEventSlice.windowEventIDs(db, now: now, calendar: calendar))
         let eventClause = eventIDs.isEmpty ? "" : " OR event_id IN (\(placeholders(eventIDs.count)))"
         let rows = try Row.fetchAll(db, sql: """
-            SELECT id, event_id, title, duration_sec, transcript_text, summary_json, segments_json, chapters_json,
-                   created_at, updated_at
-            FROM meeting_transcripts
+            SELECT id, event_id FROM meeting_transcripts
             WHERE created_at >= ?\(eventClause)
             ORDER BY created_at DESC, id DESC
             LIMIT \(maxTranscripts)
             """, arguments: StatementArguments([since] + eventIDs))
+        return rows.map { (id: $0["id"], eventID: $0["event_id"]) }
+    }
+
+    /// The columns the projection reads, in the window's order.
+    private static func rows(_ db: Database, ids: [Int64]) throws -> [TranscriptRow] {
+        guard !ids.isEmpty else { return [] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, event_id, title, duration_sec, segments_json, summary_json, chapters_json, created_at, updated_at,
+                   CASE WHEN segments_json IS NULL OR NOT json_valid(segments_json) THEN transcript_text END AS legacy_text
+            FROM meeting_transcripts
+            WHERE id IN (\(placeholders(ids.count)))
+            ORDER BY created_at DESC, id DESC
+            """, arguments: StatementArguments(ids))
         return rows.map { row in
-            let id: Int64 = row["id"]
-            return TranscriptRow(
-                id: id,
+            TranscriptRow(
+                id: row["id"],
                 eventID: row["event_id"],
                 title: row["title"],
                 durationSec: row["duration_sec"],
-                transcriptText: row["transcript_text"],
                 segmentsJSON: row["segments_json"],
+                legacyText: row["legacy_text"],
+                summaryJSON: row["summary_json"],
                 chaptersJSON: row["chapters_json"],
                 createdAt: row["created_at"],
-                updatedAt: row["updated_at"],
-                ownSummary: decodeRecap(row["summary_json"], what: "summary_json of transcript \(id)")
+                updatedAt: row["updated_at"]
             )
         }
     }
 
-    // MARK: - Recap
-
-    private struct Recaps {
-        var byTranscript: [Int64: MeetingRecap.Content] = [:]
-        var byEvent: [String: MeetingRecap.Content] = [:]
+    /// SHA-256 over everything the record is derived from; each field is
+    /// tagged (nil vs present) and length-prefixed, so no two inputs collide.
+    private static func fingerprint(_ row: TranscriptRow, recap: ChosenRecap?, phone: String?) -> Data {
+        var hasher = SHA256()
+        let fields: [String?] = [
+            String(row.id), row.eventID, row.title, String(row.durationSec), row.createdAt, row.updatedAt,
+            row.segmentsJSON, row.legacyText, row.summaryJSON, row.chaptersJSON,
+            recap.map { String($0.id) }, recap?.updatedAt, phone
+        ]
+        for field in fields {
+            guard let field else {
+                hasher.update(data: Data([0]))
+                continue
+            }
+            let bytes = Data(field.utf8)
+            let length = withUnsafeBytes(of: UInt64(bytes.count).littleEndian) { Data($0) }
+            hasher.update(data: Data([1]) + length)
+            hasher.update(data: bytes)
+        }
+        return Data(hasher.finalize())
     }
 
-    /// The `meeting_recaps` rows of the window's transcripts, by
+    // MARK: - Recap
+
+    private struct ChosenRecap {
+        let id: Int64
+        let updatedAt: String
+        let content: MeetingRecap.Content
+    }
+
+    private struct Recaps {
+        var byTranscript: [Int64: ChosenRecap] = [:]
+        var byEvent: [String: ChosenRecap] = [:]
+    }
+
+    /// The readable `meeting_recaps` rows of the window's transcripts, by
     /// `transcript_id` and by `event_id` (the join `r.transcript_id = t.id
     /// OR (r.event_id IS NOT NULL AND r.event_id = t.event_id)`).
-    private static func recaps(_ db: Database, rows: [TranscriptRow]) throws -> Recaps {
-        guard !rows.isEmpty else { return Recaps() }
-        let ids = rows.map(\.id)
-        let eventIDs = Array(Set(rows.compactMap(\.eventID)))
+    private static func recaps(_ db: Database, window: [(id: Int64, eventID: String?)]) throws -> Recaps {
+        guard !window.isEmpty else { return Recaps() }
+        let ids = window.map(\.id)
+        let eventIDs = Array(Set(window.compactMap(\.eventID)))
         let eventClause = eventIDs.isEmpty ? "" : " OR event_id IN (\(placeholders(eventIDs.count)))"
         var out = Recaps()
-        // Newest first; the first row seen per key wins.
+        // Newest first; the first readable row seen per key wins.
         for row in try Row.fetchAll(db, sql: """
-            SELECT id, event_id, transcript_id, recap_json FROM meeting_recaps
+            SELECT id, event_id, transcript_id, recap_json, updated_at FROM meeting_recaps
             WHERE transcript_id IN (\(placeholders(ids.count)))\(eventClause)
             ORDER BY updated_at DESC, id DESC
             """, arguments: StatementArguments(ids) + StatementArguments(eventIDs)) {
             let recapID: Int64 = row["id"]
             guard let content = decodeRecap(row["recap_json"], what: "meeting recap \(recapID)") else { continue }
+            let chosen = ChosenRecap(id: recapID, updatedAt: row["updated_at"], content: content)
             if let transcriptID: Int64 = row["transcript_id"], out.byTranscript[transcriptID] == nil {
-                out.byTranscript[transcriptID] = content
+                out.byTranscript[transcriptID] = chosen
             }
             if let eventID: String = row["event_id"], out.byEvent[eventID] == nil {
-                out.byEvent[eventID] = content
+                out.byEvent[eventID] = chosen
             }
         }
         return out
     }
 
-    /// nil for a NULL or empty column; an unreadable one is logged and left
-    /// out.
+    /// nil for a NULL or empty column; an unreadable one is logged once and
+    /// left out.
     private static func decodeRecap(_ json: String?, what: String) -> MeetingRecap.Content? {
         guard let json, !json.isEmpty else { return nil }
         guard let content = try? JSONDecoder().decode(MeetingRecap.Content.self, from: Data(json.utf8)) else {
-            logger.warning("unreadable \(what, privacy: .public) left out")
+            if warned.withLock({ $0.insert(what).inserted }) {
+                logger.warning("unreadable \(what, privacy: .public) left out")
+            }
             return nil
         }
         return content
     }
 
+    private static let warned = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+
     // MARK: - Segments
 
     /// The non-deleted segments; a legacy row (no or unreadable
-    /// `segments_json`) is one segment holding `transcript_text`.
+    /// `segments_json`) is one segment holding `transcript_text`. Valid JSON
+    /// of another shape has no text to fall back on and publishes `[]`.
     private static func segments(_ row: TranscriptRow) -> [Segment] {
         if let utterances = row.segmentsJSON.flatMap(TranscriptSegments.decode) {
             return utterances.filter { !$0.deleted }.map {
                 Segment(startSec: $0.startSec, endSec: $0.endSec, speaker: $0.speaker, text: $0.text)
             }
         }
-        if row.segmentsJSON != nil {
-            logger.warning("unreadable segments_json of transcript \(row.id, privacy: .public); published as one segment")
+        // Logged per build, i.e. once per change of the row.
+        if let raw = row.segmentsJSON, raw != "[]" {
+            logger.warning("unreadable segments_json of transcript \(row.id, privacy: .public); published from the flat text")
         }
-        guard !row.transcriptText.isEmpty else { return [] }
-        return [Segment(startSec: 0, endSec: Double(row.durationSec), speaker: "", text: row.transcriptText)]
+        guard let text = row.legacyText, !text.isEmpty else { return [] }
+        return [Segment(startSec: 0, endSec: Double(row.durationSec), speaker: "", text: text)]
     }
 
     /// Display names in order of first appearance; "" (not diarized) is no
@@ -250,6 +383,7 @@ struct MeetingTranscriptSlice: AssetSliceSource {
     private func makePayload(
         _ row: TranscriptRow,
         recap: MeetingRecap.Content?,
+        phone: String?,
         speakers: [String],
         segmentsClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
     ) -> Payload {
@@ -266,7 +400,7 @@ struct MeetingTranscriptSlice: AssetSliceSource {
             durationSec: row.durationSec,
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
-            phoneRecordingID: phoneRecordingID(row.id),
+            phoneRecordingID: phone,
             speakers: speakerList.items, speakersMore: speakerList.more,
             summary: recap?.summary,
             keyDecisions: decisions.items, keyDecisionsMore: decisions.more,

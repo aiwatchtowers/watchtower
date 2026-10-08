@@ -469,8 +469,12 @@ private final class StubAssetSliceSource: AssetSliceSource, @unchecked Sendable 
         lock.withLock { current.append(Self.record(id: id, payload: payload, asset: asset)) }
     }
 
-    func assetRecords(_ db: Database) throws -> [AssetSliceRecord] {
-        lock.withLock { current }
+    func assetRecords(
+        _ db: Database,
+        stagedDigest: @escaping (_ recordName: String, _ fileName: String) -> Data?
+    ) throws -> () throws -> [AssetSliceRecord] {
+        let records = lock.withLock { current }
+        return { records }
     }
 
     private static func record(id: String, payload: String, asset: String) -> AssetSliceRecord {

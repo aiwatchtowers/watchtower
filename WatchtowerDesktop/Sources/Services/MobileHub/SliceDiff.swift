@@ -79,7 +79,7 @@ enum SliceDiff {
     /// in the asset alone (a renamed speaker in the segments) republishes.
     static func recordHash(_ record: SliceRecord, asset: SliceAsset?) -> String {
         guard let asset else { return hashHex(record.payload) }
-        return hashHex(record.payload + Data(SHA256.hash(data: asset.data)))
+        return hashHex(record.payload + asset.digest)
     }
 
     /// SHA-256 hex digest of `data`. Exposed `internal` so tests can reproduce hashes.

@@ -189,8 +189,11 @@ final class SlicePublisher: Sendable {
             }
             assetsByName[name] = asset
             records.append(item.record)
-            // A published record whose file is gone is sent again.
-            if !store.isStaged(recordName: name, fileName: asset.fileName) { known.removeValue(forKey: name) }
+            // A published record whose staged file is gone (or holds other
+            // content) is sent again.
+            if store.stagedDigest(recordName: name, fileName: asset.fileName) != asset.digest {
+                known.removeValue(forKey: name)
+            }
         }
         if !unstageable.isEmpty {
             logger.warning("\(unstageable.count) asset-backed records skipped: no asset store")
@@ -246,8 +249,7 @@ final class SlicePublisher: Sendable {
                 return (record, CloudRecordFactory.record(for: record))
             }
             do {
-                let url = try assets?.stage(asset, recordName: record.recordName)
-                return (record, Self.cloudRecord(for: record, assetFileURL: url))
+                return (record, Self.cloudRecord(for: record, assetFileURL: try stagedFile(asset, recordName: record.recordName)))
             } catch {
                 skipped.append(record.recordName)
                 logger.error("""
@@ -257,6 +259,29 @@ final class SlicePublisher: Sendable {
                 return nil
             }
         }
+    }
+
+    private enum StagingError: Error, LocalizedError {
+        case noStore
+        case notBuilt
+
+        var errorDescription: String? {
+            switch self {
+            case .noStore: return "no asset store"
+            case .notBuilt: return "the staged file changed since the source read it; rebuilt next cycle"
+            }
+        }
+    }
+
+    /// The staged file holding `asset`: the one already there when it holds
+    /// the same digest, else `asset.data` written now.
+    private func stagedFile(_ asset: SliceAsset, recordName: String) throws -> URL {
+        guard let store = assets else { throw StagingError.noStore }
+        if store.stagedDigest(recordName: recordName, fileName: asset.fileName) == asset.digest {
+            return store.fileURL(recordName: recordName, fileName: asset.fileName)
+        }
+        guard let data = asset.data else { throw StagingError.notBuilt }
+        return try store.stage(data, fileName: asset.fileName, recordName: recordName)
     }
 
     /// `CloudRecordFactory.record(for:)` plus the staged asset file.
@@ -334,13 +359,23 @@ final class SlicePublisher: Sendable {
         try dbPool.read { db in try Row.fetchAll(db, sql: sql) }
     }
 
+    /// The read, then the asset sources' builds after it ended (decoding
+    /// and hashing stay out of the read transaction).
     private func fetchRecords(_ kindSources: [any SliceSource]) throws -> [AssetSliceRecord] {
+        let store = assets
+        let stagedDigest: (String, String) -> Data? = { name, file in store?.stagedDigest(recordName: name, fileName: file) }
+        var builds: [() throws -> [AssetSliceRecord]] = []
         try dbPool.read { db in
-            try kindSources.flatMap { source -> [AssetSliceRecord] in
-                if let assetSource = source as? any AssetSliceSource { return try assetSource.assetRecords(db) }
-                return try source.records(db).map { AssetSliceRecord(record: $0, asset: nil) }
+            for source in kindSources {
+                if let assetSource = source as? any AssetSliceSource {
+                    builds.append(try assetSource.assetRecords(db, stagedDigest: stagedDigest))
+                } else {
+                    let records = try source.records(db).map { AssetSliceRecord(record: $0, asset: nil) }
+                    builds.append { records }
+                }
             }
         }
+        return try builds.flatMap { try $0() }
     }
 
     // MARK: - Fast lane
