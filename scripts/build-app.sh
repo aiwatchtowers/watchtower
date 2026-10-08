@@ -53,6 +53,9 @@ STAGE_DIR="$PROJECT_ROOT/build.next"
 APP_NAME="Watchtower"
 APP_BUNDLE="$STAGE_DIR/$APP_NAME.app"
 ENTITLEMENTS="$SCRIPT_DIR/Watchtower.entitlements"
+# Mobile hub (iCloud/CloudKit + push): restricted entitlements, used only on
+# the real-identity branch with an embedded provisioning profile (app-codesign).
+ENTITLEMENTS_CLOUD="$SCRIPT_DIR/Watchtower-cloud.entitlements"
 
 # Parse flags
 DEV_MODE=false
@@ -411,11 +414,36 @@ else
 fi
 # END signing-identity-selection
 
+# BEGIN app-codesign (extracted verbatim by scripts/tests/test-build-app-cloud.sh)
+# The mobile hub needs the iCloud container, CloudKit and push entitlements
+# (Watchtower-cloud.entitlements). They are restricted: they take effect only
+# with a real identity and an embedded Developer ID provisioning profile that
+# grants them (WATCHTOWER_PROVISION_PROFILE → Contents/embedded.provisionprofile;
+# a relative path resolves against the project root). Without a profile the
+# bundle signs with the base entitlements and the hub reports "Needs a signed
+# build". Ad-hoc never gets them: amfid kills an ad-hoc app that carries
+# restricted entitlements. Every flavor uses the same container.
 if [ "$SIGN_IDENTITY" != "-" ]; then
     echo "==> Code signing with: $SIGN_IDENTITY"
+    BUNDLE_ENTITLEMENTS="$ENTITLEMENTS"
+    if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ]; then
+        case "$WATCHTOWER_PROVISION_PROFILE" in
+            /*) PROVISION_PROFILE="$WATCHTOWER_PROVISION_PROFILE" ;;
+            *) PROVISION_PROFILE="$PROJECT_ROOT/$WATCHTOWER_PROVISION_PROFILE" ;;
+        esac
+        if [ ! -f "$PROVISION_PROFILE" ]; then
+            echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' not found — refusing to sign without the mobile hub it asked for" >&2
+            exit 1
+        fi
+        cp "$PROVISION_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
+        BUNDLE_ENTITLEMENTS="$ENTITLEMENTS_CLOUD"
+        echo "    Embedded provisioning profile: $PROVISION_PROFILE (iCloud/CloudKit + push entitlements)"
+    else
+        echo "    WARNING: mobile hub disabled: no provisioning profile (set WATCHTOWER_PROVISION_PROFILE) — signing with the base entitlements."
+    fi
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower"
     codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --sign "$SIGN_IDENTITY" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
-    codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --entitlements "$ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
+    codesign --force --options runtime ${TIMESTAMP_FLAG:+"$TIMESTAMP_FLAG"} --entitlements "$BUNDLE_ENTITLEMENTS" --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 else
     echo "==> Ad-hoc code signing..."
     echo "    WARNING: $ADHOC_REASON"
@@ -427,6 +455,7 @@ else
     codesign --force --sign - "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$APP_BUNDLE"
 fi
+# END app-codesign
 
 # In dev mode, skip DMG/ZIP/notarization — just output the .app
 if $DEV_MODE; then
