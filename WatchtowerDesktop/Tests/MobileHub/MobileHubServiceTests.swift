@@ -47,6 +47,7 @@ final class MobileHubServiceTests: XCTestCase {
         )
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
+            hostInfo: testHostInfo(),
             relayIdleInterval: relayInterval, relayActiveInterval: relayInterval,
             availabilityReprobeInterval: .milliseconds(20), isEnabled: isEnabled
         )

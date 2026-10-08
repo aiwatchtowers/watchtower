@@ -1858,7 +1858,8 @@ final class AppState {
             hubID: try storage.sidecar.ensureHubID()
         )
         return MobileHubService(
-            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar
+            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
+            hostInfo: .live(dbPool: dbPool, ownerUser: storage.ownerUser)
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
     }
 

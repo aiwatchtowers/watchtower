@@ -73,6 +73,7 @@ final class SlicePublisher: Sendable {
     /// an unchanged stuck record warns once, a changed one warns again.
     private let oversizedWarned = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
     private let warningCount = OSAllocatedUnfairLock(initialState: 0)
+    private let lastPublish = OSAllocatedUnfairLock<Date?>(initialState: nil)
 
     init(
         dbPool: DatabasePool,
@@ -94,6 +95,10 @@ final class SlicePublisher: Sendable {
     var oversizedWarnings: Int { warningCount.withLock { $0 } }
 
     var isRunning: Bool { loopTask.withLock { $0 != nil } }
+
+    /// The end of the last publish cycle that completed (the heartbeat's
+    /// `last_publish_at`); nil before the first.
+    var lastPublishAt: Date? { lastPublish.withLock { $0 } }
 
     /// Test seams: the loop's stored sleep handle and the loop task.
     var currentSleepForTesting: Task<Void, Never>? { lane.withLock { $0.sleep } }
@@ -117,6 +122,7 @@ final class SlicePublisher: Sendable {
                 return outcome
             }
         }
+        lastPublish.withLock { $0 = Date() }
         return outcome
     }
 

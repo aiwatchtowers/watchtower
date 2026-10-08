@@ -26,6 +26,9 @@ extension CloudKitTransport: HubTransport {}
 struct MobileHubStorage {
     let transport: any HubTransport
     let sidecar: HubSyncState
+    /// The iCloud user record name for the heartbeat's `owner_user`. Kept
+    /// with the transport, so a stub storage never reaches CloudKit.
+    var ownerUser: @Sendable () async -> String? = { nil }
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -41,7 +44,7 @@ struct MobileHubStorage {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
-        return Self(transport: CloudKitTransport(store: store), sidecar: sidecar)
+        return Self(transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName)
     }
 }
 
@@ -52,6 +55,13 @@ enum HubStatus: Equatable {
     /// CloudKit can't be used (no entitlement on unsigned dev builds, no
     /// iCloud account, …): expected and harmless; no loops run.
     case unavailable(String)
+    /// Enabling was refused: the named Mac's heartbeat is under 720 s old
+    /// (spec §8 I-1). Settings shows "<mac_name> is your hub. Turn it off
+    /// there, or Take over".
+    case otherHub(String)
+    /// The named Mac took over while this hub ran, so this one stopped.
+    /// Settings shows "Another Mac took over".
+    case tookOver(String)
 }
 
 /// Composition root of the mobile hub (spec §6.1): owns the slice publisher
@@ -64,13 +74,33 @@ final class MobileHubService {
     nonisolated static let defaultRelayActiveInterval: Duration = .seconds(3)
     /// A phone action seen this recently keeps the fast relay cadence.
     nonisolated static let activityWindow: TimeInterval = 300
+    /// The heartbeat is rewritten this often (spec §3).
+    nonisolated static let heartbeatInterval: Duration = .seconds(300)
+    /// Bound on each CloudKit wait the heartbeat adds: the pull before the
+    /// single-hub check and the iCloud user lookup.
+    nonisolated static let defaultCloudTimeout: Duration = .seconds(30)
 
     private(set) var status: HubStatus = .off
+    /// The heartbeat's `sharing` field; the link center sets it once the
+    /// zone shares exist.
+    @ObservationIgnored var sharing: HubSharing = .none
+    /// Runs after a successful `takeOver()` (the seam for the share
+    /// teardown of spec §2.3, wired with the zone shares).
+    @ObservationIgnored var onTakeOver: (@MainActor () async -> Void)?
+    /// The end of the last relay cycle that ran without an error.
+    @ObservationIgnored private(set) var lastRelayAt: Date?
 
     @ObservationIgnored private let transport: any HubTransport
     @ObservationIgnored private let publisher: SlicePublisher
     @ObservationIgnored private let processor: RelayProcessor
     @ObservationIgnored private let sidecar: HubSyncState
+    @ObservationIgnored private let identity: HubIdentity
+    @ObservationIgnored private let hostInfo: HubHostInfo
+    @ObservationIgnored private let heartbeatEvery: Duration
+    @ObservationIgnored private let cloudTimeout: Duration
+    @ObservationIgnored private var heartbeatTask: Task<Void, Never>?
+    /// The iCloud user record name, once looked up.
+    @ObservationIgnored private var ownerUser: String?
     @ObservationIgnored private let relayIdleInterval: Duration
     @ObservationIgnored private let relayActiveInterval: Duration
     @ObservationIgnored private let availabilityReprobeInterval: Duration
@@ -98,9 +128,12 @@ final class MobileHubService {
         publisher: SlicePublisher,
         processor: RelayProcessor,
         sidecar: HubSyncState,
+        hostInfo: HubHostInfo,
         relayIdleInterval: Duration = MobileHubService.defaultRelayIdleInterval,
         relayActiveInterval: Duration = MobileHubService.defaultRelayActiveInterval,
         availabilityReprobeInterval: Duration = .seconds(600),
+        heartbeatInterval: Duration = MobileHubService.heartbeatInterval,
+        cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
         now: @escaping @Sendable () -> Date = { Date() },
         isEnabled: @escaping () -> Bool
     ) {
@@ -108,6 +141,10 @@ final class MobileHubService {
         self.publisher = publisher
         self.processor = processor
         self.sidecar = sidecar
+        self.identity = HubIdentity(sidecar: sidecar)
+        self.hostInfo = hostInfo
+        self.heartbeatEvery = heartbeatInterval
+        self.cloudTimeout = cloudTimeout
         self.relayIdleInterval = relayIdleInterval
         self.relayActiveInterval = relayActiveInterval
         self.availabilityReprobeInterval = availabilityReprobeInterval
@@ -124,9 +161,33 @@ final class MobileHubService {
         publisher.nudge(kinds: kinds)
     }
 
-    /// Starts the transport, gates on availability, then spins up the loops.
-    /// Safe to call again after `.unavailable` or `stop()`.
+    /// Turns the hub on and reports where it landed: `.running`, or
+    /// `.otherHub` when another Mac's heartbeat is live (spec §8 I-1).
+    @discardableResult
+    func enable() async -> HubStatus {
+        await start()
+        return status
+    }
+
+    /// Enables over a live foreign heartbeat: writes this hub's heartbeat,
+    /// so the other hub stops at its next read.
+    @discardableResult
+    func takeOver() async -> HubStatus {
+        await start(takingOver: true)
+        if status == .running, let onTakeOver {
+            await onTakeOver()
+        }
+        return status
+    }
+
+    /// Starts the transport, gates on availability and the single-hub rule,
+    /// then spins up the loops. Safe to call again after `.unavailable`,
+    /// `.otherHub`, `.tookOver` or `stop()`.
     func start() async {
+        await start(takingOver: false)
+    }
+
+    private func start(takingOver: Bool) async {
         guard !disposed, isEnabled() else { return }
         guard status != .running, status != .starting else { return }
         status = .starting
@@ -145,8 +206,23 @@ final class MobileHubService {
         }
         reprobeTask?.cancel()
         reprobeTask = nil
+        switch await claimHub(takingOver: takingOver, startEpoch: startEpoch) {
+        case nil:
+            return
+        case .refused(let macName):
+            stop()
+            status = .otherHub(macName)
+            return
+        case .failed(let message):
+            status = .unavailable(message)
+            startReprobeLoop()
+            return
+        case .claimed:
+            break
+        }
         publisher.start()
         startRelayLoop()
+        startHeartbeatLoop()
         status = .running
     }
 
@@ -171,6 +247,8 @@ final class MobileHubService {
 
     func stop() {
         publisher.stop()
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         reprobeTask?.cancel()
         reprobeTask = nil
         let relay = relayTask
@@ -225,6 +303,7 @@ final class MobileHubService {
             while pass.remaining > 0, !Task.isCancelled {
                 pass = try await processor.processOnce()
             }
+            lastRelayAt = now()
         } catch is CancellationError {
             return
         } catch {
@@ -238,6 +317,142 @@ final class MobileHubService {
             return relayActiveInterval
         }
         return relayIdleInterval
+    }
+
+    // MARK: - Heartbeat and the single-hub rule (spec §4.1, §8 I-1)
+
+    private enum Claim {
+        case claimed
+        case refused(macName: String)
+        case failed(String)
+    }
+
+    /// Pulls (bounded), reads the heartbeat and, unless another hub's is
+    /// live, writes this hub's. `takingOver` skips the refusal. nil: a
+    /// stop() ran meanwhile.
+    private func claimHub(takingOver: Bool, startEpoch: Int) async -> Claim? {
+        let transport = self.transport
+        let logger = self.logger
+        let pulled = await Self.bounded(cloudTimeout) { () -> Bool in
+            do {
+                try await transport.pull()
+                return true
+            } catch {
+                logger.warning("heartbeat pull failed: \(error.localizedDescription, privacy: .public)")
+                return false
+            }
+        }
+        if pulled == nil { logger.warning("heartbeat pull timed out; checking the buffered heartbeat") }
+        guard status == .starting, epoch == startEpoch else { return nil }
+        do {
+            let hubID = try identity.hubID()
+            let read = try await identity.readHeartbeat(from: transport)
+            if !takingOver, let latest = read.latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {
+                return .refused(macName: latest.macName)
+            }
+            await resolveOwnerUser()
+            guard status == .starting, epoch == startEpoch else { return nil }
+            try await writeHeartbeat(hubID: hubID)
+            return .claimed
+        } catch {
+            logger.error("single-hub check failed: \(error.localizedDescription, privacy: .public)")
+            return .failed("Couldn't check which Mac is the hub: \(error.localizedDescription)")
+        }
+    }
+
+    private func startHeartbeatLoop() {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { [weak self, interval = heartbeatEvery] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: interval)
+                guard let self, !Task.isCancelled else { return }
+                await self.heartbeatTick()
+            }
+        }
+    }
+
+    /// One heartbeat tick: read the record first; another hub's live
+    /// heartbeat written since the last read stops this hub
+    /// (`.tookOver`), otherwise this hub's heartbeat is rewritten. Reads
+    /// only the local buffer the relay loop's pulls fill.
+    func heartbeatTick() async {
+        guard status == .running else { return }
+        let tickEpoch = epoch
+        do {
+            let hubID = try identity.hubID()
+            let read = try await identity.readHeartbeat(from: transport)
+            guard status == .running, epoch == tickEpoch else { return }
+            if let arrived = read.arrived, HubIdentity.isLiveForeign(arrived, hubID: hubID, now: now()) {
+                logger.notice("another Mac took over the hub; stopping")
+                stop()
+                status = .tookOver(arrived.macName)
+                return
+            }
+            await resolveOwnerUser()
+            guard status == .running, epoch == tickEpoch else { return }
+            try await writeHeartbeat(hubID: hubID)
+        } catch {
+            logger.error("heartbeat tick failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func writeHeartbeat(hubID: String) async throws {
+        let at = now()
+        let heartbeat = HeartbeatPayload(
+            updatedAt: at,
+            appVersion: hostInfo.appVersion,
+            hubID: hubID,
+            macName: hostInfo.macName,
+            flavor: hostInfo.flavor,
+            lastPublishAt: publisher.lastPublishAt,
+            lastRelayAt: lastRelayAt,
+            relayBacklog: processor.relayBacklog,
+            accounts: Array(hostInfo.accounts().prefix(HeartbeatPayload.maxAccounts)),
+            enabledAt: try identity.ensureEnabledAt(at),
+            ownerUser: ownerUser ?? "",
+            sharing: sharing
+        )
+        try await transport.save([try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)])
+    }
+
+    /// Looks the iCloud user up once (bounded); retried at the next write
+    /// while unknown.
+    private func resolveOwnerUser() async {
+        guard ownerUser == nil else { return }
+        let lookup = hostInfo.ownerUser
+        if let found = await Self.bounded(cloudTimeout, { await lookup() }) {
+            ownerUser = found
+        }
+    }
+
+    /// Runs `operation` for at most `timeout`. On timeout it is cancelled,
+    /// left to finish on its own, and nil is returned.
+    nonisolated static func bounded<T: Sendable>(
+        _ timeout: Duration,
+        _ operation: @escaping @Sendable () async -> T
+    ) async -> T? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let pending = OSAllocatedUnfairLock<CheckedContinuation<T?, Never>?>(initialState: continuation)
+            let finish: @Sendable (T?) -> Void = { value in
+                let waiting = pending.withLock { slot -> CheckedContinuation<T?, Never>? in
+                    defer { slot = nil }
+                    return slot
+                }
+                waiting?.resume(returning: value)
+            }
+            let work = Task { await operation() }
+            let timer = Task {
+                try? await Task.sleep(for: timeout)
+                guard !Task.isCancelled else { return }
+                work.cancel()
+                finish(nil)
+            }
+            Task {
+                let value = await work.value
+                timer.cancel()
+                finish(value)
+            }
+        }
     }
 
     /// While `.unavailable`, periodically re-probes iCloud; when it returns,

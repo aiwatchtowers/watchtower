@@ -26,7 +26,12 @@ final class HubSyncState: Sendable {
     let relayGate = RelayPassGate()
 
     init(path: String) throws {
-        queue = try DatabaseQueue(path: path)
+        // A second handle on the file (a relaunch whose old instance is
+        // still closing, a duplicate app instance) waits for the lock
+        // instead of failing at once with SQLITE_BUSY.
+        var config = Configuration()
+        config.busyMode = .timeout(5)
+        queue = try DatabaseQueue(path: path, configuration: config)
         try createSchema()
     }
 
@@ -123,17 +128,20 @@ final class HubSyncState: Sendable {
     /// This install's hub id (spec §4.1), created on first use and kept for
     /// good: an account reset does not change which Mac this is.
     func ensureHubID() throws -> String {
+        try ensureMetaValue(forKey: Self.hubIDKey) { UUID().uuidString.lowercased() }
+    }
+
+    /// The value under `key`, or `make()` stored there when the key is new.
+    /// One write transaction, so two callers never store two values.
+    func ensureMetaValue(forKey key: String, make: () -> String) throws -> String {
         try queue.write { db in
             if let existing = try String.fetchOne(
-                db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [Self.hubIDKey]
+                db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [key]
             ) {
                 return existing
             }
-            let fresh = UUID().uuidString.lowercased()
-            try db.execute(
-                sql: "INSERT INTO hub_meta (key, value) VALUES (?, ?)",
-                arguments: [Self.hubIDKey, fresh]
-            )
+            let fresh = make()
+            try db.execute(sql: "INSERT INTO hub_meta (key, value) VALUES (?, ?)", arguments: [key, fresh])
             return fresh
         }
     }
@@ -216,18 +224,22 @@ final class HubSyncState: Sendable {
 
     /// Clears the sync state derived from the CloudKit account so the next
     /// publish/relay cycle starts clean against the new account: slice
-    /// hashes and the relay change token. The exactly-once ledger is KEPT:
+    /// hashes, the relay change token and the heartbeat read state (the new
+    /// account's DataZone is another zone). The exactly-once ledger is KEPT:
     /// relay record names carry phone-generated UUIDs, so they cannot
     /// collide across accounts, and on a same-Apple-ID sign-out/sign-in the
     /// re-fetched zone still holds actions whose echo never reached the
     /// server — without the ledger they would be applied a second time
-    /// (spec §8 I-3, §9). The hygiene stamp and the hub id are kept too.
+    /// (spec §8 I-3, §9). The hygiene stamp, the hub id and `enabled_at`
+    /// are kept too.
     /// The generation counter is bumped so an in-flight publish cycle can
     /// detect the reset and abort before recording stale hashes.
     func wipeSyncState() throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM slice_state")
-            try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [RelayProcessor.relayTokenKey])
+            for key in [RelayProcessor.relayTokenKey] + HubIdentity.heartbeatReadKeys {
+                try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
+            }
             try db.execute(
                 sql: """
                     INSERT INTO hub_meta (key, value)

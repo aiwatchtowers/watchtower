@@ -6,14 +6,15 @@ import WatchtowerSync
 
 /// HubTransport stub: InMemoryCloudTransport record I/O plus steerable
 /// availability, a log of every saved record (with the instant it was
-/// saved) and counters for the lifecycle calls.
+/// saved) and counters for the lifecycle calls. Two stubs over one `cloud`
+/// are two Macs on one iCloud account.
 final class StubHubTransport: HubTransport, @unchecked Sendable {
     struct Saved {
         let record: CloudRecord
         let at: ContinuousClock.Instant
     }
 
-    private let inner = InMemoryCloudTransport()
+    private let inner: InMemoryCloudTransport
     private let lock = NSLock()
     private var currentAvailability: CloudAvailability
     private var startCount = 0
@@ -23,9 +24,11 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var savedLog: [Saved] = []
     private var resetHandler: (@Sendable () -> Void)?
     private var rejectedHandler: (@Sendable (String, CloudZoneID) -> Void)?
+    private var pullHangs = false
 
-    init(availability: CloudAvailability = .available) {
+    init(availability: CloudAvailability = .available, cloud: InMemoryCloudTransport = InMemoryCloudTransport()) {
         currentAvailability = availability
+        inner = cloud
     }
 
     var starts: Int { lock.withLock { startCount } }
@@ -36,6 +39,11 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     /// save, so a test polls an O(1) value instead of re-decoding the log.
     var appliedEchoIDs: [String] { lock.withLock { appliedIDs } }
     var saved: [Saved] { lock.withLock { savedLog } }
+
+    /// A pull that never returns until it is cancelled (a hung CloudKit fetch).
+    func setPullHangs(_ value: Bool) {
+        lock.withLock { pullHangs = value }
+    }
 
     func setAvailability(_ value: CloudAvailability) {
         lock.withLock { currentAvailability = value }
@@ -64,7 +72,10 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
             lifecycleLog.append("stop")
         }
     }
-    func pull() async throws {}
+    func pull() async throws {
+        guard lock.withLock({ pullHangs }) else { return }
+        try await Task.sleep(for: .seconds(3600))
+    }
     func availability() async -> CloudAvailability { lock.withLock { currentAvailability } }
 
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async {
@@ -96,6 +107,16 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         try await inner.changes(in: zone, since: token)
     }
+}
+
+/// Host facts for a test hub: no host lookup, no main DB, no CloudKit.
+func testHostInfo(
+    macName: String = "Mac acme",
+    flavor: HubFlavor = .default,
+    accounts: @escaping @Sendable () -> [HeartbeatAccount] = { [] },
+    ownerUser: String? = "_owner-acme"
+) -> HubHostInfo {
+    HubHostInfo(macName: macName, appVersion: "0.0.0-test", flavor: flavor, accounts: accounts) { ownerUser }
 }
 
 /// A slice source whose records the test sets; counts its reads.
