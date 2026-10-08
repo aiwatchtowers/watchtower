@@ -304,6 +304,38 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertEqual(changes.withLock { $0 }, 0, "and nudges nothing")
     }
 
+    /// B2 deferred N1: a stop mid-pass must not leave the workbenches it cut
+    /// stamped as attempted, nor drop their session-change requests — the
+    /// restarted refresher runs them at once, not 120 s later.
+    func testAStopMidPassKeepsTheUnfinishedWorkbenchesDue() async throws {
+        let gate = FetchGate()
+        let clock = TestInstant()
+        let parking = OSAllocatedUnfairLock(initialState: false)
+        let refresher = WorkbenchGitRefresher(
+            fetch: { id in
+                if parking.withLock({ $0 }) { await gate.enter(id) }
+                return Self.gitStatus(branch: "main", detached: false, changes: 0)
+            },
+            workbenchIDs: { [1, 2, 3] },
+            clock: { clock.now }
+        )
+        await refresher.refreshDue()
+        clock.advance(by: .seconds(40))
+        refresher.sessionStateChanged(workbenchID: 1)
+        refresher.sessionStateChanged(workbenchID: 2)
+        parking.withLock { $0 = true }
+        let pass = Task { await refresher.refreshDue() }
+        await awaitHubCondition("the requested run of 1 is in flight") { gate.calls == [1] }
+
+        refresher.stop()
+        gate.release()
+        _ = await pass.value
+        let rerun = await refresher.refreshDue()
+
+        XCTAssertEqual(rerun, [1, 2], "both requests survive the stop: 1 was cut in flight, 2 never ran")
+        XCTAssertEqual(gate.calls, [1, 1, 2])
+    }
+
     func testRefreshCadenceIsEvery120SecondsPerWorkbench() async throws {
         let calls = OSAllocatedUnfairLock(initialState: 0)
         let clock = TestInstant()

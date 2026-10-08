@@ -90,8 +90,8 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     }
 
     /// One pass: runs every due workbench, one after the other. A `stop()`
-    /// during the pass ends it before its next run, and the run in flight
-    /// stores nothing.
+    /// during the pass ends it before its next run, the run in flight
+    /// stores nothing, and every workbench the pass did not finish stays due.
     /// - Returns: the workbenches whose CLI run was started.
     @discardableResult
     func refreshDue() async -> Set<Int64> {
@@ -105,11 +105,14 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         }
         guard isCurrent(passGeneration) else { return [] }
         var attempted: Set<Int64> = []
-        for id in takeDue(ids: ids, now: clock()) {
+        var unfinished = takeDue(ids: ids, now: clock())
+        while let next = unfinished.first {
             guard !Task.isCancelled, isCurrent(passGeneration) else { break }
-            attempted.insert(id)
-            await refresh(id, passGeneration: passGeneration)
+            attempted.insert(next.id)
+            guard await refresh(next.id, passGeneration: passGeneration) else { break }
+            unfinished.removeFirst()
         }
+        restore(unfinished)
         return attempted
     }
 
@@ -117,15 +120,24 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         generation.withLock { $0 == passGeneration }
     }
 
+    /// What `takeDue` changed for one workbench, so a pass that did not
+    /// finish its run can put it back.
+    private struct Taken {
+        let id: Int64
+        let previous: Entry?
+        let stamp: ContinuousClock.Instant
+    }
+
     /// Forgets workbenches that left `ids`, adds new ones, and stamps the
     /// due ones as attempted now.
-    private func takeDue(ids: [Int64], now: ContinuousClock.Instant) -> [Int64] {
+    private func takeDue(ids: [Int64], now: ContinuousClock.Instant) -> [Taken] {
         entries.withLock { [timing] entries in
             let wanted = Set(ids)
             entries = entries.filter { wanted.contains($0.key) }
-            var due: [Int64] = []
+            var due: [Taken] = []
             for id in ids {
-                var entry = entries[id] ?? Entry()
+                let previous = entries[id]
+                var entry = previous ?? Entry()
                 let isDue: Bool = {
                     guard let last = entry.lastAttempt else { return true }
                     let elapsed = now - last
@@ -134,7 +146,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
                 if isDue {
                     entry.lastAttempt = now
                     entry.requested = false
-                    due.append(id)
+                    due.append(Taken(id: id, previous: previous, stamp: now))
                 }
                 entries[id] = entry
             }
@@ -142,7 +154,24 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         }
     }
 
-    private func refresh(_ id: Int64, passGeneration: Int) async {
+    /// Puts back the cadence state of workbenches the pass did not finish
+    /// (a stop cut it), unless a later pass stamped them since: a restart
+    /// runs them at once and keeps their session-change requests.
+    private func restore(_ unfinished: [Taken]) {
+        guard !unfinished.isEmpty else { return }
+        entries.withLock { entries in
+            for taken in unfinished {
+                guard var entry = entries[taken.id], entry.lastAttempt == taken.stamp else { continue }
+                entry.lastAttempt = taken.previous?.lastAttempt
+                entry.requested = entry.requested || (taken.previous?.requested ?? false)
+                entries[taken.id] = entry
+            }
+        }
+    }
+
+    /// Whether the run finished under the pass's generation (a failure
+    /// counts as finished: it keeps the last value and waits its turn).
+    private func refresh(_ id: Int64, passGeneration: Int) async -> Bool {
         let fetch = self.fetch
         let result = await MobileHubService.bounded(timing.timeout) { () -> Result<WorkbenchGitStatus, any Error> in
             do {
@@ -151,7 +180,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
                 return .failure(error)
             }
         }
-        guard isCurrent(passGeneration) else { return }
+        guard isCurrent(passGeneration) else { return false }
         switch result {
         case nil:
             logger.warning("git status for workbench \(id) timed out; keeping the last value")
@@ -162,6 +191,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         case .success(let status)?:
             store(Self.snapshot(status), for: id)
         }
+        return true
     }
 
     private func store(_ snapshot: WorkbenchGitSnapshot, for id: Int64) {
