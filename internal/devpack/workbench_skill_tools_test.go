@@ -87,4 +87,11 @@ func TestWorkbenchSkill_ExplainsBothWorkOnPrompts(t *testing.T) {
 			t.Errorf("the skill must contain %q", want)
 		}
 	}
+	// Review 2026-10-08: the skip rule covers both the plan path and the
+	// board-order path, so it comes before either.
+	skip := strings.Index(content, "skip a leaf that is `blocked`")
+	plan := strings.Index(content, "If the intent names a plan")
+	if skip < 0 || plan < 0 || skip > plan {
+		t.Error("the group section must state the skip rule before the plan and board-order paths")
+	}
 }

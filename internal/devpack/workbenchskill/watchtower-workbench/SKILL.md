@@ -54,17 +54,17 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 
 ## Working a target
 
-The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, set it `in_progress` with its `branch` in one `update_target`, and work it under the rules above (feature, spec, plan). If it turns out to have sub-targets, work it as a group (below).
+The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` with its `branch` in one `update_target`, and work it under the rules above (feature, spec, plan).
 
 ## Working a group
 
 The first prompt `Work on group #<id>` hands you a target with sub-targets.
 
 1. Read the subtree: `workbench_board`, then `get_target` and `list_comments` on the group. The group's intent is the brief.
-2. If the intent names a plan, run that plan as "Running a plan" says, in the order its dependencies allow.
-3. Otherwise take the open leaves in board order — priority, then status, then id. Leaves that do not depend on each other may run in parallel only where the folder's own rules allow parallel work.
-4. Skip a leaf that is `blocked`, waits on an open ask, or was already `in_progress` or `in_review` when you started — another session is on it.
-5. Set the leaves' statuses, never the group's: it follows its children.
+2. Whichever way you pick the work below, skip a leaf that is `blocked`, waits on an open ask, or was already `in_progress` or `in_review` when you started — another session is on it.
+3. If the intent names a plan, run that plan as "Running a plan" says, in the order its dependencies allow.
+4. Otherwise take the open leaves in board order — priority, then status, then id. Leaves that do not depend on each other may run in parallel only where the folder's own rules allow parallel work.
+5. Set each leaf `in_progress` with its `branch` in one `update_target` when you start it. Set the leaves' statuses, never the group's: it follows its children.
 6. When the group's work is done or handed to the owner, call `finish_session` once with `target_id` = the group and a summary of the whole group.
 
 ## Asking the owner
