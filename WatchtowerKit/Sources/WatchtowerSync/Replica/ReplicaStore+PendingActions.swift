@@ -36,9 +36,12 @@ extension ReplicaStore {
 
     /// Deletes one overlay row. Public for the app's "Dismiss" affordance on
     /// failed actions; unknown ids are a no-op (DELETE matches nothing).
-    public func removePendingAction(id: String) throws {
+    /// Returns whether a row went.
+    @discardableResult
+    public func removePendingAction(id: String) throws -> Bool {
         try writer.write { db in
             try db.execute(sql: "DELETE FROM pending_actions WHERE action_id = ?", arguments: [id])
+            return db.changesCount > 0
         }
     }
 

@@ -37,6 +37,8 @@ public actor ActionOutbox {
     /// The linked phone's device id, stamped on every enqueued action. nil
     /// until linking finishes (or after an unlink): enqueue then refuses.
     private var deviceID: String?
+    /// Told about each `applied` echo whose overlay row it removed.
+    private var appliedObserver: (@Sendable (ActionRequestPayload) -> Void)?
 
     public init(
         transport: any CloudSyncTransport,
@@ -54,6 +56,14 @@ public actor ActionOutbox {
     /// unlink. Actions already in flight keep the id they were sent with.
     public func setDeviceID(_ deviceID: String?) {
         self.deviceID = deviceID
+    }
+
+    /// The overlay row goes on `applied`, so this is how the app reads an
+    /// applied echo's `result` (an ask answer's `delivery`). Called on this
+    /// actor, once per row an `applied` echo removes: never for a
+    /// redelivered echo or an unknown action id.
+    public func setAppliedObserver(_ observer: (@Sendable (ActionRequestPayload) -> Void)?) {
+        appliedObserver = observer
     }
 
     /// The `snooze_until` param in the wire's frozen form: plain ISO8601 UTC,
@@ -119,7 +129,9 @@ public actor ActionOutbox {
             // Still in flight on the Mac: the overlay stays pending.
             break
         case .applied:
-            try store.removePendingAction(id: action.id)
+            if try store.removePendingAction(id: action.id) {
+                appliedObserver?(action)
+            }
         case .failed, .expired, .cancelled:
             try store.markPendingActionFailed(
                 id: action.id,

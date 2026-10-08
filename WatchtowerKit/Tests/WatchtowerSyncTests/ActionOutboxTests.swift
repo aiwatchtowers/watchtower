@@ -178,6 +178,34 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertTrue(try store.pendingActions().isEmpty)
     }
 
+    /// The overlay row goes on `applied`, so the observer is how the phone
+    /// learns an applied echo's result (an ask answer's `delivery`): once
+    /// per row it removes, never for an unknown id or another status.
+    func testAppliedObserverSeesTheAppliedEchoOfAKnownRowOnce() async throws {
+        let (_, store, outbox) = try makeFixtures()
+        let seen = OSAllocatedUnfairLock<[ActionRequestPayload]>(initialState: [])
+        await outbox.setAppliedObserver { action in seen.withLock { $0.append(action) } }
+        _ = try await outbox.enqueue(kind: .askAnswer, entityRecordName: "owner_ask-109")
+
+        var echo = try XCTUnwrap(store.pendingActions().first).action
+        echo.status = .received
+        try await outbox.applyEcho(echo)
+        XCTAssertTrue(seen.withLock { $0 }.isEmpty, "received is still in flight")
+
+        echo.status = .applied
+        echo.result = ["delivery": .string("submitted")]
+        try await outbox.applyEcho(echo)
+        try await outbox.applyEcho(echo)
+
+        var ghost = ActionRequestPayload(id: "ghost", kind: .askAnswer, entityID: "1", createdAt: base)
+        ghost.status = .applied
+        try await outbox.applyEcho(ghost)
+
+        let applied = seen.withLock { $0 }
+        XCTAssertEqual(applied.map(\.id), [echo.id], "a redelivered or unknown echo fires nothing")
+        XCTAssertEqual(applied.first?.result, ["delivery": .string("submitted")])
+    }
+
     func testFailedEchoMarksRowFailedWithMessage() async throws {
         let (_, store, outbox) = try makeFixtures()
         _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-9")
