@@ -8,18 +8,18 @@ import WatchtowerSync
 /// conflict. `from_status`/`from_priority` are always the replica's value
 /// the phone shows, never an optimistic one. Owned by `AppEnvironment`.
 ///
-/// One write per field (or per comment target) is in flight at a time:
-/// until the outbox has saved the action and its overlay row, a second
-/// send on the same key is a no-op, so a double tap never posts a
-/// non-idempotent comment twice and two picks never stack on one field.
+/// One write per field (or per comment target) is in flight at a time
+/// (`SendGuard`): a double tap never posts a non-idempotent comment twice
+/// and two picks never stack on one field.
 @MainActor
 @Observable
 final class BoardWriter {
     typealias Enqueue = (ActionKind, String?, [String: JSONValue]) async throws -> Void
 
     /// Keys (`BoardWriter.key`) of the sends still waiting for the outbox.
-    private(set) var inFlight: Set<String> = []
+    var inFlight: Set<String> { sendGuard.inFlight }
 
+    @ObservationIgnored private let sendGuard = SendGuard()
     @ObservationIgnored private let enqueue: Enqueue
     @ObservationIgnored private let remove: (String) throws -> Void
     /// The failed overlay rows of one kind on one entity (ids).
@@ -143,11 +143,7 @@ final class BoardWriter {
     /// Enqueues unless the same key is already in flight; returns whether
     /// it sent.
     private func send(_ kind: ActionKind, _ entity: String?, _ params: [String: JSONValue]) async throws -> Bool {
-        let key = Self.key(kind, entity)
-        guard inFlight.insert(key).inserted else { return false }
-        defer { inFlight.remove(key) }
-        try await enqueue(kind, entity, params)
-        return true
+        try await sendGuard.run(Self.key(kind, entity)) { try await enqueue(kind, entity, params) }
     }
 
     private static func recordName(_ target: WorkbenchTarget) -> String {
