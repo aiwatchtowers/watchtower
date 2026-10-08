@@ -90,7 +90,7 @@ struct WorkbenchSlice: SliceSource {
         let project = summary.project
         let name = SliceClip.text(project.name, limit: 200)
         let description = SliceClip.text(project.description, limit: 1000)
-        let folder = SliceClip.text(Self.folderDisplay(project.folderPath, home: home), limit: 300)
+        let folder = SliceClip.text(WorkbenchBranchPresentation.displayPath(project.folderPath, home: home), limit: 300)
         let git = gitStatus(project.id)
         let branch = SliceClip.text(git?.branch ?? "", limit: 120)
         let more = window.more[project.id] ?? 0
@@ -120,23 +120,17 @@ struct WorkbenchSlice: SliceSource {
     /// publish only these workbenches' boards.
     static func publishedWorkbenches(_ db: Database) throws -> [WorkbenchSwitcherSummary] {
         let all = try WorkbenchQueries.switcherSummaries(db)
-        let order = Dictionary(uniqueKeysWithValues: all.enumerated().map { ($1.id, $0) })
-        let sorted = all.sorted { lhs, rhs in
-            // ISO stamps of one format order as strings; "" (no session) sorts last.
-            if lhs.lastSessionActivity != rhs.lastSessionActivity {
-                return lhs.lastSessionActivity > rhs.lastSessionActivity
+        // No session (or an unparsable stamp) sorts last; ties keep the
+        // switcher's order.
+        let ranked = all.enumerated().map { (order: $0, activity: SliceDate.parse($1.lastSessionActivity), summary: $1) }
+        let sorted = ranked.sorted { lhs, rhs in
+            switch (lhs.activity, rhs.activity) {
+            case let (left?, right?) where left != right: return left > right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return lhs.order < rhs.order
             }
-            return order[lhs.id, default: 0] < order[rhs.id, default: 0]
         }
-        return Array(sorted.prefix(maxWorkbenches))
-    }
-
-    /// `path` with the home prefix replaced by `~`; anything else as-is.
-    static func folderDisplay(_ path: String, home: String) -> String {
-        let base = home.hasSuffix("/") && home.count > 1 ? String(home.dropLast()) : home
-        guard !base.isEmpty else { return path }
-        if path == base { return "~" }
-        guard path.hasPrefix(base + "/") else { return path }
-        return "~" + path.dropFirst(base.count)
+        return sorted.prefix(maxWorkbenches).map(\.summary)
     }
 }

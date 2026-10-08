@@ -95,11 +95,11 @@ final class WorkbenchSliceTests: XCTestCase {
     // MARK: - folder_display
 
     func testFolderUnderHomeIsShownWithATilde() {
-        XCTAssertEqual(WorkbenchSlice.folderDisplay(home + "/Projects/acme", home: home), "~/Projects/acme")
-        XCTAssertEqual(WorkbenchSlice.folderDisplay(home, home: home), "~")
-        XCTAssertEqual(WorkbenchSlice.folderDisplay(home + "/", home: home + "/"), "~/")
+        XCTAssertEqual(WorkbenchBranchPresentation.displayPath(home + "/Projects/acme", home: home), "~/Projects/acme")
+        XCTAssertEqual(WorkbenchBranchPresentation.displayPath(home, home: home), "~")
+        XCTAssertEqual(WorkbenchBranchPresentation.displayPath(home + "/", home: home + "/"), "~/")
         XCTAssertEqual(
-            WorkbenchSlice.folderDisplay("/Users/acme2/Projects/acme", home: home), "/Users/acme2/Projects/acme",
+            WorkbenchBranchPresentation.displayPath("/Users/acme2/Projects/acme", home: home), "/Users/acme2/Projects/acme",
             "a sibling folder sharing the prefix is not under home"
         )
     }
@@ -119,6 +119,38 @@ final class WorkbenchSliceTests: XCTestCase {
         XCTAssertTrue(clipped.hasPrefix("/Volumes/acme/"))
         XCTAssertTrue(clipped.hasSuffix("…"))
         XCTAssertEqual(byName["b"]?["folder_display_clipped"] as? Bool, true)
+    }
+
+    func testWorkbenchesOrderByParsedSessionActivity() throws {
+        let now = Date()
+        let whole = dbStamp(now)
+        // The same second with a fraction is later, though it sorts lower as text.
+        let fractional = String(whole.dropLast()) + ".900Z"
+        let (earlier, later, none) = try dbPool.write { db -> (Int64, Int64, Int64) in
+            let earlier = try TestDatabase.insertWorkbench(db, name: "a", folder: "/tmp/a")
+            let later = try TestDatabase.insertWorkbench(db, name: "b", folder: "/tmp/b")
+            let none = try TestDatabase.insertWorkbench(db, name: "c", folder: "/tmp/c")
+            try SliceSeed.insertSession(db, projectID: earlier)
+            try SliceSeed.insertSession(db, projectID: later)
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = ? WHERE project_id = ?", arguments: [whole, earlier])
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = ? WHERE project_id = ?", arguments: [fractional, later])
+            return (earlier, later, none)
+        }
+        let order = try dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) }
+
+        XCTAssertEqual(order, [later, earlier, none], "newest activity first, no session last")
+    }
+
+    func testAnUnparsableRequiredDateIsLoggedAndPublishedAs1970() {
+        let record = "workbench_target-\(UUID().uuidString)"
+        XCTAssertEqual(SliceDate.required("not a date", field: "created_at", record: record), Date(timeIntervalSince1970: 0))
+        XCTAssertTrue(SliceDate.hasWarned(field: "created_at", record: record))
+        XCTAssertFalse(SliceDate.hasWarned(field: "updated_at", record: record))
+        XCTAssertEqual(
+            SliceDate.required(dbStamp(Date(timeIntervalSince1970: 1_700_000_000)), field: "x", record: record),
+            Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        XCTAssertFalse(SliceDate.hasWarned(field: "x", record: record), "a good date logs nothing")
     }
 
     // MARK: - Zero workbenches
@@ -244,6 +276,32 @@ final class WorkbenchSliceTests: XCTestCase {
         await refresher.refreshDue()
 
         XCTAssertEqual(refresher.status(for: 7)?.branch, "main")
+    }
+
+    /// Review I1: a hub stop ends the pass in flight. The blocked run stores
+    /// nothing, and no other workbench gets a CLI run after the stop.
+    func testAStopEndsThePassAndNoCLIRunsAfterIt() async throws {
+        let gate = FetchGate()
+        let refresher = WorkbenchGitRefresher(
+            fetch: { id in
+                await gate.enter(id)
+                return Self.gitStatus(branch: "main", detached: false, changes: 0)
+            },
+            workbenchIDs: { [1, 2, 3] }
+        )
+        let changes = OSAllocatedUnfairLock(initialState: 0)
+        refresher.setOnChange { changes.withLock { $0 += 1 } }
+        let pass = Task { await refresher.refreshDue() }
+        await awaitHubCondition("the first run is in flight") { gate.calls == [1] }
+
+        refresher.stop()
+        gate.release()
+        let attempted = await pass.value
+
+        XCTAssertEqual(attempted, [1])
+        XCTAssertEqual(gate.calls, [1], "no CLI run after the stop")
+        XCTAssertNil(refresher.status(for: 1), "the run in flight at the stop stores nothing")
+        XCTAssertEqual(changes.withLock { $0 }, 0, "and nudges nothing")
     }
 
     func testRefreshCadenceIsEvery120SecondsPerWorkbench() async throws {
@@ -389,5 +447,39 @@ final class TestInstant: Sendable {
 
     func advance(by duration: Duration) {
         current.withLock { $0 += duration }
+    }
+}
+
+/// A fetch that parks every call until `release()`, recording the ids.
+final class FetchGate: Sendable {
+    private struct State {
+        var calls: [Int64] = []
+        var released = false
+        var parked: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = OSAllocatedUnfairLock(initialState: State())
+
+    var calls: [Int64] { state.withLock { $0.calls } }
+
+    func enter(_ id: Int64) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = state.withLock { state -> Bool in
+                state.calls.append(id)
+                guard !state.released else { return true }
+                state.parked.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let parked = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+            state.released = true
+            defer { state.parked = [] }
+            return state.parked
+        }
+        parked.forEach { $0.resume() }
     }
 }

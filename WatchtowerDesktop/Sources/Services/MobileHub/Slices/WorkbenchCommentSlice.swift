@@ -76,7 +76,8 @@ struct WorkbenchCommentSlice: SliceSource {
                 id: id, workbenchID: project, targetID: row["target_id"], parentID: row["parent_id"],
                 author: row["author"], agentLabel: label.text, agentLabelClipped: label.clipped,
                 body: body.text, bodyClipped: body.clipped, status: row["status"],
-                createdAt: SliceDate.parseOrEpoch(row["created_at"] ?? ""), read: !readAt.isEmpty
+                createdAt: SliceDate.required(row["created_at"] ?? "", field: "created_at", record: kind.recordName(id: String(id))),
+                read: !readAt.isEmpty
             )
             return SliceRecord(kind: kind, id: String(id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }

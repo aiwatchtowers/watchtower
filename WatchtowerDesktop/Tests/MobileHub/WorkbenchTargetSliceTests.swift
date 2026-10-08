@@ -152,6 +152,47 @@ final class WorkbenchTargetSliceTests: XCTestCase {
         XCTAssertTrue(try commentIDs().isEmpty, "a comment on an unpublished target is not published")
     }
 
+    /// Review M2: an archived group's window follows its subtree's newest
+    /// close (the view's rule), so a group closed long ago with a child
+    /// closed recently is published with it and the child's parent_id holds.
+    func testAnArchivedGroupIsPublishedWhileItsChildIs() throws {
+        let now = Date()
+        let (group, child) = try dbPool.write { db -> (Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            let group = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Group")
+            let child = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Child", parentID: group)
+            try SliceSeed.close(db, id: child, at: now.addingTimeInterval(-80 * day))
+            // The rollup closed the group too; date its own close earlier.
+            try SliceSeed.close(db, id: group, at: now.addingTimeInterval(-100 * day))
+            return (group, child)
+        }
+        let payloads = try targetPayloads()
+
+        XCTAssertEqual(payloads[child]?["archived"] as? Bool, true)
+        XCTAssertEqual(payloads[group]?["archived"] as? Bool, true, "the group's subtree closed 80 days ago")
+        XCTAssertEqual((payloads[child]?["parent_id"] as? NSNumber)?.int64Value, group)
+    }
+
+    func testOnEqualCloseTimesAnArchivedGroupRanksBeforeItsChildren() throws {
+        let now = Date()
+        let (group, children) = try dbPool.write { db -> (Int64, [Int64]) in
+            let project = try TestDatabase.insertWorkbench(db)
+            let group = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Group")
+            var children: [Int64] = []
+            for index in 0..<500 {
+                children.append(try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "c\(index)", parentID: group))
+            }
+            for child in children { try SliceSeed.close(db, id: child, at: now.addingTimeInterval(-30 * day)) }
+            try SliceSeed.close(db, id: group, at: now.addingTimeInterval(-30 * day))
+            return (group, children)
+        }
+        let payloads = try targetPayloads()
+
+        XCTAssertEqual(payloads.count, 500)
+        XCTAssertNotNil(payloads[group], "the group keeps its place at the cap; one child leaves instead")
+        XCTAssertEqual(children.filter { payloads[$0] == nil }.count, 1)
+    }
+
     func testADoneTargetNotYetArchivedIsPublishedAsNotArchived() throws {
         let target = try dbPool.write { db -> Int64 in
             let project = try TestDatabase.insertWorkbench(db)

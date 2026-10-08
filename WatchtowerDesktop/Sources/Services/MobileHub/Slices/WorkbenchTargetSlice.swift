@@ -10,6 +10,12 @@ import WatchtowerSync
 /// close first. Board targets only (`project_id IS NOT NULL`, PROJ-01); the
 /// archive verdict is the `workbench_target_archive` view's (PROJ-15), read
 /// once for all workbenches.
+///
+/// An archived target's last close is its subtree's newest close, as the
+/// view decides the archive (a node's close is its newest status move, else
+/// `updated_at`). A group is therefore never older than its children, and
+/// on equal close times the larger subtree ranks first, so an archived
+/// child's `parent_id` always names a published group.
 struct WorkbenchTargetWindow {
     static let maxOpen = 2000
     static let maxArchived = 500
@@ -24,25 +30,45 @@ struct WorkbenchTargetWindow {
 
     static func load(_ db: Database, now: Date) throws -> Self {
         let cutoff = now.addingTimeInterval(-Double(archivedDays) * 86_400)
-        // The close time is the view's own: the newest status move, else
-        // updated_at. Every non-archived target is in the window, so the done
-        // count reads from it too.
+        // Every non-archived target is in the window, so the done count reads
+        // from it too. `up` carries each descendant's close to every ancestor
+        // on the same board (the view's walk); keyed by descendant, so a
+        // subtree's size counts each node once.
         let rows = try Row.fetchAll(db, sql: """
-            WITH board AS (
-                SELECT t.id, t.project_id, t.status, t.updated_at, a.archived,
-                       COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
-                                t.updated_at) AS closed_at
+            WITH RECURSIVE
+            node(id, parent_id, project_id, closed_at) AS (
+                SELECT t.id, t.parent_id, t.project_id,
+                       julianday(COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
+                                          t.updated_at))
+                FROM targets t
+                WHERE t.project_id IS NOT NULL
+            ),
+            up(ancestor, parent_id, project_id, descendant, closed_at) AS (
+                SELECT id, parent_id, project_id, id, closed_at FROM node
+                UNION
+                SELECT a.id, a.parent_id, up.project_id, up.descendant, up.closed_at
+                FROM up JOIN targets a ON a.id = up.parent_id AND a.project_id = up.project_id
+            ),
+            subtree AS (
+                SELECT ancestor AS id, MAX(closed_at) AS closed_at, COUNT(*) AS size FROM up GROUP BY ancestor
+            ),
+            board AS (
+                SELECT t.id, t.project_id, t.status, julianday(t.updated_at) AS updated, a.archived,
+                       s.closed_at, s.size
                 FROM targets t
                 JOIN workbench_target_archive a ON a.target_id = t.id
+                JOIN subtree s ON s.id = t.id
                 WHERE t.project_id IS NOT NULL
             )
             SELECT id, project_id, status, archived,
                    ROW_NUMBER() OVER (
                        PARTITION BY project_id, archived
-                       ORDER BY CASE WHEN archived THEN closed_at ELSE updated_at END DESC, id DESC
+                       ORDER BY CASE WHEN archived THEN closed_at ELSE updated END DESC,
+                                CASE WHEN archived THEN size ELSE 0 END DESC,
+                                id DESC
                    ) AS rank
             FROM board
-            WHERE archived = 0 OR julianday(closed_at) >= julianday(?)
+            WHERE archived = 0 OR closed_at >= julianday(?)
             """, arguments: [cutoff])
         var published: [Int64: Bool] = [:]
         var more: [Int64: Int] = [:]
@@ -160,6 +186,7 @@ struct WorkbenchTargetSlice: SliceSource {
             TerminalLaunch.workOnTargetPrompt(targetID: id, vocabulary: .current), limit: 1000
         )
         let lastStatus = facts.lastStatus[id]
+        let recordName = kind.recordName(id: String(id))
         return Payload(
             id: id, workbenchID: workbenchID, parentID: parentID,
             text: text.text, textClipped: text.clipped,
@@ -176,8 +203,8 @@ struct WorkbenchTargetSlice: SliceSource {
             lastStatusAt: lastStatus.flatMap { SliceDate.parse($0.at) },
             lastStatusActor: lastStatus?.actor,
             workOnPrompt: prompt.text, workOnPromptClipped: prompt.clipped,
-            createdAt: SliceDate.parseOrEpoch(target.createdAt),
-            updatedAt: SliceDate.parseOrEpoch(target.updatedAt)
+            createdAt: SliceDate.required(target.createdAt, field: "created_at", record: recordName),
+            updatedAt: SliceDate.required(target.updatedAt, field: "updated_at", record: recordName)
         )
     }
 }

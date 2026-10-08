@@ -50,6 +50,9 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     private let entries = OSAllocatedUnfairLock<[Int64: Entry]>(initialState: [:])
     private let onChange = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
+    /// Bumped by `start()` and `stop()`: a pass that began under another
+    /// generation stops before its next run and stores nothing.
+    private let generation = OSAllocatedUnfairLock(initialState: 0)
     private let logger = Logger(subsystem: Constants.bundleID, category: "WorkbenchGitRefresher")
 
     /// - Parameters:
@@ -86,10 +89,13 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         }
     }
 
-    /// One pass: runs every due workbench, one after the other.
-    /// - Returns: the workbenches attempted.
+    /// One pass: runs every due workbench, one after the other. A `stop()`
+    /// during the pass ends it before its next run, and the run in flight
+    /// stores nothing.
+    /// - Returns: the workbenches whose CLI run was started.
     @discardableResult
     func refreshDue() async -> Set<Int64> {
+        let passGeneration = generation.withLock { $0 }
         let ids: [Int64]
         do {
             ids = try await workbenchIDs()
@@ -97,11 +103,18 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
             logger.error("git status: listing workbenches failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
-        let due = takeDue(ids: ids, now: clock())
-        for id in due {
-            await refresh(id)
+        guard isCurrent(passGeneration) else { return [] }
+        var attempted: Set<Int64> = []
+        for id in takeDue(ids: ids, now: clock()) {
+            guard !Task.isCancelled, isCurrent(passGeneration) else { break }
+            attempted.insert(id)
+            await refresh(id, passGeneration: passGeneration)
         }
-        return Set(due)
+        return attempted
+    }
+
+    private func isCurrent(_ passGeneration: Int) -> Bool {
+        generation.withLock { $0 == passGeneration }
     }
 
     /// Forgets workbenches that left `ids`, adds new ones, and stamps the
@@ -129,7 +142,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
         }
     }
 
-    private func refresh(_ id: Int64) async {
+    private func refresh(_ id: Int64, passGeneration: Int) async {
         let fetch = self.fetch
         let result = await MobileHubService.bounded(timing.timeout) { () -> Result<WorkbenchGitStatus, any Error> in
             do {
@@ -138,6 +151,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
                 return .failure(error)
             }
         }
+        guard isCurrent(passGeneration) else { return }
         switch result {
         case nil:
             logger.warning("git status for workbench \(id) timed out; keeping the last value")
@@ -167,6 +181,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     // MARK: - HubCompanion
 
     func start() {
+        generation.withLock { $0 += 1 }
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -181,6 +196,7 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     }
 
     func stop() {
+        generation.withLock { $0 += 1 }
         loopTask.withLock { current in
             current?.cancel()
             current = nil
