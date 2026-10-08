@@ -1845,6 +1845,13 @@ final class MeetingRecorderCenter {
     /// recording recoverable. Unlike `writeMetaSidecar` (best-effort for a
     /// live capture) a failure here throws. Returns the reserved audio URL;
     /// nothing exists there yet.
+    ///
+    /// Call it on the main actor (as `ingestPhoneRecording` does). The
+    /// exclusive create makes it safe against other reservers on any
+    /// thread, but `startRecording`'s own sidecar write is not exclusive, so
+    /// a reservation is serialised with a Desktop capture only on the main
+    /// actor. Internal (and `nonisolated`) only so the reservers' race is
+    /// testable off the main actor.
     nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
