@@ -28,7 +28,8 @@ struct MarkdownList: Equatable {
 
 /// The block structure of a Markdown document: a small line-based reader
 /// for the CommonMark blocks (ATX and setext headings, paragraphs, fenced
-/// and indented code, quotes, lists, thematic breaks, HTML blocks) and GFM
+/// and indented code, quotes, lists, thematic breaks, HTML blocks per
+/// `MarkdownHTMLBlock`) and GFM
 /// tables and task items. HTML blocks read as a paragraph of their raw text,
 /// as Core keeps them.
 struct MarkdownBlockReader {
@@ -75,7 +76,7 @@ struct MarkdownBlockReader {
         if let marker = MarkdownLine.ListMarker(line) { return list(marker) }
         if MarkdownLine.indent(line) >= 4 { return indentedCode() }
         if isTableStart(index) { return table() }
-        if MarkdownLine.startsHTMLBlock(line) { return html() }
+        if let html = MarkdownHTMLBlock(line) { return self.html(html) }
         return paragraph()
     }
 
@@ -186,11 +187,14 @@ struct MarkdownBlockReader {
 
     // MARK: - Leaf text
 
-    private mutating func html() -> MarkdownBlock {
+    private mutating func html(_ block: MarkdownHTMLBlock) -> MarkdownBlock {
         var body: [String] = []
-        while index < lines.count, !MarkdownLine.isBlank(lines[index]) {
-            body.append(lines[index])
+        while index < lines.count {
+            let line = lines[index]
+            if case .blankLine = block, MarkdownLine.isBlank(line) { break }
+            body.append(line)
             index += 1
+            if block.ends(line) { break }
         }
         return .paragraph(body.joined(separator: "\n") + "\n")
     }
@@ -222,7 +226,7 @@ struct MarkdownBlockReader {
     private func startsBlock(_ line: String) -> Bool {
         if MarkdownLine.Fence(line) != nil || MarkdownLine.atxHeading(line) != nil { return true }
         if MarkdownLine.isThematicBreak(line) || MarkdownLine.quoteContent(line) != nil { return true }
-        if MarkdownLine.startsHTMLBlock(line) { return true }
+        if MarkdownHTMLBlock(line)?.interruptsParagraph == true { return true }
         guard let marker = MarkdownLine.ListMarker(line), !MarkdownLine.isBlank(marker.content) else { return false }
         return !marker.ordered || marker.start == 1
     }
@@ -321,13 +325,6 @@ enum MarkdownLine {
         guard rest.first == ">" else { return nil }
         let content = rest.dropFirst()
         return String(content.first == " " ? content.dropFirst() : content)
-    }
-
-    static func startsHTMLBlock(_ line: String) -> Bool {
-        guard indent(line) < 4 else { return false }
-        let rest = line.drop { $0 == " " }
-        guard rest.first == "<", let next = rest.dropFirst().first else { return false }
-        return next.isLetter || next == "/" || next == "!" || next == "?"
     }
 
     /// `- `, `* `, `+ `, `1. ` or `1) `, up to 3 spaces in.

@@ -158,6 +158,32 @@ final class CommentAnchorBuilderTests: XCTestCase {
         XCTAssertEqual(PlainTextRendering.render(markdown).text, "a\nb\n1\n2\n3\n\n\n")
     }
 
+    /// CommonMark's HTML-block starts: a placeholder like `<owner>` inside
+    /// a paragraph is inline text, never a block of its own.
+    func testAnInlineTagDoesNotInterruptAParagraph() {
+        XCTAssertEqual(
+            PlainTextRendering.render("Set the token in\n<owner> config and **restart**.\n").text,
+            "Set the token in <owner> config and restart.\n\n"
+        )
+    }
+
+    func testAnAutolinkStartingALineIsText() {
+        XCTAssertEqual(PlainTextRendering.render("<https://example.com> is the site\n").text, "https://example.com is the site\n\n")
+    }
+
+    func testHTMLBlocksStartOnlyAsCommonMarkSays() {
+        // A block tag (condition 6) interrupts a paragraph.
+        XCTAssertEqual(PlainTextRendering.render("Text\n<div>\nraw\n</div>\n").text, "Text\n\n<div>\nraw\n</div>\n\n")
+        // A comment (condition 2) ends at its closing marker, not a blank line.
+        XCTAssertEqual(PlainTextRendering.render("<!-- note -->\nAfter\n").text, "<!-- note -->\n\nAfter\n\n")
+        // A complete other tag alone on its line (condition 7) starts a block,
+        // but not inside a paragraph.
+        XCTAssertEqual(PlainTextRendering.render("<owner>\n").text, "<owner>\n\n")
+        XCTAssertEqual(PlainTextRendering.render("Text\n<owner>\n").text, "Text <owner>\n\n")
+        // A tag that is not alone on its line is paragraph text.
+        XCTAssertEqual(PlainTextRendering.render("<owner> config\n").text, "<owner> config\n\n")
+    }
+
     func testAnEmptySnapshotRendersNothing() {
         XCTAssertEqual(PlainTextRendering.render(""), PlainTextDocument(text: "", headings: []))
     }
