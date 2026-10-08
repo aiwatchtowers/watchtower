@@ -35,6 +35,9 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case heartbeat
     /// The hub's answer to one phone's `device` record (spec §4.13).
     case deviceGrant = "device_grant"
+    /// Mac-side progress of one phone recording upload (spec §4.12), record
+    /// name `recording_job-<upload id>`.
+    case recordingJob = "recording_job"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

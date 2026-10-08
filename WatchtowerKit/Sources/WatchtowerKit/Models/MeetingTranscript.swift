@@ -1,104 +1,136 @@
 import Foundation
-import GRDB
+import WatchtowerSync
 
 // MARK: - MeetingTranscript
 
-/// One locally-recorded meeting — the mobile mirror of the desktop's
-/// `meeting_transcripts` row (see `MeetingRecorderCenter` and the transcriber
-/// stack on that side).
+/// The `meeting_transcript` DataZone slice (mobile POC spec §4.11), record
+/// name `meeting_transcript-<meeting_transcripts.id>`: a capped projection
+/// with the recap resolved by the hub. The transcript body is not in the
+/// payload; it rides as the record's `segments.json` asset
+/// (`TranscriptSegment`). Never published: `audio_path`, `speakers_json`
+/// (voice embeddings), `notes_md` and chapters other than the overview.
 ///
-/// Unlike every other slice this one is published as a PROJECTION, so the model
-/// deliberately has NO `transcriptText`: the full text (and `segments_json`)
-/// would dominate the record and stays on the Mac, reachable through the
-/// desktop app. `snippet` is the first 200 characters, mirroring the desktop
-/// recordings list's own perf projection.
-///
-/// `recapJSON` is the RESOLVED recap the publisher computes in SQL — the linked
-/// event's `meeting_recaps` row when it has one, the recording's own
-/// `summary_json` otherwise (the desktop's `RecordingDetailView.load` rule).
-/// `speakers` is the diarized speaker roster (labels only; the voice embeddings
-/// never leave the Mac).
-public struct MeetingTranscript: FetchableRecord, Identifiable, Equatable {
+/// Wire: snake_case, sorted keys (decoded with `RelayCoder`); timestamps
+/// are the stored ISO8601 strings. A nil optional is an absent key:
+/// `<field>_clipped` is present only when the hub clipped the field,
+/// `<list>_more` only when it dropped entries.
+public struct MeetingTranscript: Codable, Identifiable, Equatable, Sendable {
     public let id: Int
-    /// nil for an ad-hoc recording — one that was never linked to an event, or
-    /// whose event was deleted (the column is ON DELETE SET NULL: a transcript
-    /// outlives its calendar event).
-    public let eventID: String?         // column: event_id
-    /// Title of the linked calendar event (publisher LEFT JOIN); nil for an
-    /// ad-hoc recording and for a link whose event row sync retention pruned.
-    public let eventTitle: String?      // column: event_title
+    /// nil for an ad-hoc recording: never linked to an event, or its event
+    /// was deleted (the column is ON DELETE SET NULL).
+    public let eventID: String?
+    /// At most 300.
     public let title: String
-    public let durationSec: Int         // column: duration_sec
-    public let langStats: String        // column: lang_stats
-    public let notesMD: String          // column: notes_md
-    public let chaptersJSON: String     // column: chapters_json
-    public let recapJSON: String        // column: recap_json (publisher-resolved)
-    public let speakers: String         // column: speakers (publisher-joined JSON array)
-    /// First 200 characters of the transcript — the whole text is not synced.
-    public let snippet: String
+    public let titleClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    public let durationSec: Int
+    /// ISO8601, as stored.
     public let createdAt: String
+    /// ISO8601, as stored.
     public let updatedAt: String
+    /// The phone upload this transcript came from (the hub's sidecar map);
+    /// nil for a recording made on the Mac.
+    public let phoneRecordingID: String?
+    /// Display names only, at most 20.
+    public let speakers: [String]
+    public let speakersMore: Int?
 
-    public init(row: Row) {
-        id = row["id"]
-        eventID = row["event_id"]
-        eventTitle = row["event_title"]
-        title = row["title"] ?? ""
-        durationSec = row["duration_sec"] ?? 0
-        langStats = row["lang_stats"] ?? ""
-        notesMD = row["notes_md"] ?? ""
-        chaptersJSON = row["chapters_json"] ?? ""
-        recapJSON = row["recap_json"] ?? ""
-        speakers = row["speakers"] ?? "[]"
-        snippet = row["snippet"] ?? ""
-        createdAt = row["created_at"] ?? ""
-        updatedAt = row["updated_at"] ?? ""
+    // Recap: `meeting_recaps.recap_json`, else `summary_json` (ad-hoc).
+    /// nil while the recording has no recap.
+    public let summary: String?
+    /// Each recap list: at most 50 entries of at most 500.
+    public let keyDecisions: [String]
+    public let keyDecisionsMore: Int?
+    public let actionItems: [String]
+    public let actionItemsMore: Int?
+    public let openQuestions: [String]
+    public let openQuestionsMore: Int?
+
+    /// `chapters_json.overall_summary`, at most 2000; nil when absent.
+    public let overview: String?
+    public let overviewClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// True when the `segments.json` asset was clipped to its 20 MB cap.
+    public let segmentsClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+
+    public var recordName: String { SliceKind.meetingTranscript.recordName(id: String(id)) }
+
+    // convertFromSnakeCase maps "event_id" -> "eventId" (lowercase d), so
+    // the id-suffixed keys' stringValues use that form.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case eventID = "eventId"
+        case title, titleClipped, durationSec, createdAt, updatedAt
+        case phoneRecordingID = "phoneRecordingId"
+        case speakers, speakersMore, summary
+        case keyDecisions, keyDecisionsMore, actionItems, actionItemsMore, openQuestions, openQuestionsMore
+        case overview, overviewClipped, segmentsClipped
     }
 
-    // MARK: - Recap
+    public init(
+        id: Int,
+        eventID: String? = nil,
+        title: String,
+        titleClipped: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        durationSec: Int,
+        createdAt: String,
+        updatedAt: String,
+        phoneRecordingID: String? = nil,
+        speakers: [String],
+        speakersMore: Int? = nil,
+        summary: String? = nil,
+        keyDecisions: [String],
+        keyDecisionsMore: Int? = nil,
+        actionItems: [String],
+        actionItemsMore: Int? = nil,
+        openQuestions: [String],
+        openQuestionsMore: Int? = nil,
+        overview: String? = nil,
+        overviewClipped: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        segmentsClipped: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
+    ) {
+        self.id = id
+        self.eventID = eventID
+        self.title = title
+        self.titleClipped = titleClipped
+        self.durationSec = durationSec
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.phoneRecordingID = phoneRecordingID
+        self.speakers = speakers
+        self.speakersMore = speakersMore
+        self.summary = summary
+        self.keyDecisions = keyDecisions
+        self.keyDecisionsMore = keyDecisionsMore
+        self.actionItems = actionItems
+        self.actionItemsMore = actionItemsMore
+        self.openQuestions = openQuestions
+        self.openQuestionsMore = openQuestionsMore
+        self.overview = overview
+        self.overviewClipped = overviewClipped
+        self.segmentsClipped = segmentsClipped
+    }
+}
 
-    /// The recap shape the meeting pipeline produces — the mobile mirror of the
-    /// desktop's `MeetingRecap.Content`. Absent keys default instead of failing
-    /// the decode, matching Go's `json.Unmarshal` tolerance in
-    /// `internal/mcp/transcripts.go` (a partial recap still carries its
-    /// summary).
-    public struct Recap: Decodable, Equatable {
-        public let summary: String
-        public let keyDecisions: [String]
-        public let actionItems: [String]
-        public let openQuestions: [String]
+// MARK: - Segments asset
 
-        enum CodingKeys: String, CodingKey {
-            case summary
-            case keyDecisions = "key_decisions"
-            case actionItems = "action_items"
-            case openQuestions = "open_questions"
-        }
+/// One non-deleted transcript segment in the `segments.json` asset
+/// (spec §4.11), which holds `[{start_sec, end_sec, speaker, text}]`. A
+/// legacy transcript without segments arrives as one segment.
+public struct TranscriptSegment: Codable, Equatable, Sendable {
+    public let startSec: Double
+    public let endSec: Double
+    /// "" when the recording was not diarized.
+    public let speaker: String
+    public let text: String
 
-        public init(from decoder: Decoder) throws {
-            let values = try decoder.container(keyedBy: CodingKeys.self)
-            summary = try values.decodeIfPresent(String.self, forKey: .summary) ?? ""
-            keyDecisions = try values.decodeIfPresent([String].self, forKey: .keyDecisions) ?? []
-            actionItems = try values.decodeIfPresent([String].self, forKey: .actionItems) ?? []
-            openQuestions = try values.decodeIfPresent([String].self, forKey: .openQuestions) ?? []
-        }
+    public init(startSec: Double, endSec: Double, speaker: String, text: String) {
+        self.startSec = startSec
+        self.endSec = endSec
+        self.speaker = speaker
+        self.text = text
     }
 
-    /// The resolved recap, or nil when the recording has none (or the stored
-    /// JSON is unreadable — a bad recap must never hide the recording).
-    public var recap: Recap? {
-        guard !recapJSON.isEmpty, let data = recapJSON.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(Recap.self, from: data)
-    }
-
-    // MARK: - Speakers
-
-    /// Diarized speaker labels ("Я", "Speaker 2", a confirmed name) from the
-    /// publisher-joined `speakers` array; empty when the recording was not
-    /// diarized.
-    public var decodedSpeakers: [String] {
-        guard !speakers.isEmpty, speakers != "[]",
-              let data = speakers.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    /// Decodes the asset's bytes; an empty array is an empty transcript.
+    public static func decodeAsset(_ data: Data) throws -> [Self] {
+        try RelayCoder.makeDecoder().decode([Self].self, from: data)
     }
 }

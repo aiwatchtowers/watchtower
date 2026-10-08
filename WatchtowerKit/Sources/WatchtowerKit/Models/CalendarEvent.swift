@@ -1,99 +1,179 @@
 import Foundation
-import GRDB
+import WatchtowerSync
+
+// MARK: - Wire enums
+
+/// `calendar_events.event_status` as stored. rawValues are wire format; a
+/// value a newer Mac writes decodes as an unknown value (`OpenWireValue`).
+/// The hub never publishes `cancelled` events (spec §4.10); the value is
+/// known only so a mirror can name it.
+public struct CalendarEventStatus: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    public static let confirmed = Self(rawValue: "confirmed")
+    public static let tentative = Self(rawValue: "tentative")
+    public static let cancelled = Self(rawValue: "cancelled")
+    public static let knownValues: [Self] = [.confirmed, .tentative, .cancelled]
+}
+
+/// A linked target's `targets.status`. Linked targets are never on a board
+/// (`project_id IS NULL`, PROJ-01), so the board-only `in_review` is not
+/// among the known values; anything else decodes as unknown.
+public struct LinkedTargetStatus: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    public static let todo = Self(rawValue: "todo")
+    public static let inProgress = Self(rawValue: "in_progress")
+    public static let blocked = Self(rawValue: "blocked")
+    public static let done = Self(rawValue: "done")
+    public static let dismissed = Self(rawValue: "dismissed")
+    public static let snoozed = Self(rawValue: "snoozed")
+    public static let knownValues: [Self] = [.todo, .inProgress, .blocked, .done, .dismissed, .snoozed]
+}
 
 // MARK: - Attendee
 
-public struct EventAttendee: Codable, Identifiable, Equatable {
-    // Note: uses email as identity; assumes no duplicate emails per event (standard for calendar APIs)
+/// One attendee reduced to the three keys the hub keeps (spec §4.10).
+public struct EventAttendee: Codable, Identifiable, Equatable, Sendable {
+    // Email is the identity; calendar APIs list each email once per event.
     public var id: String { email }
     public let email: String
     public let displayName: String
+    /// As stored (`accepted`, `declined`, `tentative`, `needsAction`, …).
     public let responseStatus: String
-    public let slackUserID: String
 
-    public init(email: String, displayName: String, responseStatus: String, slackUserID: String) {
+    public init(email: String, displayName: String, responseStatus: String) {
         self.email = email
         self.displayName = displayName
         self.responseStatus = responseStatus
-        self.slackUserID = slackUserID
-    }
-
-    public enum CodingKeys: String, CodingKey {
-        case email
-        case displayName = "display_name"
-        case responseStatus = "response_status"
-        case slackUserID = "slack_user_id"
     }
 }
 
-// MARK: - CalendarCalendarItem
+// MARK: - Linked target
 
-public struct CalendarCalendarItem: FetchableRecord, Identifiable, Equatable {
-    public let id: String
-    public let name: String
-    public let isPrimary: Bool
-    public let isSelected: Bool
-    public let color: String
-    public let syncedAt: String
-    /// The Google account that synced this calendar, or nil for a CalDAV/ICS
-    /// calendar (`caldav:%`/`ics:%` ids), which isn't tied to any account.
-    public let accountID: Int?
+/// A target created from one of the event's transcript action items,
+/// shown read-only (spec §4.10).
+public struct LinkedTarget: Codable, Identifiable, Equatable, Sendable {
+    public let id: Int
+    /// At most 200 grapheme clusters, clipped by the hub.
+    public let text: String
+    public let status: LinkedTargetStatus
 
-    public init(row: Row) {
-        id = row["id"]
-        name = row["name"] ?? ""
-        isPrimary = (row["is_primary"] as Int? ?? 0) != 0
-        isSelected = (row["is_selected"] as Int? ?? 1) != 0
-        color = row["color"] ?? ""
-        syncedAt = row["synced_at"] ?? ""
-        accountID = row["account_id"]
+    public init(id: Int, text: String, status: LinkedTargetStatus) {
+        self.id = id
+        self.text = text
+        self.status = status
     }
 }
 
 // MARK: - CalendarEvent
 
-public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
+/// The `calendar_event` DataZone slice (mobile POC spec §4.10), record name
+/// `calendar_event-<calendar_events.id>`: a capped projection of one event
+/// in the hub's window, never the raw row (`raw_json` stays on the Mac).
+///
+/// Wire: snake_case, sorted keys (decoded with `RelayCoder`). Times travel
+/// as the stored ISO8601 strings, so an all-day event keeps its stored
+/// date. A nil optional is an absent key: `<field>_clipped` is present only
+/// when the hub clipped the field, `<list>_more` only when it dropped
+/// entries, `prep_generated_at` only when the event has prep.
+public struct CalendarEvent: Codable, Identifiable, Equatable, Sendable {
     public let id: String
-    public let calendarID: String
-    public let title: String
-    public let description: String
-    public let location: String
-    public let startTime: String       // ISO8601
-    public let endTime: String         // ISO8601
-    public let organizerEmail: String
-    public let attendees: String       // JSON array
-    public let isRecurring: Bool
+    /// ISO8601, as stored.
+    public let startTime: String
+    /// ISO8601, as stored.
+    public let endTime: String
     public let isAllDay: Bool
-    public let eventStatus: String
-    public let eventType: String
+    public let isRecurring: Bool
+    public let eventStatus: CalendarEventStatus
+    public let organizerEmail: String
     public let htmlLink: String
+    /// "" when the event has no meeting link.
     public let conferenceURL: String
-    public let rawJSON: String
-    public let syncedAt: String
-    public let updatedAt: String
+    /// At most 300.
+    public let title: String
+    public let titleClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// At most 300.
+    public let location: String
+    public let locationClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// Plain text (the hub strips HTML), at most 2000.
+    public let description: String
+    public let descriptionClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// At most 100.
+    public let attendees: [EventAttendee]
+    public let attendeesMore: Int?
+    /// Talking points, then suggested prep: at most 8, each at most 300.
+    public let prepBullets: [String]
+    public let prepBulletsMore: Int?
+    /// ISO8601, as stored; nil when the event has no prep yet.
+    public let prepGeneratedAt: String?
+    /// At most 20, read-only.
+    public let linkedTargets: [LinkedTarget]
+    public let linkedTargetsMore: Int?
 
-    public init(row: Row) {
-        id = row["id"]
-        calendarID = row["calendar_id"] ?? ""
-        title = row["title"] ?? ""
-        description = row["description"] ?? ""
-        location = row["location"] ?? ""
-        startTime = row["start_time"] ?? ""
-        endTime = row["end_time"] ?? ""
-        organizerEmail = row["organizer_email"] ?? ""
-        attendees = row["attendees"] ?? "[]"
-        isRecurring = (row["is_recurring"] as Int? ?? 0) != 0
-        isAllDay = (row["is_all_day"] as Int? ?? 0) != 0
-        eventStatus = row["event_status"] ?? "confirmed"
-        eventType = row["event_type"] ?? ""
-        htmlLink = row["html_link"] ?? ""
-        conferenceURL = row["conference_url"] ?? ""
-        rawJSON = row["raw_json"] ?? "{}"
-        syncedAt = row["synced_at"] ?? ""
-        updatedAt = row["updated_at"] ?? ""
+    public var recordName: String { SliceKind.calendarEvent.recordName(id: id) }
+
+    // convertFromSnakeCase maps "conference_url" -> "conferenceUrl"
+    // (lowercase rl), so that key's stringValue uses this form.
+    enum CodingKeys: String, CodingKey {
+        case id, startTime, endTime, isAllDay, isRecurring, eventStatus, organizerEmail, htmlLink
+        case conferenceURL = "conferenceUrl"
+        case title, titleClipped, location, locationClipped, description, descriptionClipped
+        case attendees, attendeesMore, prepBullets, prepBulletsMore, prepGeneratedAt
+        case linkedTargets, linkedTargetsMore
     }
 
-    // MARK: - ISO8601 Parsing
+    public init(
+        id: String,
+        startTime: String,
+        endTime: String,
+        isAllDay: Bool,
+        isRecurring: Bool,
+        eventStatus: CalendarEventStatus,
+        organizerEmail: String,
+        htmlLink: String,
+        conferenceURL: String,
+        title: String,
+        titleClipped: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        location: String,
+        locationClipped: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        description: String,
+        descriptionClipped: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        attendees: [EventAttendee],
+        attendeesMore: Int? = nil,
+        prepBullets: [String],
+        prepBulletsMore: Int? = nil,
+        prepGeneratedAt: String? = nil,
+        linkedTargets: [LinkedTarget],
+        linkedTargetsMore: Int? = nil
+    ) {
+        self.id = id
+        self.startTime = startTime
+        self.endTime = endTime
+        self.isAllDay = isAllDay
+        self.isRecurring = isRecurring
+        self.eventStatus = eventStatus
+        self.organizerEmail = organizerEmail
+        self.htmlLink = htmlLink
+        self.conferenceURL = conferenceURL
+        self.title = title
+        self.titleClipped = titleClipped
+        self.location = location
+        self.locationClipped = locationClipped
+        self.description = description
+        self.descriptionClipped = descriptionClipped
+        self.attendees = attendees
+        self.attendeesMore = attendeesMore
+        self.prepBullets = prepBullets
+        self.prepBulletsMore = prepBulletsMore
+        self.prepGeneratedAt = prepGeneratedAt
+        self.linkedTargets = linkedTargets
+        self.linkedTargetsMore = linkedTargetsMore
+    }
+
+    // MARK: - Dates
 
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let fmt = ISO8601DateFormatter()
@@ -101,72 +181,20 @@ public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
         return fmt
     }()
 
-    // MARK: - Computed Dates
-
+    /// `startTime` parsed; `distantPast` when malformed.
     public var startDate: Date {
         Self.iso8601Formatter.date(from: startTime) ?? Date.distantPast
     }
 
+    /// `endTime` parsed; `distantPast` when malformed.
     public var endDate: Date {
         Self.iso8601Formatter.date(from: endTime) ?? Date.distantPast
     }
 
-    public var duration: TimeInterval {
-        endDate.timeIntervalSince(startDate)
-    }
+    // MARK: - Conference link
 
-    // MARK: - Attendees
-
-    // Note: decodes JSON each time; acceptable for current use (row rendering, attendee count)
-    public var parsedAttendees: [EventAttendee] {
-        guard let data = attendees.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([EventAttendee].self, from: data)) ?? []
-    }
-
-    /// Everyone identified with the event: attendees plus the organizer —
-    /// the sync stores the organizer in its own column, never in the
-    /// attendees JSON, and an organizer-not-guest event (Zoom/Calendly, a
-    /// self-removed organizer) would otherwise lose them. Used to scope
-    /// voice-print matching and to seed the rename picker; the organizer
-    /// entry is skipped when already listed as an attendee
-    /// (case-insensitive email compare).
-    ///
-    /// Room resources are filtered out FIRST — Google stores them as
-    /// ordinary attendee rows (the client parses no resource flag; the
-    /// `@resource.calendar.google.com` address is the stable marker, and
-    /// the Google client is the only writer of this JSON), and one filter
-    /// here covers all three consumers: the sentinel below, the voice-print
-    /// scoping set, and the rename picker (a room must never be offered as
-    /// a speaker or mint a voice print).
-    ///
-    /// The organizer joins only a NON-EMPTY (human) attendee list: an empty
-    /// result is the "no identities → treat as ad-hoc" sentinel downstream
-    /// (`VoicePrintMatcher.scoped` falls back to the global pool on []),
-    /// and a zero-guest self-created event (focus block), a room-only
-    /// booking, or an undecodable attendees JSON must keep that fallback —
-    /// an owner-only set would silently narrow the pool to the owner and
-    /// strip every colleague's name.
-    public var attendeesIncludingOrganizer: [EventAttendee] {
-        let attendees = parsedAttendees.filter {
-            let email = $0.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            return !email.hasSuffix("@resource.calendar.google.com")
-        }
-        let organizer = organizerEmail.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !attendees.isEmpty, !organizer.isEmpty,
-              !attendees.contains(where: {
-                  $0.email.trimmingCharacters(in: .whitespacesAndNewlines)
-                      .caseInsensitiveCompare(organizer) == .orderedSame
-              })
-        else { return attendees }
-        return attendees + [EventAttendee(
-            email: organizer, displayName: "", responseStatus: "", slackUserID: "")]
-    }
-
-    // MARK: - Conference Link
-
-    /// The event's meeting link (Meet/Zoom/Teams/Webex) as a URL, or nil when
-    /// absent or malformed — a bad value in the DB must mean "no Join button",
-    /// never a crash.
+    /// The event's meeting link as a URL, or nil when absent or malformed —
+    /// a bad value must mean "no Join button", never a crash.
     public var conferenceLink: URL? {
         guard !conferenceURL.isEmpty,
               let url = URL(string: conferenceURL),
@@ -174,84 +202,5 @@ public struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
               scheme == "https" || scheme == "http",
               url.host != nil else { return nil }
         return url
-    }
-
-    // MARK: - Status
-
-    public var isHappeningNow: Bool {
-        let now = Date()
-        return now >= startDate && now < endDate
-    }
-
-    public var isUpcoming: Bool {
-        let now = Date()
-        return startDate > now && startDate <= now.addingTimeInterval(3600)
-    }
-
-    // MARK: - Description
-
-    public var plainDescription: String {
-        Self.stripHTML(description)
-    }
-
-    public static func stripHTML(_ input: String) -> String {
-        guard !input.isEmpty else { return "" }
-        var s = input
-        s = s.replacingOccurrences(of: "(?i)<\\s*br\\s*/?\\s*>", with: "\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "(?i)</\\s*p\\s*>", with: "\n\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "(?i)</\\s*div\\s*>", with: "\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "(?i)</\\s*li\\s*>", with: "\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "(?i)<\\s*hr\\s*/?\\s*>", with: "\n", options: .regularExpression)
-        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        let entities: [String: String] = [
-            "&nbsp;": " ",
-            "&amp;": "&",
-            "&lt;": "<",
-            "&gt;": ">",
-            "&quot;": "\"",
-            "&#39;": "'",
-            "&apos;": "'"
-        ]
-        for (k, v) in entities {
-            s = s.replacingOccurrences(of: k, with: v)
-        }
-        s = s.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    // MARK: - Display
-
-    public var formattedTimeRange: String {
-        if isAllDay { return "All day" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "HH:mm"
-        return "\(fmt.string(from: startDate)) - \(fmt.string(from: endDate))"
-    }
-
-    public var durationText: String {
-        let minutes = Int(duration / 60)
-        if minutes < 60 { return "\(minutes)m" }
-        let hours = minutes / 60
-        let rem = minutes % 60
-        if rem == 0 { return "\(hours)h" }
-        return "\(hours)h \(rem)m"
-    }
-
-    public var responseIcon: String {
-        switch eventStatus {
-        case "confirmed": return "checkmark.circle.fill"
-        case "tentative": return "questionmark.circle"
-        case "cancelled": return "xmark.circle"
-        default: return "circle"
-        }
-    }
-
-    public var responseColor: String {
-        switch eventStatus {
-        case "confirmed": return "green"
-        case "tentative": return "orange"
-        case "cancelled": return "red"
-        default: return "secondary"
-        }
     }
 }
