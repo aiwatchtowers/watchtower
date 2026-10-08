@@ -71,8 +71,9 @@ struct SettingsSnapshot: Equatable {
 
     /// Both records are RelayCoder JSON in `slice_records`. An undecodable
     /// payload reads as absent (a newer Mac's reshaped record must never
-    /// break Settings).
-    private static func decode<T: Decodable>(
+    /// break Settings). The Workbench snapshot reads the heartbeat through it
+    /// too.
+    static func decode<T: Decodable>(
         _ type: T.Type,
         recordName: String,
         store: ReplicaStore,

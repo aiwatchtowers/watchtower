@@ -51,6 +51,25 @@ final class ReplicaResetTests: XCTestCase {
         XCTAssertEqual(try store.lastAlertedWatermark(), watermark)
     }
 
+    /// Every stored payload of one kind, from an already-open database;
+    /// other kinds are left out.
+    func testPayloadsOfAKindListOnlyThatKind() async throws {
+        let store = try ReplicaStore.inMemory()
+        let transport = InMemoryCloudTransport()
+        let stamp = Date().rounded()
+        try await transport.save([
+            try heartbeatRecord(at: stamp),
+            CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "1", modifiedAt: stamp, payload: Data("{\"id\":1}".utf8))),
+            CloudRecordFactory.record(for: SliceRecord(kind: .workbench, id: "2", modifiedAt: stamp, payload: Data("{\"id\":2}".utf8)))
+        ])
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+
+        let payloads = try await store.reader.read { db in try store.payloads(of: .workbench, from: db) }
+        XCTAssertEqual(Set(payloads.compactMap { String(bytes: $0, encoding: .utf8) }), ["{\"id\":1}", "{\"id\":2}"])
+        let none = try await store.reader.read { db in try store.payloads(of: .ownerAsk, from: db) }
+        XCTAssertTrue(none.isEmpty)
+    }
+
     func testPayloadForAnAbsentRecordIsNil() throws {
         let store = try ReplicaStore.inMemory()
         let payload = try store.reader.read { db in try store.payload(forRecordName: "heartbeat", from: db) }

@@ -1,8 +1,9 @@
 import SwiftUI
+import UIKit
 
 /// The four tabs (spec §13 A4): Now, Workbench, Calendar and More. Now and
-/// Workbench are filled by sub-project B and Calendar by C; until then each
-/// shows its empty state. More holds Settings.
+/// Workbench come from sub-project B, Calendar from C. More holds Settings
+/// and the voice-note entry.
 struct RootTabView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case now, workbench, calendar, more
@@ -27,6 +28,12 @@ struct RootTabView: View {
             }
         }
 
+        /// The Workbench tab's badge is the open-ask count (orange, set in
+        /// `init`); 0 hides it. Other tabs carry none.
+        func badge(_ snapshot: WorkbenchReplicaSnapshot) -> Int {
+            self == .workbench ? snapshot.openAsks().count : 0
+        }
+
         /// Spec §3: 5 s while Now or Workbench is on screen, 30 s otherwise.
         var fetchInterval: Duration {
             switch self {
@@ -40,13 +47,40 @@ struct RootTabView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var selection: Tab = .now
 
+    init() {
+        // The only tab badge is the open-ask count: a waiting-for-you element.
+        UITabBarItem.appearance().badgeColor = PhoneTone.waitingBadgeColor
+    }
+
     var body: some View {
         TabView(selection: $selection) {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
+                    .badge(tab.badge(env.workbenchReplica.snapshot))
                     .tag(tab)
             }
+        }
+        // A minimized capture keeps a red bar above everything: tap to
+        // return to the recorder.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if env.recorder.isCapturing, !env.recorder.isPresented {
+                RecordingMiniBar()
+            }
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { env.recorder.isPresented },
+            set: { presented in
+                // A swipe-down only minimizes: the capture goes on.
+                guard !presented else { return }
+                if env.recorder.isCapturing {
+                    env.recorder.minimize()
+                } else {
+                    env.recorder.close()
+                }
+            }
+        )) {
+            RecordingView()
         }
         .onChange(of: selection, initial: true) {
             env.setFetchInterval(selection.fetchInterval)
@@ -66,44 +100,21 @@ struct RootTabView: View {
     private func content(for tab: Tab) -> some View {
         switch tab {
         case .now:
-            EmptyTabView(
-                title: "Nothing needs you",
-                systemImage: "checkmark.circle",
-                message: "Asks and sessions from your Mac show up here."
-            )
+            NowView()
         case .workbench:
-            EmptyTabView(
-                title: "No workbenches yet",
-                systemImage: "hammer",
-                message: "Your Mac's workbenches show up here."
-            )
+            WorkbenchListView()
         case .calendar:
-            EmptyTabView(
-                title: "No events",
-                systemImage: "calendar",
-                message: "Your calendar from the Mac shows up here."
-            )
+            AgendaView()
         case .more:
             MoreView()
         }
     }
 }
 
-/// A tab's empty state, under its own navigation title.
-private struct EmptyTabView: View {
-    let title: String
-    let systemImage: String
-    let message: String
-
-    var body: some View {
-        NavigationStack {
-            ContentUnavailableView(title, systemImage: systemImage, description: Text(message))
-        }
-    }
-}
-
-/// More: Settings only.
+/// More: Settings, and the free voice-note entry of the recorder.
 struct MoreView: View {
+    @Environment(AppEnvironment.self) private var env
+
     enum Row: CaseIterable, Identifiable {
         case settings
 
@@ -124,11 +135,22 @@ struct MoreView: View {
 
     var body: some View {
         NavigationStack {
-            List(Row.allCases) { row in
-                NavigationLink {
-                    destination(for: row)
-                } label: {
-                    Label(row.title, systemImage: row.systemImage)
+            List {
+                Section {
+                    Button {
+                        Task { await env.recorder.recordVoiceNote() }
+                    } label: {
+                        Label("Record a voice note", systemImage: "mic")
+                    }
+                }
+                Section {
+                    ForEach(Row.allCases) { row in
+                        NavigationLink {
+                            destination(for: row)
+                        } label: {
+                            Label(row.title, systemImage: row.systemImage)
+                        }
+                    }
                 }
             }
             .navigationTitle("More")

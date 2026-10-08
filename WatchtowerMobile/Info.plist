@@ -20,6 +20,9 @@
 	<!-- The link flow scans the QR code shown on the Mac. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Watchtower uses the camera to scan the code shown on your Mac.</string>
+	<!-- The recorder captures meetings and voice notes for the Mac to transcribe. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Watchtower records meetings and voice notes so your Mac can transcribe them.</string>
 	<!-- remote-notification: silent CloudKit pushes wake the sync engine.
 	     audio: an active phone recording keeps capturing through lock and background.
 	     fetch: background refresh for the shared database scope. -->

@@ -181,14 +181,39 @@ public struct CalendarEvent: Codable, Identifiable, Equatable, Sendable {
         return fmt
     }()
 
-    /// `startTime` parsed; `distantPast` when malformed.
+    /// `startTime` parsed; `distantPast` when malformed. For an all-day
+    /// event this is the stored UTC midnight, which falls on the previous
+    /// day west of UTC: place and format events with `localStart(in:)`.
     public var startDate: Date {
         Self.iso8601Formatter.date(from: startTime) ?? Date.distantPast
     }
 
-    /// `endTime` parsed; `distantPast` when malformed.
+    /// `endTime` parsed; `distantPast` when malformed. All-day: see
+    /// `startDate`, use `localEnd(in:)`.
     public var endDate: Date {
         Self.iso8601Formatter.date(from: endTime) ?? Date.distantPast
+    }
+
+    /// Where the event starts on `calendar`'s clock. A timed event is its
+    /// instant; an all-day event is local midnight of its stored calendar
+    /// day (the hub stores the day as UTC midnight), so it never shifts by
+    /// a day in a zone west or east of UTC. `distantPast` when malformed.
+    public func localStart(in calendar: Calendar) -> Date {
+        isAllDay ? Self.localMidnight(ofUTCDay: startDate, in: calendar) : startDate
+    }
+
+    /// The end counterpart of `localStart(in:)`; an all-day end is the
+    /// exclusive next day, as stored.
+    public func localEnd(in calendar: Calendar) -> Date {
+        isAllDay ? Self.localMidnight(ofUTCDay: endDate, in: calendar) : endDate
+    }
+
+    private static func localMidnight(ofUTCDay instant: Date, in calendar: Calendar) -> Date {
+        guard instant != .distantPast else { return .distantPast }
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC") ?? utc.timeZone
+        let day = utc.dateComponents([.year, .month, .day], from: instant)
+        return calendar.date(from: DateComponents(year: day.year, month: day.month, day: day.day)) ?? .distantPast
     }
 
     // MARK: - Conference link

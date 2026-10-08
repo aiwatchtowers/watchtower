@@ -92,7 +92,7 @@ kit-test:
 
 # iPhone app (WatchtowerMobile, an xcodegen project). Simulator device for
 # the mobile targets; override: make mobile-run SIM="iPhone 17e".
-SIM ?= iPhone 17 Pro
+SIM ?= iPhone 18 Pro
 MOBILE_PROJ := WatchtowerMobile/WatchtowerMobile.xcodeproj
 MOBILE_DEST := platform=iOS Simulator,name=$(SIM)
 MOBILE_BUNDLE_ID := com.aiwatchtowers.watchtower.mobile

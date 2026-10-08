@@ -6,6 +6,7 @@ import XCTest
 /// relaunch, ack after local delete). Dates derive from Date() — no
 /// hardcoded wall-clock values.
 final class RecordingUploaderTests: XCTestCase {
+    private static let deviceID = "device-a"
     private var dir: URL!
 
     override func setUpWithError() throws {
@@ -28,7 +29,7 @@ final class RecordingUploaderTests: XCTestCase {
         transport: any CloudSyncTransport = InMemoryCloudTransport()
     ) throws -> (RecordingUploader, ReplicaStore, any CloudSyncTransport) {
         let store = try ReplicaStore.inMemory()
-        return (RecordingUploader(transport: transport, store: store), store, transport)
+        return (RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID), store, transport)
     }
 
     /// Registers `file` as a capture that ended just now and lasted
@@ -131,13 +132,13 @@ final class RecordingUploaderTests: XCTestCase {
         let store = try ReplicaStore.inMemory()
         let file = try makeAudioFile()
 
-        let first = RecordingUploader(transport: transport, store: store)
+        let first = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let recording = try await register(first, file: file, duration: 60)
         _ = try await first.uploadPending()
 
         // "Relaunch": a fresh uploader over the same store re-sends the
         // still-uploading row (the hub's processed-set absorbs duplicates).
-        let second = RecordingUploader(transport: transport, store: store)
+        let second = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let resent = try await second.uploadPending()
         XCTAssertEqual(resent, 1)
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
@@ -226,6 +227,392 @@ final class RecordingUploaderTests: XCTestCase {
         try await uploader.applyEcho(echo(for: recording, status: .received))
         try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "stale duplicate"))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
+    }
+
+    // MARK: - Event link, device id, marks (mobile POC spec §5.3)
+
+    private func uploadedPayload(
+        _ recording: PhoneRecording,
+        transport: any CloudSyncTransport
+    ) async throws -> (RecordingUploadPayload, [String: Any]) {
+        let batch = try await transport.changes(in: .relay, since: nil)
+        let record = try XCTUnwrap(batch.changed.first { $0.recordName == "recupload-\(recording.id)" })
+        let payload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: record.payload) as? [String: Any])
+        return (payload, object)
+    }
+
+    func testEventIDAndDeviceIDTravelInThePayload() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let ended = Date()
+        let registered = try await uploader.register(
+            fileURL: try makeAudioFile(), startedAt: ended.addingTimeInterval(-60), endedAt: ended,
+            titleHint: "Design sync", eventID: "evt-7"
+        )
+        let recording = try XCTUnwrap(registered)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.eventID, "evt-7")
+        _ = try await uploader.uploadPending()
+
+        let (payload, object) = try await uploadedPayload(recording, transport: transport)
+        XCTAssertEqual(payload.eventID, "evt-7")
+        XCTAssertEqual(payload.deviceID, Self.deviceID)
+        XCTAssertEqual(object["event_id"] as? String, "evt-7")
+        XCTAssertEqual(object["device_id"] as? String, Self.deviceID)
+    }
+
+    func testVoiceNoteLeavesEventIDAbsent() async throws {
+        let (uploader, _, transport) = try makeStack()
+        let recording = try await register(uploader, file: try makeAudioFile())
+        XCTAssertNil(recording.eventID)
+        _ = try await uploader.uploadPending()
+
+        let (payload, object) = try await uploadedPayload(recording, transport: transport)
+        XCTAssertNil(payload.eventID)
+        XCTAssertNil(object["event_id"], "a nil event id is an absent key, never null")
+    }
+
+    func testNothingIsSentWithoutALinkedDevice() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let uploader = RecordingUploader(transport: transport, store: store)
+        let recording = try await register(uploader, file: try makeAudioFile())
+
+        let sent = try await uploader.uploadPending()
+        XCTAssertEqual(sent, 0, "the hub fails an upload without a device id as device_not_linked")
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .waiting)
+        let batch = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty)
+
+        await uploader.setDeviceID(Self.deviceID)
+        let resent = try await uploader.uploadPending()
+        XCTAssertEqual(resent, 1, "linking later sends the waiting recording")
+    }
+
+    func testMarksAreStoredLocallyAndNeverUploaded() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let ended = Date()
+        let registered = try await uploader.register(
+            fileURL: try makeAudioFile(), startedAt: ended.addingTimeInterval(-300), endedAt: ended,
+            titleHint: nil, marks: [125, 12, 125, 240]
+        )
+        let recording = try XCTUnwrap(registered)
+        XCTAssertEqual(try store.phoneRecordingMarks(id: recording.id), [12, 125, 240])
+        _ = try await uploader.uploadPending()
+
+        let (_, object) = try await uploadedPayload(recording, transport: transport)
+        let keys = Set(object.keys)
+        XCTAssertFalse(keys.contains { $0.contains("mark") }, "marks stay on the phone: \(keys)")
+        XCTAssertEqual(keys, [
+            "id", "started_at", "ended_at", "duration_sec", "sample_format", "status", "device_id"
+        ])
+    }
+
+    func testActiveDurationExcludesPausesAndDecidesTooShort() async throws {
+        let (uploader, store, _) = try makeStack()
+        let ended = Date()
+        let registered = try await uploader.register(
+            fileURL: try makeAudioFile(), startedAt: ended.addingTimeInterval(-600), endedAt: ended,
+            activeDuration: 420, titleHint: nil
+        )
+        let recording = try XCTUnwrap(registered)
+        XCTAssertEqual(recording.durationSec, 420, "a paused gap is not audio")
+
+        let file = try makeAudioFile(name: "paused.m4a")
+        let blip = try await uploader.register(
+            fileURL: file, startedAt: ended.addingTimeInterval(-600), endedAt: ended,
+            activeDuration: 0, titleHint: nil
+        )
+        XCTAssertNil(blip, "wall-clock time while paused does not make a recording long enough")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(try store.phoneRecordings().count, 1)
+    }
+
+    func testOversizedAssetFailsLocallyWithoutSending() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let uploader = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID, maxAssetBytes: 32)
+        let file = try makeAudioFile(bytes: 64)
+        let recording = try await register(uploader, file: file)
+
+        let sent = try await uploader.uploadPending()
+        XCTAssertEqual(sent, 0)
+        let row = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(row.state, .failed)
+        XCTAssertEqual(row.errorMessage, RecordingUploader.tooLargeMessage)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the only copy is kept")
+        let batch = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty)
+    }
+
+    func testRemovingARecordingRemovesItsMarks() async throws {
+        let (uploader, store, _) = try makeStack()
+        let ended = Date()
+        let registered = try await uploader.register(
+            fileURL: try makeAudioFile(), startedAt: ended.addingTimeInterval(-60), endedAt: ended,
+            titleHint: nil, marks: [5]
+        )
+        let recording = try XCTUnwrap(registered)
+        try await uploader.discard(id: recording.id)
+        XCTAssertTrue(try store.phoneRecordingMarks(id: recording.id).isEmpty)
+    }
+
+    // MARK: - Capture lifecycle and launch recovery (a kill never loses audio)
+
+    func testBeginCaptureWritesARecordingRowThatUploadsNothing() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let file = try makeAudioFile()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: Date(), titleHint: "Design sync", eventID: "evt-1")
+        XCTAssertEqual(try store.phoneRecording(id: row.id)?.state, .recording)
+        let sent = try await uploader.uploadPending()
+        XCTAssertEqual(sent, 0, "a capture still being written is never sent")
+        let batch = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty)
+    }
+
+    func testFinishCaptureFinalizesWithTheLastTitleEventAndMarks() async throws {
+        let (uploader, store, _) = try makeStack()
+        let started = Date()
+        let row = try await uploader.beginCapture(fileURL: try makeAudioFile(), startedAt: started, titleHint: "Design sync", eventID: "evt-1")
+        try await uploader.addMark(id: row.id, offsetSec: 4)
+        let finished = try await uploader.finishCapture(
+            id: row.id, endedAt: started.addingTimeInterval(90), activeDuration: 60,
+            titleHint: "Voice note", eventID: nil, marks: [4, 50]
+        )
+        let done = try XCTUnwrap(finished)
+        XCTAssertEqual(done.state, .waiting)
+        XCTAssertEqual(done.durationSec, 60)
+        XCTAssertNil(done.eventID, "switched to No meeting before Stop")
+        XCTAssertEqual(done.titleHint, "Voice note")
+        XCTAssertEqual(try store.phoneRecordingMarks(id: row.id), [4, 50])
+    }
+
+    func testFinishCaptureUnderASecondRemovesRowAndFile() async throws {
+        let (uploader, store, _) = try makeStack()
+        let file = try makeAudioFile()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: Date(), titleHint: nil, eventID: nil)
+        let finished = try await uploader.finishCapture(
+            id: row.id, endedAt: Date(), activeDuration: 0, titleHint: nil, eventID: nil
+        )
+        XCTAssertNil(finished)
+        XCTAssertTrue(try store.phoneRecordings().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testRelaunchFinalizesACaptureCutShortWithTheFilesDuration() async throws {
+        let (uploader, store, _) = try makeStack()
+        let started = Date().addingTimeInterval(-3_600)
+        let file = try makeAudioFile()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: started, titleHint: "Design sync", eventID: "evt-1")
+        try await uploader.addMark(id: row.id, offsetSec: 30)
+
+        let recovered = try await relaunched(store).recoverInterruptedCaptures { _ in 1_234.4 }
+
+        XCTAssertEqual(recovered.map(\.id), [row.id])
+        let done = try XCTUnwrap(try store.phoneRecording(id: row.id))
+        XCTAssertEqual(done.state, .waiting)
+        XCTAssertEqual(done.durationSec, 1_234, "the duration comes from the file")
+        XCTAssertEqual(done.endedAt.timeIntervalSince1970, started.addingTimeInterval(1_234.4).timeIntervalSince1970, accuracy: 0.001)
+        XCTAssertEqual(done.eventID, "evt-1")
+        XCTAssertEqual(try store.phoneRecordingMarks(id: row.id), [30], "marks tapped before the kill survive")
+        let sent = try await uploader.uploadPending()
+        XCTAssertEqual(sent, 1)
+    }
+
+    /// A capture begun in this process is never claimed by recovery, even
+    /// with no id passed in (the Record-during-launch-recovery race); a new
+    /// process (a relaunch) does recover it.
+    func testRecoveryNeverTouchesACaptureBegunInThisProcess() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let file = dir.appendingPathComponent("live.m4a")
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: Date(), titleHint: nil, eventID: nil)
+        // The writer has not created the file yet: a claim would fail it.
+        let recovered = try await uploader.recoverInterruptedCaptures { _ in nil }
+        XCTAssertTrue(recovered.isEmpty)
+        XCTAssertEqual(try store.phoneRecording(id: row.id)?.state, .recording)
+        _ = try await uploader.sweepOrphanFiles()
+
+        try Data(repeating: 1, count: 32).write(to: file)
+        let relaunched = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID)
+        let after = try await relaunched.recoverInterruptedCaptures { _ in 60 }
+        XCTAssertEqual(after.map(\.id), [row.id])
+    }
+
+    func testRecoveryWithTheFileGoneFailsWithoutRetry() async throws {
+        let (uploader, store, _) = try makeStack()
+        let file = try makeAudioFile()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: Date(), titleHint: nil, eventID: nil)
+        try FileManager.default.removeItem(at: file)
+
+        _ = try await relaunched(store).recoverInterruptedCaptures { _ in 60 }
+
+        let failed = try XCTUnwrap(try store.phoneRecording(id: row.id))
+        XCTAssertEqual(failed.state, .failed)
+        XCTAssertEqual(failed.errorMessage, RecordingUploader.missingFileMessage)
+        XCTAssertEqual(failed.failure, .missingFile)
+        XCTAssertFalse(failed.offersRetry)
+        try await uploader.retryFailed(id: row.id)
+        XCTAssertEqual(try store.phoneRecording(id: row.id)?.state, .failed, "Retry is a no-op for a permanent local failure")
+    }
+
+    func testRecoveryOfAFileWithNoAudioFailsAndDeletesIt() async throws {
+        let (uploader, store, _) = try makeStack()
+        let file = try makeAudioFile()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: Date(), titleHint: nil, eventID: nil)
+        _ = try await relaunched(store).recoverInterruptedCaptures { _ in nil }
+        let failed = try XCTUnwrap(try store.phoneRecording(id: row.id))
+        XCTAssertEqual(failed.errorMessage, RecordingUploader.unrecoverableMessage)
+        XCTAssertFalse(failed.offersRetry)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testRecoveryUnderASecondRemovesTheRow() async throws {
+        let (uploader, store, _) = try makeStack()
+        let row = try await uploader.beginCapture(fileURL: try makeAudioFile(), startedAt: Date(), titleHint: nil, eventID: nil)
+        _ = try await relaunched(store).recoverInterruptedCaptures { _ in 0.4 }
+        XCTAssertNil(try store.phoneRecording(id: row.id))
+    }
+
+    func testOrphanSweepDeletesOnlyFilesWithoutARow() async throws {
+        let (uploader, _, _) = try makeStack()
+        let kept = try makeAudioFile(name: "kept.m4a")
+        _ = try await register(uploader, file: kept)
+        let orphan = try makeAudioFile(name: "orphan.m4a")
+
+        let removed = try await uploader.sweepOrphanFiles()
+
+        XCTAssertEqual(removed.map(\.lastPathComponent), ["orphan.m4a"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+    }
+
+    func testOnlyARemoteFailureOffersRetry() async throws {
+        let (uploader, store, _) = try makeStack()
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+        try await uploader.applyEcho(echo(for: recording, status: .failed, errorMessage: "disk full"))
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.offersRetry, true)
+
+        let small = RecordingUploader(
+            transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID, maxAssetBytes: 1
+        )
+        let big = try await register(small, file: try makeAudioFile(name: "big.m4a"))
+        _ = try await small.uploadPending()
+        XCTAssertEqual(try store.phoneRecording(id: big.id)?.offersRetry, false, "over 90 MB stays over 90 MB")
+    }
+
+    func testRegisterKeepsAGivenID() async throws {
+        let (uploader, _, _) = try makeStack()
+        let ended = Date()
+        let registered = try await uploader.register(
+            id: "demo-recording", fileURL: try makeAudioFile(), startedAt: ended.addingTimeInterval(-60), endedAt: ended, titleHint: nil
+        )
+        XCTAssertEqual(registered?.id, "demo-recording")
+    }
+
+    /// The uploader of a new process over the same replica: it has begun
+    /// no capture, so every `recording` row is a capture cut short.
+    private func relaunched(_ store: ReplicaStore) -> RecordingUploader {
+        RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+    }
+
+    // MARK: - Relative paths (iOS may move the container)
+
+    func testAFileInTheRecordingsFolderIsStoredByName() async throws {
+        let (uploader, _, _) = try makeStack()
+        let inside = try await register(uploader, file: try makeAudioFile(name: "in.m4a"))
+        XCTAssertEqual(inside.storedPath, "in.m4a")
+
+        let elsewhere = FileManager.default.temporaryDirectory.appendingPathComponent("elsewhere-\(UUID().uuidString).m4a")
+        try Data(repeating: 1, count: 16).write(to: elsewhere)
+        addTeardownBlock { try? FileManager.default.removeItem(at: elsewhere) }
+        let outside = try await register(uploader, file: elsewhere)
+        XCTAssertEqual(outside.storedPath, elsewhere.path, "a file kept elsewhere keeps its absolute path")
+    }
+
+    /// The container moves between launches: every file is in a folder
+    /// with a new absolute base. Nothing is deleted, recovery finds the
+    /// stranded capture, and the upload sends the file from its new place.
+    func testAMovedRecordingsFolderKeepsEveryFile() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let saved = try await register(uploader, file: try makeAudioFile(name: "saved.m4a"))
+        let stranded = try await uploader.beginCapture(
+            fileURL: try makeAudioFile(name: "stranded.m4a"), startedAt: Date(), titleHint: nil, eventID: nil
+        )
+        let moved = try moveFolder()
+
+        let relaunched = RecordingUploader(transport: transport, store: store, directory: moved, deviceID: Self.deviceID)
+        let recovered = try await relaunched.recoverInterruptedCaptures { _ in 60 }
+        let removed = try await relaunched.sweepOrphanFiles()
+        let sent = try await relaunched.uploadPending()
+
+        XCTAssertEqual(recovered.map(\.id), [stranded.id])
+        XCTAssertTrue(removed.isEmpty, "a moved container must not look like orphans")
+        XCTAssertEqual(sent, 2)
+        let assets = try await transport.changes(in: .relay, since: nil).changed.compactMap(\.assetFileURL)
+        XCTAssertEqual(Set(assets.map(\.lastPathComponent)), ["saved.m4a", "stranded.m4a"])
+        XCTAssertTrue(assets.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+        XCTAssertEqual(try store.phoneRecording(id: saved.id)?.state, .uploading)
+    }
+
+    /// A row written by an older build holds an absolute path into the old
+    /// container. It is rewritten to the bare name and found in the new one.
+    func testALegacyAbsolutePathIsMovedToTheCurrentFolder() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
+        let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
+        XCTAssertTrue(legacy.storedPath.hasPrefix("/"))
+        let moved = try moveFolder()
+
+        let current = RecordingUploader(transport: transport, store: store, directory: moved, deviceID: Self.deviceID)
+        let removed = try await current.sweepOrphanFiles()
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertEqual(try store.phoneRecording(id: legacy.id)?.storedPath, "legacy.m4a")
+        let sent = try await current.uploadPending()
+        XCTAssertEqual(sent, 1)
+    }
+
+    /// Moves the test's recordings folder to a new container, keeping its
+    /// name (as iOS does when the container UUID changes).
+    private func moveFolder() throws -> URL {
+        let container = FileManager.default.temporaryDirectory.appendingPathComponent("container-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: container) }
+        let moved = container.appendingPathComponent(dir.lastPathComponent, isDirectory: true)
+        try FileManager.default.moveItem(at: dir, to: moved)
+        return moved
+    }
+
+    // MARK: - Typed local failures
+
+    func testFailCaptureIsUnrecoverableWithoutRetry() async throws {
+        let (uploader, store, transport) = try makeStack()
+        let file = try makeAudioFile()
+        let row = try await uploader.beginCapture(fileURL: file, startedAt: Date(), titleHint: nil, eventID: nil)
+        try await uploader.failCapture(id: row.id)
+        let failed = try XCTUnwrap(try store.phoneRecording(id: row.id))
+        XCTAssertEqual(failed.failure, .unrecoverable)
+        XCTAssertFalse(failed.offersRetry)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        _ = try await uploader.uploadPending()
+        let batch = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty, "never uploaded")
+    }
+
+    /// Retry keys on the stored kind, not the text: a row failed by an
+    /// older build, known only by its message, gets its kind.
+    func testRetryKeysOnTheStoredFailureKind() async throws {
+        let (uploader, store, _) = try makeStack()
+        let recording = try await register(uploader, file: try makeAudioFile())
+        try store.setPhoneRecordingState(id: recording.id, state: .failed, errorMessage: RecordingUploader.tooLargeMessage)
+        XCTAssertTrue(try XCTUnwrap(try store.phoneRecording(id: recording.id)).offersRetry, "no kind stored yet")
+        _ = try await uploader.sweepOrphanFiles()
+        let upgraded = try XCTUnwrap(try store.phoneRecording(id: recording.id))
+        XCTAssertEqual(upgraded.failure, .tooLarge)
+        XCTAssertFalse(upgraded.offersRetry)
+
+        try store.setPhoneRecordingState(id: recording.id, state: .failed, errorMessage: "The file is over 90 MB", failure: nil)
+        XCTAssertTrue(try XCTUnwrap(try store.phoneRecording(id: recording.id)).offersRetry, "a Mac failure's text never decides")
     }
 
     // MARK: - Discard

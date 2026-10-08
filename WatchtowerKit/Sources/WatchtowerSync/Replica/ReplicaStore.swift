@@ -108,19 +108,75 @@ public final class ReplicaStore: Sendable {
                     state TEXT NOT NULL CHECK(state IN ('pending','failed')),
                     error_message TEXT
                 );
-                CREATE TABLE IF NOT EXISTS phone_recordings (
-                    recording_id TEXT PRIMARY KEY,
-                    file_path TEXT NOT NULL,
-                    started_at REAL NOT NULL,
-                    ended_at REAL NOT NULL,
-                    duration_sec INTEGER NOT NULL,
-                    title_hint TEXT,
-                    sample_format TEXT NOT NULL,
-                    state TEXT NOT NULL
-                        CHECK(state IN ('waiting','uploading','delivered','failed')),
-                    error_message TEXT
+                \(Self.phoneRecordingsTableSQL(name: "phone_recordings", ifNotExists: true));
+                CREATE TABLE IF NOT EXISTS phone_recording_marks (
+                    recording_id TEXT NOT NULL
+                        REFERENCES phone_recordings(recording_id) ON DELETE CASCADE,
+                    offset_sec INTEGER NOT NULL CHECK(offset_sec >= 0),
+                    PRIMARY KEY (recording_id, offset_sec)
                 );
                 """)
+            // A replica created before `event_id` existed keeps its ledger:
+            // the column is added in place (CREATE IF NOT EXISTS skipped it).
+            let columns = try db.columns(in: "phone_recordings").map(\.name)
+            if !columns.contains("event_id") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN event_id TEXT")
+            }
+            if !columns.contains("failure_kind") {
+                try db.execute(sql: "ALTER TABLE phone_recordings ADD COLUMN failure_kind TEXT")
+            }
+        }
+        try upgradePhoneRecordingsStates()
+    }
+
+    /// The `phone_recordings` ledger. `recording` is a capture still being
+    /// written: its row exists from the first second, so a capture cut short
+    /// by a kill is finalized at the next launch.
+    private static func phoneRecordingsTableSQL(name: String, ifNotExists: Bool) -> String {
+        """
+        CREATE TABLE \(ifNotExists ? "IF NOT EXISTS " : "")\(name) (
+            recording_id TEXT PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            started_at REAL NOT NULL,
+            ended_at REAL NOT NULL,
+            duration_sec INTEGER NOT NULL,
+            title_hint TEXT,
+            sample_format TEXT NOT NULL,
+            state TEXT NOT NULL
+                CHECK(state IN ('recording','waiting','uploading','delivered','failed')),
+            error_message TEXT,
+            event_id TEXT,
+            failure_kind TEXT
+        )
+        """
+    }
+
+    /// A ledger written before the `recording` state existed has a CHECK
+    /// without it, and SQLite cannot alter a CHECK: the table is rebuilt
+    /// with its rows. Foreign keys are off for the swap, so dropping the old
+    /// table does not cascade into `phone_recording_marks`.
+    private func upgradePhoneRecordingsStates() throws {
+        let current = try writer.read { db in
+            try String.fetchOne(
+                db,
+                sql: "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'phone_recordings'"
+            )
+        }
+        guard let current, !current.contains("'recording'") else { return }
+        try writer.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            defer { try? db.execute(sql: "PRAGMA foreign_keys = ON") }
+            try db.inTransaction {
+                let columns = """
+                    recording_id, file_path, started_at, ended_at, duration_sec,
+                    title_hint, sample_format, state, error_message, event_id, failure_kind
+                    """
+                try db.execute(sql: Self.phoneRecordingsTableSQL(name: "phone_recordings_upgrade", ifNotExists: false))
+                try db.execute(sql: "INSERT INTO phone_recordings_upgrade (\(columns)) SELECT \(columns) FROM phone_recordings")
+                try db.execute(sql: "DROP TABLE phone_recordings")
+                try db.execute(sql: "ALTER TABLE phone_recordings_upgrade RENAME TO phone_recordings")
+                return .commit
+            }
         }
     }
 
@@ -311,6 +367,17 @@ public final class ReplicaStore: Sendable {
             db,
             sql: "SELECT payload FROM slice_records WHERE record_name = ?",
             arguments: [recordName]
+        )
+    }
+
+    /// Every stored payload of one data-zone kind (the WatchtowerKit slice
+    /// mirrors decode them), from an ALREADY-OPEN database so it runs inside
+    /// a ValueObservation tracking closure. Ordered by record name.
+    public func payloads(of kind: SliceKind, from db: Database) throws -> [Data] {
+        try Data.fetchAll(
+            db,
+            sql: "SELECT payload FROM slice_records WHERE kind = ? ORDER BY record_name",
+            arguments: [kind.rawValue]
         )
     }
 
