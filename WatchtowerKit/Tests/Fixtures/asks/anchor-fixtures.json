@@ -4,8 +4,8 @@
   "cases": [
     {
       "name": "selection_at_document_start",
-      "markdown": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\n## Risks\n\nThe batch job may lag behind example.com traffic.\n",
-      "text": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\nRisks\n\nThe batch job may lag behind example.com traffic.\n\n",
+      "markdown": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\n## Risks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n",
+      "text": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\nRisks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n\n",
       "headings": [
         {
           "offset": 98,
@@ -25,8 +25,8 @@
     },
     {
       "name": "selection_at_document_end",
-      "markdown": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\n## Risks\n\nThe batch job may lag behind example.com traffic.\n",
-      "text": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\nRisks\n\nThe batch job may lag behind example.com traffic.\n\n",
+      "markdown": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\n## Risks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n",
+      "text": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\nRisks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n\n",
       "headings": [
         {
           "offset": 98,
@@ -34,12 +34,12 @@
         }
       ],
       "selection": {
-        "location": 146,
+        "location": 168,
         "length": 7
       },
       "anchor": {
         "quote": "traffic",
-        "prefix": "atches of 500.\n\nRisks\n\nThe batch job may lag behind example.com ",
+        "prefix": "\n\nRisks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com ",
         "suffix": ".\n\n",
         "heading": "Risks"
       }

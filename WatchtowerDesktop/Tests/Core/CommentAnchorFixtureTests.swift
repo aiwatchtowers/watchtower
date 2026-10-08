@@ -18,6 +18,12 @@ final class CommentAnchorFixtureTests: XCTestCase {
             "selection_in_a_clipped_snapshots_last_shown_line"
         ])
         XCTAssertEqual(fixtures.cases.filter(\.docClipped).count, 1)
+        // A full window counted in characters, not scalars or UTF-16 units:
+        // a port that counts anything else fails this case.
+        XCTAssertTrue(fixtures.cases.contains { fixture in
+            let prefix = fixture.anchor.prefix
+            return prefix.count == CommentAnchor.contextLength && prefix.unicodeScalars.count > prefix.count
+        }, "a multi-scalar grapheme inside a full context window")
     }
 
     func testCoreRendersEachCasesSnapshotToItsText() throws {
