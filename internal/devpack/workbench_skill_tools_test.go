@@ -73,3 +73,25 @@ func skillToolsSectionNames(content string) map[string]bool {
 	}
 	return named
 }
+
+// Spec 2026-10-08: the Desktop starts a group's session with "Work on group
+// #<id>"; the skill must say what that means, and keep the task wording.
+func TestWorkbenchSkill_ExplainsBothWorkOnPrompts(t *testing.T) {
+	_, body := devpack.WorkbenchSkill()
+	content := string(body)
+	for _, want := range []string{
+		"## Working a target", "`Work on target #<id>`",
+		"## Working a group", "`Work on group #<id>`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("the skill must contain %q", want)
+		}
+	}
+	// Review 2026-10-08: the skip rule covers both the plan path and the
+	// board-order path, so it comes before either.
+	skip := strings.Index(content, "skip a leaf that is `blocked`")
+	plan := strings.Index(content, "If the intent names a plan")
+	if skip < 0 || plan < 0 || skip > plan {
+		t.Error("the group section must state the skip rule before the plan and board-order paths")
+	}
+}

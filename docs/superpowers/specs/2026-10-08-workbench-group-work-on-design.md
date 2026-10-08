@@ -72,7 +72,8 @@ sessions on the group; changing how a task's session is found.
 `internal/devpack/workbenchskill/watchtower-workbench/SKILL.md` gains:
 
 - **Working a target** (short): the first prompt `Work on target #<id>` → `get_target` +
-  `list_comments`, set `in_progress` with `branch`, follow the feature/plan rules.
+  `list_comments` and the board; a target with sub-targets is worked as a group, otherwise
+  set `in_progress` with `branch` and follow the feature/plan rules.
 - **Working a group** — the first prompt `Work on group #<id>`, or a target that has
   sub-targets:
   1. `workbench_board` and `get_target` on the group: read the subtree and the intent.
@@ -85,8 +86,10 @@ sessions on the group; changing how a task's session is found.
   5. Never set the group's status; set the leaves', the group follows.
   6. One `finish_session` at the end with `target_id` = the group, summarising the group.
 
-The pack has no version constant: the installed copy is refreshed by content digest
-(DEV-04 `planFor`, PROJ-04 keeps owner-edited copies). Editing SKILL.md is the bump.
+The pack marker goes v3 → v4 (`x-watchtower-pack`), the repo's convention: the previous
+pack is frozen in `internal/devpack/testdata` for the DEV-04 upgrade test. The installed
+copy is still refreshed by its content digest (DEV-04 `planFor`, PROJ-04 keeps
+owner-edited copies).
 
 ### Go / report
 

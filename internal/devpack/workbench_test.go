@@ -121,12 +121,13 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session, and the pack marker moves to v3.
+// finishing a session (pack v3); the marker is now v4 (spec 2026-10-08,
+// Working a target / Working a group).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v3\n") {
-		t.Fatalf("the skill must carry %s: v3", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v4\n") {
+		t.Fatalf("the skill must carry %s: v4", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -143,11 +144,11 @@ func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1 → v3, v2 → v3): a copy we wrote
+// DEV-04 across every previous version (v1 → v4, v2 → v4, v3 → v4): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)
