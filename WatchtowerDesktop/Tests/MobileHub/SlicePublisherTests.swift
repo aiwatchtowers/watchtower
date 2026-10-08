@@ -238,6 +238,9 @@ final class SlicePublisherTests: XCTestCase {
         publisher.start()
 
         XCTAssertTrue(oldSleep.isCancelled, "a restart cancels the old loop's sleep at once")
+        // Should that guard break, end the old sleep here so the test fails
+        // on the assertion above instead of waiting out the hour-long tick.
+        oldSleep.cancel()
         await awaitHubCondition("the new loop sleeps") {
             publisher.currentSleepForTesting.map { $0 != oldSleep } ?? false
         }
@@ -247,6 +250,26 @@ final class SlicePublisherTests: XCTestCase {
 
         publisher.nudge(kinds: [.workbench])
         XCTAssertTrue(newSleep.isCancelled, "a nudge still wakes the new loop")
+    }
+
+    func testAnEndingSleepNeverClearsANewerLoopsHandle() {
+        let publisher = makeLanePublisher(FakeClock())
+        let far = ContinuousClock.now + .seconds(3_600)
+        let oldSleep = publisher.beginSleep(tick: far)
+        let newSleep = publisher.beginSleep(tick: far)
+        defer {
+            oldSleep.cancel()
+            newSleep.cancel()
+        }
+
+        publisher.endSleep(oldSleep)
+        XCTAssertEqual(publisher.currentSleepForTesting, newSleep, "the old loop's exit leaves the new handle alone")
+
+        publisher.nudge(kinds: [.workbench])
+        XCTAssertTrue(newSleep.isCancelled, "so a nudge still wakes the new loop")
+
+        publisher.endSleep(newSleep)
+        XCTAssertNil(publisher.currentSleepForTesting, "a loop forgets its own handle")
     }
 
     func testANudgeReadsOnlyTheNudgedKinds() async throws {

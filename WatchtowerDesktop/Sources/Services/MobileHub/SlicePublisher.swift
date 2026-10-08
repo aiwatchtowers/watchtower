@@ -252,16 +252,28 @@ final class SlicePublisher: Sendable {
     }
 
     private func sleepUntilNextDeadline(tick: ContinuousClock.Instant) async {
-        let sleep = lane.withLock { [timing] lane in
+        let sleep = beginSleep(tick: tick)
+        // stop() may have cancelled the loop before this sleep existed.
+        if Task.isCancelled { sleep.cancel() }
+        await sleep.value
+        endSleep(sleep)
+    }
+
+    /// Stores and returns the loop's sleep until the next deadline (the
+    /// tick, or the fast lane's deadline when sooner). Under the nudge lock,
+    /// so a nudge can never fall between "deadline computed" and "stored".
+    func beginSleep(tick: ContinuousClock.Instant) -> Task<Void, Never> {
+        lane.withLock { [timing] lane in
             let deadline = Self.fastDeadline(lane, timing: timing).map { min($0, tick) } ?? tick
             let task = Task<Void, Never> { _ = try? await Task.sleep(until: deadline, clock: .continuous) }
             lane.sleep = task
             return task
         }
-        // stop() may have cancelled the loop before this sleep existed.
-        if Task.isCancelled { sleep.cancel() }
-        await sleep.value
-        // Only our own handle: a restarted loop may have stored its own.
+    }
+
+    /// Forgets `sleep` once it returned — only when it is still the stored
+    /// handle: a restarted loop may have stored its own meanwhile.
+    func endSleep(_ sleep: Task<Void, Never>) {
         lane.withLock { lane in
             if lane.sleep == sleep { lane.sleep = nil }
         }
