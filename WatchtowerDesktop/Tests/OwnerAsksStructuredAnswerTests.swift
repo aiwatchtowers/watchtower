@@ -184,6 +184,35 @@ final class OwnerAsksStructuredAnswerTests: XCTestCase {
         XCTAssertEqual(vm.asks.drafts.askDraft(for: askID).note, "Ship it", "the Desktop draft is kept")
     }
 
+    /// The guarded write fails (the database refuses it): `.failed` with
+    /// the reason, also in `answerErrors`; nothing is typed, the ask stays
+    /// open and the Desktop draft is kept.
+    func testAFailedWriteIsFailedTypesNothingAndKeepsTheDraft() async throws {
+        let (p, s, asks) = try await seed()
+        let askID = asks[0]
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let ask = try await openAsk(vm, project: p, id: askID)
+        vm.asks.drafts.update(askID) { $0.note = "Ship it" }
+        try await pool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_ask_answer BEFORE UPDATE ON owner_asks
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        let outcome = await vm.asks.answer(ask, with: yes)
+
+        guard case let .failed(reason) = outcome else { return XCTFail("got \(outcome)") }
+        XCTAssertTrue(reason.contains("disk full"), reason)
+        XCTAssertEqual(vm.asks.answerErrors[askID], reason)
+        let row = try await stored(askID)
+        XCTAssertEqual(row.status, "open")
+        XCTAssertEqual(row.answer, "")
+        XCTAssertTrue(typed.isEmpty)
+        XCTAssertEqual(vm.asks.drafts.askDraft(for: askID).note, "Ship it", "the Desktop draft is kept")
+    }
+
     func testAnUnknownLabelIsInvalidAndWritesNothing() async throws {
         let (p, s, asks) = try await seed()
         center.start(s, fresh: true)
