@@ -105,6 +105,60 @@ final class CalendarMirrorFixtureTests: XCTestCase {
         XCTAssertNil(event.conferenceLink, "an empty conference_url means no Join button")
     }
 
+    // MARK: - All-day dates
+
+    private func allDay(_ start: String, _ end: String) -> CalendarEvent {
+        CalendarEvent(
+            id: "evt-ad", startTime: start, endTime: end, isAllDay: true, isRecurring: false,
+            eventStatus: .confirmed, organizerEmail: "", htmlLink: "", conferenceURL: "", title: "Offsite",
+            location: "", description: "", attendees: [], prepBullets: [], linkedTargets: []
+        )
+    }
+
+    private func calendar(_ zone: String) throws -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: zone))
+        return calendar
+    }
+
+    /// The hub stores an all-day day as UTC midnight. West of UTC that
+    /// instant is the previous evening, so the local accessors read the
+    /// stored calendar day instead (review focus 2).
+    func testAnAllDayEventKeepsItsDayWestOfUTC() throws {
+        let losAngeles = try calendar("America/Los_Angeles")
+        let event = allDay("2026-10-25T00:00:00Z", "2026-10-26T00:00:00Z")
+        let start = losAngeles.dateComponents([.year, .month, .day, .hour], from: event.localStart(in: losAngeles))
+        XCTAssertEqual([start.year, start.month, start.day, start.hour], [2026, 10, 25, 0])
+        let end = losAngeles.dateComponents([.year, .month, .day, .hour], from: event.localEnd(in: losAngeles))
+        XCTAssertEqual([end.year, end.month, end.day, end.hour], [2026, 10, 26, 0])
+        // The raw instant is the trap: 24 Oct, 17:00 in Los Angeles.
+        XCTAssertEqual(losAngeles.component(.day, from: event.startDate), 24)
+    }
+
+    func testAnAllDayEventKeepsItsDayEastOfUTC() throws {
+        let tokyo = try calendar("Asia/Tokyo")
+        let event = allDay("2026-10-25T00:00:00Z", "2026-10-26T00:00:00Z")
+        XCTAssertEqual(tokyo.dateComponents([.month, .day, .hour], from: event.localStart(in: tokyo)).day, 25)
+        XCTAssertEqual(tokyo.component(.hour, from: event.localStart(in: tokyo)), 0)
+    }
+
+    func testATimedEventKeepsItsInstant() throws {
+        let event = CalendarEvent(
+            id: "evt-t", startTime: "2026-10-08T09:00:00Z", endTime: "2026-10-08T09:30:00Z", isAllDay: false,
+            isRecurring: false, eventStatus: .confirmed, organizerEmail: "", htmlLink: "", conferenceURL: "",
+            title: "x", location: "", description: "", attendees: [], prepBullets: [], linkedTargets: []
+        )
+        let losAngeles = try calendar("America/Los_Angeles")
+        XCTAssertEqual(event.localStart(in: losAngeles), event.startDate)
+        XCTAssertEqual(event.localEnd(in: losAngeles), event.endDate)
+    }
+
+    func testAMalformedAllDayTimeIsDistantPast() throws {
+        let event = allDay("not a date", "")
+        XCTAssertEqual(event.localStart(in: try calendar("UTC")), .distantPast)
+        XCTAssertEqual(event.localEnd(in: try calendar("UTC")), .distantPast)
+    }
+
     func testCalendarEventWithFutureStatusesStillDecodes() throws {
         // swiftlint:disable:next line_length
         let json = #"{"attendees":[],"conference_url":"","description":"","end_time":"2026-10-08T10:00:00Z","event_status":"moved","html_link":"","id":"evt-3","is_all_day":false,"is_recurring":false,"linked_targets":[{"id":1,"status":"parked","text":"t"}],"location":"","organizer_email":"","prep_bullets":[],"start_time":"2026-10-08T09:00:00Z","title":"x"}"#
