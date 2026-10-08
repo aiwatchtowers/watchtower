@@ -16,6 +16,10 @@ let package = Package(
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.20.0"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),
         .package(url: "https://github.com/nalexn/ViewInspector", from: "0.10.0"),
+        // The shared mobile Kit (mobile POC). Only the app target takes its
+        // model-free WatchtowerSync product; WatchtowerCore stays Kit-free
+        // (pinned by PublicAPISurfaceTests).
+        .package(path: "../WatchtowerKit"),
         // Pinned to 0.18.x: WhisperKitEngine uses 0.18.0-specific API surface
         // (including the misspelled `detectLangauge(audioArray:)`).
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", .upToNextMinor(from: "0.18.0")),
@@ -66,6 +70,7 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
+                .product(name: "WatchtowerSync", package: "WatchtowerKit"),
             ],
             path: "Sources",
             exclude: ["WatchtowerCore", "OCRKit", "OCRHelper"],
