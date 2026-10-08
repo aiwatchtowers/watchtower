@@ -59,7 +59,7 @@ struct CodeFilesPaneView: View {
         .inspector(isPresented: inspectorShown) {
             if let usages = files.usages {
                 CodeInspector(usages: usages, questions: files.questions, project: project)
-                    .inspectorColumnWidth(min: 220, ideal: 300, max: 560)
+                    .persistedInspectorColumnWidth(key: "workbench.code.inspector.width", range: 220...560, ideal: 300)
             }
         }
         .task(id: project.id) { await files.show(project) }

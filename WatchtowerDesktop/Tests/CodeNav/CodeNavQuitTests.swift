@@ -48,11 +48,14 @@ final class CodeNavQuitTests: XCTestCase {
         return false
     }
 
-    func testQuitStopsTheSearchesOfOpenQuicklyDefinitionAndUsages() async {
+    func testQuitStopsTheSearchesOfOpenQuicklyDefinitionAndUsages() async throws {
         let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
         let openQuickly = OpenQuicklyCenter(codeIndex: codeIndex, presenter: SilentPresenter(), startSearch: stubStarter())
         let navigation = CodeNavigationCenter(codeIndex: codeIndex, startSearch: stubStarter()) {}
-        let usages = CodeUsagesCenter(startSearch: stubStarter()) {}
+        let suite = "CodeNavQuitTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let usages = CodeUsagesCenter(defaults: defaults, startSearch: stubStarter()) {}
 
         usages.showUsages(of: "save", project: project)
         // A file the index has not seen: the heuristic's text search runs.

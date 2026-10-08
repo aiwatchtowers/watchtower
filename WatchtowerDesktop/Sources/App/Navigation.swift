@@ -67,7 +67,8 @@ struct SplashView: View {
 
 struct MainNavigationView: View {
     @Environment(AppState.self) private var appState
-    @State private var showMenu = true
+    /// The full menu (true) or the icon rail ⌘B folds it into, kept across launches.
+    @AppStorage("sidebar.menuExpanded") private var showMenu = true
     /// Reuses `GoogleConnectFlow.shared.calendar` (rather than a locally-
     /// constructed `GoogleAuthService()`) so this reconnect flow gets its
     /// DB-derived `isConnected` from the same wiring — `AppState.

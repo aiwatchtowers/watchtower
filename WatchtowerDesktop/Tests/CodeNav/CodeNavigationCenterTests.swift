@@ -118,7 +118,7 @@ final class CodeNavigationCenterTests: XCTestCase {
 
     func testShowAllUsagesFromTheMenuShowsTheUsagesOfTheWord() async {
         let (center, vm) = makeCenter(symbols: [saveInStore, saveInList])
-        let usages = CodeUsagesCenter(startSearch: searches.start) {}
+        let usages = CodeUsagesCenter(defaults: defaults, startSearch: searches.start) {}
         center.usages = usages
         menu.answer = .showAllUsages
         await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), project: project, anchor: nil)

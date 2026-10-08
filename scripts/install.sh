@@ -1,11 +1,11 @@
 #!/bin/bash
 #
 # Watchtower Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/vadimtrunov/watchtower/main/scripts/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/aiwatchtowers/watchtower/main/scripts/install.sh | bash
 #
 set -euo pipefail
 
-REPO="vadimtrunov/watchtower"
+REPO="aiwatchtowers/watchtower"
 APP_NAME="Watchtower"
 INSTALL_DIR="/Applications"
 CLI_LINK="/usr/local/bin/watchtower"
@@ -201,6 +201,6 @@ echo ""
 info "Watchtower $VERSION installed successfully!"
 echo ""
 echo "  Open the app:   open -a Watchtower"
+echo "                  (setup walks you through Goals, Connect and About you)"
 echo "  CLI:            watchtower --help"
-echo "  Login:          watchtower login"
 echo ""
