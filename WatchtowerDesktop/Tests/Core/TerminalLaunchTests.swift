@@ -128,6 +128,7 @@ final class TerminalLaunchTests: XCTestCase {
         for vocabulary in [WorkbenchVocabulary.current, .legacy] {
             XCTAssertFalse(TerminalLaunch.firstRunPrompt(vocabulary).contains("'"))
             XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
+            XCTAssertFalse(TerminalLaunch.workOnGroupPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
         }
     }
 
@@ -135,6 +136,9 @@ final class TerminalLaunchTests: XCTestCase {
     /// (spec 2026-10-02 §5.3); the prompts name what the folder has, and stay
     /// one line without control characters.
     func testPromptsNameTheFoldersSkill() {
+        // The skill's "Working a target" / "Working a group" sections key on the
+        // "Work on target #" / "Work on group #" prefixes: keep them in step with
+        // internal/devpack/workbench_skill_tools_test.go TestWorkbenchSkill_ExplainsBothWorkOnPrompts.
         XCTAssertEqual(TerminalLaunch.firstRunPrompt(.current),
                        "Set up this Watchtower workbench using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.firstRunPrompt(.legacy),
@@ -143,8 +147,20 @@ final class TerminalLaunchTests: XCTestCase {
                        "Work on target #7 using the watchtower-workbench skill.")
         XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .legacy),
                        "Work on target #7 using the watchtower-project skill.")
+        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current),
+                       "Work on group #7 using the watchtower-workbench skill.")
+        XCTAssertEqual(TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .legacy),
+                       "Work on group #7 using the watchtower-project skill.")
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: true, vocabulary: .current),
+                       TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: .current))
+        XCTAssertEqual(TerminalLaunch.workOnPrompt(targetID: 7, isGroup: false, vocabulary: .current),
+                       TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .current))
         for vocabulary in [WorkbenchVocabulary.current, .legacy] {
-            for prompt in [TerminalLaunch.firstRunPrompt(vocabulary), TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary)] {
+            for prompt in [
+                TerminalLaunch.firstRunPrompt(vocabulary),
+                TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary),
+                TerminalLaunch.workOnGroupPrompt(targetID: 7, vocabulary: vocabulary)
+            ] {
                 XCTAssertFalse(prompt.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
             }
         }

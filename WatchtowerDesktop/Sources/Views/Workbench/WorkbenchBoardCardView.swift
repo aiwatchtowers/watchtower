@@ -238,17 +238,32 @@ enum WorkbenchTargetNumber {
     }
 }
 
-/// The context menu of a board row or kanban card: Open Group on a list row
-/// with children (spec 2026-10-06 Part 4), copy the number, and "Move to…"
-/// another target or the top level (board #186).
+/// The context menu of a board row or kanban card: Work on It (or Open Its
+/// Session) on every target, a group too (spec 2026-10-08; left out of the
+/// side panel's ⋯ menu, which has its own button), Open Group on a
+/// list row with children (spec 2026-10-06 Part 4), copy the number, and
+/// "Move to…" another target or the top level (board #186).
 struct WorkbenchTargetMenu: View {
     let target: Target
     let vm: WorkbenchBoardViewModel
+    /// False in the side panel's ⋯ menu: Work on It is the panel's own
+    /// primary button there.
+    var showsWorkOn = true
     /// The list's Open Group: enters `target` as the board scope. Nil hides
     /// the item (kanban cards are leaves; the panel has its own button).
     var onOpenGroup: ((Int) -> Void)?
+    @Environment(AppState.self) private var appState
 
     var body: some View {
+        if showsWorkOn {
+            let sessions = appState.workbenchesViewModel
+            let existing = WorkOnTargetButton.hasSession(target, in: sessions)
+            Button(WorkOnTargetButton.title(existing: existing)) {
+                WorkOnTargetButton.start(target, vm: sessions)
+            }
+            .disabled(sessions == nil)
+            Divider()
+        }
         if let onOpenGroup, let node = WorkbenchBoardOutline.find(target.id, in: vm.roots), !node.children.isEmpty {
             Button("Open Group") { onOpenGroup(target.id) }
                 .disabled(vm.scopeNode?.target.id == target.id)

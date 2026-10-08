@@ -166,6 +166,20 @@ package struct WorkbenchBoardKanban {
         self.archivedCardCount = Self.archivedLeafCount(archiveScope?.children ?? roots)
     }
 
+    /// Whether a double-click on `lane`'s header enters its group: not the
+    /// No group lane, not the scope's own "Tasks" lane (it would re-enter
+    /// the scope).
+    package static func entersGroup(_ lane: Lane, scopeID: Int?) -> Bool {
+        lane.root != nil && lane.id != scopeID
+    }
+
+    /// Whether `lane`'s header offers Work on It (#472): only a group's lane
+    /// — the scope's own "Tasks" lane is worked from the path bar's group.
+    package static func showsWorkOn(_ lane: Lane, scopeID: Int?) -> Bool {
+        guard entersGroup(lane, scopeID: scopeID), let root = lane.root else { return false }
+        return !root.children.isEmpty
+    }
+
     /// Whether `id` is a card shown on this board. A drop accepts only these:
     /// the drop payload is plain text, so a number dragged in from elsewhere
     /// (or a parent's id) must never move a target.

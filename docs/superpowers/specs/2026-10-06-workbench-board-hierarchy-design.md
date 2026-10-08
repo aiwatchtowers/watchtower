@@ -40,8 +40,8 @@ parent.
     click; images; **Asks** (instead of the Documents field, see below); **Comments | History** tabs; the comment field pinned at the
     bottom (⌘↩ / ⌃↩).
   - *Group:* the same, except a **GROUP** tag; the status is not a menu but reads
-    "from sub-tasks", with an "N of M done" bar and a per-status breakdown; **Open group**
-    replaces Work on It; a **SUB-TASKS** tree (nested groups fold, done ones fold into one row,
+    "from sub-tasks", with an "N of M done" bar and a per-status breakdown; **Work on It**,
+    with **Open group** beside it; a **SUB-TASKS** tree (nested groups fold, done ones fold into one row,
     a click opens the sub-task in the panel).
   The panel opens from a card (task) and from a lane header or a group row in List (group).
   Esc or ✕ closes it.
@@ -59,6 +59,8 @@ parent.
 2. **Panel over the board or beside it.** *Recommended:* over the board (the kanban keeps its
    full width — the reason the popup replaced a side column in board #155), no dimming.
    *Alternative:* a real side column that narrows the board.
+
+**Amended 2026-10-08 (board #472, spec `2026-10-08-workbench-group-work-on-design.md`):** a group's panel shows **Work on It** as the primary button with **Open group** beside it; Work on It is also on a group lane header and in every target's context menu.
 
 **Why there is no "Documents" field.** The #255 sketch has one, but targets no longer have
 documents. On 2026-10-03 the Documents tab and documents attached to a target were removed
@@ -137,7 +139,7 @@ WatchtowerCore, and `docs/app-guide.md` describes the new board.
   on reload, not per tab switch.
 - **Group mode.** Status shown as a label "<status> · from sub-tasks", no menu; "N of M done"
   over the group's leaves with a breakdown by status (counts only, statuses with zero
-  omitted); **Open group** (Part 4) instead of Work on It; a SUB-TASKS tree from the node's
+  omitted); **Work on It**, with **Open group** (Part 4) beside it; a SUB-TASKS tree from the node's
   children (`WorkbenchBoardOutline` rows rooted at the group, done/dismissed folded into one
   "✓ N closed" row that unfolds in place; nested groups fold, folds are panel-local state).
   Archived sub-tasks follow the board's Archive toggle.

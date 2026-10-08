@@ -65,8 +65,8 @@ struct WorkbenchBoardKanbanView: View {
                             columnCount: board.columns.count,
                             isFolded: folded.contains(lane.id),
                             isDoneUnfolded: vm.unfoldedDoneLanes.contains(lane.id),
-                            // The scope's own Tasks lane would re-enter the scope.
-                            entersGroup: lane.root != nil && lane.id != board.scopeID,
+                            entersGroup: WorkbenchBoardKanban.entersGroup(lane, scopeID: board.scopeID),
+                            showsWorkOn: WorkbenchBoardKanban.showsWorkOn(lane, scopeID: board.scopeID),
                             vm: vm,
                             selectedTargetID: selectedTargetID,
                             onSelect: onSelect,
@@ -120,10 +120,11 @@ private enum WorkbenchBoardKanbanLayout {
     }
 }
 
-/// One lane: a header (fold chevron, `#id`, title, progress, status) over the
-/// board's columns filled with this lane's cards. Clicking the header opens
-/// the group in the panel, a double-click enters it; the chevron folds the
-/// lane.
+/// One lane: a header (fold chevron, `#id`, title, progress, status, and on
+/// a group's lane Work on It — not on the scope's own Tasks lane nor on No
+/// group) over the board's columns filled with this lane's
+/// cards. Clicking the header opens the group in the panel, a double-click
+/// enters it; the chevron folds the lane.
 private struct WorkbenchBoardKanbanLaneView: View {
     let lane: WorkbenchBoardKanban.Lane
     let columnCount: Int
@@ -132,6 +133,9 @@ private struct WorkbenchBoardKanbanLaneView: View {
     /// A double-click enters the lane's group: not for No group, nor for
     /// the scope's own Tasks lane.
     let entersGroup: Bool
+    /// The header offers Work on It: a group's lane only
+    /// (`WorkbenchBoardKanban.showsWorkOn`).
+    let showsWorkOn: Bool
     let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
@@ -192,11 +196,43 @@ private struct WorkbenchBoardKanbanLaneView: View {
             .accessibilityLabel(isFolded ? "Show lane" : "Fold lane")
             .accessibilityValue(isFolded ? "Folded" : "Expanded")
             summary
+            // Beside `summary`, not inside it: its tap and simultaneous
+            // double-tap would also fire on a click here, and VoiceOver
+            // would merge the button into the header's combined element.
+            // Right after the status chip; the header's free space past it
+            // is `clickLayer`, so it never stretches to the trailing edge.
+            if showsWorkOn, let root = lane.root {
+                WorkOnTargetButton(target: root.target, compact: true, isVisible: true)
+            }
         }
         .padding(.vertical, 4)
         .padding(.trailing, 10)
         .frame(width: WorkbenchBoardKanbanLayout.width(columns: columnCount), alignment: .leading)
+        .background { clickLayer }
         .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// The header's empty space (past the button, the padding) clicks like
+    /// `summary`. A background, not an ancestor: a hit lands here only
+    /// where no header view sits in front, so the chevron and Work on It
+    /// buttons never fire it. Hidden from VoiceOver — `summary` carries the
+    /// same actions.
+    @ViewBuilder
+    private var clickLayer: some View {
+        if let root = lane.root {
+            clicks(Color.clear.contentShape(Rectangle()), id: root.target.id)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// A click opens the target in the panel, a double-click enters the
+    /// group (a group lane only). Simultaneous, not `onTapGesture(count: 2)`
+    /// ahead of the single tap: that would hold every single click until the
+    /// double-click interval passed.
+    private func clicks(_ view: some View, id: Int) -> some View {
+        view
+            .onTapGesture { vm.select(id) }
+            .simultaneousGesture(TapGesture(count: 2).onEnded { if entersGroup { onEnter(id) } })
     }
 
     /// Everything right of the chevron; for a group lane a click opens the
@@ -220,17 +256,10 @@ private struct WorkbenchBoardKanbanLaneView: View {
                     color: WorkbenchBoardColors.status(root.target.statusColor)
                 )
             }
-            Spacer(minLength: 0)
         }
         if let root = lane.root {
             let id = root.target.id
-            // Simultaneous, not `onTapGesture(count: 2)` ahead of the single
-            // tap: that would hold every single click until the double-click
-            // interval passed.
-            content
-                .contentShape(Rectangle())
-                .onTapGesture { vm.select(id) }
-                .simultaneousGesture(TapGesture(count: 2).onEnded { if entersGroup { onEnter(id) } })
+            clicks(content.contentShape(Rectangle()), id: id)
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { vm.select(id) }

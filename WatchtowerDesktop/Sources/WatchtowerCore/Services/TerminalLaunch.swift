@@ -89,6 +89,18 @@ package struct TerminalLaunch: Equatable, Sendable {
         "Work on target #\(targetID) using the \(vocabulary.skillName) skill."
     }
 
+    /// "Work on it" on a target with sub-targets (spec 2026-10-08): the skill's
+    /// "Working a group" section keys on this wording.
+    package static func workOnGroupPrompt(targetID: Int64, vocabulary: WorkbenchVocabulary) -> String {
+        "Work on group #\(targetID) using the \(vocabulary.skillName) skill."
+    }
+
+    /// The first prompt of a Work on It session: the group wording when the target has sub-targets.
+    package static func workOnPrompt(targetID: Int64, isGroup: Bool, vocabulary: WorkbenchVocabulary) -> String {
+        isGroup ? workOnGroupPrompt(targetID: targetID, vocabulary: vocabulary)
+            : workOnTargetPrompt(targetID: targetID, vocabulary: vocabulary)
+    }
+
     /// Follows a session's brief when the owner asked for a plan first (a
     /// start from the phone, mobile POC spec §6.5).
     package static let planFirstSuffix =
