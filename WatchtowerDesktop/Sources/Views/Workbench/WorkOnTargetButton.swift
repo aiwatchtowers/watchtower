@@ -16,10 +16,10 @@ struct WorkOnTargetButton: View {
     var body: some View {
         let vm = appState.workbenchesViewModel
         let existing = Self.hasSession(target, in: vm)
-        let title = existing ? "Open Its Session" : "Work on It"
+        let title = Self.title(existing: existing)
         let icon = existing ? "arrow.right.circle" : "play.circle"
         let button = Button {
-            Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.workbenchID) }
+            Self.start(target, vm: vm)
         } label: {
             if compact {
                 Image(systemName: icon)
@@ -40,6 +40,17 @@ struct WorkOnTargetButton: View {
         .opacity(isVisible ? 1 : 0)
         .disabled(!isVisible || vm == nil)
         .accessibilityHidden(!isVisible)
+    }
+
+    /// The button's and the target menu's label.
+    static func title(existing: Bool) -> String {
+        existing ? "Open Its Session" : "Work on It"
+    }
+
+    /// Opens `target`'s session or starts one: the button's and the target
+    /// menu's action.
+    static func start(_ target: Target, vm: WorkbenchesViewModel?) {
+        Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.workbenchID) }
     }
 
     /// Whether `target` already has a session in its workbench: the button

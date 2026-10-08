@@ -258,8 +258,8 @@ struct WorkbenchTargetMenu: View {
         if showsWorkOn {
             let sessions = appState.workbenchesViewModel
             let existing = WorkOnTargetButton.hasSession(target, in: sessions)
-            Button(existing ? "Open Its Session" : "Work on It") {
-                Task { await sessions?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.workbenchID) }
+            Button(WorkOnTargetButton.title(existing: existing)) {
+                WorkOnTargetButton.start(target, vm: sessions)
             }
             .disabled(sessions == nil)
             Divider()
