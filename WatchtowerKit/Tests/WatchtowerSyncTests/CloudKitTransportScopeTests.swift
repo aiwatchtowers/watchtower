@@ -269,6 +269,47 @@ final class CloudKitTransportScopeTests: XCTestCase {
         XCTAssertEqual(collected.values, [.unlinked])
     }
 
+    func testThrownBareZoneNotFoundKeepsTheParkedEventsForeignZone() async throws {
+        // The engine throws a bare error and reports the zone in the event:
+        // the zone must not be lost, or a stale owner unlinks the live link.
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneNotFound)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let collected = await events(of: transport)
+        let stale = CKRecordZone.ID(zoneName: "DataZone", ownerName: "_stale-owner")
+        engine.onNextFetch { await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: stale) }
+
+        try await transport.pull()
+
+        XCTAssertTrue(collected.values.isEmpty)
+    }
+
+    func testAPullDuringAPullReturnsAtOnce() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        engine.onNextFetch { try? await transport.pull() }
+
+        try await transport.pull()
+
+        XCTAssertEqual(engine.fetchCount, 1, "pulls are serialized: the inner one did not fetch")
+    }
+
+    func testAPullThatEndsUnlinkedDoesNotThrow() async throws {
+        // Expired token → re-fetch; during the re-fetch the event path
+        // reports the zone gone, and the re-fetch then throws zoneNotFound.
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.changeTokenExpired), CKError(.zoneNotFound)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let collected = await events(of: transport)
+        let zone = shared.zoneID(for: .relay)
+        engine.onNextFetch {
+            engine.onNextFetch { await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: zone) }
+        }
+
+        try await transport.pull()
+
+        XCTAssertEqual(engine.fetchCount, 2)
+        XCTAssertEqual(collected.values, [.unlinked])
+    }
+
     func testPrivateScopeIgnoresEventPathErrors() async throws {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)

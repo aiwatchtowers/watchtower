@@ -67,6 +67,13 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     // Send-side error state (spec §9).
     private(set) var batchLimit = maxBatchSize
+    /// The batch last handed to the engine: what a request-level
+    /// `.limitExceeded` (which names no record) is about.
+    private var lastBuiltBatch: (id: Int, size: Int, saves: [(name: String, zone: CloudZoneID)])?
+    private var batchSerial = 0
+    /// The batch a `.limitExceeded` was already applied to — the same
+    /// failure can arrive thrown and per record; it shrinks once.
+    private var shrunkBatchID: Int?
     /// Start of the current throttling stretch; nil once a send succeeds.
     /// Settings shows "iCloud is slowing sync down" after 60 s of it.
     public private(set) var throttledSince: Date?
@@ -86,9 +93,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// An expired-token zone check + re-fetch is running (two concurrent
     /// pulls, or a pull and the event path, must not both run one).
     private var refetchInFlight = false
-    /// A `pull()` fetch is awaiting the engine. Fetch-error events that
-    /// arrive meanwhile are parked here and handled by `pull()` instead,
-    /// so one server failure is handled once.
+    /// A `pull()` fetch is awaiting the engine. Pulls are serialized: a
+    /// pull while another runs returns at once, so this flag and the parked
+    /// slot belong to that one pull. Fetch-error events that arrive
+    /// meanwhile are parked and handled by the pull instead, so one server
+    /// failure is handled once.
     private var manualFetchInFlight = false
     private var parkedEventError: (error: CKError, zoneID: CKRecordZone.ID)?
 
@@ -233,29 +242,43 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// transport can act on (unlinked, an expired token, throttling) are
     /// handled, not thrown. A successful fetch ends a throttling stretch.
     public func pull() async throws {
-        guard let engine, !isUnlinked else { return }
+        guard let engine, !isUnlinked, !manualFetchInFlight else { return }
         if let throttledUntil, now() < throttledUntil { return }
         manualFetchInFlight = true
         parkedEventError = nil
         do {
+            try await fetchAndHandle(engine: engine)
+        } catch where isUnlinked {
+            // The link ended while this pull ran (the event path or the
+            // handling unlinked): `.unlinked` already told the owner, so a
+            // leftover zone error is not a new outage.
+            return
+        }
+    }
+
+    private func fetchAndHandle(engine: any SyncEngineDriving) async throws {
+        var thrown: CKError?
+        do {
             try await engine.fetchChanges()
-            manualFetchInFlight = false
-            if let parked = parkedEventError {
-                // The engine reported this fetch's failure as an event only.
-                parkedEventError = nil
-                try await handleFetchError(parked.error, zoneID: parked.zoneID, engine: engine)
-                return
-            }
-            clearThrottle()
         } catch let error as CKError {
-            // The thrown error supersedes any event-path copy of it.
-            manualFetchInFlight = false
-            parkedEventError = nil
-            try await handleFetchError(error, zoneID: nil, engine: engine)
+            thrown = error
         } catch {
             manualFetchInFlight = false
             parkedEventError = nil
             throw error
+        }
+        let parked = parkedEventError
+        manualFetchInFlight = false
+        parkedEventError = nil
+        if let thrown {
+            // The thrown error supersedes the event copy of it, but keeps
+            // the event's zone: a bare error is otherwise taken as ours.
+            try await handleFetchError(thrown, zoneID: parked?.zoneID, engine: engine)
+        } else if let parked {
+            // The engine reported this fetch's failure as an event only.
+            try await handleFetchError(parked.error, zoneID: parked.zoneID, engine: engine)
+        } else {
+            clearThrottle()
         }
     }
 
@@ -394,6 +417,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     func handleFetchEventError(_ error: CKError, zoneID: CKRecordZone.ID) async {
         guard !scope.writesZones, let engine, !isUnlinked else { return }
         if manualFetchInFlight {
+            // One slot: the pull's single fetch fails once.
             parkedEventError = (error, zoneID)
             return
         }
@@ -403,8 +427,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         } else if mine.contains(where: { $0.code == .changeTokenExpired }) {
             do {
                 try await refetchAfterExpiredToken(engine: engine)
-            } catch {
+            } catch where !isUnlinked {
                 recordError(error)
+            } catch {
+                // Unlinked meanwhile: the event already said so.
             }
         }
     }
@@ -487,6 +513,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         nextBackoff = Self.initialBackoff
         isPaused = false
         batchLimit = Self.maxBatchSize
+        lastBuiltBatch = nil
+        shrunkBatchID = nil
         accountResetCount += 1
         accountResetHandler?()
         // Relaunch with fresh state (loadEngineState is now empty). No-op on
@@ -511,6 +539,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                     systemFields: try store.systemFields(recordName: $0.recordName, zone: $0.zone)
                 )
             }
+            batchSerial += 1
+            lastBuiltBatch = (
+                id: batchSerial,
+                size: pending.saves.count + pending.deletes.count,
+                saves: pending.saves.map { (name: $0.recordName, zone: $0.zone) }
+            )
             let recordIDsToDelete = pending.deletes.map {
                 CKRecord.ID(recordName: $0.name, zoneID: scope.zoneID(for: $0.zone))
             }
@@ -649,7 +683,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             }
             try fixSystemFieldsForFailedSaves(failedSaves)
             let batchSize = saved.count + deleted.count + failedSaves.count + failedDeletes.count
-            try shrinkBatch(after: failedSaves, batchSize: batchSize)
+            let tooLarge = failedSaves.filter { $0.error.code == .limitExceeded }.compactMap { failure in
+                scope.cloudZone(for: failure.record.recordID.zoneID).map { (name: failure.record.recordID.recordName, zone: $0) }
+            }
+            if !tooLarge.isEmpty {
+                try shrinkBatch(size: batchSize, rejectable: tooLarge)
+            }
             lastError = nil
         } catch {
             recordError(error)
@@ -661,8 +700,17 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         let errors = Self.flatten(error, zoneID: nil).map(\.error)
         applySendFailures(errors)
         if errors.contains(where: { $0.code == .limitExceeded }) {
-            // A request-level rejection names no record: halve and retry.
-            batchLimit = max(1, batchLimit / 2)
+            // A request-level rejection names no record: it is about the
+            // batch last handed out.
+            if let batch = lastBuiltBatch {
+                do {
+                    try shrinkBatch(size: batch.size, rejectable: batch.saves)
+                } catch {
+                    recordError(error)
+                }
+            } else {
+                batchLimit = max(1, batchLimit / 2)
+            }
         }
         if !applyThrottle(from: errors), !errors.contains(where: { Self.handledSendCodes.contains($0.code) }) {
             recordError(error)
@@ -735,19 +783,20 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
     }
 
-    /// `.limitExceeded`: halve the next batch and retry. A record that
-    /// fails even alone is logged, dropped from the queue, and handed to
-    /// the rejected-record handler, so it never retries forever.
-    private func shrinkBatch(after failures: [(record: CKRecord, error: CKError)], batchSize: Int) throws {
-        let tooLarge = failures.filter { $0.error.code == .limitExceeded }
-        guard !tooLarge.isEmpty else { return }
-        guard batchSize <= 1 else {
-            batchLimit = max(1, batchSize / 2)
+    /// `.limitExceeded` on a batch of `size`: halve the next batch and
+    /// retry. A record that fails even alone (`rejectable`) is logged,
+    /// dropped from the queue, and handed to the rejected-record handler,
+    /// so it never retries forever. Applied once per built batch.
+    private func shrinkBatch(size: Int, rejectable: [(name: String, zone: CloudZoneID)]) throws {
+        if let id = lastBuiltBatch?.id {
+            guard shrunkBatchID != id else { return }
+            shrunkBatchID = id
+        }
+        guard size <= 1 else {
+            batchLimit = max(1, size / 2)
             return
         }
-        for failure in tooLarge {
-            guard let zone = scope.cloudZone(for: failure.record.recordID.zoneID) else { continue }
-            let name = failure.record.recordID.recordName
+        for (name, zone) in rejectable {
             try store.dropPending(recordName: name, zone: zone)
             logger.error("CloudKit rejected \(name, privacy: .public) even alone (limitExceeded); dropped it from the send queue")
             recordRejectedHandler?(name, zone)

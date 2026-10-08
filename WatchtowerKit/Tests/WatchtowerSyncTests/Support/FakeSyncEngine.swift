@@ -9,7 +9,7 @@ import Foundation
 /// `nextEngineBatch()` and nothing delivers `CKSyncEngine.Event`s, so
 /// `handleEngineEvent`'s mapping is untested here. Tests call the
 /// transport's internal entry points (`handleSentChanges`,
-/// `handleFetchEventError`, …) directly; `onFetch` lets a test deliver an
+/// `handleFetchEventError`, …) directly; `onNextFetch` lets a test deliver an
 /// event-path error while a fetch is in flight.
 final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     private let lock = NSLock()

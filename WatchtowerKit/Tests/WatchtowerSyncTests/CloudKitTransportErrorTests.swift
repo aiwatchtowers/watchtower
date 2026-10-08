@@ -229,17 +229,56 @@ final class CloudKitTransportErrorTests: XCTestCase {
         XCTAssertNil(since)
     }
 
-    func testRequestLevelLimitExceededHalvesTheBatch() async throws {
-        let transport = await CloudKitTransport.testing(store: try .inMemory())
+    func testRequestLevelLimitExceededHalvesTheBatchThatWasSent() async throws {
+        let store = try TransportStore.inMemory()
+        let transport = await CloudKitTransport.testing(store: store)
+        try await transport.save(records(60))
 
+        _ = await transport.nextEngineBatch()
         await transport.handleSendError(CKError(.limitExceeded))
         let once = await transport.batchLimit
+        XCTAssertEqual(once, 30, "half the 60 records actually sent, not half of 200")
+
+        await transport.handleSendError(CKError(.limitExceeded))
+        let repeated = await transport.batchLimit
+        XCTAssertEqual(repeated, 30, "the same batch shrinks once")
+
+        _ = await transport.nextEngineBatch()
         await transport.handleSendError(CKError(.limitExceeded))
         let twice = await transport.batchLimit
-
-        XCTAssertEqual([once, twice], [100, 50])
+        XCTAssertEqual(twice, 15)
         let lastError = await transport.lastError
         XCTAssertNil(lastError, "a handled rejection is not an outage")
+    }
+
+    func testRequestLevelLimitExceededOnOneRecordRejectsIt() async throws {
+        let store = try TransportStore.inMemory()
+        let transport = await CloudKitTransport.testing(store: store)
+        let rejectedNames = await rejected(transport)
+        try await transport.save(records(1))
+
+        _ = await transport.nextEngineBatch()
+        await transport.handleSendError(CKError(.limitExceeded))
+
+        XCTAssertEqual(rejectedNames.values, ["target-0"])
+        XCTAssertTrue(try store.pendingBatch(limit: 10).saves.isEmpty, "no retry for ever")
+    }
+
+    func testLimitExceededThrownAndPerRecordShrinksOnce() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory())
+        try await transport.save(records(10))
+        let next = await transport.nextEngineBatch()
+        let batch = try XCTUnwrap(next)
+
+        await transport.handleSendError(CKError(.limitExceeded))
+        await transport.handleSentChanges(
+            saved: [], deleted: [],
+            failedSaves: batch.recordsToSave.map { ($0, CKError(.limitExceeded)) },
+            failedDeletes: [:]
+        )
+
+        let limit = await transport.batchLimit
+        XCTAssertEqual(limit, 5)
     }
 
     func testShrinkUsesTheSizeOfTheBatchThatFailed() async throws {
