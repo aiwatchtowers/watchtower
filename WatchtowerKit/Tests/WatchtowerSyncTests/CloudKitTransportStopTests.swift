@@ -92,3 +92,48 @@ final class CloudKitTransportStopTests: XCTestCase {
         XCTAssertNil(since)
     }
 }
+
+/// `sendNow()`: the hub's fast lane asks for an immediate send; it never
+/// overrides a stop, a throttle wait or a quota pause.
+final class CloudKitTransportSendNowTests: XCTestCase {
+    private func record(_ name: String) -> CloudRecord {
+        CloudRecord(recordName: name, zone: .data, kind: "terminal_session", modifiedAt: Date(), payload: Data("{}".utf8))
+    }
+
+    func testSendNowAsksTheEngineToSendThePendingQueue() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
+        try await transport.save([record("terminal_session-1")])
+
+        await transport.sendNow()
+
+        XCTAssertEqual(engine.sendCount, 1)
+        XCTAssertFalse(engine.recordZoneChanges.isEmpty, "the pending save is scheduled on the engine")
+    }
+
+    func testSendNowIsANoOpWhileThrottled() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine) { _ in
+            // The retry never fires inside the test: the wait stays open.
+            try? await Task.sleep(for: .seconds(3_600))
+        }
+        addTeardownBlock { await transport.retryTask?.cancel() }
+        try await transport.save([record("terminal_session-1")])
+        await transport.handleSendError(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 600.0]))
+
+        await transport.sendNow()
+
+        XCTAssertEqual(engine.sendCount, 0, "a server-requested wait is honoured")
+    }
+
+    func testSendNowIsANoOpAfterStop() async throws {
+        let engine = FakeSyncEngine()
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
+        try await transport.save([record("terminal_session-1")])
+        await transport.stop()
+
+        await transport.sendNow()
+
+        XCTAssertEqual(engine.sendCount, 0, "a stopped transport sends nothing")
+    }
+}

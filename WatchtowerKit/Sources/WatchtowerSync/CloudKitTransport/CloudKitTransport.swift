@@ -1110,3 +1110,18 @@ private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Send
         await transport?.nextEngineBatch()
     }
 }
+
+// MARK: - Send now (the mobile hub's fast lane)
+
+extension CloudKitTransport {
+    /// Asks the engine to send the pending queue at once instead of waiting
+    /// for its own scheduling (mobile POC spec §4.5: the hub's fast lane
+    /// sends right after a fast diff saved something). The same path as a
+    /// throttle retry (`resend()`). No-op while stopped, without an engine,
+    /// unlinked, paused for quota, or inside a server-requested wait.
+    public func sendNow() async {
+        guard !isStopped, !isPaused else { return }
+        if let throttledUntil, now() < throttledUntil { return }
+        await resend()
+    }
+}
