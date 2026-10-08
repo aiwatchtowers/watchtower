@@ -93,13 +93,19 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// An expired-token zone check + re-fetch is running (two concurrent
     /// pulls, or a pull and the event path, must not both run one).
     private var refetchInFlight = false
-    /// A `pull()` fetch is awaiting the engine. Pulls are serialized: a
-    /// pull while another runs returns at once, so this flag and the parked
-    /// slot belong to that one pull. Fetch-error events that arrive
-    /// meanwhile are parked and handled by the pull instead, so one server
-    /// failure is handled once.
+    /// The running pull, error handling included. A `pull()` arriving
+    /// meanwhile joins it (awaits it, gets its outcome) instead of starting
+    /// a second fetch, so the flag and parked events below belong to it.
+    private var pullTask: Task<Void, Error>?
+    /// Pulls that joined a running one (observable in tests).
+    private(set) var pullJoins = 0
+    /// The running pull's `fetchChanges()` is awaiting the engine (cleared
+    /// before its error handling). Fetch-error events delivered meanwhile
+    /// are parked — every one: in `shared` scope one fetch covers every
+    /// zone and fails once per zone — and handled by the pull, so one
+    /// server failure is handled once.
     private var manualFetchInFlight = false
-    private var parkedEventError: (error: CKError, zoneID: CKRecordZone.ID)?
+    private var parkedEventErrors: [(error: CKError, zoneID: CKRecordZone.ID)] = []
 
     public init(
         store: TransportStore,
@@ -242,10 +248,25 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// transport can act on (unlinked, an expired token, throttling) are
     /// handled, not thrown. A successful fetch ends a throttling stretch.
     public func pull() async throws {
-        guard let engine, !isUnlinked, !manualFetchInFlight else { return }
+        if let pullTask {
+            pullJoins += 1
+            return try await pullTask.value
+        }
+        guard let engine, !isUnlinked else { return }
         if let throttledUntil, now() < throttledUntil { return }
+        // Actor-isolated: the body runs after this job suspends below, so
+        // `pullTask` is set before it can clear it.
+        let task = Task {
+            defer { self.pullTask = nil }
+            try await self.performPull(engine: engine)
+        }
+        pullTask = task
+        try await task.value
+    }
+
+    private func performPull(engine: any SyncEngineDriving) async throws {
         manualFetchInFlight = true
-        parkedEventError = nil
+        parkedEventErrors = []
         do {
             try await fetchAndHandle(engine: engine)
         } catch where isUnlinked {
@@ -264,19 +285,22 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             thrown = error
         } catch {
             manualFetchInFlight = false
-            parkedEventError = nil
+            parkedEventErrors = []
             throw error
         }
-        let parked = parkedEventError
+        let parked = parkedEventErrors
         manualFetchInFlight = false
-        parkedEventError = nil
+        parkedEventErrors = []
         if let thrown {
-            // The thrown error supersedes the event copy of it, but keeps
-            // the event's zone: a bare error is otherwise taken as ours.
-            try await handleFetchError(thrown, zoneID: parked?.zoneID, engine: engine)
-        } else if let parked {
-            // The engine reported this fetch's failure as an event only.
-            try await handleFetchError(parked.error, zoneID: parked.zoneID, engine: engine)
+            // The thrown error supersedes the event copies of it, but keeps
+            // their zones: a bare error is ours when nothing was parked or
+            // any parked zone is ours, and otherwise is about a foreign zone.
+            let zoneID = parked.isEmpty ? nil : (parked.first { ownsZone($0.zoneID) } ?? parked[0]).zoneID
+            try await handleFetchError(thrown, zoneID: zoneID, engine: engine)
+        } else if !parked.isEmpty {
+            // The engine reported this fetch's failures as events only.
+            let items = parked.flatMap { Self.flatten($0.error, zoneID: $0.zoneID) }
+            try await handleFetchItems(items, original: parked[0].error, engine: engine)
         } else {
             clearThrottle()
         }
@@ -348,8 +372,17 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         case .didFetchRecordZoneChanges(let fetched):
             // Not awaited here: a re-fetch from inside the engine's own
             // event delivery would wait on the fetch that is delivering.
+            // Parked right here while a pull's fetch is awaiting the engine:
+            // the engine awaits this delivery inside that fetch, so the park
+            // happens before `fetchChanges()` returns — no Task hop that
+            // could lose the race with the pull's resume. Shared scope only
+            // (private scope ignores event-path errors, as before scopes).
             if let error = fetched.error {
-                Task { await self.handleFetchEventError(error, zoneID: fetched.zoneID) }
+                if manualFetchInFlight, !scope.writesZones, !isUnlinked {
+                    parkedEventErrors.append((error, fetched.zoneID))
+                } else {
+                    Task { await self.handleFetchEventError(error, zoneID: fetched.zoneID) }
+                }
             }
         case .accountChange(let change):
             handleAccountChange(change.changeType)
@@ -395,7 +428,17 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// - Anything else is rethrown (`shared`: unless it is only about other
     ///   owners' zones).
     func handleFetchError(_ error: CKError, zoneID: CKRecordZone.ID?, engine: any SyncEngineDriving) async throws {
-        let mine = Self.flatten(error, zoneID: zoneID).filter { ownsZone($0.zoneID) }.map(\.error)
+        try await handleFetchItems(Self.flatten(error, zoneID: zoneID), original: error, engine: engine)
+    }
+
+    /// `handleFetchError` over already-flattened items (one server failure
+    /// may arrive as several parked events); `original` is what is rethrown.
+    private func handleFetchItems(
+        _ items: [(zoneID: CKRecordZone.ID?, error: CKError)],
+        original error: CKError,
+        engine: any SyncEngineDriving
+    ) async throws {
+        let mine = items.filter { ownsZone($0.zoneID) }.map(\.error)
         if !scope.writesZones, mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
             emitUnlinked(reason: "zone not found on fetch")
             return
@@ -417,8 +460,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     func handleFetchEventError(_ error: CKError, zoneID: CKRecordZone.ID) async {
         guard !scope.writesZones, let engine, !isUnlinked else { return }
         if manualFetchInFlight {
-            // One slot: the pull's single fetch fails once.
-            parkedEventError = (error, zoneID)
+            parkedEventErrors.append((error, zoneID))
             return
         }
         let mine = Self.flatten(error, zoneID: zoneID).filter { ownsZone($0.zoneID) }.map(\.error)

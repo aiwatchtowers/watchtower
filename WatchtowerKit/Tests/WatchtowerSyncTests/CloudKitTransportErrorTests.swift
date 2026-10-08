@@ -199,11 +199,14 @@ final class CloudKitTransportErrorTests: XCTestCase {
 
     func testThrottledSinceClearsWhenTheWaitEndsWithNothingPending() async throws {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 3.0])])
-        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
+        let gate = Gate()
+        // The wait holds until the gate opens, so "during" is observable.
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine) { _ in await gate.wait() }
 
         try await transport.pull()
         let during = await transport.throttledSince
         XCTAssertNotNil(during)
+        await gate.open()
         await transport.retryTask?.value
 
         let after = await transport.throttledSince

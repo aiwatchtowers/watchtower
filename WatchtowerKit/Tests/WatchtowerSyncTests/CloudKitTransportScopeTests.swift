@@ -283,14 +283,82 @@ final class CloudKitTransportScopeTests: XCTestCase {
         XCTAssertTrue(collected.values.isEmpty)
     }
 
-    func testAPullDuringAPullReturnsAtOnce() async throws {
+    /// From inside the fake's fetch: starts a second pull in its own task
+    /// and waits until it has joined the running one. Returns that task.
+    private func startJoiningPull(
+        _ transport: CloudKitTransport,
+        order: Collector<String>
+    ) async -> Task<Error?, Never> {
+        let inner = Task<Error?, Never> {
+            do {
+                try await transport.pull()
+                order.append("inner done")
+                return nil
+            } catch {
+                order.append("inner done")
+                return error
+            }
+        }
+        for _ in 0..<10_000 where await transport.pullJoins == 0 {
+            await Task.yield()
+        }
+        order.append("fetch ending")
+        return inner
+    }
+
+    func testAPullDuringAPullJoinsIt() async throws {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
-        engine.onNextFetch { try? await transport.pull() }
+        let order = Collector<String>()
+        let innerBox = Collector<Task<Error?, Never>>()
+        engine.onNextFetch { innerBox.append(await self.startJoiningPull(transport, order: order)) }
+
+        try await transport.pull()
+        let innerError = await innerBox.values.first?.value
+
+        let joins = await transport.pullJoins
+        XCTAssertEqual(joins, 1, "the second pull joined the running one")
+        XCTAssertNil(innerError)
+        XCTAssertEqual(engine.fetchCount, 1, "one fetch for both callers")
+        XCTAssertEqual(order.values, ["fetch ending", "inner done"], "the joiner returns only after the running fetch")
+    }
+
+    func testAJoiningPullGetsTheRunningPullsError() async throws {
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.networkFailure)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let order = Collector<String>()
+        let innerBox = Collector<Task<Error?, Never>>()
+        engine.onNextFetch { innerBox.append(await self.startJoiningPull(transport, order: order)) }
+
+        do {
+            try await transport.pull()
+            XCTFail("the network failure surfaces")
+        } catch let error as CKError {
+            XCTAssertEqual(error.code, .networkFailure)
+        }
+        let innerError = await innerBox.values.first?.value
+
+        XCTAssertEqual((innerError as? CKError)?.code, .networkFailure, "the joiner gets the same outcome")
+        XCTAssertEqual(engine.fetchCount, 1)
+    }
+
+    func testThrownBareZoneNotFoundIsOursWhenAnyParkedZoneIsOurs() async throws {
+        // The live owner's zone and a stale owner's same-named zone are both
+        // gone; the stale event is parked last. The thrown bare error must
+        // still count for the live link.
+        let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneNotFound)])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
+        let collected = await events(of: transport)
+        let live = shared.zoneID(for: .data)
+        let stale = CKRecordZone.ID(zoneName: "DataZone", ownerName: "_stale-owner")
+        engine.onNextFetch {
+            await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: live)
+            await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: stale)
+        }
 
         try await transport.pull()
 
-        XCTAssertEqual(engine.fetchCount, 1, "pulls are serialized: the inner one did not fetch")
+        XCTAssertEqual(collected.values, [.unlinked])
     }
 
     func testAPullThatEndsUnlinkedDoesNotThrow() async throws {

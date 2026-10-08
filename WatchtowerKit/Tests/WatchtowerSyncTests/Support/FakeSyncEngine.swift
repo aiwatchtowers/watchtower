@@ -87,6 +87,23 @@ final class Collector<Value>: @unchecked Sendable {
     var values: [Value] { lock.withLock { _values } }
 }
 
+/// Holds waiters until `open()` (a sleeper the test releases).
+actor Gate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+}
+
 /// A controllable clock for throttle timestamps.
 final class TestClock: @unchecked Sendable {
     private let lock = NSLock()
