@@ -61,6 +61,27 @@ struct RootTabView: View {
                     .tag(tab)
             }
         }
+        // A minimized capture keeps a red bar above everything: tap to
+        // return to the recorder.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if env.recorder.isCapturing, !env.recorder.isPresented {
+                RecordingMiniBar()
+            }
+        }
+        .fullScreenCover(isPresented: Binding(
+            get: { env.recorder.isPresented },
+            set: { presented in
+                // A swipe-down only minimizes: the capture goes on.
+                guard !presented else { return }
+                if env.recorder.isCapturing {
+                    env.recorder.minimize()
+                } else {
+                    env.recorder.close()
+                }
+            }
+        )) {
+            RecordingView()
+        }
         .onChange(of: selection, initial: true) {
             env.setFetchInterval(selection.fetchInterval)
         }
@@ -107,8 +128,10 @@ private struct EmptyTabView: View {
     }
 }
 
-/// More: Settings only.
+/// More: Settings, and the free voice-note entry of the recorder.
 struct MoreView: View {
+    @Environment(AppEnvironment.self) private var env
+
     enum Row: CaseIterable, Identifiable {
         case settings
 
@@ -129,11 +152,22 @@ struct MoreView: View {
 
     var body: some View {
         NavigationStack {
-            List(Row.allCases) { row in
-                NavigationLink {
-                    destination(for: row)
-                } label: {
-                    Label(row.title, systemImage: row.systemImage)
+            List {
+                Section {
+                    Button {
+                        Task { await env.recorder.recordVoiceNote() }
+                    } label: {
+                        Label("Record a voice note", systemImage: "mic")
+                    }
+                }
+                Section {
+                    ForEach(Row.allCases) { row in
+                        NavigationLink {
+                            destination(for: row)
+                        } label: {
+                            Label(row.title, systemImage: row.systemImage)
+                        }
+                    }
                 }
             }
             .navigationTitle("More")

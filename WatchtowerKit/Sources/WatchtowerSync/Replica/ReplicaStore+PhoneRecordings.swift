@@ -125,7 +125,8 @@ extension ReplicaStore {
         }
     }
 
-    func phoneRecording(id: String) throws -> PhoneRecording? {
+    /// One ledger row; nil for an unknown id.
+    public func phoneRecording(id: String) throws -> PhoneRecording? {
         try writer.read { db in
             try phoneRecordings(from: db).first { $0.id == id }
         }

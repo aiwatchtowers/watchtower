@@ -50,6 +50,11 @@ final class AppEnvironment {
     /// The Workbench slices as the Now and Workbench tabs and the tab badge
     /// draw them: one observation for the app's lifetime.
     let workbenchReplica = WorkbenchReplicaModel()
+    /// The phone recorder (record a meeting or a voice note), owned for the
+    /// app's lifetime so a capture survives any navigation.
+    let recorder: PhoneRecorderController
+    /// The phone's recordings and their way to the Mac.
+    let phoneRecordings = PhoneRecordingsModel()
 
     /// This phone's link, nil until the link flow (Task 12) sets one. The
     /// demo transport is linked to `DemoSeed.device`.
@@ -69,6 +74,7 @@ final class AppEnvironment {
     @ObservationIgnored private let transport: any CloudSyncTransport
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
+    @ObservationIgnored private let uploader: RecordingUploader
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     @ObservationIgnored private var bootstrapped = false
@@ -100,12 +106,15 @@ final class AppEnvironment {
 
     /// Designated init with an injectable transport and replica path, so
     /// wiring tests build isolated environments. Throws when the replica
-    /// cannot open (the app then shows `BootFailureView`).
+    /// cannot open (the app then shows `BootFailureView`). `makeRecorder`
+    /// builds the recorder over the environment's uploader; tests pass a
+    /// fake audio engine and clock, the app the microphone.
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil
     ) throws {
         assert(
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
@@ -135,11 +144,21 @@ final class AppEnvironment {
                 Self.logger.warning("post-echo hydrate failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        feed = RelayFeed(transport: transport, store: store, outbox: outbox, onActionApplied: hydrateAfterEcho)
+        let uploader = RecordingUploader(transport: transport, store: store, deviceID: device?.deviceID)
+        self.uploader = uploader
+        recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
+        feed = RelayFeed(
+            transport: transport,
+            store: store,
+            outbox: outbox,
+            uploads: uploader,
+            onActionApplied: hydrateAfterEcho
+        )
         let settings = DeviceSettings(transport: transport, defaults: defaults)
         settings.linkedDevice = device
         deviceSettings = settings
         workbenchReplica.start(store: store)
+        phoneRecordings.start(store: store)
 
         bootstrapTask = Task { await bootstrap() }
     }
@@ -173,8 +192,23 @@ final class AppEnvironment {
         } catch {
             Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
         }
+        // The relaunch retry: recordings saved but not yet acknowledged go
+        // out again (the hub's processed set absorbs duplicates).
+        await recorder.uploadPending()
         bootstrapped = true
         restartLoop()
+    }
+
+    /// The device recorder: the microphone, recordings in Application
+    /// Support, and a local notification for the 3-hour cap notice.
+    private static func liveRecorder(_ uploader: RecordingUploader) throws -> PhoneRecorderController {
+        let recorder = PhoneRecorderController(
+            uploader: uploader,
+            engine: AVAudioCaptureEngine(),
+            directory: try PhoneRecorderController.defaultDirectory()
+        )
+        recorder.onCapNotice = { RecorderNotices.postCapNotice() }
+        return recorder
     }
 
     /// One fetch: DataZone, then RelayZone echoes. Returns false when the
