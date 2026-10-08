@@ -1852,6 +1852,14 @@ final class AppState {
     /// B registers its slice sources and dispatcher handlers here.
     private func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
         let dispatcher = MobileHubCommandDispatcher()
+        if let asks = workbenchesViewModel?.asks {
+            let askAnswers = AskAnswerHandler(dbPool: dbPool) { [weak asks] ask, answer in
+                // A rebuilt workbench state rebuilds the hub too; until then
+                // nothing is written.
+                await asks?.answer(ask, with: answer) ?? .failed("The workbench is reloading on the Mac")
+            }
+            dispatcher.register(.askAnswer) { try await askAnswers.handle($0) }
+        }
         // The folder's git status goes through the CLI (PROJ-10's git); no
         // CLI, no refresher, and the workbench records carry no branch.
         let gitRefresher = workbenchesViewModel?.cli.map { cli in
