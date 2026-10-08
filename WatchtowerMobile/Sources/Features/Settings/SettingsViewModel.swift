@@ -54,33 +54,31 @@ struct SettingsSnapshot: Equatable {
     /// Reads from an ALREADY-OPEN database, so it runs inside a
     /// ValueObservation tracking closure (a nested `DatabasePool.read`
     /// there would trap on reentrancy).
-    static func read(from db: Database, deviceID: String?) throws -> Self {
+    static func read(from db: Database, store: ReplicaStore, deviceID: String?) throws -> Self {
         var snapshot = Self()
-        snapshot.heartbeat = try decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, from: db)
+        snapshot.heartbeat = try decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
         if let deviceID {
             snapshot.grant = try decode(
                 DeviceGrant.self,
                 recordName: SliceKind.deviceGrant.recordName(id: deviceID),
+                store: store,
                 from: db
             )
         }
-        snapshot.queuedCount = try Int.fetchOne(
-            db,
-            sql: "SELECT COUNT(*) FROM pending_actions WHERE state = ?",
-            arguments: [PendingAction.State.pending.rawValue]
-        ) ?? 0
+        snapshot.queuedCount = try store.pendingActions(from: db).filter { $0.state == .pending }.count
         return snapshot
     }
 
     /// Both records are RelayCoder JSON in `slice_records`. An undecodable
     /// payload reads as absent (a newer Mac's reshaped record must never
     /// break Settings).
-    private static func decode<T: Decodable>(_ type: T.Type, recordName: String, from db: Database) throws -> T? {
-        guard let payload = try Data.fetchOne(
-            db,
-            sql: "SELECT payload FROM slice_records WHERE record_name = ?",
-            arguments: [recordName]
-        ) else { return nil }
+    private static func decode<T: Decodable>(
+        _ type: T.Type,
+        recordName: String,
+        store: ReplicaStore,
+        from db: Database
+    ) throws -> T? {
+        guard let payload = try store.payload(forRecordName: recordName, from: db) else { return nil }
         do {
             return try RelayCoder.makeDecoder().decode(T.self, from: payload)
         } catch {
@@ -105,7 +103,7 @@ final class SettingsViewModel {
         if cancellable != nil, observedDeviceID == deviceID { return }
         observedDeviceID = deviceID
         let observation = ValueObservation.tracking { db in
-            try SettingsSnapshot.read(from: db, deviceID: deviceID)
+            try SettingsSnapshot.read(from: db, store: store, deviceID: deviceID)
         }
         cancellable = observation.start(
             in: store.reader,

@@ -66,13 +66,7 @@ enum DemoSeed {
         )
         return [
             try CloudRecordFactory.record(for: heartbeat, modifiedAt: now),
-            CloudRecord(
-                recordName: grant.recordName,
-                zone: .data,
-                kind: SliceKind.deviceGrant.rawValue,
-                modifiedAt: now,
-                payload: try RelayCoder.makeEncoder().encode(grant)
-            )
+            try CloudRecordFactory.record(for: grant, modifiedAt: now)
         ]
     }
 }

@@ -23,8 +23,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                 completionHandler(.noData)
                 return
             }
-            await env.refresh()
-            completionHandler(.newData)
+            completionHandler(await env.refresh() ? .newData : .failed)
         }
     }
 }

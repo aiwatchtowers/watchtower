@@ -42,6 +42,10 @@ final class DeviceSettings {
     @ObservationIgnored private let transport: any CloudSyncTransport
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let now: @Sendable () -> Date
+    /// The last queued device-record write. Writes run one at a time, in
+    /// toggle order, and each sends the choices current when it runs, so the
+    /// Mac always ends on the latest state.
+    @ObservationIgnored private var lastWrite: Task<Void, Never>?
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "DeviceSettings")
 
     private enum Keys {
@@ -67,10 +71,14 @@ final class DeviceSettings {
         guard value != typingRequested else { return }
         let previous = typingRequested
         typingRequested = value
-        if await writeDeviceRecord() {
-            defaults.set(value, forKey: Keys.typingRequested)
-        } else {
-            typingRequested = previous
+        await serializedWrite { [weak self] saved in
+            guard let self else { return }
+            if saved {
+                defaults.set(value, forKey: Keys.typingRequested)
+            } else if typingRequested == value {
+                // Revert only our own change: a later toggle owns the value now.
+                typingRequested = previous
+            }
         }
     }
 
@@ -78,10 +86,13 @@ final class DeviceSettings {
         guard value != startSessions else { return }
         let previous = startSessions
         startSessions = value
-        if await writeDeviceRecord() {
-            defaults.set(value, forKey: Keys.startSessions)
-        } else {
-            startSessions = previous
+        await serializedWrite { [weak self] saved in
+            guard let self else { return }
+            if saved {
+                defaults.set(value, forKey: Keys.startSessions)
+            } else if startSessions == value {
+                startSessions = previous
+            }
         }
     }
 
@@ -99,6 +110,20 @@ final class DeviceSettings {
             startSessions: startSessions,
             updatedAt: now()
         )
+    }
+
+    /// Queues one device-record write behind the previous one. `completion`
+    /// runs before the next write starts, so a revert after a failed write
+    /// is already in the choices the next write sends.
+    private func serializedWrite(completion: @escaping @MainActor (_ saved: Bool) -> Void) async {
+        let prior = lastWrite
+        let write = Task { [weak self] in
+            await prior?.value
+            guard let self else { return }
+            completion(await self.writeDeviceRecord())
+        }
+        lastWrite = write
+        await write.value
     }
 
     /// Saves the device record for the current choices. Returns false (and

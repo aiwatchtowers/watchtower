@@ -37,6 +37,7 @@ struct RootTabView: View {
     }
 
     @Environment(AppEnvironment.self) private var env
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selection: Tab = .now
 
     var body: some View {
@@ -49,6 +50,15 @@ struct RootTabView: View {
         }
         .onChange(of: selection, initial: true) {
             env.setFetchInterval(selection.fetchInterval)
+        }
+        // The fetch loop pauses in the background (a recording's audio
+        // background mode must not keep it running) and resumes on return.
+        .onChange(of: scenePhase) {
+            switch scenePhase {
+            case .background: env.setActive(false)
+            case .active: env.setActive(true)
+            default: break
+            }
         }
     }
 

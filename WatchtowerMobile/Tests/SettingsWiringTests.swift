@@ -66,7 +66,7 @@ final class SettingsWiringTests: XCTestCase {
         ])
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
-        let snapshot = try await store.reader.read { db in try SettingsSnapshot.read(from: db, deviceID: nil) }
+        let snapshot = try await store.reader.read { db in try SettingsSnapshot.read(from: db, store: store, deviceID: nil) }
         XCTAssertEqual(snapshot.heartbeat?.macName, "Acme Mac")
         XCTAssertEqual(snapshot.heartbeat?.accounts.map(\.label), ["acme"])
         XCTAssertNil(snapshot.grant, "no linked device, so no grant to read")
@@ -82,7 +82,7 @@ final class SettingsWiringTests: XCTestCase {
                 try await outbox.enqueue(kind: .probe, entityRecordName: nil)
             }
             let snapshot = try await store.reader.read { db in
-                try SettingsSnapshot.read(from: db, deviceID: device.deviceID)
+                try SettingsSnapshot.read(from: db, store: store, deviceID: device.deviceID)
             }
             XCTAssertEqual(snapshot.queuedCount, expected, "queued count for \(expected) pending rows")
         }
@@ -92,12 +92,13 @@ final class SettingsWiringTests: XCTestCase {
     func testViewModelObservesTheQueuedCount() async throws {
         let store = try makePoolStore()
         let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: device.deviceID)
+        try await outbox.enqueue(kind: .probe, entityRecordName: nil)
         let model = SettingsViewModel()
         model.start(store: store, deviceID: device.deviceID)
-        try await poll { model.snapshot.queuedCount == 0 }
+        try await poll({ model.snapshot.queuedCount == 1 }, "the observation's first value is missing")
 
         try await outbox.enqueue(kind: .probe, entityRecordName: nil)
-        try await poll({ model.snapshot.queuedCount == 1 }, "the observation did not re-fire on a new pending row")
+        try await poll({ model.snapshot.queuedCount == 2 }, "the observation did not re-fire on a new pending row")
     }
 
     // MARK: - Workbench toggles
@@ -109,17 +110,21 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertTrue(settings.newAskAlerts)
     }
 
+    /// The spy counts every save call: the in-memory transport collapses
+    /// repeated saves of one record name, so it could not see a double write.
     func testTypeIntoSessionsWritesTypingRequestedOnceOnARepeatedToggle() async throws {
-        let transport = InMemoryCloudTransport()
+        let transport = SpyTransport()
         let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
         await settings.setTypingRequested(true)
 
-        let devices = try await deviceRecords(in: transport)
-        XCTAssertEqual(devices.count, 1, "a repeated toggle to the same value must not write again")
-        let written = try XCTUnwrap(devices.first)
+        let saves = await transport.saves
+        XCTAssertEqual(saves.count, 1, "a repeated toggle to the same value must not write again")
+        XCTAssertEqual(saves.first?.count, 1)
+        let payloads = try await transport.devicePayloads()
+        let written = try XCTUnwrap(payloads.first)
         XCTAssertTrue(written.typingRequested)
         XCTAssertTrue(written.startSessions)
         XCTAssertEqual(written.deviceID, device.deviceID)
@@ -128,14 +133,14 @@ final class SettingsWiringTests: XCTestCase {
     }
 
     func testStartSessionsToggleWritesTheDeviceRecord() async throws {
-        let transport = InMemoryCloudTransport()
+        let transport = SpyTransport()
         let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
         settings.linkedDevice = device
 
         await settings.setStartSessions(false)
 
-        let records = try await deviceRecords(in: transport)
-        let written = try XCTUnwrap(records.first)
+        let payloads = try await transport.devicePayloads()
+        let written = try XCTUnwrap(payloads.first)
         XCTAssertFalse(written.startSessions)
         XCTAssertFalse(written.typingRequested)
     }
@@ -143,14 +148,14 @@ final class SettingsWiringTests: XCTestCase {
     /// Before linking there is no device record to write: the choice is kept
     /// and the link flow sends it with the link record.
     func testToggleWhileUnlinkedKeepsTheChoiceAndWritesNothing() async throws {
-        let transport = InMemoryCloudTransport()
+        let transport = SpyTransport()
         let defaults = try makeDefaults()
         let settings = DeviceSettings(transport: transport, defaults: defaults)
 
         await settings.setTypingRequested(true)
 
-        let records = try await deviceRecords(in: transport)
-        XCTAssertTrue(records.isEmpty)
+        let saves = await transport.saves
+        XCTAssertTrue(saves.isEmpty)
         XCTAssertTrue(settings.typingRequested)
         XCTAssertTrue(
             DeviceSettings(transport: transport, defaults: defaults).typingRequested,
@@ -160,13 +165,39 @@ final class SettingsWiringTests: XCTestCase {
 
     /// A failed write leaves the toggle where it was and says why.
     func testFailedWriteRevertsTheToggle() async throws {
-        let settings = DeviceSettings(transport: FailingTransport(), defaults: try makeDefaults())
+        let transport = SpyTransport(failingSaves: [0])
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
         settings.linkedDevice = device
 
         await settings.setTypingRequested(true)
 
         XCTAssertFalse(settings.typingRequested)
         XCTAssertNotNil(settings.lastError)
+    }
+
+    /// Two quick toggles: the writes never overlap, run in toggle order, and
+    /// the first one's failure reverts only its own change before the second
+    /// write reads the choices.
+    func testQuickTogglesWriteOneAtATimeAndAFailedFirstWriteCannotOverwriteTheSecond() async throws {
+        let transport = SpyTransport(failingSaves: [0], delay: .milliseconds(100))
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        settings.linkedDevice = device
+
+        let first = Task { await settings.setTypingRequested(true) }
+        // The second toggle comes while the first write is in flight.
+        while await transport.saves.isEmpty {
+            await Task.yield()
+        }
+        await settings.setStartSessions(false)
+        await first.value
+
+        let maxInFlight = await transport.maxInFlight
+        XCTAssertEqual(maxInFlight, 1, "device-record writes must not overlap")
+        let payloads = try await transport.devicePayloads()
+        XCTAssertEqual(payloads.map(\.typingRequested), [true, false], "the second write sends the reverted typing choice")
+        XCTAssertEqual(payloads.map(\.startSessions), [true, false])
+        XCTAssertFalse(settings.typingRequested, "the failed typing write is reverted")
+        XCTAssertFalse(settings.startSessions, "the second toggle keeps its value")
     }
 
     /// Settings reads the hub's grant for this phone.
@@ -177,32 +208,54 @@ final class SettingsWiringTests: XCTestCase {
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         let mine = try await store.reader.read { db in
-            try SettingsSnapshot.read(from: db, deviceID: DemoSeed.device.deviceID)
+            try SettingsSnapshot.read(from: db, store: store, deviceID: DemoSeed.device.deviceID)
         }
         XCTAssertEqual(mine.grant?.deviceID, DemoSeed.device.deviceID)
         let other = try await store.reader.read { db in
-            try SettingsSnapshot.read(from: db, deviceID: device.deviceID)
+            try SettingsSnapshot.read(from: db, store: store, deviceID: device.deviceID)
         }
         XCTAssertNil(other.grant, "another device's grant must not show")
     }
 
-    // MARK: - Helpers
-
-    private func deviceRecords(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
-        let batch = try await transport.changes(in: .relay, since: nil)
-        return try batch.changed
-            .filter { $0.kind == RelayRecordKind.device.rawValue }
-            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
-    }
 }
 
-/// A transport whose every call fails.
-private struct FailingTransport: CloudSyncTransport {
+/// Records every `save` call (one entry per call), fails the calls whose
+/// index is in `failingSaves`, and tracks how many saves overlap.
+private actor SpyTransport: CloudSyncTransport {
     struct Failure: Error {}
 
-    func save(_ records: [CloudRecord]) async throws { throw Failure() }
-    func delete(recordNames: [String], in zone: CloudZoneID) async throws { throw Failure() }
+    private(set) var saves: [[CloudRecord]] = []
+    private(set) var maxInFlight = 0
+    private var inFlight = 0
+    private let failingSaves: Set<Int>
+    private let delay: Duration
+
+    init(failingSaves: Set<Int> = [], delay: Duration = .zero) {
+        self.failingSaves = failingSaves
+        self.delay = delay
+    }
+
+    func save(_ records: [CloudRecord]) async throws {
+        let index = saves.count
+        saves.append(records)
+        inFlight += 1
+        maxInFlight = max(maxInFlight, inFlight)
+        defer { inFlight -= 1 }
+        if delay > .zero {
+            try await Task.sleep(for: delay)
+        }
+        if failingSaves.contains(index) { throw Failure() }
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
-        throw Failure()
+        CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
+    }
+
+    func devicePayloads() throws -> [DevicePayload] {
+        try saves.flatMap { $0 }
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
     }
 }

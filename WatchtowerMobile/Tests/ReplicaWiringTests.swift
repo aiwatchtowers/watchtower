@@ -30,10 +30,27 @@ final class ReplicaWiringTests: XCTestCase {
         }
     }
 
+    /// Stops the environment's loop on teardown, so no test leaves a fetch
+    /// loop running into the next one.
+    private func managed(_ env: AppEnvironment) -> AppEnvironment {
+        addTeardownBlock { @MainActor in env.stop() }
+        return env
+    }
+
+    /// An isolated demo environment on `path`.
+    private func demoEnvironment(at path: String) throws -> AppEnvironment {
+        managed(try AppEnvironment(
+            transport: InMemoryCloudTransport(),
+            replicaPath: path,
+            transportKind: .inMemoryDemo,
+            defaults: try makeDefaults()
+        ))
+    }
+
     // MARK: - Boot and demo seed
 
     func testAppEnvironmentBootsAndHydratesExactlyTheDemoSeed() async throws {
-        let env = try AppEnvironment()
+        let env = try managed(AppEnvironment())
         try await poll { env.lastSyncAt != nil }
 
         for (kind, expected) in seededCounts {
@@ -69,12 +86,84 @@ final class ReplicaWiringTests: XCTestCase {
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
 
         let snapshot = try await store.reader.read { db in
-            try SettingsSnapshot.read(from: db, deviceID: DemoSeed.device.deviceID)
+            try SettingsSnapshot.read(from: db, store: store, deviceID: DemoSeed.device.deviceID)
         }
         XCTAssertEqual(MacStatus(heartbeat: snapshot.heartbeat, now: now), .online(macName: DemoSeed.macName))
         let grant = try XCTUnwrap(snapshot.grant)
         XCTAssertTrue(grant.linked)
         XCTAssertEqual(grant.hubID, snapshot.heartbeat?.hubID)
+    }
+
+    /// A relaunch builds a new in-memory transport whose cursor restarts;
+    /// the persisted replica must still pick up the fresh seed. The replica
+    /// starts with an old heartbeat behind a stored token, as a first
+    /// launch two hours ago would have left it.
+    func testRelaunchedDemoShowsAFreshHeartbeatAndTheSeedTally() async throws {
+        let path = try makeReplicaPath()
+        do {
+            let stale = InMemoryCloudTransport()
+            try await DemoSeed.load(into: stale, now: Date().addingTimeInterval(-7_200))
+            _ = try await ReplicaHydrator(transport: stale, store: try ReplicaStore(path: path)).hydrateOnce()
+        }
+
+        for launch in 1...2 {
+            let env = try demoEnvironment(at: path)
+            try await poll { env.lastSyncAt != nil }
+            env.stop()
+
+            let store = env.store
+            let snapshot = try await store.reader.read { db in
+                try SettingsSnapshot.read(from: db, store: store, deviceID: DemoSeed.device.deviceID)
+            }
+            XCTAssertEqual(
+                MacStatus(heartbeat: snapshot.heartbeat, now: Date()),
+                .online(macName: DemoSeed.macName),
+                "launch \(launch) must show the fresh heartbeat"
+            )
+            for (kind, expected) in seededCounts {
+                let rows = try await count(kind, in: store)
+                XCTAssertEqual(rows, expected, "launch \(launch): unexpected \(kind.rawValue) count")
+            }
+        }
+    }
+
+    // MARK: - Fetch loop
+
+    /// "Last sync" follows every successful loop fetch, not only the first.
+    func testALoopTickAdvancesLastSync() async throws {
+        let env = try demoEnvironment(at: try makeReplicaPath())
+        try await poll { env.isLooping }
+        let first = try XCTUnwrap(env.lastSyncAt)
+
+        env.setFetchInterval(.milliseconds(50))
+        try await poll({ (env.lastSyncAt ?? first) > first }, "a loop fetch did not advance lastSyncAt")
+    }
+
+    /// The tab sets the cadence, and the loop pauses in the background and
+    /// resumes in the foreground.
+    func testTheLoopFollowsTheTabCadenceAndPausesInTheBackground() async throws {
+        let env = try demoEnvironment(at: try makeReplicaPath())
+        try await poll { env.isLooping }
+
+        env.setFetchInterval(RootTabView.Tab.now.fetchInterval)
+        XCTAssertEqual(env.fetchInterval, .seconds(5))
+        XCTAssertTrue(env.isLooping)
+        env.setFetchInterval(RootTabView.Tab.more.fetchInterval)
+        XCTAssertEqual(env.fetchInterval, .seconds(30))
+        XCTAssertTrue(env.isLooping)
+
+        env.setFetchInterval(.milliseconds(50))
+        env.setActive(false)
+        XCTAssertFalse(env.isLooping)
+        // Let a fetch that was mid-flight at the pause finish first.
+        try await Task.sleep(for: .milliseconds(150))
+        let paused = env.lastSyncAt
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(env.lastSyncAt, paused, "no fetch may run while the app is in the background")
+
+        env.setActive(true)
+        XCTAssertTrue(env.isLooping)
+        try await poll({ env.lastSyncAt != paused }, "the loop did not resume in the foreground")
     }
 
     // MARK: - Transport choice
@@ -87,7 +176,7 @@ final class ReplicaWiringTests: XCTestCase {
             CloudKitTransport.entitlementPresent(),
             "an unsigned simulator host must probe false, or the demo path is dead"
         )
-        let env = try AppEnvironment()
+        let env = try managed(AppEnvironment())
         XCTAssertEqual(env.transportKind, .inMemoryDemo)
         XCTAssertEqual(env.linkedDevice, DemoSeed.device)
     }
@@ -96,12 +185,12 @@ final class ReplicaWiringTests: XCTestCase {
     /// runs on the `.cloudKit` kind. Forced through the designated init with
     /// an in-memory stand-in on an isolated path.
     func testCloudKitKindSeedsNothingAndStartsUnlinked() async throws {
-        let env = try AppEnvironment(
+        let env = try managed(AppEnvironment(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
             transportKind: .cloudKit,
             defaults: try makeDefaults()
-        )
+        ))
         XCTAssertNil(env.linkedDevice)
 
         try await poll { env.lastSyncAt != nil }
