@@ -229,6 +229,10 @@ jobs:
       - name: SwiftLint
         run: swiftlint lint --strict --baseline .swiftlint-baseline.json
 
+      - name: SwiftLint (mobile Kit)
+        working-directory: WatchtowerKit
+        run: swiftlint lint --strict
+
   swift-test:
     name: Swift Test
     needs: gate
@@ -280,6 +284,13 @@ jobs:
 
       - name: Test
         timeout-minutes: 20
+        run: swift test
+
+      # The shared mobile Kit package (WatchtowerSync + WatchtowerKit): small,
+      # no ML stack. The app build above already compiled WatchtowerSync.
+      - name: Test (mobile Kit)
+        timeout-minutes: 10
+        working-directory: WatchtowerKit
         run: swift test
 
       # The process-spawning suites again on a one-thread concurrency pool,

@@ -77,9 +77,11 @@ test-cover:
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
 # class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
 # single-quotes it so the | never reaches the shell); without FILTER the full
-# suite runs as before.
+# suite runs as before, followed by the mobile Kit suite (kit-test), so the
+# gate covers both packages.
 test-swift:
 	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter '$(FILTER)',)
+	$(if $(FILTER),,$(MAKE) kit-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
 # WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
@@ -125,6 +127,7 @@ lint-diff:
 
 lint-swift:
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
+	cd WatchtowerKit && swiftlint lint --strict
 
 lint-all: lint lint-swift
 
