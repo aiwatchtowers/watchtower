@@ -10,9 +10,10 @@ import WatchtowerSync
 /// - only for an ask opened at or after the hub's `enabled_at`, so a first
 ///   enable never alerts on the asks already waiting;
 /// - remembered in the sidecar's `alerted_asks` with the sync generation
-///   that wrote it. A rebuilt hub or a full republish finds it there, and
-///   an account reset (a new generation, a new zone) publishes no record
-///   for it at all;
+///   that wrote it. A rebuilt hub or a full republish finds it there; an
+///   account reset (a new generation, a new zone) publishes no record for
+///   an alert confirmed published before, and stamps an unconfirmed one
+///   again in the new generation;
 /// - deleted when the ask leaves `open`, or 7 days after it was written.
 ///
 /// Open asks of published workbenches only (`WorkbenchSlice`), the same
@@ -66,12 +67,11 @@ struct AskAlertSlice: SliceSource {
             guard let created = SliceDate.parse(row["created_at"] ?? ""), created >= enabledAt else { return nil }
             return row["id"]
         }
-        let alerted = try sidecar.markAlerted(fresh, at: stamp)
+        let (generation, alerted) = try sidecar.markAlerted(fresh, at: stamp)
         // Every open ask stays remembered, published or not.
         try sidecar.pruneAlertedAsks(
             olderThan: stamp.addingTimeInterval(-Self.lifetime), keeping: Set(rows.map { $0["id"] as Int64 })
         )
-        let generation = try sidecar.generation()
         let encoder = RelayCoder.makeEncoder()
         return try open.compactMap { row in
             let id: Int64 = row["id"]
