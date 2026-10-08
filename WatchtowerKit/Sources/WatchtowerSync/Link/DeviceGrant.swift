@@ -1,17 +1,23 @@
 import Foundation
-import WatchtowerSync
 
-/// Why the hub refused a link (spec §4.13). rawValues are wire format.
-public enum LinkRefusal: String, Codable, CaseIterable, Sendable {
-    case usedCode = "used_code"
-    case expiredCode = "expired_code"
-    case unknownCode = "unknown_code"
+/// Why the hub refused a link (spec §4.13). rawValues are wire format. A
+/// code added by a newer Mac decodes as an unknown value (`OpenWireValue`)
+/// and is still a refusal: the link flow treats any non-nil `linkRefused`
+/// as refused.
+public struct LinkRefusal: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    public static let usedCode = Self(rawValue: "used_code")
+    public static let expiredCode = Self(rawValue: "expired_code")
+    public static let unknownCode = Self(rawValue: "unknown_code")
+    public static let knownValues: [Self] = [.usedCode, .expiredCode, .unknownCode]
 }
 
-/// Phone-side mirror of the hub's `device_grant` slice (mobile POC spec
-/// §4.13), record name `device_grant-<device_id>`: the hub's view of one
-/// phone that wrote a `device` record. Settings and the link flow read it
-/// ("Waiting for your Mac to confirm" / "Allowed").
+/// The hub's `device_grant` slice (mobile POC spec §4.13), record name
+/// `device_grant-<device_id>`: the hub's view of one phone that wrote a
+/// `device` record. The hub writes it; the phone's Settings and link flow
+/// read it ("Waiting for your Mac to confirm" / "Allowed").
 ///
 /// Wire: RelayCoder JSON (snake_case, Unix-second dates, sorted keys). A nil
 /// optional is an absent key.

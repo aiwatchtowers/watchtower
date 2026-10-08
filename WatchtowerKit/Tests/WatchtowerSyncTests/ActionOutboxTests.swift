@@ -17,7 +17,7 @@ final class ActionOutboxTests: XCTestCase {
         let transport = InMemoryCloudTransport()
         let store = try ReplicaStore.inMemory()
         let frozen = base
-        let outbox = ActionOutbox(transport: transport, store: store) {
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1") {
             clock?.withLock { $0 } ?? frozen
         }
         return (transport, store, outbox)
@@ -101,9 +101,59 @@ final class ActionOutboxTests: XCTestCase {
         }
     }
 
+    // MARK: - Device id (spec §5.2 rule 4: the hub gates on it)
+
+    func testEnqueueStampsTheLinkedDeviceID() async throws {
+        let (transport, store, outbox) = try makeFixtures()
+
+        _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil, params: ["nonce": .string("n-1")])
+
+        let records = try await relayRecords(transport)
+        let wire = try decodeAction(try XCTUnwrap(records.first))
+        XCTAssertEqual(wire.deviceID, "D1")
+        XCTAssertEqual(try XCTUnwrap(store.pendingActions().first).action.deviceID, "D1")
+    }
+
+    func testUnlinkedOutboxRefusesToEnqueue() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: transport, store: store)
+
+        do {
+            _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
+            XCTFail("an outbox with no device id must refuse to enqueue")
+        } catch ActionOutboxError.notLinked {
+            // expected
+        }
+
+        let records = try await relayRecords(transport)
+        XCTAssertTrue(records.isEmpty)
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+    }
+
+    func testSetDeviceIDLinksAndUnlinksTheOutbox() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: transport, store: store)
+
+        await outbox.setDeviceID("D2")
+        _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
+        let records = try await relayRecords(transport)
+        XCTAssertEqual(try decodeAction(try XCTUnwrap(records.first)).deviceID, "D2")
+
+        await outbox.setDeviceID(nil)
+        do {
+            _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
+            XCTFail("unlinking must stop enqueues again")
+        } catch ActionOutboxError.notLinked {
+            // expected
+        }
+        XCTAssertEqual(try store.pendingActions().count, 1)
+    }
+
     func testEnqueueTransportThrowLeavesNoPendingRow() async throws {
         let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: ThrowingSaveTransport(), store: store)
+        let outbox = ActionOutbox(transport: ThrowingSaveTransport(), store: store, deviceID: "D1")
 
         do {
             _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")

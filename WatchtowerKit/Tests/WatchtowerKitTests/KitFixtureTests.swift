@@ -3,9 +3,8 @@
 /// to the literal and decodes back to the value; a nil optional is an ABSENT
 /// key, never `null`.
 ///
-/// Plain imports (no @testable): every symbol here is the public surface the
+/// Plain import (no @testable): every symbol here is the public surface the
 /// phone app and the Desktop hub build against.
-import WatchtowerKit
 import WatchtowerSync
 import XCTest
 
@@ -178,9 +177,29 @@ final class KitFixtureTests: XCTestCase {
     }
 
     func testHeartbeatEnumsAreFrozen() {
-        XCTAssertEqual(HubFlavor.allCases.map(\.rawValue), ["default", "corp"])
-        XCTAssertEqual(HubSharing.allCases.map(\.rawValue), ["available", "unavailable", "none"])
-        XCTAssertEqual(HeartbeatAccount.Kind.allCases.map(\.rawValue), ["slack", "google", "jira"])
+        XCTAssertEqual(HubFlavor.knownValues.map(\.rawValue), ["default", "corp"])
+        XCTAssertEqual(HubSharing.knownValues.map(\.rawValue), ["available", "unavailable", "none"])
+        XCTAssertEqual(HeartbeatAccount.Kind.knownValues.map(\.rawValue), ["slack", "google", "jira"])
+    }
+
+    /// A newer Mac may add a flavor, a sharing state or an account kind. An
+    /// older phone must still decode the heartbeat (liveness depends on it),
+    /// keep the raw strings and see them as unknown.
+    func testHeartbeatWithFutureValuesStillDecodesAndKeepsTheRawStrings() throws {
+        // swiftlint:disable:next line_length
+        let json = #"{"accounts":[{"kind":"confluence","label":"acme","status":"connected"}],"app_version":"9.0.0","enabled_at":1700000000,"flavor":"partner","hub_id":"hub-1","mac_name":"Acme Mac","owner_user":"_owner","relay_backlog":0,"sharing":"paused","updated_at":1700000000}"#
+        let beat = try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: Data(json.utf8))
+
+        XCTAssertEqual(beat.updatedAt, t0)
+        XCTAssertEqual(beat.flavor.rawValue, "partner")
+        XCTAssertFalse(beat.flavor.isKnown)
+        XCTAssertEqual(beat.sharing.rawValue, "paused")
+        XCTAssertFalse(beat.sharing.isKnown)
+        XCTAssertEqual(beat.accounts.first?.kind.rawValue, "confluence")
+        XCTAssertEqual(beat.accounts.first?.kind.isKnown, false)
+        XCTAssertTrue(HubFlavor.corp.isKnown)
+        // The raw strings survive a re-encode byte for byte.
+        XCTAssertEqual(try encoded(beat), json)
     }
 
     // MARK: - device (RelayZone, phone-written)
@@ -277,8 +296,32 @@ final class KitFixtureTests: XCTestCase {
         )
     }
 
+    /// A newer Mac may add a refusal code or a scope. The grant still
+    /// decodes, and an unknown refusal is still a refusal (non-nil), so the
+    /// link flow stops waiting.
+    func testDeviceGrantWithFutureScopeAndRefusalStillDecodes() throws {
+        // swiftlint:disable:next line_length
+        let json = #"{"device_id":"D1","hub_id":"hub-1","link_refused":"revoked_code","linked":false,"name":"iPhone","scope":"family","start_sessions_allowed":true,"typing_allowed":false}"#
+        let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: Data(json.utf8))
+
+        let refusal = try XCTUnwrap(grant.linkRefused, "an unknown refusal code is still a refusal")
+        XCTAssertEqual(refusal.rawValue, "revoked_code")
+        XCTAssertFalse(refusal.isKnown)
+        XCTAssertEqual(grant.scope.rawValue, "family")
+        XCTAssertFalse(grant.scope.isKnown)
+        XCTAssertEqual(try encoded(grant), json)
+    }
+
+    func testDevicePayloadWithFutureScopeStillDecodes() throws {
+        // swiftlint:disable:next line_length
+        let json = #"{"app_version":"9.0.0","device_id":"D7","model":"iPhone16,1","name":"iPhone","scope":"family","start_sessions":true,"typing_requested":false,"updated_at":1700000000,"user_record_name":"_owner"}"#
+        let device = try RelayCoder.makeDecoder().decode(DevicePayload.self, from: Data(json.utf8))
+        XCTAssertEqual(device.scope.rawValue, "family")
+        XCTAssertFalse(device.scope.isKnown)
+    }
+
     func testLinkRefusalAndScopeAreFrozen() {
-        XCTAssertEqual(LinkRefusal.allCases.map(\.rawValue), ["used_code", "expired_code", "unknown_code"])
-        XCTAssertEqual(DeviceScope.allCases.map(\.rawValue), ["private", "shared"])
+        XCTAssertEqual(LinkRefusal.knownValues.map(\.rawValue), ["used_code", "expired_code", "unknown_code"])
+        XCTAssertEqual(DeviceScope.knownValues.map(\.rawValue), ["private", "shared"])
     }
 }

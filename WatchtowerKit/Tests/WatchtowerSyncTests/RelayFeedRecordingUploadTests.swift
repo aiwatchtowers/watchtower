@@ -23,7 +23,7 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
         RelayFeed(
             transport: transport,
             store: store,
-            outbox: ActionOutbox(transport: transport, store: store),
+            outbox: ActionOutbox(transport: transport, store: store, deviceID: "D1"),
             uploads: uploads
         )
     }

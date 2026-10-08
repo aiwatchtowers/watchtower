@@ -2,10 +2,15 @@ import Foundation
 
 /// The CloudKit database a linked phone syncs through (spec §2.3): the
 /// Mac user's private database (same Apple ID) or the shared database (a
-/// different Apple ID, through zone shares). rawValues are wire format.
-public enum DeviceScope: String, Codable, CaseIterable, Sendable {
-    case `private`
-    case shared
+/// different Apple ID, through zone shares). rawValues are wire format; a
+/// scope added by a newer build decodes as an unknown value (`OpenWireValue`).
+public struct DeviceScope: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    public static let `private` = Self(rawValue: "private")
+    public static let shared = Self(rawValue: "shared")
+    public static let knownValues: [Self] = [.private, .shared]
 }
 
 /// The phone's link record in RelayZone (mobile POC spec §5.1), record name

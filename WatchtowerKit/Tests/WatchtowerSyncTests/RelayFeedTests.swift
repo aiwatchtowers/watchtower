@@ -26,7 +26,7 @@ final class RelayFeedTests: XCTestCase {
     ) throws -> Fixtures {
         let transport = InMemoryCloudTransport()
         let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store)
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         let feed = RelayFeed(
             transport: transport,
             store: store,
@@ -165,6 +165,42 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertFalse(f.feed.isDesktopReachable(now: base.addingTimeInterval(720)))
     }
 
+    func testHeartbeatWithFutureValuesStillYieldsAnAge() throws {
+        // A newer Mac's heartbeat (new flavor, sharing state, account kind)
+        // must keep an older phone's liveness working.
+        let store = try ReplicaStore.inMemory()
+        // swiftlint:disable:next line_length
+        let json = #"{"accounts":[{"kind":"confluence","label":"acme","status":"connected"}],"app_version":"9.0.0","enabled_at":1700000000,"flavor":"partner","hub_id":"hub-1","mac_name":"Acme Mac","owner_user":"_owner","relay_backlog":0,"sharing":"paused","updated_at":1700000000}"#
+        let record = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
+                                 modifiedAt: base, payload: Data(json.utf8))
+        try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+
+        XCTAssertEqual(try store.heartbeatAge(now: base.addingTimeInterval(60)), .seconds(60))
+    }
+
+    func testLivenessNeedsOnlyUpdatedAt() throws {
+        // Liveness reads `updated_at` alone, so a field a future Mac drops or
+        // reshapes can never turn the Mac offline.
+        let store = try ReplicaStore.inMemory()
+        let record = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
+                                 modifiedAt: base, payload: Data(#"{"updated_at":1700000000}"#.utf8))
+        try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+
+        XCTAssertEqual(try store.heartbeatAge(now: base), .seconds(0))
+    }
+
+    func testUndecodableHeartbeatIsLoggedOnceNotPerRead() throws {
+        let store = try ReplicaStore.inMemory()
+        let garbage = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
+                                  modifiedAt: base, payload: Data("not json".utf8))
+        try store.apply(CloudChangeBatch(changed: [garbage], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+
+        for _ in 0..<3 {
+            XCTAssertNil(try store.heartbeatAge(now: base))
+        }
+        XCTAssertEqual(store.undecodableHeartbeatLogCount(), 1)
+    }
+
     func testUndecodableHeartbeatReadsAsNeverSeen() throws {
         let store = try ReplicaStore.inMemory()
         let garbage = CloudRecord(recordName: "heartbeat", zone: .data, kind: "heartbeat",
@@ -277,7 +313,7 @@ final class RelayFeedTests: XCTestCase {
     func testPullHookRunsBeforeChangesAreRead() async throws {
         let transport = InMemoryCloudTransport()
         let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store)
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         _ = try await outbox.enqueue(kind: .targetDone, entityRecordName: "target-1")
         let action = try XCTUnwrap(store.pendingActions().first).action
         let record = try echoRecord(action, status: .applied)
@@ -328,7 +364,7 @@ final class RelayFeedTests: XCTestCase {
                         modifiedAt: base, payload: Data("{}".utf8))
         ])
         let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store)
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         let feed = RelayFeed(transport: transport, store: store, outbox: outbox)
 
         async let first = feed.pollOnce()
@@ -349,7 +385,7 @@ final class RelayFeedTests: XCTestCase {
     func testOnActionAppliedFiresAfterTokenIsPersisted() async throws {
         let transport = InMemoryCloudTransport()
         let store = try ReplicaStore.inMemory()
-        let outbox = ActionOutbox(transport: transport, store: store)
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         let fired = expectation(description: "hook fired")
         let tokenAtFire = OSAllocatedUnfairLock<Int?>(initialState: nil)
         let hook: @Sendable () async -> Void = {

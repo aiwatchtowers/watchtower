@@ -44,7 +44,7 @@ final class ActionStatusTests: XCTestCase {
     func testReceivedAndHeldKeepTheOverlayPending() async throws {
         for status in [ActionStatus.received, .held] {
             let store = try ReplicaStore.inMemory()
-            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store) { self.stamp }
+            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: "D1") { self.stamp }
             _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
 
             try await echo(status, outbox: outbox, store: store)
@@ -56,7 +56,7 @@ final class ActionStatusTests: XCTestCase {
     func testExpiredAndCancelledFailTheOverlay() async throws {
         for status in [ActionStatus.expired, .cancelled] {
             let store = try ReplicaStore.inMemory()
-            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store) { self.stamp }
+            let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: "D1") { self.stamp }
             _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
 
             try await echo(status, outbox: outbox, store: store)

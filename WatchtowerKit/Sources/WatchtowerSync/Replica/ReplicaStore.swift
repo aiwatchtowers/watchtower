@@ -54,6 +54,10 @@ public final class ReplicaStore: Sendable {
     /// Widened from `private` to `internal`: read by `decodePendingActions`
     /// in `ReplicaStore+PendingActions.swift` after the split.
     let logger = Logger(subsystem: "WatchtowerKit", category: "ReplicaStore")
+    /// How many undecodable-heartbeat warnings were emitted. The phone reads
+    /// the heartbeat on every liveness check, so the warning fires once per
+    /// store, never per tick.
+    private let undecodableHeartbeatLogs = OSAllocatedUnfairLock(initialState: 0)
 
     private static let dataTokenKey = "data_change_token"
     /// RelayFeed's cursor (Plan 4 decision 3: the phone's SINGLE relay
@@ -255,9 +259,12 @@ public final class ReplicaStore: Sendable {
 
     /// Age of the desktop heartbeat relative to `now`, read from the
     /// DataZone `heartbeat` record (mobile POC spec §4.1) that hydration
-    /// stores in `slice_records`; nil = never seen (an undecodable payload
-    /// also reads as never — conservative). Negative when the desktop clock
-    /// runs ahead of the phone's.
+    /// stores in `slice_records`; nil = never seen. Negative when the desktop
+    /// clock runs ahead of the phone's.
+    ///
+    /// Only `updated_at` is decoded, so no other field a newer Mac adds or
+    /// reshapes can turn the Mac offline. A payload without a readable
+    /// `updated_at` reads as never seen (conservative) and is logged once.
     public func heartbeatAge(now: Date = Date()) throws -> Duration? {
         let payload = try writer.read { db in
             try Data.fetchOne(
@@ -266,11 +273,29 @@ public final class ReplicaStore: Sendable {
                 arguments: [HeartbeatPayload.recordName]
             )
         }
-        guard let payload,
-              let heartbeat = try? RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: payload) else {
+        guard let payload else { return nil }
+        guard let stamp = try? RelayCoder.makeDecoder().decode(HeartbeatStamp.self, from: payload) else {
+            let firstTime = undecodableHeartbeatLogs.withLock { emitted -> Bool in
+                guard emitted == 0 else { return false }
+                emitted = 1
+                return true
+            }
+            if firstTime {
+                logger.warning("undecodable heartbeat payload, the Mac reads as offline")
+            }
             return nil
         }
-        return .seconds(now.timeIntervalSince(heartbeat.updatedAt))
+        return .seconds(now.timeIntervalSince(stamp.updatedAt))
+    }
+
+    /// Undecodable-heartbeat warnings emitted so far (for tests).
+    func undecodableHeartbeatLogCount() -> Int {
+        undecodableHeartbeatLogs.withLock { $0 }
+    }
+
+    /// The one heartbeat field liveness needs.
+    private struct HeartbeatStamp: Decodable {
+        let updatedAt: Date
     }
 
     // MARK: - Alert watermark (NotificationCoordinator dedup state)

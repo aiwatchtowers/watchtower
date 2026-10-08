@@ -45,9 +45,10 @@ final class SliceKindTests: XCTestCase {
         ])
         let store = try ReplicaStore.inMemory()
         let surfaced = OSAllocatedUnfairLock(initialState: [AppliedSliceRecord]())
-        let hydrator = ReplicaHydrator(transport: transport, store: store) { records in
+        let hook: @Sendable ([AppliedSliceRecord]) -> Void = { records in
             surfaced.withLock { $0.append(contentsOf: records) }
         }
+        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: hook)
 
         let result = try await hydrator.hydrateOnce()
 

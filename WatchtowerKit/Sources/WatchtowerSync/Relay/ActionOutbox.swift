@@ -1,5 +1,12 @@
 import Foundation
 
+/// Why `ActionOutbox.enqueue` refused to ship an action.
+public enum ActionOutboxError: Error, Equatable {
+    /// No linked device id yet: the hub fails every record without one as
+    /// `device_not_linked` (spec §5.2 rule 4), so nothing is sent.
+    case notLinked
+}
+
 /// The phone's action producer: enqueues ActionRequests into the relay zone
 /// and mirrors each into the replica DB's `pending_actions` overlay, so view
 /// models can render optimistic state without ever mutating `slice_records`
@@ -25,15 +32,26 @@ public actor ActionOutbox {
     private let transport: any CloudSyncTransport
     private let store: ReplicaStore
     private let now: @Sendable () -> Date
+    /// The linked phone's device id, stamped on every enqueued action. nil
+    /// until linking finishes (or after an unlink): enqueue then refuses.
+    private var deviceID: String?
 
     public init(
         transport: any CloudSyncTransport,
         store: ReplicaStore,
+        deviceID: String? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
         self.store = store
+        self.deviceID = deviceID
         self.now = now
+    }
+
+    /// Called by the link flow once the device is linked, and with nil on
+    /// unlink. Actions already in flight keep the id they were sent with.
+    public func setDeviceID(_ deviceID: String?) {
+        self.deviceID = deviceID
     }
 
     /// The `snooze_until` param in the wire's frozen form: plain ISO8601 UTC,
@@ -43,7 +61,9 @@ public actor ActionOutbox {
         ["snooze_until": .string(snoozeFormatter.string(from: date))]
     }
 
-    /// Builds and ships one ActionRequest; returns its id.
+    /// Builds and ships one ActionRequest stamped with the linked device id;
+    /// returns its id. Throws `ActionOutboxError.notLinked` (sending
+    /// nothing) while no device id is set.
     ///
     /// `entityRecordName` is the slice recordName the action targets
     /// (`target-42`) — the wire `entityID` is its id suffix ("42"), which the
@@ -69,12 +89,14 @@ public actor ActionOutbox {
         entityRecordName: String?,
         params: [String: JSONValue] = [:]
     ) async throws -> String {
+        guard let deviceID else { throw ActionOutboxError.notLinked }
         let action = ActionRequestPayload(
             id: UUID().uuidString,
             kind: kind,
             entityID: Self.entityID(from: entityRecordName),
             params: params,
-            createdAt: now()
+            createdAt: now(),
+            deviceID: deviceID
         )
         try await transport.save([try CloudRecordFactory.record(for: action, modifiedAt: action.createdAt)])
         try store.insertPendingAction(action, entityRecordName: entityRecordName)

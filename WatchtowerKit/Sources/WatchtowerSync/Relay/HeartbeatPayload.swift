@@ -81,20 +81,30 @@ public struct HeartbeatPayload: Codable, Equatable, Sendable {
     }
 }
 
-/// The Desktop build flavor that runs the hub. rawValues are wire format.
-public enum HubFlavor: String, Codable, CaseIterable, Sendable {
-    case `default`
-    case corp
+/// The Desktop build flavor that runs the hub. rawValues are wire format;
+/// a newer Mac's flavor decodes as an unknown value (`OpenWireValue`).
+public struct HubFlavor: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
+    public static let `default` = Self(rawValue: "default")
+    public static let corp = Self(rawValue: "corp")
+    public static let knownValues: [Self] = [.default, .corp]
 }
 
-/// Whether the hub's zone shares exist (spec §4.1). rawValues are wire format.
-public enum HubSharing: String, Codable, CaseIterable, Sendable {
+/// Whether the hub's zone shares exist (spec §4.1). rawValues are wire
+/// format; a newer state decodes as an unknown value (`OpenWireValue`).
+public struct HubSharing: OpenWireValue {
+    public let rawValue: String
+    public init(rawValue: String) { self.rawValue = rawValue }
+
     /// The zone shares exist.
-    case available
+    public static let available = Self(rawValue: "available")
     /// Sharing failed or is not possible on this account.
-    case unavailable
+    public static let unavailable = Self(rawValue: "unavailable")
     /// No QR code has been shown yet, so no share was created.
-    case none
+    public static let none = Self(rawValue: "none")
+    public static let knownValues: [Self] = [.available, .unavailable, .none]
 }
 
 /// One read-only account row in the heartbeat: label and status only.
@@ -102,10 +112,16 @@ public struct HeartbeatAccount: Codable, Equatable, Sendable {
     /// Cap on `label`, in grapheme clusters (clipped by the hub).
     public static let maxLabelLength = 80
 
-    public enum Kind: String, Codable, CaseIterable, Sendable {
-        case slack
-        case google
-        case jira
+    /// rawValues are wire format; a connector kind added by a newer Mac
+    /// decodes as an unknown value (`OpenWireValue`).
+    public struct Kind: OpenWireValue {
+        public let rawValue: String
+        public init(rawValue: String) { self.rawValue = rawValue }
+
+        public static let slack = Self(rawValue: "slack")
+        public static let google = Self(rawValue: "google")
+        public static let jira = Self(rawValue: "jira")
+        public static let knownValues: [Self] = [.slack, .google, .jira]
     }
 
     public let kind: Kind
