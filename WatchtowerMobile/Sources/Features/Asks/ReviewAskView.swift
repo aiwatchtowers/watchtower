@@ -41,6 +41,8 @@ struct ReviewAskView: View {
         .sheet(item: Binding(get: { composing.map(SelectionBox.init) }, set: { composing = $0?.range })) { box in
             commentSheet(box.range)
         }
+        // A new document (a newer round) never keeps the old selection.
+        .onChange(of: review.document?.text) { selection = NSRange(location: 0, length: 0) }
         if !review.comments.isEmpty {
             Section("Your comments") {
                 ForEach(review.comments) { comment in
@@ -126,7 +128,9 @@ private struct SnapshotTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        if view.text != text { view.text = text }
+        guard view.text != text else { return }
+        view.text = text
+        view.selectedRange = NSRange(location: 0, length: 0)
     }
 
     func makeCoordinator() -> Coordinator {
