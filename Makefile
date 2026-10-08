@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check
+.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -80,6 +80,13 @@ test-cover:
 # suite runs as before.
 test-swift:
 	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
+# WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
+# works too). Without FILTER the whole Kit suite runs — it is small and links
+# no ML stack.
+kit-test:
+	cd WatchtowerKit && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # The suites that spawn child processes, on a one-thread Swift concurrency
 # pool: a blocking pipe read or waitUntilExit on a pool thread (instead of
