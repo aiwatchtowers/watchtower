@@ -1860,6 +1860,11 @@ final class AppState {
             }
             dispatcher.register(.askAnswer) { try await askAnswers.handle($0) }
         }
+        // Board writes report through the board's own onOwnerWrite, so the
+        // Mac never announces the owner's phone edit (spec §6.1).
+        BoardHandlers(dbPool: dbPool, cli: workbenchesViewModel?.cli) { [weak vm = workbenchesViewModel] projectID, subject in
+            vm?.onOwnerWrite?(projectID, subject)
+        }.register(on: dispatcher)
         // The folder's git status goes through the CLI (PROJ-10's git); no
         // CLI, no refresher, and the workbench records carry no branch.
         let gitRefresher = workbenchesViewModel?.cli.map { cli in
