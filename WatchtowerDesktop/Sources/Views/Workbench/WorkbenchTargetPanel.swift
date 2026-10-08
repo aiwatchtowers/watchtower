@@ -150,7 +150,7 @@ struct WorkbenchTargetPanel: View {
 
     private var moreMenu: some View {
         Menu {
-            WorkbenchTargetMenu(target: target, vm: vm)
+            WorkbenchTargetMenu(target: target, vm: vm, showsWorkOn: false)
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 12, weight: .semibold))

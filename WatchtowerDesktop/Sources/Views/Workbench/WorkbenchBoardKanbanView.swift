@@ -121,7 +121,8 @@ private enum WorkbenchBoardKanbanLayout {
 }
 
 /// One lane: a header (fold chevron, `#id`, title, progress, status, and on
-/// a group lane Work on It) over the board's columns filled with this lane's
+/// a group's lane Work on It — not on the scope's own Tasks lane nor on No
+/// group) over the board's columns filled with this lane's
 /// cards. Clicking the header opens the group in the panel, a double-click
 /// enters it; the chevron folds the lane.
 private struct WorkbenchBoardKanbanLaneView: View {
@@ -195,7 +196,9 @@ private struct WorkbenchBoardKanbanLaneView: View {
             // Beside `summary`, not inside it: its tap and simultaneous
             // double-tap would also fire on a click here, and VoiceOver
             // would merge the button into the header's combined element.
-            if let root = lane.root, !root.children.isEmpty {
+            // Only a group's lane: not No group, not the scope's own Tasks
+            // lane (its root is the scope, worked from the path bar's group).
+            if entersGroup, let root = lane.root, !root.children.isEmpty {
                 WorkOnTargetButton(target: root.target, compact: true, isVisible: true)
             }
         }
