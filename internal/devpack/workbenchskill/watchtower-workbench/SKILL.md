@@ -52,6 +52,21 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 - **A spec, plan or design is written** → ask the owner to review it, every time, as "Asking the owner" below says. The review happens in Watchtower — not in a chat artifact, not in the terminal, anywhere else.
 - **A plan is written** → also `create_targets` in one call, one sub-target per plan task, under the feature target (`parent_id` = the feature target's id). Text = the task's title; intent = the plan path plus the task number, e.g. `docs/plans/feature-x.md — Task 3`, so any later session can find the task's steps. Nest deeper with `parent_key` only where the plan itself nests.
 
+## Working a target
+
+The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, set it `in_progress` with its `branch` in one `update_target`, and work it under the rules above (feature, spec, plan). If it turns out to have sub-targets, work it as a group (below).
+
+## Working a group
+
+The first prompt `Work on group #<id>` hands you a target with sub-targets.
+
+1. Read the subtree: `workbench_board`, then `get_target` and `list_comments` on the group. The group's intent is the brief.
+2. If the intent names a plan, run that plan as "Running a plan" says, in the order its dependencies allow.
+3. Otherwise take the open leaves in board order — priority, then status, then id. Leaves that do not depend on each other may run in parallel only where the folder's own rules allow parallel work.
+4. Skip a leaf that is `blocked`, waits on an open ask, or was already `in_progress` or `in_review` when you started — another session is on it.
+5. Set the leaves' statuses, never the group's: it follows its children.
+6. When the group's work is done or handed to the owner, call `finish_session` once with `target_id` = the group and a summary of the whole group.
+
 ## Asking the owner
 
 Anything that waits for the owner — an answer, a decision, a manual check, a document review — is an `ask_owner` call. Never leave it as text in the terminal, and never as a target comment: the owner answers asks from one stack in Watchtower, and a question in the terminal is easily missed. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): a check at the end of every turn sends a request left as plain text back to you, and the named ask is how it knows you filed it.
