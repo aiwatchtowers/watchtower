@@ -670,6 +670,32 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(board.lanes.map(\.id), [3])
     }
 
+    func testWorkOnShowsOnlyOnAGroupsLane() throws {
+        let roots = [
+            node(try target(1, "Plan A"), [
+                node(try target(2)),
+                node(try target(3, "Nested"), [node(try target(4))])
+            ]),
+            node(try target(5, "Lone leaf"))
+        ]
+        let board = WorkbenchBoardKanban(roots, scopeID: nil, showDone: false)
+        let group = try XCTUnwrap(lane(board, 1))
+        XCTAssertTrue(WorkbenchBoardKanban.showsWorkOn(group, scopeID: board.scopeID), "a group lane with children")
+        let noGroup = try XCTUnwrap(lane(board, 0))
+        XCTAssertNil(noGroup.root)
+        XCTAssertFalse(WorkbenchBoardKanban.showsWorkOn(noGroup, scopeID: board.scopeID), "No group has no root")
+
+        let scoped = WorkbenchBoardKanban(roots, scopeID: 1, showDone: false)
+        XCTAssertEqual(scoped.lanes.map(\.id), [1, 3], "Tasks first, sharing the scope's id")
+        let tasks = try XCTUnwrap(scoped.lanes.first)
+        XCTAssertEqual(tasks.root?.target.id, 1, "the Tasks lane's root is the scope node")
+        XCTAssertFalse(WorkbenchBoardKanban.showsWorkOn(tasks, scopeID: scoped.scopeID),
+                       "the scope's own Tasks lane is worked from the path bar")
+        XCTAssertFalse(WorkbenchBoardKanban.entersGroup(tasks, scopeID: scoped.scopeID))
+        let nested = try XCTUnwrap(lane(scoped, 3))
+        XCTAssertTrue(WorkbenchBoardKanban.showsWorkOn(nested, scopeID: scoped.scopeID))
+    }
+
     func testEmptyBoardHasNoLanesAndZeroTotals() {
         let board = WorkbenchBoardKanban([], scopeID: nil, showDone: false)
         XCTAssertTrue(board.lanes.isEmpty)

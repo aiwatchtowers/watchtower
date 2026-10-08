@@ -65,8 +65,8 @@ struct WorkbenchBoardKanbanView: View {
                             columnCount: board.columns.count,
                             isFolded: folded.contains(lane.id),
                             isDoneUnfolded: vm.unfoldedDoneLanes.contains(lane.id),
-                            // The scope's own Tasks lane would re-enter the scope.
-                            entersGroup: lane.root != nil && lane.id != board.scopeID,
+                            entersGroup: WorkbenchBoardKanban.entersGroup(lane, scopeID: board.scopeID),
+                            showsWorkOn: WorkbenchBoardKanban.showsWorkOn(lane, scopeID: board.scopeID),
                             vm: vm,
                             selectedTargetID: selectedTargetID,
                             onSelect: onSelect,
@@ -133,6 +133,9 @@ private struct WorkbenchBoardKanbanLaneView: View {
     /// A double-click enters the lane's group: not for No group, nor for
     /// the scope's own Tasks lane.
     let entersGroup: Bool
+    /// The header offers Work on It: a group's lane only
+    /// (`WorkbenchBoardKanban.showsWorkOn`).
+    let showsWorkOn: Bool
     let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
@@ -196,9 +199,7 @@ private struct WorkbenchBoardKanbanLaneView: View {
             // Beside `summary`, not inside it: its tap and simultaneous
             // double-tap would also fire on a click here, and VoiceOver
             // would merge the button into the header's combined element.
-            // Only a group's lane: not No group, not the scope's own Tasks
-            // lane (its root is the scope, worked from the path bar's group).
-            if entersGroup, let root = lane.root, !root.children.isEmpty {
+            if showsWorkOn, let root = lane.root {
                 WorkOnTargetButton(target: root.target, compact: true, isVisible: true)
             }
         }
