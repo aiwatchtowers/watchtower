@@ -1852,14 +1852,29 @@ final class AppState {
     /// B registers its slice sources and dispatcher handlers here.
     private func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
         let dispatcher = MobileHubCommandDispatcher()
-        let publisher = SlicePublisher(dbPool: dbPool, state: storage.sidecar, transport: storage.transport, sources: [])
+        // The folder's git status goes through the CLI (PROJ-10's git); no
+        // CLI, no refresher, and the workbench records carry no branch.
+        let gitRefresher = workbenchesViewModel?.cli.map { cli in
+            WorkbenchGitRefresher(
+                fetch: { try await cli.gitStatus(projectID: $0) },
+                workbenchIDs: { try await dbPool.read { try WorkbenchSlice.publishedWorkbenches($0).map(\.id) } }
+            )
+        }
+        let sources: [any SliceSource] = [
+            WorkbenchSlice { gitRefresher?.status(for: $0) },
+            WorkbenchTargetSlice(),
+            WorkbenchCommentSlice()
+        ]
+        let publisher = SlicePublisher(dbPool: dbPool, state: storage.sidecar, transport: storage.transport, sources: sources)
+        gitRefresher?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.workbench]) }
         let processor = RelayProcessor(
             transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID()
         )
         return MobileHubService(
             transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: .live(dbPool: dbPool, ownerUser: storage.ownerUser)
+            hostInfo: .live(dbPool: dbPool, ownerUser: storage.ownerUser),
+            companions: gitRefresher.map { [$0] } ?? []
         ) { [weak self] in self?.isMobileSyncEnabled ?? false }
     }
 

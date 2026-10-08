@@ -20,6 +20,14 @@ protocol HubTransport: CloudSyncTransport, Sendable {
 
 extension CloudKitTransport: HubTransport {}
 
+/// Background work that runs only while the hub publishes (a slice's
+/// refresher): started with the publisher, stopped with the hub. It never
+/// touches the relay processor.
+protocol HubCompanion: AnyObject, Sendable {
+    func start()
+    func stop()
+}
+
 /// The process-wide part of the hub: one transport and one sidecar over the
 /// files in the hub directory. Built once per app run and kept across hub
 /// rebuilds, so two CKSyncEngines never drive one `transport.db`.
@@ -95,6 +103,7 @@ final class MobileHubService {
 
     @ObservationIgnored private let transport: any HubTransport
     @ObservationIgnored private let publisher: SlicePublisher
+    @ObservationIgnored private let companions: [any HubCompanion]
     @ObservationIgnored private let processor: RelayProcessor
     @ObservationIgnored private let sidecar: HubSyncState
     @ObservationIgnored private let identity: HubIdentity
@@ -134,6 +143,7 @@ final class MobileHubService {
         processor: RelayProcessor,
         sidecar: HubSyncState,
         hostInfo: HubHostInfo,
+        companions: [any HubCompanion] = [],
         relayIdleInterval: Duration = MobileHubService.defaultRelayIdleInterval,
         relayActiveInterval: Duration = MobileHubService.defaultRelayActiveInterval,
         availabilityReprobeInterval: Duration = .seconds(600),
@@ -144,6 +154,7 @@ final class MobileHubService {
     ) {
         self.transport = transport
         self.publisher = publisher
+        self.companions = companions
         self.processor = processor
         self.sidecar = sidecar
         self.identity = HubIdentity(sidecar: sidecar)
@@ -227,6 +238,7 @@ final class MobileHubService {
         }
         tickFailures = 0
         publisher.start()
+        companions.forEach { $0.start() }
         startRelayLoop()
         startHeartbeatLoop()
         status = .running
@@ -253,6 +265,7 @@ final class MobileHubService {
 
     func stop() {
         publisher.stop()
+        companions.forEach { $0.stop() }
         heartbeatTask?.cancel()
         heartbeatTask = nil
         reprobeTask?.cancel()

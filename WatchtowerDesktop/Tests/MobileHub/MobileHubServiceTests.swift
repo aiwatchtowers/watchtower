@@ -36,6 +36,7 @@ final class MobileHubServiceTests: XCTestCase {
         transport: StubHubTransport,
         relayInterval: Duration = .milliseconds(20),
         dispatcher: MobileHubCommandDispatcher? = nil,
+        companions: [any HubCompanion] = [],
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
@@ -47,7 +48,7 @@ final class MobileHubServiceTests: XCTestCase {
         )
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
-            hostInfo: testHostInfo(),
+            hostInfo: testHostInfo(), companions: companions,
             relayIdleInterval: relayInterval, relayActiveInterval: relayInterval,
             availabilityReprobeInterval: .milliseconds(20), isEnabled: isEnabled
         )
@@ -66,6 +67,22 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(MobileHubService.defaultRelayIdleInterval, .seconds(30))
         XCTAssertEqual(MobileHubService.defaultRelayActiveInterval, .seconds(3))
         XCTAssertEqual(MobileHubService.activityWindow, 300)
+    }
+
+    func testCompanionsRunOnlyWhileTheHubPublishes() async throws {
+        let companion = CountingCompanion()
+        let offline = makeService(transport: StubHubTransport(availability: .noAccount), companions: [companion])
+        await offline.start()
+        XCTAssertEqual(companion.starts, 0, "no companion runs while the hub cannot publish")
+
+        let service = makeService(transport: StubHubTransport(), companions: [companion])
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(companion.starts, 1)
+
+        service.stop()
+        XCTAssertEqual(companion.stops, 1)
+        offline.stop()
     }
 
     func testRunningHubAnswersAProbe() async throws {
@@ -344,4 +361,17 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertNil(appState.mobileHub)
         XCTAssertNotNil(appState.mobileHubInitError)
     }
+}
+
+/// Counts a hub companion's lifecycle calls.
+final class CountingCompanion: HubCompanion, @unchecked Sendable {
+    private let lock = NSLock()
+    private var startCount = 0
+    private var stopCount = 0
+
+    var starts: Int { lock.withLock { startCount } }
+    var stops: Int { lock.withLock { stopCount } }
+
+    func start() { lock.withLock { startCount += 1 } }
+    func stop() { lock.withLock { stopCount += 1 } }
 }
