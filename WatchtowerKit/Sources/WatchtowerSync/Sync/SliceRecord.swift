@@ -47,6 +47,10 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case ownerAsk = "owner_ask"
     case sessionReport = "session_report"
     case sessionTimeline = "session_timeline"
+    /// The push trigger for a new owner ask (spec §4.7, §7), record name
+    /// `ask_alert-<owner_asks.id>`: written once per ask, deleted when the ask
+    /// leaves `open` or after 7 days.
+    case askAlert = "ask_alert"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"
