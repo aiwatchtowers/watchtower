@@ -196,8 +196,11 @@ final class AppEnvironment {
         } catch {
             Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
         }
-        // The relaunch retry: recordings saved but not yet acknowledged go
-        // out again (the hub's processed set absorbs duplicates).
+        // A capture cut short by a kill is finalized from its file, and
+        // files without a ledger row are deleted. Then the relaunch retry:
+        // recordings saved but not yet acknowledged go out again (the hub's
+        // processed set absorbs duplicates).
+        await recorder.recoverOnLaunch()
         await recorder.uploadPending()
         bootstrapped = true
         restartLoop()
@@ -247,7 +250,20 @@ final class AppEnvironment {
     func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
+        // A capture keeps going in the background, but its timer slows.
+        recorder.setForeground(active)
         restartLoop()
+    }
+
+    /// The one place the phone's link changes (the link flow, Task 12, and
+    /// unlink): Settings, the action outbox and the recording uploader all
+    /// take the new device id, then waiting recordings go out at once.
+    func setLinkedDevice(_ device: LinkedDevice?) async {
+        linkedDevice = device
+        deviceSettings.linkedDevice = device
+        await outbox.setDeviceID(device?.deviceID)
+        await uploader.setDeviceID(device?.deviceID)
+        await recorder.uploadPending()
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).

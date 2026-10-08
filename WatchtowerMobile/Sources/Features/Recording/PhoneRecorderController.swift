@@ -8,6 +8,10 @@ import WatchtowerSync
 /// a fake in tests (no audio is ever recorded there).
 @MainActor
 protocol AudioCaptureEngine: AnyObject {
+    /// Called when the capture dies under the controller (an encode error,
+    /// a media-services reset): the controller stops and saves what was
+    /// written.
+    var onFailure: (@MainActor (String) -> Void)? { get set }
     func requestPermission() async -> Bool
     /// Activates the audio session and starts writing `url`.
     func begin(url: URL) throws
@@ -15,9 +19,13 @@ protocol AudioCaptureEngine: AnyObject {
     /// Continues writing the same file after a pause or an interruption.
     func resume() throws
     /// Stops and finalises the file, then releases the audio session.
-    func finish()
+    func finish() async
     /// The current input level, 0...1, for the waveform.
     func level() -> Float
+    /// The playable length of a recording file; nil when it holds no
+    /// readable audio. Used for an honest saved duration and for launch
+    /// recovery of a capture cut short.
+    func recordedDuration(of url: URL) async -> TimeInterval?
 }
 
 /// The calendar event a "Record this meeting" capture belongs to. The
@@ -62,6 +70,10 @@ struct SavedRecording: Equatable {
 /// Lifecycle facts:
 /// - Files land in Application Support/phone-recordings/<uuid>.m4a and
 ///   stay until the Mac acknowledges receipt.
+/// - The ledger row exists from the first second (state `recording`) and
+///   marks are stored as they are tapped, so a capture cut short by a kill
+///   is finalized from its file at the next launch (`recoverOnLaunch`),
+///   which also deletes files no row points at.
 /// - The `audio` background mode keeps an active capture going with the
 ///   screen locked. The recorder never touches the fetch loop, which
 ///   pauses in the background as usual.
@@ -81,6 +93,8 @@ final class PhoneRecorderController {
         case idle
         case recording
         case paused(PauseReason)
+        /// Stop was tapped: the file is being finalized and registered.
+        case saving
         case saved(SavedRecording)
         /// Stopped under a second of audio: discarded, never uploaded.
         case tooShort
@@ -110,6 +124,9 @@ final class PhoneRecorderController {
     /// Recent input levels, oldest first, for the waveform.
     private(set) var levels: [Float] = []
     private(set) var capNotice: String?
+    /// Why the capture ended by itself (an encode error, a media-services
+    /// reset); shown on the Saved screen. nil after a normal stop.
+    private(set) var endNotice: String?
 
     /// Raised once when the cap notice appears; the app posts a local
     /// notification, since the screen is usually locked by then.
@@ -120,6 +137,8 @@ final class PhoneRecorderController {
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private let now: @MainActor () -> Date
     @ObservationIgnored private let tickInterval: Duration?
+    /// The ledger id of the capture being written.
+    @ObservationIgnored private var captureID: String?
     @ObservationIgnored private var fileURL: URL?
     @ObservationIgnored private var startedAt: Date?
     /// Audio recorded before the current span.
@@ -127,6 +146,10 @@ final class PhoneRecorderController {
     /// When the current recording span began; nil while paused.
     @ObservationIgnored private var spanStart: Date?
     @ObservationIgnored private var tickTask: Task<Void, Never>?
+    /// false while the app is not active: the ticker slows to
+    /// `backgroundTickInterval` (nobody sees the timer or the waveform).
+    @ObservationIgnored private var isForeground = true
+    static let backgroundTickInterval: Duration = .seconds(1)
     /// Kept for the controller's lifetime (the environment owns it for the
     /// app's), so it is never removed.
     @ObservationIgnored private var interruptionObserver: (any NSObjectProtocol)?
@@ -147,6 +170,9 @@ final class PhoneRecorderController {
         self.directory = directory
         self.now = now
         self.tickInterval = tickInterval
+        engine.onFailure = { [weak self] message in
+            self?.engineFailed(message)
+        }
         // Registered for the controller's lifetime: a call while recording
         // must pause the capture even with no view on screen.
         interruptionObserver = notificationCenter.addObserver(
@@ -180,6 +206,12 @@ final class PhoneRecorderController {
         }
     }
 
+    /// The ticker's current period; nil when the ticker is off (tests).
+    var currentTickInterval: Duration? {
+        guard let tickInterval else { return nil }
+        return isForeground ? tickInterval : max(tickInterval, Self.backgroundTickInterval)
+    }
+
     var savedRecording: SavedRecording? {
         if case let .saved(saved) = phase { return saved }
         return nil
@@ -211,6 +243,7 @@ final class PhoneRecorderController {
             "Keeps going with the screen locked. \(marks.count) \(marks.count == 1 ? "moment" : "moments") marked."
         case .paused(.interruption): "Paused — call in progress"
         case .paused(.user): "Paused"
+        case .saving: "Saving…"
         case let .saved(saved): "Saved · \(Self.clockText(saved.durationSec))"
         case .tooShort: "Too short to save"
         case .denied: "Microphone access is off. Turn it on in Settings to record."
@@ -270,7 +303,7 @@ final class PhoneRecorderController {
     /// Closes the finished screen ("See recordings", or a stop that saved
     /// nothing) and returns to idle.
     func close() {
-        guard !isCapturing else { return }
+        guard !isCapturing, phase != .saving else { return }
         isPresented = false
         phase = .idle
     }
@@ -283,23 +316,44 @@ final class PhoneRecorderController {
             phase = .denied
             return
         }
+        let start = now()
+        let url = directory.appendingPathComponent("\(UUID().uuidString).m4a")
+        var row: PhoneRecording?
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let url = directory.appendingPathComponent("\(UUID().uuidString).m4a")
+            // The row first: a kill a second later still leaves a capture
+            // the next launch finalizes.
+            let (title, eventID) = finalTitleAndEvent(startedAt: start)
+            row = try await uploader.beginCapture(fileURL: url, startedAt: start, titleHint: title, eventID: eventID)
             try engine.begin(url: url)
+            captureID = row?.id
             fileURL = url
-            let start = now()
             startedAt = start
             spanStart = start
             phase = .recording
             startTicker()
         } catch {
             Self.logger.error("recording start failed: \(error.localizedDescription, privacy: .public)")
+            if let row {
+                try? await uploader.discard(id: row.id)
+            }
             phase = .failed("Could not start recording: \(error.localizedDescription)")
         }
     }
 
+    /// The title and event the context gives right now.
+    private func finalTitleAndEvent(startedAt: Date) -> (String, String?) {
+        switch context {
+        case let .meeting(event):
+            (event.title, event.id)
+        case .voiceNote:
+            ("Voice note — \(Self.titleStamp.string(from: startedAt))", nil)
+        }
+    }
+
     private func reset() {
+        captureID = nil
+        endNotice = nil
         fileURL = nil
         startedAt = nil
         spanStart = nil
@@ -330,56 +384,90 @@ final class PhoneRecorderController {
     }
 
     func markMoment() {
-        guard isCapturing else { return }
+        guard isCapturing, let captureID else { return }
         refreshElapsed()
-        marks.append(Int(elapsed))
+        let offset = Int(elapsed)
+        marks.append(offset)
+        // Stored as tapped, so the mark survives a capture cut short. Stop
+        // re-inserts every mark, so a write still in flight is not lost.
+        Task { [uploader] in
+            do {
+                try await uploader.addMark(id: captureID, offsetSec: offset)
+            } catch {
+                Self.logger.warning("mark not stored: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
-    /// Stops and finalises the capture: the file is registered with the
-    /// uploader (which discards a capture under a second) and the upload
-    /// pass runs at once. Safe to call when nothing is capturing.
+    /// Stops and finalises the capture: the ledger row becomes `waiting`
+    /// (or is removed for a capture under a second) and the upload pass runs
+    /// at once. The phase is `saving` from the first line, so the controls
+    /// are off and no mark is dropped while the file closes. The saved
+    /// duration is the recorded time, never more than the file holds. Safe
+    /// to call when nothing is capturing.
     func stop() async {
-        guard isCapturing, let fileURL, let startedAt else { return }
+        guard isCapturing, let captureID, let fileURL, let startedAt else { return }
+        phase = .saving
         closeSpan()
-        let duration = min(accumulated, Self.maximumDuration)
-        engine.finish()
         tickTask?.cancel()
         tickTask = nil
+        self.captureID = nil
         self.fileURL = nil
         self.startedAt = nil
-        elapsed = duration
-
-        let eventID: String?
-        let title: String
-        switch context {
-        case let .meeting(event):
-            eventID = event.id
-            title = event.title
-        case .voiceNote:
-            eventID = nil
-            title = "Voice note — \(Self.titleStamp.string(from: startedAt))"
+        await engine.finish()
+        var duration = min(accumulated, Self.maximumDuration)
+        if let written = await engine.recordedDuration(of: fileURL) {
+            duration = min(duration, written)
         }
+        elapsed = duration
+        let (title, eventID) = finalTitleAndEvent(startedAt: startedAt)
         do {
-            let registered = try await uploader.register(
-                fileURL: fileURL,
-                startedAt: startedAt,
+            let finished = try await uploader.finishCapture(
+                id: captureID,
                 endedAt: now(),
                 activeDuration: duration,
                 titleHint: title,
                 eventID: eventID,
                 marks: marks
             )
-            guard let registered else {
+            guard let finished else {
                 phase = .tooShort
                 return
             }
-            phase = .saved(SavedRecording(id: registered.id, durationSec: registered.durationSec))
+            phase = .saved(SavedRecording(id: finished.id, durationSec: finished.durationSec))
         } catch {
+            // The row stays `recording`: the next launch finalizes it.
             Self.logger.error("recording save failed: \(error.localizedDescription, privacy: .public)")
             phase = .failed("Could not save the recording: \(error.localizedDescription)")
             return
         }
         await uploadPending()
+    }
+
+    /// The engine lost the capture: the timer stops right here, before any
+    /// hop, and what was written is saved.
+    private func engineFailed(_ message: String) {
+        guard isCapturing else { return }
+        closeSpan()
+        endNotice = message
+        Task { await stop() }
+    }
+
+    /// Launch recovery: finalizes captures cut short by a kill (their rows
+    /// are still `recording`) from their files, then deletes recording
+    /// files no row points at. A capture running right now is left alone.
+    func recoverOnLaunch() async {
+        do {
+            let recovered = try await uploader.recoverInterruptedCaptures(excluding: captureID) { [engine] url in
+                await engine.recordedDuration(of: url)
+            }
+            if !recovered.isEmpty {
+                Self.logger.notice("recovered \(recovered.count) recordings cut short")
+            }
+            try await uploader.sweepOrphanFiles(in: directory)
+        } catch {
+            Self.logger.error("recording recovery failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Retry on a failed upload: back to waiting, then an upload pass.
@@ -425,13 +513,23 @@ final class PhoneRecorderController {
 
     private func startTicker() {
         tickTask?.cancel()
-        guard let tickInterval else { return }
+        guard tickInterval != nil else { return }
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: tickInterval)
+                guard let interval = self?.currentTickInterval else { return }
+                try? await Task.sleep(for: interval)
                 guard let self else { return }
                 await self.tick()
             }
+        }
+    }
+
+    /// Scene phase: the ticker slows to once a second while the app is not
+    /// active, and is back to its full rate on return.
+    func setForeground(_ foreground: Bool) {
+        isForeground = foreground
+        if foreground {
+            Task { await tick() }
         }
     }
 

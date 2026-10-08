@@ -109,6 +109,10 @@ extension DemoSeed {
     /// `recording_job` at `percent`. The ledger row is made once and reused
     /// on every relaunch, so the job keeps one record. The audio stand-in
     /// is deleted by the `received` echo, as for a real upload.
+    /// The demo recording's fixed ledger id: one row and one job record
+    /// across relaunches.
+    static let recordingID = "demo-phone-recording"
+
     static func loadRecordingDemo(
         uploader: RecordingUploader,
         store: ReplicaStore,
@@ -117,12 +121,13 @@ extension DemoSeed {
         percent: Int = 60
     ) async throws {
         let recording: PhoneRecording
-        if let existing = try store.phoneRecordings().first(where: { $0.eventID == recordedEventID }) {
+        if let existing = try store.phoneRecording(id: recordingID) {
             recording = existing
         } else {
             let file = FileManager.default.temporaryDirectory.appendingPathComponent("demo-\(UUID().uuidString).m4a")
             try Data([0]).write(to: file)
             guard let row = try await uploader.register(
+                id: recordingID,
                 fileURL: file,
                 startedAt: now.addingTimeInterval(-7_200),
                 endedAt: now.addingTimeInterval(-4_500),

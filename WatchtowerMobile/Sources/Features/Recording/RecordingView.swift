@@ -17,7 +17,7 @@ struct RecordingView: View {
                 RecordingSavedView(saved: saved)
             case .tooShort, .denied, .failed:
                 RecordingEndedView()
-            case .idle, .recording, .paused:
+            case .idle, .recording, .paused, .saving:
                 RecordingCaptureView()
             }
         }
@@ -192,6 +192,11 @@ private struct RecordingSavedView: View {
                     .font(.title2.weight(.semibold))
                     .padding(.top, 24)
 
+                if let notice = env.recorder.endNotice {
+                    Text(notice)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
                 StepRow(state: .done, text: "Saved on the phone")
                 if let recording {
                     let upload = PhoneUploadStage(recording: recording, heartbeat: snapshot.heartbeat, now: context.date)
@@ -222,16 +227,18 @@ private struct RecordingSavedView: View {
     @ViewBuilder
     private func uploadStep(_ stage: PhoneUploadStage) -> some View {
         switch stage {
-        case .sending: StepRow(state: .working, text: stage.label)
+        case .recording, .sending: StepRow(state: .working, text: stage.label)
         case .waitingForMac: StepRow(state: .waiting, text: stage.label)
         case .delivered: StepRow(state: .done, text: stage.label)
         case .failed:
             VStack(alignment: .leading, spacing: 8) {
                 StepRow(state: .failed, text: stage.label)
-                Button("Retry") {
-                    Task { await env.recorder.retry(id: saved.id) }
+                if stage.offersRetry {
+                    Button("Retry") {
+                        Task { await env.recorder.retry(id: saved.id) }
+                    }
+                    .padding(.leading, 34)
                 }
-                .padding(.leading, 34)
             }
         }
     }

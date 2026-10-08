@@ -114,7 +114,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL.path), "failed → the only copy is kept")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
         let stage = PhoneUploadStage(recording: row, heartbeat: nil, now: Date())
-        XCTAssertEqual(stage, .failed("The Mac could not save the recording."))
+        XCTAssertEqual(stage, .failed("The Mac could not save the recording.", retryable: true))
         XCTAssertTrue(stage.offersRetry)
 
         await wired.env.recorder.retry(id: recording.id)
@@ -135,5 +135,31 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertEqual(wired.env.recorder.phase, .recording, "the capture itself goes on")
         wired.env.setActive(true)
         XCTAssertTrue(wired.env.isLooping)
+    }
+
+    // MARK: - Link seam
+
+    /// `setLinkedDevice` reaches Settings, the outbox and the uploader, and
+    /// sends a recording that waited while the phone was unlinked.
+    func testSetLinkedDeviceReachesTheUploaderAndSendsWaitingRecordings() async throws {
+        let wired = try await makeWired()
+        await wired.env.setLinkedDevice(nil)
+        let recording = try await recordAndStop(wired)
+        XCTAssertEqual(try wired.env.store.phoneRecording(id: recording.id)?.state, .waiting, "unlinked: nothing is sent")
+        let before = try await relayUploads(in: wired.transport)
+        XCTAssertTrue(before.isEmpty)
+
+        let device = LinkedDevice(
+            deviceID: "device-b", name: "Phone B", model: "iPhone", appVersion: "1.0",
+            scope: .private, userRecordName: "_user-b"
+        )
+        await wired.env.setLinkedDevice(device)
+
+        XCTAssertEqual(wired.env.linkedDevice, device)
+        XCTAssertEqual(wired.env.deviceSettings.linkedDevice, device)
+        let uploads = try await relayUploads(in: wired.transport)
+        XCTAssertEqual(uploads.map(\.deviceID), ["device-b"])
+        let actionID = try await wired.env.outbox.enqueue(kind: .probe, entityRecordName: nil)
+        XCTAssertFalse(actionID.isEmpty, "the outbox is linked too")
     }
 }

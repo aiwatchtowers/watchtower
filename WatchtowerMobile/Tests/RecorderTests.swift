@@ -225,4 +225,129 @@ final class RecorderTests: XCTestCase {
         XCTAssertEqual(rig.controller.phase, .denied)
         XCTAssertTrue(rig.engine.begunURLs.isEmpty)
     }
+
+    // MARK: - A capture cut short (kill, jetsam, crash)
+
+    func testBeginWritesTheLedgerRowBeforeAnyAudio() async throws {
+        let rig = try makeRecorderRig()
+        await rig.controller.recordMeeting(meeting(start: rig.clock.now))
+        let row = try XCTUnwrap(try rig.store.phoneRecordings().first)
+        XCTAssertEqual(row.state, .recording)
+        XCTAssertEqual(row.fileURL, rig.engine.begunURLs.first)
+        XCTAssertEqual(row.eventID, "evt-1")
+        rig.clock.advance(5)
+        rig.controller.markMoment()
+        try await poll { (try? rig.store.phoneRecordingMarks(id: row.id)) == [5] }
+    }
+
+    func testRelaunchFinalizesACaptureCutShortWithTheFilesDuration() async throws {
+        let killed = try makeRecorderRig()
+        await killed.controller.recordVoiceNote()
+        killed.clock.advance(30)
+        killed.controller.markMoment()
+        let rowID = try XCTUnwrap(try killed.store.phoneRecordings().first?.id)
+        try await poll { (try? killed.store.phoneRecordingMarks(id: rowID)) == [30] }
+        // The process dies here: no stop(), no finish().
+
+        let relaunched = try makeRecorderRig(sharing: killed)
+        relaunched.engine.fileDuration = 42
+        await relaunched.controller.recoverOnLaunch()
+        await relaunched.controller.uploadPending()
+
+        let row = try XCTUnwrap(try relaunched.store.phoneRecording(id: rowID))
+        XCTAssertEqual(row.state, .uploading)
+        XCTAssertEqual(row.durationSec, 42, "the duration is read from the file")
+        XCTAssertEqual(try relaunched.store.phoneRecordingMarks(id: rowID), [30])
+        let uploads = try await relayUploads(in: relaunched.transport)
+        XCTAssertEqual(uploads.map(\.id), [rowID])
+    }
+
+    func testRelaunchDeletesARecordingFileWithNoRow() async throws {
+        let rig = try makeRecorderRig()
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(30)
+        await rig.controller.stop()
+        let kept = try XCTUnwrap(rig.engine.begunURLs.first)
+        let orphan = rig.directory.appendingPathComponent("\(UUID().uuidString).m4a")
+        try Data(repeating: 1, count: 32).write(to: orphan)
+
+        let relaunched = try makeRecorderRig(sharing: rig)
+        await relaunched.controller.recoverOnLaunch()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "a file with a row is kept")
+    }
+
+    func testRelaunchWithTheFileGoneFailsWithoutRetry() async throws {
+        let killed = try makeRecorderRig()
+        await killed.controller.recordVoiceNote()
+        try FileManager.default.removeItem(at: try XCTUnwrap(killed.engine.begunURLs.first))
+
+        let relaunched = try makeRecorderRig(sharing: killed)
+        relaunched.engine.fileDuration = 42
+        await relaunched.controller.recoverOnLaunch()
+
+        let row = try XCTUnwrap(try relaunched.store.phoneRecordings().first)
+        XCTAssertEqual(row.state, .failed)
+        let stage = PhoneUploadStage(recording: row, heartbeat: nil, now: Date())
+        XCTAssertEqual(stage, .failed(RecordingUploader.missingFileMessage, retryable: false))
+        XCTAssertFalse(stage.offersRetry)
+    }
+
+    // MARK: - Engine failure, honest duration, saving
+
+    func testAnEngineFailureStopsTheTimerAndSavesWhatWasWritten() async throws {
+        let rig = try makeRecorderRig()
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(50)
+        rig.engine.fail("Audio services restarted, so the recording stopped here.")
+        rig.clock.advance(600)
+        try await poll { rig.controller.savedRecording != nil }
+        XCTAssertEqual(rig.controller.savedRecording?.durationSec, 50, "the timer stopped at the failure")
+        XCTAssertEqual(rig.controller.endNotice, "Audio services restarted, so the recording stopped here.")
+        XCTAssertEqual(rig.engine.finishCount, 1)
+    }
+
+    func testTheSavedDurationNeverExceedsWhatTheFileHolds() async throws {
+        let rig = try makeRecorderRig()
+        rig.engine.fileDuration = 40
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(60)
+        await rig.controller.stop()
+        XCTAssertEqual(rig.controller.savedRecording?.durationSec, 40)
+    }
+
+    func testControlsAreOffWhileSaving() async throws {
+        let rig = try makeRecorderRig()
+        rig.engine.holdFinish = true
+        await rig.controller.recordVoiceNote()
+        rig.clock.advance(20)
+        rig.controller.markMoment()
+        let stopping = Task { await rig.controller.stop() }
+        try await poll { rig.controller.phase == .saving }
+
+        XCTAssertFalse(rig.controller.isCapturing, "the view disables every control off a capture")
+        rig.controller.markMoment()
+        rig.controller.pause()
+        XCTAssertEqual(rig.controller.marks, [20], "no mark is taken, or dropped, while saving")
+        XCTAssertEqual(rig.engine.pauseCount, 0)
+        rig.controller.close()
+        XCTAssertTrue(rig.controller.isPresented, "the recorder cannot be closed mid-save")
+
+        rig.engine.releaseFinish()
+        await stopping.value
+        let row = try XCTUnwrap(try rig.store.phoneRecordings().first)
+        XCTAssertEqual(try rig.store.phoneRecordingMarks(id: row.id), [20])
+    }
+
+    // MARK: - Ticker
+
+    func testTheTickerSlowsToOnceASecondInTheBackground() throws {
+        let rig = try makeRecorderRig(tickInterval: .milliseconds(100))
+        XCTAssertEqual(rig.controller.currentTickInterval, .milliseconds(100))
+        rig.controller.setForeground(false)
+        XCTAssertEqual(rig.controller.currentTickInterval, .seconds(1))
+        rig.controller.setForeground(true)
+        XCTAssertEqual(rig.controller.currentTickInterval, .milliseconds(100))
+    }
 }
