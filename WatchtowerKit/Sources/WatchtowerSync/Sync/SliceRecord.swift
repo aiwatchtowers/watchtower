@@ -38,6 +38,15 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     /// Mac-side progress of one phone recording upload (spec §4.12), record
     /// name `recording_job-<upload id>`.
     case recordingJob = "recording_job"
+    // Workbench Remote (spec §4.2–§4.9): resolved, capped projections the
+    // hub computes; the phone decodes them with the WatchtowerKit mirrors.
+    case workbench
+    case workbenchTarget = "workbench_target"
+    case workbenchComment = "workbench_comment"
+    case terminalSession = "terminal_session"
+    case ownerAsk = "owner_ask"
+    case sessionReport = "session_report"
+    case sessionTimeline = "session_timeline"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

@@ -1,0 +1,21 @@
+{
+  "answer": {"answers": [], "checklist": [{"id": "1", "note": "", "state": "ok"}, {"id": "login", "note": "The sheet closes on its own.", "state": "broken"}], "comments": [], "note": "", "verdict": ""},
+  "answered_at": 1700000100,
+  "changes": "",
+  "created_at": 1700000000,
+  "delivered_at": 1700000200,
+  "doc_path": "",
+  "id": 15,
+  "kind": "check",
+  "payload": {
+    "checklist": [{"id": "1", "text": "Launch the app"}, {"hint": "Settings, Accounts", "id": "login", "text": "Sign in with a second account"}],
+    "focus": [],
+    "questions": []
+  },
+  "status": "delivered",
+  "summary": "",
+  "title": "Check the sign-in flow",
+  "title_clipped": true,
+  "workbench_id": 7,
+  "workbench_name": "Acme"
+}

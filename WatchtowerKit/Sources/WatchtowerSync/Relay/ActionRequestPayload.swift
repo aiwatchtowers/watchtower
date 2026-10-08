@@ -21,6 +21,32 @@ public enum ActionKind: String, Codable, CaseIterable {
     /// Link check (mobile POC spec §5.2): params `{nonce}`, hub-only,
     /// idempotent; `applied` carries `result = {nonce, hub_id}`.
     case probe
+    // Workbench Remote (spec §5.2). The typed params live in WatchtowerKit
+    // (`ActionParams`); `entity_id` per kind is in the spec table.
+    /// Entity: ask id. Idempotent (guarded `WHERE status='open'`).
+    case askAnswer = "ask_answer"
+    /// Entity: target id. Idempotent.
+    case boardTargetStatus = "board_target_status"
+    /// Entity: target id. Idempotent.
+    case boardTargetPriority = "board_target_priority"
+    /// Entity: target id. Not idempotent.
+    case boardCommentAdd = "board_comment_add"
+    /// Entity: root comment id. Not idempotent.
+    case boardCommentReply = "board_comment_reply"
+    /// No entity. Not idempotent.
+    case boardTargetCreate = "board_target_create"
+    /// Entity: target id. Not idempotent.
+    case sessionStart = "session_start"
+    /// Entity: session id. Not idempotent.
+    case sessionInput = "session_input"
+    /// Entity: the original `session_input` action id. Idempotent.
+    case sessionInputCancel = "session_input_cancel"
+    /// Entity: session id. Not idempotent.
+    case sessionFinishRequest = "session_finish_request"
+    /// Entity: session id. Idempotent.
+    case sessionStop = "session_stop"
+    /// Entity: session id. Idempotent.
+    case sessionReportRequest = "session_report_request"
 }
 
 /// Wire status of one action record (spec §5.2). Only the Mac moves a record
