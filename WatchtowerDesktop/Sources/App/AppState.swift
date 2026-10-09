@@ -290,6 +290,10 @@ final class AppState {
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
+    /// Every line the app types into a workbench session's prompt — an
+    /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
+    /// one queue per session (PROJ-12).
+    private(set) var sessionLineDelivery: SessionLineDelivery?
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
@@ -1709,9 +1713,10 @@ final class AppState {
         let agentStates = SessionAgentStateCenter(
             dbPool: dbPool, terminalCenter: terminalCenter, notifier: sessionNotifier
         )
+        let lineDelivery = SessionLineDelivery(terminalCenter: terminalCenter)
         let vm = WorkbenchesViewModel(
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
-            agentStates: agentStates
+            agentStates: agentStates, lineDelivery: lineDelivery
         )
         vm.codeFiles.codeIndex = codeIndexCenter
         openQuicklyCenter.workbenches = vm
@@ -1771,6 +1776,7 @@ final class AppState {
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
         sessionAgentStateCenter = agentStates
+        sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
         // The first poll also loads the list (onPolled → reload).
