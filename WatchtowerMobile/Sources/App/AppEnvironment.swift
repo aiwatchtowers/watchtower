@@ -200,12 +200,7 @@ final class AppEnvironment {
     private func bootstrap() async {
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
-        await outbox.setAppliedObserver { [weak askAnswerer, weak sessionStarts] action in
-            Task { @MainActor in
-                askAnswerer?.receiveApplied(action)
-                sessionStarts?.receiveApplied(action)
-            }
-        }
+        await outbox.setAppliedObserver(Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts))
         switch transportKind {
         case .inMemoryDemo:
             #if DEBUG
@@ -241,6 +236,21 @@ final class AppEnvironment {
         await recorder.uploadPending()
         bootstrapped = true
         restartLoop()
+    }
+
+    /// The outbox's one applied observer, shared by the app and the tests:
+    /// every applied echo goes to both consumers on the main actor, and
+    /// each keeps only its own kind.
+    nonisolated static func appliedObserver(
+        askAnswerer: AskAnswerer,
+        sessionStarts: SessionStarter
+    ) -> @Sendable (ActionRequestPayload) -> Void {
+        { [weak askAnswerer, weak sessionStarts] action in
+            Task { @MainActor in
+                askAnswerer?.receiveApplied(action)
+                sessionStarts?.receiveApplied(action)
+            }
+        }
     }
 
     /// The device recorder: the microphone, recordings in Application

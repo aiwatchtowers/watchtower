@@ -65,7 +65,7 @@ final class AskAnswerer {
     }
 
     /// The app's answerer: answers through the outbox, Dismiss on the
-    /// overlay. `AppEnvironment` hands it the outbox's applied echoes.
+    /// overlay. `AppEnvironment.appliedObserver` hands it the outbox's applied echoes.
     static func sending(through outbox: ActionOutbox, store: ReplicaStore, drafts: AskDraftStore) -> AskAnswerer {
         AskAnswerer(
             drafts: drafts,
@@ -79,14 +79,6 @@ final class AskAnswerer {
                     .map(\.id)
             }
         )
-    }
-
-    /// Takes the outbox's applied echoes alone (tests; the app shares the
-    /// observer with `SessionStarter` in `AppEnvironment`).
-    func observeApplied(on outbox: ActionOutbox) async {
-        await outbox.setAppliedObserver { [weak self] action in
-            Task { @MainActor in self?.receiveApplied(action) }
-        }
     }
 
     nonisolated static func recordName(_ askID: Int64) -> String {

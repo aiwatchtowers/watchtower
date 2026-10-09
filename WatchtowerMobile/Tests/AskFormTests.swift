@@ -16,6 +16,7 @@ final class AskFormTests: XCTestCase {
         let outbox: ActionOutbox
         let drafts: AskDraftStore
         let answerer: AskAnswerer
+        let starter: SessionStarter
     }
 
     private func makeFixture() async throws -> Fixture {
@@ -23,8 +24,9 @@ final class AskFormTests: XCTestCase {
         let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
         let drafts = AskDraftStore()
         let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: drafts)
-        await answerer.observeApplied(on: outbox)
-        return Fixture(store: store, outbox: outbox, drafts: drafts, answerer: answerer)
+        let starter = SessionStarter.sending(through: outbox, store: store)
+        await outbox.setAppliedObserver(AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
+        return Fixture(store: store, outbox: outbox, drafts: drafts, answerer: answerer, starter: starter)
     }
 
     private func makeAsk(_ id: Int64, _ overrides: [String: Any]) throws -> OwnerAsk {
