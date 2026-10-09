@@ -38,22 +38,6 @@ final class OwnerAsksViewModel {
         case noSession
     }
 
-    /// What a structured answer (`answer(_:with:)`) came to.
-    enum AnswerOutcome: Equatable {
-        /// Written; the line went as the delivery says.
-        case stored(Delivery)
-        /// Not written: the ask was no longer open (withdrawn, superseded,
-        /// answered meanwhile).
-        case notOpen
-        /// Not written: Go's reader would refuse it (`OwnerAskAnswerProblem.message`).
-        case invalid(String)
-        /// Not written: another answer to the ask is being written; a
-        /// retry once it is done finds the ask answered.
-        case busy
-        /// Not written: the write failed (the reason, also in `answerErrors`).
-        case failed(String)
-    }
-
     /// What the last answer to an ask came to, shown beside it.
     enum AnswerNotice: Equatable {
         /// Written; the line went as the delivery says. An ask without a
@@ -497,29 +481,9 @@ final class OwnerAsksViewModel {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
-        guard case let .stored(delivery) = await store(draft.answer(for: ask), for: ask) else { return nil }
-        return delivery
-    }
-
-    /// Answers `ask` with a structured value — the phone's (mobile POC spec
-    /// §6.2) — by the draft's rules (`OwnerAskAnswer.normalized`, then
-    /// `problem`) and then the draft path's own step (`store`): stored
-    /// first, delivered, held and noticed alike (PROJ-12 unchanged). A
-    /// Desktop draft of the ask is discarded on success and kept otherwise.
-    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerOutcome {
-        let normalized = answer.normalized(for: ask)
-        if let problem = normalized.problem(kind: ask.kind, payload: ask.payload) { return .invalid(problem.message) }
-        return await store(normalized, for: ask)
-    }
-
-    /// The step both entries share, for an answer already checked: one
-    /// guarded write, then the `OwnerAskPrompt` line to the ask's session
-    /// (`deliver`), the held answers, notices and hints. An ask no longer
-    /// open writes nothing and keeps the draft.
-    private func store(_ answer: OwnerAskAnswer, for ask: OwnerAsk) async -> AnswerOutcome {
-        guard !isAnswering(ask.id) else { return .busy }
         answering.insert(ask.id)
         defer { answering.remove(ask.id) }
+        let answer = draft.answer(for: ask)
         let (askID, projectID) = (ask.id, ask.projectID)
         do {
             try await dbPool.write { db in
@@ -528,11 +492,10 @@ final class OwnerAsksViewModel {
         } catch AskAnswerError.notOpen {
             answerNotices[askID] = .withdrawn
             await load(projectID: projectID)
-            return .notOpen
+            return nil
         } catch {
-            let reason = "Could not save the answer: \(error.localizedDescription)"
-            answerErrors[askID] = reason
-            return .failed(reason)
+            answerErrors[askID] = "Could not save the answer: \(error.localizedDescription)"
+            return nil
         }
         answerErrors[askID] = nil
         drafts.discard(askID)
@@ -552,7 +515,7 @@ final class OwnerAsksViewModel {
         }
         await load(projectID: projectID)
         await onAnswered?()
-        return .stored(delivery)
+        return delivery
     }
 
     /// The session states changed or were read again
