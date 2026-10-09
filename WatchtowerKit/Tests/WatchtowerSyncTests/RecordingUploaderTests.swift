@@ -150,6 +150,116 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(batch.newToken.value, 2)
     }
 
+    // MARK: - One save per recording (no re-send of in-flight uploads)
+
+    /// After the launch pass, a pass re-saves only `waiting` rows: an
+    /// `uploading` row is already in the transport's durable send queue,
+    /// and re-saving it (a new stamp and a new asset) would block the
+    /// queue's clear and upload the audio again.
+    func testEachRecordingIsSavedOnceAcrossPasses() async throws {
+        let spy = SpyTransport()
+        let (uploader, _, _) = try makeStack(transport: spy)
+        let first = try await register(uploader, file: try makeAudioFile(name: "one.m4a"))
+        _ = try await uploader.uploadPending()
+        let second = try await register(uploader, file: try makeAudioFile(name: "two.m4a"))
+        _ = try await uploader.uploadPending()
+
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves.filter { $0 == "recupload-\(first.id)" }.count, 1)
+        XCTAssertEqual(saves.filter { $0 == "recupload-\(second.id)" }.count, 1)
+    }
+
+    /// Two passes that overlap (a capture's stop while the launch pass is
+    /// still sending) merge: the second never sends a row the first is
+    /// sending.
+    func testOverlappingPassesNeverSaveARecordingTwice() async throws {
+        let spy = SpyTransport()
+        await spy.holdSaves()
+        let (uploader, _, _) = try makeStack(transport: spy)
+        let first = try await register(uploader, file: try makeAudioFile(name: "one.m4a"))
+        let second = try await register(uploader, file: try makeAudioFile(name: "two.m4a"))
+
+        let passA = Task { try await uploader.uploadPending() }
+        try await eventually { await spy.heldCount == 1 }
+        let passB = Task { try await uploader.uploadPending() }
+        // A pass that does not wait for A reaches the transport at once.
+        _ = try? await eventually(timeout: 0.5) { await spy.heldCount > 1 }
+        await spy.release()
+        _ = try await passA.value
+        _ = try await passB.value
+
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves.filter { $0 == "recupload-\(first.id)" }.count, 1)
+        XCTAssertEqual(saves.filter { $0 == "recupload-\(second.id)" }.count, 1)
+    }
+
+    /// The launch pass of a new process re-sends an `uploading` row once —
+    /// the relaunch retry — and later passes leave it alone.
+    func testTheLaunchPassResendsAnUploadingRowOnce() async throws {
+        let store = try ReplicaStore.inMemory()
+        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let recording = try await register(before, file: try makeAudioFile())
+        _ = try await before.uploadPending()
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
+
+        let spy = SpyTransport()
+        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID)
+        let launch = try await relaunched.uploadPending()
+        let later = try await relaunched.uploadPending()
+
+        XCTAssertEqual(launch, 1)
+        XCTAssertEqual(later, 0)
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(recording.id)"])
+    }
+
+    /// The launch pass waits for a link: a pass without a device sends
+    /// nothing and does not use up the re-send of in-flight rows.
+    func testTheLaunchResendWaitsForALinkedDevice() async throws {
+        let store = try ReplicaStore.inMemory()
+        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let recording = try await register(before, file: try makeAudioFile())
+        _ = try await before.uploadPending()
+
+        let spy = SpyTransport()
+        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: nil)
+        _ = try await relaunched.uploadPending()
+        await relaunched.setDeviceID(Self.deviceID)
+        _ = try await relaunched.uploadPending()
+
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(recording.id)"])
+    }
+
+    /// A wiped transport store lost its send queue: the next pass re-sends
+    /// every `uploading` row once more.
+    func testAfterAWipeTheNextPassResendsUploadingRows() async throws {
+        let spy = SpyTransport()
+        let (uploader, _, _) = try makeStack(transport: spy)
+        let recording = try await register(uploader, file: try makeAudioFile())
+        _ = try await uploader.uploadPending()
+        _ = try await uploader.uploadPending()
+
+        await uploader.resendInFlightAfterWipe()
+        _ = try await uploader.uploadPending()
+        _ = try await uploader.uploadPending()
+
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
+    }
+
+    /// Polls `condition` until it holds or `timeout` passes (then throws).
+    private func eventually(
+        timeout: TimeInterval = 5,
+        _ condition: @Sendable () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()) {
+            guard Date() < deadline else { throw EventuallyTimedOut() }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
     func testTransportFailureLeavesRowForNextPass() async throws {
         let (uploader, store, _) = try makeStack(transport: FailingTransport())
         let file = try makeAudioFile()
@@ -633,6 +743,40 @@ private actor FailingTransport: CloudSyncTransport {
 
     func save(_ records: [CloudRecord]) async throws { throw SaveFailed() }
     func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
+    }
+}
+
+private struct EventuallyTimedOut: Error {}
+
+/// Transport that records every saved record name and, when told to,
+/// holds each save until `release()` — the overlapping-pass branch.
+private actor SpyTransport: CloudSyncTransport {
+    private(set) var savedNames: [String] = []
+    private var holding = false
+    private var held: [CheckedContinuation<Void, Never>] = []
+
+    var heldCount: Int { held.count }
+
+    func holdSaves() { holding = true }
+
+    func release() {
+        holding = false
+        let waiting = held
+        held = []
+        waiting.forEach { $0.resume() }
+    }
+
+    func save(_ records: [CloudRecord]) async throws {
+        savedNames += records.map(\.recordName)
+        if holding {
+            await withCheckedContinuation { held.append($0) }
+        }
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
     }

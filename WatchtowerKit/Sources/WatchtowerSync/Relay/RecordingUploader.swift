@@ -22,9 +22,12 @@ public protocol RecordingUploadAcking: Sendable {
 ///   row plus the file survive an app kill;
 /// - the local file is deleted ONLY on a `received` echo from the hub
 ///   (ack-then-delete);
-/// - `uploadPending()` at every launch IS the relaunch retry: re-saving the
-///   same recordName upserts into the transport's pending queue, and the
-///   hub's processed-set absorbs true duplicates.
+/// - the first `uploadPending()` of a process with a linked device IS the
+///   relaunch retry: it re-saves `uploading` rows too (the same recordName
+///   upserts into the transport's pending queue, and the hub's
+///   processed-set absorbs true duplicates). Later passes send `waiting`
+///   rows only — an `uploading` row already sits in the transport's
+///   durable send queue — until `resendInFlightAfterWipe()`.
 public actor RecordingUploader: RecordingUploadAcking {
     /// Recordings shorter than this are degenerate (a tap on Record followed
     /// by an immediate stop) and are discarded without a ledger row.
@@ -68,6 +71,14 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// A new process starts empty, so a capture cut short is recovered.
     private var liveCaptureIDs: Set<String> = []
     private var ledgerPrepared = false
+    /// Whether the next pass re-saves `uploading` rows: true for the first
+    /// pass of a process (the relaunch retry) and after a transport wipe.
+    private var resendInFlight = true
+    /// The pass sending now, and the one queued behind it: callers that
+    /// overlap a running pass join the queued one, so no two passes ever
+    /// send at once.
+    private var runningPass: Task<Int, Error>?
+    private var queuedPass: Task<Int, Error>?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "RecordingUploader")
 
     public init(
@@ -360,23 +371,64 @@ public actor RecordingUploader: RecordingUploadAcking {
 
     // MARK: - Upload
 
-    /// Saves every `waiting`/`uploading` row into the relay zone as a pending
+    /// Saves every `waiting` row into the relay zone as a pending
     /// `recording_upload` record with the audio attached; a successful save
-    /// flips the row to `uploading`. Re-sending an `uploading` row is the
-    /// relaunch/push-failure retry — the save upserts the same recordName and
+    /// flips the row to `uploading`. The first pass of a process (and the
+    /// first after `resendInFlightAfterWipe()`) re-sends `uploading` rows
+    /// too — the relaunch retry: the save upserts the same recordName and
     /// the hub's processed-set absorbs duplicates. A transport throw leaves
     /// the row untouched for the next pass; a vanished local file, or one
     /// over the asset cap, fails the row locally (it can never be sent).
     /// Without a linked device nothing is sent and every row keeps waiting.
+    /// A call while a pass is sending waits for it and runs one more pass,
+    /// shared by every caller that arrived meanwhile.
     /// Returns how many rows were handed to the transport.
     @discardableResult
     public func uploadPending() async throws -> Int {
+        if let queuedPass {
+            return try await queuedPass.value
+        }
+        guard let previous = runningPass else {
+            let pass = Task { try await self.runPass() }
+            runningPass = pass
+            return try await pass.value
+        }
+        let pass = Task {
+            _ = try? await previous.value
+            return try await self.runQueuedPass()
+        }
+        queuedPass = pass
+        return try await pass.value
+    }
+
+    /// Called by the transport's wipe path (an account reset discards the
+    /// send queue): the next pass re-sends every `uploading` row.
+    public func resendInFlightAfterWipe() {
+        resendInFlight = true
+    }
+
+    private func runQueuedPass() async throws -> Int {
+        runningPass = queuedPass
+        queuedPass = nil
+        return try await runPass()
+    }
+
+    private func runPass() async throws -> Int {
+        defer { runningPass = nil }
+        return try await sendPending()
+    }
+
+    private func sendPending() async throws -> Int {
         guard let deviceID else {
             logger.notice("recording uploads wait: this phone is not linked")
             return 0
         }
         try prepareLedger()
-        let rows = try store.phoneRecordings().filter { $0.state == .waiting || $0.state == .uploading }
+        let includeInFlight = resendInFlight
+        resendInFlight = false
+        let rows = try store.phoneRecordings().filter {
+            $0.state == .waiting || (includeInFlight && $0.state == .uploading)
+        }
         var sent = 0
         for row in rows {
             let file = fileURL(row)
@@ -411,6 +463,9 @@ public actor RecordingUploader: RecordingUploadAcking {
                     recording upload save failed for \(row.id, privacy: .public): \
                     \(error.localizedDescription, privacy: .public)
                     """)
+                if row.state == .uploading {
+                    resendInFlight = true
+                }
                 continue
             }
             try store.setPhoneRecordingState(id: row.id, state: .uploading)
