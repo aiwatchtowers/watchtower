@@ -19,12 +19,14 @@ public struct CloudRecord: Equatable {
     /// ABSENT field, never a null — pre-Plan-6 records decode to nil and nil
     /// encodes to nothing. Always nil for relay-zone records.
     public let notifyLevel: String?
-    /// Local path of a file riding along as a `CKAsset` (phone
-    /// `recording_upload` records) — the escape hatch past the ~1 MB payload
-    /// cap. On save the CloudKit adapter attaches the file; on fetch it
-    /// points at a durable stashed copy (`TransportStore.stashAsset`). nil —
-    /// every record kind except recording uploads — means no asset field,
-    /// and a rewrite with nil REMOVES a previously attached asset.
+    /// Local path of a file riding along as a `CKAsset` — the escape hatch
+    /// past the ~1 MB payload cap: phone `recording_upload` records in the
+    /// relay zone, and asset-backed slice records in the data zone (e.g. a
+    /// meeting transcript's segments). On save the CloudKit adapter attaches
+    /// the file; on fetch it points at a durable stashed copy
+    /// (`TransportStore.stashAsset`) that the consumer reads before the
+    /// stash is cleaned up. nil means no asset field, and a rewrite with nil
+    /// REMOVES a previously attached asset.
     public let assetFileURL: URL?
 
     public init(
@@ -95,6 +97,10 @@ public protocol CloudSyncTransport {
 /// .relay (it sweeps by age, see `SweepingTransport`). Consumers: the phone's
 /// replica hydrator compacts .data, and the phone's `RelayFeed` — the only
 /// relay consumer on a device that runs no hygiene — compacts .relay.
+/// Data-zone compaction also deletes the stashed asset files of the
+/// compacted events (`TransportStore.compactEvents`): a consumer must have
+/// copied a record's asset bytes before it compacts past that record.
+///
 /// A silent no-op default is intentionally absent: a conformer that forgets
 /// to implement compaction would silently accumulate the buffer forever.
 public protocol CompactingTransport: CloudSyncTransport {

@@ -166,6 +166,67 @@ final class TransportAssetTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
     }
 
+    // MARK: - Unreferenced-stash sweep (final-review i-F5)
+
+    /// A stash file no buffered or pending row points at (a pre-fix leak, an
+    /// eviction, a wipe) is swept; a referenced one is kept.
+    func testSweepRemovesAnOrphanStashAndKeepsAReferencedOne() throws {
+        let (store, dir) = try fileStore()
+        let kept = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
+        let orphan = kept.deletingLastPathComponent().appendingPathComponent("meeting_transcript-orphan")
+        try Data("[0]".utf8).write(to: orphan)
+
+        store.sweepUnreferencedStash()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+    }
+
+    /// The launch pass: opening a store sweeps what an earlier run leaked.
+    func testOpeningAStoreSweepsOrphanStashFiles() throws {
+        let (store, dir) = try fileStore()
+        let kept = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
+        let orphan = kept.deletingLastPathComponent().appendingPathComponent("meeting_transcript-orphan")
+        try Data("[0]".utf8).write(to: orphan)
+
+        _ = try TransportStore(path: dir.appendingPathComponent("store.sqlite").path)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+    }
+
+    func testEvictingTheDataZoneSweepsItsStash() throws {
+        let (store, dir) = try fileStore()
+        let stashed = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
+
+        try store.evictZone(.data)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stashed.path))
+    }
+
+    func testWipeSweepsTheStash() throws {
+        let (store, dir) = try fileStore()
+        let stashed = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
+
+        try store.wipe()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stashed.path))
+    }
+
+    /// Only the stash directory is swept: a referenced-elsewhere file next to
+    /// the store (the hub's staged assets, the phone's recordings) is never
+    /// touched, referenced or not.
+    func testSweepNeverTouchesFilesOutsideTheStash() throws {
+        let (store, dir) = try fileStore()
+        _ = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
+        let outside = dir.appendingPathComponent("not-a-stash.json")
+        try Data("[1]".utf8).write(to: outside)
+
+        try store.wipe()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path))
+    }
+
     func testStashAssetOnInMemoryStoreReturnsNil() throws {
         let store = try TransportStore.inMemory()
         XCTAssertNil(store.stashAsset(from: URL(fileURLWithPath: "/tmp/x.m4a"), recordName: "recupload-X"))

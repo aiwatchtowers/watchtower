@@ -21,6 +21,10 @@ public final class TransportStore: Sendable {
             .deletingLastPathComponent()
             .appendingPathComponent("transport-assets", isDirectory: true)
         try createSchema()
+        // Launch pass: stash files an earlier run leaked (before the
+        // eviction/wipe sweeps existed, or a crash between a buffer and its
+        // compaction) are unreferenced by any row now.
+        sweepUnreferencedStash()
     }
 
     private init(queue: DatabaseQueue) throws {
@@ -409,13 +413,15 @@ public final class TransportStore: Sendable {
     /// A store with no recorded scope adopts this one and keeps its state.
     @discardableResult
     func adoptScope(_ scope: CloudDatabaseScope) throws -> Bool {
-        try queue.write { db in
+        let wiped = try queue.write { db in
             let stored = try Self.readScope(db)
             let wipe = stored != nil && stored != scope
             if wipe { try Self.wipeState(db) }
             try Self.writeScope(scope, db)
             return wipe
         }
+        if wiped { sweepUnreferencedStash() }
+        return wiped
     }
 
     private static func readScope(_ db: Database) throws -> CloudDatabaseScope? {
@@ -453,6 +459,7 @@ public final class TransportStore: Sendable {
     /// The recorded scope stays: it is link configuration, not account state.
     public func wipe() throws {
         try queue.write { db in try Self.wipeState(db) }
+        sweepUnreferencedStash()
     }
 
     private static func wipeState(_ db: Database) throws {
@@ -570,6 +577,52 @@ public final class TransportStore: Sendable {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM events WHERE zone = ?", arguments: [zone.rawValue])
             try db.execute(sql: "DELETE FROM system_fields WHERE zone = ?", arguments: [zone.rawValue])
+        }
+        // The evicted events took their stash references with them.
+        sweepUnreferencedStash()
+    }
+
+    /// Removes every file in the stash directory that no buffered event and
+    /// no pending row references — the stash's only owners. Runs at open (a
+    /// launch sweep of earlier leaks), after `evictZone` and after a wipe.
+    /// Callers other than `init` run on the transport actor, whose fetch
+    /// path stashes and buffers with no suspension in between, so a fresh
+    /// stash is always referenced by the time a sweep can look. Best-effort:
+    /// a missing directory is nothing to sweep, other failures are logged.
+    func sweepUnreferencedStash() {
+        guard let stash = assetsDirectory?.standardizedFileURL else { return }
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(at: stash, includingPropertiesForKeys: nil)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return
+        } catch {
+            logger.warning("stash sweep could not list the stash: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        guard !files.isEmpty else { return }
+        let referenced: Set<String>
+        do {
+            referenced = try queue.read { db in
+                let paths = try String.fetchAll(db, sql: """
+                    SELECT asset_path FROM events WHERE asset_path IS NOT NULL
+                    UNION SELECT asset_path FROM pending WHERE asset_path IS NOT NULL
+                    """)
+                return Set(paths.map { URL(fileURLWithPath: $0) }
+                    .filter { $0.deletingLastPathComponent().standardizedFileURL == stash }
+                    .map(\.lastPathComponent))
+            }
+        } catch {
+            // Without the references every file looks orphaned: keep them all.
+            logger.warning("stash sweep could not read references: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        for file in files where !referenced.contains(file.lastPathComponent) {
+            do {
+                try FileManager.default.removeItem(at: file)
+            } catch {
+                logger.warning("unreferenced stash not removed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
