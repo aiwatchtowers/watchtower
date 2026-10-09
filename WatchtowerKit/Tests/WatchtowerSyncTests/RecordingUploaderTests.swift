@@ -682,6 +682,55 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(sent, 1)
     }
 
+    /// The first echo of a launch can arrive before recovery or the sweep:
+    /// it still resolves a legacy row against the CURRENT folder, so the
+    /// delivered audio is deleted, not leaked in the moved container.
+    func testAnEchoBeforeAnyOtherCallUsesTheMigratedPath() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
+        let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
+        let moved = try moveFolder()
+
+        let current = RecordingUploader(transport: transport, store: store, directory: moved, deviceID: Self.deviceID)
+        try await current.applyEcho(echo(for: legacy, status: .received))
+
+        XCTAssertEqual(try store.phoneRecording(id: legacy.id)?.storedPath, "legacy.m4a")
+        XCTAssertEqual(try store.phoneRecording(id: legacy.id)?.state, .delivered)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("legacy.m4a").path))
+    }
+
+    /// The owner's delete can come first too: it removes the file from
+    /// the current folder.
+    func testADiscardBeforeAnyOtherCallUsesTheMigratedPath() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
+        let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
+        let moved = try moveFolder()
+
+        let current = RecordingUploader(transport: transport, store: store, directory: moved, deviceID: Self.deviceID)
+        try await current.discard(id: legacy.id)
+
+        XCTAssertNil(try store.phoneRecording(id: legacy.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("legacy.m4a").path))
+    }
+
+    /// A delivered row owns no file: audio left behind after its
+    /// `received` echo (a failed delete) is swept like an orphan.
+    func testTheSweepDeletesTheFileOfADeliveredRow() async throws {
+        let (uploader, store, _) = try makeStack()
+        let file = try makeAudioFile(name: "delivered.m4a")
+        let recording = try await register(uploader, file: file)
+        try store.setPhoneRecordingState(id: recording.id, state: .delivered)
+
+        let removed = try await uploader.sweepOrphanFiles()
+
+        XCTAssertEqual(removed.map(\.lastPathComponent), ["delivered.m4a"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered, "the row stays")
+    }
+
     /// Moves the test's recordings folder to a new container, keeping its
     /// name (as iOS does when the container UUID changes).
     private func moveFolder() throws -> URL {

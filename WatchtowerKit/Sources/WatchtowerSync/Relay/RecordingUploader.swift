@@ -123,9 +123,11 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// - an absolute path into a folder named like the recordings folder
     ///   (an older container's) becomes the bare file name;
     /// - a local failure recorded only by its message gets its kind.
+    /// Every entry point that resolves a row's file runs it first (an echo
+    /// can arrive before launch recovery); a failed upgrade is retried by
+    /// the next call.
     private func prepareLedger() throws {
         guard !ledgerPrepared else { return }
-        ledgerPrepared = true
         let legacyKinds: [String: PhoneRecording.LocalFailure] = [
             Self.missingFileMessage: .missingFile,
             Self.tooLargeMessage: .tooLarge,
@@ -142,6 +144,7 @@ public actor RecordingUploader: RecordingUploadAcking {
                 try store.setPhoneRecordingState(id: row.id, state: .failed, errorMessage: row.errorMessage, failure: kind)
             }
         }
+        ledgerPrepared = true
     }
 
     private func failLocally(_ id: String, _ failure: PhoneRecording.LocalFailure) throws {
@@ -335,15 +338,16 @@ public actor RecordingUploader: RecordingUploadAcking {
         return recovered
     }
 
-    /// Deletes every file in the recordings folder that no ledger row
-    /// points at (a capture whose row never got written, or a leftover).
-    /// Rows are matched by their path resolved against the CURRENT folder.
+    /// Deletes every file in the recordings folder that no undelivered
+    /// ledger row points at (a capture whose row never got written, audio
+    /// a `received` echo failed to delete, or a leftover). Rows are matched
+    /// by their path resolved against the CURRENT folder.
     /// Runs at launch, after recovery. Returns the deleted files.
     @discardableResult
     public func sweepOrphanFiles() throws -> [URL] {
         guard let directory else { return [] }
         try prepareLedger()
-        let known = Set(try store.phoneRecordings().map { fileURL($0).standardizedFileURL.path })
+        let known = Set(try store.phoneRecordings().filter { $0.state != .delivered }.map { fileURL($0).standardizedFileURL.path })
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
@@ -483,6 +487,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// our own save reflecting back: inert. Idempotent — a replayed batch
     /// re-applies the same terminal state and the file removal no-ops.
     public func applyEcho(_ upload: RecordingUploadPayload) async throws {
+        try prepareLedger()
         switch upload.status {
         case .pending:
             break
@@ -515,6 +520,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// relay record, if any, is left for the hub's hygiene.
     public func discard(id: String) throws {
         liveCaptureIDs.remove(id)
+        try prepareLedger()
         guard let row = try store.phoneRecording(id: id) else { return }
         try store.removePhoneRecording(id: id)
         try? FileManager.default.removeItem(at: fileURL(row))
