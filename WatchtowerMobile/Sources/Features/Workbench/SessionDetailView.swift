@@ -35,7 +35,7 @@ struct SessionDetailView: View {
                 timeline: viewModel.timeline,
                 now: context.date
             ) {
-                content(detail)
+                content(detail, now: context.date)
             } else {
                 ContentUnavailableView(
                     "Session not found",
@@ -101,11 +101,13 @@ struct SessionDetailView: View {
         }
     }
 
-    private func content(_ detail: SessionDetailModel) -> some View {
+    /// `now` is the timeline's tick, so a stop row's "Stopping…" turns into
+    /// "Waiting for your Mac" when the heartbeat goes stale.
+    private func content(_ detail: SessionDetailModel, now: Date) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 header(detail)
-                if let actions = actions(now: .now) {
+                if let actions = actions(now: now) {
                     ForEach(actions.stopRows) { StopRowView(row: $0, onDismiss: dismissStop) }
                 }
                 if let notice = detail.approvalNotice {
