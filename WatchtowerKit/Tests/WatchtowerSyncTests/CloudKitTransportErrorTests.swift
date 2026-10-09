@@ -322,6 +322,39 @@ final class CloudKitTransportErrorTests: XCTestCase {
         XCTAssertTrue(rejectedNames.values.isEmpty, "a 10-record batch never rejects a record as too large alone")
     }
 
+    // MARK: - assetFileNotFound
+
+    /// A recording upload whose audio the phone already deleted (a
+    /// `received` echo) fails `.assetFileNotFound` on every send: the
+    /// record is dropped and reported rejected instead of retrying forever.
+    /// A failure of another kind on the same batch stays pending.
+    func testAMissingAssetFileDropsTheSaveInsteadOfRetrying() async throws {
+        let store = try TransportStore.inMemory()
+        let transport = await CloudKitTransport.testing(store: store)
+        let rejectedNames = await rejected(transport)
+        let gone = FileManager.default.temporaryDirectory.appendingPathComponent("gone-\(UUID().uuidString).m4a")
+        try await transport.save([
+            CloudRecord(
+                recordName: "recupload-a", zone: .relay, kind: "recording_upload",
+                modifiedAt: Date(), payload: Data("{}".utf8), assetFileURL: gone
+            ),
+            CloudRecord(recordName: "target-1", zone: .data, kind: "target", modifiedAt: Date(), payload: Data("{}".utf8))
+        ])
+        let next = await transport.nextEngineBatch()
+        let batch = try XCTUnwrap(next)
+
+        await transport.handleSentChanges(
+            saved: [], deleted: [],
+            failedSaves: batch.recordsToSave.map {
+                ($0, CKError($0.recordID.recordName == "recupload-a" ? .assetFileNotFound : .networkFailure))
+            },
+            failedDeletes: [:]
+        )
+
+        XCTAssertEqual(rejectedNames.values, ["recupload-a"])
+        XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["target-1"])
+    }
+
     // MARK: - quotaExceeded
 
     func testQuotaExceededPausesUntilResume() async throws {

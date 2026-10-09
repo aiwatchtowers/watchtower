@@ -161,7 +161,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     /// Called with a record CloudKit rejects even in a batch of one
-    /// (`.limitExceeded`). The transport has dropped it from its send queue;
+    /// (`.limitExceeded`), or whose asset file is gone
+    /// (`.assetFileNotFound`). The transport has dropped it from its send queue;
     /// the hub clears the record's `slice_state` hash so it is not believed
     /// published (spec §9).
     public func setRecordRejectedHandler(_ handler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?) {
@@ -759,6 +760,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 try store.deleteSystemFields(recordNames: [entry.name], zone: entry.zone)
             }
             try fixSystemFieldsForFailedSaves(failedSaves)
+            try dropSavesWithMissingAssets(failedSaves)
             let batchSize = saved.count + deleted.count + failedSaves.count + failedDeletes.count
             let tooLarge = failedSaves.filter { $0.error.code == .limitExceeded }.compactMap { failure in
                 scope.cloudZone(for: failure.record.recordID.zoneID).map { (name: failure.record.recordID.recordName, zone: $0) }
@@ -826,6 +828,21 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             default:
                 break
             }
+        }
+    }
+
+    /// A save whose asset file is gone (`.assetFileNotFound`) fails the
+    /// same way on every retry — e.g. a recording upload whose audio the
+    /// phone deleted on the hub's `received` echo while the save was still
+    /// queued. It is rejected like a record too large alone: dropped from
+    /// the queue, logged, and handed to the rejected-record handler.
+    private func dropSavesWithMissingAssets(_ failures: [(record: CKRecord, error: CKError)]) throws {
+        for failure in failures where failure.error.code == .assetFileNotFound {
+            guard let zone = scope.cloudZone(for: failure.record.recordID.zoneID) else { continue }
+            let name = failure.record.recordID.recordName
+            try store.dropPending(recordName: name, zone: zone)
+            logger.error("the asset file of \(name, privacy: .public) is gone (assetFileNotFound); dropped it from the send queue")
+            recordRejectedHandler?(name, zone)
         }
     }
 
