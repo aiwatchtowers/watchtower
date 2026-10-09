@@ -144,26 +144,9 @@ public final class TransportStore: Sendable {
     }
 
     func pendingBatch(limit: Int) throws -> (saves: [CloudRecord], deletes: [(name: String, zone: CloudZoneID)]) {
-        // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
-        // FIRST enqueue — a hot record cannot starve older pending sends.
-        // Do not "fix" to latest-write ordering.
-        let rows = try queue.read { db in
-            try Row.fetchAll(
-                db,
-                sql: "SELECT rowid, * FROM pending ORDER BY rowid LIMIT ?",
-                arguments: [limit]
-            )
-        }
         var saves: [CloudRecord] = []
         var deletes: [(name: String, zone: CloudZoneID)] = []
-        var orphanRowIDs: [Int64] = []
-        for row in rows {
-            guard let zone = CloudZoneID(rawValue: row["zone"]) else {
-                // A zone that no longer maps (corruption, a stale artefact of a
-                // previous account) would loop forever on every nudge — evict it.
-                orphanRowIDs.append(row["rowid"])
-                continue
-            }
+        for (row, zone) in try pendingRows(columns: "*", limit: limit) {
             if (row["deleted"] as Int64? ?? 0) != 0 {
                 deletes.append((name: row["record_name"], zone: zone))
             } else {
@@ -178,6 +161,54 @@ public final class TransportStore: Sendable {
                 ))
             }
         }
+        return (saves, deletes)
+    }
+
+    /// The identities of `pendingBatch(limit:)`'s rows — same order, same
+    /// limit, same orphan eviction — without reading payload BLOBs. For the
+    /// engine nudge, which schedules record IDs only; the engine reads the
+    /// records themselves later through `pendingBatch`.
+    func pendingNames(limit: Int) throws -> (
+        saves: [(name: String, zone: CloudZoneID)],
+        deletes: [(name: String, zone: CloudZoneID)]
+    ) {
+        var saves: [(name: String, zone: CloudZoneID)] = []
+        var deletes: [(name: String, zone: CloudZoneID)] = []
+        for (row, zone) in try pendingRows(columns: "record_name, zone, deleted", limit: limit) {
+            let entry = (name: row["record_name"] as String, zone: zone)
+            if (row["deleted"] as Int64? ?? 0) != 0 {
+                deletes.append(entry)
+            } else {
+                saves.append(entry)
+            }
+        }
+        return (saves, deletes)
+    }
+
+    /// The first `limit` pending rows (only `columns`, plus rowid and zone)
+    /// with their mapped zone. Rows whose zone no longer maps are evicted.
+    private func pendingRows(columns: String, limit: Int) throws -> [(row: Row, zone: CloudZoneID)] {
+        // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
+        // FIRST enqueue — a hot record cannot starve older pending sends.
+        // Do not "fix" to latest-write ordering.
+        let rows = try queue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT rowid, zone, \(columns) FROM pending ORDER BY rowid LIMIT ?",
+                arguments: [limit]
+            )
+        }
+        var mapped: [(row: Row, zone: CloudZoneID)] = []
+        var orphanRowIDs: [Int64] = []
+        for row in rows {
+            guard let zone = CloudZoneID(rawValue: row["zone"]) else {
+                // A zone that no longer maps (corruption, a stale artefact of a
+                // previous account) would loop forever on every nudge — evict it.
+                orphanRowIDs.append(row["rowid"])
+                continue
+            }
+            mapped.append((row: row, zone: zone))
+        }
         if !orphanRowIDs.isEmpty {
             try queue.write { db in
                 for rowID in orphanRowIDs {
@@ -186,7 +217,7 @@ public final class TransportStore: Sendable {
             }
             logger.warning("evicted \(orphanRowIDs.count, privacy: .public) pending rows with an unmappable zone")
         }
-        return (saves, deletes)
+        return mapped
     }
 
     /// Removes a record from the send queue whatever its stamp: the

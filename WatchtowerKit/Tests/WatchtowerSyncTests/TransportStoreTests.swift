@@ -326,6 +326,33 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["keep-1"])
     }
 
+    // MARK: - pendingNames (final-review i-F7)
+
+    /// The engine nudge needs only identities: `pendingNames` lists the same
+    /// rows as `pendingBatch`, in first-enqueue order and under the same
+    /// limit, without reading any payload.
+    func testPendingNamesListsTheQueueInFirstEnqueueOrder() throws {
+        let store = try TransportStore.inMemory()
+        try store.enqueueSave([record("data-1"), record("relay-1", zone: .relay)])
+        try store.enqueueDelete(recordNames: ["data-2"], zone: .data)
+        try store.enqueueSave([record("data-1", payload: "{\"v\":2}")])
+
+        let names = try store.pendingNames(limit: 10)
+        XCTAssertEqual(names.saves.map(\.name), ["data-1", "relay-1"])
+        XCTAssertEqual(names.saves.map(\.zone), [.data, .relay])
+        XCTAssertEqual(names.deletes.map(\.name), ["data-2"])
+        XCTAssertEqual(try store.pendingNames(limit: 1).saves.map(\.name), ["data-1"])
+    }
+
+    func testPendingNamesEvictsUnmappableZoneRows() throws {
+        let store = try TransportStore.inMemory()
+        try store.enqueueSave([record("keep-1", zone: .data)])
+        try store.injectRawPendingRow(recordName: "orphan-1", zoneRaw: "GhostZone")
+
+        XCTAssertEqual(try store.pendingNames(limit: 10).saves.map(\.name), ["keep-1"])
+        XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["keep-1"])
+    }
+
     // MARK: - notifyLevel (Plan 6 Decision 3)
 
     func testNotifyLevelSurvivesPendingQueueAndEventBuffer() throws {

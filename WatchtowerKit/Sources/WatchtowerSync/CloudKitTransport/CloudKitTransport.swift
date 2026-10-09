@@ -376,9 +376,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private func nudgeEngine() {
         guard let engine, !isUnlinked else { return }
         do {
-            let pending = try store.pendingBatch(limit: Self.maxBatchSize)
+            // Names only: the engine reads the records (payload BLOBs, assets)
+            // when it asks for a batch.
+            let pending = try store.pendingNames(limit: Self.maxBatchSize)
             var changes: [CKSyncEngine.PendingRecordZoneChange] = pending.saves.map {
-                .saveRecord(CKRecord.ID(recordName: $0.recordName, zoneID: scope.zoneID(for: $0.zone)))
+                .saveRecord(CKRecord.ID(recordName: $0.name, zoneID: scope.zoneID(for: $0.zone)))
             }
             changes += pending.deletes.map {
                 .deleteRecord(CKRecord.ID(recordName: $0.name, zoneID: scope.zoneID(for: $0.zone)))
