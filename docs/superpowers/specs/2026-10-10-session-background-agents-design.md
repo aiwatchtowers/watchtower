@@ -1,0 +1,343 @@
+# Session state: background agents (board #411) — design
+
+**Status:** Draft for owner review (PROJ-11 amendment needs explicit approval via an ask).
+**Business spec:** `2026-10-10-session-background-agents-business.md`.
+**Touches:** `cmd/workbench_session_state.go`, `cmd/workbench_check.go` (Stop hook), `internal/db/terminal_sessions.go`,
+migration `00106`, `internal/devpack/workbench_settings.go`, WatchtowerCore `SessionAgentStatus`,
+`SessionStatePresentation`, `SessionSwitcherPresentation`, `SessionAgentNoticePolicy`, `TerminalSessionQueries`,
+`docs/inventory/workbench.md` (PROJ-11, v1 limits), `docs/features/workbench.md`, `docs/app-guide.md`.
+
+## 1. Problem and root cause
+
+The main agent launches background subagents (Claude Code runs subagents in the background by default) and ends
+its turn. The sync Stop hook records `waiting`; `SessionAgentStatus.effective` puts a `waiting` at the bottom of
+the order, so the row reads **Stopped**, or **Waiting for you** when the session has open asks. The subagents' own
+`PostToolUse` events carry `agent_id` and are written only over `approval` (`onlyFrom = agentStateApproval`,
+board #367), so their work is invisible. This is the intended PROJ-11 behaviour; #411 changes the contract.
+
+## 2. Hook facts this design relies on
+
+Verified against the Claude Code hooks reference (Appendix A has the quotes):
+
+| # | Fact | Used for |
+|---|---|---|
+| F1 | The **Stop** input carries `background_tasks`: one entry per *in-flight* task, with `id`, `type` (`shell`, `subagent`, `monitor`, `workflow`, `teammate`, `cloud session`, `MCP task`), `status`, `description`, `agent_type` (subagent only). Present when the task registry is reachable; empty when nothing is in flight. Its stated purpose: tell "session is done" from "session is paused waiting for background work". | Primary signal and count |
+| F2 | `SubagentStart` / `SubagentStop` exist. Both carry `agent_id`, `agent_type`. `SubagentStop` also carries `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`, and the parent session's `background_tasks` / `session_crons`. | Live count updates |
+| F3 | `SubagentStop` also fires for Claude Code's internal agents (prompt suggestions, `/btw`); for those `agent_type` is the session's `--agent` or `""`. `SubagentStart` also fires on a subagent resume and on every message an in-process teammate handles. | Filtering |
+| F4 | Common field `agent_id`: "Present only when the hook fires inside a subagent call". Subagent tool calls fire the same `PostToolUse` hooks with `agent_id`/`agent_type`. | Heartbeat, main-vs-subagent split (already used) |
+| F5 | The `Notification` `idle_prompt` comes ~60 s after Claude finishes responding "and only if … no background agent, such as a background subagent, is still running". | A clear signal |
+| F6 | Background subagent results "reach Claude as a completion notification in a later turn"; an Agent call's `tool_response.status` is `async_launched` for background subagents. | Wake-up path |
+| F7 | `async: true` command hooks run without blocking, `timeout` not enforced, each run a separate process. | SubagentStop entry |
+| F8 | `Stop` and `SubagentStop` are distinct events (exit 2 on `SubagentStop` keeps the *subagent* running). | Main Stop ≠ subagent end |
+
+**Not verifiable from the docs** (Appendix A.6): whether `SubagentStop` fires when a subagent is killed (`/tasks` →
+`x`, `TaskStop`) or crashes; whether an idle main session is always woken by the completion notification
+(the docs say "in a later turn"; observed behaviour in workbench sessions is that it wakes — the owner's case 1
+"main agent wakes from a task-notification"); the possible `status` values of a `background_tasks` entry; whether
+the stopping subagent is still listed in its own `SubagentStop`'s `background_tasks`; whether a task entry's `id`
+equals the subagent's `agent_id`. The design is correct under every answer to these (§4.4); plan Task 0 captures
+real inputs to pin the parse.
+
+## 3. Decision: snapshot at Stop, not a free-running counter
+
+Rejected alternatives:
+
+- **Counter from SubagentStart/SubagentStop.** F3 makes both events noisy (teammate messages, resumes, internal
+  agents), and a lost or never-fired `SubagentStop` (crash, kill — unverified) leaves the counter high forever.
+  An increment/decrement ledger can only be made safe with a staleness timeout, and then the timeout is the real
+  contract.
+- **Subagent `PostToolUse` over `waiting` → `background`.** No count; a late async subagent `PostToolUse`
+  (stamped after the turn's Stop, the #367/#368 race) would raise Agents working *after* the agents ended and
+  nothing would lower it but the next turn. It also weakens the strictest PROJ-11 subagent guard.
+
+Chosen: **the sync Stop hook's `background_tasks` is the only thing that can enter background.** It is an exact,
+synchronous snapshot taken at the very moment the state becomes `waiting`. Every later event can only *lower* the
+count or *end* the state. Stickiness is bounded by construction: the next main turn's Stop re-snapshots, and a
+staleness bound covers the case where the main agent never wakes.
+
+Second key decision: **no new `agent_state` value.** Background is "`waiting` + live subagents", a presentation
+of the stored `waiting`. This keeps every `waiting` rule (turn order #368, repeats, failure, `finished_at`,
+`isAtPrompt`, PROJ-12) untouched, and avoids the table-recreation dance an `agent_state` CHECK change would need on
+`terminal_sessions` (referenced by `terminal_session_targets`).
+
+## 4. Go write path
+
+### 4.1 Schema — migration `00106_terminal_session_background_agents.sql`
+
+(Latest on this branch is `00105_workbench_archive_now.sql`; renumber at merge if main moved.)
+
+```
+ALTER TABLE terminal_sessions ADD COLUMN agent_background INTEGER
+    CHECK (agent_background IS NULL OR agent_background >= 0);
+    -- in-flight background subagents at the last Stop of this run, lowered by later reports;
+    -- NULL = none / unknown. Meaningful only under agent_state = 'waiting'. Written by the hooks only.
+ALTER TABLE terminal_sessions ADD COLUMN agent_background_at TEXT;
+    -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop),
+    -- agent_state_at format; NULL when agent_background is NULL.
+```
+
+Down: drop both columns (SQLite ≥ 3.35 `DROP COLUMN`, as earlier column migrations in this table do — check
+`00101`/`00102` Down for the precedent and follow it). Mirror into `schema.sql`; regenerate the golden and
+`WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
+(`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`). No new table, so
+`TestAllTablesExist` is unchanged. Swift reads both columns (not Go-only, unlike `agent_turn_end`).
+
+### 4.2 Who writes what
+
+| Event | Today | New |
+|---|---|---|
+| Stop (sync, `workbench check --stop-hook`) | `waiting` (turn-ordered) | `waiting` **plus** `agent_background = n`, `agent_background_at = at` where n = count of `background_tasks` entries with `type == "subagent"`; `n == 0` or the field absent → both NULL. A Stop over a stored `waiting` whose count differs is **not** a repeat: it writes, and advances `agent_state_at` (so the following Stopped is a new transition for the notice policy). |
+| UserPromptSubmit, main-thread PostToolUse (`working`) | as today | as today, and NULL both columns (a main turn began; its Stop re-snapshots). |
+| StopFailure | `waiting` + error | as today, and NULL both (Error outranks anyway; no snapshot in its input). |
+| Notification `idle_prompt` | `waiting` | `waiting`, and NULL both (F5: positive evidence nothing runs). A stored `waiting` with a non-NULL count is a change, not a repeat. |
+| Notification `permission_prompt` / `elicitation_dialog` | `approval` | unchanged; columns kept (after the grant the row goes `working` by ask #20 rules, and the main's next Stop re-snapshots). |
+| Subagent PostToolUse (`agent_id` set) | writes only over `approval` | over `approval`: unchanged. Over `waiting` with `agent_background > 0`: **only** `agent_background_at = at` (heartbeat), guarded `at > agent_background_at`. `agent_state`, `agent_state_at`, `finished_at`, turn order untouched. Otherwise nothing. |
+| **SubagentStop** (new async state hook) | — | Ignored when `agent_type == ""` (F3 internal agents) or the input has no `background_tasks`. Over `waiting` with `agent_background > 0` and `at > agent_background_at`: `agent_background = min(stored, m)` where m = `subagent` entries of its `background_tasks` whose `id != agent_id`; `agent_background_at = at`. Never raises the count; never touches `agent_state`/`agent_state_at`/`finished_at`. |
+| SessionStart mark/clear, conversation switch | clear state / mark run | also NULL both (`MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`). |
+
+**Invariant (guarded):** `agent_background` goes from NULL to a number only in the Stop's write; every other
+write leaves it, lowers it, or NULLs it.
+
+### 4.3 Signatures
+
+```go
+// cmd/workbench_check.go
+type stopHookInput struct {
+    SessionID      string `json:"session_id"`
+    TranscriptPath string `json:"transcript_path"`
+    StopHookActive bool   `json:"stop_hook_active"`
+    BackgroundTasks *[]backgroundTask `json:"background_tasks"` // nil = field absent (older CLI)
+}
+type backgroundTask struct{ ID, Type string } // other fields ignored; malformed entry = not a subagent
+
+// backgroundSubagents counts in-flight subagents; ok is false when the field is absent.
+func backgroundSubagents(tasks *[]backgroundTask, except string) (n int, ok bool)
+
+// internal/db/terminal_sessions.go
+// AgentOrder gains the Stop's snapshot; zero value = "not a Stop" (columns follow §4.2).
+type AgentOrder struct {
+    ToolRun     bool
+    SeenTurnEnd sql.NullInt64
+    Stop        bool
+    Background  sql.NullInt64 // Stop only: the snapshot; invalid = none/unknown
+}
+// SetTerminalAgentState keeps its signature; the UPDATE sets the two columns per §4.2 and its
+// "is a change" clause gains `OR agent_background IS NOT ?` for the Stop and idle_prompt.
+
+// LowerTerminalBackground is the subagent PostToolUse heartbeat (count = nil) and the
+// SubagentStop write (count = m); same row guards as SetTerminalAgentState plus
+// agent_state = 'waiting' AND agent_background > 0 AND agent_background_at < stamp.
+func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, at time.Time,
+    count *int64) (bool, error)
+```
+
+`sessionStateInput` gains `AgentType string` and `BackgroundTasks *[]backgroundTask`. `agentStateFor` gains
+`SubagentStop` → no state (`ok` true, routed to `LowerTerminalBackground`); `recordHookAgentState` routes a
+subagent `PostToolUse` over `waiting` to the heartbeat instead of returning on `onlyFrom`. Read-first stays
+(the common no-change path never takes the write lock).
+
+### 4.4 Correctness under the unverified facts
+
+- *Stopping subagent still listed in its own `SubagentStop` snapshot, ids differ:* m over-counts by one, the
+  count does not drop on that event; it drops on a later report or the main agent's wake. Never under-counts.
+- *`SubagentStop` never fires on kill/crash:* count stays; heartbeat ages; staleness bound (§5.1) ends it.
+- *Main agent not woken:* count may reach 0 via `SubagentStop` (grace, §5.1) or age out; either way Stopped
+  appears once, keyed by the Stop's stamp.
+- *Unknown `status` values:* every listed entry counts (the docs call them in-flight). Plan Task 0 records real
+  values; if a terminal status appears in the list, filter it then.
+- *Late async events (#367/#368):* a heartbeat or `SubagentStop` can only lower/age; with a NULL count they
+  write nothing, so nothing resurrects background after the main's Stop said "no subagents".
+
+### 4.5 Hook pack
+
+- `stateHookSpecs` gains `stateHookSpec("SubagentStop")` (async, timeout 5, no matcher → all agent types).
+  `SubagentStart` is **not** installed (F3 noise; the Stop snapshot covers launches).
+- `HasStateHooks` gates the Stop's state write (board #340) and the run mark (#396). Adding an event would make
+  every existing folder read as "no state hooks" until Repair, silently dropping their `waiting`. Split:
+  `coreStateHookSpecs` (the four of today) gate the Stop write and the mark; `HasStateHooks` keeps its name and
+  meaning for the status JSON (`state_hooks`, all five), so the Desktop header shows "state hooks missing" and
+  offers Repair. New helper `HasCoreStateHooks(dir, id)` for `workbenchHasStateHooks`.
+- No skill-pack prompt changes; no ask-guard prompt version bump. PROJ-04 rules apply to the new entry unchanged
+  (one entry of ours per owned event; malformed `SubagentStop` counts as a malformed file — guard extended).
+- `docs/features/workbench.md`: Re-run Setup needed once; without it the count updates only at turn end.
+
+## 5. Swift read path
+
+### 5.1 Row and status
+
+`SessionAgentStateRow` gains `agentBackground: Int?` (`agent_background`) and `agentBackgroundAt: String?`;
+`TerminalSessionQueries.fetchAgentStates` selects them.
+
+`SessionSwitcherPresentation.State.Kind` gains `case background` ("the main turn is over, background subagents
+run"). `State` gains `backgroundAgents: Int` (0 when the count is not shown).
+
+`SessionAgentStatus.effective(row:live:startedAt:now:)` — gains `now` (the center already re-resolves on every
+poll). New branch after `working`:
+
+```
+hook == .waiting && !failed && backgroundRuns(row, now) → .background
+backgroundRuns: count = row.agentBackground, at = parse(row.agentBackgroundAt)
+    count > 0  && now - at < backgroundStaleAfter (30 min)
+    count == 0 && now - at < backgroundGrace (120 s)        // lowered to zero, main about to wake
+```
+
+Order (pinned by `testProj11_StateOrder`): approval > error > working > **background** > finished > open ask >
+stopped > running > not started. Background is run-scoped like every hook state (decision 9: `agent_state_at`
+of this run; `agent_background_at` ≥ the Stop's stamp by construction). A non-live session never shows it.
+
+`isAtPrompt` adds `.background` to the true set (the main agent is at its prompt — hand-offs, ruling R52).
+`hooksReported` unchanged (it is `at != nil`, so a background session vouches for the PROJ-12 Return).
+
+### 5.2 Presentation
+
+| | background, no asks | background, asks open |
+|---|---|---|
+| Tone | `.green` | `.green` |
+| Glyph | `person.2.fill` | `questionmark` |
+| Caption | "Agents working" / "1 agent working" / "N agents working" | same + " · 1 ask open" / " · N asks open" |
+| Dot | filled, pulsing (`symbolEffect(.pulse)` / opacity animation honouring Reduce Motion) | same |
+
+`SessionSwitcherPresentation.rows` needs no change beyond the caption; the sessions panel row, the header and
+the Go-to palette read `SessionStatePresentation`. `WorkbenchSessionReportView` lists the state like others.
+
+### 5.3 Notices
+
+`SessionAgentNoticePolicy.transition` treats `.background` like `.working`: not announced, and an earlier banner
+is withdrawn. The following Stopped / Finished is a transition keyed `kind@agent_state_at`:
+- main wakes → Stop with no subagents → `stopped@t2`: one notice;
+- count ages out or grace expires with no wake → `stopped@t1` (the background Stop's stamp, never announced
+  before because the policy saw `.background`): one notice.
+Known double: a subagent silent > 30 min that then reports again revives background (count still > 0) and a
+later Stop announces again — two "stopped" notices; listed as a v1 limit.
+
+### 5.4 Ask answer auto-Return (PROJ-12)
+
+`SessionLineDelivery` gates on `needsApproval` and `hooksReported`; neither changes for background, so the answer
+is pasted and submitted immediately and wakes the main agent. No code change; a guard pins it.
+
+## 6. Contract — PROJ-11 amendment (text for `docs/inventory/workbench.md`)
+
+Add to PROJ-11 Observable, after the states paragraph:
+
+> Since 2026-10-XX (board #411): the Stop hook also stores the count of in-flight background subagents its input
+> reports (`background_tasks` entries of type `subagent`; `agent_background`, `agent_background_at`; NULL when
+> none or the field is absent). Only the Stop's write sets a count; a UserPromptSubmit, a main-thread
+> PostToolUse, a StopFailure, the `idle_prompt` notice, a new run and a conversation switch clear it; a
+> subagent's PostToolUse over `waiting` only refreshes `agent_background_at`, and a `SubagentStop` (async state
+> hook) only lowers the count, never below its own snapshot, ignoring an empty `agent_type`. Neither touches
+> `agent_state`, `agent_state_at`, `finished_at` or the turn order. The Desktop shows a trusted `waiting` with a
+> count > 0 reported in the last 30 minutes, or lowered to 0 in the last 120 s, as **Agents working** (green, the
+> count in the caption, `?` and the ask count with open asks). The order becomes approval > error > working >
+> agents working > finished > open ask > stopped > running > not started. Agents working is never announced; it
+> counts as at the prompt (`isAtPrompt`) and gets an ask answer's Return like Stopped.
+
+Replace in the order sentence and in the guard list; v1 note (d) of "Session agent state ordering and subagents"
+gains the count's limits (unverified kill/crash `SubagentStop`, staleness double notice, teammates/shells not
+counted, older CLI without the field shows Stopped).
+
+## 7. Guard tests
+
+Rewritten (same strictness, new rule — not relaxed):
+- `cmd/workbench_session_state_test.go::TestProj11_PostToolUseIntoWorkingClearsFinished` — its subagent half
+  ("a subagent's PostToolUse over `waiting` writes nothing and keeps `finished_at`") becomes: over `waiting` with
+  no count it writes nothing at all (row byte-identical); with a count it changes only `agent_background_at`
+  (`agent_state`, `agent_state_at`, `finished_at`, `agent_turn_end`, `agent_tool_run`, `agent_background`
+  unchanged) and the Desktop status keeps `isAtPrompt == true`.
+- `SessionAgentStatusTests::testProj11_StateOrder` — table over nine kinds, live and not live.
+- `SessionAgentNoticePolicyTests::testProj11_OneNoticePerTransition` — adds background → stopped (one notice),
+  background never posts.
+
+New Go:
+- `TestProj11_StopRecordsBackgroundSubagents` (2 subagents + shell + teammate → 2; empty → NULL; absent → NULL;
+  malformed entries ignored)
+- `TestProj11_OnlyTheStopStartsBackground` (late subagent PostToolUse / SubagentStop / idle_prompt over a
+  NULL-count `waiting` write nothing; db and hook halves)
+- `TestProj11_SubagentStopOnlyLowersTheCount` (min rule; own id excluded; `agent_type == ""` ignored; older stamp
+  ignored; never touches state/stamp/finished)
+- `TestProj11_StopOverWaitingWithAnotherCountWrites` (repeat rule; stamp advances)
+- `TestProj11_MainTurnAndIdleNoticeClearTheCount` (UserPromptSubmit, main PostToolUse, StopFailure, idle_prompt)
+- `TestProj11_NewRunAndConversationSwitchClearTheCount` (`MarkTerminalAgentRun`, `ClearTerminalAgentState`,
+  `SetTerminalClaudeSessionID`)
+- `TestProj11_HookNeverWritesStdoutAndExitsZero` extended with a `SubagentStop` input
+- `TestProj11_StopStateWriteNeedsOnlyTheCoreHooks` (a folder without the SubagentStop entry still records
+  `waiting`; status JSON reports `state_hooks: false`)
+- `internal/devpack`: `TestProj04_...` malformed-file guard extended to `SubagentStop`; install/has tests for five
+  entries.
+
+New Swift (`Tests/Core`):
+- `SessionAgentStatusTests::testProj11_BackgroundAgentsAreNotStopped`
+- `SessionAgentStatusTests::testProj11_BackgroundWithAsksIsNotWaitingOnAsk`
+- `SessionAgentStatusTests::testProj11_BackgroundEndsOnStalenessAndGrace`
+- `SessionAgentStatusTests::testProj11_StateFromAnEarlierRunIsIgnored` — extended with an earlier run's count
+- `SessionAgentStatusTests::testProj11_BackgroundIsAtPrompt`
+- `SessionStatePresentationTests::testBackgroundIsGreenWithAgentCount`
+- `SessionAgentNoticePolicyTests::testProj11_BackgroundIsNeverAnnouncedTheStopAfterOnce`
+- `SessionLineDeliveryTests::testProj12_AnAnswerIntoABackgroundSessionGetsTheReturn`
+
+## 8. Rollout and docs
+
+Migration + schema regen; hook pack: Re-run Setup / Repair once (header shows "state hooks missing" until then);
+`docs/features/workbench.md` (session state section + Re-run Setup note), `docs/app-guide.md` (the new state and
+its caption), inventory changelog line. Plan Task 0: capture a real Stop and SubagentStop input with background
+subagents (redacted, under `cmd/testdata/`, like `stopfailure_rate_limit.json`) and pin the parse.
+
+## 9. Owner decisions (recommended default first)
+
+1. **What counts.** (a) **`subagent` only** — rec.; (b) `subagent` + `workflow`; (c) everything but `shell`;
+   (d) every task. Teammates and shells would make a session look busy indefinitely.
+2. **Staleness bound** (count > 0, no report): (a) **30 min** — rec.; (b) 60 min; (c) none (stays until the main
+   agent wakes or the session restarts).
+3. **Grace after the count reaches 0:** (a) **120 s** — rec.; (b) 0 (Stopped at once, possibly a second
+   "stopped" notice when the main agent wakes); (c) 5 min.
+4. **Live count via `SubagentStop`:** (a) **install it** (Re-run Setup once) — rec.; (b) no new hook, count only
+   at turn end (simpler, still correct).
+5. **Older Claude Code without `background_tasks`:** (a) **Stopped as today** — rec.; (b) fallback "subagent
+   PostToolUse over `waiting` → Agents working, no count" (weaker guard, sticky on late events).
+6. **Label/glyph:** (a) **"Agents working", `person.2.fill`, pulsing green** — rec.; (b) "Background work",
+   `ellipsis`; (c) plain Working.
+7. **Subagent permission grant (ask #20):** (a) **unchanged** — after a granted subagent permission the row shows
+   Working until the next Stop — rec.; (b) return to Agents working instead (changes ask #20's decision).
+
+## Appendix A — sources and quotes
+
+Hooks reference: https://code.claude.com/docs/en/hooks · Subagents: https://code.claude.com/docs/en/sub-agents
+(read 2026-10-10).
+
+A.1 Stop input: "Stop hooks receive `stop_hook_active`, `last_assistant_message`, `background_tasks`, and
+`session_crons`." — "The `background_tasks` and `session_crons` arrays let hooks distinguish "session is done"
+from "session is paused waiting for background work to wake it back up". Both arrays are present when the task
+registry is reachable and are empty when nothing is in flight or scheduled." — "Each entry in `background_tasks`
+describes one in-flight task" — `type`: "Friendly task-type label such as `shell`, `subagent`, `monitor`,
+`workflow`, `teammate`, `cloud session`, or `MCP task`"; `agent_type`: "Subagent type name. Present only for
+`subagent` tasks".
+
+A.2 SubagentStart: "Runs when Claude spawns a subagent with the Agent tool, when Claude resumes a subagent, and
+each time an in-process agent team teammate handles a new message." — "SubagentStart hooks receive `agent_id` …
+and `agent_type`".
+
+A.3 SubagentStop: "Runs when a Claude Code subagent has finished responding." — "SubagentStop hooks receive
+`stop_hook_active`, `agent_id`, `agent_type`, `agent_transcript_path`, and `last_assistant_message`." — "Not every
+SubagentStop event comes from a subagent Claude spawned. Claude Code also runs internal agents for some of its own
+features, such as prompt suggestions and `/btw` side questions … For those events, `agent_type` is the agent name
+the session itself runs as … and an empty string when the session runs without one." — "SubagentStop hooks also
+receive the `background_tasks` and `session_crons` arrays described under Stop input. Both arrays are scoped to the
+parent session, not the subagent." — Stop vs SubagentStop exit 2: "Prevents Claude from stopping" / "Prevents the
+subagent from stopping".
+
+A.4 Common fields: `agent_id` — "Present only when the hook fires inside a subagent call. Use this to distinguish
+subagent hook calls from main-thread calls." — "When a subagent calls a tool, tool events such as `PreToolUse` and
+`PostToolUse` fire the same configured hooks as in the main conversation, and the input carries the `agent_id`
+and `agent_type` common input fields". Notification: "Expect `idle_prompt` about 60 seconds after Claude finishes
+responding, and only if you haven't typed since and no background agent, such as a background subagent, is still
+running." Agent tool: "`async_launched` for background subagents. Subagents run in the background by default".
+
+A.5 Async: "set `"async": true` to run the hook in the background while Claude continues working. Async hooks
+can't block or control Claude's behavior" — "Once an async hook is running in the background, Claude Code doesn't
+enforce `timeout` on it." — "Each execution creates a separate background process." Subagents page: "A background
+subagent's results reach Claude as a completion notification in a later turn."
+
+A.6 Not found in either page: SubagentStop on a killed/failed/crashed subagent; whether an idle main session is
+woken by the completion notification; the `status` value set; whether a task `id` equals `agent_id`; whether a
+stopping subagent is still listed in its own SubagentStop's `background_tasks`. The subagents page says only:
+"When a subagent fails or you stop it, Claude Code keeps its row for 30 seconds" (in `/tasks`) and "A subagent you
+stopped yourself … doesn't auto-resume".
