@@ -57,6 +57,17 @@ final class RecordingUploadPayloadTests: XCTestCase {
         XCTAssertEqual(decoded.titleHint, "Standup")
     }
 
+    func testAnUnknownStatusDecodesAsPending() throws {
+        // A status from a newer Mac must not fail the whole echo (the row
+        // would stay `uploading` forever): it reads as pending, which the
+        // phone treats as inert until a verdict it knows arrives.
+        // swiftlint:disable:next line_length
+        let json = #"{"device_id":"D1","duration_sec":754,"ended_at":1700000754,"id":"R1","sample_format":"aac-64k-mono","started_at":1700000000,"status":"ingesting"}"#
+        let decoded = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.status, .pending)
+        XCTAssertEqual(decoded.id, "R1")
+    }
+
     func testReceivedWriteBackWireFormatIsFrozen() throws {
         var upload = RecordingUploadPayload(
             id: "R1",

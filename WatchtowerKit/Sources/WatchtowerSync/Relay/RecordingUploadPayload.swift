@@ -11,6 +11,14 @@ public enum RecordingUploadStatus: String, Codable, Sendable {
     /// The hub could not ingest (missing asset, write error); the phone keeps
     /// the local copy and may retry with a fresh upload.
     case failed
+
+    /// A status this build does not know decodes as `pending` (inert on the
+    /// phone), so an echo from a newer Mac never fails the whole record —
+    /// the `ActionStatus` rule.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .pending
+    }
 }
 
 /// Metadata for one phone-recorded audio file relayed to the Mac. The audio
