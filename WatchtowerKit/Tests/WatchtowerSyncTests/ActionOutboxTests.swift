@@ -131,6 +131,28 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertTrue(try store.pendingActions().isEmpty)
     }
 
+    /// An empty device id is no link: the hub's device gate would reject
+    /// every action stamped "" (final-review A-T3).
+    func testEmptyDeviceIDCountsAsUnlinked() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let viaInit = ActionOutbox(transport: transport, store: store, deviceID: "")
+        let viaSetter = ActionOutbox(transport: transport, store: store, deviceID: "D1")
+        await viaSetter.setDeviceID("  ")
+
+        for outbox in [viaInit, viaSetter] {
+            do {
+                _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
+                XCTFail("an empty device id must refuse to enqueue")
+            } catch ActionOutboxError.notLinked {
+                // expected
+            }
+        }
+        let records = try await relayRecords(transport)
+        XCTAssertTrue(records.isEmpty)
+        XCTAssertTrue(try store.pendingActions().isEmpty)
+    }
+
     func testSetDeviceIDLinksAndUnlinksTheOutbox() async throws {
         let transport = InMemoryCloudTransport()
         let store = try ReplicaStore.inMemory()

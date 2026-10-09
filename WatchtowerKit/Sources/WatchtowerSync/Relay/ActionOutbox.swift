@@ -36,6 +36,7 @@ public actor ActionOutbox {
     private let now: @Sendable () -> Date
     /// The linked phone's device id, stamped on every enqueued action. nil
     /// until linking finishes (or after an unlink): enqueue then refuses.
+    /// An empty (or whitespace-only) id is stored as nil — no link.
     private var deviceID: String?
     /// Told about each `applied` echo whose overlay row it removed.
     private var appliedObserver: (@Sendable (ActionRequestPayload) -> Void)?
@@ -48,14 +49,21 @@ public actor ActionOutbox {
     ) {
         self.transport = transport
         self.store = store
-        self.deviceID = deviceID
+        self.deviceID = Self.linkedID(deviceID)
         self.now = now
     }
 
     /// Called by the link flow once the device is linked, and with nil on
     /// unlink. Actions already in flight keep the id they were sent with.
     public func setDeviceID(_ deviceID: String?) {
-        self.deviceID = deviceID
+        self.deviceID = Self.linkedID(deviceID)
+    }
+
+    /// nil for a missing or blank id: the hub's device gate rejects an
+    /// action stamped "", so a blank id must refuse at enqueue instead.
+    private static func linkedID(_ deviceID: String?) -> String? {
+        guard let deviceID, !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return deviceID
     }
 
     /// The overlay row goes on `applied`, so this is how the app reads an
