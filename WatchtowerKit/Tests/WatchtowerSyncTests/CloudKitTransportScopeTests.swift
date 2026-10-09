@@ -123,6 +123,45 @@ final class CloudKitTransportScopeTests: XCTestCase {
         XCTAssertEqual(zone.zoneID.zoneName, "DataZone")
     }
 
+    /// A deleted private DataZone (`.encryptedDataReset`, the owner deleting
+    /// iCloud data) lost every published record: the owner must hear it
+    /// through the reset handler — exactly once per deletion batch — so the
+    /// hub forgets its `slice_state` and republishes (final-review i-F3).
+    func testPrivateScopeDataZoneDeletionFiresTheResetHandlerOnce() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory())
+        let resets = Collector<Int>()
+        await transport.setAccountResetHandler { resets.append(1) }
+
+        await transport.handleDeletedZones([
+            CloudDatabaseScope.private.zoneID(for: .data),
+            CloudDatabaseScope.private.zoneID(for: .relay)
+        ])
+
+        XCTAssertEqual(resets.values.count, 1, "one reset for one deletion batch")
+        let accountResets = await transport.accountResetCount
+        XCTAssertEqual(accountResets, 0, "a zone deletion is not an account change")
+    }
+
+    func testPrivateScopeRelayOnlyDeletionDoesNotFireTheResetHandler() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory())
+        let resets = Collector<Int>()
+        await transport.setAccountResetHandler { resets.append(1) }
+
+        await transport.handleDeletedZones([CloudDatabaseScope.private.zoneID(for: .relay)])
+
+        XCTAssertTrue(resets.values.isEmpty, "published slice records live in DataZone only")
+    }
+
+    func testSharedScopeZoneDeletionDoesNotFireTheResetHandler() async throws {
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared)
+        let resets = Collector<Int>()
+        await transport.setAccountResetHandler { resets.append(1) }
+
+        await transport.handleDeletedZones([shared.zoneID(for: .data)])
+
+        XCTAssertTrue(resets.values.isEmpty, "a participant is unlinked instead")
+    }
+
     func testSharedScopeZoneNotFoundOnFetchEmitsUnlinked() async throws {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneNotFound)])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)

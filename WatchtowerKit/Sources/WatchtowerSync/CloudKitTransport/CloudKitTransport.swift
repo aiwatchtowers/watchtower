@@ -57,8 +57,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Number of CloudKit account changes that forced a local reset. Read via
     /// `await transport.accountResetCount` (the hub surfaces it for diagnostics).
     public private(set) var accountResetCount = 0
-    /// Fired after an account-change reset so an owner (the desktop hub) can
-    /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
+    /// Fired after an account-change reset, and after a `private`-scope
+    /// DataZone deletion, so an owner (the desktop hub) can wipe its own
+    /// derived state and republish. Set before `start()` via `setAccountResetHandler`.
     private var accountResetHandler: (@Sendable () -> Void)?
     private var eventHandler: (@Sendable (TransportEvent) -> Void)?
     private var recordRejectedHandler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?
@@ -150,7 +151,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// In `shared` scope an account switch does NOT emit `.unlinked`: the
     /// transport wipes and relaunches on the new account's shared database
     /// with the same `ownerName`. The phone decides (Task 12, spec §9) from
-    /// this handler whether the old link still stands.
+    /// this handler whether the old link still stands. In `private` scope the
+    /// handler also fires when the server deleted DataZone (see
+    /// `handleDeletedZones`): the published records are gone either way.
     public func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) {
         accountResetHandler = handler
     }
@@ -427,7 +430,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// A server-side zone deletion evicts that zone's buffered events and
     /// archived system fields. In `private` scope it then re-registers the
     /// zone so the surviving pending rows re-create it and re-send on the
-    /// next batch. In `shared` scope the owner removed this participant or
+    /// next batch, and a deleted DataZone fires the reset handler once. In `shared` scope the owner removed this participant or
     /// deleted the share: the phone is unlinked, and it must not (and
     /// cannot) re-create the owner's zone.
     func handleDeletedZones(_ zoneIDs: [CKRecordZone.ID]) {
@@ -445,6 +448,14 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             recordError(error)
         }
         if scope.writesZones {
+            // A deleted DataZone (`.encryptedDataReset`, the owner deleting
+            // iCloud data) took every published slice record with it: the
+            // owner's record of what is published is stale, exactly as after
+            // an account change, so the same reset handler tells it — once
+            // per deletion batch, evicted or not (the server zone is gone).
+            if deletedZones.contains(.data) {
+                accountResetHandler?()
+            }
             nudgeEngine()
         } else {
             emitUnlinked(reason: "zone deleted")

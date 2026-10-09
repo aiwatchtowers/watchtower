@@ -15,7 +15,8 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     /// Sends the pending queue at once (the fast lane, spec §4.5); a no-op
     /// while stopped, unlinked, paused or throttled.
     func sendNow() async
-    /// Set the account-change reset callback before `start()`.
+    /// Set the reset callback before `start()`: an account change, or (private
+    /// scope) the server deleting DataZone — either way nothing published survives.
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async
     /// A record CloudKit rejects even alone (`.limitExceeded`, spec §9).
     func setRecordRejectedHandler(_ handler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?) async
@@ -254,7 +255,9 @@ final class MobileHubService {
     }
 
     /// Registered BEFORE `transport.start()`, so an account change seen
-    /// during startup still wipes the derived sync state.
+    /// during startup still wipes the derived sync state. The same handler
+    /// covers a server-side DataZone deletion (`.encryptedDataReset`, the
+    /// owner deleting iCloud data): the recreated zone gets every record again.
     private func installTransportHandlers() async {
         let sidecar = self.sidecar
         let publisher = self.publisher
