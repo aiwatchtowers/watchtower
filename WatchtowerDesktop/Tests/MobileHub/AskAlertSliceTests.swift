@@ -15,7 +15,11 @@ final class AskAlertSliceTests: XCTestCase {
     private var dbPath: String!
     private var dbPool: DatabasePool!
     private var sidecar: HubSyncState!
-    private let clock = OSAllocatedUnfairLock(initialState: Date())
+    // A whole second, so a stamp 7 days later round-trips the sidecar's
+    // seconds-since-1970 REAL exactly at the lifetime boundary.
+    private let clock = OSAllocatedUnfairLock(
+        initialState: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+    )
     private let day: TimeInterval = 86_400
     private var enabledAt: Date!
 
@@ -123,7 +127,7 @@ final class AskAlertSliceTests: XCTestCase {
         let publisher = publisher(transport)
         try await publisher.publishOnce()
 
-        try sidecar.wipeSyncState()
+        try sidecar.wipeSyncState(now: Date())
         let before = savedAlerts(transport).count
         try await publisher.publishOnce()
         XCTAssertEqual(savedAlerts(transport).count, before, "the new zone gets no alert for an old ask")
@@ -133,6 +137,86 @@ final class AskAlertSliceTests: XCTestCase {
         let fresh = try ask(in: project, createdAt: now)
         try await publisher.publishOnce()
         XCTAssertEqual(savedAlerts(transport).dropFirst(before), ["ask_alert-\(fresh)"])
+    }
+
+    func testMarkAlertedReturnsTheGenerationOfItsOwnTransaction() throws {
+        XCTAssertEqual(try sidecar.markAlerted([], at: now).generation, 0)
+        try sidecar.wipeSyncState(now: Date())
+
+        let marked = try sidecar.markAlerted([7], at: now)
+
+        XCTAssertEqual(marked.generation, 1, "the bumped generation")
+        XCTAssertEqual(marked.alerted[7]?.generation, marked.generation, "a fresh ask carries the same value")
+    }
+
+    func testAnAlertNeverConfirmedPublishedIsRaisedAfterAReset() async throws {
+        let id = try ask(in: try workbench(), createdAt: now)
+        // Remembered as alerted, but no save ever recorded its hash.
+        XCTAssertEqual(try alertIDs(), [id])
+        XCTAssertEqual(try sidecar.hashes(forKind: .askAlert), [:])
+
+        try sidecar.wipeSyncState(now: now)
+        let transport = StubHubTransport()
+        try await publisher(transport).publishOnce()
+
+        XCTAssertEqual(savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))])
+    }
+
+    func testAResetDuringTheAlertsSaveStillAlertsInTheNewGeneration() async throws {
+        let id = try ask(in: try workbench(), createdAt: now)
+        let name = SliceKind.askAlert.recordName(id: String(id))
+        let transport = StubHubTransport()
+        let gate = SaveGate()
+        defer { gate.release() }
+        transport.gateNextSave(on: gate) { $0.recordName == name }
+        let publisher = publisher(transport)
+
+        let first = Task { try await publisher.publishOnce() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+        try sidecar.wipeSyncState(now: now)
+        gate.release()
+        _ = try await first.value
+        XCTAssertNil(try sidecar.hashes(forKind: .askAlert)[name], "the reset aborts the cycle before it records the hash")
+
+        let before = transport.saved.count
+        advance(10)
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(
+            transport.saved.dropFirst(before).map(\.record.recordName).filter { $0.hasPrefix("ask_alert-") }, [name],
+            "the next cycle publishes the alert into the new zone"
+        )
+    }
+
+    func testAnExpiredAlertOfAnOpenAskIsNotRaisedAgainAfterAReset() async throws {
+        let id = try ask(in: try workbench(), createdAt: now)
+        let transport = StubHubTransport()
+        let publisher = publisher(transport)
+        try await publisher.publishOnce()
+        advance(7 * day + 1)
+        try await publisher.publishOnce()
+        XCTAssertEqual(try sidecar.hashes(forKind: .askAlert), [:], "the expired record left the zone")
+
+        try sidecar.wipeSyncState(now: now)
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))], "alerted once, ever")
+    }
+
+    func testAResetKeepsAnOlderGenerationsAlertWithoutAHash() async throws {
+        let id = try ask(in: try workbench(), createdAt: now)
+        let transport = StubHubTransport()
+        let publisher = publisher(transport)
+        try await publisher.publishOnce()
+        try sidecar.wipeSyncState(now: now)
+        // Delivered to the first zone; the second has no hash for it.
+        XCTAssertEqual(try sidecar.alertedAsks()[id]?.generation, 0)
+
+        try sidecar.wipeSyncState(now: now)
+        try await publisher.publishOnce()
+
+        XCTAssertEqual(try sidecar.alertedAsks()[id]?.generation, 0, "the historic row survives the second reset")
+        XCTAssertEqual(savedAlerts(transport), [SliceKind.askAlert.recordName(id: String(id))])
     }
 
     // MARK: - Deletion

@@ -49,6 +49,12 @@ var transcriptGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	return cliGenerator(cfg)
 }
 
+// insertMeetingTranscript is the seam tests override to act between save's
+// event lookup and its insert (the deleted-meanwhile window).
+var insertMeetingTranscript = func(database *db.DB, tr db.MeetingTranscript) (int64, error) {
+	return database.InsertMeetingTranscript(tr)
+}
+
 var meetingTranscriptCmd = &cobra.Command{
 	Use:   "transcript",
 	Short: "Manage meeting transcripts",
@@ -167,9 +173,22 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
+	// A queued recording can outlive its calendar event (calendar sync
+	// deletes it while the job waits): a gone event is dropped with a
+	// warning and the transcript saved as a plain recording, instead of
+	// failing the event_id foreign key and losing it. A lookup error is
+	// not "gone" and fails the save.
 	title := transcriptSaveFlagTitle
-	if title == "" && transcriptSaveFlagEventID != "" {
-		if ev, err := database.GetCalendarEventByID(transcriptSaveFlagEventID); err == nil && ev != nil {
+	eventID := transcriptSaveFlagEventID
+	if eventID != "" {
+		ev, err := database.GetCalendarEventByID(eventID)
+		if err != nil {
+			return fmt.Errorf("looking up calendar event %s: %w", eventID, err)
+		}
+		if ev == nil {
+			warnDroppedTranscriptEvent(cmd.ErrOrStderr(), eventID)
+			eventID = ""
+		} else if title == "" {
 			title = ev.Title
 		}
 	}
@@ -187,13 +206,20 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 		SegmentsJSON:   segments,
 		SpeakersJSON:   speakers,
 	}
-	if transcriptSaveFlagEventID != "" {
-		tr.EventID = sql.NullString{String: transcriptSaveFlagEventID, Valid: true}
+	if eventID != "" {
+		tr.EventID = sql.NullString{String: eventID, Valid: true}
 	}
 	if transcriptSaveFlagAudio != "" {
 		tr.AudioPath = sql.NullString{String: transcriptSaveFlagAudio, Valid: true}
 	}
-	id, err := database.InsertMeetingTranscript(tr)
+	id, err := insertMeetingTranscript(database, tr)
+	if err != nil && tr.EventID.Valid && db.IsForeignKeyViolation(err) {
+		// The event was deleted between the lookup and the insert: retry
+		// once unlinked. The post-insert steps read the stored row's link.
+		warnDroppedTranscriptEvent(cmd.ErrOrStderr(), eventID)
+		tr.EventID = sql.NullString{}
+		id, err = insertMeetingTranscript(database, tr)
+	}
 	if err != nil {
 		return fmt.Errorf("persisting transcript: %w", err)
 	}
@@ -203,6 +229,12 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	recapSkipped, chaptersOutcome, recapErr := runSaveGenerations(
 		cmd.Context(), database, cfg, id, text, tr.SegmentsJSON.Valid, cmd.ErrOrStderr())
 	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
+}
+
+// warnDroppedTranscriptEvent is save's one stderr line for an --event-id
+// whose calendar event no longer exists.
+func warnDroppedTranscriptEvent(errOut io.Writer, eventID string) {
+	fmt.Fprintf(errOut, "warning: calendar event %s no longer exists (saving the transcript as a plain recording)\n", eventID)
 }
 
 // runSaveGenerations runs save's post-insert AI steps: the recap (unless the

@@ -134,7 +134,8 @@ final class SessionReportSliceTests: XCTestCase {
             let items: [SessionReport.Item] = (0..<40).map { (item: Int) -> SessionReport.Item in
                 SessionReport.Item(id: Int64(index * 100 + item), text: text, status: "todo")
             }
-            let started = String(format: "2026-01-%02dT09:00:00Z", 20 - index)
+            // Phase 5 has not started: it counts as the newest.
+            let started = index == 5 ? "" : String(format: "2026-01-%02dT09:00:00Z", 20 - index)
             return SessionReport.Phase(
                 targetID: Int64(100 + index), text: "Phase \(index)", done: 0, total: 40, startedAt: started, items: items
             )
@@ -155,6 +156,7 @@ final class SessionReportSliceTests: XCTestCase {
         XCTAssertEqual(items(9).kept, 0, "the oldest phase (started first, last on the board) lost its items")
         XCTAssertEqual(items(9).more, 40)
         XCTAssertEqual(items(0).kept, 40, "the newest phase is intact")
+        XCTAssertEqual(items(5).kept, 40, "a phase not started yet loses its items last")
         XCTAssertNil(phases[0]["items_more"])
         for index in 0..<10 {
             XCTAssertEqual(items(index).kept + items(index).more, 40, "every dropped item is counted")
@@ -232,9 +234,14 @@ final class SessionReportSliceTests: XCTestCase {
     }
 
     @MainActor
-    func testTheRequestHandlerIsIdempotentAndRefusesAnUnknownSession() async throws {
-        let session = try await dbPool.write { db in
-            try SliceSeed.insertSession(db, projectID: try TestDatabase.insertWorkbench(db))
+    func testTheRequestHandlerIsIdempotentAndRefusesASessionOutsideTheWindow() async throws {
+        let (session, old, shell) = try await dbPool.write { db -> (Int64, Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            return (
+                try SliceSeed.insertSession(db, projectID: project),
+                try SliceSeed.insertSession(db, projectID: project, lastActiveAt: Date().addingTimeInterval(-8 * 86_400)),
+                try SliceSeed.insertSession(db, projectID: project, kind: "shell")
+            )
         }
         let runner = FakeCLIRunner(stdout: Self.cliJSON(session))
         let clock = TestInstant()
@@ -242,7 +249,7 @@ final class SessionReportSliceTests: XCTestCase {
         try sidecar.saveSessionReport(try SessionReportSlice.encode(try Self.report(session)), sessionID: session, at: Date())
         let reports = self.runner(fetch: SessionReportRunner.cliFetch(runner), clock: clock) { window }
         let dispatcher = MobileHubCommandDispatcher()
-        SessionReportRequestHandler(dbPool: dbPool, runner: reports).register(on: dispatcher)
+        SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions()).register(on: dispatcher)
         func action(_ entity: String?) -> ActionRequestPayload {
             ActionRequestPayload(id: UUID().uuidString, kind: .sessionReportRequest, entityID: entity, params: [:], createdAt: Date())
         }
@@ -255,9 +262,14 @@ final class SessionReportSliceTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1, "and runs nothing more")
         XCTAssertFalse(runner.invocations[0].contains("--no-network"))
 
-        let missing = try await dispatcher.dispatch(action("999999"))
-        XCTAssertEqual(missing?.status, .failed)
-        XCTAssertEqual(missing?.reason, .notFound)
+        for (entity, label) in [("999999", "unknown"), (String(old), "active 8 days ago"), (String(shell), "a shell")] {
+            let refused = try await dispatcher.dispatch(action(entity))
+            XCTAssertEqual(refused?.status, .failed, label)
+            XCTAssertEqual(refused?.reason, .notFound, label)
+        }
+        XCTAssertEqual(runner.invocations.count, 1, "a refused request runs nothing")
+        await reports.runDue()
+        XCTAssertEqual(runner.invocations.count, 1)
         let invalid = try await dispatcher.dispatch(action(nil))
         XCTAssertEqual(invalid?.reason, .invalidParams)
     }

@@ -119,26 +119,55 @@ final class HubSyncState: Sendable {
     }
 
     func setHash(_ hash: String, for recordName: String) throws {
+        try queue.write { try Self.upsertHash(hash, for: recordName, $0) }
+    }
+
+    /// Records `hashes` (record name → hash) only while the sync generation
+    /// is still `generation`, checked in the same transaction, so a reset
+    /// cannot land between the check and the writes. False (nothing
+    /// written) when a reset bumped it.
+    func setHashes(_ hashes: [String: String], ifGeneration generation: Int) throws -> Bool {
         try queue.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO slice_state (record_name, payload_hash, pushed_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(record_name) DO UPDATE SET
-                        payload_hash = excluded.payload_hash,
-                        pushed_at = excluded.pushed_at
-                    """,
-                arguments: [recordName, hash, Date().timeIntervalSince1970]
-            )
+            guard try Self.generation(db) == generation else { return false }
+            for (name, hash) in hashes {
+                try Self.upsertHash(hash, for: name, db)
+            }
+            return true
         }
+    }
+
+    private static func upsertHash(_ hash: String, for recordName: String, _ db: Database) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO slice_state (record_name, payload_hash, pushed_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(record_name) DO UPDATE SET
+                    payload_hash = excluded.payload_hash,
+                    pushed_at = excluded.pushed_at
+                """,
+            arguments: [recordName, hash, Date().timeIntervalSince1970]
+        )
     }
 
     func removeHashes(_ recordNames: [String]) throws {
         guard !recordNames.isEmpty else { return }
+        try queue.write { try Self.deleteHashes(recordNames, $0) }
+    }
+
+    /// `removeHashes` only while the sync generation is still `generation`,
+    /// checked in the same transaction. False (nothing removed) when a reset
+    /// bumped it.
+    func removeHashes(_ recordNames: [String], ifGeneration generation: Int) throws -> Bool {
         try queue.write { db in
-            for name in recordNames {
-                try db.execute(sql: "DELETE FROM slice_state WHERE record_name = ?", arguments: [name])
-            }
+            guard try Self.generation(db) == generation else { return false }
+            try Self.deleteHashes(recordNames, db)
+            return true
+        }
+    }
+
+    private static func deleteHashes(_ recordNames: [String], _ db: Database) throws {
+        for name in recordNames {
+            try db.execute(sql: "DELETE FROM slice_state WHERE record_name = ?", arguments: [name])
         }
     }
 
@@ -512,7 +541,10 @@ final class HubSyncState: Sendable {
 
     /// When an ask's `ask_alert` was first written, and in which sync
     /// generation: an alert is published only in the generation that wrote
-    /// it, so a new account's zone never gets an alert for an old ask.
+    /// it. A reset forgets an unconfirmed alert of the wiped generation (no
+    /// recorded hash, within the lifetime) so it is stamped again; every
+    /// other row is kept, so a new account's zone never gets an alert the
+    /// old zone got.
     struct AlertedAsk: Equatable, Sendable {
         let at: Date
         let generation: Int
@@ -520,21 +552,19 @@ final class HubSyncState: Sendable {
 
     /// Remembers each of `askIDs` not alerted yet as alerted at `date` in
     /// the current generation (a remembered one keeps its first stamp), and
-    /// returns every remembered ask. One write transaction, so two cycles
-    /// never alert one ask twice.
-    func markAlerted(_ askIDs: [Int64], at date: Date) throws -> [Int64: AlertedAsk] {
+    /// returns that generation with every remembered ask. One write
+    /// transaction, so two cycles never alert one ask twice and a reset
+    /// cannot land between the stamp and the generation it is compared to.
+    func markAlerted(_ askIDs: [Int64], at date: Date) throws -> (generation: Int, alerted: [Int64: AlertedAsk]) {
         try queue.write { db in
-            let raw = try String.fetchOne(
-                db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [Self.generationKey]
-            )
-            let generation = raw.flatMap(Int.init) ?? 0
+            let generation = try Self.generation(db)
             for id in askIDs {
                 try db.execute(
                     sql: "INSERT INTO alerted_asks (ask_id, at, generation) VALUES (?, ?, ?) ON CONFLICT(ask_id) DO NOTHING",
                     arguments: [id, date.timeIntervalSince1970, generation]
                 )
             }
-            return try Self.fetchAlerted(db)
+            return (generation, try Self.fetchAlerted(db))
         }
     }
 
@@ -574,12 +604,31 @@ final class HubSyncState: Sendable {
     /// re-fetched zone still holds actions whose echo never reached the
     /// server — without the ledger they would be applied a second time
     /// (spec §8 I-3, §9). The hygiene stamp, the hub id and `enabled_at`
-    /// are kept too, and so are the alerted asks: the new account's zone
-    /// must not get an alert for an ask alerted before (spec §4.7).
+    /// are kept too, and so are the alerted asks whose alert has a recorded
+    /// hash: the new account's zone must not get an alert for an ask alerted
+    /// before (spec §4.7). An alert of the generation being wiped, written
+    /// within the alert lifetime of `now`, without one (its cycle aborted or
+    /// its save failed) is forgotten, so the next cycle stamps it in the new
+    /// generation and publishes it; older-generation and expired rows stay.
+    /// Accepted trade-off — a duplicate beats a lost alert: an alert saved
+    /// before its hash was recorded, or one whose record left the zone with
+    /// its workbench, may alert once more in the new zone.
     /// The generation counter is bumped so an in-flight publish cycle can
     /// detect the reset and abort before recording stale hashes.
-    func wipeSyncState() throws {
+    func wipeSyncState(now: Date) throws {
         try queue.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM alerted_asks WHERE generation = ? AND at >= ? AND NOT EXISTS (
+                        SELECT 1 FROM slice_state WHERE record_name = ? || alerted_asks.ask_id
+                    )
+                    """,
+                arguments: [
+                    try Self.generation(db),
+                    now.addingTimeInterval(-AskAlertSlice.lifetime).timeIntervalSince1970,
+                    SliceKind.askAlert.recordName(id: "")
+                ]
+            )
             try db.execute(sql: "DELETE FROM slice_state")
             for key in [RelayProcessor.relayTokenKey] + HubIdentity.heartbeatReadKeys {
                 try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
@@ -595,9 +644,13 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// The sync generation counter: 0 until the first `wipeSyncState()`.
+    /// The sync generation counter: 0 until the first `wipeSyncState(now:)`.
     func generation() throws -> Int {
-        let raw = try metaValue(forKey: Self.generationKey)
+        try queue.read(Self.generation)
+    }
+
+    private static func generation(_ db: Database) throws -> Int {
+        let raw = try String.fetchOne(db, sql: "SELECT value FROM hub_meta WHERE key = ?", arguments: [generationKey])
         return raw.flatMap(Int.init) ?? 0
     }
 }

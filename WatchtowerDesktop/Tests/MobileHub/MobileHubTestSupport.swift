@@ -30,6 +30,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var pullFails = false
     private var dataChangesFail = false
     private var failingSaves = 0
+    private var saveGate: (gate: SaveGate, matches: @Sendable (CloudRecord) -> Bool)?
     private let echoesOwnSaves: Bool
     private var ownPayloads: Set<Data> = []
 
@@ -68,6 +69,12 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     /// CloudKit or network error).
     func failNextSaves(_ count: Int) {
         lock.withLock { failingSaves = count }
+    }
+
+    /// The next save carrying a record that `matches` parks on `gate`
+    /// before it writes anything (a slow CloudKit save); later saves pass.
+    func gateNextSave(on gate: SaveGate, where matches: @escaping @Sendable (CloudRecord) -> Bool) {
+        lock.withLock { saveGate = (gate, matches) }
     }
 
     /// `changes(in: .data, …)` throws (a broken local buffer).
@@ -123,6 +130,12 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func save(_ records: [CloudRecord]) async throws {
+        let gate = lock.withLock { () -> SaveGate? in
+            guard let pending = saveGate, records.contains(where: pending.matches) else { return nil }
+            saveGate = nil
+            return pending.gate
+        }
+        if let gate { await gate.park() }
         let fails = lock.withLock {
             guard failingSaves > 0 else { return false }
             failingSaves -= 1
@@ -157,6 +170,35 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
             deletedRecordNames: batch.deletedRecordNames,
             newToken: batch.newToken
         )
+    }
+}
+
+/// A sticky gate for a stub call: `park()` fulfils `arrived`, then waits
+/// for `release()`, which lets a park that comes before or after it through.
+final class SaveGate: @unchecked Sendable {
+    let arrived = XCTestExpectation(description: "a gated save parked")
+    private let lock = NSLock()
+    private var isOpen = false
+    private var parked: [CheckedContinuation<Void, Never>] = []
+
+    func park() async {
+        arrived.fulfill()
+        await withCheckedContinuation { continuation in
+            let open = lock.withLock {
+                if !isOpen { parked.append(continuation) }
+                return isOpen
+            }
+            if open { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let waiting = lock.withLock {
+            isOpen = true
+            defer { parked = [] }
+            return parked
+        }
+        waiting.forEach { $0.resume() }
     }
 }
 

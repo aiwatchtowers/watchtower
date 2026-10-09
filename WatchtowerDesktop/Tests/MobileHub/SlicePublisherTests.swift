@@ -145,10 +145,30 @@ final class SlicePublisherTests: XCTestCase {
         let publisher = makePublisher([source])
         try await publisher.publishOnce()
 
-        try state.wipeSyncState()
+        try state.wipeSyncState(now: Date())
         let after = try await publisher.publishOnce()
 
         XCTAssertEqual(after.pushed, 1, "an account reset re-pushes the whole slice")
+    }
+
+    func testSetHashesWritesNothingOnAGenerationMismatch() throws {
+        let hashes = ["workbench-1": "a", "workbench-2": "b"]
+        try state.wipeSyncState(now: Date())
+
+        XCTAssertFalse(try state.setHashes(hashes, ifGeneration: 0), "a reset landed since generation 0")
+        XCTAssertEqual(try state.hashes(forKind: .workbench), [:])
+        XCTAssertTrue(try state.setHashes(hashes, ifGeneration: 1))
+        XCTAssertEqual(try state.hashes(forKind: .workbench), hashes)
+    }
+
+    func testRemoveHashesRemovesNothingOnAGenerationMismatch() throws {
+        try state.setHash("a", for: "workbench-1")
+        try state.setHash("b", for: "workbench-2")
+
+        XCTAssertFalse(try state.removeHashes(["workbench-1"], ifGeneration: 1))
+        XCTAssertEqual(try state.hashes(forKind: .workbench), ["workbench-1": "a", "workbench-2": "b"])
+        XCTAssertTrue(try state.removeHashes(["workbench-1", "workbench-2"], ifGeneration: 0))
+        XCTAssertEqual(try state.hashes(forKind: .workbench), [:])
     }
 
     // MARK: - Fast lane

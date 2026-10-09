@@ -386,7 +386,7 @@ final class RelayProcessorTests: XCTestCase {
         try await transport.save([record])
         _ = try await makeProcessor().processOnce()
 
-        try sidecar.wipeSyncState()
+        try sidecar.wipeSyncState(now: Date())
         // Same Apple ID back: the zone is re-fetched and the echo never landed.
         try await transport.save([record])
         _ = try await makeProcessor().processOnce()

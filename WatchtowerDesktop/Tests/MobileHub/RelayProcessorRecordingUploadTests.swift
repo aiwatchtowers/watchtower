@@ -174,7 +174,30 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(echoes.map(\.payload.status), [.received, .received], "the stale pending converges to received")
         XCTAssertNil(echoes.last?.record.assetFileURL, "the re-echo drops the asset again")
         XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "received")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: again.assetFileURL?.path ?? ""), "the re-echo never reads the stash")
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: try XCTUnwrap(again.assetFileURL).path),
+            "the re-fetched copy is deleted after the re-echo, never left in the stash"
+        )
+    }
+
+    func testAFailedReEchoKeepsTheReFetchedCopyUntilTheNextPass() async throws {
+        try await send(uploadPayload(), asset: try makeAsset())
+        let processor = try makeProcessor()
+        _ = try await processor.processOnce()
+        let again = try CloudRecordFactory.record(for: uploadPayload(), modifiedAt: now, assetFileURL: try makeAsset("again.m4a"))
+        try await transport.save([again])
+        let copy = try XCTUnwrap(again.assetFileURL)
+
+        transport.failNextSaves(1)
+        do {
+            _ = try await processor.processOnce()
+            XCTFail("the echo's save failed, so the pass fails")
+        } catch {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: copy.path), "kept while the echo is unsaved")
+
+        _ = try await processor.processOnce()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: copy.path), "the retried re-echo removes it")
+        XCTAssertEqual(enqueued.count, 1)
     }
 
     // MARK: - Missing asset

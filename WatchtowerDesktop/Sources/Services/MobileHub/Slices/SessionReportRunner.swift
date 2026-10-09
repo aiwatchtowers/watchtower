@@ -167,15 +167,22 @@ final class SessionReportRunner: HubCompanion, Sendable {
     @discardableResult
     func runDue() async -> [Int64] {
         let passGeneration = generation.withLock { $0 }
+        // Taken before the read: a change the fast lane reports while the
+        // read is out stays pending for the next pass (the read may predate it).
+        let changedAt = takeStatesChanged()
         let listed: [SessionReportSlice.Windowed]
         do {
             listed = try await window()
         } catch {
             logger.error("session report: listing the sessions failed: \(error.localizedDescription, privacy: .public)")
+            restoreStatesChanged(changedAt)
             return []
         }
-        guard isCurrent(passGeneration) else { return [] }
-        var changed = observeStates(listed)
+        guard isCurrent(passGeneration) else {
+            restoreStatesChanged(changedAt)
+            return []
+        }
+        var changed = changedAt.map { observeStates(listed, changedAt: $0) } ?? false
         changed = prune(keeping: Set(listed.map(\.sessionID))) || changed
         let stored: Set<Int64>
         do {
@@ -211,12 +218,9 @@ final class SessionReportRunner: HubCompanion, Sendable {
 
     /// Stores a `state` milestone for each session whose resolved state text
     /// changed since its last stored one, and marks those sessions changed.
-    /// Whether anything was stored.
-    private func observeStates(_ listed: [SessionReportSlice.Windowed]) -> Bool {
-        guard let changedAt = state.withLock({ state -> Date? in
-            defer { state.statesChangedAt = nil }
-            return state.statesChangedAt
-        }) else { return false }
+    /// Whether anything was stored. `changedAt`: when the fast lane first
+    /// reported the change.
+    private func observeStates(_ listed: [SessionReportSlice.Windowed], changedAt: Date) -> Bool {
         do {
             let latest = try sidecar.stateMilestones().compactMapValues(\.first)
             let cutoff = now().addingTimeInterval(-HubSyncState.milestoneLifetime)
@@ -245,8 +249,25 @@ final class SessionReportRunner: HubCompanion, Sendable {
         } catch {
             logger.error("session report: storing state milestones failed: \(error.localizedDescription, privacy: .public)")
             // Resolved again at the next pass.
-            state.withLock { $0.statesChangedAt = $0.statesChangedAt ?? changedAt }
+            restoreStatesChanged(changedAt)
             return false
+        }
+    }
+
+    /// Takes and clears the pending state change stamp.
+    private func takeStatesChanged() -> Date? {
+        state.withLock { state -> Date? in
+            defer { state.statesChangedAt = nil }
+            return state.statesChangedAt
+        }
+    }
+
+    /// Puts a taken stamp back, keeping the earlier of it and one reported
+    /// since.
+    private func restoreStatesChanged(_ changedAt: Date?) {
+        guard let changedAt else { return }
+        state.withLock { state in
+            state.statesChangedAt = min(state.statesChangedAt ?? changedAt, changedAt)
         }
     }
 

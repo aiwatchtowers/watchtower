@@ -169,6 +169,48 @@ final class SessionTimelineSliceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(changes.withLock { $0 }, 2)
     }
 
+    /// Review I1: a change the fast lane reports while the pass's window
+    /// read is out (the read returned the state from before it) is
+    /// resolved by the next pass, not dropped.
+    func testAChangeReportedDuringTheWindowReadIsResolvedNextPass() async throws {
+        let session: Int64 = 31
+        let state = OSAllocatedUnfairLock(initialState: SessionSwitcherPresentation.State.live(.working))
+        let reads = OSAllocatedUnfairLock(initialState: 0)
+        let box = OSAllocatedUnfairLock<SessionReportRunner?>(initialState: nil)
+        let reports = SessionReportRunner(
+            fetch: { _, _, _ in throw CLIRunnerError.launchFailed(underlying: CancellationError()) },
+            sidecar: sidecar,
+            window: { // swiftlint:disable:this trailing_closure
+                let snapshot = state.withLock { $0 }
+                if reads.withLock({ $0 += 1; return $0 }) == 1 {
+                    // Go writes the new state and the lane reports it after
+                    // the read took its snapshot.
+                    state.withLock { $0 = .live(.needsApproval) }
+                    box.withLock { $0 }?.sessionStatesChanged()
+                }
+                return [SessionReportSlice.Windowed(
+                    sessionID: session, workbenchID: 1, live: true, createdAt: nil, lastActiveAt: Date(),
+                    state: snapshot, stateAt: Date()
+                )]
+            }
+        )
+        box.withLock { $0 = reports }
+        reports.sessionStatesChanged()
+        await reports.runDue()
+        XCTAssertEqual(try sidecar.stateMilestones()[session]?.map(\.text), ["Working"])
+        await reports.runDue()
+        XCTAssertEqual(try sidecar.stateMilestones()[session]?.map(\.text), ["Needs approval", "Working"])
+        box.withLock { $0 = nil }
+    }
+
+    /// Review M2: the Desktop's own ask and target writes reach the timeline
+    /// through the fast lane.
+    func testAskAndTargetWritesNudgeTheTimeline() {
+        let kinds = Dictionary(uniqueKeysWithValues: FastLane.observedTables.map { ($0.table, $0.kinds) })
+        XCTAssertEqual(kinds["owner_asks"]?.contains(.sessionTimeline), true)
+        XCTAssertEqual(kinds["targets"]?.contains(.sessionTimeline), true)
+    }
+
     func testStatusHistoryOfALinkedTargetBeforeTheSessionIsExcluded() throws {
         let (project, session) = try seedSession()
         let target = try dbPool.write { db -> Int64 in
