@@ -287,6 +287,69 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 100))
     }
 
+    // MARK: - Relay-buffer compaction (final-review i-F2)
+
+    /// A TransportStore-backed feed compacts the consumed relay buffer: the
+    /// phone is its only relay consumer, so events at or below the token it
+    /// just persisted are dead weight in cloudkit-transport.sqlite.
+    func testPollCompactsConsumedRelayEventsOfATransportStore() async throws {
+        let transportStore = try TransportStore.inMemory()
+        let transport = CloudKitTransport(store: transportStore)
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
+        let feed = RelayFeed(transport: transport, store: store, outbox: outbox)
+        let device = CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
+                                 modifiedAt: base, payload: Data("{}".utf8))
+        try transportStore.bufferChanged([device])
+        try transportStore.bufferDeleted(recordNames: ["action-gone"], zone: .relay)
+
+        _ = try await feed.pollOnce()
+
+        let token = try XCTUnwrap(store.relayToken())
+        XCTAssertEqual(token, CloudChangeToken(value: 2))
+        let left = try transportStore.changes(in: .relay, since: nil)
+        XCTAssertTrue(left.changed.isEmpty, "consumed relay events are compacted")
+        XCTAssertTrue(left.deletedRecordNames.isEmpty, "consumed tombstones are compacted")
+    }
+
+    /// Compaction is hygiene: a failing compaction never fails a cycle
+    /// whose token is already persisted.
+    func testRelayCompactionFailureDoesNotFailThePoll() async throws {
+        let transport = ThrowingRelayCompactTransport()
+        let store = try ReplicaStore.inMemory()
+        let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
+        let feed = RelayFeed(transport: transport, store: store, outbox: outbox)
+        try await transport.save([
+            CloudRecord(recordName: "device-D1", zone: .relay, kind: RelayRecordKind.device.rawValue,
+                        modifiedAt: base, payload: Data("{}".utf8))
+        ])
+
+        _ = try await feed.pollOnce()
+
+        XCTAssertEqual(try store.relayToken(), CloudChangeToken(value: 1))
+        let calls = await transport.compactCalls
+        XCTAssertEqual(calls.map(\.zone), [.relay])
+        XCTAssertEqual(calls.map(\.keepSince), [1])
+    }
+
+    private actor ThrowingRelayCompactTransport: CompactingTransport {
+        private let inner = InMemoryCloudTransport()
+        private(set) var compactCalls: [(zone: CloudZoneID, keepSince: Int)] = []
+        struct CompactError: Error {}
+
+        func save(_ records: [CloudRecord]) async throws { try await inner.save(records) }
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+            try await inner.delete(recordNames: recordNames, in: zone)
+        }
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            try await inner.changes(in: zone, since: token)
+        }
+        func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
+            compactCalls.append((zone: zone, keepSince: token.value))
+            throw CompactError()
+        }
+    }
+
     func testSetRelayTokenIsMonotonic() throws {
         let store = try ReplicaStore.inMemory()
 

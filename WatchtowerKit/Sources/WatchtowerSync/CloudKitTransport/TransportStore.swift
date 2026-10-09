@@ -37,7 +37,8 @@ public final class TransportStore: Sendable {
         try queue.write { db in
             // events is append-only. Two retention primitives trim it:
             // compactEvents(_:keepSince:) drops seq ≤ consumer floor — called by a
-            // CompactingTransport consumer (the Plan 3 replica hydrator, .data zone).
+            // CompactingTransport consumer (the phone: the replica hydrator for
+            // .data, RelayFeed for .relay).
             // sweepEvents(in:olderThan:upTo:) drops consumed events past an age
             // cutoff — called by the desktop's daily relay hygiene, which needs the
             // .relay zone to retain history until its aged-record scan has seen a

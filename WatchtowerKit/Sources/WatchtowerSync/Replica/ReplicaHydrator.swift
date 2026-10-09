@@ -95,7 +95,8 @@ public actor ReplicaHydrator {
         // CompactingTransport's retention note): safe here because the
         // replica is the ONLY data-zone consumer on this device and its
         // floor is its own just-persisted token — desktop hygiene's aged
-        // -record scan only touches .relay, which we never compact.
+        // -record scan only touches the hub's .relay buffer (the phone's
+        // .relay buffer is RelayFeed's to compact).
         // Hygiene only; a failure must not fail an already-applied cycle.
         if let compacting = transport as? any CompactingTransport {
             do {

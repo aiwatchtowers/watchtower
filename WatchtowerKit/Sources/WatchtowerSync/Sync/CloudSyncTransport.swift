@@ -89,10 +89,12 @@ public protocol CloudSyncTransport {
 /// requirements) so conformers that don't buffer (e.g. the test fake) need
 /// not provide an implementation.
 ///
-/// Retention/hygiene interaction: the relay buffer must retain full history
-/// until hygiene's aged-record scan (`changes(in: .relay, since: nil)`)
-/// finds and deletes stale records. Call `compact` only AFTER hygiene has
-/// had a chance to scan — the Plan 3 Task 4 hydrator is the intended consumer.
+/// Retention/hygiene interaction: the desktop hub's relay buffer must retain
+/// full history until hygiene's aged-record scan (`changes(in: .relay,
+/// since: nil)`) finds and deletes stale records, so the hub never compacts
+/// .relay (it sweeps by age, see `SweepingTransport`). Consumers: the phone's
+/// replica hydrator compacts .data, and the phone's `RelayFeed` — the only
+/// relay consumer on a device that runs no hygiene — compacts .relay.
 /// A silent no-op default is intentionally absent: a conformer that forgets
 /// to implement compaction would silently accumulate the buffer forever.
 public protocol CompactingTransport: CloudSyncTransport {

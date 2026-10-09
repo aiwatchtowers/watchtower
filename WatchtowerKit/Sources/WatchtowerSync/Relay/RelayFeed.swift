@@ -20,6 +20,10 @@ import os
 /// throw replays the batch next cycle (all routing is idempotent), while an
 /// undecodable payload never wedges the feed — it is logged, skipped, and
 /// left behind by the advancing token.
+///
+/// Buffer retention: once the token advances, the consumed relay events are
+/// compacted from a `CompactingTransport` (best-effort, logged) — without it
+/// every hub echo would stay in the phone's transport store forever.
 public actor RelayFeed {
     /// The desktop refreshes its heartbeat every 300 s; the phone shows the
     /// Mac online while the heartbeat is UNDER 720 s old (mobile POC spec §3).
@@ -118,7 +122,9 @@ public actor RelayFeed {
             if outcome.appliedEcho { appliedEchoRouted = true }
         }
 
-        try store.setRelayToken(batch.newToken)
+        if try store.setRelayToken(batch.newToken) {
+            await compactConsumedRelay(keepSince: batch.newToken)
+        }
         if appliedEchoRouted, let onActionApplied {
             // Fire-and-forget AFTER the token is persisted: the hook exists
             // to trigger re-hydration, and it must observe post-batch state —
@@ -128,6 +134,21 @@ public actor RelayFeed {
             Task { await onActionApplied() }
         }
         return echoes
+    }
+
+    /// Drops the consumed relay buffer (events at or below the token just
+    /// persisted) from a buffering transport. Safe on the phone: this feed is
+    /// its only relay consumer, and the relay hygiene that needs full relay
+    /// history (`changes(in: .relay, since: nil)`) runs on the desktop hub
+    /// against the hub's own buffer. Hygiene only — a failure is logged and
+    /// retried at the next advancing cycle; it never fails this one.
+    private func compactConsumedRelay(keepSince token: CloudChangeToken) async {
+        guard let compacting = transport as? any CompactingTransport else { return }
+        do {
+            try await compacting.compact(in: .relay, keepSince: token)
+        } catch {
+            logger.warning("relay-zone compaction failed (will retry next cycle): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     /// Routes ONE relay record to its consumer; every path is idempotent
