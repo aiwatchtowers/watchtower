@@ -11,6 +11,8 @@ enum SessionStartText {
     static let pickedUp = "Mac picked it up"
     static let starting = "Starting Claude Code"
     static let openSession = "Open session"
+    static let ended = "The session ended"
+    static let clippedBrief = "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
     static let leaveHint = "If the Mac is asleep the request waits and starts when it wakes. You can leave this screen."
     static let notAllowed = "This phone is not allowed to start sessions on the Mac"
     static let briefReadOnly = "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
@@ -52,6 +54,9 @@ enum StartStage: Equatable {
     case starting(sessionID: Int64?)
     /// The session record is live and has reported a state.
     case open(sessionID: Int64)
+    /// The session the start ran is no longer live (stopped, or it exited
+    /// early): the start is over and the sheet offers a new one.
+    case ended(sessionID: Int64)
     /// The Mac refused, or it expired; the row offers Try again.
     case failed(message: String, row: PendingAction)
 
@@ -63,10 +68,14 @@ enum StartStage: Equatable {
         guard let attempt else { return rows.last.map(Self.init) }
         if attempt.applied {
             guard let sessionID = attempt.sessionID else { return .starting(sessionID: nil) }
-            if let session = snapshot.session(sessionID), session.live, session.stateKind != .notStarted {
-                return .open(sessionID: sessionID)
+            guard let session = snapshot.session(sessionID) else { return .starting(sessionID: sessionID) }
+            if session.live {
+                return session.stateKind == .notStarted ? .starting(sessionID: sessionID) : .open(sessionID: sessionID)
             }
-            return .starting(sessionID: sessionID)
+            // A resumed session's record may still read stopped from before
+            // the start; only activity since the start counts as its end.
+            let since = session.lastActiveAt >= attempt.sentAt.addingTimeInterval(-1)
+            return attempt.params.mode == .new || since ? .ended(sessionID: sessionID) : .starting(sessionID: sessionID)
         }
         // No row yet: the replica read has not caught up with the save.
         return rows.first { $0.id == attempt.actionID }.map(Self.init) ?? .sent
@@ -101,6 +110,8 @@ struct StartProgressModel: Equatable {
     /// The session Open session goes to; nil until it is open.
     let openSessionID: Int64?
     let failure: String?
+    /// The session ended: the sheet offers Start a new one.
+    let isEnded: Bool
 
     init(stage: StartStage, macOnline: Bool) {
         self.stage = stage
@@ -109,14 +120,20 @@ struct StartProgressModel: Equatable {
         case .sent: reached = 0
         case .pickedUp: reached = 1
         case .starting: reached = 2
-        case .open: reached = 3
+        case .open, .ended: reached = 3
         case .failed: reached = -1
         }
         let titles = [SessionStartText.sent, SessionStartText.pickedUp, SessionStartText.starting]
         steps = titles.enumerated().map { index, title in
             Step(title: title, state: index < reached ? .done : (index == reached ? .current : .todo))
         }
-        current = reached >= 0 && reached < titles.count ? titles[reached] : (reached == 3 ? SessionStartText.openSession : "")
+        if case .ended = stage {
+            isEnded = true
+            current = SessionStartText.ended
+        } else {
+            isEnded = false
+            current = reached >= 0 && reached < titles.count ? titles[reached] : (reached == 3 ? SessionStartText.openSession : "")
+        }
         waitingLine = stage == .sent && !macOnline ? BoardWriteText.waitingForMac : nil
         if case let .open(sessionID) = stage {
             openSessionID = sessionID
@@ -253,7 +270,11 @@ struct StartSessionFormModel {
             .map { TargetOption(id: $0.id, label: $0.label) }
         let grant = StartGrant(grant)
         self.grant = grant
-        briefCaption = grant.typingAllowed ? nil : SessionStartText.briefReadOnly
+        if !grant.typingAllowed {
+            briefCaption = SessionStartText.briefReadOnly
+        } else {
+            briefCaption = target?.workOnPromptClipped == true ? SessionStartText.clippedBrief : nil
+        }
         existing = target.flatMap { Self.existingSession(of: $0, in: snapshot, now: now) }
         progress = target.flatMap { StartProgressModel.of(targetID: $0.id, attempt: attempt, snapshot: snapshot, now: now) }
         let sending = target.map { inFlight.contains(SessionStarter.startKey($0.id)) } ?? false

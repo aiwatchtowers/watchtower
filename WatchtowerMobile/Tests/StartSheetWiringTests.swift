@@ -16,17 +16,18 @@ final class StartSheetWiringTests: XCTestCase {
         let store: ReplicaStore
         let outbox: ActionOutbox
         let starter: SessionStarter
+        let answerer: AskAnswerer
     }
 
-    /// The app's wiring: the starter takes the outbox's applied echoes.
+    /// The app's wiring: `AppEnvironment.appliedObserver` hands the
+    /// outbox's applied echoes to the starter and the ask answerer.
     private func makeFixture() async throws -> Fixture {
         let store = try ReplicaStore.inMemory()
         let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: DemoSeed.device.deviceID)
         let starter = SessionStarter.sending(through: outbox, store: store)
-        await outbox.setAppliedObserver { [weak starter] action in
-            Task { @MainActor in starter?.receiveApplied(action) }
-        }
-        return Fixture(store: store, outbox: outbox, starter: starter)
+        let answerer = AskAnswerer.sending(through: outbox, store: store, drafts: AskDraftStore())
+        await outbox.setAppliedObserver(AppEnvironment.appliedObserver(askAnswerer: answerer, sessionStarts: starter))
+        return Fixture(store: store, outbox: outbox, starter: starter, answerer: answerer)
     }
 
     /// The demo snapshot with the store's overlay rows and a heartbeat of
@@ -151,6 +152,84 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertNil(try form(400, replica, fixture.starter).progress)
     }
 
+    /// Review Important 1: a start is over once its session no longer runs.
+    /// Applied → running (open) → stopped is `ended`, never `starting`
+    /// again, and the sheet offers a new start once the owner is done.
+    func testAStoppedSessionEndsTheStartAndTheSheetOffersANewOne() async throws {
+        let fixture = try await makeFixture()
+        try await fixture.starter.start(targetID: 400, params: try startParams(400))
+        try await echo(fixture, .applied, result: ["session_id": .integer(90), "stage": .string("starting")])
+        try await poll(timeout: 2, { fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
+
+        var replica = try snapshot(fixture.store)
+        replica.sessions.append(try session(90, target: 400, ["state_kind": "running", "live": true]))
+        XCTAssertEqual(try form(400, replica, fixture.starter).progress?.stage, .open(sessionID: 90))
+
+        replica.sessions[replica.sessions.count - 1] = try session(90, target: 400, [
+            "state_kind": "stopped", "state_caption": "Stopped", "state_tone": "secondary", "live": false, "is_ring": true
+        ])
+        let ended = try XCTUnwrap(try form(400, replica, fixture.starter).progress)
+        XCTAssertEqual(ended.stage, .ended(sessionID: 90))
+        XCTAssertTrue(ended.isEnded)
+        XCTAssertEqual(ended.current, "The session ended")
+        XCTAssertEqual(ended.caption, "The session ended", "the target's line no longer says Starting")
+        XCTAssertNil(ended.openSessionID)
+        XCTAssertTrue(try form(400, replica, fixture.starter).canStart, "Start a new one can send")
+
+        // Dismiss (or Start a new one) clears it: the form is back, with the
+        // ended session as the target's existing one.
+        try fixture.starter.clear(targetID: 400)
+        let fresh = try form(400, replica, fixture.starter)
+        XCTAssertNil(fresh.progress)
+        XCTAssertEqual(fresh.existing?.id, 90)
+        XCTAssertEqual(fresh.openIt, .resume)
+        XCTAssertTrue(fresh.canStart)
+    }
+
+    /// A new session whose record arrives already not live (it exited
+    /// early) ends the start too. A resumed session's record that still
+    /// reads stopped from before the start stays `starting`.
+    func testARecordThatArrivesNotLiveEndsANewStartOnly() async throws {
+        let fixture = try await makeFixture()
+        try await fixture.starter.start(targetID: 400, params: try startParams(400))
+        try await echo(fixture, .applied, result: ["session_id": .integer(92), "stage": .string("starting")])
+        try await poll(timeout: 2, { fixture.starter.attempts[400]?.applied == true }, "the applied observer reached the starter")
+        var replica = try snapshot(fixture.store)
+        replica.sessions.append(try session(92, target: 400, ["state_kind": "stopped", "live": false, "is_ring": true]))
+        XCTAssertEqual(try form(400, replica, fixture.starter).progress?.stage, .ended(sessionID: 92))
+
+        try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
+        var resume = try XCTUnwrap(fixture.store.pendingActions().first { $0.entityRecordName == "workbench_target-416" }).action
+        resume.status = .applied
+        resume.result = ["session_id": .integer(16), "stage": .string("starting")]
+        try await fixture.outbox.applyEcho(resume)
+        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+        replica = try snapshot(fixture.store)
+        XCTAssertEqual(
+            try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16),
+            "#16 last ran hours before the resume: its record is stale, not the end"
+        )
+    }
+
+    /// Review Minor 1: the app's one applied observer feeds both consumers.
+    func testTheAppsAppliedObserverReachesTheAnswererAndTheStarter() async throws {
+        let fixture = try await makeFixture()
+        try await fixture.outbox.enqueue(kind: .askAnswer, entityRecordName: "owner_ask-109")
+        try await fixture.starter.start(targetID: 400, params: try startParams(400))
+        for var action in try fixture.store.pendingActions().map(\.action) {
+            action.status = .applied
+            action.result = action.kind == .askAnswer
+                ? ["delivery": .string("submitted")]
+                : ["session_id": .integer(93), "stage": .string("starting")]
+            try await fixture.outbox.applyEcho(action)
+        }
+        try await poll(timeout: 2, {
+            fixture.answerer.applied[109] != nil && fixture.starter.attempts[400]?.applied == true
+        }, "both consumers saw their echo")
+        XCTAssertEqual(fixture.answerer.applied[109], AppliedAnswer(delivery: .submitted))
+        XCTAssertEqual(fixture.starter.attempts[400]?.sessionID, 93)
+    }
+
     /// The progress lives in the app-owned starter: a sheet built again
     /// (left and reopened) shows the same stage; after a relaunch the
     /// overlay row still gives it, and an applied echo of a start sent
@@ -260,6 +339,25 @@ final class StartSheetWiringTests: XCTestCase {
         var blank = unedited
         blank.brief = "  \n"
         XCTAssertNil(blank.params(workbenchID: DemoSeed.acmeID, mode: .new, grant: typing.grant).brief)
+    }
+
+    /// Review Minor 2: a clipped work-on prompt says so when the brief is
+    /// editable, since an edit replaces the Mac's full prompt.
+    func testAClippedPromptSaysAnEditReplacesTheMacsPrompt() throws {
+        var replica = try snapshot(try ReplicaStore.inMemory(), grant: grant(typing: true, start: true))
+        replica.targets.append(try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(480, workbench: DemoSeed.acmeID, [
+            "work_on_prompt": "Work on target #480 with a long brief…", "work_on_prompt_clipped": true
+        ])))
+        XCTAssertEqual(
+            try form(480, replica).briefCaption,
+            "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
+        )
+        XCTAssertNil(try form(415, replica).briefCaption, "an unclipped prompt needs no caption")
+        replica.grants = []
+        XCTAssertEqual(
+            try form(480, replica).briefCaption,
+            "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
+        )
     }
 
     /// A phone the Mac does not allow to start sessions gets Start off with

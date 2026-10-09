@@ -196,10 +196,13 @@ struct StartSessionSheet: View {
                 if let failure = progress.failure {
                     Text(failure).font(.subheadline).foregroundStyle(PhoneTone.red.color)
                 }
+                if progress.isEnded {
+                    Text(SessionStartText.ended).font(.subheadline).foregroundStyle(.secondary)
+                }
             } header: {
                 Text(model.progressHeader)
             } footer: {
-                if progress.failure == nil { Text(SessionStartText.leaveHint) }
+                if progress.failure == nil && !progress.isEnded { Text(SessionStartText.leaveHint) }
             }
         }
         .safeAreaInset(edge: .bottom) { progressButtons(progress, model) }
@@ -229,6 +232,21 @@ struct StartSessionSheet: View {
                     Text("Dismiss").frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.bordered)
+            } else if progress.isEnded {
+                Button {
+                    clear(model)
+                    start(.new, model)
+                } label: {
+                    Text("Start a new one").frame(maxWidth: .infinity, minHeight: 50)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.canStart)
+                Button {
+                    clear(model)
+                } label: {
+                    Text("Dismiss").frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
             } else {
                 Button {
                     if let id = progress.openSessionID {
@@ -241,6 +259,15 @@ struct StartSessionSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(progress.openSessionID == nil)
+                // Done always ends the sheet's hold on the start; a save the
+                // Mac has not answered yet still shows from its overlay row.
+                Button {
+                    clear(model)
+                    dismiss()
+                } label: {
+                    Text("Done").frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
             }
         }
         .padding(.horizontal, 20)

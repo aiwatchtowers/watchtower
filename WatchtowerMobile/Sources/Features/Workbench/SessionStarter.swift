@@ -9,6 +9,8 @@ struct StartAttempt: Equatable {
     let actionID: String
     let targetID: Int64
     let params: SessionStartParams
+    /// When the phone sent it.
+    let sentAt: Date
     /// The Mac's `applied` echo arrived.
     var applied = false
     /// `result.session_id` of the applied echo.
@@ -38,15 +40,18 @@ final class SessionStarter {
     @ObservationIgnored private let remove: (String) throws -> Void
     /// The failed overlay rows of one kind on one entity (ids).
     @ObservationIgnored private let failedRows: (ActionKind, String) throws -> [String]
+    @ObservationIgnored private let now: () -> Date
 
     init(
         enqueue: @escaping Enqueue,
         remove: @escaping (String) throws -> Void,
-        failedRows: @escaping (ActionKind, String) throws -> [String] = { _, _ in [] }
+        failedRows: @escaping (ActionKind, String) throws -> [String] = { _, _ in [] },
+        now: @escaping () -> Date = { Date() }
     ) {
         self.enqueue = enqueue
         self.remove = remove
         self.failedRows = failedRows
+        self.now = now
     }
 
     /// The app's starter: actions through the outbox, Dismiss on the overlay.
@@ -94,7 +99,7 @@ final class SessionStarter {
             actionID = try await enqueue(.sessionStart, entity, wire)
         }
         guard sent, let actionID else { return false }
-        attempts[targetID] = StartAttempt(actionID: actionID, targetID: targetID, params: params)
+        attempts[targetID] = StartAttempt(actionID: actionID, targetID: targetID, params: params, sentAt: now())
         for id in stale {
             try remove(id)
         }
@@ -117,7 +122,7 @@ final class SessionStarter {
         var attempt = attempts[targetID]
         if attempt?.actionID != action.id {
             guard let params = try? SessionStartParams(wireParams: action.params) else { return }
-            attempt = StartAttempt(actionID: action.id, targetID: targetID, params: params)
+            attempt = StartAttempt(actionID: action.id, targetID: targetID, params: params, sentAt: action.createdAt)
         }
         guard var attempt else { return }
         attempt.applied = true
@@ -127,8 +132,8 @@ final class SessionStarter {
         attempts[targetID] = attempt
     }
 
-    /// The owner is done with a start (opened its session, closed the
-    /// finished sheet, or dismissed a refusal): its failed rows go and the
+    /// The owner is done with a start (opened its session, tapped Done, or
+    /// dismissed a refusal or an ended session): its failed rows go and the
     /// target's sheet starts fresh.
     func clear(targetID: Int64) throws {
         attempts[targetID] = nil
