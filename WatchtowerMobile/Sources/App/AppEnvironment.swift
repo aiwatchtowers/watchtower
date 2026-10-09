@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 import os
-import WatchtowerSync
+@_spi(DemoTransport) import WatchtowerSync
 
 /// Which transport an `AppEnvironment` runs on: probed in `init()`,
 /// injectable through the designated init for tests. `.cloudKit` NEVER

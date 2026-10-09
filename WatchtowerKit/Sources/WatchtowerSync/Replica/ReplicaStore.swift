@@ -304,6 +304,12 @@ public final class ReplicaStore: Sendable {
     /// with the process (the phone's in-memory demo): without the reset its
     /// fresh tokens never pass the monotonic guard of a persisted replica.
     /// The alert watermark is kept.
+    ///
+    /// SPI (`@_spi(DemoTransport) import WatchtowerSync`), not plain public:
+    /// against a persistent transport (CloudKit) the reset would replay the
+    /// whole buffered zone on every call, so a caller must opt in by name —
+    /// the phone's DEBUG demo bootstrap is the only one (final-review A-T11 N1).
+    @_spi(DemoTransport)
     public func resetSyncTokens() throws {
         try writer.write { db in
             try db.execute(

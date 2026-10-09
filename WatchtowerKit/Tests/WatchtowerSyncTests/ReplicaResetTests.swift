@@ -1,10 +1,12 @@
 import GRDB
 import XCTest
-@testable import WatchtowerSync
+@_spi(DemoTransport) @testable import WatchtowerSync
 
 /// `resetSyncTokens` and `payload(forRecordName:from:)`: a transport whose
 /// cursor restarts (a new in-memory demo transport per launch) lands its
-/// records on a persisted replica only after the reset.
+/// records on a persisted replica only after the reset. The reset is SPI
+/// (`DemoTransport`): even this `@testable` import needs the SPI name, so a
+/// caller without it does not compile — that is the guard (A-T11 N1).
 final class ReplicaResetTests: XCTestCase {
     private func heartbeatRecord(at stamp: Date) throws -> CloudRecord {
         try CloudRecordFactory.record(for: HeartbeatFixtures.minimal(updatedAt: stamp), modifiedAt: stamp)
