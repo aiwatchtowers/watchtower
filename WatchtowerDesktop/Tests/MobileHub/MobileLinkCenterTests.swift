@@ -179,11 +179,15 @@ final class MobileLinkCenterTests: XCTestCase {
         scope: DeviceScope = .private,
         user: String = "_owner-acme",
         creator: String? = nil,
-        name: String = "iPhone"
+        name: String = "iPhone",
+        unlinked: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        typingRequested: Bool = false,
+        startSessions: Bool = true
     ) throws -> CloudRecord {
         let payload = DevicePayload(
             deviceID: deviceID, name: name, model: "iPhone18,1", appVersion: "0.0.0-test", scope: scope,
-            userRecordName: user, linkNonce: nonce, typingRequested: false, startSessions: true, updatedAt: clock.now
+            userRecordName: user, linkNonce: nonce, unlinked: unlinked, typingRequested: typingRequested,
+            startSessions: startSessions, updatedAt: clock.now
         )
         let record = try CloudRecordFactory.record(for: payload, modifiedAt: clock.now)
         return CloudRecord(
@@ -199,14 +203,17 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     private func grants() throws -> [String: DeviceGrant] {
+        try Dictionary(uniqueKeysWithValues: grantRecords().map {
+            ($0.id, try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: $0.payload))
+        })
+    }
+
+    private func grantRecords() throws -> [SliceRecord] {
         let hubID = try sidecar.ensureHubID()
         let clock = try XCTUnwrap(self.clock)
         let slice = DeviceGrantSlice(sidecar: sidecar, hubID: hubID) { clock.now }
         // The slice reads the sidecar; the main-DB handle is unused.
-        let records = try DatabaseQueue().read { try slice.records($0) }
-        return try Dictionary(uniqueKeysWithValues: records.map {
-            ($0.id, try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: $0.payload))
-        })
+        return try DatabaseQueue().read { try slice.records($0) }
     }
 
     // MARK: - One link, idempotent
@@ -749,6 +756,195 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertTrue(shares.participantNames(in: .data).isEmpty)
         XCTAssertTrue(shares.participantNames(in: .relay).isEmpty)
         XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "0")
+    }
+    // MARK: - Final-review fixes
+
+    /// Relays one probe from `deviceID` (creator `creator`) and returns its echo.
+    private func relayedProbe(from deviceID: String, creator: String? = nil) async throws -> ActionRequestPayload? {
+        let transport = StubHubTransport()
+        let record = try probe(from: deviceID, creator: creator)
+        try await transport.save([record])
+        _ = try await RelayProcessor(
+            transport: transport, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme"
+        ).processOnce()
+        return try lastEcho(record, in: transport)
+    }
+
+    private func linkSharedPhone(_ deviceID: String = "phone-a", user: String = "_colleague-a") async throws {
+        let code = try await center.issueCode()
+        shares.join(user)
+        try await handle(try deviceRecord(deviceID, nonce: code.nonce, scope: .shared, user: user, creator: user))
+        XCTAssertEqual(center.devices.map(\.deviceID), [deviceID])
+    }
+
+    /// #1: the phone's own unlink (`unlinked: true`, no nonce) removes it.
+    func testAPhonesOwnUnlinkRemovesItAndItsLaterActionsFailDeviceNotLinked() async throws {
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, unlinked: true))
+
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertNil(try sidecar.linkedDevice("phone-a"))
+        XCTAssertTrue(try grants().isEmpty, "its grant leaves the zone")
+        let echo = try await relayedProbe(from: "phone-a")
+        XCTAssertEqual(echo?.reason, .deviceNotLinked)
+    }
+
+    /// #1: in `shared` scope the phone has left the shares before the hub
+    /// reads its unlink; the missing participant is no error.
+    func testASharedPhonesUnlinkAfterItLeftTheSharesRemovesIt() async throws {
+        try await linkSharedPhone()
+        for zone in [CloudZoneID.data, .relay] {
+            try await shares.removeParticipants(in: zone) { _ in true }
+        }
+
+        try await handle(try deviceRecord(
+            "phone-a", nonce: nil, scope: .shared, user: "_colleague-a", creator: "_colleague-a", unlinked: true
+        ))
+
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertTrue(try grants().isEmpty)
+        let echo = try await relayedProbe(from: "phone-a", creator: "_colleague-a")
+        XCTAssertEqual(echo?.reason, .deviceNotLinked)
+    }
+
+    /// #1: a share failure after the phone's unlink still removes it and is
+    /// swept by the next close; it never fails the relay pass.
+    func testASharedUnlinkWhoseParticipantRemovalFailsStillRemovesThePhone() async throws {
+        try await linkSharedPhone()
+        shares.setFailing(["removeParticipants"])
+
+        try await handle(try deviceRecord(
+            "phone-a", nonce: nil, scope: .shared, user: "_colleague-a", creator: "_colleague-a", unlinked: true
+        ))
+
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertEqual(try sidecar.metaValue(forKey: MobileLinkCenter.sweepPendingKey), "1")
+    }
+
+    /// #1: an unlink another iCloud user wrote removes nothing.
+    func testAForgedUnlinkInSharedScopeRemovesNothing() async throws {
+        try await linkSharedPhone()
+        shares.join("_stranger")
+
+        try await handle(try deviceRecord(
+            "phone-a", nonce: nil, scope: .shared, user: "_colleague-a", creator: "_stranger", unlinked: true
+        ))
+        try await handle(try deviceRecord(
+            "phone-a", nonce: nil, scope: .shared, user: "_stranger", creator: "_stranger", unlinked: true
+        ))
+
+        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-a"])
+        XCTAssertEqual(try grants()["phone-a"]?.linked, true)
+        let echo = try await relayedProbe(from: "phone-a", creator: "_colleague-a")
+        XCTAssertEqual(echo?.status, .applied)
+    }
+
+    /// #1: once unlinked, a later stale code of the same Mac is refused with
+    /// its reason, not swallowed as "already linked".
+    func testAPhoneThatUnlinkedGetsTheRefusalOfAnExpiredCodeLater() async throws {
+        let first = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: first.nonce))
+        try await handle(try deviceRecord("phone-a", nonce: nil, unlinked: true))
+
+        let second = try await center.issueCode()
+        clock.advance(601)
+        try await handle(try deviceRecord("phone-a", nonce: second.nonce))
+
+        XCTAssertEqual(try grants()["phone-a"]?.linkRefused, .expiredCode)
+    }
+
+    /// #3: the phone's start-sessions toggle (a nonce-less rewrite) reaches
+    /// the grant; `typing_requested` is not stored (R6).
+    func testALinkedPhonesStartSessionsToggleIsMirroredAndTypingRequestIsNot() async throws {
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        clock.advance(10)
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: true, startSessions: false))
+
+        let device = try XCTUnwrap(center.devices.first)
+        XCTAssertFalse(device.startSessionsAllowed)
+        XCTAssertFalse(device.typingAllowed, "a typing request is never a grant")
+        XCTAssertEqual(device.decidedAt, clock.now)
+        let grant = try XCTUnwrap(try grants()["phone-a"])
+        XCTAssertFalse(grant.startSessionsAllowed)
+        XCTAssertFalse(grant.typingAllowed)
+        XCTAssertEqual(MobileLinkCenter.sessionGrant(sidecar, deviceID: "phone-a").startSessionsAllowed, false)
+
+        clock.advance(10)
+        try await handle(try deviceRecord("phone-a", nonce: nil, startSessions: true))
+        XCTAssertEqual(center.devices.first?.startSessionsAllowed, true)
+        XCTAssertEqual(center.devices.first?.decidedAt, clock.now)
+    }
+
+    /// #3: an unchanged choice stamps nothing new.
+    func testAnUnchangedStartSessionsChoiceLeavesTheGrantAlone() async throws {
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        nudges = []
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, startSessions: true))
+
+        XCTAssertNil(center.devices.first?.decidedAt)
+        XCTAssertTrue(nudges.isEmpty)
+    }
+
+    /// #3: a nonce-less record of a phone that is not linked changes nothing.
+    func testAnUnlinkedDevicesNonceLessRecordChangesNothing() async throws {
+        nudges = []
+
+        try await handle(try deviceRecord("phone-x", nonce: nil, startSessions: false))
+        try await handle(try deviceRecord("phone-x", nonce: nil, unlinked: true))
+
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertTrue(try grants().isEmpty)
+        XCTAssertTrue(try sidecar.linkRefusals().isEmpty)
+        XCTAssertTrue(nudges.isEmpty)
+    }
+
+    /// #3: a start-sessions rewrite another iCloud user wrote is ignored.
+    func testAForgedStartSessionsRewriteInSharedScopeIsIgnored() async throws {
+        try await linkSharedPhone()
+
+        try await handle(try deviceRecord(
+            "phone-a", nonce: nil, scope: .shared, user: "_colleague-a", creator: "_stranger", startSessions: false
+        ))
+
+        XCTAssertEqual(center.devices.first?.startSessionsAllowed, true)
+    }
+
+    /// #5: two refusals at different times publish different payloads, so
+    /// the phone sees the second one as an answer.
+    func testTwoRefusalsAtDifferentTimesPublishDifferentPayloads() async throws {
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        let scan = try deviceRecord("phone-b", nonce: code.nonce)
+
+        try await handle(scan)
+        let first = try XCTUnwrap(try grantRecords().first { $0.id == "phone-b" })
+        clock.advance(5)
+        try await handle(scan)
+        let second = try XCTUnwrap(try grantRecords().first { $0.id == "phone-b" })
+
+        XCTAssertNotEqual(first.payload, second.payload)
+        let grant = try RelayCoder.makeDecoder().decode(DeviceGrant.self, from: second.payload)
+        XCTAssertEqual(grant.linkRefused, .usedCode)
+        XCTAssertEqual(grant.decidedAt, Date(timeIntervalSince1970: clock.now.timeIntervalSince1970.rounded(.down)))
+    }
+
+    /// #7: New code retires the code it replaces.
+    func testANewCodeRetiresThePreviousUnusedCode() async throws {
+        let first = try await center.issueCode()
+        let second = try await center.issueCode()
+
+        try await handle(try deviceRecord("phone-a", nonce: first.nonce))
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertEqual(try grants()["phone-a"]?.linkRefused, .expiredCode)
+
+        try await handle(try deviceRecord("phone-b", nonce: second.nonce))
+        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-b"])
     }
 }
 

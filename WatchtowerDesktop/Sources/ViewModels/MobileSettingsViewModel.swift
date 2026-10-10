@@ -12,7 +12,7 @@ protocol MobileSettingsHost: AnyObject {
 }
 
 /// Settings → Mobile on the Mac (mobile POC spec §2.3, §8 I-1, §9, §10):
-/// the "Use Watchtower on iPhone" opt-in, the hub status, the QR sheet and
+/// the "Sync with iPhone" opt-in, the hub status, the QR sheet and
 /// the linked phones (Allow… / Revoke typing, Remove).
 ///
 /// The hub and its link center are the app's (`AppState.mobileHub`); this
@@ -32,7 +32,7 @@ final class MobileSettingsViewModel {
     nonisolated static let refreshInterval: Duration = .seconds(5)
 
     /// `CloudKitTransport.entitlementPresent()`: false on an ad-hoc build,
-    /// which disables the toggle.
+    /// which cannot turn the toggle on (an inherited on can be turned off).
     let entitlementPresent: Bool
     let flavor: HubFlavor
 
@@ -77,7 +77,7 @@ final class MobileSettingsViewModel {
     var hubInitError: String? { host.mobileHubInitError }
     var devices: [HubSyncState.LinkedDevice] { hub?.linkCenter?.devices ?? [] }
     var showsCorpNotice: Bool { flavor == .corp }
-    var toggleDisabled: Bool { !entitlementPresent }
+    var toggleDisabled: Bool { !entitlementPresent && !isOn }
 
     /// The spec's sentence for an iCloud account the Mac can't use.
     var accountMessage: String? {
@@ -176,9 +176,11 @@ final class MobileSettingsViewModel {
 
     // MARK: - The toggle and Take over
 
-    /// The opt-in toggle; turning on needs a signed build.
+    /// The opt-in toggle; turning on needs a signed build. Turning off
+    /// closes an open QR sheet and its link first.
     func setEnabled(_ enabled: Bool) async {
         guard !enabled || entitlementPresent else { return }
+        if !enabled { await linkSheetDismissed() }
         host.setMobileSyncEnabled(enabled)
         isOn = enabled
         await refresh()

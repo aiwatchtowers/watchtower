@@ -734,9 +734,18 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Stores a fresh code, then keeps the newest `keeping` codes.
-    func addLinkCode(nonce: String, issuedAt: Date, exp: Date, keeping: Int) throws {
+    /// Stores a fresh code, then keeps the newest `keeping` codes. With
+    /// `retiringOpenCodesAt`, every unused code still valid then is retired
+    /// first (its `exp` set just before that moment), so only the new code
+    /// links and a phone scanning an older one reads `expired_code`.
+    func addLinkCode(nonce: String, issuedAt: Date, exp: Date, keeping: Int, retiringOpenCodesAt retiredAt: Date? = nil) throws {
         try queue.write { db in
+            if let retiredAt {
+                try db.execute(
+                    sql: "UPDATE link_codes SET exp = ? WHERE used_by_device IS NULL AND exp >= ?",
+                    arguments: [retiredAt.timeIntervalSince1970 - 1, retiredAt.timeIntervalSince1970]
+                )
+            }
             try db.execute(
                 sql: "INSERT INTO link_codes (nonce, issued_at, exp) VALUES (?, ?, ?)",
                 arguments: [nonce, issuedAt.timeIntervalSince1970, exp.timeIntervalSince1970]

@@ -62,7 +62,7 @@ struct MobileSettingsView: View {
 
     private var toggleSection: some View {
         Section {
-            Toggle("Use Watchtower on iPhone", isOn: Binding(
+            Toggle("Sync with iPhone", isOn: Binding(
                 get: { model.isOn },
                 set: { enabled in Task { await model.setEnabled(enabled) } }
             ))

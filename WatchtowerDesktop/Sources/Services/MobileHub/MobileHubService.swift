@@ -387,8 +387,11 @@ final class MobileHubService {
         }
     }
 
-    /// 3 s while a phone action was seen in the last 300 s, otherwise 30 s.
-    private func relayInterval() -> Duration {
+    /// 3 s while a QR code is open (the scanning phone's `device` record
+    /// waits for its grant) or a phone action was seen in the last 300 s,
+    /// otherwise 30 s.
+    func relayInterval() -> Duration {
+        if linkCenter?.openCode != nil { return relayActiveInterval }
         if let last = processor.lastActivityAt, now().timeIntervalSince(last) < Self.activityWindow {
             return relayActiveInterval
         }

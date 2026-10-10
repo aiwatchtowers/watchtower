@@ -36,6 +36,7 @@ final class MobileHubServiceTests: XCTestCase {
     private func makeService(
         transport: StubHubTransport,
         relayInterval: Duration = .milliseconds(20),
+        relayActiveInterval: Duration? = nil,
         dispatcher: MobileHubCommandDispatcher? = nil,
         companions: [any HubCompanion] = [],
         assets: SliceAssetStore? = nil,
@@ -52,7 +53,7 @@ final class MobileHubServiceTests: XCTestCase {
         return MobileHubService(
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
             hostInfo: testHostInfo(), companions: companions,
-            relayIdleInterval: relayInterval, relayActiveInterval: relayInterval,
+            relayIdleInterval: relayInterval, relayActiveInterval: relayActiveInterval ?? relayInterval,
             availabilityReprobeInterval: .milliseconds(20), isEnabled: isEnabled
         )
     }
@@ -70,6 +71,26 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(MobileHubService.defaultRelayIdleInterval, .seconds(30))
         XCTAssertEqual(MobileHubService.defaultRelayActiveInterval, .seconds(3))
         XCTAssertEqual(MobileHubService.activityWindow, 300)
+    }
+
+    /// A phone that scanned the QR writes its `device` record: while the
+    /// code is open the relay polls at the active cadence, so the grant
+    /// lands well inside the phone's 60 s wait.
+    func testAnOpenLinkCodeRunsTheRelayAtTheActiveCadence() async throws {
+        let hub = makeService(transport: StubHubTransport(), relayInterval: .seconds(30), relayActiveInterval: .seconds(3))
+        XCTAssertEqual(hub.relayInterval(), .seconds(30))
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            nudge: { _ in }, sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        hub.linkCenter = center
+        XCTAssertEqual(hub.relayInterval(), .seconds(30), "no code on screen")
+
+        _ = try await center.issueCode()
+        XCTAssertEqual(hub.relayInterval(), .seconds(3))
+
+        await center.closeLink(reason: .sheetClosed)
+        XCTAssertEqual(hub.relayInterval(), .seconds(30))
     }
 
     func testAStopWhileTheTransportHandlersInstallLeavesTheTransportStopped() async throws {

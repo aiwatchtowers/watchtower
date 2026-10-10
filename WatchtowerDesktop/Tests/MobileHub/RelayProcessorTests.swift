@@ -43,6 +43,28 @@ final class RelayProcessorTests: XCTestCase {
             .filter { $0.status != .pending }
     }
 
+    // MARK: - Device records
+
+    /// A phone's `device` record is phone activity: the hub keeps the
+    /// active cadence for the grant traffic that follows.
+    func testAHandedOverDeviceRecordCountsAsPhoneActivity() async throws {
+        let payload = DevicePayload(
+            deviceID: "phone-a", name: "iPhone", model: "iPhone18,1", appVersion: "0.0.0-test", scope: .private,
+            userRecordName: "_owner-acme", linkNonce: "nonce-acme", typingRequested: false, startSessions: true,
+            updatedAt: Date()
+        )
+        try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: Date())])
+        let processor = RelayProcessor(
+            transport: transport, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme",
+            deviceRecords: .init { _ in }
+        )
+        XCTAssertNil(processor.lastActivityAt)
+
+        _ = try await processor.processOnce()
+
+        XCTAssertNotNil(processor.lastActivityAt)
+    }
+
     // MARK: - Probe
 
     func testProbeDeliveredTwiceEchoesTheSameAppliedNonceAndHubID() async throws {

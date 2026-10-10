@@ -22,6 +22,7 @@ final class MobileSettingsViewTests: XCTestCase {
     private static let codeButton = "Use Watchtower on iPhone"
 
     func testAnAdHocBuildShowsNeedsASignedBuildWithTheToggleDisabled() async throws {
+        fixture.host.isMobileSyncEnabled = false
         let model = fixture.makeModel(entitlementPresent: false)
         let view = MobileSettingsView(model: model)
 
@@ -29,11 +30,25 @@ final class MobileSettingsViewTests: XCTestCase {
         XCTAssertTrue(try view.inspect().find(ViewType.Toggle.self).isDisabled())
     }
 
+    func testAnAdHocBuildKeepsAnInheritedOnToggleEnabledToTurnItOff() throws {
+        let view = MobileSettingsView(model: fixture.makeModel(entitlementPresent: false))
+
+        XCTAssertNoThrow(try view.inspect().find(text: "Needs a signed build"))
+        XCTAssertFalse(try view.inspect().find(ViewType.Toggle.self).isDisabled())
+    }
+
     func testASignedBuildHasAnEnabledToggleAndNoSignedBuildLine() throws {
         let view = MobileSettingsView(model: fixture.makeModel())
 
         XCTAssertThrowsError(try view.inspect().find(text: "Needs a signed build"))
         XCTAssertFalse(try view.inspect().find(ViewType.Toggle.self).isDisabled())
+    }
+
+    /// R7: the toggle and the QR button have their own labels.
+    func testTheToggleReadsSyncWithIPhone() throws {
+        let view = MobileSettingsView(model: fixture.makeModel())
+
+        XCTAssertEqual(try view.inspect().find(ViewType.Toggle.self).labelView().text().string(), "Sync with iPhone")
     }
 
     func testTheCorpFlavorShowsTheNoticeAndTheDefaultFlavorDoesNot() throws {

@@ -22,7 +22,7 @@ final class MobileSettingsViewModelTests: XCTestCase {
     // MARK: - The toggle
 
     func testAnAdHocBuildDisablesTheToggleAndOffersNoCode() async throws {
-        await fixture.startHub()
+        fixture.host.isMobileSyncEnabled = false
         let model = fixture.makeModel(entitlementPresent: false)
         await model.refresh()
 
@@ -31,8 +31,22 @@ final class MobileSettingsViewModelTests: XCTestCase {
 
         await model.setEnabled(true)
         XCTAssertEqual(fixture.host.setCalls, [], "a disabled toggle never turns the hub on")
+    }
+
+    /// An ad-hoc build that inherited `mobileSyncEnabled = true` can still
+    /// turn it off; "disabled" is for turning on.
+    func testAnAdHocBuildCanTurnAnInheritedOnToggleOff() async throws {
+        await fixture.startHub()
+        let model = fixture.makeModel(entitlementPresent: false)
+        await model.refresh()
+        XCTAssertTrue(model.isOn)
+        XCTAssertFalse(model.toggleDisabled, "turning it off stays possible")
+        XCTAssertFalse(model.canShowCode)
+
         await model.setEnabled(false)
-        XCTAssertEqual(fixture.host.setCalls, [false], "turning it off stays possible")
+
+        XCTAssertEqual(fixture.host.setCalls, [false])
+        XCTAssertTrue(model.toggleDisabled, "once off, it cannot be turned on again")
     }
 
     func testTheToggleDrivesTheAppsHubSwitch() async throws {
@@ -167,6 +181,23 @@ final class MobileSettingsViewModelTests: XCTestCase {
 
         XCTAssertNil(model.linkSheet)
         XCTAssertFalse(fixture.shares.isLinkOpen)
+    }
+
+    /// Turning the hub off with the QR up closes the sheet and its link.
+    func testTurningTheHubOffClosesAnOpenSheetsLink() async throws {
+        await fixture.startHub()
+        let model = fixture.makeModel()
+        await model.refresh()
+        model.showCode()
+        await model.linkSheet?.start()
+        XCTAssertTrue(fixture.shares.isLinkOpen)
+
+        await model.setEnabled(false)
+
+        XCTAssertNil(model.linkSheet)
+        XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertNil(fixture.center.openCode)
+        XCTAssertEqual(fixture.host.setCalls, [false])
     }
 
     // MARK: - The phone list

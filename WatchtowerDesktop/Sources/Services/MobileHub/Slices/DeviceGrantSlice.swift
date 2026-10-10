@@ -48,7 +48,9 @@ struct DeviceGrantSlice: SliceSource {
         let refused = try sidecar.linkRefusals().filter { !linkedIDs.contains($0.deviceID) }.map { refusal in
             (refusal.at, DeviceGrant(
                 deviceID: refusal.deviceID, hubID: hubID, name: refusal.name, scope: refusal.scope, linked: false,
-                linkRefused: refusal.reason, typingAllowed: false, startSessionsAllowed: true
+                // The refusal's time: a second identical refusal still
+                // differs, so the phone reads it as an answer.
+                linkRefused: refusal.reason, typingAllowed: false, startSessionsAllowed: true, decidedAt: refusal.at
             ))
         }
         let encoder = RelayCoder.makeEncoder()

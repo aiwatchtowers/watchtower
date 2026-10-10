@@ -44,7 +44,9 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   `user_record_name` and has accepted both shares). A refused nonce is
 ///   published as `device_grant` with `link_refused`; a wrong creator gets
 ///   no grant at all. A linked phone keeps its link whatever nonce it sends
-///   later; a removed one is never re-linked by an old nonce.
+///   later; a removed one is never re-linked by an old nonce. A linked
+///   phone's own rewrite without a nonce unlinks it (`unlinked: true`) or
+///   sets its start-sessions grant.
 ///
 /// The `device_grant` records are `DeviceGrantSlice`'s, from the sidecar;
 /// every change here nudges that kind.
@@ -152,7 +154,8 @@ final class MobileLinkCenter {
     // MARK: - The QR code and the public link
 
     /// A new QR code (Use Watchtower on iPhone, New code). Throws without
-    /// iCloud or the Mac's user name; nothing is created then.
+    /// iCloud or the Mac's user name; nothing is created then. The codes
+    /// still open are retired: only the newest one links.
     func issueCode() async throws -> LinkPayload {
         let account = await accountAvailability()
         guard account == .available else { throw MobileLinkError.account(account) }
@@ -165,7 +168,8 @@ final class MobileLinkCenter {
         )
         try sidecar.addLinkCode(
             nonce: code.nonce, issuedAt: Date(timeIntervalSince1970: TimeInterval(code.iat)),
-            exp: Date(timeIntervalSince1970: TimeInterval(code.exp)), keeping: Self.keptCodes
+            exp: Date(timeIntervalSince1970: TimeInterval(code.exp)), keeping: Self.keptCodes,
+            retiringOpenCodesAt: now()
         )
         openCode = code
         scheduleExpiry(of: code)
@@ -248,7 +252,10 @@ final class MobileLinkCenter {
             logger.warning("undecodable device record \(record.recordName, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return
         }
-        guard let nonce = payload.linkNonce, !nonce.isEmpty, payload.unlinked != true else { return }
+        guard let nonce = payload.linkNonce, !nonce.isEmpty, payload.unlinked != true else {
+            try await handleLinkedRewrite(record, payload)
+            return
+        }
         guard DeviceScope.knownValues.contains(payload.scope), await creatorMatches(record, payload) else {
             logger.warning("device record \(record.recordName, privacy: .public) not written by its phone's user: no grant")
             return
@@ -284,6 +291,35 @@ final class MobileLinkCenter {
         nudge([.deviceGrant])
         // Outside the relay pass: the close's share calls never hold it.
         closeAfterLink = Task { await self.closeLink(reason: .used) }
+    }
+
+    /// A linked phone's own rewrite without a nonce (spec §2.3 "Unlink and
+    /// revoke", §10): `unlinked: true` removes it as Remove does (in
+    /// `shared` scope it has left the shares already); otherwise its
+    /// start-sessions choice becomes the grant. `typing_requested` is not
+    /// stored (the typing prompt is deferred). The record must be the
+    /// linked phone's: its scope, and a creator both checks accept. An
+    /// unlinked device's record changes nothing.
+    private func handleLinkedRewrite(_ record: CloudRecord, _ payload: DevicePayload) async throws {
+        guard let device = try sidecar.linkedDevice(payload.deviceID) else { return }
+        guard payload.scope == device.scope, device.accepts(creator: record.creatorUserRecordName),
+              await creatorMatches(record, payload) else {
+            logger.warning("device record \(record.recordName, privacy: .public) not written by its linked phone: ignored")
+            return
+        }
+        if payload.unlinked == true {
+            logger.info("phone \(device.deviceID, privacy: .public) unlinked itself")
+            guard let removed = try dropDevice(device.deviceID) else { return }
+            do {
+                try await removeParticipant(of: removed)
+            } catch {
+                // Inside the relay pass: logged, swept by the next close.
+                logger.warning("unlinked phone's share participant not removed: \(error.localizedDescription, privacy: .public)")
+            }
+            return
+        }
+        guard payload.startSessions != device.startSessionsAllowed else { return }
+        try setStartSessionsAllowed(payload.startSessions, deviceID: device.deviceID)
     }
 
     /// Publishes the refusal, unless the phone is linked already: a linked
@@ -331,9 +367,22 @@ final class MobileLinkCenter {
     /// linked phone is on that user). A failed participant removal marks the
     /// sweep pending, so the next close removes it, and is rethrown.
     func remove(deviceID: String) async throws {
-        guard let removed = try sidecar.removeLinkedDevice(deviceID) else { return }
+        guard let removed = try dropDevice(deviceID) else { return }
+        try await removeParticipant(of: removed)
+    }
+
+    /// Deletes the device's row; the removed row, nil when it was not linked.
+    private func dropDevice(_ deviceID: String) throws -> HubSyncState.LinkedDevice? {
+        guard let removed = try sidecar.removeLinkedDevice(deviceID) else { return nil }
         reloadDevices()
         nudge([.deviceGrant])
+        return removed
+    }
+
+    /// In `shared` scope, the removed phone's iCloud user leaves both shares
+    /// unless another linked phone is on it. A participant already gone is
+    /// no error; a failure marks the sweep pending and is rethrown.
+    private func removeParticipant(of removed: HubSyncState.LinkedDevice) async throws {
         let name = removed.userRecordName
         guard removed.scope == .shared, !devices.contains(where: { $0.scope == .shared && $0.userRecordName == name }) else {
             return

@@ -128,8 +128,8 @@ final class RelayProcessor: Sendable {
         self.now = now
     }
 
-    /// When the relay last handled a phone action; drives the hub's
-    /// adaptive poll cadence. nil until then.
+    /// When the relay last handled a phone action or `device` record;
+    /// drives the hub's adaptive poll cadence. nil until then.
     var lastActivityAt: Date? { lastActivity.withLock { $0 } }
 
     /// Unprocessed relay records left by the last pass (the heartbeat's
@@ -217,7 +217,11 @@ final class RelayProcessor: Sendable {
             }
         case RelayRecordKind.device.rawValue:
             guard let deviceRecords else { return nil }
-            return Work(run: { try await deviceRecords.handle(record) }, budgeted: false)
+            return Work(run: {
+                // Phone activity: the grant traffic that follows runs at the active cadence.
+                self.lastActivity.withLock { $0 = self.now() }
+                try await deviceRecords.handle(record)
+            }, budgeted: false)
         default:
             // Future kinds have no relay work.
             return nil
