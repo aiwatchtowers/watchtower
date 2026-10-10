@@ -52,7 +52,8 @@ Not cached: the owner may set `claude_path` or install Claude Code while the
 app runs, and the lookups are a handful of `stat` calls (the resolved-PATH
 step reuses the cached `resolvedEnvironment()`).
 
-The onboarding CLI check, the terminal and `resolvedEnvironment` use it, so
+The terminal and `resolvedEnvironment` use it. The onboarding CLI check
+runs Go `ai test`, which already resolves through `claude.FindBinary`, so
 "found" in onboarding means "launchable" everywhere. Dual path with Go
 `claude.FindBinary`: same order of override → well-known dirs; a comment on
 each names the other.
