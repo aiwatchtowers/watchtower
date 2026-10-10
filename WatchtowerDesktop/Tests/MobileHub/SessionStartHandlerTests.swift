@@ -370,6 +370,7 @@ final class SessionStartHandlerTests: XCTestCase {
     private func relay(now: Date = Date()) throws -> (StubHubTransport, HubSyncState, RelayProcessor, SessionStartStopHandlers) {
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
+        try sidecar.linkTestDevice("device-a")
         let dispatcher = MobileHubCommandDispatcher()
         let handlers = makeHandlers(makeVM())
         handlers.register(on: dispatcher)

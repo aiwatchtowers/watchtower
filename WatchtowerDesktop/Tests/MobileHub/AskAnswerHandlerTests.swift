@@ -57,6 +57,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         processes = []
         models = []
         sidecar = try HubSyncState.inMemory()
+        try sidecar.linkTestDevice("device-a")
         center = TerminalCenter(
             makeProcess: { [weak self] in
                 let process = RecordingSession()

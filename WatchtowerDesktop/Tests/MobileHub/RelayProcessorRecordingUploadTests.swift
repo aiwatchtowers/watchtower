@@ -29,6 +29,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
     override func setUp() async throws {
         transport = StubHubTransport()
         sidecar = try HubSyncState.inMemory()
+        try sidecar.linkTestDevice("device-a")
         (dbPool, dbPath) = try TestDatabase.createPool()
         try FileManager.default.createDirectory(at: assetsDir, withIntermediateDirectories: true)
         enqueued = []
@@ -66,13 +67,11 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     private func makeProcessor(
         ingest: Bool = true,
-        isDeviceLinked: @escaping @Sendable (String) -> Bool = { !$0.isEmpty },
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) throws -> RelayProcessor {
         let jobs = try XCTUnwrap(self.jobs)
         let uploads = RelayProcessor.RecordingUploads(
             ingest: { upload, audio in try await jobs.ingest(upload, audio: audio) },
-            isDeviceLinked: isDeviceLinked,
             sleep: sleep
         )
         return RelayProcessor(
@@ -246,13 +245,12 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
     /// A processor over `buffer` (`PhoneOnlyBuffer`: reads see the phone's
     /// saves only, the hub's land in `echoes`).
     private func processor(
-        over buffer: PhoneOnlyBuffer, linked: @escaping @Sendable (String) -> Bool = { !$0.isEmpty }
+        over buffer: PhoneOnlyBuffer
     ) throws -> RelayProcessor {
         let jobs = try XCTUnwrap(self.jobs)
         let sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
         let uploads = RelayProcessor.RecordingUploads(
             ingest: { upload, audio in try await jobs.ingest(upload, audio: audio) },
-            isDeviceLinked: linked,
             sleep: sleep
         )
         return RelayProcessor(
@@ -274,9 +272,10 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
             for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: try makeAsset("r2.m4a")
         )
         try await buffer.phone.save([failed, received])
-        _ = try await processor(over: buffer) { $0 == "device-a" }.processOnce()
+        _ = try await processor(over: buffer).processOnce()
         let echoCount = await buffer.echoes.count
         XCTAssertEqual(echoCount, 2)
+        try sidecar.linkTestDevice("device-x")  // the phone links meanwhile
 
         try sidecar.wipeSyncState(now: now)  // an account reset: the relay is read from the start
         _ = try await processor(over: buffer).processOnce()
@@ -301,10 +300,9 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         let buffer = PhoneOnlyBuffer()
         let jobs = try XCTUnwrap(self.jobs)
         let sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
-        func processor(linked: @escaping @Sendable (String) -> Bool) -> RelayProcessor {
+        func processor() -> RelayProcessor {
             let uploads = RelayProcessor.RecordingUploads(
                 ingest: { upload, audio in try await jobs.ingest(upload, audio: audio) },
-                isDeviceLinked: linked,
                 sleep: sleep
             )
             return RelayProcessor(
@@ -319,13 +317,14 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
             for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: try makeAsset("r2.m4a")
         )
         try await buffer.phone.save([failed, received])
-        _ = try await processor { $0 == "device-a" }.processOnce()
+        _ = try await processor().processOnce()
         XCTAssertEqual(try sidecar.relayOutcome(failed.recordName), "failed:device_not_linked")
         XCTAssertEqual(try sidecar.relayOutcome(received.recordName), "received")
         let echoCount = await buffer.echoes.count
 
         try sidecar.wipeSyncState(now: now, keepingRelayToken: true)
-        _ = try await processor { !$0.isEmpty }.processOnce()
+        try sidecar.linkTestDevice("device-x")  // the phone links meanwhile
+        _ = try await processor().processOnce()
 
         XCTAssertEqual(enqueued.count, 1, "the failed upload is not ingested without a phone retry")
         let echoesAfter = await buffer.echoes.count
@@ -395,7 +394,7 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         let asset = try makeAsset()
         let record = try await send(uploadPayload(deviceID: "device-x"), asset: asset)
 
-        _ = try await makeProcessor { $0 == "device-a" }.processOnce()
+        _ = try await makeProcessor().processOnce()
 
         let echo = try XCTUnwrap(try echoes(of: record.recordName).first)
         XCTAssertEqual(echo.payload.status, .failed)

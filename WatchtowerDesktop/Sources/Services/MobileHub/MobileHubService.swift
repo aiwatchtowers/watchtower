@@ -46,6 +46,9 @@ struct MobileHubStorage {
     /// The staged CKAsset files of asset-backed slices (`SliceAssets/` in
     /// the hub directory); nil in a stub storage.
     var sliceAssets: SliceAssetStore?
+    /// The hub's zone shares (linking, spec §2.3); nil in a stub storage,
+    /// which then links no phone.
+    var shares: (any ShareService)?
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -63,7 +66,8 @@ struct MobileHubStorage {
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
         return Self(
             transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
-            sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true))
+            sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
+            shares: CloudKitShareService()
         )
     }
 }
@@ -107,9 +111,12 @@ final class MobileHubService {
     /// The heartbeat's `sharing` field; the link center sets it once the
     /// zone shares exist.
     @ObservationIgnored var sharing: HubSharing = .none
-    /// Runs after a successful `takeOver()` (the seam for the share
-    /// teardown of spec §2.3, wired with the zone shares).
+    /// Runs after a successful `takeOver()`: the link center's share
+    /// teardown (spec §2.3).
     @ObservationIgnored var onTakeOver: (@MainActor () async -> Void)?
+    /// Phone linking (Settings → Mobile); nil when the storage has no share
+    /// service.
+    @ObservationIgnored var linkCenter: MobileLinkCenter?
     /// The end of the last relay cycle that ran without an error.
     @ObservationIgnored private(set) var lastRelayAt: Date?
 

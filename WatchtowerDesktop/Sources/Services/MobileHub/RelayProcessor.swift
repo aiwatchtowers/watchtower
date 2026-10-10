@@ -33,6 +33,13 @@ import WatchtowerSync
 /// that put it back to `pending` only gets `received` echoed again). An upload
 /// found still `begun` is echoed `failed` / `outcome_unknown`, not re-ingested.
 ///
+/// Device gate (§5.2 rule 4): an action or upload is applied only when its
+/// `device_id` is a linked phone in the sidecar's `devices` table and, in
+/// `shared` scope, the record's creator is that phone's iCloud user
+/// (`LinkedDevice.accepts(creator:)`); anything else fails
+/// `device_not_linked` and is never dispatched. A `device` record (a phone's
+/// link request) goes to `deviceRecords`, the link center, unbudgeted.
+///
 /// Backlog: one pass handles at most `batchLimit` records and reports the
 /// rest, so the hub re-runs at once instead of waiting for the next poll.
 /// The change token is persisted only once a pass leaves nothing behind.
@@ -44,11 +51,14 @@ final class RelayProcessor: Sendable {
     /// closure parameters, so callers' trailing `now` closure still binds.
     struct RecordingUploads: Sendable {
         let ingest: RecordingIngest
-        /// The device gate (§5.2 rule 4): an upload whose `device_id` is not
-        /// linked fails `device_not_linked`.
-        var isDeviceLinked: @Sendable (String) -> Bool = { !$0.isEmpty }
         /// The ingest timeout's clock.
         var sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    }
+
+    /// Where phone `device` records go (`MobileLinkCenter.handleDevice`).
+    /// A value, not a closure parameter, like `RecordingUploads`.
+    struct DeviceRecords: Sendable {
+        let handle: @Sendable (CloudRecord) async throws -> Void
     }
 
     struct Pass: Equatable, Sendable {
@@ -91,6 +101,8 @@ final class RelayProcessor: Sendable {
     private let batchLimit: Int
     /// nil: uploads are left pending for a hub that can ingest them.
     private let recordingUploads: RecordingUploads?
+    /// nil: device records are left for a hub that links phones.
+    private let deviceRecords: DeviceRecords?
     private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: Constants.bundleID, category: "RelayProcessor")
     private let lastActivity = OSAllocatedUnfairLock<Date?>(initialState: nil)
@@ -103,6 +115,7 @@ final class RelayProcessor: Sendable {
         hubID: String,
         batchLimit: Int = RelayProcessor.defaultBatchLimit,
         recordingUploads: RecordingUploads? = nil,
+        deviceRecords: DeviceRecords? = nil,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.transport = transport
@@ -111,6 +124,7 @@ final class RelayProcessor: Sendable {
         self.hubID = hubID
         self.batchLimit = batchLimit
         self.recordingUploads = recordingUploads
+        self.deviceRecords = deviceRecords
         self.now = now
     }
 
@@ -180,7 +194,8 @@ final class RelayProcessor: Sendable {
             case nil:
                 return nil
             case .apply(let action):
-                return Work(run: { try await self.processAction(action, doneSeq: mark) }, budgeted: true)
+                let creator = record.creatorUserRecordName
+                return Work(run: { try await self.processAction(action, creator: creator, doneSeq: mark) }, budgeted: true)
             case let .reEcho(action, outcome):
                 return Work(run: { try await self.reEchoAction(action, outcome) }, budgeted: false)
             }
@@ -191,13 +206,20 @@ final class RelayProcessor: Sendable {
             switch pending {
             case .ingest(let upload):
                 let asset = record.assetFileURL
-                return Work(run: { try await self.processUpload(upload, asset: asset, uploads: uploads, doneSeq: mark) }, budgeted: true)
+                let creator = record.creatorUserRecordName
+                return Work(
+                    run: { try await self.processUpload(upload, asset: asset, creator: creator, uploads: uploads, doneSeq: mark) },
+                    budgeted: true
+                )
             case .reEchoReceived(let upload):
                 let asset = record.assetFileURL
                 return Work(run: { try await self.reEchoReceived(upload, asset: asset) }, budgeted: false)
             }
+        case RelayRecordKind.device.rawValue:
+            guard let deviceRecords else { return nil }
+            return Work(run: { try await deviceRecords.handle(record) }, budgeted: false)
         default:
-            // Device records and future kinds have no relay work.
+            // Future kinds have no relay work.
             return nil
         }
     }
@@ -250,11 +272,13 @@ final class RelayProcessor: Sendable {
         try await window.changedAfter(try sidecar.relayDoneSeq(recordName), recordName, in: transport)
     }
 
-    private func processAction(_ action: ActionRequestPayload, doneSeq: Int) async throws {
+    private func processAction(_ action: ActionRequestPayload, creator: String?, doneSeq: Int) async throws {
         lastActivity.withLock { $0 = now() }
         let outcome: ActionOutcome
         if try sidecar.relayPhase(action.recordName) == .begun {
             outcome = .failed(.outcomeUnknown, message: "The Mac restarted while applying this")
+        } else if try !isFromLinkedDevice(action.deviceID, creator: creator) {
+            outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else if isExpired(action) {
             outcome = .expired
         } else if let applied = try await applyAction(action) {
@@ -267,6 +291,14 @@ final class RelayProcessor: Sendable {
             action.recordName, outcome: Self.ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome),
             doneSeq: doneSeq, at: now()
         )
+    }
+
+    static let notLinkedMessage = "This phone is not linked to this Mac."
+
+    /// The device gate (§5.2 rule 4).
+    private func isFromLinkedDevice(_ deviceID: String?, creator: String?) throws -> Bool {
+        guard let deviceID, let device = try sidecar.linkedDevice(deviceID) else { return false }
+        return device.accepts(creator: creator)
     }
 
     private func isExpired(_ action: ActionRequestPayload) -> Bool {
@@ -364,14 +396,16 @@ final class RelayProcessor: Sendable {
         removeConsumedAsset(asset)
     }
 
-    private func processUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads, doneSeq: Int) async throws {
+    private func processUpload(
+        _ upload: RecordingUploadPayload, asset: URL?, creator: String?, uploads: RecordingUploads, doneSeq: Int
+    ) async throws {
         lastActivity.withLock { $0 = now() }
         let name = upload.recordName
         let outcome: ActionOutcome
         if try sidecar.relayPhase(name) == .begun {
             outcome = .failed(.outcomeUnknown, message: "Your Mac restarted while saving this recording. Send it again.")
-        } else if !(upload.deviceID.map(uploads.isDeviceLinked) ?? false) {
-            outcome = .failed(.deviceNotLinked, message: "This phone is not linked to this Mac.")
+        } else if try !isFromLinkedDevice(upload.deviceID, creator: creator) {
+            outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else {
             guard try sidecar.claimRelayRetryingFailure(name, at: now()) else { return }
             outcome = await ingestUpload(upload, asset: asset, uploads: uploads)

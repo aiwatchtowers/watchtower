@@ -32,13 +32,16 @@ import WatchtowerSync
 @MainActor
 final class SessionStartStopHandlers {
     /// The grants of the device a request came from (spec §4.13, §5.2 rule
-    /// 4). Until the Mac decides them (A8), every device has the spec's
-    /// defaults.
+    /// 4): the linked phone's row in the sidecar's `devices`
+    /// (`MobileLinkCenter.sessionGrant`).
     struct DeviceGrant: Equatable, Sendable {
         let typingAllowed: Bool
         let startSessionsAllowed: Bool
 
+        /// A newly linked phone's grants.
         static let specDefaults = Self(typingAllowed: false, startSessionsAllowed: true)
+        /// No device, or its grants could not be read.
+        static let denied = Self(typingAllowed: false, startSessionsAllowed: false)
     }
 
     typealias Grant = @MainActor (_ deviceID: String?) -> DeviceGrant

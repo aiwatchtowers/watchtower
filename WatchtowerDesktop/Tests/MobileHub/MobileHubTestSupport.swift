@@ -337,3 +337,19 @@ final class HandlerLatch {
         waiting.forEach { $0.resume() }
     }
 }
+
+extension HubSyncState {
+    /// Seeds a linked phone past the device gate (spec §5.2 rule 4), as if
+    /// it had scanned a code: tests of the relay's own rules start here.
+    func linkTestDevice(
+        _ deviceID: String = "device-a",
+        scope: DeviceScope = .private,
+        userRecordName: String = "_owner-acme",
+        at date: Date = Date()
+    ) throws {
+        let nonce = "test-nonce-\(deviceID)"
+        try addLinkCode(nonce: nonce, issuedAt: date, exp: date.addingTimeInterval(600), keeping: MobileLinkCenter.keptCodes)
+        let device = LinkedDevice(deviceID: deviceID, name: "iPhone", scope: scope, userRecordName: userRecordName, linkedAt: date)
+        _ = try linkDevice(device, nonce: nonce, now: date)
+    }
+}

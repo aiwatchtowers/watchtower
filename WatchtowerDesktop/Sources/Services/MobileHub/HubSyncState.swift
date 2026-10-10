@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import GRDB
 import WatchtowerSync
@@ -10,7 +11,10 @@ import WatchtowerSync
 /// (`ask_answer_deliveries`, spec §5.2/§6.2), the phone recordings the
 /// hub ingested (`phone_recordings`, spec §6.4/§4.12), the last capped
 /// session reports (`session_reports`, spec §4.8) and the hub-observed
-/// session state milestones (`session_milestones`, spec §4.9).
+/// session state milestones (`session_milestones`, spec §4.9), and the
+/// linking state (spec §2.3): the issued QR codes (`link_codes`), the linked
+/// phones (`devices`, spec §10) and the refused link attempts
+/// (`link_refusals`, published as `device_grant` with `link_refused`).
 /// Mirrors the TransportStore GRDB pattern: DatabaseQueue + `CREATE TABLE IF NOT EXISTS`.
 final class HubSyncState: Sendable {
     /// Where one relay record stands in the exactly-once ledger.
@@ -106,6 +110,7 @@ final class HubSyncState: Sendable {
                 );
                 CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
                 """)
+            try Self.createLinkTables(db)
             // A sidecar created before the ledger kept echoes and buffer
             // marks gains the columns; its old `done` rows hold neither (no
             // echo: skipped as before; no mark: the pre-mark behaviour).
@@ -115,6 +120,36 @@ final class HubSyncState: Sendable {
             }
             return .commit
         }
+    }
+
+    /// The linking tables (spec §2.3, §10).
+    private static func createLinkTables(_ db: Database) throws {
+        try db.execute(sql: """
+                CREATE TABLE IF NOT EXISTS link_codes (
+                    nonce TEXT PRIMARY KEY,
+                    issued_at REAL NOT NULL,
+                    exp REAL NOT NULL,
+                    used_by_device TEXT,
+                    used_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS devices (
+                    device_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    user_record_name TEXT NOT NULL,
+                    linked_at REAL NOT NULL,
+                    typing_allowed INTEGER NOT NULL DEFAULT 0,
+                    start_sessions_allowed INTEGER NOT NULL DEFAULT 1,
+                    decided_at REAL
+                );
+                CREATE TABLE IF NOT EXISTS link_refusals (
+                    device_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    at REAL NOT NULL
+                );
+                """)
     }
 
     // MARK: - Hash queries
@@ -637,6 +672,237 @@ final class HubSyncState: Sendable {
         return Dictionary(uniqueKeysWithValues: rows.map {
             ($0["ask_id"] as Int64, AlertedAsk(at: Date(timeIntervalSince1970: $0["at"]), generation: $0["generation"]))
         })
+    }
+
+    // MARK: - Linking (spec §2.3, §10)
+
+    /// One QR code the hub issued. Single use: `usedByDevice` is set once.
+    struct LinkCode: Equatable, Sendable {
+        let nonce: String
+        let issuedAt: Date
+        let exp: Date
+        let usedByDevice: String?
+    }
+
+    /// One linked phone (the `devices` table, spec §10).
+    struct LinkedDevice: Equatable, Sendable {
+        let deviceID: String
+        /// At most `DevicePayload.maxNameLength` grapheme clusters.
+        let name: String
+        let scope: DeviceScope
+        let userRecordName: String
+        let linkedAt: Date
+        var typingAllowed = false
+        var startSessionsAllowed = true
+        /// When the owner last changed a grant; nil while undecided.
+        var decidedAt: Date?
+
+        /// The device gate's creator check (spec §5.2 rule 4): in `shared`
+        /// scope a record must be written by the phone's own iCloud user.
+        /// A `private` phone writes as the Mac's user, which CloudKit reports
+        /// as `CKCurrentUserDefaultName` (or the user's own name); nil is a
+        /// record whose creator is unknown (the in-memory transport, an
+        /// event buffered before creators were kept): `private` only.
+        func accepts(creator: String?) -> Bool {
+            if scope == .shared { return creator == userRecordName }
+            guard let creator else { return true }
+            return creator == CKCurrentUserDefaultName || creator == userRecordName
+        }
+    }
+
+    /// A refused link attempt, published as `device_grant` with `link_refused`.
+    struct LinkRefusalRecord: Equatable, Sendable {
+        let deviceID: String
+        let name: String
+        let scope: DeviceScope
+        let reason: LinkRefusal
+        let at: Date
+    }
+
+    /// What a nonce does for a device.
+    enum LinkDecision: Equatable, Sendable {
+        /// Known, unused and `exp ≥ now`.
+        case valid
+        /// The same nonce from the same device again (idempotent).
+        case alreadyUsedByThisDevice
+        case refused(LinkRefusal)
+
+        static func of(_ code: LinkCode?, deviceID: String, now: Date) -> Self {
+            guard let code else { return .refused(.unknownCode) }
+            if let used = code.usedByDevice { return used == deviceID ? .alreadyUsedByThisDevice : .refused(.usedCode) }
+            return code.exp >= now ? .valid : .refused(.expiredCode)
+        }
+    }
+
+    /// Stores a fresh code, then keeps the newest `keeping` codes.
+    func addLinkCode(nonce: String, issuedAt: Date, exp: Date, keeping: Int) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: "INSERT INTO link_codes (nonce, issued_at, exp) VALUES (?, ?, ?)",
+                arguments: [nonce, issuedAt.timeIntervalSince1970, exp.timeIntervalSince1970]
+            )
+            try db.execute(
+                sql: """
+                    DELETE FROM link_codes WHERE nonce NOT IN (
+                        SELECT nonce FROM link_codes ORDER BY issued_at DESC, rowid DESC LIMIT ?
+                    )
+                    """,
+                arguments: [keeping]
+            )
+        }
+    }
+
+    func linkCode(_ nonce: String) throws -> LinkCode? {
+        try queue.read { try Self.fetchLinkCode(nonce, $0) }
+    }
+
+    /// Every stored code, newest first.
+    func linkCodes() throws -> [LinkCode] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM link_codes ORDER BY issued_at DESC, rowid DESC").map(Self.linkCode)
+        }
+    }
+
+    /// Links `device` with `nonce` in one transaction: the decision is
+    /// re-checked there, and only a `.valid` one marks the code used by the
+    /// device, upserts its row (a re-link keeps the owner's grants) and
+    /// forgets its refusal. Returns the decision it found.
+    func linkDevice(_ device: LinkedDevice, nonce: String, now: Date) throws -> LinkDecision {
+        try queue.write { db in
+            let decision = LinkDecision.of(try Self.fetchLinkCode(nonce, db), deviceID: device.deviceID, now: now)
+            guard decision == .valid else { return decision }
+            try db.execute(
+                sql: "UPDATE link_codes SET used_by_device = ?, used_at = ? WHERE nonce = ?",
+                arguments: [device.deviceID, now.timeIntervalSince1970, nonce]
+            )
+            try db.execute(
+                sql: """
+                    INSERT INTO devices (device_id, name, scope, user_record_name, linked_at, typing_allowed,
+                                         start_sessions_allowed, decided_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(device_id) DO UPDATE SET
+                        name = excluded.name, scope = excluded.scope,
+                        user_record_name = excluded.user_record_name, linked_at = excluded.linked_at
+                    """,
+                arguments: [
+                    device.deviceID, device.name, device.scope.rawValue, device.userRecordName,
+                    device.linkedAt.timeIntervalSince1970, device.typingAllowed, device.startSessionsAllowed,
+                    device.decidedAt?.timeIntervalSince1970
+                ]
+            )
+            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ?", arguments: [device.deviceID])
+            return .valid
+        }
+    }
+
+    func linkedDevice(_ deviceID: String) throws -> LinkedDevice? {
+        try queue.read { db in
+            try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ?", arguments: [deviceID]).map(Self.device)
+        }
+    }
+
+    /// Every linked phone, oldest link first (two phones of one name are
+    /// told apart by `linkedAt`).
+    func linkedDevices() throws -> [LinkedDevice] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM devices ORDER BY linked_at, device_id").map(Self.device)
+        }
+    }
+
+    /// Deletes the device's row and refusal; the removed row, nil when it
+    /// was not linked.
+    func removeLinkedDevice(_ deviceID: String) throws -> LinkedDevice? {
+        try queue.write { db in
+            let row = try Row.fetchOne(db, sql: "SELECT * FROM devices WHERE device_id = ?", arguments: [deviceID])
+            try db.execute(sql: "DELETE FROM devices WHERE device_id = ?", arguments: [deviceID])
+            try db.execute(sql: "DELETE FROM link_refusals WHERE device_id = ?", arguments: [deviceID])
+            return row.map(Self.device)
+        }
+    }
+
+    /// A grant the owner decides per phone (spec §10).
+    enum DeviceGrantKind: String {
+        case typing = "typing_allowed"
+        case startSessions = "start_sessions_allowed"
+    }
+
+    /// Sets one grant of a linked device and stamps `decided_at`. False
+    /// when the device is not linked.
+    func setDeviceGrant(_ grant: DeviceGrantKind, _ allowed: Bool, deviceID: String, at date: Date) throws -> Bool {
+        try queue.write { db in
+            try db.execute(
+                sql: "UPDATE devices SET \(grant.rawValue) = ?, decided_at = ? WHERE device_id = ?",
+                arguments: [allowed, date.timeIntervalSince1970, deviceID]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    func saveLinkRefusal(_ refusal: LinkRefusalRecord) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO link_refusals (device_id, name, scope, reason, at) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(device_id) DO UPDATE SET
+                        name = excluded.name, scope = excluded.scope, reason = excluded.reason, at = excluded.at
+                    """,
+                arguments: [
+                    refusal.deviceID, refusal.name, refusal.scope.rawValue, refusal.reason.rawValue,
+                    refusal.at.timeIntervalSince1970
+                ]
+            )
+        }
+    }
+
+    /// Every remembered refusal, newest first.
+    func linkRefusals() throws -> [LinkRefusalRecord] {
+        try queue.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM link_refusals ORDER BY at DESC, device_id").map { row in
+                LinkRefusalRecord(
+                    deviceID: row["device_id"], name: row["name"], scope: DeviceScope(rawValue: row["scope"]),
+                    reason: LinkRefusal(rawValue: row["reason"]), at: Date(timeIntervalSince1970: row["at"])
+                )
+            }
+        }
+    }
+
+    func pruneLinkRefusals(olderThan date: Date) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM link_refusals WHERE at < ?", arguments: [date.timeIntervalSince1970])
+        }
+    }
+
+    /// Take over (spec §2.3): forgets every code, linked phone and refusal.
+    func clearLinkState() throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM link_refusals")
+        }
+    }
+
+    private static func fetchLinkCode(_ nonce: String, _ db: Database) throws -> LinkCode? {
+        try Row.fetchOne(db, sql: "SELECT * FROM link_codes WHERE nonce = ?", arguments: [nonce]).map(linkCode)
+    }
+
+    private static func linkCode(_ row: Row) -> LinkCode {
+        LinkCode(
+            nonce: row["nonce"],
+            issuedAt: Date(timeIntervalSince1970: row["issued_at"]),
+            exp: Date(timeIntervalSince1970: row["exp"]),
+            usedByDevice: row["used_by_device"]
+        )
+    }
+
+    private static func device(_ row: Row) -> LinkedDevice {
+        LinkedDevice(
+            deviceID: row["device_id"],
+            name: row["name"],
+            scope: DeviceScope(rawValue: row["scope"]),
+            userRecordName: row["user_record_name"],
+            linkedAt: Date(timeIntervalSince1970: row["linked_at"]),
+            typingAllowed: row["typing_allowed"],
+            startSessionsAllowed: row["start_sessions_allowed"],
+            decidedAt: (row["decided_at"] as Double?).map(Date.init(timeIntervalSince1970:))
+        )
     }
 
     // MARK: - Account-change reset

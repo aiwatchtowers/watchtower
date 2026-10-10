@@ -1881,12 +1881,11 @@ final class AppState {
             }
         ).register(on: dispatcher)
         // Starts take the Desktop's own start (Work on it's path) and stops
-        // `TerminalCenter.close` (spec §6.5). Every device has the spec's
-        // default grants (no typing, starts allowed) until the Mac decides
-        // them per device (A8).
+        // `TerminalCenter.close` (spec §6.5), under the linked phone's own
+        // grants (`devices`, A8).
         SessionStartStopHandlers(
             dbPool: dbPool, workbenches: workbenchesViewModel, terminalCenter: terminalCenter,
-            deviceGrant: { _ in .specDefaults },
+            deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
         ).register(on: dispatcher)
         // The folder's git status goes through the CLI (PROJ-10's git); no
@@ -1922,7 +1921,8 @@ final class AppState {
             CalendarEventSlice(),
             MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
             RecordingJobSlice(sidecar: storage.sidecar),
-            SessionTimelineSlice(sessions: sessions, sidecar: sidecar)
+            SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
+            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID())
         ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
         let transport = storage.transport
         let publisher = SlicePublisher(
@@ -1946,17 +1946,10 @@ final class AppState {
         )
         let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports]
         let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings]
-        let processor = RelayProcessor(
-            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
-            hubID: try storage.sidecar.ensureHubID(),
-            // Until A8 reads the linked devices, the default gate passes any upload naming one.
+        return try assembleMobileHub(
+            storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
         )
-        return MobileHubService(
-            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: .live(dbPool: dbPool, ownerUser: storage.ownerUser),
-            companions: companions
-        ) { [weak self] in self?.isMobileSyncEnabled ?? false }
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

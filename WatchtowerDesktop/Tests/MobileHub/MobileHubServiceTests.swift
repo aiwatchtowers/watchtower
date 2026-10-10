@@ -20,6 +20,7 @@ final class MobileHubServiceTests: XCTestCase {
     override func setUp() async throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
         sidecar = try HubSyncState.inMemory()
+        try sidecar.linkTestDevice("device-a")
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         defaults = UserDefaults(suiteName: suiteName)
     }

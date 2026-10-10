@@ -1,14 +1,14 @@
 import Foundation
 
 /// CloudKit zone identifiers. rawValue is the CKRecordZone name (Plan 2).
-public enum CloudZoneID: String, Codable, CaseIterable {
+public enum CloudZoneID: String, Codable, CaseIterable, Sendable {
     case data = "DataZone"
     case relay = "RelayZone"
 }
 
 /// One record on the wire: identity + opaque payload. The real transport
 /// (Plan 2) maps this 1:1 onto a CKRecord with `payload` in encryptedValues.
-public struct CloudRecord: Equatable {
+public struct CloudRecord: Equatable, Sendable {
     public let recordName: String
     public let zone: CloudZoneID
     public let kind: String
@@ -28,6 +28,12 @@ public struct CloudRecord: Equatable {
     /// stash is cleaned up. nil means no asset field, and a rewrite with nil
     /// REMOVES a previously attached asset.
     public let assetFileURL: URL?
+    /// `CKRecord.creatorUserRecordID.recordName` of a fetched record: who
+    /// wrote it. The hub's device gate checks it in `shared` scope (spec
+    /// §5.2 rule 4). Read-only server metadata: never sent on a save, nil
+    /// for a record this device built, in the in-memory fake unless a test
+    /// sets it, and for an event buffered before the field existed.
+    public let creatorUserRecordName: String?
 
     public init(
         recordName: String,
@@ -36,7 +42,8 @@ public struct CloudRecord: Equatable {
         modifiedAt: Date,
         payload: Data,
         notifyLevel: String? = nil,
-        assetFileURL: URL? = nil
+        assetFileURL: URL? = nil,
+        creatorUserRecordName: String? = nil
     ) {
         self.recordName = recordName
         self.zone = zone
@@ -45,6 +52,7 @@ public struct CloudRecord: Equatable {
         self.payload = payload
         self.notifyLevel = notifyLevel
         self.assetFileURL = assetFileURL
+        self.creatorUserRecordName = creatorUserRecordName
     }
 }
 

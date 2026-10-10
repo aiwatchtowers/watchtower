@@ -16,6 +16,9 @@ final class RelayProcessorTests: XCTestCase {
     override func setUp() async throws {
         transport = StubHubTransport()
         sidecar = try HubSyncState.inMemory()
+        // Every test action comes from this linked phone (the device gate
+        // has its own tests in MobileLinkCenterTests).
+        try sidecar.linkTestDevice("device-a")
         dispatcher = MobileHubCommandDispatcher()
     }
 
