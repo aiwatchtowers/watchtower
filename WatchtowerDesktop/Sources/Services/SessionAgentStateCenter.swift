@@ -28,7 +28,9 @@ extension NotificationService: SessionAgentNotifying {}
 /// going with the Workbench tab or the window closed. Never writes: Go is the
 /// only writer of those columns. Each change feeds `SessionAgentNoticePolicy`:
 /// a session turning to the owner is announced while the app is in the
-/// background (decision 12).
+/// background (decision 12). Its `SessionBackgroundProber` runs the
+/// staleness probe of a silent background agent count (#411) — the probe's
+/// CLI writes, the center only reads again.
 @MainActor
 @Observable
 final class SessionAgentStateCenter {
@@ -52,6 +54,8 @@ final class SessionAgentStateCenter {
     /// write.
     @ObservationIgnored private let clock: @Sendable () -> Date
     @ObservationIgnored private var notices = SessionAgentNoticePolicy()
+    /// nil without a CLI runner: no count is probed, and none shows over.
+    @ObservationIgnored private let prober: SessionBackgroundProber?
     /// Whether the app is frontmost, when a banner is not needed. Without an
     /// application object (a test host) nothing is posted.
     @ObservationIgnored var isAppActive: () -> Bool = { NSApp?.isActive ?? true }
@@ -83,7 +87,8 @@ final class SessionAgentStateCenter {
         defaults: UserDefaults = .standard,
         notificationCenter: NotificationCenter = .default,
         read: Reader? = nil,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        probeRunner: (any CLIRunnerProtocol)? = nil
     ) {
         self.terminalCenter = terminalCenter
         self.interval = interval
@@ -94,6 +99,8 @@ final class SessionAgentStateCenter {
         self.read = read ?? { ids in
             try await dbPool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: ids) }
         }
+        prober = probeRunner.map { SessionBackgroundProber(runner: $0) }
+        prober?.onSettled = { [weak self] in self?.refresh() }
     }
 
     /// Whether the 1 s loop is running (a test seam).
@@ -119,10 +126,13 @@ final class SessionAgentStateCenter {
         notifier.withdrawAllSessionAgentNotices()
     }
 
+    /// Stops following and cancels every staleness probe in flight (its
+    /// child gets SIGTERM).
     func stop() {
         following = false
         pollTask?.cancel()
         pollTask = nil
+        prober?.stop()
         if let activationObserver { notificationCenter.removeObserver(activationObserver) }
         activationObserver = nil
     }
@@ -163,11 +173,16 @@ final class SessionAgentStateCenter {
 
     /// The last good read under the current liveness and run starts: a
     /// session that stopped or started again loses its previous run's hook
-    /// state at once, not a read later.
+    /// state at once, not a read later. Then the counts silent long enough
+    /// are probed.
     private func publishResolved() {
-        publish(SessionAgentStatus.resolve(
-            rows, liveIDs: terminalCenter.liveClaudeIDs, startedAt: terminalCenter.startedAt, now: clock()
-        ))
+        let now = clock()
+        let live = terminalCenter.liveClaudeIDs
+        let startedAt = terminalCenter.startedAt
+        let over = prober?.displayOver(rows, liveIDs: live, startedAt: startedAt) ?? []
+        let next = SessionAgentStatus.resolve(rows, liveIDs: live, startedAt: startedAt, now: now, displayOver: over)
+        publish(next)
+        prober?.probeDue(rows, statuses: next, startedAt: startedAt, now: now)
     }
 
     /// Assigned only on a change, so an unchanged read re-renders nothing;

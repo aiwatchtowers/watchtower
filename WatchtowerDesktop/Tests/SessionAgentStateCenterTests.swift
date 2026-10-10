@@ -96,7 +96,8 @@ final class SessionAgentStateCenterTests: XCTestCase {
     private func makeCenter(
         interval: Duration = .milliseconds(20),
         read: SessionAgentStateCenter.Reader? = nil,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        probeRunner: (any CLIRunnerProtocol)? = nil
     ) -> SessionAgentStateCenter {
         let reader: SessionAgentStateCenter.Reader = read ?? { [pool, log] ids in
             try log?.record(ids)
@@ -105,7 +106,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         let center = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, interval: interval, notifier: notifier, defaults: defaults,
-            notificationCenter: activations, read: reader, clock: clock
+            notificationCenter: activations, read: reader, clock: clock, probeRunner: probeRunner
         )
         center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
@@ -647,6 +648,96 @@ final class SessionAgentStateCenterTests: XCTestCase {
                                                title: "Release work stopped", body: "acme")])
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 1, "announced once")
+    }
+
+    /// The row a background test reads, which a fake Go write changes.
+    private final class StoredRow: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: SessionAgentStateRow
+
+        init(_ value: SessionAgentStateRow) { self.value = value }
+
+        var row: SessionAgentStateRow {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
+
+    private func backgroundRow(_ row: TerminalSession) -> SessionAgentStateRow {
+        SessionAgentStateRow(
+            id: row.id, projectID: row.projectID, title: "Release work", agentState: "waiting",
+            agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 2, agentBackgroundAt: stamp(2)
+        )
+    }
+
+    /// #411 §10: a count silent for 30 minutes is probed; the CLI ends it
+    /// (the only writer), the center reads the row again at once and
+    /// announces Stopped once.
+    func testAProbeThatEndsTheCountPostsOneStoppedNotice() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let stored = StoredRow(backgroundRow(row))
+        let runner = ScriptedProbeRunner {
+            // What Go's compare-and-clear leaves.
+            stored.row.agentBackground = nil
+            return Data(ProbeAnswer.ran("idle", ended: true).utf8)
+        }
+        let clock = ManualClock(started.addingTimeInterval(2 + 31 * 60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored.row] }, clock: { clock.now },
+                                probeRunner: runner)
+        await center.poll()
+        await eventually("the probe ends the count and the center reads it") {
+            center.statuses[row.id]?.state == .live(.stopped)
+        }
+        XCTAssertEqual(runner.invocations, [[
+            "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
+        ]])
+        XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work stopped", body: "acme")])
+        clock.now = clock.now.addingTimeInterval(3600)
+        await center.poll()
+        XCTAssertEqual(notifier.posted.count, 1, "announced once")
+        XCTAssertEqual(runner.invocations.count, 1, "no count, no probe")
+    }
+
+    /// #411 §10 (F24): two probes that cannot run show the count over —
+    /// Stopped, one notice — while the row never changes; a new report
+    /// brings Agents working back.
+    func testTwoFailedProbesShowStoppedOnceWithoutAWrite() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let stored = StoredRow(backgroundRow(row))
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
+        let clock = ManualClock(started.addingTimeInterval(2 + 31 * 60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored.row] }, clock: { clock.now },
+                                probeRunner: runner)
+        await center.poll()
+        await eventually("the first probe runs") { runner.invocations.count == 1 }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2),
+                       "one failed probe changes nothing")
+        XCTAssertEqual(notifier.posted, [])
+
+        clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
+        await center.poll()
+        await eventually("two failed probes show the count over") {
+            center.statuses[row.id]?.state == .live(.stopped)
+        }
+        XCTAssertEqual(stored.row, backgroundRow(row), "nothing written")
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work stopped", body: "acme")])
+        clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
+        await center.poll()
+        await eventually("the probe is tried again") { runner.invocations.count == 3 }
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertEqual(notifier.posted.count, 1, "announced once")
+
+        stored.row.agentBackgroundAt = stamp(clock.now.timeIntervalSince(started))
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2),
+                       "a new report is a new count")
     }
 
     // MARK: - Views
