@@ -564,10 +564,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
 
-        try await pool.write { try $0.execute(sql: """
-            CREATE TEMP TRIGGER refuse_session_insert BEFORE INSERT ON terminal_sessions
-            BEGIN SELECT RAISE(ABORT, 'insert refused'); END
-            """) }
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuse_session_insert BEFORE INSERT ON terminal_sessions
+                BEGIN SELECT RAISE(ABORT, 'insert refused'); END
+                """)
+        }
         await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
         try await pool.write { try $0.execute(sql: "DROP TRIGGER temp.refuse_session_insert") }
         let error = try XCTUnwrap(vm.sessionErrors[p])
@@ -599,10 +601,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
         await vm.reload()
 
-        try await pool.write { try $0.execute(sql: """
-            CREATE TEMP TRIGGER refuse_target_update BEFORE UPDATE ON targets
-            BEGIN SELECT RAISE(ABORT, 'update refused'); END
-            """) }
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuse_target_update BEFORE UPDATE ON targets
+                BEGIN SELECT RAISE(ABORT, 'update refused'); END
+                """)
+        }
         await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
         try await pool.write { try $0.execute(sql: "DROP TRIGGER temp.refuse_target_update") }
 
