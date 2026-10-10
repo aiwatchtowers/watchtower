@@ -32,10 +32,13 @@ enum MobileLinkError: Error, Equatable, LocalizedError {
 ///   link then), opens the public link and stores the code (`exp = iat + 600`).
 /// - `closeLink(reason:)` runs on use, at expiry and when the sheet closes:
 ///   it closes the public link, then removes every participant whose iCloud
-///   user is not a linked `shared` phone (one bound to a used nonce). A
-///   failed close stays marked in `hub_meta` and is retried by the next close
-///   (`.restart` at the next hub build). It never touches shares the hub
-///   did not open the link on.
+///   user is not a linked `shared` phone (one bound to a used nonce). The
+///   sweep runs only while `hub_meta` marks it pending (the link was opened,
+///   or a Remove failed to drop its participant); a failed sweep keeps the
+///   mark and is retried by the next close (`.restart` at the next hub build).
+/// - Every share call is bounded (`shareTimeout`): offline CloudKit waits
+///   for connectivity, and `handleDevice` runs inside the relay pass, which a
+///   hub stop waits for. The close after a link runs outside the pass.
 /// - `handleDevice(_:)` links a phone whose record carries a valid nonce,
 ///   written by the phone's own user (`shared`: the record's creator equals
 ///   `user_record_name` and has accepted both shares). A refused nonce is
@@ -58,9 +61,10 @@ final class MobileLinkCenter {
 
     /// `link_codes` keeps this many, newest first (spec §2.3).
     nonisolated static let keptCodes = 50
-    /// `hub_meta`: "1" from just before the public link opens until it is
-    /// closed for sure.
-    nonisolated static let publicLinkOpenKey = "share_link_open"
+    /// `hub_meta`: "1" while the shares need a close-and-sweep (from just
+    /// before the public link opens, or after a Remove whose participant
+    /// removal failed) until a close succeeds.
+    nonisolated static let sweepPendingKey = "share_sweep_pending"
     /// Bound on the iCloud user lookup.
     nonisolated static let ownerLookupTimeout: Duration = .seconds(30)
 
@@ -79,6 +83,9 @@ final class MobileLinkCenter {
     @ObservationIgnored private let nudge: @MainActor (Set<SliceKind>) -> Void
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
+    @ObservationIgnored private let shareTimeout: Duration
+    /// The close that follows a link, run outside the relay pass.
+    @ObservationIgnored private(set) var closeAfterLink: Task<Void, Never>?
     @ObservationIgnored private var knownOwnerUser: String?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
     /// Bumped each time the public link opens, so a close that was
@@ -93,7 +100,8 @@ final class MobileLinkCenter {
         ownerUser: @escaping @Sendable () async -> String?,
         nudge: @escaping @MainActor (Set<SliceKind>) -> Void,
         now: @escaping @Sendable () -> Date = { Date() },
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        shareTimeout: Duration = MobileHubService.defaultCloudTimeout
     ) {
         self.sidecar = sidecar
         self.shares = shares
@@ -102,6 +110,7 @@ final class MobileLinkCenter {
         self.nudge = nudge
         self.now = now
         self.sleep = sleep
+        self.shareTimeout = shareTimeout
         reloadDevices()
     }
 
@@ -132,7 +141,12 @@ final class MobileLinkCenter {
 
     /// The Mac's iCloud account, for Settings → Mobile's sentences.
     func accountAvailability() async -> CloudAvailability {
-        await shares.accountStatus()
+        let shares = self.shares
+        do {
+            return try await share { await shares.accountStatus() }
+        } catch {
+            return .unavailable(error.localizedDescription)
+        }
     }
 
     // MARK: - The QR code and the public link
@@ -140,7 +154,7 @@ final class MobileLinkCenter {
     /// A new QR code (Use Watchtower on iPhone, New code). Throws without
     /// iCloud or the Mac's user name; nothing is created then.
     func issueCode() async throws -> LinkPayload {
-        let account = await shares.accountStatus()
+        let account = await accountAvailability()
         guard account == .available else { throw MobileLinkError.account(account) }
         guard let owner = await resolveOwnerUser() else { throw MobileLinkError.ownerUnknown }
         let hubID = try sidecar.ensureHubID()
@@ -162,11 +176,12 @@ final class MobileLinkCenter {
     /// share URLs in the QR) when sharing fails.
     private func openPublicLink() async -> ShareURLs? {
         do {
-            let urls = try await shares.ensureShares()
+            let shares = self.shares
+            let urls = try await share { try await shares.ensureShares() }
             linkEpoch += 1
             // Marked before it opens: a crash in between still closes it.
-            try sidecar.setMetaValue("1", forKey: Self.publicLinkOpenKey)
-            try await shares.setPublicLink(open: true)
+            try sidecar.setMetaValue("1", forKey: Self.sweepPendingKey)
+            try await share { try await shares.setPublicLink(open: true) }
             onSharingChanged?(.available)
             return urls
         } catch {
@@ -184,6 +199,9 @@ final class MobileLinkCenter {
         expiryTask = Task { [sleep] in
             await sleep(.seconds(wait))
             guard !Task.isCancelled else { return }
+            // Detach first: the close cancels `expiryTask`, which would
+            // otherwise cancel this very close mid-flight.
+            self.expiryTask = nil
             await self.closeLinkIfExpired()
         }
     }
@@ -201,15 +219,16 @@ final class MobileLinkCenter {
         expiryTask = nil
         openCode = nil
         do {
-            guard try sidecar.metaValue(forKey: Self.publicLinkOpenKey) == "1" else { return }
+            guard try sidecar.metaValue(forKey: Self.sweepPendingKey) == "1" else { return }
             let epoch = linkEpoch
-            try await shares.setPublicLink(open: false)
+            let shares = self.shares
+            try await share { try await shares.setPublicLink(open: false) }
             let bound = Set(try sidecar.linkedDevices().filter { $0.scope == .shared }.map(\.userRecordName))
             for zone in [CloudZoneID.data, .relay] {
-                try await shares.removeParticipants(in: zone) { !bound.contains($0.userRecordName ?? "") }
+                try await share { try await shares.removeParticipants(in: zone) { !bound.contains($0.userRecordName ?? "") } }
             }
             guard epoch == linkEpoch else { return }
-            try sidecar.setMetaValue("0", forKey: Self.publicLinkOpenKey)
+            try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
         } catch {
             let why = error.localizedDescription
             logger.error("share link not closed (\(reason.rawValue, privacy: .public)), retried at the next close: \(why, privacy: .public)")
@@ -263,7 +282,8 @@ final class MobileLinkCenter {
         logger.info("linked phone \(payload.deviceID, privacy: .public) (\(payload.scope.rawValue, privacy: .public))")
         reloadDevices()
         nudge([.deviceGrant])
-        await closeLink(reason: .used)
+        // Outside the relay pass: the close's share calls never hold it.
+        closeAfterLink = Task { await self.closeLink(reason: .used) }
     }
 
     /// Publishes the refusal, unless the phone is linked already: a linked
@@ -289,7 +309,8 @@ final class MobileLinkCenter {
     private func hasAcceptedBothShares(_ userRecordName: String) async -> Bool {
         do {
             for zone in [CloudZoneID.data, .relay] {
-                let participants = try await shares.participants(in: zone)
+                let shares = self.shares
+                let participants = try await share { try await shares.participants(in: zone) }
                 guard participants.contains(where: { $0.userRecordName == userRecordName && $0.accepted }) else {
                     logger.warning("phone user has not accepted the \(zone.rawValue, privacy: .public) share: no grant")
                     return false
@@ -304,9 +325,11 @@ final class MobileLinkCenter {
 
     // MARK: - The phone list (Settings → Mobile)
 
-    /// Remove (spec §2.3): the device leaves `devices`, its `device_grant`
-    /// is deleted at the next publish, and in `shared` scope its iCloud user
-    /// leaves both shares (unless another linked phone is on that user).
+    /// Remove (spec §2.3): the device leaves `devices` (the gate refuses it
+    /// at once), its `device_grant` is deleted at the next publish, and in
+    /// `shared` scope its iCloud user leaves both shares (unless another
+    /// linked phone is on that user). A failed participant removal marks the
+    /// sweep pending, so the next close removes it, and is rethrown.
     func remove(deviceID: String) async throws {
         guard let removed = try sidecar.removeLinkedDevice(deviceID) else { return }
         reloadDevices()
@@ -315,8 +338,14 @@ final class MobileLinkCenter {
         guard removed.scope == .shared, !devices.contains(where: { $0.scope == .shared && $0.userRecordName == name }) else {
             return
         }
-        for zone in [CloudZoneID.data, .relay] {
-            try await shares.removeParticipants(in: zone) { $0.userRecordName == name }
+        let shares = self.shares
+        do {
+            for zone in [CloudZoneID.data, .relay] {
+                try await share { try await shares.removeParticipants(in: zone) { $0.userRecordName == name } }
+            }
+        } catch {
+            try sidecar.setMetaValue("1", forKey: Self.sweepPendingKey)
+            throw error
         }
     }
 
@@ -361,8 +390,9 @@ final class MobileLinkCenter {
         expiryTask = nil
         openCode = nil
         do {
-            try await shares.deleteShares()
-            try sidecar.setMetaValue("0", forKey: Self.publicLinkOpenKey)
+            let shares = self.shares
+            try await share { try await shares.deleteShares() }
+            try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
         } catch {
             logger.error("take over: zone shares not deleted: \(error.localizedDescription, privacy: .public)")
         }
@@ -393,6 +423,20 @@ final class MobileLinkCenter {
         guard let found = lookedUp.flatMap({ $0 }) else { return nil }
         knownOwnerUser = found
         return found
+    }
+
+    /// Runs one share call for at most `shareTimeout`; a call still running
+    /// then is cancelled and left to end on its own.
+    private func share<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        let outcome = await MobileHubService.bounded(shareTimeout) { () -> Result<T, Error> in
+            do {
+                return .success(try await operation())
+            } catch {
+                return .failure(error)
+            }
+        }
+        guard let outcome else { throw ShareServiceError.timedOut }
+        return try outcome.get()
     }
 
     /// Unix-second stamps on the wire.

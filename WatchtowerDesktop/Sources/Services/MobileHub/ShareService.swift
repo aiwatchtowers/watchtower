@@ -36,15 +36,26 @@ protocol ShareService: Sendable {
     func deleteShares() async throws
 }
 
-/// The CloudKit implementation over the Mac user's private database. Only a
-/// signed build with the iCloud entitlement reaches it (the hub runs only
-/// after the transport saw iCloud available). Not unit-tested: CloudKit
-/// needs a signed build and a real account (the A14 device smoke).
+/// The CloudKit implementation over the Mac user's private database.
+/// Without the iCloud entitlement (an unsigned dev build) it never touches
+/// `CKContainer`, which would crash: the account reads `.unavailable` and
+/// every other call throws `ShareServiceError.noEntitlement`. The CloudKit
+/// calls themselves are not unit-tested: they need a signed build and a real
+/// account (the A14 device smoke).
 struct CloudKitShareService: ShareService {
     let containerID: String
+    private let entitlementPresent: @Sendable () -> Bool
 
-    init(containerID: String = WatchtowerCloud.containerID) {
+    init(
+        containerID: String = WatchtowerCloud.containerID,
+        entitlementPresent: (@Sendable () -> Bool)? = nil
+    ) {
         self.containerID = containerID
+        self.entitlementPresent = entitlementPresent ?? { CloudKitTransport.entitlementPresent(containerID: containerID) }
+    }
+
+    private func requireEntitlement() throws {
+        guard entitlementPresent() else { throw ShareServiceError.noEntitlement }
     }
 
     private var database: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
@@ -61,6 +72,7 @@ struct CloudKitShareService: ShareService {
     }
 
     func accountStatus() async -> CloudAvailability {
+        guard entitlementPresent() else { return .unavailable("missing iCloud entitlement (unsigned dev build?)") }
         do {
             switch try await CKContainer(identifier: containerID).accountStatus() {
             case .available: return .available
@@ -76,6 +88,7 @@ struct CloudKitShareService: ShareService {
     }
 
     func ensureShares() async throws -> ShareURLs {
+        try requireEntitlement()
         var urls: [CloudZoneID: String] = [:]
         for zone in [CloudZoneID.data, .relay] {
             let share: CKShare
@@ -94,6 +107,7 @@ struct CloudKitShareService: ShareService {
     }
 
     func setPublicLink(open: Bool) async throws {
+        try requireEntitlement()
         for zone in [CloudZoneID.data, .relay] {
             guard let share = try await fetchShare(zone) else { continue }
             share.publicPermission = open ? Self.publicPermission(for: zone) : .none
@@ -102,11 +116,13 @@ struct CloudKitShareService: ShareService {
     }
 
     func participants(in zone: CloudZoneID) async throws -> [ShareParticipant] {
+        try requireEntitlement()
         guard let share = try await fetchShare(zone) else { return [] }
         return share.participants.filter { $0.role != .owner }.map(Self.participant)
     }
 
     func removeParticipants(in zone: CloudZoneID, where shouldRemove: @escaping @Sendable (ShareParticipant) -> Bool) async throws {
+        try requireEntitlement()
         guard let share = try await fetchShare(zone) else { return }
         let leaving = share.participants.filter { $0.role != .owner && shouldRemove(Self.participant($0)) }
         guard !leaving.isEmpty else { return }
@@ -115,6 +131,7 @@ struct CloudKitShareService: ShareService {
     }
 
     func deleteShares() async throws {
+        try requireEntitlement()
         let ids = [CloudZoneID.data, .relay].map(Self.shareID)
         let (_, results) = try await database.modifyRecords(saving: [], deleting: ids)
         for (_, result) in results {
@@ -149,9 +166,14 @@ struct CloudKitShareService: ShareService {
 enum ShareServiceError: Error, LocalizedError {
     case noURL(CloudZoneID)
     case noSaveResult
+    case noEntitlement
+    /// A share call outlived `MobileLinkCenter`'s share timeout.
+    case timedOut
 
     var errorDescription: String? {
         switch self {
+        case .noEntitlement: return "This build has no iCloud entitlement"
+        case .timedOut: return "iCloud didn't answer in time"
         case .noURL(let zone): return "The \(zone.rawValue) share has no URL"
         case .noSaveResult: return "iCloud did not return the saved share"
         }
