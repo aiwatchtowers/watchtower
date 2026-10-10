@@ -18,7 +18,8 @@ struct WorkbenchTargetPanel: View {
     @Binding var titleDraft: String
     /// `WorkbenchesViewModel.showAsk`: an Asks row opens the ask drawer.
     let onShowAsk: (Int64, Int64) async -> Bool
-    /// Why an ask did not open (the asks' `loadErrors`); nil = it is gone.
+    /// Why an ask did not open (the asks' `loadErrors`), a full sentence
+    /// shown as is in the error row; nil = it is gone.
     let askOpenFailure: () -> String?
     /// Open group: enters the group as the board scope (spec 2026-10-06
     /// Part 4).
@@ -275,9 +276,7 @@ struct WorkbenchTargetPanel: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 20) {
-            WorkbenchPanelDescription(targetID: target.id, intent: target.intent) { text, original, id in
-                vm.saveIntent(text, original: original, for: id)
-            }
+            WorkbenchPanelDescription(vm: vm, targetID: target.id, intent: target.intent)
             if mode == .group {
                 WorkbenchGroupSubtasks(group: node, showArchived: vm.showArchived) { vm.push($0) }
                     // Its folds are this group's own: another group starts unfolded.

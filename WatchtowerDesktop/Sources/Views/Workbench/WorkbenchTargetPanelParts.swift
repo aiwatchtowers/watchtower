@@ -55,32 +55,30 @@ struct WorkbenchDetailMenuLabel: View {
 
 /// The panel's description (spec 2026-10-06 Part 3): folded to six lines
 /// with Show all when longer; a click opens the editor, where ⌘↩ or focus
-/// loss saves and Esc cancels. A failed save keeps the editor and the
-/// draft (the panel's error row says why) — after a switch too: the draft
-/// stays bound to its own target and is back when the panel returns to it.
+/// loss saves and Esc cancels. The draft lives in the view model per target
+/// (`WorkbenchBoardViewModel.descriptionDraft(for:)`): a failed save keeps
+/// the editor and the draft (the panel's error row says why) — after a
+/// switch too, where the draft stays on its own target and is back when the
+/// panel returns to it, whatever is edited meanwhile.
 struct WorkbenchPanelDescription: View {
+    let vm: WorkbenchBoardViewModel
     let targetID: Int
     let intent: String
-    /// `WorkbenchBoardViewModel.saveIntent(_:original:for:)` on the target
-    /// the editor was opened on, with the text it opened with: whether the
-    /// text is saved.
-    let onSave: (_ text: String, _ original: String, _ targetID: Int) -> Bool
 
     static let foldedLines = 6
 
-    @State private var draft = ""
-    /// The description the editor opened with: a save never writes this
-    /// snapshot over a newer description (`saveIntent`'s `original`).
-    @State private var original = ""
-    /// The target the editor was opened on: a save that arrives after the
-    /// panel moved to another target (focus loss while it switches) still
-    /// goes to this one, never to the new one.
-    @State private var editingTargetID: Int?
     @State private var expanded = false
     @State private var foldedHeight: CGFloat = 0
     @State private var fullHeight: CGFloat = 0
 
-    private var isEditing: Bool { editingTargetID == targetID }
+    private var isEditing: Bool { vm.descriptionDraft(for: targetID) != nil }
+
+    /// The editor's text: this target's own draft.
+    private var draft: Binding<String> {
+        let id = targetID
+        return Binding(get: { vm.descriptionDraft(for: id)?.text ?? "" },
+                       set: { vm.setDescriptionDraft($0, for: id) })
+    }
     private var isTruncated: Bool { fullHeight > foldedHeight + 1 }
 
     var body: some View {
@@ -96,18 +94,15 @@ struct WorkbenchPanelDescription: View {
                 text
             }
         }
-        .onChange(of: targetID) {
-            // Moving to another target is a focus loss: the draft saves to
-            // its own target. A failure (shown in the error row) keeps the
-            // draft on that target, so returning to it reopens the editor.
-            save()
-            expanded = false
-        }
-        // The panel closing (✕, Esc, a reload that empties the path) saves
-        // explicitly rather than trusting the editor's teardown focus loss;
-        // a save that already ran cleared `editingTargetID`, so this one is
-        // a no-op then.
-        .onDisappear { save() }
+        // Moving to another target or closing the panel saves the editor in
+        // the view model (`open`, `closeDetail`): a failure keeps the draft
+        // on its own target, so returning to it reopens the editor.
+        .onChange(of: targetID) { expanded = false }
+        // The pane leaving the screen some other way saves explicitly rather
+        // than trusting the editor's teardown focus loss. After `open` or
+        // `closeDetail` this target is no longer the open one, so this does
+        // nothing then — a failed save is not retried behind its error.
+        .onDisappear { vm.saveDescriptionOnFocusLoss(for: targetID) }
     }
 
     private var text: some View {
@@ -152,8 +147,8 @@ struct WorkbenchPanelDescription: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 4) {
-            CommentTextEditor(text: $draft, placeholder: "Describe the target…", focusOnAppear: true,
-                              minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel, onEndEditing: save)
+            CommentTextEditor(text: draft, placeholder: "Describe the target…", focusOnAppear: true,
+                              minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel, onEndEditing: endEditing)
             Text("⌘↩ saves, Esc cancels")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -161,19 +156,22 @@ struct WorkbenchPanelDescription: View {
     }
 
     private func beginEditing() {
-        draft = intent
-        original = intent
-        editingTargetID = targetID
+        vm.beginDescriptionEdit(targetID)
     }
 
-    /// ⌘↩ and focus loss. After a save or a cancel the editor is gone, so
-    /// the focus loss its removal causes saves nothing.
+    /// ⌘↩ on the target this view shows. The focus loss after a switch or a
+    /// close arrives late, for a target no longer open, and saves nothing
+    /// (`saveDescriptionOnFocusLoss`): the move already saved it.
     private func save() {
-        guard let id = editingTargetID else { return }
-        if onSave(draft, original, id) { editingTargetID = nil }
+        vm.saveDescription(for: targetID)
+    }
+
+    /// Focus loss: saves only while this target is the open one.
+    private func endEditing() {
+        vm.saveDescriptionOnFocusLoss(for: targetID)
     }
 
     private func cancel() {
-        editingTargetID = nil
+        vm.cancelDescriptionEdit(targetID)
     }
 }

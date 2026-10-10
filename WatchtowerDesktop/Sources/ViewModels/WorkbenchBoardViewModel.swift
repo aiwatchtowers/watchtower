@@ -57,6 +57,20 @@ final class WorkbenchBoardViewModel {
         }
     }
 
+    /// An open description editor: the text typed so far and the
+    /// description it opened with (`saveIntent`'s `original`).
+    struct DescriptionDraft: Equatable {
+        var text: String
+        let original: String
+    }
+
+    /// Open description editors by target id (board #417): like comment
+    /// drafts, each stays with its own target, so editing another target's
+    /// description never replaces a draft kept after a failed save, and
+    /// returning to the target reopens its editor. Session state, never
+    /// remembered.
+    private var descriptionDrafts: [Int: DescriptionDraft] = [:]
+
     /// List or Kanban, remembered per project.
     var mode: WorkbenchBoardMode {
         didSet { preferences.mode = mode }
@@ -202,6 +216,7 @@ final class WorkbenchBoardViewModel {
             }
             roots = board
             panelPath = path
+            dropDescriptionDrafts(notOn: board)
             selectedComments = comments
             selectedImages = images
             selectedAsks = asks
@@ -218,6 +233,17 @@ final class WorkbenchBoardViewModel {
                 loadedTargetID = panelPath.last
             }
         }
+    }
+
+    /// A draft whose target left the board has nowhere to be saved: it is
+    /// dropped, said once, so neither a switch nor a later save raises the
+    /// error again.
+    private func dropDescriptionDrafts(notOn board: [WorkbenchBoardNode]) {
+        let gone = descriptionDrafts.keys.filter { WorkbenchBoardOutline.find($0, in: board) == nil }.sorted()
+        guard !gone.isEmpty else { return }
+        gone.forEach { descriptionDrafts[$0] = nil }
+        let labels = gone.map(WorkbenchTargetNumber.label).joined(separator: ", ")
+        errorMessage = "Dropped the unsaved description of \(labels): no longer on this board."
     }
 
     /// Reloads when anything on this project's board changed since the last
@@ -321,11 +347,15 @@ final class WorkbenchBoardViewModel {
         open(Array(panelPath.dropLast()))
     }
 
-    /// Every panel navigation: the new path, a fresh read, and the open
-    /// target's agent comments marked read.
+    /// Every panel navigation: the new path, the description editor of the
+    /// target left behind saved (a focus loss), a fresh read, and the open
+    /// target's agent comments marked read. The error row starts empty, so
+    /// only the target just left can put an error under the next one.
     private func open(_ path: [Int]) {
+        let leaving = selectedTargetID
         panelPath = path
         errorMessage = nil
+        if let leaving, leaving != path.last { saveDescription(for: leaving) }
         load()
         guard let node = selectedNode, node.unreadForOwner > 0 else { return }
         do {
@@ -344,6 +374,7 @@ final class WorkbenchBoardViewModel {
     /// a failed write from the panel (rename, status, comment) moves to the
     /// board's banner instead of vanishing with the panel.
     func closeDetail() {
+        if let id = selectedTargetID { saveDescription(for: id) }
         panelPath = []
         selectedComments = []
         selectedImages = []
@@ -524,51 +555,106 @@ final class WorkbenchBoardViewModel {
         write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
     }
 
-    /// The panel's description editor (⌘↩ or focus loss) on `id`, the
-    /// target the editor was opened on (nil = the open one): a focus loss
-    /// that lands after the panel moved on still saves to its own target.
-    /// The text is trimmed like a rename; a description unchanged once
-    /// trimmed writes nothing.
+    /// The description write behind the panel's editor
+    /// (`saveDescription(for:)`) on `id`, the target the editor was opened on
+    /// — after a move that is the target the panel left (`open`,
+    /// `closeDetail`), never the new one; a late focus loss there saves
+    /// nothing (`saveDescriptionOnFocusLoss`). Nil = the open target. The
+    /// text is trimmed like a rename; a description unchanged once trimmed
+    /// writes nothing.
     ///
     /// `original` is the description the editor opened with: a draft equal
     /// to it (once trimmed) writes nothing, even when the agent changed the
     /// description meanwhile, and a changed draft over a description that
-    /// moved since then writes nothing either — the editor keeps the draft
-    /// and `errorMessage` says so. Nil skips both checks.
+    /// moved since then writes nothing either — checked by the write itself
+    /// (`updateIntent(_:id:intent:ifUnchangedFrom:)`), so an agent write the
+    /// poll has not seen yet counts too. The editor keeps the draft and
+    /// `errorMessage` says so, naming the target.
     /// - Returns: whether the description is saved, so the editor keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func saveIntent(_ text: String, original: String? = nil, for id: Int? = nil) -> Bool {
+    func saveIntent(_ text: String, original: String, for id: Int? = nil) -> Bool {
         let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Nothing open and no editor's target: nothing to save, nothing to say.
         guard let id = id ?? selectedTargetID else { return false }
+        let label = WorkbenchTargetNumber.label(id)
         guard let node = WorkbenchBoardOutline.find(id, in: roots) else {
-            errorMessage = "Could not save the description: \(WorkbenchTargetNumber.label(id)) is no longer on this board."
+            errorMessage = "Could not save the description of \(label): it is no longer on this board."
             return false
         }
-        if let original, intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
+        if intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
         guard node.target.intent != intent else { return true }
-        if let original, node.target.intent != original {
-            errorMessage = "The description changed while you were editing. Copy your text, press Esc and edit again."
-            return false
+        let conflict: (Error) -> String? = { error in
+            guard error is TargetIntentConflictError else { return nil }
+            return "The description of \(label) changed while you were editing. "
+                + "Copy your text, press Esc and edit again."
         }
-        return write("save the description", target: id) { db in
-            try TargetQueries.updateIntent(db, id: id, intent: intent)
+        let body: (Database) throws -> Void = { db in
+            try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
         }
+        return write("save the description of \(label)", target: id, failure: conflict, body)
+    }
+
+    /// The open editor on `id`, nil when its description is not being edited.
+    func descriptionDraft(for id: Int) -> DescriptionDraft? {
+        descriptionDrafts[id]
+    }
+
+    /// A click on the description (or Add a description): opens the editor
+    /// on `id` with its description as shown. An editor already open there
+    /// keeps its draft; a target not on the board opens nothing.
+    func beginDescriptionEdit(_ id: Int) {
+        guard descriptionDrafts[id] == nil, let node = WorkbenchBoardOutline.find(id, in: roots) else { return }
+        descriptionDrafts[id] = DescriptionDraft(text: node.target.intent, original: node.target.intent)
+    }
+
+    /// Typing in the editor on `id`; ignored with no editor open there.
+    func setDescriptionDraft(_ text: String, for id: Int) {
+        descriptionDrafts[id]?.text = text
+    }
+
+    /// Esc in the editor: the draft is dropped, nothing is written.
+    func cancelDescriptionEdit(_ id: Int) {
+        descriptionDrafts[id] = nil
+    }
+
+    /// ⌘↩, a focus loss on the open target, or the panel leaving `id`
+    /// (`open`, `closeDetail`): `saveIntent` with the text the editor
+    /// opened with. A saved draft closes the editor; a failed one stays on
+    /// its own target (`errorMessage` says why), unless the target is gone
+    /// and there is nothing left to save it to.
+    /// - Returns: whether nothing is left unsaved — true with no editor open.
+    @discardableResult
+    func saveDescription(for id: Int) -> Bool {
+        guard let draft = descriptionDrafts[id] else { return true }
+        let saved = saveIntent(draft.text, original: draft.original, for: id)
+        if saved || WorkbenchBoardOutline.find(id, in: roots) == nil { descriptionDrafts[id] = nil }
+        return saved
+    }
+
+    /// The editor's focus loss and the pane leaving the screen: saves `id`
+    /// only while it is the open target. Once the panel moved on or closed,
+    /// `open` and `closeDetail` already saved it, and the editor's late
+    /// end-of-editing must not retry a failed save behind the error row.
+    func saveDescriptionOnFocusLoss(for id: Int) {
+        guard id == selectedTargetID else { return }
+        saveDescription(for: id)
     }
 
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
     /// the "Waiting for you" stack row's path, so a click never starts an
-    /// agent. When it opens nothing, `failure` names why (the asks'
-    /// `loadErrors`, a read error included); without a reason the ask is
-    /// gone. Either says so in the panel's error row.
+    /// agent. When it opens nothing, the panel's error row says why.
+    /// - Parameter failure: the reason, a full sentence shown as is — never
+    ///   prefixed here (the asks' `loadErrors`: "That ask no longer
+    ///   exists.", "Could not load the ask: …"; the board view's own "Could
+    ///   not open the ask: …"). Nil reads as the ask being gone.
     func openAsk(
         _ askID: Int64,
         show: (Int64, Int64) async -> Bool,
         failure: () -> String? = { nil }
     ) async {
         guard await !show(askID, projectID) else { return }
-        errorMessage = failure().map { "Could not open the ask: \($0)" } ?? "This ask is gone."
+        errorMessage = failure() ?? "This ask is gone."
     }
 
     /// The composer's send: the open target's own draft, cleared once the
@@ -610,11 +696,13 @@ final class WorkbenchBoardViewModel {
     /// reload. The hook fires only after the write succeeded — for the target
     /// the write touched (`target`, the selected one unless the caller names
     /// another, e.g. a kanban drop) and for every target `alsoTouched` names.
+    /// `failure` may word an error itself; nil falls back to "Could not …".
     @discardableResult
     private func write(
         _ what: String,
         target: Int? = nil,
         alsoTouched: () -> [Int64] = { [] },
+        failure: (Error) -> String? = { _ in nil },
         _ body: (Database) throws -> Void
     ) -> Bool {
         let touched = target ?? selectedTargetID
@@ -630,11 +718,13 @@ final class WorkbenchBoardViewModel {
             load()
             return true
         } catch {
-            errorMessage = "Could not \(what): \(error.localizedDescription)"
+            errorMessage = failure(error) ?? "Could not \(what): \(error.localizedDescription)"
             // Drop a card deleted elsewhere now rather than on the next poll
             // (this `load()` keeps `errorMessage`); from this board a
-            // `wrongWorkbench` means a row that is gone.
-            if error is TargetNotFoundError || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
+            // `wrongWorkbench` means a row that is gone. A refused
+            // description shows the newer text the same way.
+            if error is TargetNotFoundError || error is TargetIntentConflictError
+                || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
             return false
         }
     }

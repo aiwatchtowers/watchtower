@@ -405,7 +405,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
         vm.select(taskA)
 
-        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint"))
+        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint", original: ""))
 
         let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(stored?.intent, "Ship the v2 endpoint")
@@ -426,8 +426,8 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
             try db.execute(sql: "UPDATE targets SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?", arguments: [taskA])
         }
 
-        XCTAssertTrue(vm.saveIntent(""))
-        XCTAssertTrue(vm.saveIntent(" \n\t "), "blank once trimmed is the empty description")
+        XCTAssertTrue(vm.saveIntent("", original: ""))
+        XCTAssertTrue(vm.saveIntent(" \n\t ", original: ""), "blank once trimmed is the empty description")
 
         let after = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(reported, 0)
@@ -441,12 +441,12 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.select(taskA)
 
-        XCTAssertTrue(vm.saveIntent("\n  Ship the v2 endpoint \n"))
+        XCTAssertTrue(vm.saveIntent("\n  Ship the v2 endpoint \n", original: ""))
         let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(stored?.intent, "Ship the v2 endpoint")
         XCTAssertEqual(reported, 1)
 
-        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint\n"))
+        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint\n", original: ""))
         XCTAssertEqual(reported, 1, "equal once trimmed: no second write")
     }
 
@@ -479,8 +479,23 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.panelPath, [taskA], "the panel stays open")
 
         await vm.openAsk(42, show: { _, _ in false }, failure: { "Could not load the ask: disk I/O error" })
-        XCTAssertEqual(vm.errorMessage, "Could not open the ask: Could not load the ask: disk I/O error",
-                       "a read failure is named, not reported as gone")
+        XCTAssertEqual(vm.errorMessage, "Could not load the ask: disk I/O error",
+                       "a read failure is named once, not reported as gone and not prefixed twice")
+    }
+
+    /// The real reason source: `OwnerAsksViewModel.lookUp` names a gone ask
+    /// in `loadErrors`, and the panel shows that sentence as is.
+    func testOpenAskShowsTheAsksOwnReasonForAGoneAsk() async throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        let asks = OwnerAsksViewModel(dbPool: dbManager.dbPool, terminalCenter: nil, defaults: defaults)
+
+        await vm.openAsk(42, show: { askID, projectID in
+            await asks.lookUp(askID: askID, projectID: projectID) != nil
+        }, failure: { asks.loadErrors[pid] })
+
+        XCTAssertEqual(vm.errorMessage, "That ask no longer exists.")
     }
 
     func testSaveIntentFailureKeepsTheErrorAndReturnsFalse() throws {
@@ -496,7 +511,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
                 """)
         }
 
-        XCTAssertFalse(vm.saveIntent("Draft the owner keeps"))
+        XCTAssertFalse(vm.saveIntent("Draft the owner keeps", original: ""))
 
         let error = try XCTUnwrap(vm.errorMessage)
         XCTAssertTrue(error.contains("disk full"), error)
@@ -513,7 +528,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.select(taskA)
         vm.select(taskB)
 
-        XCTAssertTrue(vm.saveIntent("Written on A", for: taskA))
+        XCTAssertTrue(vm.saveIntent("Written on A", original: "", for: taskA))
 
         let (storedA, storedB) = try dbManager.dbPool.read { db in
             (try TargetQueries.fetchByID(db, id: taskA), try TargetQueries.fetchByID(db, id: taskB))
@@ -521,36 +536,15 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(storedA?.intent, "Written on A")
         XCTAssertEqual(storedB?.intent, "", "the open target is untouched")
         XCTAssertEqual(reported, [.target(Int64(taskA))])
-        XCTAssertFalse(vm.saveIntent("Lost", for: 999_999), "a target not on the board writes nothing")
+        XCTAssertFalse(vm.saveIntent("Lost", original: "", for: 999_999), "a target not on the board writes nothing")
         let error = try XCTUnwrap(vm.errorMessage, "a draft that cannot be saved says why")
         XCTAssertTrue(error.contains("#999999"), error)
-    }
-
-    /// The editor's switch-save fails (the trigger fixture): the error is
-    /// set after the panel moved on, so the owner sees why the draft stayed.
-    func testAFailedSaveOnASwitchLeavesTheErrorSet() throws {
-        let (pid, _, taskA, taskB) = try seedGroup()
-        let vm = makeVM(project: pid)
-        vm.select(taskA)
-        try dbManager.dbPool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER fail_intent_update BEFORE UPDATE OF intent ON targets
-                BEGIN SELECT RAISE(ABORT, 'disk full'); END
-                """)
-        }
-        vm.select(taskB)
-
-        XCTAssertFalse(vm.saveIntent("Draft on A", original: "", for: taskA))
-
-        let error = try XCTUnwrap(vm.errorMessage)
-        XCTAssertTrue(error.contains("disk full"), error)
-        XCTAssertEqual(vm.selectedTargetID, taskB)
     }
 
     func testSaveIntentWithNothingSelectedWritesNothing() throws {
         let (pid, _, _, _) = try seedGroup()
         let vm = makeVM(project: pid)
-        XCTAssertFalse(vm.saveIntent("Lost"))
+        XCTAssertFalse(vm.saveIntent("Lost", original: ""))
         XCTAssertNil(vm.errorMessage, "nothing open and no editor's target: silent")
     }
 
@@ -602,6 +596,30 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertTrue(error.contains("changed while you were editing"), error)
     }
 
+    /// The agent's write lands after the board's last poll: the view model
+    /// still holds the old description, so only the write itself can see it.
+    func testAnAgentEditTheBoardHasNotPolledYetIsNeverOverwritten() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.select(taskA)
+        try agentWritesIntent("Agent's newer text", on: taskA)
+        // No load(): the panel still shows the empty description.
+        XCTAssertEqual(vm.selectedNode?.target.intent, "")
+
+        XCTAssertFalse(vm.saveIntent("Owner's draft", original: "", for: taskA))
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(stored?.intent, "Agent's newer text")
+        XCTAssertEqual(stored?.updatedAt, "2026-01-02T00:00:00Z", "nothing was written")
+        XCTAssertEqual(reported, 0)
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains("changed while you were editing"), error)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        XCTAssertEqual(vm.selectedNode?.target.intent, "Agent's newer text", "the conflict reloads the board")
+    }
+
     func testAnEditedDraftOverAnUnchangedDescriptionSaves() throws {
         let (pid, _, taskA, _) = try seedGroup()
         let vm = makeVM(project: pid)
@@ -611,5 +629,317 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
 
         let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(stored?.intent, "Owner's draft")
+    }
+
+    // MARK: - Description drafts per target (board #417)
+
+    private func failIntentWrites() throws {
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_intent_update BEFORE UPDATE OF intent ON targets
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+    }
+
+    private func allowIntentWrites() throws {
+        try dbManager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_intent_update") }
+    }
+
+    private func storedIntent(_ id: Int) throws -> String? {
+        try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: id)?.intent }
+    }
+
+    func testBeginOnAnOpenEditorKeepsItsDraft() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA), .init(text: "", original: ""))
+        vm.setDescriptionDraft("Half typed", for: taskA)
+
+        vm.beginDescriptionEdit(taskA)
+
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Half typed")
+    }
+
+    func testCancelDropsTheDraftAndWritesNothing() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Never mind", for: taskA)
+
+        vm.cancelDescriptionEdit(taskA)
+        vm.select(taskB)
+
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        XCTAssertTrue(vm.saveDescription(for: taskA), "no editor open: nothing left unsaved")
+        XCTAssertEqual(try storedIntent(taskA), "")
+    }
+
+    /// Editing another target's description never touches a draft kept on
+    /// the first one after its save failed.
+    func testEditingAnotherTargetKeepsTheFirstTargetsDraft() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+        XCTAssertFalse(vm.saveDescription(for: taskA))
+        vm.select(taskB)
+        try allowIntentWrites()
+
+        vm.beginDescriptionEdit(taskB)
+        vm.setDescriptionDraft("Written on B", for: taskB)
+        XCTAssertTrue(vm.saveDescription(for: taskB))
+
+        XCTAssertEqual(try storedIntent(taskB), "Written on B")
+        XCTAssertNil(vm.descriptionDraft(for: taskB))
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A")
+        vm.select(taskA)
+        XCTAssertEqual(try storedIntent(taskA), "", "coming back does not save it by itself")
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A", "the editor reopens with it")
+        XCTAssertTrue(vm.saveDescription(for: taskA))
+        XCTAssertEqual(try storedIntent(taskA), "Draft on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+    }
+
+    /// The draft keeps the description it opened with: an agent edit that
+    /// lands meanwhile is refused at save, and the draft stays.
+    func testADraftKeepsItsOriginalForTheConflictCheck() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Owner's draft", for: taskA)
+        try agentWritesIntent("Agent's newer text", on: taskA)
+
+        XCTAssertFalse(vm.saveDescription(for: taskA))
+
+        XCTAssertEqual(try storedIntent(taskA), "Agent's newer text")
+        XCTAssertEqual(vm.descriptionDraft(for: taskA), .init(text: "Owner's draft", original: ""))
+    }
+
+    // MARK: - Description: saving on the way out (board #417 N1)
+
+    func testStartEditNavigateAwayAndBackSavesTheDraftOnTheWayOut() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.select(taskB)
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A", "leaving the target is a focus loss: it saves")
+        XCTAssertEqual(try storedIntent(taskB), "", "never to the target opened next")
+        XCTAssertEqual(reported, [.target(Int64(taskA))])
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        XCTAssertNil(vm.errorMessage)
+        vm.select(taskA)
+        XCTAssertNil(vm.descriptionDraft(for: taskA), "a saved draft does not reopen the editor")
+        XCTAssertEqual(vm.selectedNode?.target.intent, "Written on A")
+    }
+
+    func testClosingThePanelSavesTheOpenEditor() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.closeDetail()
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+    }
+
+    /// A draft whose save fails on the way out says so once, naming its
+    /// target; the targets opened after it do not repeat the error.
+    func testAFailedSwitchSaveNamesItsTargetAndDoesNotFollowThePanel() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+
+        vm.select(taskB)
+
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        XCTAssertTrue(error.contains("disk full"), error)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A", "the draft stays on its own target")
+
+        vm.select(group)
+        XCTAssertNil(vm.errorMessage, "the error belongs to leaving A, not to every target opened after it")
+        vm.push(taskB)
+        XCTAssertNil(vm.errorMessage)
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A")
+    }
+
+    /// A draft left on a target deleted elsewhere is dropped with one
+    /// message naming it, so the error can be dismissed for good.
+    func testADraftOnADeletedTargetIsDroppedWithOneMessage() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+        vm.select(taskB)
+        try delete(taskA)
+
+        vm.load()
+
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        vm.dismissError()
+        vm.select(group)
+        vm.select(taskB)
+        vm.load()
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage, "dismissed for good: nothing raises it again")
+    }
+
+    func testTheOpenTargetDeletedUnderItsEditorDropsTheDraftWithAMessage() throws {
+        let (pid, group, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(group)
+        vm.push(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try delete(taskA)
+
+        vm.load()
+
+        XCTAssertEqual(vm.panelPath, [group])
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        vm.dismissError()
+        vm.back()
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// The editor's end-of-editing arrives after the move already saved —
+    /// and failed — the target it was open on: it does not retry behind the
+    /// error row.
+    func testALateFocusLossAfterAFailedSwitchSaveDoesNotRetry() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+        vm.select(taskB)
+        let error = try XCTUnwrap(vm.errorMessage)
+        try allowIntentWrites()
+
+        vm.saveDescriptionOnFocusLoss(for: taskA)
+
+        XCTAssertEqual(try storedIntent(taskA), "", "no retry once the panel moved on")
+        XCTAssertEqual(vm.errorMessage, error)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A")
+    }
+
+    func testAFocusLossOnTheOpenTargetSaves() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.saveDescriptionOnFocusLoss(for: taskA)
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+    }
+
+    /// Closing the panel (✕, or Esc with it open) on a failing save keeps the
+    /// draft on its target, and the error — now the board's banner — names it.
+    func testClosingThePanelOnAFailingSaveKeepsTheDraftAndNamesTheTarget() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        try failIntentWrites()
+        for (target, close) in [(taskA, { vm.closeDetail() }), (taskB, { XCTAssertTrue(vm.escape()) })] {
+            vm.select(target)
+            vm.beginDescriptionEdit(target)
+            vm.setDescriptionDraft("Draft", for: target)
+
+            close()
+
+            XCTAssertNil(vm.selectedTargetID)
+            XCTAssertEqual(vm.descriptionDraft(for: target)?.text, "Draft")
+            let error = try XCTUnwrap(vm.boardBannerError)
+            XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(target)), error)
+            XCTAssertEqual(try storedIntent(target), "")
+        }
+    }
+
+    /// The target is deleted elsewhere and the panel leaves it before the
+    /// next poll noticed: one message, no draft left, dismissing is final.
+    func testLeavingATargetDeletedBeforeThePollDropsItsDraftWithOneMessage() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try delete(taskA)
+
+        vm.select(taskB)
+
+        XCTAssertEqual(vm.errorMessage,
+                       "Dropped the unsaved description of \(WorkbenchTargetNumber.label(taskA)): no longer on this board.")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        vm.dismissError()
+        vm.load()
+        vm.select(group)
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage, "dismissed for good")
+    }
+
+    func testPushAndBackSaveTheTargetBeingLeft() throws {
+        let (pid, group, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.push(group)
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        vm.beginDescriptionEdit(group)
+        vm.setDescriptionDraft("Written on the group", for: group)
+
+        vm.back()
+
+        XCTAssertEqual(vm.selectedTargetID, taskA)
+        XCTAssertEqual(try storedIntent(group), "Written on the group")
+        XCTAssertNil(vm.descriptionDraft(for: group))
+    }
+
+    /// A board click on the target already open is no move: the editor
+    /// stays open and nothing is saved.
+    func testReselectingTheOpenTargetKeepsTheEditorOpenAndUnsaved() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Half typed", for: taskA)
+
+        vm.select(taskA)
+
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Half typed")
+        XCTAssertEqual(try storedIntent(taskA), "")
     }
 }

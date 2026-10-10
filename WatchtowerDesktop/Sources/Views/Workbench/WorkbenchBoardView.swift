@@ -106,8 +106,9 @@ struct WorkbenchBoardView: View {
         if vm.scopeNode != nil { pathBarFocused = true }
     }
 
-    /// Open Group from the list or the panel, or a lane header
-    /// double-click (`enter`, `WorkbenchBoardViewModel.enterLane` there).
+    /// Open Group from the list, the panel or a lane header's VoiceOver
+    /// action, or a lane header double-click (`enter`,
+    /// `WorkbenchBoardViewModel.enterLane` there).
     /// With the panel closed the path bar takes focus — on the next turn, as
     /// entering from the board root is what puts the bar on screen.
     private func enterScopeAndFocus(
@@ -189,6 +190,7 @@ struct WorkbenchBoardView: View {
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
                     onEnter: { id in enterScopeAndFocus(vm, id) { vm.enterLane($0) } },
+                    onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
                     onMove: { vm.setStatus($1, for: $0) }
                 )
             } else {
@@ -323,7 +325,7 @@ struct WorkbenchBoardView: View {
                 await projects?.showAsk(askID, projectID: projectID) ?? false
             },
             askOpenFailure: { [weak projects = appState.workbenchesViewModel, projectID] in
-                guard let projects else { return "the workbench list is not loaded." }
+                guard let projects else { return "Could not open the ask: the workbench list is not loaded." }
                 return projects.asks.loadErrors[projectID]
             },
             onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
