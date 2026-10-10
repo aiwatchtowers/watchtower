@@ -9,7 +9,7 @@ Lanes: **Go** tasks can run in parallel where dependencies allow (one table = on
 
 ## Phase 0 — controller
 
-**T0. Merge `origin/main` into the branch.** Brings PR #185 (migration 00106, `SubagentStop`, Agents working, `workbench session-probe`, `SessionBackgroundProber`). Check `internal/db/migrations` for the highest number; take the next for G1 (00107 unless taken). Merge the #478 ask guard v3 lane before G5 starts. `bash scripts/dev-health.sh` before dispatching.
+**T0. Keep the branch on `origin/main`.** `origin/main` (with #411: migration 00106, `SubagentStop`, Agents working, `workbench session-probe`, `SessionBackgroundProber`) is merged into the branch as of 2026-10-10 (`cf931eb0`); merge it again before dispatching and check `internal/db/migrations` on `origin/main` for the highest number — G1 takes the next (00107 unless another lane landed one). Merge the #478 ask guard v3 lane before G5 starts. `bash scripts/dev-health.sh` before dispatching.
 
 ## Phase 1 — Go
 

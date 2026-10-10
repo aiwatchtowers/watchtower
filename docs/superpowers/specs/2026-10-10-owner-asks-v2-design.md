@@ -4,7 +4,7 @@
 **Board:** #395 (fewer unnecessary asks), #501 (Quick ask in the banner), #503 (asks for mobile), #412 (keyboard navigation of the stack and drawer, last Swift task)
 **Business spec:** `docs/superpowers/specs/2026-10-10-owner-asks-v2-business.md`
 **Plan:** `docs/superpowers/plans/2026-10-10-owner-asks-v2.md`
-**Builds on:** `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md` (asks, banner, drawer, PROJ-12/13), `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` (states, ask guard v2), board #411 (PR #185, background agents, migration 00106, PROJ-11 amended 2026-10-10) and the ask guard v3 lane (#478).
+**Builds on:** `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md` (asks, banner, drawer, PROJ-12/13), `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` (states, ask guard v2), board #411 (in main: background agents, migration 00106, PROJ-11 amended 2026-10-10) and the ask guard v3 lane (#478).
 **Owner decisions already taken (not re-opened here):** ask #66 (2026-10-05), asks #145 and #146 (2026-10-10). The forks this spec leaves to the owner are listed in the business spec; the choices below are the recommended ones and are marked **[D1]**…**[D7]** where an owner decision applies.
 
 This document holds decisions and contracts only. It names files, types and functions where the contract lives; it carries no implementation code.
@@ -13,8 +13,8 @@ This document holds decisions and contracts only. It names files, types and func
 
 ## 0. Dependencies and order
 
-- **PR #185 (board #411)** is merged into `origin/main` (merge `ffcd0180`). This feature branch was cut before it and must merge `origin/main` before the first task: everything below reads the post-#185 `terminal_sessions` (columns `agent_background`, `agent_background_at`, migration 00106), the five state hooks (`SubagentStop` included), the "Agents working" state and the session probe pattern (`workbench session-probe`, `SessionBackgroundProber`), which the escalation runner in Part 5 copies.
-- **Migration number:** 00107 (00106 is #185's). If another lane lands a 00107 first, this one takes the next free number at merge time; nothing in it depends on the number.
+- **Board #411 (PR #185) is already in main** (merge `ffcd0180`), and `origin/main` is merged into this branch (merge `cf931eb0`). Everything below reads the post-#411 `terminal_sessions` (columns `agent_background`, `agent_background_at`, migration 00106), the five state hooks (`SubagentStop` included), the "Agents working" state and the session probe pattern (`workbench session-probe`, `SessionBackgroundProber`), which the escalation runner in Part 5 copies.
+- **Migration number:** 00107 — the highest in `origin/main` is 00106 (#411's). If another lane lands a 00107 first, this one takes the next free number at merge time; nothing in it depends on the number.
 - **Ask guard v3 (#478, lane `feat/314-askguard`):** default `ok: true` first, two explicit failure cases, unfinished work is never a failure, a named `ask #N` is never a failure. This design carries all four rules into **v4** (Part 4). Task G5 of the plan starts after #478 is merged into this branch.
 - **Swift lane already running (#500 ask number, #502 checklist):** touches the stack, the banner and the drawer. Every Swift-UI task here that touches those views starts after that lane is merged into this branch.
 
