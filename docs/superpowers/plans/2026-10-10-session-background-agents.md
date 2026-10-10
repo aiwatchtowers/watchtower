@@ -488,7 +488,7 @@ Run exactly one branch, chosen by Task 12's verdict.
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/SessionBackgroundPolicy.swift` (`needsProbe`), `SessionSwitcherPresentation.swift` (`State.backgroundChecking`), `SessionStatePresentation.swift` (caption)
 - Create: `WatchtowerDesktop/Sources/Services/SessionBackgroundProber.swift` (owned by `SessionAgentStateCenter`; runs the CLI through `CLIRunnerProtocol`)
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Models/SessionProbeResult.swift` (decoder for the Task 11/13 envelope)
-- Modify: `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift`, `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (`lastOwnerInputAt[id]`, stamped in the terminal delegate's `send(source:data:)` for owner keystrokes only — not for lines `SessionLineDelivery` types)
+- Modify: `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift`, `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (`lastOwnerInputAt[id]`, stamped in the terminal delegate's `send(source:data:)` for owner keystrokes only — not for lines `OwnerAsksViewModel.deliver` types)
 - Modify: `docs/inventory/workbench.md`, `docs/features/workbench.md`, `docs/app-guide.md` (probe details)
 - Test: `Tests/Core/SessionBackgroundPolicyTests.swift` (create), `Tests/Core/SessionProbeResultTests.swift` (create), `Tests/Core/SessionStatePresentationTests.swift`, `Tests/SessionBackgroundProberTests.swift` (create), `Tests/SessionAgentStateCenterTests.swift`
 

@@ -219,7 +219,7 @@ later Stop announces again — two "stopped" notices; listed as a v1 limit.
 
 ### 5.4 Ask answer auto-Return (PROJ-12)
 
-`SessionLineDelivery` gates on `needsApproval` and `hooksReported`; neither changes for background, so the answer
+`OwnerAsksViewModel.deliver` gates on `needsApproval` and `hooksReported`; neither changes for background, so the answer
 is pasted and submitted immediately and wakes the main agent. No code change; a guard pins it.
 
 ## 6. Contract — PROJ-11 amendment (text for `docs/inventory/workbench.md`)
