@@ -285,8 +285,8 @@ subagents (redacted, under `cmd/testdata/`, like `stopfailure_rate_limit.json`) 
 
 1. **What counts.** **Decided (ask #138): `subagent` + `workflow`.** Teammates and shells stay out: they would
    make a session look busy indefinitely.
-2. **Staleness bound** (count > 0, no report): 30 min, then the owner asked for a probe of the session
-   instead of a blind fall-back — the probe's shape is open in ask #140.
+2. **Staleness bound** (count > 0, no report for 30 min): **Decided (asks #138, #140): probe the session, in two
+   stages, instead of a blind fall-back.** See §10.
 3. **Grace after the count reaches 0:** **Decided (ask #138): 120 s.**
 4. **Live count via `SubagentStop`:** **Decided (ask #138): install it** (Re-run Setup once).
 5. **Older Claude Code without `background_tasks`:** (a) **Stopped as today** — rec.; (b) fallback "subagent
@@ -295,6 +295,38 @@ subagents (redacted, under `cmd/testdata/`, like `stopfailure_rate_limit.json`) 
    `ellipsis`; (c) plain Working.
 7. **Subagent permission grant (ask #20):** (a) **unchanged** — after a granted subagent permission the row shows
    Working until the next Stop — rec.; (b) return to Agents working instead (changes ask #20's decision).
+
+## 10. Staleness probe (asks #138, #140)
+
+After 30 min with `agent_background > 0` and no report (`agent_background_at` older than 30 min), Watchtower
+probes the session rather than falling back to Stopped blindly.
+
+**Stage 1 — passive, no model turn.**
+- Claude Code keeps a local session registry: one JSON file per running process under
+  `<claude config dir>/sessions/<pid>.json` with `pid`, `sessionId`, `status` (`busy`/`idle`),
+  `statusUpdatedAt`, `peerProtocol`, `peerFeatures` and `messagingSocketPath`. Find the entry whose `sessionId`
+  is the row's Claude session id. No entry, or its `pid` is not alive → the process is gone → Stopped (one notice).
+- `status == busy` → the main agent is in a turn; the hooks will report it — leave the row alone.
+- Subagent transcripts of the session live at `<claude projects dir>/<project slug>/<session_id>/subagents/agent-<id>.jsonl`.
+  Any of them written within the last 30 min → still working: refresh `agent_background_at`, stay Agents working.
+
+**Stage 2 — active ping, only if stage 1 is inconclusive** (process alive, idle, no fresh transcript — e.g. a
+subagent inside a 20-minute test command writes nothing).
+- Send one cross-session message to the session over Claude Code's peer messaging channel (the same one
+  `SendMessage` between local sessions uses; registry `messagingSocketPath`, gated on `peerProtocol` and the
+  feature list) asking the main agent to check on its background agents. The answer text is not parsed: the
+  main agent's reply ends a turn, and that turn's Stop hook carries a fresh `background_tasks` snapshot — the
+  authoritative count, through the existing write path.
+- The row shows Agents working with a "checking…" caption while the ping is in flight. No Stop within 5 min of
+  the ping, or the channel unavailable (no socket, unknown protocol version, write error) → Stopped (one notice).
+- At most one ping per run per 30-min silence window; never while `status == busy`, never while the row is
+  Needs approval, never when the owner typed into the session in the last 2 min (the Desktop knows its own
+  terminal input) — so a ping cannot collide with the owner's input.
+
+**Risk.** The peer channel and the registry are Claude Code internals, not a documented API. The probe is
+version-gated and every failure falls through to the old outcome (Stopped), so a Claude Code change can only
+lose the probe, never stick the state. Task 0 captures a registry entry and a ping round-trip as redacted
+fixtures.
 
 ## Appendix A — sources and quotes
 

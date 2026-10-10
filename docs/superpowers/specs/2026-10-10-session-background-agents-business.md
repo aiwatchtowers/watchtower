@@ -77,8 +77,9 @@ exactly as Stopped.
 Approved by the owner on 2026-10-10 (ask #139), including the PROJ-11 amendment above. Answers from ask #138:
 
 1. Counts: subagents and workflows.
-2. 30 min with no report about the agents: probe the session before falling back to Stopped (shape of the probe:
-   ask #140).
+2. 30 min with no report about the agents: probe the session before falling back to Stopped (ask #140) —
+   first quietly (is the process alive, are the agents still writing), then, if that says nothing, a short
+   message to the session itself over Claude Code's session-to-session channel; its reply refreshes the count.
 3. After the count drops to zero, keep "Agents working" up to 2 min while the main agent wakes.
 4. The live-count hook is added (Re-run Setup once).
 5. Older Claude Code: Stopped as today (default taken).
