@@ -16,7 +16,7 @@ This document holds decisions and contracts only. It names files, types and func
 - **Board #411 (PR #185) is already in main** (merge `ffcd0180`), and `origin/main` is merged into this branch (merge `cf931eb0`). Everything below reads the post-#411 `terminal_sessions` (columns `agent_background`, `agent_background_at`, migration 00106), the five state hooks (`SubagentStop` included), the "Agents working" state and the session probe pattern (`workbench session-probe`, `SessionBackgroundProber`), which the escalation runner in Part 5 copies.
 - **Migration number:** 00107 — the highest in `origin/main` is 00106 (#411's). If another lane lands a 00107 first, this one takes the next free number at merge time; nothing in it depends on the number.
 - **Ask guard v3 (#478)** is merged into this branch (merge `a65390dd`). Its final text (`internal/devpack/askguard_prompt.md`): pass unless a failure case clearly applies; the request case takes priority over the pass list; unfinished work (a progress report, a partial result, a next step the agent itself will take, work still left) is never the finish case; a named `ask #<number>`, including step-by-step help on it, is never a failure; a closing summary that says it called `finish_session` and lists what is left on the owner is never the request case. v4 (Part 4) carries every one of these rules.
-- **Swift lane already running (#500 ask number, #502 checklist):** touches the stack, the banner, the drawer and the `OwnerAsk*` Core files. Every Swift task here that touches those (C1, U3, U4) starts after that lane is merged into this branch.
+- **Swift lane already running (#500 ask number, #502 checklist):** touches the stack, the banner, the drawer and the `OwnerAsk*` Core files. Every Swift task here that touches those (C1, U3, U5) starts after that lane is merged into this branch.
 
 ---
 
@@ -161,6 +161,7 @@ The model returns exactly one JSON object:
 ```
 {"request": "none" | "chat" | "full",
  "names_ask": true | false,
+ "request_outside_ask": true | false,
  "closing_summary": true | false,
  "complete_unreported": true | false,
  "question": "<the question to the owner, ≤ 300 runes; '' when request is not chat>",
@@ -178,38 +179,41 @@ Outline, in this order:
 
 1. Role: classify a coding agent's final message of a turn. Input is the message only.
 2. **Default:** `request: none`, `names_ask: false`, `closing_summary: false`, `complete_unreported: false` — return the default unless a case below clearly applies, and when unsure (v3: "unless a failure case below clearly applies").
-3. `names_ask` is true when the message names an ask (`ask #<number>`), including step-by-step help for the owner on that ask (v3 pass list).
+3. `names_ask` is true when the message names an ask (`ask #<number>`), including step-by-step help for the owner on that ask. `request_outside_ask` is true when the message's request (`chat` or `full`) is something **other than** what a named ask carries — a question or a review request beside it; false when there is no request or the request is the named ask itself (pointing the owner to it, helping with it).
 4. `closing_summary` is true when the message says it called `finish_session` (for example "session finished") and lists what is left on the owner — those items are filed as asks separately, so such a list is never a request; it never affects `complete_unreported` (v3 pass list).
 5. `request: full` — the message waits on the owner to review a document, run a manual check, or make several related decisions, or the owner would need more than the message to answer.
-6. `request: chat` — the message waits on the owner for one thing answerable from the conversation: a clarification, a yes/no, a choice among a few named options. Extract `question` and the `options` the message itself names (never invent options). A question to the owner **besides** a named ask is still a request.
+6. `request: chat` — the message waits on the owner for one thing answerable from the conversation: a clarification, a yes/no, a choice among a few named options. Extract `question` and the `options` the message itself names (never invent options). A question to the owner beside a named ask is still a request (`request_outside_ask: true`).
 7. Not requests: rhetorical questions, questions the agent answers itself, offers ("say if you want X"). **The request check takes priority over the not-complete list in 8** (v3: "failure case 1 takes priority over this list"): a question or request to the owner inside a progress report is still `chat` or `full`.
 8. `complete_unreported` — the message says all of this session's work is complete with nothing left for the agent to do, and does not say it called `finish_session` ("session finished"). Unfinished work is never complete: a progress report, a partial result, a next step the agent itself will take, work still left, a pause for an answer (v3 pass list).
 9. Output only the JSON object.
 
+**What moves where (F8).** v3's pass item "a named ask is never a failure" is **replaced** by the narrower named-ask rule: a named ask passes the request check only when the request is the named ask itself (`names_ask` and not `request_outside_ask`); a further question or request beside it is judged on its own (E7, E7b). v3's "Return {"ok": true} when stop_hook_active is true" leaves the text: the classifier no longer decides passing at all, and the never-block rule on `stop_hook_active` is Go's (table row 1, guard `TestProj13_ContinuedTurnNeverBlocks`). Every other v3 rule keeps a clause of its own (mapping in 11.1).
+
 ### 4.5 Decision table
 
-Two phases, as v2/v3 return "the first failure": the **request phase**, then the **finish phase**. "Record" means `SetChatQuestion` (4.7); "recordable" means the session resolved and the folder has the core state hooks (4.6), whatever the presence.
+Two phases, as v2/v3 return "the first failure": the **request phase**, then the **finish phase**. "Record" means `SetChatQuestion` (4.7); "recordable" means the session resolved and the folder has the core state hooks (4.6), whatever the presence. "Covered" means `names_ask` and not `request_outside_ask`: the request is the named ask itself. A Chat question that may pass is recorded only once the finish phase passes too (N1).
 
 | # | Condition | Output |
 |---|---|---|
-| 1 | `stop_hook_active` | **never block.** If `request = chat` (and not `closing_summary`) and recordable → record, whatever the presence; an absent owner gets it raised at once by the Desktop (Part 5.2, `away`). Otherwise clear (4.2 step 6). Print nothing. |
+| 1 | `stop_hook_active` | **never block.** If `request = chat`, not covered, not `closing_summary`, and recordable → record, whatever the presence; an absent owner gets it raised at once by the Desktop (Part 5.2, `away`). Otherwise clear (4.2 step 6). Print nothing. |
 | 2 | input unreadable / message empty / model failed | pass (step 6's clear only when the message was empty) |
 | *Request phase* | | |
-| 3 | `closing_summary` | no request failure; go to the finish phase |
-| 4 | `request = full`, `names_ask` false | block **R-full** |
-| 5 | `request = full`, `names_ask` true | no request failure (the named ask carries it); finish phase |
-| 6 | `request = chat` (named ask or not), owner **present**, recordable, record succeeded | record; **go on to the finish phase** (F7) |
-| 7 | `request = chat`, otherwise | block **R-away** |
-| 8 | `request = none` | finish phase |
+| 3 | `closing_summary`, or `request = none`, or the request is covered | no request failure; finish phase |
+| 4 | `request = full` (not covered) | block **R-full** |
+| 5 | `request = chat` (not covered), owner **present**, recordable | a **Chat candidate**; finish phase |
+| 6 | `request = chat` (not covered), otherwise | block **R-away** |
 | *Finish phase* | | |
-| 9 | `complete_unreported` | block **R-finish** — a question recorded in row 6 stays recorded |
+| 7 | `complete_unreported` with a Chat candidate | block **R-finish-ask**; nothing recorded |
+| 8 | `complete_unreported` | block **R-finish** |
+| 9 | a Chat candidate | record; if the record fails → block **R-away** (4.6); else pass |
 | 10 | otherwise | pass |
 
-Fixed reasons (Go constants `askGuardReasonFull`, `askGuardReasonAway`, `askGuardReasonFinish`, pinned by a test; the model never writes the reason text):
+Fixed reasons (Go constants `askGuardReasonFull`, `askGuardReasonAway`, `askGuardReasonFinish`, `askGuardReasonFinishAsk`, pinned by a test; the model never writes the reason text):
 
 - **R-full:** "You asked the owner for a review, a check or several decisions in plain text. File it with ask_owner (kind review, check or question with up to 4 questions), name it as 'ask #<id>' in your text, then stop."
 - **R-away:** "The owner is not in this session, so a question in the terminal would wait unseen. File it with ask_owner (kind question; one decision with 2-3 short options shows as a one-tap Quick ask), name it as 'ask #<id>' in your text, then stop."
 - **R-finish:** the v3 finish reason, unchanged.
+- **R-finish-ask:** "Your work in this session looks complete, and your message still asks the owner something. File the open question with ask_owner and name it as 'ask #<id>', then call finish_session with a 2-3 line summary for the owner (what was done, the PRs, what is left on them), say 'session finished', then stop."
 
 At most one block per Stop and none on `stop_hook_active`, so the guard can never loop a turn: the Stop after a block is always `stop_hook_active`.
 
@@ -238,12 +242,12 @@ ALTER TABLE terminal_sessions ADD COLUMN chat_question_at TEXT;  -- the guard's 
 
 Go-only writes. Rules:
 
-- **Set** by table rows 1 and 6: `SetChatQuestion(sessionID, claudeSessionID, q, at)` on the matched row; a newer Stop's question replaces an older one.
+- **Set** by table rows 1 and 9: `SetChatQuestion(sessionID, claudeSessionID, q, at)` on the matched row; a newer Stop's question replaces an older one.
 - **Cleared** (both columns NULL):
   - by the guard's own run on a later Stop of the same `claude_session_id` that records nothing (4.2 step 6) — `chat_question_at` earlier than that Stop;
   - by a `UserPromptSubmit` (`workbench session-state`) whose event time is later than `chat_question_at` — the owner answered (or moved on) in the terminal;
   - by a main-thread `PostToolUse` that starts a new turn out of `waiting` (the agent went on by itself);
-  - by a new run or conversation: `MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`. Their row guards are widened with `OR chat_question IS NOT NULL` (F23), so a row holding nothing else but a question is still cleared;
+  - by a new run or conversation: `MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID` add `chat_question = NULL, chat_question_at = NULL` to their `SET`. Only `ClearTerminalAgentState`'s "has something to clear" guard is widened, with `OR chat_question IS NOT NULL`, so a row holding nothing but a question is still cleared; `MarkTerminalAgentRun`'s time-order guard and `SetTerminalClaudeSessionID`'s guards are unchanged (an older mark over a newer state changes nothing, the question included);
   - by the escalation's compare-and-take (Part 5.3).
 - A StopFailure, a notification, a `SubagentStop` and the background probe leave it.
 - A question pending when its session's process ends is not raised (non-goal, Part 13); the next run's mark clears it, and the transcript still holds it on resume.
@@ -405,12 +409,24 @@ Title kept: **PROJ-13 — the ask guard never traps a turn**
 
 **Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; amended 2026-10-03 with the `finish_session` reminder (prompt v2); amended 2026-10-10 for the ask guard v3 (#478); rewritten 2026-10-10 for presence and the three ask levels — owner approved 2026-10-05, ask #66; 2026-10-10, asks #145/#146; board #395)
 
-**Observable:** The `Stop` ask guard is the command hook `workbench ask-guard --workbench N --stop` (`timeout: 30`). It never blocks when `stop_hook_active` is true, and it blocks at most once per Stop, so the Stop after a block always passes. It classifies `last_assistant_message` with the v4 text (`internal/devpack/askguard_classifier.md`, pinned by a golden) through Watchtower's light-tier model (≤ 20 s, its child process group killed and reaped on the budget or a signal), and decides by a fixed table: in the request phase a request for a review, a manual check or several decisions left as text and naming no ask is sent back (`R-full`); a single short question left as text — beside a named ask or not — passes only when the owner is present in this session (its pane on screen in the key window of the active app, the screen awake and unlocked: `owner_presence` names the session with a write at most 90 s old), the folder has the core state hooks, and the question is recorded on the session (`chat_question`, `chat_question_at`); otherwise it is sent back (`R-away`); a closing summary after `finish_session` is never a request. Then, as in v2/v3, a message that says all of the session's work is complete without saying it called `finish_session` is sent back (`R-finish`), a recorded question staying recorded. On `stop_hook_active` a short question is still recorded (raised at once by the Desktop when the owner is away), never sent back. The reasons are fixed Go strings. An input or model failure — unreadable, empty or never-closed input, a model timeout, error or malformed output, a panic — prints nothing on stdout and exits 0, so the turn ends. A database failure — cannot open, locked, missing columns, a read or the record failing — counts as the owner being away, so a short question is sent back once and never passed unrecorded. The guard opens the database with `db.OpenExistingRW` (never creates, never migrates), reads under a 500 ms busy timeout, writes only the chat question, after the model call and under a 1 s busy timeout, and never touches `agent_state`, its time, `finished_at`, the turn order or the background count. A recorded chat question is cleared by the guard's next Stop of that conversation that records none, the owner's next prompt, a turn the agent starts itself, a new run or conversation, or its escalation; `workbench escalate-question` raises it to an ask only while it is still the stored one (compare on `chat_question_at`) and the session still waits on that turn end (`agent_state = 'waiting'`, stamped at most 30 s after it), never twice. `integrate`/`resync` replace every `Stop` prompt entry carrying our marker for N (v1–v3 or an edit) with the command entry; `integrate status` reports `ask_guard` only for the command entry. The `PreToolUse` command hook (`workbench ask-guard --workbench N --pre-tool-use`, matcher `AskUserQuestion`, `timeout: 5`) prints the deny decision only when workbench N exists and its stdin (read for at most 0.5 s) names `tool_name` `AskUserQuestion`, with the present or the away reason by the same presence read; on any failure it prints nothing on stdout or stderr and exits 0, so the tool runs. It opens the database with `db.OpenExisting` (`query_only`, 500 ms busy timeout), so it finishes in under 2 s.
+**Observable:** The `Stop` ask guard is the command hook `workbench ask-guard --workbench N --stop` (`timeout: 30`). It never blocks when `stop_hook_active` is true, and it blocks at most once per Stop, so the Stop after a block always passes. It classifies `last_assistant_message` with the v4 text (`internal/devpack/askguard_classifier.md`, pinned by a golden) through Watchtower's light-tier model (≤ 20 s, its child process group killed and reaped on the budget or a signal), and decides by a fixed table: in the request phase a named ask covers only itself: a request for a review, a manual check or several decisions left as text that is not the named ask is sent back (`R-full`); a single short question left as text that is not the named ask passes only when the owner is present in this session (its pane on screen in the key window of the active app, the screen awake and unlocked: `owner_presence` names the session with a write at most 90 s old), the folder has the core state hooks, the finish check passes, and the question is recorded on the session (`chat_question`, `chat_question_at`); otherwise it is sent back (`R-away`); a closing summary after `finish_session` is never a request. Then, as in v2/v3, a message that says all of the session's work is complete without saying it called `finish_session` is sent back (`R-finish`; with a short question it would have passed, `R-finish-ask`, nothing recorded). On `stop_hook_active` a short question is still recorded (raised at once by the Desktop when the owner is away), never sent back. The reasons are fixed Go strings. An input or model failure — unreadable, empty or never-closed input, a model timeout, error or malformed output, a panic — prints nothing on stdout and exits 0, so the turn ends. A database failure — cannot open, locked, missing columns, a read or the record failing — counts as the owner being away, so a short question is sent back once and never passed unrecorded. The guard opens the database with `db.OpenExistingRW` (never creates, never migrates), reads under a 500 ms busy timeout, writes only the chat question, after the model call and under a 1 s busy timeout, and never touches `agent_state`, its time, `finished_at`, the turn order or the background count. A recorded chat question is cleared by the guard's next Stop of that conversation that records none, the owner's next prompt, a turn the agent starts itself, a new run or conversation, or its escalation; `workbench escalate-question` raises it to an ask only while it is still the stored one (compare on `chat_question_at`) and the session still waits on that turn end (`agent_state = 'waiting'`, stamped at most 30 s after it), never twice. `integrate`/`resync` replace every `Stop` prompt entry carrying our marker for N (v1–v3 or an edit) with the command entry; `integrate status` reports `ask_guard` only for the command entry. The `PreToolUse` command hook (`workbench ask-guard --workbench N --pre-tool-use`, matcher `AskUserQuestion`, `timeout: 5`) prints the deny decision only when workbench N exists and its stdin (read for at most 0.5 s) names `tool_name` `AskUserQuestion`; when one of those checks fails — another tool, unreadable, empty or never-closed input, a bad or unknown id, a deleted workbench, a broken config, a missing or locked database, a panic — it prints nothing on stdout or stderr and exits 0, so the tool runs. Once both checks pass it always denies; the reason is the present one only when the presence read succeeds and names this session, and the away reason otherwise (a failed presence read never lets the tool run). It opens the database with `db.OpenExisting` (`query_only`, 500 ms busy timeout), so it finishes in under 2 s.
 
 **Why locked:** Owner decision (spec 2026-10-03, decision 3), the PROJ-07 precedent, and the three ask levels (asks #66, #145, #146): a guard that could loop a turn or fail a turn would be worse than none; one that bounced a quick question while the owner is watching wastes the owner's time; one that let a question through to an empty room leaves it unseen — so a question passes as text only where the owner is, and only once it is recorded for raising. A broken Watchtower may cost at most one send-back of a plain-text question (what every plain-text question got before v4), never a loop and never a blocked tool: the owner approved this narrowing of "never block because Watchtower is broken" with v4 (business D1).
 
 **Test guards** (names kept where they exist; none relaxed):
-- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (now over the v4 classifier golden: it carries the default-pass, named-ask, closing-summary, request-priority and unfinished-work rules)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` — now over the v4 classifier golden. Each clause it checks today maps to a v4 golden clause or a named Go guard, so no assertion is dropped:
+
+  | v3 clause checked today | v4 home |
+  |---|---|
+  | `Return {"ok": true} unless a failure case below clearly applies.` | golden: outline 2 (default unless a case clearly applies) |
+  | `Return {"ok": true} when stop_hook_active is true.` | Go row 1: `cmd/workbench_askguard_test.go::TestProj13_ContinuedTurnNeverBlocks` |
+  | `These pass, except that failure case 1 takes priority over this list:` | golden: outline 7 (the request check takes priority) |
+  | `- Unfinished work is never case 2: …` (with "a question … inside a progress report is still case 1") | golden: outline 8 (unfinished work, incl. a next step the agent takes) and outline 7 (request inside a progress report) |
+  | `- A named ask is never a failure: … including step-by-step help …` | golden: outline 3 (`names_ask` incl. step-by-step help, `request_outside_ask`); Go: `TestProj13_StopGuardDecisionTable` rows E7, E7a, E7b |
+  | `- A closing summary that says it called finish_session … never affects case 2.` | golden: outline 4; Go: decision table row E9b |
+  | `and names no "ask #<number>".` | Go: decision table row 3 (covered) and rows E7/E7b |
+  | `does not say it called finish_session (for example "session finished")` | golden: outline 8 |
+  | `When unsure, return {"ok": true}.` | golden: outline 2 ("and when unsure") |
 - `internal/devpack/workbench_ask_guard_test.go::TestProj13_OlderPromptsAreUpgradedToTheCurrent` (#478's guard, rewritten to the same strictness: v1, v2, v3 and an edited marker prompt of N each become the one command entry; another workbench's marker prompt stays; a second resync changes nothing; the owner's `Stop` hooks and keys byte-exact)
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardFailurePrintsNothingAndExitsZero` (extended to `--stop`: every input failure, a model timeout, a model error, malformed model output, a panic)
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardFinishesFastOnALockedDatabase` (both modes; `--stop` with a stub model: a locked DB reads as away)
@@ -446,10 +462,11 @@ The Quick ask's banner and stack answers are answers "in the Desktop" and go thr
 | E4 | Present, presence write 91 s old (Desktop hung) | `R-away` | same |
 | E5 | Present, message asks to review `docs/x.md` | `R-full` | decision table |
 | E6 | Present, message asks three decisions | `R-full` | decision table |
-| E7 | "Filed ask #12 for the spec review; which branch name do you prefer?" | present → pass, the branch question recorded; absent → `R-away` (a question besides a named ask is still a request) | decision table |
-| E7a | "Filed ask #12" and step-by-step help on it, no other question | pass | decision table |
+| E7 | "Filed ask #12 for the spec review; which branch name do you prefer?" | `request_outside_ask`: present → pass, the branch question recorded; absent → `R-away` | decision table |
+| E7a | "Filed ask #12" and step-by-step help on it, no other question | covered → pass | decision table |
+| E7b | "Filed ask #12 for the branch name; please also review `docs/plan.md`." | `request = full`, `request_outside_ask` → `R-full` | decision table |
 | E8 | Message reports all done, no "session finished", present, no question | `R-finish` | decision table |
-| E8a | Present, a chat question and "all done" without `finish_session` | recorded, then `R-finish`; the record stays | `TestProj13_StopGuardDecisionTable` (row 6 → 9) |
+| E8a | Present, a chat question and "all done" without `finish_session` | `R-finish-ask`, nothing recorded (an older question cleared) | `TestProj13_StopGuardDecisionTable` (row 5 → 7) |
 | E9 | Message has a chat question and reports done, absent | `R-away` (first failure) | decision table |
 | E9a | Progress report ("tests green, next I wire the view") that also asks "should the badge be red or orange?", absent | `R-away` (the request outranks the progress report) | decision table |
 | E9b | "session finished"; the summary lists two items left on the owner as plain text, absent | pass (`closing_summary`) | decision table |
