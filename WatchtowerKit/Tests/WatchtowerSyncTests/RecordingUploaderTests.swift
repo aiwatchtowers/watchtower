@@ -213,6 +213,38 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(saves, ["recupload-\(recording.id)"])
     }
 
+    /// A launch pass that exits by throwing (a store write failing after a
+    /// re-save) keeps the in-flight re-send armed, so the next pass re-sends
+    /// the `uploading` row instead of stranding it until the next launch
+    /// (final-review P1-M1). The store's failure seam is an SQLite trigger.
+    func testALaunchPassThatThrowsKeepsTheInFlightResendArmed() async throws {
+        let store = try ReplicaStore.inMemory()
+        let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
+        let recording = try await register(before, file: try makeAudioFile())
+        _ = try await before.uploadPending()
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .uploading)
+
+        let spy = SpyTransport()
+        let relaunched = RecordingUploader(transport: spy, store: store, directory: dir, deviceID: Self.deviceID)
+        try await store.writer.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_state BEFORE UPDATE ON phone_recordings
+                BEGIN SELECT RAISE(ABORT, 'store write failed'); END
+                """)
+        }
+        do {
+            _ = try await relaunched.uploadPending()
+            XCTFail("the state write fails, so the pass throws")
+        } catch {}
+        try await store.writer.write { db in try db.execute(sql: "DROP TRIGGER fail_state") }
+
+        let retried = try await relaunched.uploadPending()
+
+        XCTAssertEqual(retried, 1, "the uploading row is re-sent by the next pass")
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, ["recupload-\(recording.id)", "recupload-\(recording.id)"])
+    }
+
     /// The launch pass waits for a link: a pass without a device sends
     /// nothing and does not use up the re-send of in-flight rows.
     func testTheLaunchResendWaitsForALinkedDevice() async throws {

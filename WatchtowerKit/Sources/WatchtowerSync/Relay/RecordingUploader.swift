@@ -431,6 +431,19 @@ public actor RecordingUploader: RecordingUploadAcking {
         try prepareLedger()
         let includeInFlight = resendInFlight
         resendInFlight = false
+        do {
+            return try await send(deviceID: deviceID, includeInFlight: includeInFlight)
+        } catch {
+            // A pass that exits by throwing (a store read or write) has not
+            // finished its re-send: keep it armed for the next pass instead
+            // of stranding `uploading` rows until the next launch. At worst
+            // a row it already re-saved goes out once more.
+            if includeInFlight { resendInFlight = true }
+            throw error
+        }
+    }
+
+    private func send(deviceID: String, includeInFlight: Bool) async throws -> Int {
         let rows = try store.phoneRecordings().filter {
             $0.state == .waiting || (includeInFlight && $0.state == .uploading)
         }
