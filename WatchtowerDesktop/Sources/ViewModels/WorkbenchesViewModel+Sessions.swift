@@ -244,8 +244,10 @@ extension WorkbenchesViewModel {
     /// started: `startTarget` returned its row — the target was read, the row
     /// created or reopened and activated — and its process is `.running` in
     /// `TerminalCenter`. A failed read, a target not on a board, a failed
-    /// create or open, a refused launch (`.unavailable`) and a process that
-    /// already exited (`claude` missing, a refused resume) write nothing.
+    /// create or open, a refused launch (`.unavailable`) and a process whose
+    /// exit was already reported write nothing. A shell that exits a moment
+    /// later (`claude` missing, a refused resume) is still `.running` here —
+    /// its exit arrives asynchronously — so it does move the target (v1).
     /// The write (`WorkbenchQueries.markInProgressOnWorkOn`) re-reads
     /// the status in its own transaction: only a `todo` task moves, never a
     /// group or a status the agent or the owner set meanwhile. The target and
