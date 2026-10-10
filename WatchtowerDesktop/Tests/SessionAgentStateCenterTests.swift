@@ -23,6 +23,19 @@ private final class ReadLog: @unchecked Sendable {
     }
 }
 
+/// A clock a test moves by hand.
+private final class ManualClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) { self.value = value }
+
+    var now: Date {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
 /// Records the session notices instead of posting them; AppState tests
 /// pass one to `initWorkbenches` so no test reaches `UNUserNotificationCenter`.
 @MainActor
@@ -80,15 +93,20 @@ final class SessionAgentStateCenterTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeCenter(interval: Duration = .milliseconds(20)) -> SessionAgentStateCenter {
-        let reader: SessionAgentStateCenter.Reader = { [pool, log] ids in
+    private func makeCenter(
+        interval: Duration = .milliseconds(20),
+        read: SessionAgentStateCenter.Reader? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() },
+        probeRunner: (any CLIRunnerProtocol)? = nil
+    ) -> SessionAgentStateCenter {
+        let reader: SessionAgentStateCenter.Reader = read ?? { [pool, log] ids in
             try log?.record(ids)
             guard let pool else { return [] }
             return try await pool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: ids) }
         }
         let center = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, interval: interval, notifier: notifier, defaults: defaults,
-            notificationCenter: activations, read: reader
+            notificationCenter: activations, read: reader, clock: clock, probeRunner: probeRunner
         )
         center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
@@ -536,6 +554,49 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(vm.sessionState(row), .live(.stopped))
     }
 
+    /// #411 §10: `initWorkbenches` hands its CLI runner to the center as the
+    /// probe runner — without it no stale count is ever probed and the suite
+    /// stays green. A counted `waiting` reported long ago, one poll: exactly
+    /// one `workbench session-probe` call.
+    func testInitWorkbenchesWiresTheProbeRunner() async throws {
+        let appState = AppState()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
+        appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.transcriptExists = { _ in true }
+        appState.terminalCenter.now = { [started] in started }
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("busy"))
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
+        defer {
+            appState.sessionAgentStateCenter?.stop()
+            appState.workbenchNotificationCenter?.stop()
+        }
+        let center = try XCTUnwrap(appState.sessionAgentStateCenter)
+        center.isAppActive = { false }
+        let row = try await session()
+        appState.terminalCenter.start(row, fresh: true)
+        let (stateAt, reportedAt) = (stamp(1), stamp(2))
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+                        agent_background = 2, agent_background_at = ? WHERE id = ?
+                    """,
+                arguments: [stateAt, reportedAt, row.id]
+            )
+        }
+
+        await center.poll()
+
+        await eventually("the stale count is probed") { !runner.invocations.isEmpty }
+        XCTAssertEqual(runner.invocations, [[
+            "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
+        ]])
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2), "busy keeps the count")
+    }
+
     // MARK: - Notices
 
     func testATransitionWithTheAppInactivePostsOneNotice() async throws {
@@ -599,6 +660,131 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 2)
         XCTAssertEqual(notifier.withdrawn.count, 2, "a session that stops takes its banner away")
+    }
+
+    /// #411: a count lowered to zero ends on the center's clock, with no
+    /// write — the same row read again past the grace publishes Stopped and
+    /// announces it once.
+    func testBackgroundEndsOnTheClockWithoutAWrite() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let reported = started.addingTimeInterval(2)
+        let stored = SessionAgentStateRow(
+            id: row.id, projectID: row.projectID, title: "Release work", agentState: "waiting",
+            agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 0, agentBackgroundAt: stamp(2)
+        )
+        let clock = ManualClock(reported.addingTimeInterval(60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored] }, clock: { clock.now })
+        var changes = 0
+        center.onChange = { changes += 1 }
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background))
+        XCTAssertEqual(notifier.posted, [], "background is not announced")
+        changes = 0
+
+        clock.now = reported.addingTimeInterval(121)
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
+        XCTAssertEqual(changes, 1)
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work stopped", body: "acme")])
+        await center.poll()
+        XCTAssertEqual(notifier.posted.count, 1, "announced once")
+    }
+
+    /// The row a background test reads, which a fake Go write changes.
+    private final class StoredRow: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: SessionAgentStateRow
+
+        init(_ value: SessionAgentStateRow) { self.value = value }
+
+        var row: SessionAgentStateRow {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
+
+    private func backgroundRow(_ row: TerminalSession) -> SessionAgentStateRow {
+        SessionAgentStateRow(
+            id: row.id, projectID: row.projectID, title: "Release work", agentState: "waiting",
+            agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 2, agentBackgroundAt: stamp(2)
+        )
+    }
+
+    /// #411 §10: a count silent for 30 minutes is probed; the CLI ends it
+    /// (the only writer), the center reads the row again at once and
+    /// announces Stopped once.
+    func testAProbeThatEndsTheCountPostsOneStoppedNotice() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let stored = StoredRow(backgroundRow(row))
+        let runner = ScriptedProbeRunner {
+            // What Go's compare-and-clear leaves.
+            stored.row.agentBackground = nil
+            return Data(ProbeAnswer.ran("idle", ended: true).utf8)
+        }
+        let clock = ManualClock(started.addingTimeInterval(2 + 31 * 60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored.row] }, clock: { clock.now },
+                                probeRunner: runner)
+        await center.poll()
+        await eventually("the probe ends the count and the center reads it") {
+            center.statuses[row.id]?.state == .live(.stopped)
+        }
+        XCTAssertEqual(runner.invocations, [[
+            "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
+        ]])
+        XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work stopped", body: "acme")])
+        clock.now = clock.now.addingTimeInterval(3600)
+        await center.poll()
+        XCTAssertEqual(notifier.posted.count, 1, "announced once")
+        XCTAssertEqual(runner.invocations.count, 1, "no count, no probe")
+    }
+
+    /// #411 §10 (F24): two probes that cannot run show the count over —
+    /// Stopped, one notice — while the row never changes; a new report
+    /// brings Agents working back.
+    func testTwoFailedProbesShowStoppedOnceWithoutAWrite() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let stored = StoredRow(backgroundRow(row))
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
+        let clock = ManualClock(started.addingTimeInterval(2 + 31 * 60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored.row] }, clock: { clock.now },
+                                probeRunner: runner)
+        await center.poll()
+        await eventually("the first probe runs") { runner.invocations.count == 1 }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2),
+                       "one failed probe changes nothing")
+        XCTAssertEqual(notifier.posted, [])
+
+        clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
+        await center.poll()
+        await eventually("two failed probes show the count over") {
+            center.statuses[row.id]?.state == .live(.stopped)
+        }
+        XCTAssertEqual(stored.row, backgroundRow(row), "nothing written")
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work stopped", body: "acme")])
+        clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
+        await center.poll()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(runner.invocations.count, 2, "shown over: no 60 s retry")
+        clock.now = clock.now.addingTimeInterval(SessionBackgroundPolicy.staleAfter - SessionBackgroundProber.retryAfter)
+        await center.poll()
+        await eventually("the probe is tried again at the 30-minute cadence") { runner.invocations.count == 3 }
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertEqual(notifier.posted.count, 1, "announced once")
+
+        stored.row.agentBackgroundAt = stamp(clock.now.timeIntervalSince(started))
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2),
+                       "a new report is a new count")
     }
 
     // MARK: - Views

@@ -35,6 +35,11 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     package var openAsks: Int
     /// The oldest of those asks; nil when none is open.
     package var oldestOpenAskID: Int64?
+    /// The background agents the last Stop or subagent report counted
+    /// (migration 00106); nil = never reported.
+    package var agentBackground: Int?
+    /// When that count was reported (same format as `agentStateAt`).
+    package var agentBackgroundAt: String?
 
     package init(
         id: Int64,
@@ -48,7 +53,9 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         agentFailedAt: String? = nil,
         agentError: String = "",
         openAsks: Int = 0,
-        oldestOpenAskID: Int64? = nil
+        oldestOpenAskID: Int64? = nil,
+        agentBackground: Int? = nil,
+        agentBackgroundAt: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -62,6 +69,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.agentError = agentError
         self.openAsks = openAsks
         self.oldestOpenAskID = oldestOpenAskID
+        self.agentBackground = agentBackground
+        self.agentBackgroundAt = agentBackgroundAt
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -78,6 +87,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case agentError = "agent_error"
         case openAsks = "open_asks"
         case oldestOpenAskID = "oldest_open_ask_id"
+        case agentBackground = "agent_background"
+        case agentBackgroundAt = "agent_background_at"
     }
 }
 
@@ -128,14 +139,23 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// run, an unknown start time or an unreadable stamp counts as none,
     /// never a dead run's state. `finished` and the open asks are not
     /// run-scoped, so they show whether the session runs or not. No
-    /// staleness timeout: a turn may work for an hour.
+    /// staleness timeout on a hook state: a turn may work for an hour; the
+    /// background count's end is `policy`'s alone, read at `now` (#411),
+    /// unless `displayOver` — two failed staleness probes in a row for this
+    /// count (spec 2026-10-10-session-background-agents §10): then the count
+    /// reads as over, with no write.
     package static func effective(
         row: SessionAgentStateRow,
         live: Bool,
-        startedAt: Date?
+        startedAt: Date?,
+        now: Date,
+        policy: SessionBackgroundPolicy = .current,
+        displayOver: Bool = false
     ) -> SessionSwitcherPresentation.State {
         let hook = live ? trustedHook(row, startedAt: startedAt) : nil
         let failed = hook == .waiting && row.agentFailedAt != nil && row.agentFailedAt == row.agentStateAt
+        let agents = hook == .waiting && !failed && !displayOver
+            ? backgroundAgents(row, now: now, policy: policy) : nil
         let kind: SessionSwitcherPresentation.State.Kind
         if hook == .approval {
             kind = .needsApproval
@@ -143,6 +163,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
             kind = .failed
         } else if hook == .working {
             kind = .working
+        } else if agents != nil {
+            kind = .background
         } else if row.finishedAt != nil {
             kind = .finished
         } else if row.openAsks > 0 {
@@ -154,8 +176,19 @@ package struct SessionAgentStatus: Equatable, Sendable {
         }
         return SessionSwitcherPresentation.State(
             kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
-            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil
+            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil, backgroundAgents: agents ?? 0
         )
+    }
+
+    /// The row's background agent count while `policy` says they run; nil
+    /// without a count, with an unreadable report stamp, or once over.
+    private static func backgroundAgents(
+        _ row: SessionAgentStateRow, now: Date, policy: SessionBackgroundPolicy
+    ) -> Int? {
+        guard let count = row.agentBackground,
+              let reported = row.agentBackgroundAt.flatMap(parseStamp),
+              policy.verdict(count: count, lastReport: reported, now: now) == .running else { return nil }
+        return count
     }
 
     /// The row's hook state when it was written during the run started at
@@ -173,12 +206,13 @@ package struct SessionAgentStatus: Equatable, Sendable {
     }
 
     /// The agent's turn is over and it sits at its prompt: a trusted
-    /// `waiting` of the current run (stopped, failed, or finished/waiting on
-    /// an ask over a turn end) — where a hand-off may press Return.
+    /// `waiting` of the current run (stopped, failed, background agents
+    /// running, or finished/waiting on an ask over a turn end) — where a
+    /// hand-off may press Return.
     package var isAtPrompt: Bool {
         guard state.live, at != nil else { return false }
         switch state.kind {
-        case .stopped, .failed, .finished, .waitingOnAsk: return true
+        case .stopped, .failed, .finished, .waitingOnAsk, .background: return true
         case .notStarted, .running, .working, .needsApproval: return false
         }
     }
@@ -201,11 +235,15 @@ package struct SessionAgentStatus: Equatable, Sendable {
     }
 
     /// The statuses of `rows`, keyed by session id; liveness comes from
-    /// `liveIDs`.
+    /// `liveIDs`, the background count is judged at `now`, and reads as over
+    /// for the sessions in `displayOver`.
     package static func resolve(
         _ rows: [SessionAgentStateRow],
         liveIDs: Set<Int64>,
-        startedAt: [Int64: Date]
+        startedAt: [Int64: Date],
+        now: Date,
+        policy: SessionBackgroundPolicy = .current,
+        displayOver: Set<Int64> = []
     ) -> [Int64: Self] {
         var result: [Int64: Self] = [:]
         for row in rows {
@@ -219,7 +257,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
                 workbenchID: row.projectID,
                 workbenchName: row.workbenchName,
                 title: row.title,
-                state: effective(row: row, live: live, startedAt: startedAt[row.id]),
+                state: effective(row: row, live: live, startedAt: startedAt[row.id], now: now, policy: policy,
+                                 displayOver: displayOver.contains(row.id)),
                 at: trusted ? row.agentStateAt : nil,
                 runMarked: marked,
                 finishSummary: row.finishSummary
