@@ -24,6 +24,16 @@ extension WorkbenchesViewModel {
         return true
     }
 
+    /// An `ask #N` clicked in a session's terminal (board #500): that ask's
+    /// drawer, the way a stack row opens it — only for an ask of the
+    /// session's own workbench. False, with nothing opened or reported, for
+    /// a number naming no ask of it.
+    @discardableResult
+    func openTerminalAskLink(_ askID: Int64, workbenchID: Int64) async -> Bool {
+        guard await asks.linkedAsk(askID: askID, projectID: workbenchID) != nil else { return false }
+        return await showAsk(askID, projectID: workbenchID)
+    }
+
     /// Opens the drawer by itself (board #364) on the oldest open ask of a
     /// session on the selected workbench's screen, when that session holds
     /// an ask the owner has not closed a drawer on — after each read of the

@@ -68,8 +68,9 @@ struct OwnerAskStackSection: View {
     }
 }
 
-/// One waiting ask: its kind's icon, title, then its next step (board
-/// #366, "Answer 2 questions") · session · age.
+/// One waiting ask: its kind's icon, title, then its number (board #500,
+/// so "ask #145" in a terminal finds its row) · next step (board #366,
+/// "Answer 2 questions") · session · age.
 private struct OwnerAskStackRow: View {
     let ask: OwnerAsk
     let sessionTitle: String
@@ -85,7 +86,7 @@ private struct OwnerAskStackRow: View {
                     .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(ask.title).lineLimit(1).truncationMode(.tail)
-                    Text("\(Text(OwnerAskPresentation.nextStep(for: ask)).foregroundStyle(Color.accentColor)) · \(caption)")
+                    Text("\(Text.askNumber(ask.id)) \(Text(OwnerAskPresentation.nextStep(for: ask)).foregroundStyle(Color.accentColor)) · \(caption)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

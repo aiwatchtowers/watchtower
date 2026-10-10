@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// The ask drawer's header: kind, title, target, age, "k of N ›", expand
-/// and close.
+/// The ask drawer's header: kind, number (board #500) and title, target,
+/// age, "k of N ›", expand and close.
 struct OwnerAskDrawerHeader: View {
     let vm: WorkbenchesViewModel
     let ask: OwnerAsk
@@ -17,7 +17,7 @@ struct OwnerAskDrawerHeader: View {
                 .foregroundStyle(Color.accentColor)
                 .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
             VStack(alignment: .leading, spacing: 1) {
-                Text(ask.title).font(.headline).lineLimit(2)
+                Text("\(Text.askNumber(ask.id)) \(ask.title)").font(.headline).lineLimit(2)
                 Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)

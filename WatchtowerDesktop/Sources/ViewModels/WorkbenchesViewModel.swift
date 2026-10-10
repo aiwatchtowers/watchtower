@@ -271,6 +271,12 @@ final class WorkbenchesViewModel {
         terminalCenter?.onPathLink = { [weak self] workbenchID, location in
             Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
         }
+        terminalCenter?.askLinkLookUp = { [weak self] workbenchID, askID in
+            await self?.asks.linkedAsk(askID: askID, projectID: workbenchID)
+        }
+        terminalCenter?.onAskLink = { [weak self] workbenchID, askID in
+            Task { await self?.openTerminalAskLink(askID, workbenchID: workbenchID) }
+        }
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }
