@@ -118,8 +118,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return res, nil
 	}
 	res.AgentBackgroundAt = db.AgentStateStamp(row.BackgroundAt)
-	if row.AgentState.String != agentStateWaiting || !row.Background.Valid || row.Background.Int64 <= 0 ||
-		now.Sub(row.BackgroundAt) < probeStaleAfter {
+	if !backgroundCountStale(row, now) {
 		return res, nil
 	}
 	var rawStatus string
@@ -137,6 +136,14 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 	_, _ = fmt.Fprintf(logOut, "session-probe: session %d: outcome %s (registry status %q), ended %v\n",
 		sessionID, res.Outcome, rawStatus, res.Ended)
 	return res, nil
+}
+
+// backgroundCountStale says row is waiting on a background count whose last
+// report is at least probeStaleAfter old at now: the only rows a probe asks
+// the registry about.
+func backgroundCountStale(row *db.TerminalSession, now time.Time) bool {
+	return row.AgentState.String == agentStateWaiting && row.Background.Valid && row.Background.Int64 > 0 &&
+		now.Sub(row.BackgroundAt) >= probeStaleAfter
 }
 
 // registryOutcome is the registry's verdict on conversation sessionID, with
