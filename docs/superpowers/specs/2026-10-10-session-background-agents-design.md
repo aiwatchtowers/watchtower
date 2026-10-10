@@ -409,8 +409,8 @@ Task 12 discovery. Read-only inspection of the installed CLI
 (`~/.local/share/claude/versions/2.1.295`, Mach-O arm64, build `07e8f67`) plus a round-trip on
 throwaway `claude --model haiku` sessions driven over a pty in a scratch folder on macOS (darwin),
 2026-10-10. No key material or minified source is reproduced here; behaviour is described in prose.
-Redacted byte fixtures: `internal/claudesession/testdata/peer_request.bin`, `peer_response.bin`,
-`peer_roundtrip.md`.
+Redacted byte fixtures: `internal/claudesession/testdata/peer_request.bin`, `peer_response.bin` (empty),
+`peer_receipt_held.bin`, `peer_roundtrip.md`.
 
 **Applies to** registry entries with `peerProtocol: 1` whose `peerFeatures` include `notify_idle`,
 `reply_across_default_dirs` and `artifact_yield` (the only shape observed). Watchtower version-gates on
@@ -428,11 +428,12 @@ exactly this and skips the probe otherwise.
 ### The frame Watchtower sends
 One line (a Claude Code sender prepends an optional `auth` line — see below; Watchtower does not):
 ```
-{"msgV":1,"msg_id":"<uuidv4>","type":"user","message":{"role":"user","content":"<ping text>"},"priority":"next","from":"uds:<sender socket path>"}
+{"msgV":1,"msg_id":"<uuidv4>","type":"user","message":{"role":"user","content":"<ping text>"},"priority":"next"}
 ```
 - `priority`: `next` (after the current turn) or `now` (ahead of the queue).
-- `from`: the sender's own `uds:` reply address. Used only for receipts and self/loop detection — **not**
-  for acceptance. A sender wanting no receipts may omit it.
+- No `from`. A Claude Code sender adds `from: "uds:<its own socket>"` as the address for receipts; it
+  is not used for acceptance. Watchtower has no socket to reply to, so it omits `from` (observed: every
+  per-mode trial below sent exactly this frame without `from`).
 - Optional `session_id`: if present and not equal to the receiver's live session id, the frame is
   dropped (`session_id mismatch`). Watchtower omits it.
 
@@ -441,71 +442,94 @@ One line (a Claude Code sender prepends an optional `auth` line — see below; W
   the socket and compares the uid to its own. Same-uid local connections are accepted.
 - `authRequired` is **false on macOS/Unix** (`true` only on Windows). So a wrong auth token, or no auth
   line at all, is still accepted on macOS — confirmed: `authed`, `wrongkey` and `nokey` pings all
-  started a turn and fired Stop. The `auth` line is only load-bearing on Windows, where the key file
-  (`<pid>.<sha256(canonical socket path)>.key`, mode 0600, holding `peerToken`) must be read.
+  started a turn and fired Stop. The `auth` line is only load-bearing on Windows (not exercised).
 - Therefore Watchtower — running as the session owner's own uid — reproduces the frame from **public
   inputs it already owns** (the registry entry) and never needs to read key material. **GO uses the
   keyless path: Task 13 sends no `auth` line and adds no key handling to its interfaces.**
-- The key, for the record (not used by the GO path):
-  - Path: `<config dir>/sessions/<pid>.<hex>.key` — `<pid>` is the receiver's pid, `<hex>` the lowercase
-    SHA-256 of the receiver's absolute, normalised `messagingSocketPath` (as in its registry entry).
-    Mode 0600; written by the receiving session when its inbox starts, removed on exit.
-  - Content: a JSON object with `peerToken` (32 hex chars), `procStart`, `pidDomain`.
-  - Reader: the **sending** Claude Code session, before it connects. It is mandatory only on Windows,
-    where a missing key aborts the send.
-  - Use in the frame: the sender's first line is `{"type":"auth","token":"<peerToken>"}`; the receiver
-    then marks the connection authenticated (`peer`). A second token, handed to the session's own child
-    processes as `CLAUDE_CODE_MESSAGING_TOKEN`, authenticates as `child`. On macOS a wrong or missing
-    token does not change delivery (observed: `wrongkey` and `nokey` both started a turn); it only
-    affects the subscription class of `notify_when_idle` control frames, which the ping does not use.
+- The key, for the record (not used by the GO path): `<config dir>/sessions/<pid>.<hex>.key`, `<hex>` being
+  the SHA-256 of the receiver's normalised `messagingSocketPath`. A sending Claude Code session reads it
+  and sends its token as an `auth` first line; the inbox requires that only on Windows. On macOS a wrong
+  or missing token does not change delivery (observed: `wrongkey` and `nokey` both started a turn).
+  **Watchtower must not read this file; Windows support needs a new owner ruling.**
 
 ### Response / ack shape
-- **No response on the inbox connection** — the server only reads; `peer_response.bin`'s on-wire length
-  is 0 in every trial. The authoritative ack of an accepted ping is the **Stop hook** of the turn the
+- **No response on the inbox connection** — the server only reads; the on-wire response is 0 bytes in every
+  trial (`peer_response.bin` is empty on purpose). The authoritative ack of an accepted ping is the **Stop hook** of the turn the
   injected message starts, carrying a fresh `background_tasks` snapshot through the existing write path.
 - **Receipts** (`held`/`denied`/`expired`/`delivered`/`refused`/`dropped`) are separate outbound
-  `control` frames the receiver opens to the sender's `from` address, e.g. (captured, redacted):
+  `control` frames the receiver opens to the sender's `from` address, e.g. (captured, redacted, in
+  `peer_receipt_held.bin`):
   `{"type":"control","action":"peer_message_status","status":"held","reason":"…","from":"uds:…","orig_msg_id":"<the request's msg_id>","msgV":1,"msg_id":"…"}`.
   A receipt is delivered only if `from` is a well-formed `uds:` path in an allowed same-uid `cc-socks`
-  namespace; otherwise it is skipped. Watchtower does not depend on receipts.
+  namespace; otherwise it is skipped. Watchtower sends no `from` and gets no receipts.
 
-### How the receiver treats the message
-- **Idle, prompting mode (default / plan / acceptEdits):** accepted → a turn starts → Stop fires. The
-  owner sees it as a normal incoming message: *"Another Claude session sent a message: <text>"* followed
-  by the fixed teammate/anti-escalation preamble. (Confirmed with the session both idle at rest and
-  idle after finishing background work.)
-- **`bypassPermissions` mode, sender did not attest a mode (Watchtower's case):** **held for the owner's
-  approval** (gate cause `no-mode-asserted`) — no turn, no Stop, registry `status` → `waiting`, a
-  Notification fires, and the owner gets a *"Held message from another session — Deny / Deliver"*
-  prompt. The hold cannot be bypassed from the sender side. This is the spec's intended fail-safe: it
-  falls through to the "no Stop within the window → Stopped" path.
-- An idle interactive session waiting on nothing accepts and acts on the ping (turn + Stop) — confirmed.
+### How the receiver treats the message — per permission mode (observed)
+Each row: a fresh interactive session started with `--permission-mode <mode>`, idle, sent Watchtower's
+exact frame (one line, no `auth`, no `from`); 45 s window. "Owner sees" is the session's own terminal.
 
-### Carry-forward: interactive status while background agents run
-An **interactive** session that launched a background subagent and whose main turn then ended reads
-registry `status: "busy"` for the whole time the background subagent is in flight, flipping to `idle`
-only once it finishes (confirmed: 1 `SubagentStart`, main-turn Stop, then ~12 s of `busy`, then
-`idle`). This matches the `-p` observation in A.7 and means Stage 1 of the probe ("`status == busy` →
-leave the row alone") already covers a session genuinely working in the background; Stage 2's ping only
-fires once `status == idle` with no fresh transcript. An idle session (including one that has just
-finished its background work) still accepts and acts on an inbound peer message.
+| Mode | Gate | Turn + Stop | Registry `status` after send | Notification hook | Owner sees |
+|---|---|---|---|---|---|
+| `manual` (the CLI's prompting default) | accepted | yes | `busy` → `idle` | none | "Another Claude session sent a message: <text>" + preamble, then the reply |
+| `acceptEdits` | accepted | yes | `busy` → `idle` | none | same |
+| `plan` | accepted | yes | `busy` → `idle` | none | same |
+| `auto` | accepted | yes | `busy` → `idle` | none | same |
+| `dontAsk` | accepted | yes | `busy` → `idle` | none | same |
+| `bypassPermissions` | **held** (`no-mode-asserted`) | **no** | `idle` → `waiting` | **"A message from another session needs your approval"** | "Held message from another session … Deny / Deliver this message to Claude" prompt |
+
+The preamble tells the receiving Claude the message came from another session, is not the user's
+input, and grants no escalation. Nothing in the banner names Watchtower; only the ping text does.
+
+**Cost of a hold (bypassPermissions).** The ping is not a silent no-op there: (1) the owner's terminal
+shows a Deny/Deliver prompt they did not ask for; (2) the registry goes `waiting`; (3) a Notification
+hook fires, which Watchtower's own PROJ-11 state hooks turn into a "needs you" state and macOS notice;
+(4) with no Stop, Watchtower shows Stopped after the 5-min window — and if the owner then presses
+Deliver, a turn starts and its Stop arrives after Watchtower already showed Stopped. The mode is visible
+before sending (hook inputs carry `permission_mode`), so the ping can be skipped for that mode.
+
+### Carry-forward: interactive registry `status` while background work runs (observed)
+Interactive sessions in `manual` mode; registry sampled every 2 s from the main turn's Stop (t+0).
+
+| Case | Timeline after the main turn ended |
+|---|---|
+| Background subagent, ~12 s (first run) | `busy` until it finished, then `idle` |
+| (a) Background subagent running `ping -c 180` in its foreground | `busy` on every sample for the subagent's whole life (t+1 s … t+56 s contiguous; the host then slept/overloaded, samples at t+1076 s and t+3269 s still `busy`). After the subagent moved the command to a background shell and stopped: `shell`. Not a clean 3-min awake sample. |
+| (b) Background Bash `sleep 120`, no subagent | **`shell`** (not `busy`) for the whole 117 s, then `busy` for the completion-notification turn, then `idle` |
+| (c) Background never-ending shell (`tail -f /dev/null`) | **not measured**: the command hit a permission prompt (`status` → `waiting`, one Notification) and never started; the rerun was stopped by the controller (host load) |
+| (d) Workflow | **not measured** (no cheap way to start one) |
+
+Observed `status` values: no key (first write), `idle`, `busy`, `shell`, `waiting`. A hung or killed
+subagent was not observed.
+
+**Converse consequence for §10.** If `busy` holds for as long as any background subagent is in flight,
+then (1) a hung subagent keeps the entry `busy` indefinitely, so a rule "`busy` → leave the row alone"
+keeps the row in Agents working forever; and (2) the entry reads `idle` only after the agents finished —
+when the Stop and `idle_prompt` hooks have already reported the count — so a ping gated on `idle` adds
+little. Background shells read `shell`, neither `busy` nor `idle`; permission prompts and held messages
+read `waiting`.
+
+**Owner decision (ask #142, 2026-10-10): "the registry decides, the ping is a fallback."** After 30 min
+of silence: registry `busy` → stay Agents working; `idle` or no live process → Stopped (one notice); the
+ping only when the registry entry has no `status` and the receiver's mode does not hold messages (i.e.
+not `bypassPermissions`). Open for the controller: the decision does not name `shell` or `waiting`.
 
 ### Failure modes — all detectable
-- Dead/closed socket → `connect()` → `ECONNREFUSED` (confirmed). A registry entry whose pid is not
+- Dead/closed socket → `connect()` → `ECONNREFUSED` (observed). A registry entry whose pid is not
   alive is caught before connecting.
-- Held / refused / dropped → no Stop within the window (plus a receipt when a reply address is given).
+- Held / refused / dropped → no Stop within the window.
 - Unknown `peerProtocol` or missing feature → version gate skips the probe.
 
 ### Verdict
 
-**GO.** All of the Step-3 conditions hold:
-- The frame is reproducible from public inputs the Desktop's user owns — the registry entry alone. The
-  `.key` file is **not** used on macOS (auth is optional there; same-uid peer-credential check is the
-  gate), so GO does not depend on reading any secret.
-- An idle default-mode session starts a turn on the ping and its Stop hook fires with a fresh
-  `background_tasks` snapshot.
-- The owner sees the ping as a normal incoming cross-session message with the standard preamble.
-- Every failure is detectable and falls through to the existing Stopped outcome: connect/write error, a
-  dead-pid registry entry, a hold/refuse/drop (no Stop, optional receipt), or a version-gate miss.
-- No check the CLI enforces was bypassed: the `bypassPermissions` approval hold was observed and
-  respected, not circumvented.
+**GO for the prompting modes (`manual`, `acceptEdits`, `plan`, `auto`, `dontAsk`); NO ping in
+`bypassPermissions`.**
+- The frame is reproducible from the registry entry alone; Watchtower reads no key file (macOS auth is
+  optional; the same-uid peer-credential check is the gate).
+- In every prompting mode an idle session starts a turn on the ping, its Stop hook fires with a fresh
+  `background_tasks` snapshot, no Notification fires, and the owner sees a normal incoming
+  cross-session message.
+- In `bypassPermissions` the ping is held: owner Deny/Deliver prompt, `waiting`, a Notification, and a
+  possible late Deliver after Watchtower shows Stopped. The hold was observed and not circumvented;
+  Task 13 must not send the ping in that mode.
+- Failures are detectable and fall through to Stopped.
+- Under the owner's ask #142 decision the ping is a narrow fallback (entry without `status`); the
+  registry `busy`/`idle` reading carries the main path.

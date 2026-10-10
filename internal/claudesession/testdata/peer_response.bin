@@ -1,1 +1,0 @@
-{"type":"control","action":"peer_message_status","status":"held","reason":"Your message is held for the recipient user's approval before it reaches their Claude session (permission-mode parity).","from":"uds:/private/tmp/cc-socks-<UID>/<RECEIVER_PID>.sock","orig_msg_id":"<SENDER_UUID>","msgV":1,"msg_id":"<RECEIVER_UUID>"}
