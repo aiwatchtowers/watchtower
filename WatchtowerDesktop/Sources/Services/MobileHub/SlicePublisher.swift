@@ -169,7 +169,7 @@ final class SlicePublisher: Sendable {
         var known = try state.hashes(forKind: kind)
         if let sql = Self.sliceSQL[kind] {
             let rows = try fetchRows(sql: sql).map { (id: Self.rowID($0), row: $0) }
-            return KindDiff(diff: SliceDiff.compute(kind: kind, rows: rows, knownHashes: known, now: Date()))
+            return KindDiff(diff: SliceDiff.compute(kind: kind, rows: rows, knownHashes: known, now: now()))
         }
         let kindSources = sources.filter { $0.kind == kind }
         guard !kindSources.isEmpty else { return nil }
