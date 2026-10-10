@@ -175,17 +175,19 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(detail.recordingText, "Transcribing on Mac · 37%")
     }
 
-    /// A new phone recording of an event that already has a recap shows
-    /// the Mac's progress on it, not the older recap.
-    func testAnInProgressRecordingWinsOverAnOlderRecap() async throws {
-        let now = now
+    /// The demo phone recording of `DemoSeed.recordedEventID` (received by
+    /// the Mac, its job transcribing at 37%), as the replica reads it.
+    private func demoRecordings() async throws -> PhoneRecordingsSnapshot {
         let store = try makePoolStore()
         let transport = InMemoryCloudTransport()
         let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
         try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: 37)
         _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
-        let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
+        return try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
+    }
 
+    /// The recorded event's card over `recordings` and an older recap of it.
+    private func recordedCardPills(_ recordings: PhoneRecordingsSnapshot) throws -> [String] {
         let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
         let olderRecap = MeetingTranscript(
             id: 9, eventID: recorded.id, title: "Earlier take", durationSec: 600,
@@ -196,7 +198,32 @@ final class CalendarWiringTests: XCTestCase {
         let agenda = AgendaDayModel(
             day: now, snapshot: snapshot([recorded], transcripts: [olderRecap]), recordings: recordings, now: now, calendar: calendar
         )
-        XCTAssertEqual(agenda.cards.first?.pills.map(\.text), ["Transcribing on Mac · 37%"])
+        return try XCTUnwrap(agenda.cards.first).pills.map(\.text)
+    }
+
+    /// A new phone recording of an event that already has a recap shows
+    /// the Mac's progress on it, not the older recap.
+    func testAnInProgressRecordingWinsOverAnOlderRecap() async throws {
+        let recordings = try await demoRecordings()
+        XCTAssertEqual(try recordedCardPills(recordings), ["Transcribing on Mac · 37%"])
+    }
+
+    /// C-T7 N2: once the Mac's job is done, the recap is shown again.
+    func testTheRecapWinsOnceTheRecordingsJobIsDone() async throws {
+        var recordings = try await demoRecordings()
+        let id = try XCTUnwrap(recordings.recordings.first { $0.eventID == DemoSeed.recordedEventID }).id
+        recordings.jobs[id] = RecordingJob(id: id, status: .done, transcriptID: 9, updatedAt: now)
+        XCTAssertEqual(try recordedCardPills(recordings), ["Recap ready", "1 action item"])
+    }
+
+    /// C-T7 N2: a delivered upload the Mac has no job for (yet, or any
+    /// more) defers to the recap.
+    func testTheRecapWinsOverADeliveredUploadWithoutAJob() async throws {
+        var recordings = try await demoRecordings()
+        recordings.jobs = [:]
+        let recording = try XCTUnwrap(recordings.recordings.first { $0.eventID == DemoSeed.recordedEventID })
+        XCTAssertEqual(PhoneUploadStage(recording: recording, heartbeat: recordings.heartbeat, now: now), .delivered)
+        XCTAssertEqual(try recordedCardPills(recordings), ["Recap ready", "1 action item"])
     }
 
     func testARecapReadyCardShowsRecapAndActionItems() throws {

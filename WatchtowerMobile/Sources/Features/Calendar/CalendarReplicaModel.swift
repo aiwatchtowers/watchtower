@@ -75,6 +75,7 @@ final class CalendarReplicaModel {
         let observation = ValueObservation.tracking { db in
             try CalendarReplicaSnapshot.read(from: db, store: store)
         }
+        .removeDuplicates()
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),

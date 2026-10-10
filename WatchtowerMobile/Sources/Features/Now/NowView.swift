@@ -95,9 +95,8 @@ private struct NextMeetingCardView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(PhoneTone.red.color)
-            // Regular size: a hit target of at least 44 pt.
-            .controlSize(.regular)
-            .frame(minHeight: 44)
+            // Large size: the button itself is at least 44 pt tall.
+            .controlSize(.large)
         }
     }
 }

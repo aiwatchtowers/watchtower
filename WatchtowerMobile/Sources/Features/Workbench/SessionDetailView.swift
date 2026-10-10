@@ -215,10 +215,13 @@ private struct StopRowView: View {
                     .font(.subheadline)
                     .foregroundStyle(PhoneTone.red.color)
                 Spacer(minLength: 8)
-                Button("Dismiss") { onDismiss(row.pending) }
-                    .font(.subheadline)
-                    .frame(minHeight: 44)
-                    .accessibilityLabel("Dismiss the failed stop")
+                Button { onDismiss(row.pending) } label: {
+                    Text("Dismiss")
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Dismiss the failed stop")
             }
         }
         .frame(minHeight: 44)

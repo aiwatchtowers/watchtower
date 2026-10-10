@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import WatchtowerKit
 import WatchtowerSync
 
@@ -9,12 +10,14 @@ struct StartAttempt: Equatable {
     let actionID: String
     let targetID: Int64
     let params: SessionStartParams
-    /// When the phone sent it.
-    let sentAt: Date
     /// The Mac's `applied` echo arrived.
     var applied = false
     /// `result.session_id` of the applied echo.
     var sessionID: Int64?
+    /// That session's record as the phone held it when the applied echo
+    /// came (nil: none yet). A resume's record from before the start reads
+    /// not live; only a record the Mac writes after it can end the start.
+    var echoedSession: TerminalSessionState?
 }
 
 /// Starts and stops sessions from the phone (spec §5.2, §6.5) through the
@@ -40,18 +43,21 @@ final class SessionStarter {
     @ObservationIgnored private let remove: (String) throws -> Void
     /// The failed overlay rows of one kind on one entity (ids).
     @ObservationIgnored private let failedRows: (ActionKind, String) throws -> [String]
-    @ObservationIgnored private let now: () -> Date
+    /// The replica's record of a session, read when its start's applied
+    /// echo arrives.
+    @ObservationIgnored private let sessionRecord: (Int64) -> TerminalSessionState?
+    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionStarter")
 
     init(
         enqueue: @escaping Enqueue,
         remove: @escaping (String) throws -> Void,
         failedRows: @escaping (ActionKind, String) throws -> [String] = { _, _ in [] },
-        now: @escaping () -> Date = { Date() }
+        sessionRecord: @escaping (Int64) -> TerminalSessionState? = { _ in nil }
     ) {
         self.enqueue = enqueue
         self.remove = remove
         self.failedRows = failedRows
-        self.now = now
+        self.sessionRecord = sessionRecord
     }
 
     /// The app's starter: actions through the outbox, Dismiss on the overlay.
@@ -65,6 +71,18 @@ final class SessionStarter {
                 try store.pendingActions(forEntity: entity)
                     .filter { $0.state == .failed && $0.action.kind == kind }
                     .map(\.id)
+            },
+            sessionRecord: { sessionID in
+                do {
+                    return try store.reader.read { db in
+                        try store.payload(forRecordName: sessionRecordName(sessionID), from: db)
+                            .map { try TerminalSessionState.decode(payload: $0) }
+                    }
+                } catch {
+                    // Read as no record: the next not-live record ends the start.
+                    logger.warning("session record not read: \(error.localizedDescription, privacy: .public)")
+                    return nil
+                }
             }
         )
     }
@@ -99,7 +117,7 @@ final class SessionStarter {
             actionID = try await enqueue(.sessionStart, entity, wire)
         }
         guard sent, let actionID else { return false }
-        attempts[targetID] = StartAttempt(actionID: actionID, targetID: targetID, params: params, sentAt: now())
+        attempts[targetID] = StartAttempt(actionID: actionID, targetID: targetID, params: params)
         for id in stale {
             try remove(id)
         }
@@ -122,12 +140,13 @@ final class SessionStarter {
         var attempt = attempts[targetID]
         if attempt?.actionID != action.id {
             guard let params = try? SessionStartParams(wireParams: action.params) else { return }
-            attempt = StartAttempt(actionID: action.id, targetID: targetID, params: params, sentAt: action.createdAt)
+            attempt = StartAttempt(actionID: action.id, targetID: targetID, params: params)
         }
         guard var attempt else { return }
         attempt.applied = true
         if case let .integer(sessionID)? = action.result?["session_id"] {
             attempt.sessionID = sessionID
+            attempt.echoedSession = sessionRecord(sessionID)
         }
         attempts[targetID] = attempt
     }

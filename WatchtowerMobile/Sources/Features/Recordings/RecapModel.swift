@@ -81,6 +81,7 @@ final class RecapBodyModel {
         let observation = ValueObservation.tracking { db in
             try RecapLoader.read(recordName: recordName, phoneRecordingID: phoneRecordingID, store: store, from: db)
         }
+        .removeDuplicates()
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),

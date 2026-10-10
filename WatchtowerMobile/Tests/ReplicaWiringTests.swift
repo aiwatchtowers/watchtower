@@ -7,11 +7,11 @@ import XCTest
 /// suites cover that): `AppEnvironment` picks the transport, boots, and
 /// hydrates exactly the demo seed.
 ///
-/// Coupling note (spec §10): `AppEnvironment()` here and the TEST_HOST app's
-/// own environment share ONE on-disk replica. The exact counts hold only
-/// because DemoSeed uses fixed record names and `apply` is an idempotent
-/// upsert, and only on a replica a previous build did not leave behind:
-/// uninstall the simulator app before `make mobile-test` (the recipe does).
+/// Coupling note (spec §10): `AppEnvironment()` here opens the app's own
+/// on-disk replica. The TEST_HOST app boots nothing while it hosts the tests
+/// (`WatchtowerMobileApp.Boot.hostingTests`), but a replica a previous
+/// `make mobile-run` left behind would skew the exact counts: uninstall the
+/// simulator app before `make mobile-test` (the recipe does).
 @MainActor
 final class ReplicaWiringTests: XCTestCase {
     /// DemoSeed's record tally per kind.
@@ -52,15 +52,22 @@ final class ReplicaWiringTests: XCTestCase {
         return env
     }
 
-    /// An isolated demo environment on `path`.
-    private func demoEnvironment(at path: String) throws -> AppEnvironment {
+    /// An isolated demo environment on `path`; `sleeper` steps its fetch
+    /// loop by hand (nil: real sleeps).
+    private func demoEnvironment(at path: String, sleeper: TickSleeper? = nil) throws -> AppEnvironment {
         managed(try AppEnvironment(
             transport: InMemoryCloudTransport(),
             replicaPath: path,
             transportKind: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory()
-        ))
+        ) { interval in
+            if let sleeper {
+                try await sleeper.sleep(interval)
+            } else {
+                try await Task.sleep(for: interval)
+            }
+        })
     }
 
     // MARK: - Boot and demo seed
@@ -155,31 +162,54 @@ final class ReplicaWiringTests: XCTestCase {
         try await poll({ (env.lastSyncAt ?? first) > first }, "a loop fetch did not advance lastSyncAt")
     }
 
-    /// The tab sets the cadence, and the loop pauses in the background and
-    /// resumes in the foreground.
+    /// The tab sets the cadence the loop sleeps, and the loop pauses in the
+    /// background and resumes in the foreground. The sleeper is stepped by
+    /// hand: no wall-clock wait decides anything.
     func testTheLoopFollowsTheTabCadenceAndPausesInTheBackground() async throws {
-        let env = try demoEnvironment(at: try makeReplicaPath())
-        try await poll { env.isLooping }
+        let sleeper = TickSleeper()
+        let env = try demoEnvironment(at: try makeReplicaPath(), sleeper: sleeper)
+        try await poll { env.isLooping && sleeper.waitingCount == 1 }
+        XCTAssertEqual(sleeper.requested.last, .seconds(30))
 
         env.setFetchInterval(RootTabView.Tab.now.fetchInterval)
         XCTAssertEqual(env.fetchInterval, .seconds(5))
-        XCTAssertTrue(env.isLooping)
+        try await poll({ sleeper.requested.last == .seconds(5) && sleeper.waitingCount == 1 }, "the loop sleeps 5 s on Now")
         env.setFetchInterval(RootTabView.Tab.more.fetchInterval)
         XCTAssertEqual(env.fetchInterval, .seconds(30))
-        XCTAssertTrue(env.isLooping)
+        try await poll({ sleeper.requested.last == .seconds(30) && sleeper.waitingCount == 1 }, "the loop sleeps 30 s on More")
 
-        env.setFetchInterval(.milliseconds(50))
+        let running = env.fetchCycles
+        sleeper.tick()
+        try await poll({ env.fetchCycles == running + 1 && sleeper.waitingCount == 1 }, "a tick runs one more cycle")
+
         env.setActive(false)
         XCTAssertFalse(env.isLooping)
-        // Let a fetch that was mid-flight at the pause finish first.
-        try await Task.sleep(for: .milliseconds(150))
-        let paused = env.lastSyncAt
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(env.lastSyncAt, paused, "no fetch may run while the app is in the background")
+        try await poll({ sleeper.waitingCount == 0 }, "the paused loop's sleep is cancelled")
+        let paused = env.fetchCycles
+        sleeper.tick()
+        await Task.yield()
+        XCTAssertEqual(env.fetchCycles, paused, "no cycle may begin while the app is in the background")
 
         env.setActive(true)
         XCTAssertTrue(env.isLooping)
-        try await poll({ env.lastSyncAt != paused }, "the loop did not resume in the foreground")
+        try await poll({ env.fetchCycles == paused + 1 }, "the loop did not resume in the foreground")
+    }
+
+    /// A-T11 N5: the scene phase is read at launch too (`initial: true`),
+    /// so a launch straight into the background (a silent push) pauses the
+    /// environment before its boot ends: the boot never starts the loop,
+    /// and the first activation does.
+    func testABackgroundLaunchStartsNoLoopUntilTheAppIsActive() async throws {
+        XCTAssertEqual(RootTabView.isActive(in: .background), false)
+        XCTAssertEqual(RootTabView.isActive(in: .active), true)
+        XCTAssertNil(RootTabView.isActive(in: .inactive), "inactive (a sheet, the app switcher) changes nothing")
+
+        let env = try demoEnvironment(at: try makeReplicaPath())
+        env.setActive(false)
+        try await poll({ env.isBootstrapped }, "the boot did not finish")
+        XCTAssertFalse(env.isLooping, "a background launch must not start the fetch loop")
+        env.setActive(true)
+        XCTAssertTrue(env.isLooping)
     }
 
     // MARK: - Transport choice
@@ -215,6 +245,25 @@ final class ReplicaWiringTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
         XCTAssertEqual(rows, 0, "the cloudKit kind must start empty")
+    }
+
+    // MARK: - Test host
+
+    /// The app hosting XCTest starts nothing of its own: no replica, demo
+    /// seed, recorder recovery, fetch loop or push registration beside the
+    /// tests' environments. A normal launch still boots.
+    func testTheTestHostBootsNoLiveEnvironment() {
+        XCTAssertTrue(
+            WatchtowerMobileApp.Boot.isHostingTests(ProcessInfo.processInfo.environment),
+            "this process hosts XCTest"
+        )
+        XCTAssertNil(AppDelegate.environment, "the test host booted a live AppEnvironment")
+        XCTAssertFalse(WatchtowerMobileApp.Boot.isHostingTests([:]), "a normal launch must boot")
+        guard case .hostingTests = WatchtowerMobileApp.Boot.make(
+            processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"]
+        ) else {
+            return XCTFail("a test host must not build an environment")
+        }
     }
 
     /// A replica that cannot open is a throw (the app shows BootFailureView),

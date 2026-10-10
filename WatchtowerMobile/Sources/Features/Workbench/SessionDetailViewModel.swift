@@ -96,8 +96,6 @@ final class SessionDetailViewModel {
     let sessionID: Int64
     private(set) var report: SessionReport?
     private(set) var timeline: SessionTimeline?
-    /// true once the first read landed.
-    private(set) var loaded = false
 
     @ObservationIgnored private let store: ReplicaStore
     @ObservationIgnored private let requester: SessionReportRequester
@@ -118,6 +116,7 @@ final class SessionDetailViewModel {
         let observation = ValueObservation.tracking { db in
             try SessionDetailRecords.read(sessionID: sessionID, from: db, store: store)
         }
+        .removeDuplicates()
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
@@ -126,7 +125,6 @@ final class SessionDetailViewModel {
                 MainActor.assumeIsolated {
                     self?.report = value.report
                     self?.timeline = value.timeline
-                    self?.loaded = true
                 }
             }
         )

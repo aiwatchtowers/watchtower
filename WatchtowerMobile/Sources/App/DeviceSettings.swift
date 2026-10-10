@@ -33,7 +33,8 @@ final class DeviceSettings {
         didSet { defaults.set(newAskAlerts, forKey: Keys.newAskAlerts) }
     }
 
-    /// Why the last device-record write failed; nil after a success.
+    /// Why a toggle went back: its write failed. Cleared once that
+    /// setting saves; another setting's save leaves it.
     private(set) var lastError: String?
 
     /// Set by the environment when the phone links or unlinks.
@@ -46,7 +47,16 @@ final class DeviceSettings {
     /// toggle order, and each sends the choices current when it runs, so the
     /// Mac always ends on the latest state.
     @ObservationIgnored private var lastWrite: Task<Void, Never>?
+    /// Per setting, a count of its toggles: a failed write reverts only the
+    /// newest one (newest write wins).
+    @ObservationIgnored private var generations: [Setting: Int] = [:]
+    /// The setting `lastError` explains.
+    @ObservationIgnored private var errorSetting: Setting?
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "DeviceSettings")
+
+    private enum Setting {
+        case typingRequested, startSessions
+    }
 
     private enum Keys {
         static let typingRequested = "device.typingRequested"
@@ -71,12 +81,11 @@ final class DeviceSettings {
         guard value != typingRequested else { return }
         let previous = typingRequested
         typingRequested = value
-        await serializedWrite { [weak self] saved in
+        await write(.typingRequested) { [weak self] saved in
             guard let self else { return }
             if saved {
                 defaults.set(value, forKey: Keys.typingRequested)
-            } else if typingRequested == value {
-                // Revert only our own change: a later toggle owns the value now.
+            } else {
                 typingRequested = previous
             }
         }
@@ -86,11 +95,11 @@ final class DeviceSettings {
         guard value != startSessions else { return }
         let previous = startSessions
         startSessions = value
-        await serializedWrite { [weak self] saved in
+        await write(.startSessions) { [weak self] saved in
             guard let self else { return }
             if saved {
                 defaults.set(value, forKey: Keys.startSessions)
-            } else if startSessions == value {
+            } else {
                 startSessions = previous
             }
         }
@@ -112,33 +121,47 @@ final class DeviceSettings {
         )
     }
 
-    /// Queues one device-record write behind the previous one. `completion`
-    /// runs before the next write starts, so a revert after a failed write
-    /// is already in the choices the next write sends.
-    private func serializedWrite(completion: @escaping @MainActor (_ saved: Bool) -> Void) async {
+    /// Queues one device-record write for a toggle of `setting` behind the
+    /// previous write. `apply` persists (saved) or reverts (failed) the
+    /// toggle; a failure is applied only while this is the setting's newest
+    /// toggle, since a later one owns the value now. It runs before the next
+    /// write starts, so a revert is already in the choices that write sends.
+    private func write(_ setting: Setting, apply: @escaping @MainActor (_ saved: Bool) -> Void) async {
+        let generation = (generations[setting] ?? 0) + 1
+        generations[setting] = generation
         let prior = lastWrite
         let write = Task { [weak self] in
             await prior?.value
             guard let self else { return }
-            completion(await self.writeDeviceRecord())
+            let failure = await self.writeDeviceRecord()
+            guard let failure else {
+                apply(true)
+                if errorSetting == setting {
+                    errorSetting = nil
+                    lastError = nil
+                }
+                return
+            }
+            guard generations[setting] == generation else { return }
+            apply(false)
+            lastError = failure
+            errorSetting = setting
         }
         lastWrite = write
         await write.value
     }
 
-    /// Saves the device record for the current choices. Returns false (and
-    /// sets `lastError`) when the save failed; true when it succeeded or
-    /// there is no link to write to yet.
-    private func writeDeviceRecord() async -> Bool {
-        guard let payload = devicePayload() else { return true }
+    /// Saves the device record for the current choices. Returns why the
+    /// save failed, or nil when it succeeded or there is no link to write
+    /// to yet.
+    private func writeDeviceRecord() async -> String? {
+        guard let payload = devicePayload() else { return nil }
         do {
             try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
-            lastError = nil
-            return true
+            return nil
         } catch {
             Self.logger.error("device record write failed: \(error.localizedDescription, privacy: .public)")
-            lastError = "Couldn't update your Mac: \(error.localizedDescription)"
-            return false
+            return "Couldn't update your Mac: \(error.localizedDescription)"
         }
     }
 }
