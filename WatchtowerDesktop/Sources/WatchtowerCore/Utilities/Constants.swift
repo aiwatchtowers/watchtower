@@ -135,7 +135,7 @@ package enum Constants {
 
     /// `claude_path` from config.yaml when it names an executable file (not a
     /// directory) — the override step of `claudeBinary()`.
-    package nonisolated static func claudePathOverride(configPath: String = Constants.configPath) -> String? {
+    package nonisolated static func claudePathOverride(configPath: String = Self.configPath) -> String? {
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),
               let yaml = try? Yams.load(yaml: str) as? [String: Any],
@@ -150,7 +150,7 @@ package enum Constants {
     /// the well-known dirs and `PATH` (`findInPath`); nil when none. The Swift
     /// twin of Go `claude.FindBinary` (a dual path). Not cached: the owner may
     /// set the path or install Claude Code while the app runs.
-    package nonisolated static func claudeBinary(configPath: String = Constants.configPath) -> String? {
+    package nonisolated static func claudeBinary(configPath: String = Self.configPath) -> String? {
         claudePathOverride(configPath: configPath) ?? findInPath("claude")
     }
 
@@ -295,12 +295,11 @@ package enum Constants {
                     }
                 }
                 env["PATH"] = Constants.appendingWellKnownDirs(
-                    to: env["PATH"] ?? "", home: NSHomeDirectory(), claudePath: Constants.claudePathOverride(),
-                    isDirectory: { dir in
-                        var isDirectory: ObjCBool = false
-                        return FileManager.default.fileExists(atPath: dir, isDirectory: &isDirectory) && isDirectory.boolValue
-                    }
-                )
+                    to: env["PATH"] ?? "", home: NSHomeDirectory(), claudePath: Constants.claudePathOverride()
+                ) { dir in
+                    var isDirectory: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: dir, isDirectory: &isDirectory) && isDirectory.boolValue
+                }
                 return env
             }()
         }

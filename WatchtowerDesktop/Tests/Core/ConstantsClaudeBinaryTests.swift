@@ -55,14 +55,13 @@ final class ConstantsClaudeBinaryTests: XCTestCase {
     func testWellKnownDirsAreAppendedOnce() {
         let present: Set<String> = ["/h/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/opt/acme"]
         let merged = Constants.appendingWellKnownDirs(
-            to: "/usr/bin:/opt/homebrew/bin", home: "/h", claudePath: "/opt/acme/claude",
-            isDirectory: { present.contains($0) }
-        )
+            to: "/usr/bin:/opt/homebrew/bin", home: "/h", claudePath: "/opt/acme/claude"
+        ) { present.contains($0) }
         XCTAssertEqual(merged, "/usr/bin:/opt/homebrew/bin:/h/.local/bin:/usr/local/bin:/opt/acme")
     }
 
     func testAnEmptyPathGetsJustTheWellKnownDirs() {
-        let merged = Constants.appendingWellKnownDirs(to: "", home: "/h", claudePath: nil, isDirectory: { $0 == "/h/.local/bin" })
+        let merged = Constants.appendingWellKnownDirs(to: "", home: "/h", claudePath: nil) { $0 == "/h/.local/bin" }
         XCTAssertEqual(merged, "/h/.local/bin")
     }
 }

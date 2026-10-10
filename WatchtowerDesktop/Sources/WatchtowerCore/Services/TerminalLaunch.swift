@@ -47,8 +47,9 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// Does not validate `uuid`: callers check `isValidSessionID` first.
     /// `rowID` reaches a `claude` launch's environment as `sessionRowEnv`,
     /// `claudeBinary` (the resolved binary) as `claudeBinaryEnv`.
-    package static func make(shell: String?, folder: String, mode: Mode, rowID: Int64? = nil,
-                             claudeBinary: String? = nil) -> Self {
+    package static func make(
+        shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, claudeBinary: String? = nil
+    ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
         let args: [String]
         switch mode {
@@ -140,5 +141,11 @@ package struct TerminalLaunch: Equatable, Sendable {
         case nil:
             "Claude Code exited."
         }
+    }
+
+    /// Whether the exit bar offers **Set Claude Path…**: only a Claude
+    /// session's 127 — a shell's 127 is the owner's last command.
+    package static func offersClaudePathFix(code: Int32?, isClaude: Bool) -> Bool {
+        isClaude && code == 127
     }
 }

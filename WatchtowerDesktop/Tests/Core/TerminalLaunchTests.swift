@@ -180,18 +180,20 @@ final class TerminalLaunchTests: XCTestCase {
     func testAResolvedBinaryRunsThroughTheEnvironment() {
         let pathFix = "export PATH=\"$(dirname \"$WATCHTOWER_CLAUDE_BIN\")\":\"$PATH\"; "
         let new = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 7, claudeBinary: bin)
-        XCTAssertEqual(new.args, ["-l", "-c",
-            "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid)'"])
+        let newCommand = "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid)'"
+        XCTAssertEqual(new.args, ["-l", "-c", newCommand])
         XCTAssertEqual(new.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=7", "WATCHTOWER_CLAUDE_BIN=\(bin)"])
 
         let prompted = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "go"), claudeBinary: bin)
-        XCTAssertEqual(prompted.args.last,
-            "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN -u WATCHTOWER_FIRST_PROMPT \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
+        let unset = "-u WATCHTOWER_CLAUDE_BIN -u WATCHTOWER_FIRST_PROMPT"
+        let promptedCommand =
+            "exec /bin/sh -c '\(pathFix)exec env \(unset) \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
+        XCTAssertEqual(prompted.args.last, promptedCommand)
         XCTAssertEqual(prompted.environment, ["WATCHTOWER_CLAUDE_BIN=\(bin)", "WATCHTOWER_FIRST_PROMPT=go"])
 
         let resume = TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .resumeClaude(uuid: uuid), claudeBinary: bin)
-        XCTAssertEqual(resume.args.last,
-            "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --resume \(uuid)'")
+        let resumeCommand = "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --resume \(uuid)'"
+        XCTAssertEqual(resume.args.last, resumeCommand)
 
         for launch in [new, prompted, resume] {
             XCTAssertFalse(launch.args.joined().contains(bin), "the path never reaches a shell parser")
@@ -241,6 +243,15 @@ final class TerminalLaunchTests: XCTestCase {
             let printed = String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
             XCTAssertEqual(printed, "2\n--resume\n\(dir.path)\n0\n", shell)
         }
+    }
+
+    /// Review Focus 4: a shell's 127 is the owner's last command, not a
+    /// missing `claude`.
+    func testOnlyAClaudeSessionsExit127OffersThePathFix() {
+        XCTAssertTrue(TerminalLaunch.offersClaudePathFix(code: 127, isClaude: true))
+        XCTAssertFalse(TerminalLaunch.offersClaudePathFix(code: 127, isClaude: false))
+        XCTAssertFalse(TerminalLaunch.offersClaudePathFix(code: 1, isClaude: true))
+        XCTAssertFalse(TerminalLaunch.offersClaudePathFix(code: nil, isClaude: true))
     }
 
     func testExitMessageNamesAMissingClaudeForCommandNotFound() {

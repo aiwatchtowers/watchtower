@@ -261,14 +261,7 @@ struct OnboardingGoalsStepView: View {
                 TextField("e.g. /usr/local/bin/claude", text: $manualPath)
                     .textFieldStyle(.roundedBorder)
                 Button("Browse…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseFiles = true
-                    panel.canChooseDirectories = false
-                    panel.allowsMultipleSelection = false
-                    panel.message = "Select the 'claude' executable"
-                    if panel.runModal() == .OK, let url = panel.url {
-                        manualPath = url.path
-                    }
+                    if let path = ClaudeExecutablePanel.pick() { manualPath = path }
                 }
                 Button("Use this path") { saveManualPath() }
                     .disabled(manualPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -281,18 +274,8 @@ struct OnboardingGoalsStepView: View {
 
     private func saveManualPath() {
         let path = manualPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard FileManager.default.isExecutableFile(atPath: path) else {
-            manualPathError = "File not found or not executable: \(path)"
-            return
-        }
-        do {
-            try OnboardingClaudePathConfig.save(path, configPath: Constants.configPath)
-        } catch {
-            manualPathError = "Could not save the path to \(Constants.configPath): \(error.localizedDescription)"
-            return
-        }
-        manualPathError = nil
-        Task { await model.runCLICheck() }
+        manualPathError = OnboardingClaudePathConfig.saveIfExecutable(path, configPath: Constants.configPath)
+        if manualPathError == nil { Task { await model.runCLICheck() } }
     }
 
     private func codeBlock(_ code: String) -> some View {

@@ -53,4 +53,19 @@ package enum OnboardingClaudePathConfig {
             throw error
         }
     }
+
+    /// `path` checked to be executable and pinned as `claude_path`: the
+    /// error line to show, nil once saved. Onboarding's manual-path row and
+    /// a workbench session's exit-127 bar share it.
+    package static func saveIfExecutable(_ path: String, configPath: String) -> String? {
+        guard FileManager.default.isExecutableFile(atPath: path) else {
+            return "File not found or not executable: \(path)"
+        }
+        do {
+            try save(path, configPath: configPath)
+        } catch {
+            return "Could not save the path to \(configPath): \(error.localizedDescription)"
+        }
+        return nil
+    }
 }
