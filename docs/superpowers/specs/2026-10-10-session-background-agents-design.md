@@ -371,3 +371,34 @@ woken by the completion notification; the `status` value set; whether a task `id
 stopping subagent is still listed in its own SubagentStop's `background_tasks`. The subagents page says only:
 "When a subagent fails or you stop it, Claude Code keeps its row for 30 seconds" (in `/tasks`) and "A subagent you
 stopped yourself … doesn't auto-resume".
+
+A.7 Observed inputs (Claude Code 2.1.295, 2026-10-10). One `claude -p --model haiku` run in a scratch folder with
+command hooks on `Stop` and `SubagentStop`: two background `general-purpose` subagents (`sleep 20`, then reply), one
+background Bash `sleep 30`, main turn ended at once. Captured: 4 Stop and 2 SubagentStop inputs plus the session's
+registry entry polled once a second. Redacted fixtures: `cmd/testdata/stop_background_tasks.json`,
+`subagentstop_background_tasks.json`, `stop_no_background_tasks.json`,
+`internal/claudesession/testdata/registry_idle.json`, `registry_busy.json`.
+- `status` values: only `running` was observed (subagent and shell entries alike); finished tasks leave the array
+  rather than change status. No other value observed — no `status` filter is needed for what was seen.
+- The stopping subagent **is** listed in its own `SubagentStop`'s `background_tasks`, still `running`
+  (agent A's SubagentStop listed A, B and the shell; B's listed B and the shell).
+- A subagent task's `id` **equals** its `agent_id` (17-char hex in this version). Shell task ids have another shape.
+- `agent_type` of the user's subagents: `general-purpose` (the type the Agent call named), both in
+  `background_tasks` and in `SubagentStop.agent_type`. Internal agents (prompt suggestions, `/btw`) not observed.
+- An empty Stop carries `"background_tasks": []` (key present, empty array), and `"session_crons": []`.
+- Shell entries carry an undocumented `command` key and no `agent_type`; the background Bash counts as a `shell`
+  entry, so the count must filter on `type == "subagent"`.
+- `SubagentStop` carried **no** `last_assistant_message` key, despite the docs (A.3). Both events also carry
+  undocumented `prompt_id`, `permission_mode` and `effort` (`{"level": …}`). The second subagent's SubagentStop
+  carried the `prompt_id` of the main turn that was running when it finished, not of the launching turn.
+- Wake-up: the idle main session was woken by each completion notification (Stops 2 and 3 followed the two
+  SubagentStops), confirming the owner's case 1 for `-p`. SubagentStop on a killed/crashed subagent: not observed.
+- Registry: `<config dir>/sessions/<pid>.json` with `kind: "interactive"`, `entrypoint: "sdk-cli"` under `-p`,
+  `peerProtocol: 1`, `peerFeatures: ["notify_idle", "reply_across_default_dirs", "artifact_yield"]`,
+  `pidDomain: "darwin"`. The first writes have **no** `status`, `updatedAt` or `statusUpdatedAt` keys (they appear
+  with the first `busy`). Under `-p` the entry stayed `busy` for the whole run, including the minute the main agent
+  sat between turns waiting on its subagents, and turned `idle` only once at the end; the entry is removed when the
+  process exits. Whether an *interactive* session waiting on background agents reports `idle` or `busy`: not
+  observed. A `<pid>.<hash>.key` file sits beside each entry; it was never opened, copied or committed.
+- Inbound peer frame: not captured. Making a decoy discoverable needs a decoy entry written into
+  `<config dir>/sessions/`, which this capture did not do; Task 12 starts from discovery.
