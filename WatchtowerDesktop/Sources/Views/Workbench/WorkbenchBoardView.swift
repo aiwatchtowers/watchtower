@@ -325,7 +325,7 @@ struct WorkbenchBoardView: View {
                 await projects?.showAsk(askID, projectID: projectID) ?? false
             },
             askOpenFailure: { [weak projects = appState.workbenchesViewModel, projectID] in
-                guard let projects else { return "the workbench list is not loaded." }
+                guard let projects else { return "Could not open the ask: the workbench list is not loaded." }
                 return projects.asks.loadErrors[projectID]
             },
             onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },

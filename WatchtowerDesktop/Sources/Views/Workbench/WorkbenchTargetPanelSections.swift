@@ -8,7 +8,7 @@ struct WorkbenchPanelAsks: View {
     let vm: WorkbenchBoardViewModel
     /// `WorkbenchesViewModel.showAsk`.
     let onShowAsk: (Int64, Int64) async -> Bool
-    /// Why an ask did not open; nil = it is gone.
+    /// Why an ask did not open, a full sentence shown as is; nil = it is gone.
     let failure: () -> String?
 
     var body: some View {

@@ -635,10 +635,11 @@ final class WorkbenchBoardViewModel {
 
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
     /// the "Waiting for you" stack row's path, so a click never starts an
-    /// agent. When it opens nothing, `failure` names why (the asks'
-    /// `loadErrors`: "That ask no longer exists." or "Could not load the
-    /// ask: …", already a full sentence, shown as is); without a reason the
-    /// ask is gone. Either says so in the panel's error row.
+    /// agent. When it opens nothing, the panel's error row says why.
+    /// - Parameter failure: the reason, a full sentence shown as is — never
+    ///   prefixed here (the asks' `loadErrors`: "That ask no longer
+    ///   exists.", "Could not load the ask: …"; the board view's own "Could
+    ///   not open the ask: …"). Nil reads as the ask being gone.
     func openAsk(
         _ askID: Int64,
         show: (Int64, Int64) async -> Bool,
