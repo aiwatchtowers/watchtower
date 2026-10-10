@@ -191,6 +191,24 @@ func TestSessionProbeStageOneTable(t *testing.T) {
 		assert.Equal(t, before, rowSnapshot(t, database, row))
 	})
 
+	// A permission prompt keeps the count: the probe still reads only a
+	// counted `waiting`, never an `approval`, whatever the registry reads.
+	t.Run("count kept under approval", func(t *testing.T) {
+		database, pid, row := briefSessionFixture(t)
+		countedRow(t, database, pid, row, 2, stale)
+		ok, err := database.SetTerminalAgentState(row, pid, briefLaunchID, "approval", time.Now(), "", nil, false, db.AgentOrder{})
+		require.NoError(t, err)
+		require.True(t, ok)
+		probeRegistries[0].apply(t) // no entry: would end a stale count
+		before := rowSnapshot(t, database, row)
+		require.Equal(t, int64(2), before["agent_background"], "approval keeps the count")
+		got := runSessionProbe(t, pid, row)
+		assert.Equal(t, map[string]any{
+			"ok": true, "outcome": "not_stale", "ended": false, "agent_background_at": db.AgentStateStamp(stale),
+		}, got)
+		assert.Equal(t, before, rowSnapshot(t, database, row))
+	})
+
 	t.Run("not counted", func(t *testing.T) {
 		database, pid, row := briefSessionFixture(t)
 		countedRow(t, database, pid, row, 2, stale)
