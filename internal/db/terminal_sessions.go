@@ -35,6 +35,8 @@ type TerminalSession struct {
 	Finished        bool          // finished_at is set (finish_session)
 	TurnEnd         sql.NullInt64 // agent_turn_end: the transcript's size at the run's last Stop hook
 	ToolRun         bool          // agent_tool_run: a main-thread PostToolUse wrote the stored state
+	Background      sql.NullInt64 // agent_background: in-flight background subagents; NULL = none / unknown
+	BackgroundAt    time.Time     // agent_background_at; zero when NULL or unreadable
 }
 
 // AgentFailure flags a stored `waiting` as a turn that ended on an error (a
@@ -47,14 +49,15 @@ type AgentFailure struct {
 
 func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
-	var stateAt, failedAt sql.NullString
+	var stateAt, failedAt, backgroundAt sql.NullString
 	var agentError string
 	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
 		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL,
-		agent_turn_end, agent_tool_run
+		agent_turn_end, agent_tool_run, agent_background, agent_background_at
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
-			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun)
+			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun,
+			&s.Background, &backgroundAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -67,6 +70,11 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	if stateAt.Valid {
 		if at, perr := time.Parse(agentStateAtLayout, stateAt.String); perr == nil {
 			s.AgentStateAt = at
+		}
+	}
+	if backgroundAt.Valid {
+		if at, perr := time.Parse(agentStateAtLayout, backgroundAt.String); perr == nil {
+			s.BackgroundAt = at
 		}
 	}
 	if failedAt.Valid {
