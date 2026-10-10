@@ -162,6 +162,7 @@ final class HubSingleHubTests: XCTestCase {
         // heartbeat written since stays unread while the pull fails.
         try await seed(foreignHeartbeat(age: 3600, hubID: try sidecar.ensureHubID(), macName: "Mac acme"), into: cloud)
         _ = try await HubIdentity(sidecar: sidecar).readHeartbeat(from: cloud)
+        try await seed(foreignHeartbeat(age: 10, macName: "Mac B"), into: cloud)
         let transport = StubHubTransport(cloud: cloud)
         transport.setPullFails(true)
         let hub = try makeHub(transport: transport, sidecar: sidecar)
