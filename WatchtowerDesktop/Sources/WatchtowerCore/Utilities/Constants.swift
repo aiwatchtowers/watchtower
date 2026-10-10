@@ -133,6 +133,42 @@ package enum Constants {
         static let dailySummary = "DAILY_SUMMARY"
     }
 
+    /// `claude_path` from config.yaml when it names an executable file (not a
+    /// directory) — the override step of `claudeBinary()`.
+    package nonisolated static func claudePathOverride(configPath: String = Constants.configPath) -> String? {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any],
+              let path = yaml["claude_path"] as? String, !path.isEmpty else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
+              FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return path
+    }
+
+    /// The `claude` binary a launch runs: the configured `claude_path`, else
+    /// the well-known dirs and `PATH` (`findInPath`); nil when none. The Swift
+    /// twin of Go `claude.FindBinary` (a dual path). Not cached: the owner may
+    /// set the path or install Claude Code while the app runs.
+    package nonisolated static func claudeBinary(configPath: String = Constants.configPath) -> String? {
+        claudePathOverride(configPath: configPath) ?? findInPath("claude")
+    }
+
+    /// `path` with the well-known install dirs (and `claudePath`'s directory)
+    /// appended when they exist and are missing — Go `fallbackPATH` mirrored.
+    /// A login shell's `PATH` misses an export that lives only in `.zshrc`.
+    package nonisolated static func appendingWellKnownDirs(
+        to path: String, home: String, claudePath: String?, isDirectory: (String) -> Bool
+    ) -> String {
+        var parts = path.split(separator: ":").map(String.init)
+        var candidates = ["\(home)/.local/bin", "\(home)/.claude/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.volta/bin"]
+        if let claudePath { candidates.append((claudePath as NSString).deletingLastPathComponent) }
+        for dir in candidates where !parts.contains(dir) && isDirectory(dir) {
+            parts.append(dir)
+        }
+        return parts.joined(separator: ":")
+    }
+
     /// Search for a binary in well-known directories first, then resolved PATH.
     /// Well-known dirs are checked first to avoid TCC prompts from iterating
     /// the full PATH (which may include ~/Documents, ~/Music, etc.).
@@ -258,6 +294,13 @@ package enum Constants {
                         }
                     }
                 }
+                env["PATH"] = Constants.appendingWellKnownDirs(
+                    to: env["PATH"] ?? "", home: NSHomeDirectory(), claudePath: Constants.claudePathOverride(),
+                    isDirectory: { dir in
+                        var isDirectory: ObjCBool = false
+                        return FileManager.default.fileExists(atPath: dir, isDirectory: &isDirectory) && isDirectory.boolValue
+                    }
+                )
                 return env
             }()
         }
