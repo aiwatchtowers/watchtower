@@ -318,8 +318,10 @@ final class RelayProcessor: Sendable {
     /// Rewrites an already-ingested upload `received` without its asset
     /// again: no claim, no ingest, and the stash is never read — only the
     /// re-fetched copy is deleted once the echo is saved (a failed save keeps
-    /// it; the next pass retries). The phone's `received` handling deletes
-    /// its row, so this does not loop.
+    /// it; the next pass retries). The phone's `received` handling marks
+    /// its row delivered and deletes only the local audio file (the row
+    /// stays); a delivered row is never uploaded again, and this echo reads
+    /// back `received`, not `pending`, so this does not loop.
     private func reEchoReceived(_ upload: RecordingUploadPayload, asset: URL?) async throws {
         lastActivity.withLock { $0 = now() }
         var echoed = upload
