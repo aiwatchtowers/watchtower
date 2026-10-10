@@ -662,6 +662,8 @@ final class AppState {
                     // Best-effort: the removal may not finish before exit;
                     // the next launch removes what is left.
                     self?.sessionAgentStateCenter?.withdrawAllNotices()
+                    // A session-probe child gets SIGTERM.
+                    self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
                     self?.mobileHub?.stop()
@@ -1733,7 +1735,7 @@ final class AppState {
         sessionNotifier: SessionAgentNotifying = NotificationService.shared
     ) {
         let agentStates = SessionAgentStateCenter(
-            dbPool: dbPool, terminalCenter: terminalCenter, notifier: sessionNotifier
+            dbPool: dbPool, terminalCenter: terminalCenter, notifier: sessionNotifier, probeRunner: cliRunner
         )
         let lineDelivery = SessionLineDelivery(terminalCenter: terminalCenter)
         let vm = WorkbenchesViewModel(

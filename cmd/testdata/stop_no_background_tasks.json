@@ -1,0 +1,15 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000411",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000411.jsonl",
+  "cwd": "/tmp/example/work",
+  "prompt_id": "00000000-0000-4000-8000-000000000004",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "both finished",
+  "background_tasks": [],
+  "session_crons": []
+}

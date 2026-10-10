@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -178,6 +179,60 @@ type stopHookInput struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
+	// BackgroundTasks lists what the session runs in the background as the
+	// turn ends (board #411).
+	BackgroundTasks backgroundTasks `json:"background_tasks"`
+}
+
+// backgroundTask is one entry of a hook input's background_tasks; every
+// other field is ignored.
+type backgroundTask struct{ ID, Type string }
+
+// backgroundTasks is a hook input's background_tasks, decoded tolerantly so
+// a malformed field never fails the whole input: absent, null or not an
+// array leaves present false (an older Claude Code, or a shape we do not
+// know); an array sets it, and an entry that is no object, or whose id or
+// type is no string, is kept with those fields empty.
+type backgroundTasks struct {
+	present bool
+	list    []backgroundTask
+}
+
+func (b *backgroundTasks) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if json.Unmarshal(data, &raw) != nil || raw == nil {
+		*b = backgroundTasks{}
+		return nil //nolint:nilerr // not an array reads as absent, never a failed input
+	}
+	list := make([]backgroundTask, len(raw))
+	for i, entry := range raw {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(entry, &fields) != nil {
+			continue
+		}
+		_ = json.Unmarshal(fields["id"], &list[i].ID)
+		_ = json.Unmarshal(fields["type"], &list[i].Type)
+	}
+	*b = backgroundTasks{present: true, list: list}
+	return nil
+}
+
+// backgroundSubagents counts the in-flight background subagents and
+// workflows of tasks, leaving out the entry whose id is except ("" leaves
+// out none). Shells, monitors, teammates and every other type never count.
+// No status filter: Claude Code drops a finished task from the list rather
+// than changing its status (only "running" was observed, spec A.7). ok is
+// false when the field was absent, null or not an array.
+func backgroundSubagents(tasks backgroundTasks, except string) (n int64, ok bool) {
+	if !tasks.present {
+		return 0, false
+	}
+	for _, task := range tasks.list {
+		if (task.Type == "subagent" || task.Type == "workflow") && (except == "" || task.ID != except) {
+			n++
+		}
+	}
+	return n, true
 }
 
 // stopHookOutput blocks the stop and hands reason back to the agent.
@@ -257,11 +312,12 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 // markStopTurnEnd records the turn end before the drift check, which can
 // take seconds: a tool result of the ending turn whose async hook starts in
 // the meantime then already finds its call before it (board #368). Only a
-// folder with the session state hooks gets it (nothing else reads it). Best
+// folder with the core four session state hooks gets it (nothing else reads
+// it; workbenchHasStateHooks, which does not require SubagentStop). Best
 // effort: it returns the write's error, which the caller reports only when
 // the check blocks the stop — otherwise the state write after the check
 // records it again and reports a failure. Outside a Desktop terminal, or
-// in a folder without the hooks, it does nothing.
+// in a folder without those hooks, it does nothing.
 func markStopTurnEnd(database *db.DB, workbenchID int64, in stopHookInput) error {
 	rowID, ok, err := terminalSessionRowID()
 	if !ok || (err == nil && in.SessionID == "") {
@@ -399,13 +455,19 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, hookTurn{stop: true})
+	turn := hookTurn{stop: true}
+	if n, ok := backgroundSubagents(in.BackgroundTasks, ""); ok && n > 0 {
+		turn.background = sql.NullInt64{Int64: n, Valid: true}
+	}
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 
-// workbenchHasStateHooks reports whether workbench id's folder has its
-// session state hooks. A gone workbench has none, and so does a settings
-// file that cannot be read: that is a normal state the Desktop already
-// offers to repair, so the hook stays silent about it.
+// workbenchHasStateHooks reports whether workbench id's folder has its core
+// session state hooks (devpack.HasCoreStateHooks): a folder installed before
+// the SubagentStop entry keeps its Stop state and run mark until repaired.
+// A gone workbench has none, and so does a settings file that cannot be
+// read: that is a normal state the Desktop already offers to repair, so the
+// hook stays silent about it.
 func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
 	wb, err := database.GetWorkbench(id)
 	if errors.Is(err, db.ErrWorkbenchNotFound) {
@@ -414,7 +476,7 @@ func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	has, _ := devpack.HasStateHooks(wb.FolderPath, id)
+	has, _ := devpack.HasCoreStateHooks(wb.FolderPath, id)
 	return has, nil
 }
 

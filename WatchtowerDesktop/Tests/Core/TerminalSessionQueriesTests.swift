@@ -215,4 +215,27 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertEqual(rows[1].openAsks, 0)
         }
     }
+
+    func testFetchAgentStatesReadsTheBackgroundColumns() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let busy = try TerminalSessionQueries.create(db, claude(project, "Busy"))
+            let quiet = try TerminalSessionQueries.create(db, claude(project, "Quiet"))
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = '2026-10-03T12:01:00.000Z',
+                        agent_background = 2, agent_background_at = '2026-10-03T12:01:30.250Z'
+                    WHERE id = ?
+                    """,
+                arguments: [busy.id]
+            )
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            XCTAssertEqual(rows.map(\.id), [busy.id, quiet.id])
+            XCTAssertEqual(rows[0].agentBackground, 2)
+            XCTAssertEqual(rows[0].agentBackgroundAt, "2026-10-03T12:01:30.250Z")
+            XCTAssertNil(rows[1].agentBackground, "a NULL count reads as nil")
+            XCTAssertNil(rows[1].agentBackgroundAt)
+        }
+    }
 }
