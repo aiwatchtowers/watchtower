@@ -23,7 +23,7 @@ The rest of the app already knows the trap:
 
 Places that still depend on the login shell's `PATH` alone:
 
-1. `TerminalLaunch.make` — bare `claude` in all three Claude modes.
+1. `TerminalLaunch.make` — bare `claude` in both Claude modes.
 2. `Constants.resolvedEnvironment()` — `PATH` from `$SHELL -lc 'echo $PATH'`,
    patched only with an nvm/fnm dir. 38 Desktop call sites launch CLI
    processes with it.
@@ -40,27 +40,32 @@ to the owner's shell files, no interactive (`-i`) shells.
 
 ### 1. One Swift resolver: `Constants.claudeBinary()`
 
-`package nonisolated static func claudeBinary() -> String?` in `Constants`:
+`package nonisolated static func claudeBinary() -> ClaudeBinary?` in `Constants`:
 
-1. `claude_path` from `config.yaml`, when it names an executable file (the
-   Swift twin of Go `FindBinary`'s override; read the same way `ConfigService`
-   reads it, without needing the `ConfigService` instance).
-2. Otherwise `findInPath("claude")`.
+1. `.pinned(path)`: `claude_path` from `config.yaml`, when it names an
+   executable regular file (the Swift twin of Go `FindBinary`'s override).
+2. Otherwise `.fallback(path)` from `findInPath("claude")` — used by the
+   terminal only when the login PATH has no `claude` (§2), so the order
+   matches Go's override → PATH → well-known dirs.
 3. Otherwise `nil`.
+
+(Revised after the final review: an unconditional `findInPath` result
+overrode the owner's own PATH choice whenever another copy sat in a
+well-known dir.)
 
 Not cached: the owner may set `claude_path` or install Claude Code while the
 app runs, and the lookups are a handful of `stat` calls (the resolved-PATH
 step reuses the cached `resolvedEnvironment()`).
 
-The terminal and `resolvedEnvironment` use it. The onboarding CLI check
+The terminal uses it; `resolvedEnvironment` uses its override step. The onboarding CLI check
 runs Go `ai test`, which already resolves through `claude.FindBinary`, so
 "found" in onboarding means "launchable" everywhere. Dual path with Go
-`claude.FindBinary`: same order of override → well-known dirs; a comment on
-each names the other.
+`claude.FindBinary`: same order of override → PATH → well-known dirs; a
+comment on each names the other.
 
 ### 2. Terminal launch by absolute path
 
-`TerminalLaunch.make` takes a new `claudeBinary: String?` parameter.
+`TerminalLaunch.make` takes a new `claudeBinary: ClaudeBinary?` parameter.
 `TerminalCenter` passes `Constants.claudeBinary()`.
 
 When it is non-nil, the launch environment gets
@@ -68,7 +73,10 @@ When it is non-nil, the launch environment gets
 Claude mode runs through `/bin/sh`, the same way `firstPromptEnv` already does:
 
 ```
-exec /bin/sh -c 'export PATH="$(dirname "$WATCHTOWER_CLAUDE_BIN"):$PATH"; exec env -u WATCHTOWER_CLAUDE_BIN [-u WATCHTOWER_FIRST_PROMPT] "$WATCHTOWER_CLAUDE_BIN" --session-id <uuid> ["$WATCHTOWER_FIRST_PROMPT"]'
+# .pinned
+exec /bin/sh -c 'export PATH="${WATCHTOWER_CLAUDE_BIN%/*}:$PATH"; exec env -u WATCHTOWER_CLAUDE_BIN [-u WATCHTOWER_FIRST_PROMPT] "$WATCHTOWER_CLAUDE_BIN" --session-id <uuid> ["$WATCHTOWER_FIRST_PROMPT"]'
+# .fallback
+exec /bin/sh -c 'command -v claude >/dev/null 2>&1 || export PATH="$PATH:${WATCHTOWER_CLAUDE_BIN%/*}"; exec env -u WATCHTOWER_CLAUDE_BIN [-u WATCHTOWER_FIRST_PROMPT] claude --session-id <uuid> ["$WATCHTOWER_FIRST_PROMPT"]'
 ```
 
 (`--resume <uuid>` for resume.) Properties:
@@ -76,11 +84,15 @@ exec /bin/sh -c 'export PATH="$(dirname "$WATCHTOWER_CLAUDE_BIN"):$PATH"; exec e
 - The path never reaches a shell parser as text: it travels in the
   environment and `/bin/sh` expands a double-quoted variable, so spaces,
   quotes and `$` in a path are safe, under any login shell (zsh, bash, fish,
-  nushell, csh).
+  nushell, csh). (A csh/tcsh login shell refuses `-l` with `-c` and cannot
+  start any Claude session — a limit that predates this change, listed in
+  the workbench v1 limits.)
 - The login shell still runs first, so auth, nvm/fnm init and everything
   else in the owner's profile stay theirs.
-- The binary's directory is prepended to `PATH`, so a hook or subprocess
-  that runs `claude` by name finds the same binary.
+- A pinned binary's directory is prepended to `PATH`; a fallback's is
+  appended only when the login PATH has no `claude`. Either way a hook or
+  subprocess that runs `claude` by name finds the same binary, and the
+  owner's own PATH choice wins over a well-known-dir copy.
 - `env -u` drops `WATCHTOWER_CLAUDE_BIN` before `claude` runs; the session
   row variable (`WATCHTOWER_TERMINAL_SESSION_ID`) stays as today.
 

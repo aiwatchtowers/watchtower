@@ -157,7 +157,7 @@ final class TerminalCenter {
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// The `claude` binary of a launch, resolved per start so a path set
     /// after an exit-127 applies on Restart. A seam for tests.
-    @ObservationIgnored var claudeBinary: () -> String? = { Constants.claudeBinary() }
+    @ObservationIgnored var claudeBinary: () -> ClaudeBinary? = { Constants.claudeBinary() }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
     /// Every process exit, after `states` records it (the VM's resume-failure

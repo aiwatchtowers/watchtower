@@ -155,13 +155,13 @@ final class TerminalCenterTests: XCTestCase {
     /// after an exit-127 reaches the next start without an app restart.
     func testEachLaunchResolvesTheClaudeBinaryAgain() throws {
         let center = makeCenter()
-        var resolved: String?
+        var resolved: ClaudeBinary?
         center.claudeBinary = { resolved }
         let s = try row()
         center.start(s, fresh: true, prompt: nil)
         XCTAssertFalse(try XCTUnwrap(sessions.last?.launches.last).environment.contains { $0.hasPrefix("WATCHTOWER_CLAUDE_BIN=") })
         sessions.last?.exit(127)
-        resolved = "/opt/acme/claude"
+        resolved = .pinned("/opt/acme/claude")
         center.start(s, fresh: false, prompt: nil)
         XCTAssertTrue(try XCTUnwrap(sessions.last?.launches.last).environment.contains("WATCHTOWER_CLAUDE_BIN=/opt/acme/claude"))
     }

@@ -10,6 +10,21 @@ import Foundation
 /// prompt text is ever parsed by a shell, and `env -u` drops the variable
 /// before `claude` runs, so its children never see it; `positionalPrompt`
 /// keeps a leading "-" from being read as a flag.
+/// The `claude` a terminal session runs (`Constants.claudeBinary()`).
+package enum ClaudeBinary: Equatable, Sendable {
+    /// The owner's `claude_path`: exec'd whatever the login PATH holds.
+    case pinned(String)
+    /// Found in a well-known install dir: used only when the login PATH has
+    /// no `claude`, so the owner's own PATH choice still wins.
+    case fallback(String)
+
+    package var path: String {
+        switch self {
+        case let .pinned(path), let .fallback(path): path
+        }
+    }
+}
+
 package struct TerminalLaunch: Equatable, Sendable {
     package enum Mode: Equatable, Sendable {
         case newClaude(uuid: String, prompt: String?)
@@ -48,15 +63,15 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// `rowID` reaches a `claude` launch's environment as `sessionRowEnv`,
     /// `claudeBinary` (the resolved binary) as `claudeBinaryEnv`.
     package static func make(
-        shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, claudeBinary: String? = nil
+        shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, claudeBinary: ClaudeBinary? = nil
     ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
         let args: [String]
         switch mode {
         case let .newClaude(uuid, prompt):
-            args = ["-l", "-c", claudeCommand("--session-id \(uuid)", resolved: claudeBinary != nil, withPrompt: prompt != nil)]
+            args = ["-l", "-c", claudeCommand("--session-id \(uuid)", binary: claudeBinary, withPrompt: prompt != nil)]
         case let .resumeClaude(uuid):
-            args = ["-l", "-c", claudeCommand("--resume \(uuid)", resolved: claudeBinary != nil, withPrompt: false)]
+            args = ["-l", "-c", claudeCommand("--resume \(uuid)", binary: claudeBinary, withPrompt: false)]
         case .shell:
             args = ["-l"]
         }
@@ -65,7 +80,7 @@ package struct TerminalLaunch: Equatable, Sendable {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
         }
         if let claudeBinary, mode != .shell {
-            launch.environment.append("\(claudeBinaryEnv)=\(claudeBinary)")
+            launch.environment.append("\(claudeBinaryEnv)=\(claudeBinary.path)")
         }
         if case let .newClaude(_, prompt?) = mode {
             launch.environment.append("\(firstPromptEnv)=\(positionalPrompt(prompt))")
@@ -78,17 +93,22 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// the variables (the login shell only runs a single-quoted literal, so
     /// one whose `$VAR` is not POSIX — nushell's `$env.VAR` — or that
     /// quotes differently — csh — still works) and `env -u` drops them
-    /// before `claude` runs, so its children never see them. A resolved
-    /// binary's directory leads `PATH`, so a hook running `claude` by name
-    /// finds the same one.
-    private static func claudeCommand(_ tail: String, resolved: Bool, withPrompt: Bool) -> String {
-        guard resolved || withPrompt else { return "exec claude \(tail)" }
-        var unset = resolved ? ["-u \(claudeBinaryEnv)"] : []
+    /// before `claude` runs, so its children never see them. A pinned
+    /// binary is exec'd and its directory leads `PATH`; a fallback's
+    /// directory is appended only when the login PATH has no `claude`. Either
+    /// way a hook running `claude` by name finds the same one.
+    private static func claudeCommand(_ tail: String, binary: ClaudeBinary?, withPrompt: Bool) -> String {
+        guard binary != nil || withPrompt else { return "exec claude \(tail)" }
+        var unset = binary == nil ? [] : ["-u \(claudeBinaryEnv)"]
         if withPrompt { unset.append("-u \(firstPromptEnv)") }
-        let pathFix = resolved ? "export PATH=\"$(dirname \"$\(claudeBinaryEnv)\")\":\"$PATH\"; " : ""
-        let binary = resolved ? "\"$\(claudeBinaryEnv)\"" : "claude"
+        let dir = "${\(claudeBinaryEnv)%/*}"
+        let (pathFix, executable) = switch binary {
+        case .pinned?: ("export PATH=\"\(dir):$PATH\"; ", "\"$\(claudeBinaryEnv)\"")
+        case .fallback?: ("command -v claude >/dev/null 2>&1 || export PATH=\"$PATH:\(dir)\"; ", "claude")
+        case nil: ("", "claude")
+        }
         let prompt = withPrompt ? " \"$\(firstPromptEnv)\"" : ""
-        return "exec /bin/sh -c '\(pathFix)exec env \(unset.joined(separator: " ")) \(binary) \(tail)\(prompt)'"
+        return "exec /bin/sh -c '\(pathFix)exec env \(unset.joined(separator: " ")) \(executable) \(tail)\(prompt)'"
     }
 
     /// `claude`'s usage documents no `--` before the prompt, so a prompt

@@ -139,19 +139,27 @@ package enum Constants {
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),
               let yaml = try? Yams.load(yaml: str) as? [String: Any],
-              let path = yaml["claude_path"] as? String, !path.isEmpty else { return nil }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
-              FileManager.default.isExecutableFile(atPath: path) else { return nil }
+              let path = yaml["claude_path"] as? String, isRunnableFile(path) else { return nil }
         return path
     }
 
-    /// The `claude` binary a launch runs: the configured `claude_path`, else
-    /// the well-known dirs and `PATH` (`findInPath`); nil when none. The Swift
-    /// twin of Go `claude.FindBinary` (a dual path). Not cached: the owner may
-    /// set the path or install Claude Code while the app runs.
-    package nonisolated static func claudeBinary(configPath: String = Self.configPath) -> String? {
-        claudePathOverride(configPath: configPath) ?? findInPath("claude")
+    /// An executable regular file — not a directory, which
+    /// `isExecutableFile` also accepts (an app bundle such as `Claude.app`).
+    package nonisolated static func isRunnableFile(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+            && FileManager.default.isExecutableFile(atPath: path)
+    }
+
+    /// The `claude` a terminal session runs: the configured `claude_path`
+    /// (pinned), else what `findInPath` finds — a fallback the session uses
+    /// only when the login PATH has no `claude`; nil when none. Together the
+    /// order is Go `claude.FindBinary`'s (override → PATH → well-known
+    /// dirs), a dual path. Not cached: the owner may set the path or install
+    /// Claude Code while the app runs.
+    package nonisolated static func claudeBinary(configPath: String = Self.configPath) -> ClaudeBinary? {
+        if let pinned = claudePathOverride(configPath: configPath) { return .pinned(pinned) }
+        return findInPath("claude").map(ClaudeBinary.fallback)
     }
 
     /// `path` with the well-known install dirs (and `claudePath`'s directory)

@@ -9,6 +9,12 @@ enum ClaudeExecutablePanel {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.message = "Select the 'claude' executable"
+        // An app bundle is a directory the resolver ignores; the native
+        // installer's ~/.local/bin is hidden from a default panel.
+        panel.treatsFilePackagesAsDirectories = true
+        panel.showsHiddenFiles = true
+        let localBin = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".local/bin")
+        if FileManager.default.fileExists(atPath: localBin.path) { panel.directoryURL = localBin }
         return panel.runModal() == .OK ? panel.url?.path : nil
     }
 }

@@ -29,7 +29,7 @@ final class ConstantsClaudeBinaryTests: XCTestCase {
 
     func testAnExecutableOverrideWins() throws {
         let bin = try executable("claude")
-        XCTAssertEqual(Constants.claudeBinary(configPath: try config(bin)), bin)
+        XCTAssertEqual(Constants.claudeBinary(configPath: try config(bin)), .pinned(bin))
     }
 
     /// Review Focus 1: a directory, a missing file or a non-executable file
@@ -40,14 +40,14 @@ final class ConstantsClaudeBinaryTests: XCTestCase {
         for override in [dir.path, dir.appendingPathComponent("gone").path, plain] {
             let configPath = try config(override)
             XCTAssertNil(Constants.claudePathOverride(configPath: configPath), override)
-            XCTAssertEqual(Constants.claudeBinary(configPath: configPath), Constants.findInPath("claude"), override)
+            XCTAssertEqual(Constants.claudeBinary(configPath: configPath), Constants.findInPath("claude").map(ClaudeBinary.fallback), override)
         }
     }
 
     func testNoConfigFallsThrough() {
         let missing = dir.appendingPathComponent("none.yaml").path
         XCTAssertNil(Constants.claudePathOverride(configPath: missing))
-        XCTAssertEqual(Constants.claudeBinary(configPath: missing), Constants.findInPath("claude"))
+        XCTAssertEqual(Constants.claudeBinary(configPath: missing), Constants.findInPath("claude").map(ClaudeBinary.fallback))
     }
 
     /// Go `fallbackPATH` mirrored: the owner's order first, missing

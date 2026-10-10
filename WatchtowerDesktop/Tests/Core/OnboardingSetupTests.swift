@@ -115,4 +115,16 @@ final class OnboardingSetupTests: XCTestCase {
         XCTAssertNil(OnboardingClaudePathConfig.saveIfExecutable(bin, configPath: configPath))
         XCTAssertEqual(Constants.claudePathOverride(configPath: configPath), bin)
     }
+
+    /// An app bundle (say `Claude.app`) is an executable directory: the
+    /// resolver would ignore it, so it is never saved.
+    func testSaveIfExecutableRefusesADirectory() throws {
+        let dir = try tempDir()
+        let bundle = dir.appendingPathComponent("Claude.app")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        XCTAssertEqual(OnboardingClaudePathConfig.saveIfExecutable(bundle.path, configPath: configPath),
+                       "File not found or not executable: \(bundle.path)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configPath), "nothing written")
+    }
 }
