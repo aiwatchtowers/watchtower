@@ -93,9 +93,20 @@ final class StartSheetWiringTests: XCTestCase {
     }
 
     private func session(_ id: Int64, target: Int64, _ overrides: [String: Any]) throws -> TerminalSessionState {
+        try mirror(TerminalSessionState.self, sessionJSON(id, target: target, overrides))
+    }
+
+    private func sessionJSON(_ id: Int64, target: Int64, _ overrides: [String: Any]) -> [String: Any] {
         var json = DemoSeed.JSON.session(id, workbench: DemoSeed.acmeID, overrides)
         json["target_id"] = target
-        return try mirror(TerminalSessionState.self, json)
+        return json
+    }
+
+    /// Lands `records` in the store, as a hydrate does.
+    private func hydrate(_ store: ReplicaStore, _ records: [CloudRecord]) async throws {
+        let transport = InMemoryCloudTransport()
+        try await transport.save(records)
+        _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
     }
 
     // MARK: - Progress
@@ -198,6 +209,7 @@ final class StartSheetWiringTests: XCTestCase {
         replica.sessions.append(try session(92, target: 400, ["state_kind": "stopped", "live": false, "is_ring": true]))
         XCTAssertEqual(try form(400, replica, fixture.starter).progress?.stage, .ended(sessionID: 92))
 
+        try await hydrate(fixture.store, try DemoSeed.workbenchRecords(now: now))
         try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
         var resume = try XCTUnwrap(fixture.store.pendingActions().first { $0.entityRecordName == "workbench_target-416" }).action
         resume.status = .applied
@@ -208,6 +220,41 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertEqual(
             try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16),
             "#16 last ran hours before the resume: its record is stale, not the end"
+        )
+    }
+
+    /// Final-review iii-M4: a resumed start's end is read off the Mac's own
+    /// record, never by comparing the Mac's clock with the phone's. The
+    /// record the phone held when the applied echo came is the one from
+    /// before the start, even stamped by a Mac clock ahead of the phone's;
+    /// a not-live record the Mac wrote after it ends the start, even
+    /// stamped by a Mac clock behind.
+    func testAResumedStartEndsOnANotLiveRecordWrittenAfterTheEcho() async throws {
+        let fixture = try await makeFixture()
+        let staleJSON = sessionJSON(16, target: 416, [
+            "state_kind": "stopped", "state_caption": "Stopped", "live": false, "is_ring": true,
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(600))
+        ])
+        try await hydrate(fixture.store, [try DemoSeed.record(kind: .terminalSession, id: 16, json: staleJSON, modifiedAt: now)])
+        try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
+        try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
+        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+
+        var replica = try snapshot(fixture.store)
+        replica.sessions.removeAll { $0.id == 16 }
+        replica.sessions.append(try mirror(TerminalSessionState.self, staleJSON))
+        XCTAssertEqual(
+            try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16),
+            "the record from before the resume is not its end, whatever the Mac's clock says"
+        )
+
+        replica.sessions[replica.sessions.count - 1] = try session(16, target: 416, [
+            "state_kind": "stopped", "state_caption": "Exited", "live": false, "is_ring": true,
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-600))
+        ])
+        XCTAssertEqual(
+            try form(416, replica, fixture.starter).progress?.stage, .ended(sessionID: 16),
+            "a not-live record written after the echo ends the start, whatever the Mac's clock says"
         )
     }
 

@@ -73,9 +73,10 @@ enum StartStage: Equatable {
                 return session.stateKind == .notStarted ? .starting(sessionID: sessionID) : .open(sessionID: sessionID)
             }
             // A resumed session's record may still read stopped from before
-            // the start; only activity since the start counts as its end.
-            let since = session.lastActiveAt >= attempt.sentAt.addingTimeInterval(-1)
-            return attempt.params.mode == .new || since ? .ended(sessionID: sessionID) : .starting(sessionID: sessionID)
+            // the start: only a record the Mac wrote after the applied echo
+            // ends it (the Mac's clock is never compared with the phone's).
+            let writtenSinceEcho = session != attempt.echoedSession
+            return attempt.params.mode == .new || writtenSinceEcho ? .ended(sessionID: sessionID) : .starting(sessionID: sessionID)
         }
         // No row yet: the replica read has not caught up with the save.
         return rows.first { $0.id == attempt.actionID }.map(Self.init) ?? .sent
