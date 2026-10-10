@@ -71,6 +71,24 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(MobileHubService.activityWindow, 300)
     }
 
+    func testAStopWhileTheTransportHandlersInstallLeavesTheTransportStopped() async throws {
+        let transport = StubHubTransport()
+        let gate = SaveGate()
+        transport.gateNextResetHandlerInstall(on: gate)
+        let service = makeService(transport: transport)
+
+        let starting = Task { await service.start() }
+        await fulfillment(of: [gate.arrived], timeout: 5)
+        service.stop()
+        await service.waitUntilStopped()
+        gate.release()
+        await starting.value
+
+        XCTAssertEqual(transport.lifecycle.last, "stop", "a stop during the install is never undone by a late start")
+        XCTAssertEqual(service.status, .off)
+        XCTAssertFalse(service.isPublishing)
+    }
+
     func testCompanionsRunOnlyWhileTheHubPublishes() async throws {
         let companion = CountingCompanion()
         let offline = makeService(transport: StubHubTransport(availability: .noAccount), companions: [companion])

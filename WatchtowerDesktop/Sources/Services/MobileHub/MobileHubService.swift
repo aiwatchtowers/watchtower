@@ -221,6 +221,9 @@ final class MobileHubService {
         await teardown?.value
         guard status == .starting, epoch == startEpoch else { return }
         await installTransportHandlers()
+        // stop() may have run during the install: never start the
+        // transport it already stopped.
+        guard status == .starting, epoch == startEpoch else { return }
         await transport.start()
         let availability = await transport.availability()
         // stop() may have run while we awaited above.

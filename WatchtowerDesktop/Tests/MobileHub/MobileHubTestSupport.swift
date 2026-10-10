@@ -31,6 +31,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var dataChangesFail = false
     private var failingSaves = 0
     private var saveGate: (gate: SaveGate, matches: @Sendable (CloudRecord) -> Bool)?
+    private var resetHandlerGate: SaveGate?
     private let echoesOwnSaves: Bool
     private var ownPayloads: Set<Data> = []
 
@@ -75,6 +76,12 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     /// before it writes anything (a slow CloudKit save); later saves pass.
     func gateNextSave(on gate: SaveGate, where matches: @escaping @Sendable (CloudRecord) -> Bool) {
         lock.withLock { saveGate = (gate, matches) }
+    }
+
+    /// The next `setAccountResetHandler` parks on `gate` before it installs
+    /// anything (a slow transport actor hop during start).
+    func gateNextResetHandlerInstall(on gate: SaveGate) {
+        lock.withLock { resetHandlerGate = gate }
     }
 
     /// `changes(in: .data, …)` throws (a broken local buffer).
@@ -122,6 +129,11 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func availability() async -> CloudAvailability { lock.withLock { currentAvailability } }
 
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async {
+        let gate = lock.withLock { () -> SaveGate? in
+            defer { resetHandlerGate = nil }
+            return resetHandlerGate
+        }
+        if let gate { await gate.park() }
         lock.withLock { resetHandler = handler }
     }
 
