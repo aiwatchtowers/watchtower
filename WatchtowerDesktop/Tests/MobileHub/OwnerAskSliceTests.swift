@@ -73,7 +73,10 @@ final class OwnerAskSliceTests: XCTestCase {
     private let optionalKeys: Set<String> = [
         "session_id", "target_id", "withdrawn_reason", "previous_ask_id", "answered_at", "delivered_at",
         "title_clipped", "summary_clipped", "changes_clipped", "payload", "payload_clipped", "doc_path_clipped",
-        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick"
+        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick",
+        // Inside `payload` (passed through verbatim): the Kit mirror decodes
+        // a question's `multi` and an option's `description` as optional.
+        "multi", "description"
     ]
 
     func testAnOpenQuestionMatchesTheKitFixture() throws {
@@ -115,7 +118,7 @@ final class OwnerAskSliceTests: XCTestCase {
     func testAClosedCheckMatchesTheKitFixture() throws {
         let answer = #"{"verdict":"","answers":[],"checklist":[{"id":"1","state":"ok","note":""}],"comments":[],"note":""}"#
         let ask = try insertAsk(
-            kind: "check", payload: #"{"focus": [], "questions": [], "checklist": [{"text": "Launch the app"}]}"#,
+            kind: "check", payload: #"{"focus": [], "questions": [], "checklist": [{"id": "1", "text": "Launch the app"}]}"#,
             status: "delivered", answer: answer
         )
         let stamp = dbStamp(Date())

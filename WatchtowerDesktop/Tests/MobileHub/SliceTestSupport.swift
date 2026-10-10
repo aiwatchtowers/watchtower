@@ -81,7 +81,9 @@ enum SliceJSON {
 /// Pins `payload` to the Kit fixture: every key it has is a fixture key or
 /// one of `optionalKeys` (omitted when nil), every required fixture key is
 /// present, and shared keys carry the same literal type. Nested objects are
-/// compared the same way.
+/// compared the same way, and so are the first elements of two non-empty
+/// arrays (an array of objects is pinned by its first element);
+/// `optionalKeys` applies at every depth.
 func assertWireShape(
     _ payload: [String: Any],
     matches fixture: [String: Any],
@@ -100,9 +102,41 @@ func assertWireShape(
         XCTAssertEqual(
             SliceJSON.literalKind(actual), SliceJSON.literalKind(expected), "literal type of \(key)", file: file, line: line
         )
-        if let nested = actual as? [String: Any], let nestedFixture = expected as? [String: Any] {
-            assertWireShape(nested, matches: nestedFixture, file: file, line: line)
-        }
+        assertNestedWireShape(actual, matches: expected, at: key, optionalKeys: optionalKeys, file: file, line: line)
+    }
+}
+
+private func assertNestedWireShape(
+    _ actual: Any, matches expected: Any, at path: String, optionalKeys: Set<String>, file: StaticString, line: UInt
+) {
+    if let nested = actual as? [String: Any], let nestedFixture = expected as? [String: Any] {
+        assertWireShape(nested, matches: nestedFixture, optionalKeys: optionalKeys, file: file, line: line)
+    } else if let list = actual as? [Any], let fixtureList = expected as? [Any],
+              let first = list.first, let fixtureFirst = fixtureList.first {
+        XCTAssertEqual(
+            SliceJSON.literalKind(first), SliceJSON.literalKind(fixtureFirst), "literal type of \(path)[0]", file: file, line: line
+        )
+        assertNestedWireShape(first, matches: fixtureFirst, at: "\(path)[0]", optionalKeys: optionalKeys, file: file, line: line)
+    }
+}
+
+/// assertWireShape itself: it reaches into arrays.
+final class WireShapeAssertionTests: XCTestCase {
+    func testAMismatchInsideAnArrayOfObjectsFails() {
+        let fixture: [String: Any] = ["items": [["id": 1, "name": "a"]]]
+        XCTExpectFailure("a missing and an extra key inside the first element")
+        assertWireShape(["items": [["id": 1, "label": "a"]]], matches: fixture)
+    }
+
+    func testAWrongLiteralTypeInsideAnArrayFails() {
+        XCTExpectFailure("a string where the fixture has a number")
+        assertWireShape(["ids": ["1"]], matches: ["ids": [1]])
+    }
+
+    func testMatchingArraysAndAnEmptyArrayPass() {
+        let fixture: [String: Any] = ["items": [["id": 1, "tags": ["x"]]]]
+        assertWireShape(["items": [["id": 2, "tags": ["y", "z"]]]], matches: fixture)
+        assertWireShape(["items": []], matches: fixture)
     }
 }
 
