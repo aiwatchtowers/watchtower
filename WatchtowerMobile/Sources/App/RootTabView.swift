@@ -46,6 +46,16 @@ struct RootTabView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Whether the environment runs in `phase`: paused in the background,
+    /// running when active; nil (no change) while inactive.
+    static func isActive(in phase: ScenePhase) -> Bool? { // swiftlint:disable:this discouraged_optional_boolean
+        switch phase {
+        case .background: false
+        case .active: true
+        default: nil
+        }
+    }
+
     init() {
         // The only tab badge is the open-ask count: a waiting-for-you element.
         UITabBarItem.appearance().badgeColor = PhoneTone.waitingBadgeColor
@@ -87,11 +97,11 @@ struct RootTabView: View {
         }
         // The fetch loop pauses in the background (a recording's audio
         // background mode must not keep it running) and resumes on return.
-        .onChange(of: scenePhase) {
-            switch scenePhase {
-            case .background: env.setActive(false)
-            case .active: env.setActive(true)
-            default: break
+        // Read at launch too: a launch straight into the background (a
+        // silent push) never starts the loop.
+        .onChange(of: scenePhase, initial: true) {
+            if let active = Self.isActive(in: scenePhase) {
+                env.setActive(active)
             }
         }
     }

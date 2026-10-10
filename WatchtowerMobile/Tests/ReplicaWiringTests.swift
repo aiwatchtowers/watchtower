@@ -182,6 +182,23 @@ final class ReplicaWiringTests: XCTestCase {
         try await poll({ env.lastSyncAt != paused }, "the loop did not resume in the foreground")
     }
 
+    /// A-T11 N5: the scene phase is read at launch too (`initial: true`),
+    /// so a launch straight into the background (a silent push) pauses the
+    /// environment before its boot ends: the boot never starts the loop,
+    /// and the first activation does.
+    func testABackgroundLaunchStartsNoLoopUntilTheAppIsActive() async throws {
+        XCTAssertEqual(RootTabView.isActive(in: .background), false)
+        XCTAssertEqual(RootTabView.isActive(in: .active), true)
+        XCTAssertNil(RootTabView.isActive(in: .inactive), "inactive (a sheet, the app switcher) changes nothing")
+
+        let env = try demoEnvironment(at: try makeReplicaPath())
+        env.setActive(false)
+        try await poll({ env.isBootstrapped }, "the boot did not finish")
+        XCTAssertFalse(env.isLooping, "a background launch must not start the fetch loop")
+        env.setActive(true)
+        XCTAssertTrue(env.isLooping)
+    }
+
     // MARK: - Transport choice
 
     /// The unsigned test host (CODE_SIGNING_ALLOWED=NO) has no iCloud

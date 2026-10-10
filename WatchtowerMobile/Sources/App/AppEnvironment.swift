@@ -94,7 +94,8 @@ final class AppEnvironment {
     @ObservationIgnored private let uploader: RecordingUploader
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
-    @ObservationIgnored private var bootstrapped = false
+    /// The boot (seed or engine start, first fetch, recovery) is done.
+    @ObservationIgnored private(set) var isBootstrapped = false
     @ObservationIgnored private var stopped = false
 
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppEnvironment")
@@ -234,7 +235,7 @@ final class AppEnvironment {
         // processed set absorbs duplicates).
         await recorder.recoverOnLaunch()
         await recorder.uploadPending()
-        bootstrapped = true
+        isBootstrapped = true
         restartLoop()
     }
 
@@ -327,7 +328,7 @@ final class AppEnvironment {
     private func restartLoop() {
         loopTask?.cancel()
         loopTask = nil
-        guard bootstrapped, isActive, !stopped else { return }
+        guard isBootstrapped, isActive, !stopped else { return }
         let interval = fetchInterval
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
