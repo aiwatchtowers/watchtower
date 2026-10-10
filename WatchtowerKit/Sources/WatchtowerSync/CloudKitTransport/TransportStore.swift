@@ -512,6 +512,8 @@ public final class TransportStore: Sendable {
     /// the same file. Deleted records are covered: their earlier change
     /// events are compacted. Only files inside the stash directory are
     /// removed. Runs on the transport actor, so no fetch interleaves.
+    ///
+    /// Relay zone: the unreferenced stash is swept after the delete.
     public func compactEvents(in zone: CloudZoneID, keepSince token: CloudChangeToken) throws {
         let consumed = try queue.write { db -> [String] in
             var consumed: [String] = []
@@ -536,6 +538,11 @@ public final class TransportStore: Sendable {
             return consumed
         }
         removeStashedFiles(atPaths: consumed)
+        // Relay zone: only the phone compacts it (RelayFeed; the hub sweeps
+        // its relay buffer by age instead), and nothing there reads a relay
+        // stash after routing — so an own upload reflecting back with its
+        // audio-sized asset goes now, not at the next launch's sweep.
+        if zone == .relay { sweepUnreferencedStash() }
     }
 
     /// Removes the files among `paths` that live in the stash directory.
@@ -615,7 +622,8 @@ public final class TransportStore: Sendable {
 
     /// Removes every file in the stash directory that no buffered event and
     /// no pending row references — the stash's only owners. Runs at open (a
-    /// launch sweep of earlier leaks), after `evictZone` and after a wipe.
+    /// launch sweep of earlier leaks), after `evictZone`, after a wipe and
+    /// after a relay-zone compaction.
     /// Callers other than `init` run on the transport actor, whose fetch
     /// path stashes and buffers with no suspension in between, so a fresh
     /// stash is always referenced by the time a sweep can look. Best-effort:

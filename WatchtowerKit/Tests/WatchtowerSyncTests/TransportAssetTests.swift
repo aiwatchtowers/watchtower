@@ -216,6 +216,25 @@ final class TransportAssetTests: XCTestCase {
     /// Only the stash directory is swept: a referenced-elsewhere file next to
     /// the store (the hub's staged assets, the phone's recordings) is never
     /// touched, referenced or not.
+    /// The phone compacts its consumed relay buffer (RelayFeed): an own
+    /// upload reflecting back with its audio-sized asset must not wait for
+    /// the next launch's sweep (final-review P2-M3).
+    func testCompactingTheRelayZoneSweepsItsConsumedStash() throws {
+        let (store, dir) = try fileStore()
+        let staged = dir.appendingPathComponent("staged-\(UUID().uuidString).m4a")
+        try Data("audio".utf8).write(to: staged)
+        let stashed = try XCTUnwrap(store.stashAsset(from: staged, recordName: "recupload-A1"))
+        try store.bufferChanged([CloudRecord(
+            recordName: "recupload-A1", zone: .relay, kind: "recording_upload", modifiedAt: stamp,
+            payload: Data("{}".utf8), assetFileURL: stashed
+        )])
+        let batch = try store.changes(in: .relay, since: nil)
+
+        try store.compactEvents(in: .relay, keepSince: batch.newToken)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stashed.path))
+    }
+
     func testSweepNeverTouchesFilesOutsideTheStash() throws {
         let (store, dir) = try fileStore()
         _ = try bufferFetched(store, dir: dir, name: "meeting_transcript-1", contents: "[1]")
