@@ -554,6 +554,49 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(vm.sessionState(row), .live(.stopped))
     }
 
+    /// #411 §10: `initWorkbenches` hands its CLI runner to the center as the
+    /// probe runner — without it no stale count is ever probed and the suite
+    /// stays green. A counted `waiting` reported long ago, one poll: exactly
+    /// one `workbench session-probe` call.
+    func testInitWorkbenchesWiresTheProbeRunner() async throws {
+        let appState = AppState()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
+        appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.transcriptExists = { _ in true }
+        appState.terminalCenter.now = { [started] in started }
+        let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("busy"))
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
+        defer {
+            appState.sessionAgentStateCenter?.stop()
+            appState.workbenchNotificationCenter?.stop()
+        }
+        let center = try XCTUnwrap(appState.sessionAgentStateCenter)
+        center.isAppActive = { false }
+        let row = try await session()
+        appState.terminalCenter.start(row, fresh: true)
+        let (stateAt, reportedAt) = (stamp(1), stamp(2))
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+                        agent_background = 2, agent_background_at = ? WHERE id = ?
+                    """,
+                arguments: [stateAt, reportedAt, row.id]
+            )
+        }
+
+        await center.poll()
+
+        await eventually("the stale count is probed") { !runner.invocations.isEmpty }
+        XCTAssertEqual(runner.invocations, [[
+            "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
+        ]])
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2), "busy keeps the count")
+    }
+
     // MARK: - Notices
 
     func testATransitionWithTheAppInactivePostsOneNotice() async throws {
