@@ -8,8 +8,8 @@ These pass, except that failure case 1 takes priority over this list:
   still left. A question or request to the owner inside a progress report is still case 1.
 - A named ask is never a failure: a message that names "ask #<number>", including step-by-step help for the owner on
   that ask.
-- A closing summary that says the session is finished and lists what is left on the owner is not a request (asks for
-  those items are filed separately).
+- A closing summary that says it called finish_session (for example "session finished") and lists what is left on the
+  owner is not case 1 (those items are filed as asks separately). This item never affects case 2.
 - Rhetorical questions, questions the agent answers itself, and offers such as "say if you want X".
 Failure cases (return the first that applies):
 1. Request left as text: last_assistant_message asks the owner for something (a question to answer, a decision to

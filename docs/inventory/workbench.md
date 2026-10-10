@@ -879,20 +879,21 @@ the prompt is v3 (board #478, owner approved 2026-10-09): it returns
 work (a progress report, a partial result, a next step the agent itself will
 take, work still left) is never case 2, that a message naming
 `ask #<number>`, including step-by-step help for the owner on that ask, is
-never a failure, and that a closing summary saying the session is finished
-and listing what is left on the owner is not a request; failure case 1 takes
-priority over that pass list (a question or request to the owner inside a
-progress report is still case 1). It names exactly two failure cases — a request to the owner left as text naming no
-`ask #<number>`, and a message saying all of the session's work is complete
-with nothing left that does not say it called `finish_session` (a PR opened
-or merged alone is no longer complete). The pass rules — `stop_hook_active`,
-when unsure — are unchanged. `integrate`/`resync` set every prompt entry
-carrying our marker, the v1 or v2 text or an edit of either, to v3 (the
-PROJ-04 rule for our edited prompt; another workbench's marker is left as it
-is). The intent is one nudge per stop: the
-prompt tells the model to pass when `stop_hook_active` is set (pinned by the
-golden; the model's compliance is not something a test can check). The
-`PreToolUse` command hook (`workbench ask-guard --workbench N
+never a failure, and that a closing summary saying it called
+`finish_session` ("session finished") and listing what is left on the owner
+is not case 1 (it never affects case 2); failure case 1 takes priority over
+that pass list (a question or request to the owner inside a progress report
+is still case 1). It names exactly two failure cases — a request to the
+owner left as text naming no `ask #<number>`, and a message saying all of
+the session's work is complete with nothing left that does not say it
+called `finish_session` (a PR opened or merged alone is no longer complete).
+The pass rules — `stop_hook_active`, when unsure — are unchanged.
+`integrate`/`resync` set every prompt entry carrying our marker, the v1 or
+v2 text or an edit of either, to v3 (the PROJ-04 rule for our edited prompt;
+another workbench's marker is left as it is). The intent is one nudge per
+stop: the prompt tells the model to pass when `stop_hook_active` is set
+(pinned by the golden; the model's compliance is not something a test can
+check). The `PreToolUse` command hook (`workbench ask-guard --workbench N
 --pre-tool-use`, matcher `AskUserQuestion`, `timeout: 5`) prints the deny
 decision only when workbench N exists and its stdin (read for at most 0.5 s)
 names `tool_name` `AskUserQuestion`; on any failure — another tool,
@@ -907,7 +908,7 @@ precedent: a guard that could loop a turn, fail a turn, or block a tool
 because Watchtower is broken would be worse than none.
 
 **Test guards:**
-- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (the golden — the v3 text since 2026-10-10 — carries the pass clauses: default pass, `stop_hook_active`, case 1 priority over the pass list, unfinished work never case 2, a named ask never fails, a closing summary is not a request, the `ask #<number>` and `finish_session` exits, when unsure)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (the golden — the v3 text since 2026-10-10 — carries the pass clauses: default pass, `stop_hook_active`, case 1 priority over the pass list, unfinished work never case 2, a named ask never fails, a closing summary after `finish_session` is not case 1 and never affects case 2, the `ask #<number>` and `finish_session` exits, when unsure)
 - `internal/devpack/workbench_ask_guard_test.go::TestProj13_OlderPromptsAreUpgradedToTheCurrent` (renamed 2026-10-10 from `TestProj13_V1PromptIsUpgradedToV2` and widened: the v1 and v2 texts and an edit of either all become v3; another workbench's older prompt stays; a second resync changes nothing)
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardFailurePrintsNothingAndExitsZero`
 - `cmd/workbench_askguard_test.go::TestProj13_AskGuardFinishesFastOnALockedDatabase`
@@ -1172,7 +1173,7 @@ other direction.
 
 ## Changelog
 
-- 2026-10-10 (board #478, **owner approved 2026-10-09 (#478)** in chat): **PROJ-13 amended** — the ask guard prompt is v3. v2 failed almost every intermediate report and step-by-step help on an ask already filed, which Claude Code prints as "Stop hook error" and which looped the agent. v3 passes by default, states that unfinished work is never case 2, that a named `ask #<number>` (including step-by-step help on it) is never a failure and that a closing summary after the session finished is not a request, gives failure case 1 priority over that pass list, and enumerates exactly two failure cases (a request left as text, a completed session without `finish_session`; "a PR opened or merged" alone no longer counts as complete). The pass rules (`stop_hook_active`, when unsure) are unchanged. The golden is updated to v3 and `TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` pins more pass clauses than before; `TestProj13_V1PromptIsUpgradedToV2` is renamed `TestProj13_OlderPromptsAreUpgradedToTheCurrent` and now also covers a v2 install and an edited v2 (fixture `internal/devpack/testdata/askguard_prompt_v2.md`), its assertions unchanged.
+- 2026-10-10 (board #478, **owner approved 2026-10-09 (#478)** in chat): **PROJ-13 amended** — the ask guard prompt is v3. v2 failed almost every intermediate report and step-by-step help on an ask already filed, which Claude Code prints as "Stop hook error" and which looped the agent. v3 passes by default, states that unfinished work is never case 2, that a named `ask #<number>` (including step-by-step help on it) is never a failure and that a closing summary after `finish_session` is not case 1 (it never affects case 2), gives failure case 1 priority over that pass list, and enumerates exactly two failure cases (a request left as text, a completed session without `finish_session`; "a PR opened or merged" alone no longer counts as complete). The pass rules (`stop_hook_active`, when unsure) are unchanged. The golden is updated to v3 and `TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` pins more pass clauses than before; `TestProj13_V1PromptIsUpgradedToV2` is renamed `TestProj13_OlderPromptsAreUpgradedToTheCurrent` and now also covers a v2 install and an edited v2 (fixture `internal/devpack/testdata/askguard_prompt_v2.md`), its assertions unchanged.
 - 2026-10-07 (board #415, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md`): **PROJ-15 amended 2026-10-07, approved by the owner in ask #106** (the spec §3 wording and all four §1 decisions as recommended) — "Archive Closed Targets Now". Migration `00105` adds `projects.archived_through` (a UTC moment, NULL = never pressed, `CHECK` it parses) and recreates `workbench_target_archive` with a second branch: a closed subtree whose newest close time is not after the moment is archived whatever `archive_after_days` says, including Never (decision 1); both `done` and `dismissed` count (decision 4). The Observable's first sentence is replaced and one sentence added after "Reopening restores it"; "hidden, never lost", groups-go-whole, restore-by-reopening and the drift guarantee are unchanged, and "Why locked" is unchanged — Undo is an extra, not the only way back. Writers: the Desktop's `WorkbenchQueries.archiveClosedTargetsNow`/`clearArchivedThrough` (the header's "Archive Closed Targets Now" / "Undo Archive Now") and the Go twins `db.ArchiveWorkbenchClosedNow`/`db.ClearWorkbenchArchivedThrough`; no CLI writer, no MCP tool. Every existing PROJ-15 guard runs unchanged (`TestProj15_PerWorkbenchSettingAndNever` still asserts that 0 archives nothing with no stamp); new guards in `internal/db/proj15_archive_now_test.go`, a stamp-only case in `TestProj15_DriftStillSeesArchivedUnmergedWork`. PROJ-05/06/07/09 untouched: the button writes only `projects`. v1 note "Board archive" extended.
 - 2026-10-07 (board #396, with #387/#388/#389; owner directive 2026-10-05 «send it right away», approved as an amendment of PROJ-12): **PROJ-12 amended** — an answer is also submitted into a session whose hooks have not written a state yet this run, when its SessionStart hook marked the run. Root cause: a relaunch or resume (`startup`/`resume`) cleared the row's state, so `SessionAgentStatus.at` was nil until the agent's next turn and the line was only pasted ("press Return to send") into an idle session; a compaction while idle continues the run and changed nothing. Now the SessionStart hook writes the run's mark (`MarkTerminalAgentRun`: no state, a stamp of this run) when the workbench's folder has the session state hooks (`workbenchHasStateHooks`), even with nothing to clear; without them `ClearTerminalAgentState` clears with no stamp (it used to stamp the clear), so a mark always means the state hooks run. The Desktop reads it as `SessionAgentStatus.runMarked`/`hooksReported`; the dot, `isAtPrompt` (hand-offs, ruling R52) and PROJ-11's states and notices are unchanged. The permission-dialog guard (`needsApproval` before the paste and after the pause, failed reads) and the owner-draft guard are unchanged. Also: the Return goes only into the process run the line was pasted into (`TerminalCenter.runs`; a relaunch reuses the process object, #387 — also for held answers and the read before the paste), the owner's submitting Return during the pause skips ours and leaves no bar (#388), a restart drops the last run's paste bar (#389), and the condition that withheld a Return is logged. Guards rewritten to the new rule, none relaxed: `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted` → `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted` (same assertions), `CodeHandoffCenterTests::testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted` → `testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted` (the earlier run's state kept, plus no row, an earlier run's mark and an unknown value; the bar asserted). New guards `testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn`, `testProj12_ACompactWhileIdleKeepsTheReturn`, `TestProj12_ANewRunWithTheStateHooksIsMarked`, `TestProj12_CompactWhileIdleKeepsTheRunsState`. Limit (h) rewritten. No hook setting changed (the SessionStart entry already ran for every source), so no Re-run Setup. PROJ-11's guards are unchanged; its "the SessionStart clear of a new run" is now the mark or the stampless clear.
 
