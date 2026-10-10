@@ -230,7 +230,9 @@ extension WorkbenchesViewModel {
     func workOn(
         targetID: Int64, targetText: String, projectID: Int64? = nil, placement: Placement = .keeping(.board)
     ) async {
-        // Every failure is on the page already (or logged, if superseded).
+        // A failure is on the page already (or logged, if superseded); a
+        // second press while this target's start runs (`inProgress`) is
+        // dropped silently, as a double click.
         guard let row = try? await startTarget(
             targetID, title: targetText, prompt: nil, mode: .openExisting, placement: placement,
             askedIn: projectID ?? selectedWorkbenchID

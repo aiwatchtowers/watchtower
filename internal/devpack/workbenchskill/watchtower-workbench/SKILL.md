@@ -54,7 +54,7 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 
 ## Working a target
 
-The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` right away with `update_target` — with its `branch` in the same call when the branch already exists, else in the call that sets the branch once you create it — and work it under the rules above (feature, spec, plan).
+The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` right away with `update_target` (add its `branch` in the same call if the branch already exists; otherwise set `branch` in a later `update_target` once you create it), and work it under the rules above (feature, spec, plan).
 
 Working on a target is all of it — the brainstorm, the spec, the decisions and the plan, not only the code — so a target is `in_progress` from the moment a session takes it up, not from the first line of code. When the owner pressed **Work on It** in Watchtower, the app has usually set it `in_progress` already; then only set its `branch` once it exists. Never move a target back to `todo` because no code exists yet.
 
