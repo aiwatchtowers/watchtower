@@ -200,6 +200,65 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertFalse(settings.startSessions, "the second toggle keeps its value")
     }
 
+    /// A-T11 N3: the newest toggle of a setting wins. On, off, on, the last
+    /// two queued behind the first write: that write's failure must not
+    /// revert the third toggle (the value matches it again, ABA).
+    func testAFailedWriteNeverRevertsANewerToggleOfTheSameSetting() async throws {
+        let transport = SpyTransport(failingSaves: [0], holdSaves: true)
+        let defaults = try makeDefaults()
+        let settings = DeviceSettings(transport: transport, defaults: defaults)
+        settings.linkedDevice = device
+        // Released on every path, so a failing assertion leaks no waiter.
+        defer { Task { await transport.release(0, 1, 2) } }
+
+        let first = Task { await settings.setTypingRequested(true) }
+        try await pollSaves(transport, 1)
+        let second = Task { await settings.setTypingRequested(false) }
+        try await poll { !settings.typingRequested }
+        let third = Task { await settings.setTypingRequested(true) }
+        try await poll { settings.typingRequested }
+
+        await transport.release(0, 1, 2)
+        _ = await (first.value, second.value, third.value)
+        XCTAssertTrue(settings.typingRequested, "the newest toggle keeps its value")
+        let payloads = try await transport.devicePayloads()
+        XCTAssertEqual(payloads.map(\.typingRequested), [true, true, true], "no write sends the stale revert")
+        XCTAssertTrue(DeviceSettings(transport: transport, defaults: defaults).typingRequested)
+    }
+
+    /// A-T11 N3: a reverted toggle says why until that setting saves, even
+    /// when the other setting's write succeeds right behind it.
+    func testARevertedToggleKeepsItsErrorUntilThatSettingSaves() async throws {
+        let transport = SpyTransport(failingSaves: [0], holdSaves: true)
+        let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
+        settings.linkedDevice = device
+        defer { Task { await transport.release(0, 1, 2) } }
+
+        let first = Task { await settings.setTypingRequested(true) }
+        try await pollSaves(transport, 1)
+        let second = Task { await settings.setStartSessions(false) }
+        try await poll { !settings.startSessions }
+        await transport.release(0, 1)
+        _ = await (first.value, second.value)
+        XCTAssertFalse(settings.typingRequested, "the failed typing write is reverted")
+        XCTAssertFalse(settings.startSessions)
+        XCTAssertNotNil(settings.lastError, "the start-sessions save must not hide why typing went back")
+
+        await transport.release(2)
+        await settings.setTypingRequested(true)
+        XCTAssertNil(settings.lastError, "a typing save clears it")
+    }
+
+    /// Waits (bounded) until the spy has seen `count` save calls.
+    private func pollSaves(_ transport: SpyTransport, _ count: Int) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while await transport.saves.count < count, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let seen = await transport.saves.count
+        XCTAssertEqual(seen, count, "the spy did not see the save in time")
+    }
+
     /// Settings reads the hub's grant for this phone.
     func testSnapshotReadsThisDevicesGrant() async throws {
         let store = try makePoolStore()
@@ -229,10 +288,16 @@ private actor SpyTransport: CloudSyncTransport {
     private var inFlight = 0
     private let failingSaves: Set<Int>
     private let delay: Duration
+    /// With `holdSaves`, each save waits for `release(index)` (sticky: a
+    /// release before the save arrives lets it straight through).
+    private let holdSaves: Bool
+    private var released: Set<Int> = []
+    private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
 
-    init(failingSaves: Set<Int> = [], delay: Duration = .zero) {
+    init(failingSaves: Set<Int> = [], delay: Duration = .zero, holdSaves: Bool = false) {
         self.failingSaves = failingSaves
         self.delay = delay
+        self.holdSaves = holdSaves
     }
 
     func save(_ records: [CloudRecord]) async throws {
@@ -244,7 +309,17 @@ private actor SpyTransport: CloudSyncTransport {
         if delay > .zero {
             try await Task.sleep(for: delay)
         }
+        if holdSaves, !released.contains(index) {
+            await withCheckedContinuation { waiters[index] = $0 }
+        }
         if failingSaves.contains(index) { throw Failure() }
+    }
+
+    func release(_ indexes: Int...) {
+        for index in indexes {
+            released.insert(index)
+            waiters.removeValue(forKey: index)?.resume()
+        }
     }
 
     func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
