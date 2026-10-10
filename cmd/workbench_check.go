@@ -312,11 +312,12 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 // markStopTurnEnd records the turn end before the drift check, which can
 // take seconds: a tool result of the ending turn whose async hook starts in
 // the meantime then already finds its call before it (board #368). Only a
-// folder with the session state hooks gets it (nothing else reads it). Best
+// folder with the core four session state hooks gets it (nothing else reads
+// it; workbenchHasStateHooks, which does not require SubagentStop). Best
 // effort: it returns the write's error, which the caller reports only when
 // the check blocks the stop — otherwise the state write after the check
 // records it again and reports a failure. Outside a Desktop terminal, or
-// in a folder without the hooks, it does nothing.
+// in a folder without those hooks, it does nothing.
 func markStopTurnEnd(database *db.DB, workbenchID int64, in stopHookInput) error {
 	rowID, ok, err := terminalSessionRowID()
 	if !ok || (err == nil && in.SessionID == "") {

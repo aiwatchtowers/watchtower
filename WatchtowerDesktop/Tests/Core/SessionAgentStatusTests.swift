@@ -354,4 +354,40 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertEqual(policy.verdict(count: 2, lastReport: report.addingTimeInterval(1), now: report), .over,
                        "a report from the future")
     }
+
+    /// §10: a count above zero is probed once its report is 30 minutes old;
+    /// zero, a younger report or a report from the future is not.
+    func testNeedsProbeTable() {
+        let policy = SessionBackgroundPolicy.current
+        let report = started
+        XCTAssertEqual(SessionBackgroundPolicy.staleAfter, 30 * 60)
+        XCTAssertFalse(policy.needsProbe(count: 2, lastReport: report, now: report.addingTimeInterval(29 * 60 + 59)))
+        XCTAssertTrue(policy.needsProbe(count: 2, lastReport: report, now: report.addingTimeInterval(30 * 60)))
+        XCTAssertTrue(policy.needsProbe(count: 1, lastReport: report, now: report.addingTimeInterval(36_000)))
+        XCTAssertFalse(policy.needsProbe(count: 0, lastReport: report, now: report.addingTimeInterval(36_000)),
+                       "a count of zero ends on the grace, not on a probe")
+        XCTAssertFalse(policy.needsProbe(count: 2, lastReport: report.addingTimeInterval(60), now: report),
+                       "a report from the future")
+    }
+
+    /// PROJ-11 (#411, §10 F24): a count shown over after failed probes reads
+    /// as what the row would be without it — Stopped, or its ask — and only
+    /// for the sessions named.
+    func testProj11_DisplayOverEndsTheCountWithoutAWrite() {
+        let input = row("waiting", at: stamp(1), background: 2, backgroundAt: stamp(2))
+        let late = started.addingTimeInterval(3600)
+        XCTAssertEqual(SessionAgentStatus.effective(row: input, live: true, startedAt: started, now: late,
+                                                    displayOver: true), .live(.stopped))
+        var asking = input
+        asking.openAsks = 1
+        XCTAssertEqual(SessionAgentStatus.effective(row: asking, live: true, startedAt: started, now: late,
+                                                    displayOver: true), .live(.waitingOnAsk, openAsks: 1))
+        var other = input
+        other.id = 2
+        let statuses = SessionAgentStatus.resolve([input, other], liveIDs: [1, 2], startedAt: [1: started, 2: started],
+                                                  now: late, displayOver: [1])
+        XCTAssertEqual(statuses[1]?.state, .live(.stopped))
+        XCTAssertEqual(statuses[1]?.at, stamp(1), "the stop it shows is the background Stop's")
+        XCTAssertEqual(statuses[2]?.state, .live(.background, backgroundAgents: 2))
+    }
 }
