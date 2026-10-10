@@ -1857,14 +1857,15 @@ func TestTranscriptSaveEventLookupErrorFails(t *testing.T) {
 	// Breaks the event lookup's SELECT only (the FK target id stays).
 	_, err = database.Exec(`ALTER TABLE calendar_events DROP COLUMN raw_json`)
 	require.NoError(t, err)
-	database.Close()
+	require.NoError(t, database.Close())
 
 	transcriptSaveFlagFile = writeTranscriptFile(t, "phone recording body")
 	transcriptSaveFlagEventID = "evt-any"
 
 	err = transcriptSaveCmd.RunE(transcriptSaveCmd, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "evt-any")
+	// Pins the lookup branch, not a later insert failure naming the id.
+	assert.Contains(t, err.Error(), "looking up calendar event evt-any")
 
 	database, err = openDBFromConfig()
 	require.NoError(t, err)
