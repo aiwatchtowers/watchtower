@@ -754,7 +754,7 @@ gets an ask answer's Return like Stopped.
 
 A count with no report for 30 minutes is probed, never ended on the clock
 alone. The probe (Go, no model turn) reads Claude Code's session registry
-entry for the session (`<claude config dir>/sessions/<pid>.json`, matched by
+entry for the session (`~/.claude/sessions/<pid>.json`, matched by
 `sessionId`): `busy` keeps Agents working; `waiting` leaves the row alone;
 `idle`, `shell`, a missing or unknown status, no entry or a dead process
 ends the count — a compare-and-clear on `agent_background_at` written by Go
@@ -1200,7 +1200,10 @@ other direction.
   for the `SubagentStop` entry — until then nothing lowers the count before
   the main agent's next turn. The probe reads Claude Code's session registry, an
   undocumented Claude Code internal: a change in it loses the probe and the
-  count ends at the first stale probe, as Stopped, never stuck. The row
+  count ends at the first stale probe, as Stopped, never stuck. The probe
+  reads `~/.claude` only, never `CLAUDE_CONFIG_DIR` (the transcript readers'
+  rule): a `claude` started with a custom `CLAUDE_CONFIG_DIR` is not found,
+  so its count ends at the first stale probe. The row
   follows the registry, so a hung subagent keeps it Agents working for as
   long as Claude Code reports work in flight. Not measured on Claude Code
   2.1.295: a never-ending background shell, workflows, a hung or killed

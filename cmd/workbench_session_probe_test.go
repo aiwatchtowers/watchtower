@@ -54,7 +54,9 @@ func registryEntry(status string) string {
 func (r registrySetup) apply(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", dir)
+	origDir := terminalClaudeDir
+	terminalClaudeDir = func() string { return dir }
+	t.Cleanup(func() { terminalClaudeDir = origDir })
 	if r.entry != "" {
 		require.NoError(t, os.MkdirAll(filepath.Join(dir, "sessions"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "sessions", strconv.Itoa(probePID)+".json"), []byte(r.entry), 0o600))

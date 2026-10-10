@@ -3,7 +3,6 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -37,7 +36,7 @@ var workbenchSessionProbeCmd = &cobra.Command{
 	Short: "Check a terminal session's stale background agent count against Claude Code's session registry",
 	Long: "--session S --workbench N: when the claude row S reads waiting with background subagents\n" +
 		"and no report for 30 minutes, reads Claude Code's session registry entry of its\n" +
-		"conversation (<claude config dir>/sessions/<pid>.json, matched by sessionId). busy or\n" +
+		"conversation (~/.claude/sessions/<pid>.json, matched by sessionId). busy or\n" +
 		"waiting leave the row alone; idle, shell, a missing or unknown status, no entry or a\n" +
 		"dead process end the count, unless a report or Stop landed since the probe read the row.\n" +
 		"It never starts a count and never changes the row's state. Prints one JSON object\n" +
@@ -133,9 +132,11 @@ func probeSession(workbenchID, sessionID int64, now time.Time) (sessionProbeResu
 
 // registryOutcome is the registry's verdict on conversation sessionID.
 func registryOutcome(sessionID string) (string, error) {
-	configDir := claudesession.ConfigDir(os.Getenv)
+	// ~/.claude only, never $CLAUDE_CONFIG_DIR: the transcript readers' dual
+	// path rule (terminalClaudeDir, ClaudeTranscript.defaultConfigDir).
+	configDir := terminalClaudeDir()
 	if configDir == "" {
-		return "", errors.New("claude config dir unknown: no $CLAUDE_CONFIG_DIR and no home dir")
+		return "", errors.New("claude config dir unknown: no home dir")
 	}
 	entry, found, err := claudesession.FindSessionWith(configDir, sessionID, probeProcs)
 	if err != nil {

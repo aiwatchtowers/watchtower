@@ -17,19 +17,6 @@ import (
 	"time"
 )
 
-// ConfigDir is Claude Code's config dir: $CLAUDE_CONFIG_DIR when set, else
-// ~/.claude ("" when the home dir is unknown).
-func ConfigDir(env func(string) string) string {
-	if dir := env("CLAUDE_CONFIG_DIR"); dir != "" {
-		return dir
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude")
-}
-
 // Entry is one running Claude Code process's registry entry
 // (<config dir>/sessions/<pid>.json). Status is raw: "busy", "idle", or
 // anything else; "" means the entry predates its first status update, which is

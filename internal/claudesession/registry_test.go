@@ -248,24 +248,3 @@ func TestProcStartIsReadInUTC(t *testing.T) {
 		t.Errorf("start(self) = %q read as UTC is %v from now; want the recent past", started, age)
 	}
 }
-
-func TestConfigDirHonoursClaudeConfigDir(t *testing.T) {
-	env := func(v string) func(string) string {
-		return func(key string) string {
-			if key == "CLAUDE_CONFIG_DIR" {
-				return v
-			}
-			return ""
-		}
-	}
-	if got := ConfigDir(env("/tmp/example/claude")); got != "/tmp/example/claude" {
-		t.Errorf("ConfigDir(set) = %q", got)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home dir")
-	}
-	if got := ConfigDir(env("")); got != filepath.Join(home, ".claude") {
-		t.Errorf("ConfigDir(unset) = %q, want %q", got, filepath.Join(home, ".claude"))
-	}
-}
