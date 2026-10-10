@@ -76,9 +76,9 @@ func writeRegistry(t *testing.T) string {
 func TestFindSessionMatchesBySessionID(t *testing.T) {
 	configDir := writeRegistry(t)
 
-	got, ok, err := FindSession(configDir, busyID)
+	got, ok, err := FindSessionWith(configDir, busyID, pidProc{})
 	if err != nil || !ok {
-		t.Fatalf("FindSession(busy) = %v, %v, %v; want found", got, ok, err)
+		t.Fatalf("FindSessionWith(busy) = %v, %v, %v; want found", got, ok, err)
 	}
 	want := Entry{
 		PID:             4242,
@@ -92,18 +92,18 @@ func TestFindSessionMatchesBySessionID(t *testing.T) {
 		t.Errorf("busy entry =\n%+v\nwant\n%+v", got, want)
 	}
 
-	idle, ok, err := FindSession(configDir, idleID)
+	idle, ok, err := FindSessionWith(configDir, idleID, pidProc{})
 	if err != nil || !ok {
-		t.Fatalf("FindSession(idle) = %v, %v, %v; want found", idle, ok, err)
+		t.Fatalf("FindSessionWith(idle) = %v, %v, %v; want found", idle, ok, err)
 	}
 	if idle.Status != "idle" || !idle.StatusUpdatedAt.Equal(time.UnixMilli(1767225645660)) {
 		t.Errorf("idle entry status = %q at %v", idle.Status, idle.StatusUpdatedAt)
 	}
 
-	if _, ok, err := FindSession(configDir, "00000000-0000-4000-8000-000000000999"); ok || err != nil {
+	if _, ok, err := FindSessionWith(configDir, "00000000-0000-4000-8000-000000000999", pidProc{}); ok || err != nil {
 		t.Errorf("unknown session: found=%v err=%v; want not found, nil", ok, err)
 	}
-	if _, ok, err := FindSession(configDir, ""); ok || err != nil {
+	if _, ok, err := FindSessionWith(configDir, "", pidProc{}); ok || err != nil {
 		t.Errorf("empty session id: found=%v err=%v; want not found, nil", ok, err)
 	}
 }
@@ -113,9 +113,9 @@ func TestFindSessionMatchesBySessionID(t *testing.T) {
 func TestFindSessionFirstWriteEntryHasNoStatus(t *testing.T) {
 	configDir := writeRegistry(t)
 
-	got, ok, err := FindSession(configDir, firstID)
+	got, ok, err := FindSessionWith(configDir, firstID, pidProc{})
 	if err != nil || !ok {
-		t.Fatalf("FindSession(first write) = %v, %v, %v; want found", got, ok, err)
+		t.Fatalf("FindSessionWith(first write) = %v, %v, %v; want found", got, ok, err)
 	}
 	if got.Status != "" || !got.StatusUpdatedAt.IsZero() {
 		t.Errorf("first-write entry status = %q at %v; want empty, zero", got.Status, got.StatusUpdatedAt)
@@ -146,14 +146,14 @@ func TestFindSessionTakesTheConfigDirLiterally(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok, err := FindSession(configDir, busyID)
+	got, ok, err := FindSessionWith(configDir, busyID, pidProc{})
 	if err != nil || !ok || got.PID != 4242 || got.Status != "busy" {
-		t.Errorf("FindSession(%q) = %+v, %v, %v; want the busy 4242", configDir, got, ok, err)
+		t.Errorf("FindSessionWith(%q) = %+v, %v, %v; want the busy 4242", configDir, got, ok, err)
 	}
 }
 
 func TestFindSessionWithoutRegistryIsNotFound(t *testing.T) {
-	_, ok, err := FindSession(t.TempDir(), busyID)
+	_, ok, err := FindSessionWith(t.TempDir(), busyID, pidProc{})
 	if ok || err != nil {
 		t.Errorf("no sessions dir: found=%v err=%v; want not found, nil", ok, err)
 	}
@@ -252,11 +252,11 @@ func TestAliveSeesTheCurrentProcess(t *testing.T) {
 	if !ok || started == "" {
 		t.Fatalf("start(self) = %q, %v", started, ok)
 	}
-	if !Alive(Entry{PID: pid, ProcStart: started}) {
-		t.Error("Alive(self with its start) = false")
+	if !AliveWith(Entry{PID: pid, ProcStart: started}, SystemProcs{}) {
+		t.Error("AliveWith(self with its start) = false")
 	}
-	if Alive(Entry{PID: pid, ProcStart: "Thu Jan  1 00:00:00 1970"}) {
-		t.Error("Alive(self with another start) = true")
+	if AliveWith(Entry{PID: pid, ProcStart: "Thu Jan  1 00:00:00 1970"}, SystemProcs{}) {
+		t.Error("AliveWith(self with another start) = true")
 	}
 }
 

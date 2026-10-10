@@ -40,17 +40,13 @@ type entryJSON struct {
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
 }
 
-// FindSession returns the registry entry of sessionID. Only regular *.json files are
+// FindSessionWith returns the registry entry of sessionID, checking
+// liveness against the process table p. Only regular *.json files are
 // read (the <pid>.<hash>.key beside each entry never is); an unreadable or
 // undecodable file is skipped. No match, or no sessions dir, is (_, false, nil).
 // Several entries can carry one session id (a stale file left by a crash, then
 // a --resume under a new pid): a live one wins over a dead one, then the
 // newest statusUpdatedAt.
-func FindSession(configDir, sessionID string) (Entry, bool, error) {
-	return FindSessionWith(configDir, sessionID, SystemProcs{})
-}
-
-// FindSessionWith is FindSession over the process table p.
 func FindSessionWith(configDir, sessionID string, p ProcInfo) (Entry, bool, error) {
 	if sessionID == "" {
 		return Entry{}, false, nil
@@ -120,12 +116,9 @@ type ProcInfo interface {
 	Start(pid int) (string, bool)
 }
 
-// Alive reports whether the entry's process still runs. When the entry
-// carries a procStart, the live process's start time must match it, so a
-// reused pid is not alive.
-func Alive(e Entry) bool { return AliveWith(e, SystemProcs{}) }
-
-// AliveWith is Alive over the process table p.
+// AliveWith reports whether the entry's process still runs in the process
+// table p. When the entry carries a procStart, the live process's start time
+// must match it, so a reused pid is not alive.
 func AliveWith(e Entry, p ProcInfo) bool {
 	if e.PID <= 0 || !p.Exists(e.PID) {
 		return false
