@@ -1,6 +1,9 @@
 import AppKit
 import GRDB
 
+/// Settings → Mobile drives the toggle and reads the hub through these.
+extension AppState: MobileSettingsHost {}
+
 extension AppState {
     /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
     /// the workbench's page on the main window, the app in front — before

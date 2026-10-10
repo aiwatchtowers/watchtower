@@ -100,6 +100,11 @@ struct HubIdentity: Sendable {
     static func flavor(buildFlavor: String) -> HubFlavor {
         buildFlavor.isEmpty || buildFlavor == "dev" ? .default : .corp
     }
+
+    /// This app's flavor, from its `WTBuildFlavor`.
+    static func bundleFlavor() -> HubFlavor {
+        flavor(buildFlavor: (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? "")
+    }
 }
 
 enum HubIdentityError: Error, LocalizedError {
@@ -147,9 +152,7 @@ struct HubHostInfo: Sendable {
         return Self(
             macName: Host.current().localizedName ?? "Mac",
             appVersion: Constants.appVersion,
-            flavor: HubIdentity.flavor(
-                buildFlavor: (Bundle.main.object(forInfoDictionaryKey: "WTBuildFlavor") as? String) ?? ""
-            ),
+            flavor: HubIdentity.bundleFlavor(),
             accounts: {
                 do {
                     return try dbPool.read(HubAccountRows.fetch)

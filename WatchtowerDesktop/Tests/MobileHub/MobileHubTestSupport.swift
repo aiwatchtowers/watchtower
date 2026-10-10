@@ -35,6 +35,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var resetHandlerGate: SaveGate?
     private let echoesOwnSaves: Bool
     private var ownPayloads: Set<Data> = []
+    private var throttleStart: Date?
 
     init(
         availability: CloudAvailability = .available,
@@ -93,6 +94,13 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func setAvailability(_ value: CloudAvailability) {
         lock.withLock { currentAvailability = value }
     }
+
+    /// The start of a throttling stretch (nil: sends go through).
+    func setThrottledSince(_ value: Date?) {
+        lock.withLock { throttleStart = value }
+    }
+
+    var throttledSince: Date? { lock.withLock { throttleStart } }
 
     func fireAccountReset() {
         let handler = lock.withLock { resetHandler }

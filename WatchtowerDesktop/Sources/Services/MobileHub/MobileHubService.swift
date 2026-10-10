@@ -22,6 +22,10 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     func setDataZoneResetHandler(_ handler: (@Sendable () -> Void)?) async
     /// A record CloudKit rejects even alone (`.limitExceeded`, spec §9).
     func setRecordRejectedHandler(_ handler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?) async
+    /// Start of the current throttling stretch (`.requestRateLimited` /
+    /// `.zoneBusy`); nil once a send goes through. Settings → Mobile shows
+    /// "iCloud is slowing sync down" after 60 s of it (spec §9).
+    var throttledSince: Date? { get async }
 }
 
 extension CloudKitTransport: HubTransport {}
@@ -189,6 +193,13 @@ final class MobileHubService {
 
     var isPublishing: Bool { publisher.isRunning }
     var relayBacklog: Int { processor.relayBacklog }
+    /// The publisher's last send (Settings → Mobile's status).
+    var lastPublishAt: Date? { publisher.lastPublishAt }
+
+    /// The transport's current throttling stretch, if any.
+    func throttledSince() async -> Date? {
+        await transport.throttledSince
+    }
 
     /// Asks the publisher's fast lane for `kinds` (B and C call this on a
     /// change they know of).
