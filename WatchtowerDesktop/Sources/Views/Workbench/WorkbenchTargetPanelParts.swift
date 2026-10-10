@@ -148,8 +148,7 @@ struct WorkbenchPanelDescription: View {
     private var editor: some View {
         VStack(alignment: .leading, spacing: 4) {
             CommentTextEditor(text: draft, placeholder: "Describe the target…", focusOnAppear: true,
-                              minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel,
-                              onEndEditing: { vm.saveDescriptionOnFocusLoss(for: targetID) })
+                              minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel, onEndEditing: endEditing)
             Text("⌘↩ saves, Esc cancels")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -165,6 +164,11 @@ struct WorkbenchPanelDescription: View {
     /// (`saveDescriptionOnFocusLoss`): the move already saved it.
     private func save() {
         vm.saveDescription(for: targetID)
+    }
+
+    /// Focus loss: saves only while this target is the open one.
+    private func endEditing() {
+        vm.saveDescriptionOnFocusLoss(for: targetID)
     }
 
     private func cancel() {
