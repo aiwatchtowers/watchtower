@@ -13,6 +13,10 @@ var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 // is time order, and the Desktop parses it pinned to UTC.
 const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
 
+// AgentStateStamp is at the way agent_state_at and agent_background_at store
+// it: compare-and-clear callers rebuild a stored stamp from its parsed time.
+func AgentStateStamp(at time.Time) string { return at.UTC().Format(agentStateAtLayout) }
+
 // agentStateAtGlob matches a stamp in agentStateAtLayout. A stored stamp that
 // does not match never blocks a write: string order means nothing for it, and
 // the next write replaces it with a valid one.
@@ -330,6 +334,28 @@ func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, a
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("lowering terminal session %d background agents: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// EndTerminalBackground ends the background subagent count of workbench
+// workbenchID's claude row id on the staleness probe's verdict (board #411):
+// it NULLs agent_background and agent_background_at only while the row is a
+// counted `waiting` of conversation sessionID still stamped seenAt, the
+// agent_background_at the probe read — a report or Stop that landed since
+// wins. No other column changes, so the row reads its stored state again.
+// false when a guard held it back.
+func (db *DB) EndTerminalBackground(id, workbenchID int64, sessionID, seenAt string) (bool, error) {
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_background = NULL, agent_background_at = NULL
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND agent_state = 'waiting' AND agent_background IS NOT NULL AND agent_background_at = ?`,
+		id, workbenchID, sessionID, seenAt)
+	if err != nil {
+		return false, fmt.Errorf("ending terminal session %d background agents: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("ending terminal session %d background agents: %w", id, err)
 	}
 	return n > 0, nil
 }

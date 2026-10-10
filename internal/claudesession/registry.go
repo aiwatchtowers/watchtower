@@ -1,7 +1,7 @@
-// Package claudesession reads Claude Code's local session registry and the
-// subagent transcripts of a session (pure reads: no DB, no network). Both are
-// Claude Code internals, not a documented API: every reader here degrades to
-// "not found" rather than an error, and callers treat not found as gone.
+// Package claudesession reads Claude Code's local session registry (pure
+// reads: no DB, no network). It is a Claude Code internal, not a documented
+// API: the reader degrades to "not found" rather than an error, and callers
+// treat not found as gone.
 package claudesession
 
 import (

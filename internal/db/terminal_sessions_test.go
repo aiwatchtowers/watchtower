@@ -950,3 +950,83 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		requireNoBackground(t, d, id, tc.name)
 	}
 }
+
+// Board #411: EndTerminalBackground NULLs the count only while the row still
+// carries the agent_background_at the probe read — a report or Stop that
+// landed since wins — and never touches another column.
+func TestEndTerminalBackgroundIsCompareAndClear(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	seen := t0.Format(agentStateAtLayout)
+	w := writeResult(t)
+
+	// counted is a finished `waiting` with a turn end, counted 2 at t0.
+	counted := func() int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100)) {
+			t.Fatal("the turn end did not write")
+		}
+		if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+			t.Fatal("the Stop did not write")
+		}
+		requireBackground(t, d, id, 2, t0, "setup")
+		return id
+	}
+
+	id := counted()
+	others := otherAgentColumns(t, d, id)
+	if !w(d.EndTerminalBackground(id, pid, agentStateUUID, seen)) {
+		t.Fatal("the matching stamp did not clear")
+	}
+	requireNoBackground(t, d, id, "the matching stamp")
+	if got := otherAgentColumns(t, d, id); got != others {
+		t.Fatalf("other columns changed:\nbefore %s\nafter  %s", others, got)
+	}
+	if w(d.EndTerminalBackground(id, pid, agentStateUUID, seen)) {
+		t.Fatal("a second end over a NULL count wrote")
+	}
+
+	for _, tc := range []struct {
+		name      string
+		setup     func(id int64)
+		workbench int64
+		uuid      string
+	}{
+		{"a newer report", func(id int64) {
+			if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), nil)) {
+				t.Fatal("the heartbeat did not write")
+			}
+		}, pid, agentStateUUID},
+		{"a newer Stop", func(id int64) {
+			if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, stopWith(1))) {
+				t.Fatal("the second Stop did not write")
+			}
+		}, pid, agentStateUUID},
+		{"over working", func(id int64) {
+			// No write path leaves a count under `working`; the guard holds anyway.
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID},
+		{"another conversation", nil, pid, otherUUID},
+		{"another workbench", nil, other, agentStateUUID},
+	} {
+		id := counted()
+		if tc.setup != nil {
+			tc.setup(id)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		if w(d.EndTerminalBackground(id, tc.workbench, tc.uuid, seen)) {
+			t.Fatalf("%s: wrote", tc.name)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+}
