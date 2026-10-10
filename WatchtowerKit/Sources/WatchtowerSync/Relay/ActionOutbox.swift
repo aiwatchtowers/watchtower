@@ -49,21 +49,14 @@ public actor ActionOutbox {
     ) {
         self.transport = transport
         self.store = store
-        self.deviceID = Self.linkedID(deviceID)
+        self.deviceID = linkedDeviceID(deviceID)
         self.now = now
     }
 
     /// Called by the link flow once the device is linked, and with nil on
     /// unlink. Actions already in flight keep the id they were sent with.
     public func setDeviceID(_ deviceID: String?) {
-        self.deviceID = Self.linkedID(deviceID)
-    }
-
-    /// nil for a missing or blank id: the hub's device gate rejects an
-    /// action stamped "", so a blank id must refuse at enqueue instead.
-    private static func linkedID(_ deviceID: String?) -> String? {
-        guard let deviceID, !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-        return deviceID
+        self.deviceID = linkedDeviceID(deviceID)
     }
 
     /// The overlay row goes on `applied`, so this is how the app reads an
@@ -176,4 +169,12 @@ public actor ActionOutbox {
         guard let hyphen = recordName.firstIndex(of: "-") else { return recordName }
         return String(recordName[recordName.index(after: hyphen)...])
     }
+}
+
+/// The link state a device id stands for: nil for a missing or blank id.
+/// The hub's device gate rejects a phone write stamped "", so the outbox and
+/// the recording uploader refuse (or wait) locally instead.
+func linkedDeviceID(_ deviceID: String?) -> String? {
+    guard let deviceID, !deviceID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    return deviceID
 }

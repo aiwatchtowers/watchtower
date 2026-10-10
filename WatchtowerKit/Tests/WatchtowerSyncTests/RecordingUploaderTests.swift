@@ -398,6 +398,26 @@ final class RecordingUploaderTests: XCTestCase {
         XCTAssertEqual(resent, 1, "linking later sends the waiting recording")
     }
 
+    /// A blank device id is no link, the same rule as ActionOutbox: the
+    /// upload waits locally instead of failing at the hub as
+    /// `device_not_linked` (final-review P2-M5).
+    func testABlankDeviceIDLeavesUploadsWaiting() async throws {
+        let transport = InMemoryCloudTransport()
+        let store = try ReplicaStore.inMemory()
+        let viaInit = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: "")
+        let recording = try await register(viaInit, file: try makeAudioFile())
+        let viaSetter = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID)
+        await viaSetter.setDeviceID("  ")
+
+        let sentViaInit = try await viaInit.uploadPending()
+        let sentViaSetter = try await viaSetter.uploadPending()
+
+        XCTAssertEqual(sentViaInit + sentViaSetter, 0)
+        XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .waiting)
+        let batch = try await transport.changes(in: .relay, since: nil)
+        XCTAssertTrue(batch.changed.isEmpty)
+    }
+
     func testMarksAreStoredLocallyAndNeverUploaded() async throws {
         let (uploader, store, transport) = try makeStack()
         let ended = Date()

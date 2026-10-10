@@ -64,7 +64,8 @@ public actor RecordingUploader: RecordingUploadAcking {
     private let now: @Sendable () -> Date
     /// The linked phone's device id, stamped on every upload. nil until
     /// linking finishes (or after an unlink): uploads then wait, because the
-    /// hub fails a record without one as `device_not_linked`.
+    /// hub fails a record without one as `device_not_linked`. A blank id
+    /// counts as none (`linkedDeviceID`).
     private var deviceID: String?
     /// Captures this uploader began and has not finished: launch recovery
     /// never touches them, however recovery and a Record tap interleave.
@@ -92,7 +93,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         self.transport = transport
         self.store = store
         self.directory = directory
-        self.deviceID = deviceID
+        self.deviceID = linkedDeviceID(deviceID)
         self.maxAssetBytes = maxAssetBytes
         self.now = now
     }
@@ -100,7 +101,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// Called by the link flow once the device is linked, and with nil on
     /// unlink. Waiting recordings go out on the next `uploadPending`.
     public func setDeviceID(_ deviceID: String?) {
-        self.deviceID = deviceID
+        self.deviceID = linkedDeviceID(deviceID)
     }
 
     // MARK: - Paths
