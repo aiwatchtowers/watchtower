@@ -304,10 +304,13 @@ final class BoardWriteWiringTests: XCTestCase {
 
     /// A transport whose saves wait until released: the window before the
     /// overlay row exists. `onSave` runs as each save starts waiting.
+    /// `release()` is sticky: a save arriving after it passes straight
+    /// through, so a late save never hangs the test.
     private final class GatedTransport: CloudSyncTransport, @unchecked Sendable {
         private let lock = NSLock()
         private var waiters: [CheckedContinuation<Void, Never>] = []
         private var saveHook: (() -> Void)?
+        private var released = false
 
         var waiting: Int { lock.withLock { waiters.count } }
 
@@ -318,6 +321,7 @@ final class BoardWriteWiringTests: XCTestCase {
 
         func release() {
             let pending = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+                released = true
                 defer { waiters = [] }
                 return waiters
             }
@@ -326,11 +330,16 @@ final class BoardWriteWiringTests: XCTestCase {
 
         func save(_ records: [CloudRecord]) async throws {
             await withCheckedContinuation { continuation in
-                let hook = lock.withLock { () -> (() -> Void)? in
+                let (passes, hook) = lock.withLock { () -> (Bool, (() -> Void)?) in
+                    if released { return (true, nil) }
                     waiters.append(continuation)
-                    return saveHook
+                    return (false, saveHook)
                 }
-                hook?()
+                if passes {
+                    continuation.resume()
+                } else {
+                    hook?()
+                }
             }
         }
 
@@ -372,6 +381,19 @@ final class BoardWriteWiringTests: XCTestCase {
         }
         await fulfillment(of: [returned], timeout: 2)
         return task
+    }
+
+    /// The gate stays open once released: a save after the release passes.
+    func testTheGatedTransportsReleaseIsSticky() async throws {
+        let transport = GatedTransport()
+        transport.release()
+        let passed = expectation(description: "a save after the release passes")
+        Task {
+            try await transport.save([])
+            passed.fulfill()
+        }
+        await fulfillment(of: [passed], timeout: 2)
+        XCTAssertEqual(transport.waiting, 0)
     }
 
     func testADoubleTapOnSendPostsOneComment() async throws {
