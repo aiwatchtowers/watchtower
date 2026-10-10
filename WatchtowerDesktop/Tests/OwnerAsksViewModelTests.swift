@@ -899,6 +899,90 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(stored.status, "open", "a question without a pick is not an answer")
     }
 
+    // MARK: - Agents working (#411)
+
+    /// A running Claude Code session with one open ask filed from it, read
+    /// through the real state center: its row holds `agentState` written
+    /// this run and a fresh count of 2 background agents.
+    private func seedBackgroundSession(
+        agentState: String
+    ) async throws -> (vm: WorkbenchesViewModel, session: TerminalSession, ask: OwnerAsk) {
+        let acme = folder.path
+        let (p, s, askID) = try await pool.write { d in
+            let p = try TestDatabase.insertWorkbench(d, folder: acme)
+            let s = try TerminalSessionQueries.create(d, .init(
+                projectID: p, kind: .claude, title: "claude", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+            ))
+            let ask = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions)
+            return (p, s, ask)
+        }
+        center.transcriptExists = { _ in false }
+        center.start(s, fresh: true)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let reported = formatter.string(from: Date().addingTimeInterval(-1))
+        try await pool.write { d in
+            try d.execute(sql: """
+                UPDATE terminal_sessions SET agent_state = ?, agent_state_at = '2999-01-01T00:00:00.000Z',
+                    agent_background = 2, agent_background_at = ? WHERE id = ?
+                """, arguments: [agentState, reported, s.id])
+        }
+        let states = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: center, notifier: RecordingSessionNotifier(), defaults: defaults
+        )
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: center, agentStates: states)
+        vm.asks.holdSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        await states.poll()
+        let ask = try await openAsk(vm, project: p, id: askID)
+        pick(vm, askID)
+        return (vm, s, ask)
+    }
+
+    /// PROJ-12 (#411, spec §5.4): Agents working is a turn end — the agent
+    /// sits at its prompt while its background agents run — so an answer
+    /// gets its Return exactly as into a stopped session.
+    func testProj12_AnAnswerIntoABackgroundSessionGetsTheReturn() async throws {
+        let (vm, s, ask) = try await seedBackgroundSession(agentState: "waiting")
+        XCTAssertEqual(vm.agentStates?.statuses[s.id]?.state.kind, .background, "the open ask does not outrank it")
+        var statusWhenTyped: String?
+        processes[0].onInput = { [pool] in
+            statusWhenTyped = try? pool?.read {
+                try String.fetchOne($0, sql: "SELECT status FROM owner_asks WHERE id = ?", arguments: [ask.id])
+            }
+        }
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(statusWhenTyped, "answered")
+        XCTAssertEqual(typed.count, 2)
+        let pasteStart: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E]
+        let pasteEnd: [UInt8] = [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+        XCTAssertEqual(Array(typed[0].prefix(6)), pasteStart)
+        XCTAssertEqual(Array(typed[0].suffix(6)), pasteEnd)
+        let body = typed[0].dropFirst(6).dropLast(6)
+        XCTAssertFalse(body.contains { $0 < 0x20 || $0 == 0x7F }, "one line: no CR, LF or other control byte inside the paste")
+        XCTAssertEqual(typed[1], [0x0D], "Return comes alone, after the paste")
+        XCTAssertNil(center.answerHints[s.id])
+    }
+
+    /// PROJ-12 (#411, spec §5.4): a background agent's permission prompt
+    /// stores `approval` with the count kept — approval outranks Agents
+    /// working, and the line is held with nothing typed.
+    func testProj12_ABackgroundSessionAtASubagentPermissionPromptHoldsTheLine() async throws {
+        let (vm, s, ask) = try await seedBackgroundSession(agentState: "approval")
+        XCTAssertEqual(vm.agentStates?.statuses[s.id]?.state.kind, .needsApproval)
+
+        let delivery = await vm.asks.answer(ask)
+
+        XCTAssertEqual(delivery, .held)
+        let stored = try await status(ask.id)
+        XCTAssertEqual(stored.status, "answered", "stored at once")
+        XCTAssertTrue(typed.isEmpty, "nothing reaches a permission prompt")
+        XCTAssertEqual(center.answerHints[s.id], .held)
+    }
+
     // MARK: - Polling
 
     /// One ask the app cannot read leaves the stack listing the others and
