@@ -128,9 +128,10 @@ private struct SnapshotTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        // Text only: assigning a selection here would report it back
+        // through the delegate into the binding during a view update.
         guard view.text != text else { return }
         view.text = text
-        view.selectedRange = NSRange(location: 0, length: 0)
     }
 
     func makeCoordinator() -> Coordinator {
