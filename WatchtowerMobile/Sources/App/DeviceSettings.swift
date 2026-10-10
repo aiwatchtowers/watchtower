@@ -126,6 +126,9 @@ final class DeviceSettings {
     /// toggle; a failure is applied only while this is the setting's newest
     /// toggle, since a later one owns the value now. It runs before the next
     /// write starts, so a revert is already in the choices that write sends.
+    /// Known limit: a revert restores the value from toggle time, which can
+    /// differ from what an earlier successful write sent; the phone then
+    /// shows it until the next write brings the Mac in line.
     private func write(_ setting: Setting, apply: @escaping @MainActor (_ saved: Bool) -> Void) async {
         let generation = (generations[setting] ?? 0) + 1
         generations[setting] = generation
