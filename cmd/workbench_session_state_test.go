@@ -1460,3 +1460,66 @@ func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
 		})
 	}
 }
+
+// dropHookEvent deletes hooks.<event> from folder's settings file, leaving
+// the folder as an install from before that event's entry left it.
+func dropHookEvent(t *testing.T, folder, event string) {
+	t.Helper()
+	file := filepath.Join(folder, ".claude", "settings.local.json")
+	b, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(b, &settings))
+	hooks := settings["hooks"].(map[string]any)
+	require.Contains(t, hooks, event)
+	delete(hooks, event)
+	b, err = json.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, b, 0o644))
+}
+
+// PROJ-11, board #411: a folder installed before the SubagentStop entry (the
+// four older state hooks only) keeps its Stop "waiting" and its run mark
+// until the owner repairs it, while the status the Desktop reads reports
+// state_hooks false, so the Desktop offers that repair.
+func TestProj11_StopStateWriteNeedsOnlyTheCoreHooks(t *testing.T) {
+	t.Run("the Stop records waiting", func(t *testing.T) {
+		database, pid, row := stopStateFixture(t, "open")
+		dropHookEvent(t, mustFolder(t, database, pid), "SubagentStop")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+		out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), statePayload("Stop", briefLaunchID, ""))
+
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+		assert.Equal(t, "waiting", storedAgentState(t, database, row))
+	})
+	t.Run("a new run is marked", func(t *testing.T) {
+		database, pid, row := briefSessionFixture(t)
+		installBriefStateHooks(t, database, pid)
+		dropHookEvent(t, mustFolder(t, database, pid), "SubagentStop")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		start := time.Now().UTC().Truncate(time.Millisecond)
+
+		_, errOut := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
+
+		assert.Empty(t, errOut)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.False(t, s.AgentState.Valid, "a mark is no state")
+		assert.False(t, s.AgentStateAt.Before(start), "stamped during this run: %v", s.AgentStateAt)
+	})
+	t.Run("the status reports the hooks missing", func(t *testing.T) {
+		useFakeWorkbenchClaude(t)
+		p := testWorkbench(t)
+		var out bytes.Buffer
+		require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))
+		dropHookEvent(t, p.FolderPath, "SubagentStop")
+		out.Reset()
+
+		require.NoError(t, runWorkbenchStatus(context.Background(), &out, p, true))
+
+		assert.Contains(t, out.String(), `"state_hooks": false`)
+		assert.Contains(t, out.String(), `"stop_hook": true`)
+	})
+}

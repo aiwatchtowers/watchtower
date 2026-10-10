@@ -461,10 +461,12 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 
-// workbenchHasStateHooks reports whether workbench id's folder has its
-// session state hooks. A gone workbench has none, and so does a settings
-// file that cannot be read: that is a normal state the Desktop already
-// offers to repair, so the hook stays silent about it.
+// workbenchHasStateHooks reports whether workbench id's folder has its core
+// session state hooks (devpack.HasCoreStateHooks): a folder installed before
+// the SubagentStop entry keeps its Stop state and run mark until repaired.
+// A gone workbench has none, and so does a settings file that cannot be
+// read: that is a normal state the Desktop already offers to repair, so the
+// hook stays silent about it.
 func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
 	wb, err := database.GetWorkbench(id)
 	if errors.Is(err, db.ErrWorkbenchNotFound) {
@@ -473,7 +475,7 @@ func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	has, _ := devpack.HasStateHooks(wb.FolderPath, id)
+	has, _ := devpack.HasCoreStateHooks(wb.FolderPath, id)
 	return has, nil
 }
 
