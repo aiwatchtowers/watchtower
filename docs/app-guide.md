@@ -493,6 +493,20 @@ Jira setup in one place (in TOOLS): pick which boards sync and see each board's 
 ### MCP Server
 How to give another AI tool (Claude Code, Cursor, Codex) your Watchtower data: two snippets with **Copy config** — `claude mcp add watchtower -- watchtower mcp` and the `.mcp.json` block. The screen does not run anything; the MCP client starts `watchtower mcp` itself. The server is read-only and reads the same database as the app. Details: [docs/mcp-server.md](mcp-server.md).
 
+## iPhone
+
+The Watchtower iPhone app works with one Mac through your own iCloud. A build without iCloud (the simulator) runs a demo linked to "Acme Mac" and never shows the steps below.
+
+**Linking** — on the Mac, turn on Settings → Mobile, then choose **Use Watchtower on iPhone**: the Mac shows a code that is valid for 10 minutes, with **New code**. On the iPhone, the first launch shows **Welcome**; tap **Scan the code on your Mac** and point the camera at the code (or scan it with the iPhone's Camera app, which opens Watchtower). The phone checks the code, checks that the iPhone is signed in to iCloud, and writes itself to the Mac; when the iPhone uses the same Apple ID as the Mac it syncs the Mac's own iCloud data, and with another Apple ID it joins the two folders the Mac shares. It then waits up to a minute for the Mac to confirm ("Waiting for Acme Mac to confirm…"), shows **Linked to Acme Mac**, and **Continue** asks for notification permission and opens **Now**. If the app is closed while it waits, it keeps waiting when you open it again, and offers to scan again once the minute is up.
+
+**When the scan does not link** — "This code expired — Show a new code on the Mac"; "Sign in to iCloud on this iPhone to use Watchtower"; "This Mac can't share with another Apple ID right now — Show a new code on the Mac" (the code carries no share, or joining it failed); "Your Mac didn't answer — keep Settings → Mobile open on the Mac and scan again"; "This code can't be used — Show a new code on the Mac" (the Mac refused it: already used by another phone, expired on the Mac's clock, or unknown); "Update Watchtower on this iPhone" (a newer Mac's code). **Scan again** retries. **The Mac doesn't show up** on Welcome lists what the Mac needs: Watchtower is open on the Mac, Settings → Mobile is on, the Mac is awake, it is a signed build, iCloud is on.
+
+**Another Mac** — scanning the code of a different Mac asks "Switch from Acme Mac to Acme Studio?". **Switch** unlinks the first Mac (below) and links the new one; **Keep Acme Mac** changes nothing. Scanning your own Mac's code again keeps the link.
+
+**Unlinking** — More → Settings → **Unlink this Mac** (after you confirm) tells the Mac, leaves its shares when the iPhone uses another Apple ID, deletes everything the phone keeps from the Mac (its data, changes it has not sent and recordings it has not delivered) and returns to Welcome. What was still waiting is reported: "Not sent: 3 items were still waiting for your Mac".
+
+**When the link ends on its own** — "This Mac removed this phone" when the Mac removed the phone (also while it was offline): the phone deletes the Mac's data and returns to Welcome. "Watchtower moved to Acme Studio — scan the code on that Mac" when another Mac took over: the phone keeps showing what it has but sends nothing until you scan the new Mac's code. "Your Mac hasn't synced for a day — if it changed iCloud account, link again" after a day without word from the Mac. Signing the iPhone in to another iCloud account deletes the Mac's data and returns to Welcome; signing out keeps it until an account is back.
+
 ## Settings
 
 Seven tabs, in order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Mobile**, **Profile** — General is the first tab, but Settings opens on Connections. Every tab that edits configuration shares the same bottom Save bar.

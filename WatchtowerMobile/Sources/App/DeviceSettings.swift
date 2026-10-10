@@ -5,7 +5,8 @@ import WatchtowerSync
 
 /// This phone's identity once it is linked to a Mac: everything its
 /// `device` record (spec §5.1) carries besides the Settings choices. The
-/// link flow (Task 12) creates it; the demo transport uses `DemoSeed.device`.
+/// link flow creates it from the `LinkStore`; the demo transport uses
+/// `DemoSeed.device`.
 struct LinkedDevice: Equatable, Sendable {
     let deviceID: String
     let name: String
@@ -107,17 +108,24 @@ final class DeviceSettings {
 
     /// The `device` record for the current choices, or nil while unlinked.
     func devicePayload() -> DevicePayload? {
-        guard let device = linkedDevice else { return nil }
-        return DevicePayload(
+        linkedDevice.map { devicePayload(for: $0, linkNonce: nil, unlinked: false, now: now()) }
+    }
+
+    /// `device`'s record with the current choices: the link flow writes it
+    /// with the scanned code's nonce, and with `unlinked` on unlink.
+    func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
+        DevicePayload(
             deviceID: device.deviceID,
             name: device.name,
             model: device.model,
             appVersion: device.appVersion,
             scope: device.scope,
             userRecordName: device.userRecordName,
+            linkNonce: linkNonce,
+            unlinked: unlinked ? true : nil,
             typingRequested: typingRequested,
             startSessions: startSessions,
-            updatedAt: now()
+            updatedAt: now
         )
     }
 

@@ -257,12 +257,15 @@ final class ReplicaWiringTests: XCTestCase {
             WatchtowerMobileApp.Boot.isHostingTests(ProcessInfo.processInfo.environment),
             "this process hosts XCTest"
         )
-        XCTAssertNil(AppDelegate.environment, "the test host booted a live AppEnvironment")
+        XCTAssertNil(AppDelegate.root, "the test host booted a live AppRoot")
         XCTAssertFalse(WatchtowerMobileApp.Boot.isHostingTests([:]), "a process without the XCTest key is not a test host")
         var built = 0
         guard case .hostingTests = WatchtowerMobileApp.Boot.make(
             processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"],
-            makeEnvironment: { built += 1; return try self.demoEnvironment(at: try self.makeReplicaPath()) }
+            makeRoot: {
+                built += 1
+                return AppRoot.demo(try self.demoEnvironment(at: try self.makeReplicaPath()), defaults: try self.makeDefaults())
+            }
         ) else {
             return XCTFail("a test host must not build an environment")
         }
@@ -270,14 +273,15 @@ final class ReplicaWiringTests: XCTestCase {
 
         // A normal launch (no XCTest key) builds and registers one.
         let path = try makeReplicaPath()
-        guard case let .ready(env) = WatchtowerMobileApp.Boot.make(
+        guard case let .ready(root) = WatchtowerMobileApp.Boot.make(
             processEnvironment: [:],
-            makeEnvironment: { try self.demoEnvironment(at: path) }
+            makeRoot: { AppRoot.demo(try self.demoEnvironment(at: path), defaults: try self.makeDefaults()) }
         ) else {
             return XCTFail("a normal launch must boot")
         }
-        XCTAssertTrue(AppDelegate.environment === env, "the push path reaches the booted environment")
-        AppDelegate.environment = nil
+        XCTAssertTrue(AppDelegate.root === root, "the push path reaches the booted root")
+        XCTAssertFalse(root.showsOnboarding, "the demo is linked and never onboards")
+        AppDelegate.root = nil
     }
 
     /// A replica that cannot open is a throw (the app shows BootFailureView),
