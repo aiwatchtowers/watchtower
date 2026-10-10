@@ -42,14 +42,17 @@ final class BoardHandlers {
     private let timeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
     private let onOwnerWrite: OwnerWrite
+    private let isReporting: @MainActor () -> Bool
 
     init(
         dbPool: DatabasePool,
         cli: WorkbenchCLI?,
         timeout: Duration = BoardHandlers.defaultTimeout,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        isReporting: @escaping @MainActor () -> Bool = { true },
         onOwnerWrite: @escaping OwnerWrite
     ) {
+        self.isReporting = isReporting
         self.dbPool = dbPool
         self.cli = cli
         self.timeout = timeout
@@ -64,9 +67,16 @@ final class BoardHandlers {
     }
 
     /// The echo of one board action. A timeout is `outcome_unknown`: the
-    /// write may still land (it is never cut mid-write).
+    /// write may still land (it is never cut mid-write). Without a board to
+    /// report the write to (`isReporting` false: the workbenches view model
+    /// is gone), the write would land unannounced and the Mac would notify
+    /// the owner of their own phone edit: refused `write_failed`, nothing
+    /// written.
     func handle(_ action: ActionRequestPayload) async throws -> ActionOutcome {
-        try await withHandlerTimeout(timeout, sleep: sleep, message: Self.timeoutMessage) {
+        guard isReporting() else {
+            return .failed(.writeFailed, message: "The Mac's board is not ready — try again in a moment")
+        }
+        return try await withHandlerTimeout(timeout, sleep: sleep, message: Self.timeoutMessage) {
             do {
                 return try await self.apply(action)
             } catch let refusal as Refusal {

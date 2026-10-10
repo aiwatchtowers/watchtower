@@ -516,6 +516,23 @@ final class BoardHandlersTests: XCTestCase {
         XCTAssertEqual(try comments(on: t), 0, "never applied")
     }
 
+    /// No board to report the write to (the workbenches view model is gone):
+    /// the write would land unannounced, so every kind refuses it.
+    func testWithoutABoardToReportToAWriteIsRefusedWriteFailed() async throws {
+        let (p, t) = try seedTarget()
+        let handlers = BoardHandlers(
+            dbPool: pool, cli: WorkbenchCLI(runner: runner), isReporting: { false }, onOwnerWrite: { _, _ in }
+        )
+
+        let outcome = try await handlers.handle(
+            action(.boardCommentAdd, entity: t, ["workbench_id": .integer(p), "body": .string("Ship it")])
+        )
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .writeFailed)
+        XCTAssertEqual(try comments(on: t), 0, "nothing is written")
+    }
+
     /// Every board kind is registered, and a delivered comment is written once.
     func testTheBoardKindsAreRegisteredAndACommentRelayedTwiceIsWrittenOnce() async throws {
         let (p, t) = try seedTarget()

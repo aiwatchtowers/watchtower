@@ -1884,9 +1884,13 @@ final class AppState {
         }
         // Board writes report through the board's own onOwnerWrite, so the
         // Mac never announces the owner's phone edit (spec §6.1).
-        BoardHandlers(dbPool: dbPool, cli: workbenchesViewModel?.cli) { [weak vm = workbenchesViewModel] projectID, subject in
-            vm?.onOwnerWrite?(projectID, subject)
-        }.register(on: dispatcher)
+        BoardHandlers(
+            dbPool: dbPool, cli: workbenchesViewModel?.cli,
+            isReporting: { [weak vm = workbenchesViewModel] in vm?.onOwnerWrite != nil },
+            onOwnerWrite: { [weak vm = workbenchesViewModel] projectID, subject in
+                vm?.onOwnerWrite?(projectID, subject)
+            }
+        ).register(on: dispatcher)
         // Starts take the Desktop's own start (Work on it's path) and stops
         // `TerminalCenter.close` (spec §6.5). Every device has the spec's
         // default grants (no typing, starts allowed) until the Mac decides
