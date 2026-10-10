@@ -23,6 +23,19 @@ private final class ReadLog: @unchecked Sendable {
     }
 }
 
+/// A clock a test moves by hand.
+private final class ManualClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) { self.value = value }
+
+    var now: Date {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
 /// Records the session notices instead of posting them; AppState tests
 /// pass one to `initWorkbenches` so no test reaches `UNUserNotificationCenter`.
 @MainActor
@@ -80,15 +93,19 @@ final class SessionAgentStateCenterTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeCenter(interval: Duration = .milliseconds(20)) -> SessionAgentStateCenter {
-        let reader: SessionAgentStateCenter.Reader = { [pool, log] ids in
+    private func makeCenter(
+        interval: Duration = .milliseconds(20),
+        read: SessionAgentStateCenter.Reader? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
+    ) -> SessionAgentStateCenter {
+        let reader: SessionAgentStateCenter.Reader = read ?? { [pool, log] ids in
             try log?.record(ids)
             guard let pool else { return [] }
             return try await pool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: ids) }
         }
         let center = SessionAgentStateCenter(
             dbPool: pool, terminalCenter: terminals, interval: interval, notifier: notifier, defaults: defaults,
-            notificationCenter: activations, read: reader
+            notificationCenter: activations, read: reader, clock: clock
         )
         center.isAppActive = { [weak self] in self?.appActive ?? true }
         centers.append(center)
@@ -599,6 +616,37 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 2)
         XCTAssertEqual(notifier.withdrawn.count, 2, "a session that stops takes its banner away")
+    }
+
+    /// #411: a count lowered to zero ends on the center's clock, with no
+    /// write — the same row read again past the grace publishes Stopped and
+    /// announces it once.
+    func testBackgroundEndsOnTheClockWithoutAWrite() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let reported = started.addingTimeInterval(2)
+        let stored = SessionAgentStateRow(
+            id: row.id, projectID: row.projectID, title: "Release work", agentState: "waiting",
+            agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 0, agentBackgroundAt: stamp(2)
+        )
+        let clock = ManualClock(reported.addingTimeInterval(60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored] }, clock: { clock.now })
+        var changes = 0
+        center.onChange = { changes += 1 }
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background))
+        XCTAssertEqual(notifier.posted, [], "background is not announced")
+        changes = 0
+
+        clock.now = reported.addingTimeInterval(121)
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
+        XCTAssertEqual(changes, 1)
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work stopped", body: "acme")])
+        await center.poll()
+        XCTAssertEqual(notifier.posted.count, 1, "announced once")
     }
 
     // MARK: - Views
