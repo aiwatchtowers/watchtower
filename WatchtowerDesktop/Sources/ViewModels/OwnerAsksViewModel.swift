@@ -249,17 +249,11 @@ final class OwnerAsksViewModel {
 
     /// The ask an `ask #N` in a session's terminal names (board #500), any
     /// status, only when it is one of `projectID`'s: from the open list,
-    /// else read. nil — no link — for a number of another workbench, one
-    /// that names no ask, or a failed read (logged; the terminal shows no
-    /// error, the text just stays text). Writes no state.
-    func linkedAsk(askID: Int64, projectID: Int64) async -> OwnerAsk? {
+    /// else read. nil — no link — for a number of another workbench or one
+    /// that names no ask; a failed read throws. Writes no state.
+    func linkedAsk(askID: Int64, projectID: Int64) async throws -> OwnerAsk? {
         if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
-        do {
-            return try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
-        } catch {
-            NSLog("OwnerAsks: ask #%lld link lookup failed: %@", askID, error.localizedDescription)
-            return nil
-        }
+        return try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
     }
 
     /// The ask a stack row, a closed list or a notice names: from the open

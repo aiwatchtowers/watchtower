@@ -14,7 +14,7 @@ struct OwnerAskLinkCard: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(ask.title).font(.callout.weight(.medium)).lineLimit(2)
-                Text(OwnerAskTerminalLinks.cardDetail(ask)).font(.caption).foregroundStyle(.secondary)
+                Text(OwnerAskPresentation.linkCardDetail(ask)).font(.caption).foregroundStyle(.secondary)
                 Text("Click to open").font(.caption2).foregroundStyle(.tertiary)
             }
         }

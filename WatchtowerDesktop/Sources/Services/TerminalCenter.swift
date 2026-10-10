@@ -878,13 +878,13 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     /// SwiftTerm detects no quoted path with a space (`"a b.txt":1`): a
     /// ⌘-click it left alone is looked up here in the clicked line — the
-    /// rows a long path wrapped over joined back. A click (⌘ or not) on an
-    /// `ask #N` of this workbench opens that ask (board #500).
+    /// rows a long path wrapped over joined back. A click on an `ask #N`
+    /// opens that ask (board #500) as `OwnerAskTerminalLinks.click` says.
     override func mouseUp(with event: NSEvent) {
         openedLinkThisClick = false
         super.mouseUp(with: event)
-        if !openedLinkThisClick, event.clickCount == 1, !selectionActive, let askID = askLinkID(at: event) {
-            openAskLinkIfKnown(askID)
+        if !openedLinkThisClick, let askID = askLinkID(at: event) {
+            clickedAskLink(askID, event: event)
             return
         }
         guard !openedLinkThisClick, event.modifierFlags.contains(.command), event.clickCount == 1, !selectionActive,
@@ -905,9 +905,11 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// pointer to this object instead.
     private lazy var askHoverTracker = AskLinkHoverTracker(view: self)
     private var askHoverTracking: NSTrackingArea?
-    /// The ask under the pointer, its card shown or being looked up.
-    private var hoveredAskID: Int64?
+    /// The link under the pointer, its card shown or being looked up.
+    private var askHover = OwnerAskTerminalLinks.Hover()
     private var askCard: NSPopover?
+    /// A plain click's open, waiting out a double click.
+    private var pendingAskOpen: Task<Void, Never>?
 
     func setAskLinks(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {
         askLinkLookUp = lookUp
@@ -929,12 +931,41 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         return OwnerAskTerminalLinks.askID(inLine: hit.line, at: hit.column)
     }
 
-    private func openAskLinkIfKnown(_ askID: Int64) {
-        guard let askLinkLookUp, let openAskLink else { return }
-        closeAskCard()
-        Task { @MainActor in
-            if await askLinkLookUp(askID) != nil { openAskLink(askID) }
+    private func clickedAskLink(_ askID: Int64, event: NSEvent) {
+        let terminal = getTerminal()
+        let click = OwnerAskTerminalLinks.click(
+            clickCount: event.clickCount, command: event.modifierFlags.contains(.command), selectionActive: selectionActive,
+            mouseReporting: allowMouseReporting && terminal.mouseMode != .off
+        )
+        switch click {
+        case .openNow:
+            closeAskCard()
+            openAskLink?(askID)
+        case .openAfterDoubleClick:
+            pendingAskOpen = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
+                guard !Task.isCancelled, let self else { return }
+                self.closeAskCard()
+                self.openAskLink?(askID)
+            }
+        case .ignore:
+            break
         }
+    }
+
+    /// A second click of a double or triple click cancels the first one's
+    /// open; any new click does.
+    override func mouseDown(with event: NSEvent) {
+        pendingAskOpen?.cancel()
+        pendingAskOpen = nil
+        super.mouseDown(with: event)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        pendingAskOpen?.cancel()
+        pendingAskOpen = nil
+        closeAskCard()
     }
 
     fileprivate func askLinkHovered(_ event: NSEvent) {
@@ -942,28 +973,36 @@ final class PalettedTerminalView: LocalProcessTerminalView {
             closeAskCard()
             return
         }
-        guard askID != hoveredAskID, let askLinkLookUp else {
-            // Over a link whose card is up (a known ask), the hand.
+        guard let askLinkLookUp, let token = askHover.enter(askID) else {
+            // Still over the link whose card is up: keep the hand.
             if askCard != nil { NSCursor.pointingHand.set() }
             return
         }
-        closeAskCard()
-        hoveredAskID = askID
+        closeCard()
         let anchor = cellRect(at: event)
         Task { @MainActor [weak self] in
             // A number naming no ask of this workbench shows nothing.
-            guard let ask = await askLinkLookUp(askID), let self, self.hoveredAskID == askID, self.window != nil else { return }
+            guard let ask = await askLinkLookUp(askID), let self, self.askHover.isCurrent(token), self.window != nil
+            else { return }
             self.showAskCard(ask, at: anchor)
         }
     }
 
+    /// The pointer left the link (or the view its window): no card, no hand.
     fileprivate func closeAskCard() {
-        hoveredAskID = nil
-        askCard?.close()
-        askCard = nil
+        askHover.leave()
+        closeCard()
+    }
+
+    private func closeCard() {
+        guard let askCard else { return }
+        askCard.close()
+        self.askCard = nil
+        NSCursor.iBeam.set()
     }
 
     private func showAskCard(_ ask: OwnerAsk, at anchor: NSRect) {
+        closeCard()
         let popover = NSPopover()
         popover.behavior = .semitransient
         popover.animates = false
@@ -973,12 +1012,13 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         NSCursor.pointingHand.set()
     }
 
-    /// The cell under the pointer, in this view's coordinates.
+    /// The cell under the pointer, in this view's coordinates (`cell(at:)`'s
+    /// grid); a zero rect at the pointer off the grid.
     private func cellRect(at event: NSEvent) -> NSRect {
-        let point = convert(event.locationInWindow, from: nil)
-        guard let size = cellSize() else { return NSRect(origin: point, size: .zero) }
-        let row = ((frame.height - point.y) / size.height).rounded(.down)
-        return NSRect(x: (point.x / size.width).rounded(.down) * size.width, y: frame.height - (row + 1) * size.height,
+        guard let cell = cell(at: event), let size = cellSize() else {
+            return NSRect(origin: convert(event.locationInWindow, from: nil), size: .zero)
+        }
+        return NSRect(x: CGFloat(cell.col) * size.width, y: frame.height - CGFloat(cell.row + 1) * size.height,
                       width: size.width, height: size.height)
     }
 

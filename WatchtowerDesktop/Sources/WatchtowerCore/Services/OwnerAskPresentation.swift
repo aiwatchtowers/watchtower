@@ -144,6 +144,12 @@ package enum OwnerAskPresentation {
         }
     }
 
+    /// The line under the title on an `ask #N` link's hover card (board
+    /// #500): "#12 · Check · Waiting for you".
+    package static func linkCardDetail(_ ask: OwnerAsk) -> String {
+        ["#\(ask.id)", askKindLabel(ask.kind), askStatusLine(ask, replacedBy: nil)].joined(separator: " · ")
+    }
+
     package static func askKindIcon(_ kind: OwnerAskKind) -> String {
         switch kind {
         case .review: "doc.text.magnifyingglass"

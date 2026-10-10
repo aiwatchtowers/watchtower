@@ -31,9 +31,49 @@ package enum OwnerAskTerminalLinks {
         matches(in: line).first { $0.range.contains(column) }?.askID
     }
 
-    /// The hover card's line under the title: "#12 · Check · Waiting for you".
-    package static func cardDetail(_ ask: OwnerAsk) -> String {
-        ["#\(ask.id)", OwnerAskPresentation.askKindLabel(ask.kind),
-         OwnerAskPresentation.askStatusLine(ask, replacedBy: nil)].joined(separator: " · ")
+    /// What a click on a link does: ⌘ opens at once; a plain click opens
+    /// once no double click follows (a double or triple click selects as
+    /// usual), and never while the program in the terminal reports the
+    /// mouse (the click is its own); a click ending a selection opens
+    /// nothing.
+    package enum Click: Equatable, Sendable {
+        case openNow
+        case openAfterDoubleClick
+        case ignore
+    }
+
+    package static func click(clickCount: Int, command: Bool, selectionActive: Bool, mouseReporting: Bool) -> Click {
+        guard clickCount == 1, !selectionActive else { return .ignore }
+        if command { return .openNow }
+        return mouseReporting ? .ignore : .openAfterDoubleClick
+    }
+
+    /// The link under the pointer and a generation per hover, so a card
+    /// lookup still running when the pointer left (or moved on, or came
+    /// back) never shows a second card.
+    package struct Hover: Sendable {
+        package private(set) var askID: Int64?
+        private var generation = 0
+
+        package init() {}
+
+        /// The pointer is over `id`'s link: a token for its lookup, nil
+        /// when that link is already hovered.
+        package mutating func enter(_ id: Int64) -> Int? {
+            guard id != askID else { return nil }
+            generation += 1
+            askID = id
+            return generation
+        }
+
+        package mutating func leave() {
+            generation += 1
+            askID = nil
+        }
+
+        /// Whether the lookup `token` started for still answers the hover.
+        package func isCurrent(_ token: Int) -> Bool {
+            token == generation
+        }
     }
 }

@@ -1,5 +1,4 @@
 import XCTest
-import GRDB
 @testable import WatchtowerCore
 
 /// `ask #N` / `ask N` in a session's terminal is a link to that ask (board
@@ -43,12 +42,37 @@ final class OwnerAskTerminalLinksTests: XCTestCase {
         XCTAssertNil(OwnerAskTerminalLinks.askID(inLine: line, at: 99))
     }
 
-    /// The hover card: the ask's title, then its kind and status.
-    func testHoverCardNamesTitleKindAndStatus() throws {
-        let ask = try OwnerAsk(row: Row([
-            "id": 12, "project_id": 1, "kind": "check", "title": "Try the export", "payload": "{}",
-            "status": "open", "withdrawn_reason": ""
-        ]))
-        XCTAssertEqual(OwnerAskTerminalLinks.cardDetail(ask), "#12 · Check · Waiting for you")
+    /// A lookup answers only the hover it started for: leaving the link
+    /// and coming back to the same ask while the first lookup runs leaves
+    /// one card, not two.
+    func testOnlyTheLatestHoverShowsItsCard() throws {
+        var hover = OwnerAskTerminalLinks.Hover()
+        let first = try XCTUnwrap(hover.enter(12))
+        XCTAssertNil(hover.enter(12), "moving over the same link starts no second lookup")
+        hover.leave()
+        let second = try XCTUnwrap(hover.enter(12))
+        XCTAssertFalse(hover.isCurrent(first), "the first lookup's answer is stale")
+        XCTAssertTrue(hover.isCurrent(second))
+        let other = try XCTUnwrap(hover.enter(13))
+        XCTAssertFalse(hover.isCurrent(second), "another link makes it stale too")
+        XCTAssertTrue(hover.isCurrent(other))
+        hover.leave()
+        XCTAssertFalse(hover.isCurrent(other))
+        XCTAssertNil(hover.askID)
+    }
+
+    /// A click on a link: ⌘ opens at once; a plain click waits out a
+    /// double click (which selects as usual) and never opens while the
+    /// program in the terminal reports the mouse; a drag's selection or a
+    /// double click opens nothing.
+    func testWhatAClickOnALinkDoes() {
+        typealias Links = OwnerAskTerminalLinks
+        XCTAssertEqual(Links.click(clickCount: 1, command: true, selectionActive: false, mouseReporting: true), .openNow)
+        XCTAssertEqual(Links.click(clickCount: 1, command: false, selectionActive: false, mouseReporting: false), .openAfterDoubleClick)
+        XCTAssertEqual(Links.click(clickCount: 1, command: false, selectionActive: false, mouseReporting: true), .ignore)
+        XCTAssertEqual(Links.click(clickCount: 2, command: false, selectionActive: false, mouseReporting: false), .ignore)
+        XCTAssertEqual(Links.click(clickCount: 2, command: true, selectionActive: false, mouseReporting: false), .ignore)
+        XCTAssertEqual(Links.click(clickCount: 1, command: false, selectionActive: true, mouseReporting: false), .ignore)
+        XCTAssertEqual(Links.click(clickCount: 1, command: true, selectionActive: true, mouseReporting: false), .ignore)
     }
 }

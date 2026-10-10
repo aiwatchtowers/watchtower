@@ -111,6 +111,16 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(OwnerAskPresentation.checkSummary([], marks: [:]), "")
     }
 
+    /// An `ask #N` link's hover card (board #500): under the title, the
+    /// number, kind and status.
+    func testLinkCardDetailNamesNumberKindAndStatus() throws {
+        let ask = try OwnerAsk(row: Row([
+            "id": 12, "project_id": 1, "kind": "check", "title": "Try the export", "payload": "{}",
+            "status": "open", "withdrawn_reason": ""
+        ]))
+        XCTAssertEqual(OwnerAskPresentation.linkCardDetail(ask), "#12 · Check · Waiting for you")
+    }
+
     func testPositionLabel() {
         XCTAssertEqual(OwnerAskPresentation.positionLabel(2, of: 5), "2 of 5")
     }

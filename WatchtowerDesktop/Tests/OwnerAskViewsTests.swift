@@ -116,7 +116,7 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertFalse(missing, "a number naming no ask is no link")
         XCTAssertNil(vm.asks.drawerAskIDs[s.project])
         XCTAssertNil(vm.asks.loadErrors[s.project], "no link reports nothing")
-        let foreignAsk = await vm.asks.linkedAsk(askID: other, projectID: s.project)
+        let foreignAsk = try await vm.asks.linkedAsk(askID: other, projectID: s.project)
         XCTAssertNil(foreignAsk)
 
         let opened = await vm.openTerminalAskLink(s.secondAsk, workbenchID: s.project)
@@ -124,6 +124,23 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.secondAsk)
         XCTAssertTrue(shows(vm, session: s.second, project: s.project), "the ask's session goes on screen")
         XCTAssertEqual(started, 0, "a click never starts a stopped session's agent")
+    }
+
+    /// A link whose read fails is no "no such ask": the click goes through
+    /// `showAsk`, which reports the failure in the asks' load error.
+    func testATerminalAskLinkWhoseReadFailsReportsIt() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project
+        await vm.asks.load(projectID: s.project)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE owner_asks RENAME TO owner_asks_gone") }
+
+        let opened = await vm.openTerminalAskLink(s.secondAsk + 100, workbenchID: s.project)
+
+        XCTAssertFalse(opened)
+        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+        XCTAssertTrue(vm.asks.loadErrors[s.project]?.hasPrefix("Could not load the ask") == true,
+                      vm.asks.loadErrors[s.project] ?? "no error")
     }
 
     /// A closed ask is still a link: its drawer opens read-only.
@@ -136,7 +153,7 @@ final class OwnerAskViewsTests: XCTestCase {
         let vm = makeVM()
         vm.selectedWorkbenchID = s.project
         await vm.asks.load(projectID: s.project)
-        let linked = await vm.asks.linkedAsk(askID: closed, projectID: s.project)
+        let linked = try await vm.asks.linkedAsk(askID: closed, projectID: s.project)
         XCTAssertEqual(linked?.status, .withdrawn)
         let opened = await vm.openTerminalAskLink(closed, workbenchID: s.project)
         XCTAssertTrue(opened)

@@ -27,10 +27,15 @@ extension WorkbenchesViewModel {
     /// An `ask #N` clicked in a session's terminal (board #500): that ask's
     /// drawer, the way a stack row opens it — only for an ask of the
     /// session's own workbench. False, with nothing opened or reported, for
-    /// a number naming no ask of it.
+    /// a number naming no ask of it. A failed read is no "no such ask":
+    /// `showAsk` reads again and reports what fails in the asks' load error.
     @discardableResult
     func openTerminalAskLink(_ askID: Int64, workbenchID: Int64) async -> Bool {
-        guard await asks.linkedAsk(askID: askID, projectID: workbenchID) != nil else { return false }
+        do {
+            guard try await asks.linkedAsk(askID: askID, projectID: workbenchID) != nil else { return false }
+        } catch {
+            NSLog("OwnerAsks: ask #%lld link read failed: %@", askID, error.localizedDescription)
+        }
         return await showAsk(askID, projectID: workbenchID)
     }
 
