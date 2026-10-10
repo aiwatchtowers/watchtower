@@ -164,6 +164,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// forgets what it published and republishes into the recreated zone.
     /// Unlike an account reset the store is NOT wiped: the relay buffer and
     /// the owner's relay cursor still hold, and must not be rewound.
+    /// The engine may report the same deletion more than once (a re-fetch, a
+    /// relaunch before its state was persisted); each report fires again,
+    /// which only costs a second wipe-and-republish — never wrong state.
     public func setDataZoneResetHandler(_ handler: (@Sendable () -> Void)?) {
         dataZoneResetHandler = handler
     }
