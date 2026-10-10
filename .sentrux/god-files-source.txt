@@ -13,6 +13,7 @@ WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskReviewBody.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
+WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
 WatchtowerMobile/Sources/Features/Asks/AskFormModel.swift
 WatchtowerMobile/Sources/Features/Calendar/AgendaModel.swift
 WatchtowerMobile/Sources/Features/Workbench/BoardTargetDetailModel.swift
