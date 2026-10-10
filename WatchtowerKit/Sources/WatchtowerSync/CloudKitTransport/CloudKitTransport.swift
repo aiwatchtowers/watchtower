@@ -692,7 +692,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 modifiedAt: record.modifiedAt,
                 payload: record.payload,
                 notifyLevel: record.notifyLevel,
-                assetFileURL: stashed
+                assetFileURL: stashed,
+                creatorUserRecordName: record.creatorUserRecordName
             )
         }
         var deletedByZone: [CloudZoneID: [String]] = [:]
@@ -1134,7 +1135,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             notifyLevel: ck.encryptedValues["notifyLevel"] as? String,
             // CloudKit's staged download location — temporary; the buffering
             // path stashes a durable copy before persisting the event.
-            assetFileURL: (ck["asset"] as? CKAsset)?.fileURL
+            assetFileURL: (ck["asset"] as? CKAsset)?.fileURL,
+            // The owner's own records read `CKCurrentUserDefaultName` here.
+            creatorUserRecordName: ck.creatorUserRecordID?.recordName
         )
     }
 }

@@ -2,10 +2,13 @@ import SwiftUI
 import WatchtowerSync
 
 /// Settings (reached from More): Your Mac, read-only accounts, the Workbench
-/// requests to the Mac, notifications, and the parked offline chat.
+/// requests to the Mac, notifications, the parked offline chat, and Unlink
+/// this Mac.
 struct SettingsView: View {
     @Environment(AppEnvironment.self) private var env
+    @Environment(LinkingViewModel.self) private var linking
     @State private var model = SettingsViewModel()
+    @State private var confirmingUnlink = false
 
     var body: some View {
         Form {
@@ -20,6 +23,7 @@ struct SettingsView: View {
                 Text("Chat")
             }
             .disabled(true)
+            unlinkSection
         }
         .navigationTitle("Settings")
         .task(id: env.linkedDevice?.deviceID) {
@@ -143,6 +147,30 @@ struct SettingsView: View {
         grant?.typingAllowed == true
             ? "Allowed"
             : "Waiting for your Mac to confirm"
+    }
+
+    // MARK: - Unlink
+
+    /// A live link only: the demo has no link to end.
+    @ViewBuilder private var unlinkSection: some View {
+        if env.transportKind == .cloudKit, linking.link != nil {
+            Section {
+                Button("Unlink this Mac", role: .destructive) {
+                    confirmingUnlink = true
+                }
+                .frame(minHeight: 44)
+                .disabled(linking.isBusy)
+                .confirmationDialog("Unlink this Mac?", isPresented: $confirmingUnlink, titleVisibility: .visible) {
+                    Button("Unlink", role: .destructive) {
+                        Task { await linking.unlink() }
+                    }
+                } message: {
+                    Text("This phone forgets the Mac's data. Changes still waiting for the Mac are not sent.")
+                }
+            } footer: {
+                Text("To use Watchtower here again, scan a new code on the Mac.")
+            }
+        }
     }
 
     // MARK: - Notifications

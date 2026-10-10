@@ -34,6 +34,19 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertTrue(batch.deletedRecordNames.isEmpty)
     }
 
+    /// The hub's device gate reads who wrote a relay record (spec §5.2 rule 4).
+    func testBufferedEventKeepsTheRecordCreator() throws {
+        let store = try TransportStore.inMemory()
+        let written = CloudRecord(
+            recordName: "device-d1", zone: .relay, kind: "device", modifiedAt: stamp, payload: Data("{}".utf8),
+            creatorUserRecordName: "_colleague-a"
+        )
+        try store.bufferChanged([written, record("action-1", zone: .relay)])
+
+        let changed = try store.changes(in: .relay, since: nil).changed
+        XCTAssertEqual(changed.map(\.creatorUserRecordName), ["_colleague-a", nil])
+    }
+
     func testZonesIsolatedInBuffer() throws {
         let store = try TransportStore.inMemory()
         try store.bufferChanged([record("target-1", zone: .data)])

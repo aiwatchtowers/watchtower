@@ -35,6 +35,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var resetHandlerGate: SaveGate?
     private let echoesOwnSaves: Bool
     private var ownPayloads: Set<Data> = []
+    private var throttleStart: Date?
 
     init(
         availability: CloudAvailability = .available,
@@ -93,6 +94,13 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func setAvailability(_ value: CloudAvailability) {
         lock.withLock { currentAvailability = value }
     }
+
+    /// The start of a throttling stretch (nil: sends go through).
+    func setThrottledSince(_ value: Date?) {
+        lock.withLock { throttleStart = value }
+    }
+
+    var throttledSince: Date? { lock.withLock { throttleStart } }
 
     func fireAccountReset() {
         let handler = lock.withLock { resetHandler }
@@ -335,5 +343,21 @@ final class HandlerLatch {
         let waiting = parked
         parked = []
         waiting.forEach { $0.resume() }
+    }
+}
+
+extension HubSyncState {
+    /// Seeds a linked phone past the device gate (spec §5.2 rule 4), as if
+    /// it had scanned a code: tests of the relay's own rules start here.
+    func linkTestDevice(
+        _ deviceID: String = "device-a",
+        scope: DeviceScope = .private,
+        userRecordName: String = "_owner-acme",
+        at date: Date = Date()
+    ) throws {
+        let nonce = "test-nonce-\(deviceID)"
+        try addLinkCode(nonce: nonce, issuedAt: date, exp: date.addingTimeInterval(600), keeping: MobileLinkCenter.keptCodes)
+        let device = LinkedDevice(deviceID: deviceID, name: "iPhone", scope: scope, userRecordName: userRecordName, linkedAt: date)
+        _ = try linkDevice(device, nonce: nonce, now: date)
     }
 }

@@ -5,10 +5,11 @@ import UIKit
 /// The silent-push wake path: CKSyncEngine owns subscriptions and push
 /// registration; the app turns a `content-available` push into a fetch.
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    /// Set once the environment exists. Static because a background push
-    /// launch reaches the delegate before any view appears; weak because
-    /// the app's boot state owns the environment.
-    @MainActor static weak var environment: AppEnvironment?
+    /// Set once the root exists. Static because a background push launch
+    /// reaches the delegate before any view appears; weak because the
+    /// app's boot state owns the root. Read through the root, since the link
+    /// flow replaces its environment.
+    @MainActor static weak var root: AppRoot?
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppDelegate")
 
@@ -18,7 +19,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
-            guard let env = Self.environment else {
+            guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
                 completionHandler(.noData)
                 return
@@ -38,7 +39,7 @@ struct WatchtowerMobileApp: App {
     /// replica, demo seed, recorder recovery, fetch loop or push
     /// registration runs beside the environments the tests build.
     enum Boot {
-        case ready(AppEnvironment)
+        case ready(AppRoot)
         case failed(String)
         case hostingTests
 
@@ -49,23 +50,23 @@ struct WatchtowerMobileApp: App {
         }
 
         @MainActor
-        /// `makeEnvironment` is for tests: the app builds its own.
+        /// `makeRoot` is for tests: the app builds its own.
         static func make(
             processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-            makeEnvironment: @MainActor () throws -> AppEnvironment = { try AppEnvironment() }
+            makeRoot: @MainActor () throws -> AppRoot = { try AppRoot.live() }
         ) -> Self {
             if isHostingTests(processEnvironment) {
                 return .hostingTests
             }
             do {
-                let env = try makeEnvironment()
-                AppDelegate.environment = env
+                let root = try makeRoot()
+                AppDelegate.root = root
                 // Only the live transport has an engine for a push to wake;
                 // the demo path registers for nothing.
-                if env.transportKind == .cloudKit {
+                if root.env.transportKind == .cloudKit {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
-                return .ready(env)
+                return .ready(root)
             } catch {
                 Logger(subsystem: "WatchtowerMobile", category: "Boot")
                     .critical("replica failed to open: \(error.localizedDescription, privacy: .public)")
@@ -79,9 +80,8 @@ struct WatchtowerMobileApp: App {
     var body: some Scene {
         WindowGroup {
             switch boot {
-            case let .ready(env):
-                RootTabView()
-                    .environment(env)
+            case let .ready(root):
+                AppRootView(root: root)
             case let .failed(message):
                 BootFailureView(message: message)
             case .hostingTests:

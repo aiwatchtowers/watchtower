@@ -499,6 +499,7 @@ final class BoardHandlersTests: XCTestCase {
         handlers.register(on: dispatcher)
         let transport = StubHubTransport()
         let sidecar = try HubSyncState.inMemory()
+        try sidecar.linkTestDevice("device-a")
         let record = try pendingActionRecord(
             kind: .boardCommentAdd, entityID: String(t), params: ["workbench_id": .integer(p), "body": .string("Ship it")]
         )
@@ -542,7 +543,9 @@ final class BoardHandlersTests: XCTestCase {
             XCTAssertTrue(dispatcher.handles(kind), kind.rawValue)
         }
         let transport = StubHubTransport()
-        let processor = RelayProcessor(transport: transport, sidecar: try HubSyncState.inMemory(), dispatcher: dispatcher, hubID: "hub-acme")
+        let linked = try HubSyncState.inMemory()
+        try linked.linkTestDevice("device-a")
+        let processor = RelayProcessor(transport: transport, sidecar: linked, dispatcher: dispatcher, hubID: "hub-acme")
         let record = try pendingActionRecord(
             kind: .boardCommentAdd, entityID: String(t), params: ["workbench_id": .integer(p), "body": .string("Ship it")]
         )

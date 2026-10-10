@@ -2262,6 +2262,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_error       TEXT NOT NULL DEFAULT '', -- the StopFailure error type, clipped to 60 runes; '' = unknown
     agent_turn_end    INTEGER, -- the transcript's size in bytes at the last Stop hook of this run; NULL = none (Go only)
     agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (Go only)
+    agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (hooks only)
+    agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );

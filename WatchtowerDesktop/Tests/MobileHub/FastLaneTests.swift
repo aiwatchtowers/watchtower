@@ -185,6 +185,66 @@ final class FastLaneTests: XCTestCase {
         XCTAssertEqual(published["state_glyph"] as? String, "hand.raised.fill")
     }
 
+    /// #411 (PROJ-11: Agents working is never announced): a turn end with
+    /// background agents running reaches the phone as `working` with the
+    /// Mac's caption and glyph, and raises no `ask_alert`.
+    func testAgentsWorkingPublishesAsWorkingAndRaisesNoAlert() async throws {
+        let bench = try await workbench()
+        let row = try await session(in: bench)
+        let center = makeCenter()
+        let liveness = SessionLivenessBox()
+        let clock = FakeClock()
+        let transport = StubHubTransport()
+        let sidecar = try HubSyncState.inMemory()
+        _ = try HubIdentity(sidecar: sidecar).ensureEnabledAt(started)
+        let sliceNow = started.addingTimeInterval(60)
+        let publisher = SlicePublisher(
+            dbPool: pool, state: sidecar, transport: transport,
+            sources: [
+                TerminalSessionSlice(liveness: { liveness.current }, reportSummary: { _, _ in nil }, now: { sliceNow }),
+                AskAlertSlice(sidecar: sidecar) { sliceNow }
+            ]
+        ) { clock.now }
+        let log = NudgeLog()
+        let lane = makeLane(center, liveness: liveness) { kinds in
+            log.record(kinds)
+            publisher.nudge(kinds: kinds)
+        }
+        lane.start()
+        terminals.start(row, fresh: true)
+        try hookWrites([row.id], "working", at: 1)
+        await center.poll()
+        try await publisher.publishOnce()
+        _ = publisher.takeDueFastKinds(now: clock.origin + .seconds(1))
+
+        clock.set(.seconds(5))
+        let turnEnd = stamp(2)
+        let other = try DatabaseQueue(path: path)
+        try await other.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+                        agent_background = 2, agent_background_at = ? WHERE id = ?
+                    """,
+                arguments: [turnEnd, turnEnd, row.id]
+            )
+        }
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state.kind, .background)
+
+        let deadline = try XCTUnwrap(publisher.fastDeadline, "the state change nudged the publisher")
+        let kinds = try XCTUnwrap(publisher.takeDueFastKinds(now: deadline))
+        XCTAssertFalse(log.nudges.contains { $0.contains(.askAlert) }, "a session state never nudges an alert")
+        try await publisher.publishOnce(kinds: kinds.union([.askAlert]))
+        let record = SliceKind.terminalSession.recordName(id: String(row.id))
+        let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
+        XCTAssertEqual(published["state_kind"] as? String, "working")
+        XCTAssertEqual(published["state_caption"] as? String, "2 agents working")
+        XCTAssertEqual(published["state_glyph"] as? String, "person.2.fill")
+        XCTAssertEqual(published["state_tone"] as? String, "green")
+        XCTAssertFalse(transport.saved.contains { $0.record.kind == SliceKind.askAlert.rawValue }, "no ask_alert")
+    }
+
     func testAStateChangeAsksForTheWorkbenchsGitAndSummaryRefresh() async throws {
         let bench = try await workbench()
         let row = try await session(in: bench)

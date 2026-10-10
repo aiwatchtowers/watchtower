@@ -169,6 +169,40 @@ final class SessionTimelineSliceTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(changes.withLock { $0 }, 2)
     }
 
+    /// #411: a turn end with background agents running is its own state
+    /// milestone, "Agents working" whatever the count, never "Working".
+    func testAgentsWorkingIsAStateMilestoneOfItsOwn() async throws {
+        let (project, session) = try seedSession()
+        let state = OSAllocatedUnfairLock(initialState: SessionSwitcherPresentation.State.live(.working))
+        let hookTime = OSAllocatedUnfairLock(initialState: now)
+        let reports = SessionReportRunner(
+            fetch: { _, _, _ in throw CLIRunnerError.launchFailed(underlying: CancellationError()) },
+            sidecar: sidecar,
+            now: { hookTime.withLock { $0 } },
+            window: {
+                [SessionReportSlice.Windowed(
+                    sessionID: session, workbenchID: project, live: true, createdAt: nil, lastActiveAt: Date(),
+                    state: state.withLock { $0 }, stateAt: self.now.addingTimeInterval(-30)
+                )]
+            }
+        )
+        reports.sessionStatesChanged()
+        await reports.runDue()
+
+        state.withLock { $0 = .live(.background, backgroundAgents: 2) }
+        hookTime.withLock { $0 = now.addingTimeInterval(10) }
+        reports.sessionStatesChanged()
+        await reports.runDue()
+        state.withLock { $0 = .live(.background, backgroundAgents: 1) }
+        hookTime.withLock { $0 = now.addingTimeInterval(20) }
+        reports.sessionStatesChanged()
+        await reports.runDue()
+
+        XCTAssertEqual(try sidecar.stateMilestones()[session]?.map(\.text), ["Agents working", "Working"],
+                       "a new count is not a new milestone")
+        XCTAssertEqual(SessionTimelineSlice.stateText(.live(.background)), "Agents working")
+    }
+
     /// Review I1: a change the fast lane reports while the pass's window
     /// read is out (the read returned the state from before it) is
     /// resolved by the next pass, not dropped.

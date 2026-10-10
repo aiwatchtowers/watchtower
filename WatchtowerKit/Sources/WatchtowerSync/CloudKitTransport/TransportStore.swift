@@ -57,7 +57,8 @@ public final class TransportStore: Sendable {
                     payload BLOB,
                     deleted INTEGER NOT NULL DEFAULT 0,
                     notify_level TEXT,
-                    asset_path TEXT
+                    asset_path TEXT,
+                    creator TEXT
                 );
                 CREATE TABLE IF NOT EXISTS pending (
                     record_name TEXT NOT NULL,
@@ -95,6 +96,10 @@ public final class TransportStore: Sendable {
                 for column in ["notify_level", "asset_path"] where !columns.contains(column) {
                     try db.execute(sql: "ALTER TABLE \(table) ADD COLUMN \(column) TEXT")
                 }
+            }
+            // creator (the hub's device gate) is fetched metadata: events only.
+            if try !db.columns(in: "events").contains(where: { $0.name == "creator" }) {
+                try db.execute(sql: "ALTER TABLE events ADD COLUMN creator TEXT")
             }
         }
     }
@@ -272,13 +277,13 @@ public final class TransportStore: Sendable {
                 try db.execute(
                     sql: """
                         INSERT INTO events
-                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path)
-                        VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                            (zone, record_name, kind, modified_at, payload, deleted, notify_level, asset_path, creator)
+                        VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
                         """,
                     arguments: [
                         record.zone.rawValue, record.recordName, record.kind,
                         record.modifiedAt.timeIntervalSince1970, record.payload,
-                        record.notifyLevel, record.assetFileURL?.path
+                        record.notifyLevel, record.assetFileURL?.path, record.creatorUserRecordName
                     ]
                 )
             }
@@ -331,7 +336,8 @@ public final class TransportStore: Sendable {
                         modifiedAt: Date(timeIntervalSince1970: row["modified_at"] ?? 0),
                         payload: row["payload"] ?? Data(),
                         notifyLevel: row["notify_level"],
-                        assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:))
+                        assetFileURL: (row["asset_path"] as String?).map(URL.init(fileURLWithPath:)),
+                        creatorUserRecordName: row["creator"]
                     ))
                 }
             }

@@ -29,7 +29,9 @@ cd "$ROOT"
 # failing test used to kill the script right here, leaving CI with a bare
 # "Error 1" and no indication of WHICH test failed.
 TEST_STATUS=0
-OUTPUT="$(go test ./... -cover 2>&1)" || TEST_STATUS=$?
+# -timeout 20m: with coverage on a CI runner, watchtower/cmd alone takes
+# ~595-601 s, right at go test's default 10m per-package limit.
+OUTPUT="$(go test ./... -cover -timeout 20m 2>&1)" || TEST_STATUS=$?
 echo "$OUTPUT"
 if [[ $TEST_STATUS -ne 0 ]]; then
     echo "coverage-gate: go test failed (exit $TEST_STATUS) — see output above" >&2

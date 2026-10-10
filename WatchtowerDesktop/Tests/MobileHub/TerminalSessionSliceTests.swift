@@ -13,7 +13,9 @@ import WatchtowerTestSupport
 final class TerminalSessionSliceTests: XCTestCase {
     private var dbPath: String!
     private var dbPool: DatabasePool!
-    private let started = Date().addingTimeInterval(-600)
+    /// The slice's clock: the background agent count (#411) is judged at it.
+    private let now = Date()
+    private var started: Date { now.addingTimeInterval(-600) }
 
     override func setUpWithError() throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
@@ -26,10 +28,13 @@ final class TerminalSessionSliceTests: XCTestCase {
 
     private func slice(
         live: Set<Int64> = [],
+        at clock: Date? = nil,
         summary: @escaping @Sendable (Int64, Int64) -> SessionReportSummary? = { _, _ in nil }
     ) -> TerminalSessionSlice {
         let liveness = SessionLiveness(liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }))
-        return TerminalSessionSlice(liveness: { liveness }, reportSummary: summary)
+        let now = clock ?? self.now
+        let sliceClock: @Sendable () -> Date = { now }
+        return TerminalSessionSlice(liveness: { liveness }, reportSummary: summary, now: sliceClock)
     }
 
     private func payloads(_ source: TerminalSessionSlice) throws -> [Int64: [String: Any]] {
@@ -54,15 +59,18 @@ final class TerminalSessionSliceTests: XCTestCase {
         state: String?,
         at offset: TimeInterval = 1,
         finished: Bool = false,
-        failedError: String? = nil
+        failedError: String? = nil,
+        background: Int? = nil,
+        backgroundAt backgroundOffset: TimeInterval? = nil
     ) throws {
         let at = stamp(offset)
         try db.execute(
             sql: """
                 UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?, finished_at = ?,
-                    agent_failed_at = ?, agent_error = ? WHERE id = ?
+                    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ? WHERE id = ?
                 """,
-            arguments: [state, state == nil ? nil : at, finished ? at : nil, failedError == nil ? nil : at, failedError ?? "", id]
+            arguments: [state, state == nil ? nil : at, finished ? at : nil, failedError == nil ? nil : at, failedError ?? "",
+                        background, background == nil ? nil : stamp(backgroundOffset ?? offset), id]
         )
     }
 
@@ -125,6 +133,10 @@ final class TerminalSessionSliceTests: XCTestCase {
             }, expected: .finished, wire: "finished"),
             Case(name: "stopped", live: true, seed: { db, id, _ in try self.setState(db, id, state: "waiting") },
                  expected: .stopped, wire: "stopped"),
+            // #411: Agents working has no wire kind; it goes out as working.
+            Case(name: "agents working", live: true, seed: { db, id, _ in
+                try self.setState(db, id, state: "waiting", background: 2)
+            }, expected: .background, wire: "working"),
             Case(name: "failed with an error", live: true, seed: { db, id, _ in
                 try self.setState(db, id, state: "waiting", failedError: "rate_limit")
             }, expected: .failed, wire: "failed"),
@@ -145,7 +157,7 @@ final class TerminalSessionSliceTests: XCTestCase {
         let published = try payloads(slice(live: live))
         let rows = try dbPool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: []) }
         let statuses = SessionAgentStatus.resolve(
-            rows, liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) })
+            rows, liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }), now: now
         )
 
         for (item, id) in seeded {
@@ -167,6 +179,27 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(byName["failed with an empty error"]?["state_caption"] as? String, "Stopped on an error")
         XCTAssertEqual(byName["not started"]?["state_caption"] as? String, "Not running", "no age: the caption never ticks")
         XCTAssertEqual(byName["not started"]?["is_ring"] as? Bool, true)
+        XCTAssertEqual(byName["agents working"]?["state_caption"] as? String, "2 agents working")
+        XCTAssertEqual(byName["agents working"]?["state_tone"] as? String, "green")
+        XCTAssertEqual(byName["agents working"]?["state_glyph"] as? String, "person.2.fill")
+    }
+
+    /// #411: a count lowered to zero shows Agents working for the policy's
+    /// grace, judged at the slice's clock, then the session is stopped.
+    func testAZeroCountIsAgentsWorkingForTheGraceAtTheSlicesClock() throws {
+        let session = try dbPool.write { db -> Int64 in
+            let project = try TestDatabase.insertWorkbench(db)
+            let id = try SliceSeed.insertSession(db, projectID: project)
+            try self.setState(db, id, state: "waiting", at: 1, background: 0, backgroundAt: 2)
+            return id
+        }
+        let reported = started.addingTimeInterval(2)
+        let inGrace = try XCTUnwrap(try payloads(slice(live: [session], at: reported.addingTimeInterval(60)))[session])
+        XCTAssertEqual(inGrace["state_kind"] as? String, "working")
+        XCTAssertEqual(inGrace["state_caption"] as? String, "Agents working")
+        let after = SessionBackgroundPolicy.grace + 1
+        let over = try XCTUnwrap(try payloads(slice(live: [session], at: reported.addingTimeInterval(after)))[session])
+        XCTAssertEqual(over["state_kind"] as? String, "stopped")
     }
 
     private static func wire(_ tone: SessionStatePresentation.Tone) -> String {
@@ -246,18 +279,19 @@ final class TerminalSessionSliceTests: XCTestCase {
         let (project, ids) = try dbPool.write { db -> (Int64, [Int64]) in
             let project = try TestDatabase.insertWorkbench(db)
             var ids: [Int64] = []
-            for _ in 0..<6 { ids.append(try SliceSeed.insertSession(db, projectID: project)) }
+            for _ in 0..<7 { ids.append(try SliceSeed.insertSession(db, projectID: project)) }
             try self.setState(db, ids[0], state: "working")
             try self.setState(db, ids[2], state: "approval")
             try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: ids[3])
             try self.setState(db, ids[4], state: nil, finished: true)
+            try self.setState(db, ids[6], state: "waiting", background: 1)
             try SliceSeed.insertSession(db, projectID: project, kind: "shell")
             return (project, ids)
         }
-        let source = slice(live: [ids[0], ids[1], ids[2]])
+        let source = slice(live: [ids[0], ids[1], ids[2], ids[6]])
         let counts = try XCTUnwrap(try dbPool.read { try source.sessionCounts($0) }[project])
-        XCTAssertEqual(counts, .init(working: 2, waiting: 1, needsApproval: 1, finished: 1, failed: 0, stopped: 0, notRunning: 1),
-                       "running counts as working; the shell is not counted")
+        XCTAssertEqual(counts, .init(working: 3, waiting: 1, needsApproval: 1, finished: 1, failed: 0, stopped: 0, notRunning: 1),
+                       "running and Agents working count as working; the shell is not counted")
     }
 
     // MARK: - Report summary

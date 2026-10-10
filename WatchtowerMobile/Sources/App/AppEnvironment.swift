@@ -11,6 +11,14 @@ enum TransportKind: String, Sendable {
     case inMemoryDemo
 }
 
+/// What the CloudKit transport tells the link flow (spec §9).
+enum LinkSignal: Sendable {
+    /// `shared` scope: the Mac's zones are gone (`TransportEvent.unlinked`).
+    case unlinked
+    /// An iCloud account sign-out or switch reset the transport.
+    case accountChanged
+}
+
 /// Why the environment could not boot (shown by `BootFailureView`).
 enum AppEnvironmentError: LocalizedError {
     /// A signed build without its app group container: the notification
@@ -73,9 +81,17 @@ final class AppEnvironment {
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
 
-    /// This phone's link, nil until the link flow (Task 12) sets one. The
-    /// demo transport is linked to `DemoSeed.device`.
+    /// This phone's link, nil until the link flow sets one. The demo
+    /// transport is linked to `DemoSeed.device`.
     private(set) var linkedDevice: LinkedDevice?
+    /// false while the link stands but nothing may be sent (the hub moved,
+    /// spec §9): the outbox and the uploader refuse as if unlinked.
+    private(set) var writesAllowed = true
+
+    /// The link flow's hooks (`AppRoot`): the transport's link signals, and
+    /// a call after every successful fetch (the heartbeat checks).
+    @ObservationIgnored var onLinkSignal: (@MainActor (LinkSignal) -> Void)?
+    @ObservationIgnored var onFetched: (@MainActor () -> Void)?
 
     /// When the phone last fetched from the Mac successfully (Settings →
     /// Your Mac → Last sync); nil before the first successful fetch.
@@ -108,15 +124,22 @@ final class AppEnvironment {
     /// device or TestFlight build) goes live over CloudKit, in the app group
     /// container; anything else (unsigned simulator and CI builds) runs the
     /// in-memory demo transport with DemoSeed. `recordingsDirectory` is for
-    /// tests: nil keeps the phone's own recordings folder.
-    convenience init(recordingsDirectory: URL? = nil) throws {
+    /// tests: nil keeps the phone's own recordings folder. A live build
+    /// runs `scope`'s database, linked as `linkedDevice` (`AppRoot` reads
+    /// both from the `LinkStore`).
+    convenience init(
+        recordingsDirectory: URL? = nil,
+        scope: CloudDatabaseScope = .private,
+        linkedDevice: LinkedDevice? = nil
+    ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
-            let transportStore = try TransportStore(path: directory.appendingPathComponent("cloudkit-transport.sqlite").path)
+            let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
             try self.init(
-                transport: CloudKitTransport(store: transportStore),
-                replicaPath: directory.appendingPathComponent("replica.sqlite").path,
+                transport: CloudKitTransport(store: transportStore, scope: scope),
+                replicaPath: Self.liveReplicaPath(in: directory),
                 transportKind: .cloudKit,
+                linkedDevice: linkedDevice,
                 recordingsDirectory: recordingsDirectory
             )
         } else {
@@ -134,11 +157,13 @@ final class AppEnvironment {
     /// cannot open (the app then shows `BootFailureView`). `makeRecorder`
     /// builds the recorder over the environment's uploader; tests pass a
     /// fake audio engine and clock, the app the microphone. `sleep` is the
-    /// fetch loop's wait between cycles.
+    /// fetch loop's wait between cycles. `linkedDevice` is the saved link
+    /// (the demo kind is always `DemoSeed.device`).
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
+        linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
@@ -152,8 +177,8 @@ final class AppEnvironment {
         self.sleep = sleep
         self.transport = transport
         self.transportKind = transportKind
-        let device = transportKind == .inMemoryDemo ? DemoSeed.device : nil
-        linkedDevice = device
+        let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
+        self.linkedDevice = device
 
         // On the live path the hydrator nudges the CKSyncEngine before each
         // cycle; the feed reads what that fetch buffered, so it gets no pull
@@ -225,6 +250,15 @@ final class AppEnvironment {
             #endif
         case .cloudKit:
             if let cloud = transport as? CloudKitTransport {
+                // Before the engine starts, so no signal goes unseen; each
+                // reaches whatever hook the link flow set by then.
+                await cloud.setEventHandler { [weak self] event in
+                    guard event == .unlinked else { return }
+                    Task { @MainActor in self?.onLinkSignal?(.unlinked) }
+                }
+                await cloud.setAccountResetHandler { [weak self] in
+                    Task { @MainActor in self?.onLinkSignal?(.accountChanged) }
+                }
                 await cloud.start()
             }
         }
@@ -286,6 +320,7 @@ final class AppEnvironment {
         } catch {
             Self.logger.error("relay fetch failed: \(error.localizedDescription, privacy: .public)")
         }
+        onFetched?()
         return true
     }
 
@@ -313,15 +348,30 @@ final class AppEnvironment {
         navigation.showRecordings()
     }
 
-    /// The one place the phone's link changes (the link flow, Task 12, and
-    /// unlink): Settings, the action outbox and the recording uploader all
-    /// take the new device id, then waiting recordings go out at once.
-    func setLinkedDevice(_ device: LinkedDevice?) async {
+    /// The one place the phone's link changes (the link flow and unlink):
+    /// Settings, the action outbox and the recording uploader all take the
+    /// new device id, then waiting recordings go out at once. With
+    /// `writesAllowed: false` the link stands (Settings still shows it) but
+    /// the outbox and the uploader get no device id, so nothing is sent.
+    func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
         linkedDevice = device
+        self.writesAllowed = writesAllowed
         deviceSettings.linkedDevice = device
-        await outbox.setDeviceID(device?.deviceID)
-        await uploader.setDeviceID(device?.deviceID)
+        let sendingID = writesAllowed ? device?.deviceID : nil
+        await outbox.setDeviceID(sendingID)
+        await uploader.setDeviceID(sendingID)
         await recorder.uploadPending()
+    }
+
+    /// The transport the link flow writes this phone's `device` record
+    /// through.
+    var linkTransport: any CloudSyncTransport { transport }
+
+    /// Asks a CloudKit transport to send its queue now (the unlinked record
+    /// before a stop), once the boot has started its engine.
+    func sendNow() async {
+        await bootstrapTask?.value
+        await (transport as? CloudKitTransport)?.sendNow()
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).
@@ -330,6 +380,15 @@ final class AppEnvironment {
         bootstrapTask?.cancel()
         loopTask?.cancel()
         loopTask = nil
+    }
+
+    /// Stops the loop and the CloudKit engine for good, after the boot has
+    /// ended: the link flow then builds the next environment on the same
+    /// files.
+    func shutDown() async {
+        stop()
+        await bootstrapTask?.value
+        await (transport as? CloudKitTransport)?.stop()
     }
 
     private func restartLoop() {
@@ -348,9 +407,19 @@ final class AppEnvironment {
         }
     }
 
+    /// The live replica's file in the app group directory.
+    static func liveReplicaPath(in directory: URL) -> String {
+        directory.appendingPathComponent("replica.sqlite").path
+    }
+
+    /// The live CloudKit transport's store in the app group directory.
+    static func liveTransportStorePath(in directory: URL) -> String {
+        directory.appendingPathComponent("cloudkit-transport.sqlite").path
+    }
+
     /// The app group container's Application Support directory. A signed
     /// build without it throws instead of falling back silently.
-    private static func appGroupDirectory() throws -> URL {
+    static func appGroupDirectory() throws -> URL {
         guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
             logger.fault("app group container \(appGroupID, privacy: .public) is unavailable")
             throw AppEnvironmentError.appGroupUnavailable
