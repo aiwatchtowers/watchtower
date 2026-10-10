@@ -73,11 +73,11 @@ final class OwnerAskSliceTests: XCTestCase {
     private let optionalKeys: Set<String> = [
         "session_id", "target_id", "withdrawn_reason", "previous_ask_id", "answered_at", "delivered_at",
         "title_clipped", "summary_clipped", "changes_clipped", "payload", "payload_clipped", "doc_path_clipped",
-        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick",
-        // Inside `payload` (passed through verbatim): the Kit mirror decodes
-        // a question's `multi` and an option's `description` as optional.
-        "multi", "description"
+        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick"
     ]
+    /// Inside `payload` (passed through verbatim): the Kit mirror decodes a
+    /// question's `multi` and an option's `description` as optional.
+    private let payloadOptionalKeys: Set<String> = ["multi", "description"]
 
     func testAnOpenQuestionMatchesTheKitFixture() throws {
         let (ask, target, session) = try dbPool.write { db -> (Int64, Int64, Int64) in
@@ -93,7 +93,10 @@ final class OwnerAskSliceTests: XCTestCase {
         }
         let payload = try payload(ask)
 
-        assertWireShape(payload, matches: try SliceJSON.kitFixture("workbench/owner_ask.json"), optionalKeys: optionalKeys)
+        assertWireShape(
+            payload, matches: try SliceJSON.kitFixture("workbench/owner_ask.json"), optionalKeys: optionalKeys,
+            nestedOptionalKeys: payloadOptionalKeys
+        )
         XCTAssertEqual(payload["workbench_name"] as? String, "Acme")
         XCTAssertEqual((payload["target_id"] as? NSNumber)?.int64Value, target)
         XCTAssertEqual((payload["session_id"] as? NSNumber)?.int64Value, session)
@@ -108,7 +111,10 @@ final class OwnerAskSliceTests: XCTestCase {
         let ask = try insertReview(snapshot: "# Plan\n\nStep 1.\n")
         let payload = try payload(ask)
 
-        assertWireShape(payload, matches: try SliceJSON.kitFixture("workbench/owner_ask_review.json"), optionalKeys: optionalKeys)
+        assertWireShape(
+            payload, matches: try SliceJSON.kitFixture("workbench/owner_ask_review.json"), optionalKeys: optionalKeys,
+            nestedOptionalKeys: payloadOptionalKeys
+        )
         XCTAssertEqual(payload["doc_snapshot"] as? String, "# Plan\n\nStep 1.\n")
         XCTAssertEqual(payload["doc_path"] as? String, "docs/plan.md")
         XCTAssertNil(payload["doc_clipped"])
@@ -127,7 +133,10 @@ final class OwnerAskSliceTests: XCTestCase {
         }
         let payload = try payload(ask)
 
-        assertWireShape(payload, matches: try SliceJSON.kitFixture("workbench/owner_ask_closed.json"), optionalKeys: optionalKeys)
+        assertWireShape(
+            payload, matches: try SliceJSON.kitFixture("workbench/owner_ask_closed.json"), optionalKeys: optionalKeys,
+            nestedOptionalKeys: payloadOptionalKeys
+        )
         let published = try XCTUnwrap(payload["answer"] as? [String: Any])
         XCTAssertEqual((published["checklist"] as? [[String: Any]])?.first?["state"] as? String, "ok")
         XCTAssertNotNil(payload["answered_at"])

@@ -82,12 +82,14 @@ enum SliceJSON {
 /// one of `optionalKeys` (omitted when nil), every required fixture key is
 /// present, and shared keys carry the same literal type. Nested objects are
 /// compared the same way, and so are the first elements of two non-empty
-/// arrays (an array of objects is pinned by its first element);
-/// `optionalKeys` applies at every depth.
+/// arrays (an array of objects is pinned by its first element).
+/// `optionalKeys` applies at the top level only; `nestedOptionalKeys` at
+/// every level below it.
 func assertWireShape(
     _ payload: [String: Any],
     matches fixture: [String: Any],
     optionalKeys: Set<String> = [],
+    nestedOptionalKeys: Set<String> = [],
     file: StaticString = #filePath,
     line: UInt = #line
 ) {
@@ -102,7 +104,7 @@ func assertWireShape(
         XCTAssertEqual(
             SliceJSON.literalKind(actual), SliceJSON.literalKind(expected), "literal type of \(key)", file: file, line: line
         )
-        assertNestedWireShape(actual, matches: expected, at: key, optionalKeys: optionalKeys, file: file, line: line)
+        assertNestedWireShape(actual, matches: expected, at: key, optionalKeys: nestedOptionalKeys, file: file, line: line)
     }
 }
 
@@ -110,7 +112,7 @@ private func assertNestedWireShape(
     _ actual: Any, matches expected: Any, at path: String, optionalKeys: Set<String>, file: StaticString, line: UInt
 ) {
     if let nested = actual as? [String: Any], let nestedFixture = expected as? [String: Any] {
-        assertWireShape(nested, matches: nestedFixture, optionalKeys: optionalKeys, file: file, line: line)
+        assertWireShape(nested, matches: nestedFixture, optionalKeys: optionalKeys, nestedOptionalKeys: optionalKeys, file: file, line: line)
     } else if let list = actual as? [Any], let fixtureList = expected as? [Any],
               let first = list.first, let fixtureFirst = fixtureList.first {
         XCTAssertEqual(
@@ -131,6 +133,18 @@ final class WireShapeAssertionTests: XCTestCase {
     func testAWrongLiteralTypeInsideAnArrayFails() {
         XCTExpectFailure("a string where the fixture has a number")
         assertWireShape(["ids": ["1"]], matches: ["ids": [1]])
+    }
+
+    func testTopLevelOptionalKeysDoNotLoosenNestedPins() {
+        XCTExpectFailure("`id` is optional at the top only, so a nested object still needs it")
+        assertWireShape(["item": ["name": "a"]], matches: ["id": 1, "item": ["id": 1, "name": "a"]], optionalKeys: ["id"])
+    }
+
+    func testNestedOptionalKeysApplyBelowTheTop() {
+        assertWireShape(
+            ["id": 1, "items": [["name": "a"]]], matches: ["id": 1, "items": [["name": "a", "multi": true]]],
+            nestedOptionalKeys: ["multi"]
+        )
     }
 
     func testMatchingArraysAndAnEmptyArrayPass() {
