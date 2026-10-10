@@ -43,3 +43,12 @@ The Mac side is ready: zones, seed records and both shares with an open link exi
 | (c) close the link, F2 | Not run: needs an accepted participant (iPhone 2). |
 | (d) userRecordID | The Mac half is done. "Same" can run on the simulator after the owner signs it in (`./sim.sh run`). "Different" needs a second Apple ID. Simulator smoke test before sign-in: the link is saved, then the expected `CKError 9 No iCloud account is configured`. |
 | (e) visible alert | Ready for `./sim.sh run` after the owner signs in and adds the Queryable `kind` index. A simulator pass is indicative; the lock-screen check is on a device. |
+
+## Simulator run 2026-10-10 (iPhone 18 Pro simulator, iOS 27.0, signed into the Mac's Apple ID; Mac in Development)
+
+- (d) same Apple ID: **PASS**. accountStatus=available in 527 ms; the simulator's userRecordID equals the Mac's owner_user.
+- (e) subscriptions: CKQuerySubscription (private, DataZone) saved in 1980 ms; CKRecordZoneSubscription (private, AlertZone) saved in 363 ms; notification authorization granted.
+- (e) DataZone alert: **PASS**. A visible alert was delivered while the app was in the background, 1472 ms after the Mac's write.
+- (e) AlertZone alert: delivered and **tapped by the owner** 1030 ms after the Mac's write. The automated read reports FAIL only because the tap removed it from Notification Center before `e-read` looked; the delivery itself is logged with its latency. Treat it as delivered.
+- Indicative only: the simulator stands in for iPhone 1. The lock-screen check, background delivery on a real device, and (a)/(b)/(c) across two Apple IDs still need the device run.
+- Owner note: Xcode 27's DeviceHub ignores clicks in its embedded simulator view (scroll only); a detached simulator window accepts clicks. The simulator's on-screen keyboard did not appear; text was entered with `pbpaste | xcrun simctl pbcopy booted` and Paste.
