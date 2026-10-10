@@ -277,25 +277,36 @@ final class CalendarEventSliceTests: XCTestCase {
     func testNullOrEmptyAttendeesAreAnEmptyListWithoutAWarning() throws {
         try insertEvent("evt-null", attendees: "null")
         try insertEvent("evt-empty", attendees: "")
-        let before = CalendarEventSlice.warningCount
         for (id, json) in [("evt-null", "null"), ("evt-empty", "")] {
             XCTAssertEqual((try payload(id)["attendees"] as? [Any])?.count, 0)
             XCTAssertFalse(CalendarEventSlice.hasWarned(.attendees, id: id, content: json))
+            XCTAssertEqual(CalendarEventSlice.warningCount(event: id), 0)
         }
-        XCTAssertEqual(CalendarEventSlice.warningCount, before)
     }
 
     func testUnreadableAttendeesWarnOncePerContent() throws {
         let id = "evt-bad-\(UUID().uuidString)"
         try insertEvent(id, attendees: #"{"email":"a@example.com"}"#)
-        let before = CalendarEventSlice.warningCount
         XCTAssertEqual((try payload(id)["attendees"] as? [Any])?.count, 0)
         _ = try payloads()
         XCTAssertTrue(CalendarEventSlice.hasWarned(.attendees, id: id, content: #"{"email":"a@example.com"}"#))
-        XCTAssertEqual(CalendarEventSlice.warningCount, before + 1, "a second tick does not warn again")
+        XCTAssertEqual(CalendarEventSlice.warningCount(event: id), 1, "a second tick does not warn again")
         try dbPool.write { try $0.execute(sql: "UPDATE calendar_events SET attendees = '[1]' WHERE id = ?", arguments: [id]) }
         _ = try payloads()
-        XCTAssertEqual(CalendarEventSlice.warningCount, before + 2, "changed content warns again")
+        XCTAssertEqual(CalendarEventSlice.warningCount(event: id), 2, "changed content warns again")
+    }
+
+    func testAWarningIsForgottenOnceItsEventLeavesTheWindow() throws {
+        let id = "evt-gone-\(UUID().uuidString)"
+        try insertEvent(id, attendees: #"{"email":"a@example.com"}"#)
+        _ = try payloads()
+        XCTAssertEqual(CalendarEventSlice.warningCount(event: id), 1)
+
+        try dbPool.write { try $0.execute(sql: "DELETE FROM calendar_events WHERE id = ?", arguments: [id]) }
+        _ = try payloads()
+
+        XCTAssertEqual(CalendarEventSlice.warningCount(event: id), 0, "the warn-once set keeps only current events")
+        XCTAssertFalse(CalendarEventSlice.hasWarned(.attendees, id: id, content: #"{"email":"a@example.com"}"#))
     }
 
     func testTitleAndLocationClipAtThreeHundred() throws {
@@ -352,13 +363,12 @@ final class CalendarEventSliceTests: XCTestCase {
         let id = "evt-prep-\(UUID().uuidString)"
         try insertEvent(id)
         try dbPool.write { try TestDatabase.insertMeetingPrep($0, eventID: id, resultJSON: "not json") }
-        let before = CalendarEventSlice.warningCount
         let payload = try payload(id)
         _ = try payloads()
         XCTAssertEqual(payload["prep_bullets"] as? [String], [])
         XCTAssertNil(payload["prep_generated_at"])
         XCTAssertTrue(CalendarEventSlice.hasWarned(.prep, id: id, content: "not json"))
-        XCTAssertEqual(CalendarEventSlice.warningCount, before + 1)
+        XCTAssertEqual(CalendarEventSlice.warningCount(event: id), 1)
     }
 
     // MARK: - Linked targets
@@ -386,11 +396,11 @@ final class CalendarEventSliceTests: XCTestCase {
         try insertEvent("evt-1")
         let transcript = Int64.random(in: 1_000_000...9_000_000)
         try dbPool.write { try TestDatabase.insertMeetingTranscript($0, id: transcript, eventID: "evt-1", chaptersJSON: "{oops") }
-        let before = CalendarEventSlice.warningCount
+        let before = CalendarEventSlice.warningCount(event: "evt-1")
         XCTAssertEqual((try payload("evt-1")["linked_targets"] as? [Any])?.count, 0)
         _ = try payloads()
         XCTAssertTrue(CalendarEventSlice.hasWarned(.chapters, id: String(transcript), content: "{oops"))
-        XCTAssertEqual(CalendarEventSlice.warningCount, before + 1)
+        XCTAssertEqual(CalendarEventSlice.warningCount(event: "evt-1"), before + 1)
     }
 
     func testLinkedTargetsCapAtTwentyAndClipTheirText() throws {

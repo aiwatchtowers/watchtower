@@ -115,6 +115,7 @@ struct CalendarEventSlice: SliceSource {
         let window = Self.window(now: stamp, calendar: calendar)
         let groups = try Self.windowEvents(db, window: window, calendar: calendar)
         let ids = groups.flatMap(\.members)
+        Self.forgetWarnings(keeping: Set(ids))
         let prep = try Self.prep(db, eventIDs: ids)
         let linked = try Self.linkedTargets(db, eventIDs: ids)
         let encoder = RelayCoder.makeEncoder()
@@ -251,7 +252,7 @@ struct CalendarEventSlice: SliceSource {
             do {
                 result = try JSONDecoder().decode(PrepResult.self, from: Data(json.utf8))
             } catch {
-                warnOnce(.prep, id: eventID, content: json, error: error)
+                warnOnce(.prep, id: eventID, event: eventID, content: json, error: error)
                 continue
             }
             let bullets = (result.talkingPoints ?? []).compactMap(\.text) + (result.suggestedPrep ?? [])
@@ -279,7 +280,7 @@ struct CalendarEventSlice: SliceSource {
             do {
                 chapters = try JSONDecoder().decode(MeetingChapters.self, from: Data(json.utf8))
             } catch {
-                warnOnce(.chapters, id: String(row["id"] as Int64), content: json, error: error)
+                warnOnce(.chapters, id: String(row["id"] as Int64), event: row["event_id"], content: json, error: error)
                 continue
             }
             let event: String = row["event_id"]
@@ -353,7 +354,7 @@ struct CalendarEventSlice: SliceSource {
         do {
             return try JSONDecoder().decode([Attendee]?.self, from: Data(json.utf8)) ?? []
         } catch {
-            warnOnce(.attendees, id: event.id, content: json, error: error)
+            warnOnce(.attendees, id: event.id, event: event.id, content: json, error: error)
             return []
         }
     }
@@ -367,9 +368,11 @@ struct CalendarEventSlice: SliceSource {
     }
 
     /// Logs an unreadable source once per row and content: the 10 s tick
-    /// re-reads it, and a changed value warns again.
-    private static func warnOnce(_ what: Unreadable, id: String, content: String, error: Error) {
-        guard warned.withLock({ $0.insert(warnKey(what, id: id, content: content)).inserted }) else { return }
+    /// re-reads it, and a changed value warns again. `event` is the
+    /// calendar event the row belongs to.
+    private static func warnOnce(_ what: Unreadable, id: String, event: String, content: String, error: Error) {
+        let key = warnKey(what, id: id, content: content)
+        guard warned.withLock({ $0.updateValue(event, forKey: key) == nil }) else { return }
         logger.warning(
             "unreadable \(what.rawValue, privacy: .public) on \(id, privacy: .public) left out: \(String(describing: error), privacy: .public)"
         )
@@ -377,16 +380,25 @@ struct CalendarEventSlice: SliceSource {
 
     /// Whether `warnOnce` logged this row's content (the test seam).
     static func hasWarned(_ what: Unreadable, id: String, content: String) -> Bool {
-        warned.withLock { $0.contains(warnKey(what, id: id, content: content)) }
+        warned.withLock { $0[warnKey(what, id: id, content: content)] != nil }
     }
 
-    /// How many distinct warnings were logged (the test seam).
-    static var warningCount: Int { warned.withLock { $0.count } }
+    /// Keeps the warn-once set bounded: only the warnings of events still
+    /// in the window are remembered.
+    private static func forgetWarnings(keeping events: Set<String>) {
+        warned.withLock { $0 = $0.filter { events.contains($0.value) } }
+    }
+
+    /// How many distinct warnings are remembered for `event`'s rows (the test seam).
+    static func warningCount(event: String) -> Int {
+        warned.withLock { $0.values.filter { $0 == event }.count }
+    }
 
     private static func warnKey(_ what: Unreadable, id: String, content: String) -> String {
         "\(what.rawValue)\u{0}\(id)\u{0}\(content.hashValue)"
     }
 
-    private static let warned = OSAllocatedUnfairLock<Set<String>>(initialState: [])
+    /// Warning key → the event its row belongs to.
+    private static let warned = OSAllocatedUnfairLock<[String: String]>(initialState: [:])
     private static let logger = Logger(subsystem: Constants.bundleID, category: "CalendarEventSlice")
 }
