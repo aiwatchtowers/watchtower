@@ -262,6 +262,32 @@ final class HubSingleHubTests: XCTestCase {
         XCTAssertEqual(try savedHeartbeats(transportB).count, 2)
     }
 
+    func testATakeOverBeatsAnOldHubWhoseClockRunsAhead() async throws {
+        let cloud = InMemoryCloudTransport()
+        let transportA = StubHubTransport(cloud: cloud)
+        let transportB = StubHubTransport(cloud: cloud)
+        // A's clock runs 600 s ahead of B's.
+        let hubA = try makeHub(
+            transport: transportA, sidecar: try HubSyncState.inMemory(), host: testHostInfo(macName: "Mac A"),
+            now: now.addingTimeInterval(600)
+        )
+        let hubB = try makeHub(transport: transportB, sidecar: try HubSyncState.inMemory(), host: testHostInfo(macName: "Mac B"))
+        let resultA = await hubA.enable()
+        XCTAssertEqual(resultA, .running)
+
+        let takeOver = await hubB.takeOver()
+
+        XCTAssertEqual(takeOver, .running)
+        let stamp = try XCTUnwrap(try savedHeartbeats(transportB).last).updatedAt
+        XCTAssertEqual(stamp, now.addingTimeInterval(601), "one second past the newest heartbeat known, not B's clock")
+        await hubA.heartbeatTick()
+        XCTAssertEqual(hubA.status, .tookOver("Mac B"), "the old hub reads the take over as the later write")
+        await hubB.heartbeatTick()
+        XCTAssertEqual(hubB.status, .running)
+        let next = try XCTUnwrap(try savedHeartbeats(transportB).last).updatedAt
+        XCTAssertGreaterThan(next, stamp, "a later heartbeat never falls behind the take over")
+    }
+
     func testATakenOverHubRestartsAtOnceOnATransportThatNeverEchoesItsOwnSaves() async throws {
         let cloud = InMemoryCloudTransport()
         let hubA = try makeHub(

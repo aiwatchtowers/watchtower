@@ -403,7 +403,7 @@ final class MobileHubService {
             }
             await resolveOwnerUser()
             guard status == .starting, epoch == startEpoch else { return nil }
-            try await writeHeartbeat(hubID: hubID)
+            try await writeHeartbeat(hubID: hubID, after: latest)
             return .claimed
         } catch {
             logger.error("single-hub check failed: \(error.localizedDescription, privacy: .public)")
@@ -444,7 +444,7 @@ final class MobileHubService {
             }
             await resolveOwnerUser()
             guard status == .running, epoch == tickEpoch else { return }
-            try await writeHeartbeat(hubID: hubID)
+            try await writeHeartbeat(hubID: hubID, after: latest)
             tickFailures = 0
         } catch {
             guard status == .running, epoch == tickEpoch else { return }
@@ -462,8 +462,12 @@ final class MobileHubService {
         }
     }
 
-    private func writeHeartbeat(hubID: String) async throws {
-        let at = now()
+    /// Stamped `max(now, newest heartbeat known + 1 s)`: a take over must
+    /// read as the later write on the old hub even when this Mac's clock
+    /// runs behind it, and every later write keeps that order (the newest
+    /// known is then this hub's own), so clock skew cannot hand the hub back.
+    private func writeHeartbeat(hubID: String, after latest: HeartbeatPayload?) async throws {
+        let at = max(now(), latest.map { $0.updatedAt.addingTimeInterval(1) } ?? .distantPast)
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
             appVersion: hostInfo.appVersion,
