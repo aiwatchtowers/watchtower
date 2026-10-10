@@ -52,3 +52,25 @@ The Mac side is ready: zones, seed records and both shares with an open link exi
 - (e) AlertZone alert: delivered and **tapped by the owner** 1030 ms after the Mac's write. The automated read reports FAIL only because the tap removed it from Notification Center before `e-read` looked; the delivery itself is logged with its latency. Treat it as delivered.
 - Indicative only: the simulator stands in for iPhone 1. The lock-screen check, background delivery on a real device, and (a)/(b)/(c) across two Apple IDs still need the device run.
 - Owner note: Xcode 27's DeviceHub ignores clicks in its embedded simulator view (scroll only); a detached simulator window accepts clicks. The simulator's on-screen keyboard did not appear; text was entered with `pbpaste | xcrun simctl pbcopy booted` and Paste.
+
+## Device run 2026-10-10 (one iPhone on the Mac's Apple ID; no second Apple ID yet)
+
+**Environment:** Xcode 26.4, iPhone 15 Pro on iOS 26.6.2 over USB, CloudKit **Development** on both sides (Debug builds, Apple Development signing). Driven with launch arguments through `xcrun devicectl device process launch` (`-ckspikeLink`, `-ckspikeRun d-same|e-subscribe|e-read`), the same as `sim.sh`.
+
+**Signing:** the first device install failed with `0xe8008012 This provisioning profile cannot be installed on this device`: a build for `generic/platform=iOS` cannot register a new iPhone. `spike.sh ios-install` now builds for the concrete device (`-destination id=<udid> -allowProvisioningDeviceRegistration`), which registers it and puts it into the profile. Developer Mode had to be turned on on the phone first (`CoreDeviceError 10005`).
+
+```
+(d) accountStatus + userRecordID: 373 ms — status=1
+(d) Mac owner_user=<record> → EQUAL
+RESULT (d): PASS — same Apple ID expected, values are equal
+(e) save CKQuerySubscription (private, DataZone): 750 ms — spike-ask-alerts-DataZone
+(e) save CKRecordZoneSubscription (private, AlertZone): 264 ms — spike-ask-alerts-AlertZone
+(e) alert delivered: zone=AlertZone subscription=spike-ask-alerts-AlertZone … Mac write → delivery latency=621 ms
+(e) alert delivered: zone=DataZone subscription=spike-ask-alerts-DataZone … Mac write → delivery latency=1498 ms
+RESULT (e): PASS — DataZone: visible alert delivered after the subscribe, latency known (lines above)
+RESULT (e): PASS — AlertZone: visible alert delivered after the subscribe, latency known (lines above)
+```
+
+- (d) same Apple ID: **PASS** on the device.
+- (e) visible alert, phone locked, app in the background (not force-quit): **PASS** on both paths; the owner saw the alerts on the lock screen. DataZone query subscription 1.5 s, AlertZone zone subscription 0.6 s after the Mac's write. The A3 decision can use the primary DataZone query subscription.
+- Still open, all need a second Apple ID: (a) shared sync + 64 MiB asset, (b) silent shared-DB push in the background, (c) closing the link and F2, (d) "different".

@@ -50,7 +50,7 @@ Run these from `spikes/cloudkit-share/`. You need `xcodegen` (`brew install xcod
 ./spike.sh check                                   # unsigned: macOS, iOS device (CODE_SIGNING_ALLOWED=NO), iOS simulator
 DEVELOPMENT_TEAM=<team-id> ./spike.sh mac          # signed macOS build; prints the binary path
 DEVELOPMENT_TEAM=<team-id> ./spike.sh ios          # signed iOS device build
-DEVELOPMENT_TEAM=<team-id> ./spike.sh ios-install <udid>   # build + install (udid: xcrun devicectl list devices)
+DEVELOPMENT_TEAM=<team-id> ./spike.sh ios-install <udid>   # build for this device + install (udid: xcrun xctrace list devices); registers a new iPhone
 DEVELOPMENT_TEAM=<team-id> ./spike.sh sim          # iOS simulator build (signed "to run locally", with the team's entitlements)
 ```
 

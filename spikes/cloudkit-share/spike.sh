@@ -9,7 +9,7 @@
 #   check             unsigned builds: macOS, iOS device (CODE_SIGNING_ALLOWED=NO), iOS simulator
 #   mac               signed macOS build (automatic signing, needs DEVELOPMENT_TEAM)
 #   ios               signed iOS device build (automatic signing, needs DEVELOPMENT_TEAM)
-#   ios-install <udid>  signed iOS build, then install on the connected device
+#   ios-install <udid>  signed iOS build for that device (registers it), then install (udid: xcrun xctrace list devices)
 #   sim               iOS simulator build with the team's entitlements (Xcode signs it "to run locally")
 #
 # Optional overrides: SPIKE_MAC_BUNDLE_ID, SPIKE_IOS_BUNDLE_ID.
@@ -71,8 +71,13 @@ case "$cmd" in
     echo "app: $PWD/$DERIVED/ios-sim-signed/Build/Products/Debug-iphonesimulator/CKSpike.app"
     ;;
   ios-install)
-    udid="${2:?usage: spike.sh ios-install <device-udid>  (xcrun devicectl list devices)}"
-    "$0" ios
+    udid="${2:?usage: spike.sh ios-install <device-udid>  (xcrun xctrace list devices)}"
+    need_team; gen
+    # Build for this device, not generic/platform=iOS: only a concrete destination lets
+    # automatic signing register a new iPhone and put it into the development profile.
+    xcodebuild -project "$PROJECT" -scheme CKSpikeiOS -configuration Debug \
+      -destination "id=$udid" -derivedDataPath "$DERIVED/ios" \
+      -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
     xcrun devicectl device install app --device "$udid" "$DERIVED/ios/Build/Products/Debug-iphoneos/CKSpike.app"
     ;;
   *)
