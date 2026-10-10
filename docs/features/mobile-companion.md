@@ -34,6 +34,16 @@ The mobile hub syncs through CloudKit, so it needs a Developer ID build that car
 - Whether amfid accepts the signed bundle and CloudKit reaches Production can only be shown on a real device (A3 smoke).
 - Covered by `scripts/tests/test-build-app-cloud.sh` (`make test-scripts`), which runs both blocks against stubbed `security` and `codesign`.
 
+### CloudKit environments
+
+CloudKit keeps two environments per container, Development and Production, and a record saved in one is never seen from the other. The Mac and the phone must talk to the same one, or the phone sees no hub and the hub sees no phone actions — with no error on either side.
+
+- **Which build lands where.** The Mac's Developer ID build is Production (`com.apple.developer.icloud-container-environment` = `Production`, `aps-environment` = `production`, from `scripts/Watchtower-cloud.entitlements`). The phone run from Xcode (the Debug configuration, `WatchtowerMobile/WatchtowerMobile.entitlements`) is Development; a TestFlight or App Store phone build is Production.
+- **Pairs that work.** A Developer ID Mac ↔ a TestFlight/App Store phone (Production). A Development-signed Mac ↔ a phone run from Xcode (Development). A Developer ID Mac with an Xcode-run phone never meets.
+- **A Development Mac.** Build with an Apple Development identity, a macOS development provisioning profile for `com.watchtower.desktop` with the container, CloudKit and Push Notifications, and `WATCHTOWER_CLOUDKIT_ENV=Development` (environment or build profile). `build-app.sh` then rewrites `icloud-container-environment` to `Development` and `aps-environment` to `development` in the temporary signing copy; the repo's entitlements file stays Production. Any other value than `Production` or `Development` fails the build.
+- **Early profile check.** Besides the App ID and the container, the profile must grant CloudKit (`com.apple.developer.icloud-services` lists `CloudKit`, or is `*`), the chosen environment (`com.apple.developer.icloud-container-environment` lists it; a Developer ID profile lists Production only), and an `aps-environment` equal to the chosen one (`production` / `development`). Otherwise the build fails before the Swift build, naming the missing grant.
+- **Before the first Production run**, deploy the schema from Development to Production in the CloudKit Console (Deploy Schema Changes): Production refuses record types it has not been given, and records are created in Development first by any Development run.
+
 ## Workbench slice mirrors and action params (Kit, B1)
 
 - **Kinds.** `SliceKind` gains `workbench`, `workbench_target`, `workbench_comment`, `terminal_session`, `owner_ask`, `session_report` and `session_timeline` (design §4.2–§4.9), and `ask_alert` (§4.7; the hub's B4 adds the kind, its Kit mirror comes with A13). The phone decodes each record's payload with its `SliceMirror` in `WatchtowerKit/Models` (`Workbench`, `WorkbenchTarget`, `WorkbenchComment`, `TerminalSessionState`, `OwnerAsk`, `SessionReport`, `SessionTimeline`) through `RelayCoder` — snake_case keys, Unix-second dates, a nil optional is an absent key, unknown keys are ignored.

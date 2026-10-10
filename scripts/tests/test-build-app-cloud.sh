@@ -18,7 +18,11 @@
 #   - real identity without a profile → base entitlements and the warning
 #     "hub disabled: no provisioning profile"
 #   - a profile that is missing, undecodable, for the wrong App ID, or lacks
-#     the container → hard error before anything is signed
+#     the container, CloudKit, aps-environment or the chosen CloudKit
+#     environment → hard error before anything is signed
+#   - WATCHTOWER_CLOUDKIT_ENV=Development with a development profile → the
+#     bundle is signed for Development (container environment and
+#     aps-environment rewritten); an unknown value is a hard error
 #   - BUILD_FLAVOR=corp → the signing blocks have no flavor logic and sign
 #     with the same container
 #   - the cloud entitlements carry the container, CloudKit, Production and
@@ -113,11 +117,30 @@ EOF
 chmod +x "$STUB_DIR/codesign" "$STUB_DIR/security"
 
 # make_profile <path> <application-identifier> <team id> <container...>
+# PROFILE_SERVICES, PROFILE_ENVS (space-separated) and PROFILE_APS shape the
+# profile's CloudKit entitlements (defaults: a Developer ID profile —
+# CloudKit, Production, production); "none" leaves the key out.
 make_profile() {
     local path="$1" app_id="$2" team="$3"
     shift 3
-    local containers=""
+    local containers="" services="" envs="" aps=""
     for c in "$@"; do containers="$containers<string>$c</string>"; done
+    local svc_spec="${PROFILE_SERVICES:-CloudKit}" env_spec="${PROFILE_ENVS:-Production}" aps_spec="${PROFILE_APS:-production}"
+    if [ "$svc_spec" = "*" ]; then
+        services="<key>com.apple.developer.icloud-services</key><string>*</string>"
+    elif [ "$svc_spec" != "none" ]; then
+        services="<key>com.apple.developer.icloud-services</key><array>"
+        for v in $svc_spec; do services="$services<string>$v</string>"; done
+        services="$services</array>"
+    fi
+    if [ "$env_spec" != "none" ]; then
+        envs="<key>com.apple.developer.icloud-container-environment</key><array>"
+        for v in $env_spec; do envs="$envs<string>$v</string>"; done
+        envs="$envs</array>"
+    fi
+    if [ "$aps_spec" != "none" ]; then
+        aps="<key>com.apple.developer.aps-environment</key><string>$aps_spec</string>"
+    fi
     cat > "$path" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -130,7 +153,9 @@ make_profile() {
         <key>com.apple.application-identifier</key><string>$app_id</string>
         <key>com.apple.developer.team-identifier</key><string>$team</string>
         <key>com.apple.developer.icloud-container-identifiers</key><array>$containers</array>
-        <key>com.apple.developer.icloud-services</key><array><string>CloudKit</string></array>
+        $services
+        $envs
+        $aps
     </dict>
 </dict>
 </plist>
@@ -143,6 +168,7 @@ make_profile "$PROFILE" "$TEAM.$BUNDLE_ID" "$TEAM" "iCloud.com.example.other" "$
 IDENTITY="Developer ID Application: Acme Corp ($TEAM)"
 
 # run_case <sign_identity> <profile path or empty> <BUILD_FLAVOR or empty>
+#          [WATCHTOWER_CLOUDKIT_ENV]
 # Runs both snippets in a fresh fake bundle; prints their output, then the
 # recorded codesign argv. Propagates the snippets' exit code.
 run_case() {
@@ -159,6 +185,7 @@ run_case() {
         ENTITLEMENTS_CLOUD="$CLOUD_ENT"
         SIGN_IDENTITY="$1"
         WATCHTOWER_PROVISION_PROFILE="$2"
+        WATCHTOWER_CLOUDKIT_ENV="${4:-}"
         BUILD_FLAVOR="$3"
         FLAVOR="$3"
         ADHOC_REASON="test reason"
@@ -199,6 +226,8 @@ check "signed entitlements: the container" \
     "$(signed_key com.apple.developer.icloud-container-identifiers:0)" "$CONTAINER"
 check "signed entitlements: Production environment" \
     "$(signed_key com.apple.developer.icloud-container-environment)" "Production"
+check "signed entitlements: aps-environment production" \
+    "$(signed_key com.apple.developer.aps-environment)" "production"
 check "signed entitlements: base key kept" \
     "$(signed_key com.apple.security.device.audio-input)" "true"
 if [ -f "$EMBEDDED" ] && cmp -s "$PROFILE" "$EMBEDDED"; then
@@ -241,10 +270,10 @@ else
 fi
 
 # --- 4. Bad profiles → hard error, nothing signed ---------------------------
-# expect_fail <label> <profile path> <error substring>
+# expect_fail <label> <profile path> <error substring> [WATCHTOWER_CLOUDKIT_ENV]
 expect_fail() {
     local rc=0 out
-    out=$(run_case "$IDENTITY" "$2" "") || rc=$?
+    out=$(run_case "$IDENTITY" "$2" "" "${4:-}") || rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "ok: $1 fails the build"
     else
@@ -267,6 +296,51 @@ expect_fail "profile whose App ID prefix is not its team" "$WORK_DIR/wrong-team.
 
 make_profile "$WORK_DIR/no-container.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "iCloud.com.example.other"
 expect_fail "profile without the container" "$WORK_DIR/no-container.provisionprofile" "does not grant the iCloud container $CONTAINER"
+
+PROFILE_SERVICES="iCloudDocuments" make_profile "$WORK_DIR/no-cloudkit.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "profile without CloudKit" "$WORK_DIR/no-cloudkit.provisionprofile" "does not grant CloudKit"
+
+PROFILE_APS="none" make_profile "$WORK_DIR/no-aps.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "profile without aps-environment" "$WORK_DIR/no-aps.provisionprofile" "has no aps-environment"
+
+PROFILE_ENVS="none" make_profile "$WORK_DIR/no-env.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "profile without a CloudKit environment" "$WORK_DIR/no-env.provisionprofile" "does not grant the CloudKit environment Production"
+
+PROFILE_ENVS="Development" PROFILE_APS="development" \
+    make_profile "$WORK_DIR/dev-only.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "default (Production) build with a Development-only profile" \
+    "$WORK_DIR/dev-only.provisionprofile" "does not grant the CloudKit environment Production"
+
+# --- 4b. WATCHTOWER_CLOUDKIT_ENV ---------------------------------------------
+PROFILE_SERVICES="*" PROFILE_ENVS="Development Production" PROFILE_APS="development" \
+    make_profile "$WORK_DIR/dev.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+OUT=$(run_case "$IDENTITY" "$WORK_DIR/dev.provisionprofile" "" "Development")
+check "Development: signed entitlements carry the Development environment" \
+    "$(signed_key com.apple.developer.icloud-container-environment)" "Development"
+check "Development: signed entitlements carry aps-environment development" \
+    "$(signed_key com.apple.developer.aps-environment)" "development"
+check "Development: the container is kept" \
+    "$(signed_key com.apple.developer.icloud-container-identifiers:0)" "$CONTAINER"
+check "Development: the profile is reported with the environment" "$OUT" "(CloudKit Development)"
+check "Development: the repo's entitlements stay Production" \
+    "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.developer.icloud-container-environment' "$CLOUD_ENT")" "Production"
+
+expect_fail "Development with a Developer ID (Production-only) profile" \
+    "$PROFILE" "does not grant the CloudKit environment Development" "Development"
+
+PROFILE_ENVS="Development Production" PROFILE_APS="production" \
+    make_profile "$WORK_DIR/dev-env-prod-aps.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "Development with a production aps-environment" \
+    "$WORK_DIR/dev-env-prod-aps.provisionprofile" "needs 'development'" "Development"
+
+expect_fail "an unknown WATCHTOWER_CLOUDKIT_ENV" "$PROFILE" "is neither Production nor Development" "Staging"
+
+OUT=$(run_case "-" "" "" "Staging" 2>&1) && rc=0 || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "ok: an unknown WATCHTOWER_CLOUDKIT_ENV fails even without a profile"
+else
+    note_fail "an unknown WATCHTOWER_CLOUDKIT_ENV fails even without a profile (got rc=0)"
+fi
 
 # --- 5. BUILD_FLAVOR=corp → the same container ------------------------------
 if grep -qE '\$\{?(BUILD_)?FLAVOR' "$CHECK_SNIPPET" "$SIGN_SNIPPET"; then

@@ -28,8 +28,10 @@
         <string>CloudKit</string>
     </array>
     <!-- Xcode adds this on a Developer ID export; a hand-signed build must
-         carry it so CloudKit talks to the Production environment the phone
-         uses. -->
+         carry it. Production pairs with a TestFlight/App Store phone build;
+         WATCHTOWER_CLOUDKIT_ENV=Development (build-app.sh) rewrites it and
+         aps-environment in the signing copy for a phone run from Xcode
+         (docs/features/mobile-companion.md, "CloudKit environments"). -->
     <key>com.apple.developer.icloud-container-environment</key>
     <string>Production</string>
     <!-- CKSyncEngine pushes. macOS spells the key with the

@@ -71,9 +71,27 @@ BUNDLE_ID="com.watchtower.desktop"
 # copy of the cloud entitlements — the team id is never written in the repo.
 # Sets PROVISION_PROFILE and SIGNED_CLOUD_ENTITLEMENTS (both empty without a
 # profile); app-codesign embeds and uses them on the real-identity branch.
+#
+# WATCHTOWER_CLOUDKIT_ENV (Production by default, or Development) picks the
+# CloudKit environment the hub talks to. A Developer ID build is Production;
+# a Mac paired with a phone run from Xcode (a Development build) must be
+# signed with an Apple Development identity and a macOS development profile
+# and set Development, because the two environments never see each other's
+# records (docs/features/mobile-companion.md, "CloudKit environments"). The
+# choice rewrites icloud-container-environment and aps-environment in the
+# temporary entitlements copy, and the profile must grant it.
 HUB_CONTAINER="iCloud.com.aiwatchtowers.watchtower"
 PROVISION_PROFILE=""
 SIGNED_CLOUD_ENTITLEMENTS=""
+CLOUDKIT_ENV="${WATCHTOWER_CLOUDKIT_ENV:-Production}"
+case "$CLOUDKIT_ENV" in
+    Production) APS_ENV="production" ;;
+    Development) APS_ENV="development" ;;
+    *)
+        echo "ERROR: WATCHTOWER_CLOUDKIT_ENV '$CLOUDKIT_ENV' is neither Production nor Development" >&2
+        exit 1
+        ;;
+esac
 if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ]; then
     case "$WATCHTOWER_PROVISION_PROFILE" in
         /*) PROVISION_PROFILE="$WATCHTOWER_PROVISION_PROFILE" ;;
@@ -101,11 +119,37 @@ if [ -n "${WATCHTOWER_PROVISION_PROFILE:-}" ]; then
         echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' does not grant the iCloud container $HUB_CONTAINER" >&2
         exit 1
     fi
+    # profile_values <key>: the profile entitlement's value(s), one per line
+    # (a string prints as itself, an array as its elements).
+    profile_values() {
+        /usr/libexec/PlistBuddy -c "Print :Entitlements:$1" "$PROFILE_PLIST" 2>/dev/null \
+            | sed -E 's/^[[:space:]]+//' || true
+    }
+    # icloud-services is an array, or "*" (every service) in an Xcode-made profile.
+    if ! profile_values com.apple.developer.icloud-services | grep -qxE 'CloudKit|\*'; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' does not grant CloudKit (com.apple.developer.icloud-services)" >&2
+        exit 1
+    fi
+    if ! profile_values com.apple.developer.icloud-container-environment | grep -qxF "$CLOUDKIT_ENV"; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' does not grant the CloudKit environment $CLOUDKIT_ENV (WATCHTOWER_CLOUDKIT_ENV) — a Developer ID profile grants Production only; Development needs a macOS development profile" >&2
+        exit 1
+    fi
+    PROFILE_APS_ENV=$(profile_values com.apple.developer.aps-environment)
+    if [ -z "$PROFILE_APS_ENV" ]; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' has no aps-environment — enable Push Notifications for the App ID and download the profile again" >&2
+        exit 1
+    fi
+    if [ "$PROFILE_APS_ENV" != "$APS_ENV" ]; then
+        echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' has aps-environment '$PROFILE_APS_ENV'; WATCHTOWER_CLOUDKIT_ENV=$CLOUDKIT_ENV needs '$APS_ENV'" >&2
+        exit 1
+    fi
     SIGNED_CLOUD_ENTITLEMENTS="$PROFILE_WORK_DIR/Watchtower-cloud.entitlements"
     cp "$ENTITLEMENTS_CLOUD" "$SIGNED_CLOUD_ENTITLEMENTS"
     /usr/libexec/PlistBuddy -c "Add :com.apple.application-identifier string $PROFILE_APP_ID" "$SIGNED_CLOUD_ENTITLEMENTS"
     /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $PROFILE_TEAM_ID" "$SIGNED_CLOUD_ENTITLEMENTS"
-    echo "==> Provisioning profile OK: $PROFILE_APP_ID with $HUB_CONTAINER"
+    /usr/libexec/PlistBuddy -c "Set :com.apple.developer.icloud-container-environment $CLOUDKIT_ENV" "$SIGNED_CLOUD_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Set :com.apple.developer.aps-environment $APS_ENV" "$SIGNED_CLOUD_ENTITLEMENTS"
+    echo "==> Provisioning profile OK: $PROFILE_APP_ID with $HUB_CONTAINER (CloudKit $CLOUDKIT_ENV)"
 fi
 # END provision-profile-check
 
