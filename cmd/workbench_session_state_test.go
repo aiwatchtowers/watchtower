@@ -1067,3 +1067,142 @@ func TestSessionState_ConversationSwitchDropsTheTurnEnd(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "working", storedAgentState(t, database, row))
 }
+
+// stopWithBackground is the Stop hook input of briefLaunchID with field as
+// its raw background_tasks value ("" leaves the key out).
+func stopWithBackground(field string) string {
+	s := `{"session_id":"` + briefLaunchID + `","transcript_path":"/tmp/x.jsonl","hook_event_name":"Stop","stop_hook_active":false`
+	if field != "" {
+		s += `,"background_tasks":` + field
+	}
+	return s + `}`
+}
+
+// hookClock sets the hook clock to base + sec seconds on each call.
+func hookClock(t *testing.T) (base time.Time, at func(sec int)) {
+	t.Helper()
+	base = time.Now()
+	orig := hookNow
+	t.Cleanup(func() { hookNow = orig })
+	return base, func(sec int) { hookNow = func() time.Time { return base.Add(time.Duration(sec) * time.Second) } }
+}
+
+// PROJ-11, board #411: the Stop stores how many background subagents and
+// workflows its input lists, stamped with the state's own time; none, an
+// absent field or a malformed one stores NULL.
+func TestProj11_StopRecordsBackgroundSubagents(t *testing.T) {
+	captured, err := os.ReadFile("testdata/stop_background_tasks.json")
+	require.NoError(t, err)
+	capturedInput := strings.ReplaceAll(string(captured), "00000000-0000-4000-8000-000000000411", briefLaunchID)
+	for _, tc := range []struct {
+		name, input string
+		want        sql.NullInt64
+	}{
+		{"subagents, a shell and a teammate", stopWithBackground(`[{"id":"a","type":"subagent"},{"id":"b","type":"subagent"},
+			{"id":"s","type":"shell"},{"id":"t","type":"teammate"}]`), sql.NullInt64{Int64: 2, Valid: true}},
+		{"the captured input", capturedInput, sql.NullInt64{Int64: 2, Valid: true}},
+		{"a workflow", stopWithBackground(`[{"id":"w","type":"workflow"}]`), sql.NullInt64{Int64: 1, Valid: true}},
+		{"empty", stopWithBackground(`[]`), sql.NullInt64{}},
+		{"absent", stopWithBackground(""), sql.NullInt64{}},
+		{"malformed entries ignored", stopWithBackground(`[{"id":"a","type":"subagent"},1,"subagent",{"type":7}]`),
+			sql.NullInt64{Int64: 1, Valid: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopStateFixture(t, "open")
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+			out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), tc.input)
+
+			assert.Empty(t, out)
+			assert.Empty(t, errOut)
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, "waiting", s.AgentState.String)
+			assert.Equal(t, tc.want, s.Background)
+			if tc.want.Valid {
+				assert.Equal(t, s.AgentStateAt, s.BackgroundAt, "the count is stamped with the Stop's time")
+			} else {
+				assert.True(t, s.BackgroundAt.IsZero())
+			}
+		})
+	}
+}
+
+// PROJ-11, board #411 (Review Focus 2): a background_tasks that is no array,
+// or whose entries are all malformed, never costs the Stop its "waiting".
+func TestProj11_MalformedBackgroundTasksStillRecordWaiting(t *testing.T) {
+	for _, field := range []string{`{"x":1}`, `[1, "a", {"type": 7}]`, `"subagent"`, `null`} {
+		t.Run(field, func(t *testing.T) {
+			database, pid, row := stopStateFixture(t, "open")
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+			out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopWithBackground(field))
+
+			assert.Empty(t, out)
+			assert.Empty(t, errOut)
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, "waiting", s.AgentState.String)
+			assert.False(t, s.Background.Valid)
+		})
+	}
+}
+
+// PROJ-11, board #411: a Stop over a stored "waiting" whose count differs is
+// a new transition: it writes and advances agent_state_at.
+func TestProj11_StopOverWaitingWithAnotherCountWrites(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base, at := hookClock(t)
+	stamp := func(sec int) time.Time {
+		return base.Add(time.Duration(sec) * time.Second).UTC().Truncate(time.Millisecond)
+	}
+	stop := func(sec int, field string) *db.TerminalSession {
+		t.Helper()
+		at(sec)
+		out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopWithBackground(field))
+		require.Empty(t, out)
+		require.Empty(t, errOut)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		return s
+	}
+
+	s := stop(1, `[{"id":"a","type":"subagent"},{"id":"b","type":"subagent"}]`)
+	require.Equal(t, int64(2), s.Background.Int64)
+
+	s = stop(2, `[{"id":"b","type":"subagent"}]`)
+	assert.Equal(t, sql.NullInt64{Int64: 1, Valid: true}, s.Background)
+	assert.Equal(t, stamp(2), s.AgentStateAt.UTC())
+	assert.Equal(t, stamp(2), s.BackgroundAt.UTC())
+
+	s = stop(3, `[]`)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.False(t, s.Background.Valid)
+	assert.True(t, s.BackgroundAt.IsZero())
+	assert.Equal(t, stamp(3), s.AgentStateAt.UTC(), "the last subagent gone is a new transition too")
+}
+
+// PROJ-11, board #411 (Review Focus 3): a Stop repeating the same non-zero
+// count is a state repeat but a fresh report: agent_state_at keeps the first
+// Stop's time, agent_background_at takes the second's.
+func TestProj11_StopWithTheSameCountRefreshesTheReportTime(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base, at := hookClock(t)
+	two := `[{"id":"a","type":"subagent"},{"id":"b","type":"subagent"}]`
+
+	at(1)
+	_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopWithBackground(two))
+	require.Empty(t, errOut)
+	at(2)
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopWithBackground(two))
+
+	assert.Empty(t, out)
+	assert.Empty(t, errOut)
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, sql.NullInt64{Int64: 2, Valid: true}, s.Background)
+	assert.Equal(t, base.Add(time.Second).UTC().Truncate(time.Millisecond), s.AgentStateAt.UTC(), "a repeat keeps the transition time")
+	assert.Equal(t, base.Add(2*time.Second).UTC().Truncate(time.Millisecond), s.BackgroundAt.UTC(), "the report time is the second Stop's")
+}

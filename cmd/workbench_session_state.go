@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,6 +211,9 @@ type hookTurn struct {
 	toolRun                   bool // a main-thread PostToolUse
 	stop                      bool // the sync Stop hook
 	transcriptPath, toolUseID string
+	// background is the Stop's count of in-flight background subagents
+	// (board #411); invalid for none or unknown, never zero.
+	background sql.NullInt64
 }
 
 // terminalSessionRowID is the terminal_sessions row the Desktop launched
@@ -239,7 +243,9 @@ func terminalSessionRowID() (id int64, ok bool, err error) {
 // Stop by the transcript: a tool call from before the run's last Stop writes
 // nothing, and the Stop replaces a tool result's `working` stamped after it
 // (its process started later); a call the transcript cannot place falls back
-// to the time order.
+// to the time order. A Stop's background count that differs from the
+// stored one makes its `waiting` a change; one repeating the stored count
+// only refreshes agent_background_at (a fresh report, not a transition).
 func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
 	if !terminal.IsSessionID(sessionID) {
@@ -255,13 +261,18 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	}
 	switch {
 	case row.WorkbenchID.Int64 != workbenchID || row.Kind != "claude",
-		row.ClaudeSessionID.String != sessionID,
-		repeatsAgentState(row, state, failure, prompt),
-		onlyFrom != "" && row.AgentState.String != onlyFrom,
+		row.ClaudeSessionID.String != sessionID:
+		return nil
+	case repeatsAgentState(row, state, failure, prompt, turn.background):
+		if turn.stop && turn.background.Valid {
+			return refreshBackgroundReport(database, rowID, workbenchID, sessionID, at)
+		}
+		return nil
+	case onlyFrom != "" && row.AgentState.String != onlyFrom,
 		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt) && !stopEndsToolRun(row, turn):
 		return nil
 	}
-	order := db.AgentOrder{Stop: turn.stop}
+	order := db.AgentOrder{Stop: turn.stop, Background: turn.background}
 	if turn.toolRun {
 		order.ToolRun, order.SeenTurnEnd = true, row.TurnEnd
 		if row.TurnEnd.Valid && toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64) == toolCallBeforeStop {
@@ -282,13 +293,28 @@ func stopEndsToolRun(row *db.TerminalSession, turn hookTurn) bool {
 	return turn.stop && row.ToolRun && row.AgentState.String == agentStateWorking
 }
 
+// refreshBackgroundReport is a Stop repeating the stored background count:
+// only agent_background_at takes its time.
+func refreshBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time) error {
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	_, err := database.LowerTerminalBackground(rowID, workbenchID, sessionID, at, nil)
+	return err
+}
+
 // repeatsAgentState says the write would change nothing the guarded UPDATE
 // lets through: a StopFailure with another error type is a change, and so is
 // a prompt's `working` on a finished row (it clears finished_at; a tool
-// run's `working` over `working` never does).
-func repeatsAgentState(row *db.TerminalSession, state string, failure *db.AgentFailure, prompt bool) bool {
+// run's `working` over `working` never does), and a `waiting` whose stored
+// background count differs from background, the count the write stores
+// (invalid for every `waiting` but a Stop that counted some).
+func repeatsAgentState(row *db.TerminalSession, state string, failure *db.AgentFailure, prompt bool,
+	background sql.NullInt64) bool {
 	switch {
 	case row.AgentState.String != state:
+		return false
+	case state == agentStateWaiting && row.Background != background:
 		return false
 	case failure != nil:
 		return row.AgentFailure != nil && row.AgentFailure.Error == failure.Error

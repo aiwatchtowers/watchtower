@@ -229,8 +229,10 @@ type AgentOrder struct {
 // (board #411) follows the state: a `working` NULLs agent_background and
 // agent_background_at (a main turn began, or a subagent's tool result
 // outranks background); the Stop's `waiting` stores order.Background
-// stamped at; any other `waiting` (StopFailure, idle_prompt) NULLs both;
-// an `approval` keeps both. A `waiting` whose count differs from the stored
+// stamped at (on the order.Stop override of a tool run's `working`,
+// agent_background_at is the Stop's own at while agent_state_at keeps the
+// later stored time); any other `waiting` (StopFailure, idle_prompt) NULLs
+// both; an `approval` keeps both. A `waiting` whose count differs from the stored
 // one is a change, not a repeat, and advances agent_state_at; when only
 // that let it through over a failed `waiting`, the error is kept as by
 // any plain `waiting`. One guarded UPDATE, no transaction; false when a

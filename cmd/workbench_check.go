@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -178,6 +179,60 @@ type stopHookInput struct {
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
+	// BackgroundTasks lists what the session runs in the background as the
+	// turn ends (board #411).
+	BackgroundTasks backgroundTasks `json:"background_tasks"`
+}
+
+// backgroundTask is one entry of a hook input's background_tasks; every
+// other field is ignored.
+type backgroundTask struct{ ID, Type string }
+
+// backgroundTasks is a hook input's background_tasks, decoded tolerantly so
+// a malformed field never fails the whole input: absent, null or not an
+// array leaves present false (an older Claude Code, or a shape we do not
+// know); an array sets it, and an entry that is no object, or whose id or
+// type is no string, is kept with those fields empty.
+type backgroundTasks struct {
+	present bool
+	list    []backgroundTask
+}
+
+func (b *backgroundTasks) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if json.Unmarshal(data, &raw) != nil || raw == nil {
+		*b = backgroundTasks{}
+		return nil //nolint:nilerr // not an array reads as absent, never a failed input
+	}
+	list := make([]backgroundTask, len(raw))
+	for i, entry := range raw {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(entry, &fields) != nil {
+			continue
+		}
+		_ = json.Unmarshal(fields["id"], &list[i].ID)
+		_ = json.Unmarshal(fields["type"], &list[i].Type)
+	}
+	*b = backgroundTasks{present: true, list: list}
+	return nil
+}
+
+// backgroundSubagents counts the in-flight background subagents and
+// workflows of tasks, leaving out the entry whose id is except ("" leaves
+// out none). Shells, monitors, teammates and every other type never count.
+// No status filter: Claude Code drops a finished task from the list rather
+// than changing its status (only "running" was observed, spec A.7). ok is
+// false when the field was absent, null or not an array.
+func backgroundSubagents(tasks backgroundTasks, except string) (n int64, ok bool) {
+	if !tasks.present {
+		return 0, false
+	}
+	for _, task := range tasks.list {
+		if (task.Type == "subagent" || task.Type == "workflow") && (except == "" || task.ID != except) {
+			n++
+		}
+	}
+	return n, true
 }
 
 // stopHookOutput blocks the stop and hands reason back to the agent.
@@ -399,7 +454,11 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, hookTurn{stop: true})
+	turn := hookTurn{stop: true}
+	if n, ok := backgroundSubagents(in.BackgroundTasks, ""); ok && n > 0 {
+		turn.background = sql.NullInt64{Int64: n, Valid: true}
+	}
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 
 // workbenchHasStateHooks reports whether workbench id's folder has its
