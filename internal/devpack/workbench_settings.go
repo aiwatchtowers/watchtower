@@ -79,9 +79,10 @@ var (
 	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, stateHookSpecs...)
 )
 
-// askGuardPromptText is the ask guard's prompt as the spec pins it (v2, spec
-// 2026-10-03-workbench-session-report Part 5), opened by
-// askGuardMarkerTemplate. An install of the v1 text is upgraded in place.
+// askGuardPromptText is the ask guard's prompt as the golden pins it (v3,
+// board #478: passes by default, two enumerated failure cases), opened by
+// askGuardMarkerTemplate. An install of the v1 or v2 text is upgraded in
+// place.
 //
 //go:embed askguard_prompt.md
 var askGuardPromptText string
