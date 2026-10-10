@@ -252,18 +252,32 @@ final class ReplicaWiringTests: XCTestCase {
     /// The app hosting XCTest starts nothing of its own: no replica, demo
     /// seed, recorder recovery, fetch loop or push registration beside the
     /// tests' environments. A normal launch still boots.
-    func testTheTestHostBootsNoLiveEnvironment() {
+    func testTheTestHostBootsNoLiveEnvironment() throws {
         XCTAssertTrue(
             WatchtowerMobileApp.Boot.isHostingTests(ProcessInfo.processInfo.environment),
             "this process hosts XCTest"
         )
         XCTAssertNil(AppDelegate.environment, "the test host booted a live AppEnvironment")
-        XCTAssertFalse(WatchtowerMobileApp.Boot.isHostingTests([:]), "a normal launch must boot")
+        XCTAssertFalse(WatchtowerMobileApp.Boot.isHostingTests([:]), "a process without the XCTest key is not a test host")
+        var built = 0
         guard case .hostingTests = WatchtowerMobileApp.Boot.make(
-            processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"]
+            processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"],
+            makeEnvironment: { built += 1; return try self.demoEnvironment(at: try self.makeReplicaPath()) }
         ) else {
             return XCTFail("a test host must not build an environment")
         }
+        XCTAssertEqual(built, 0, "a test host must not build an environment")
+
+        // A normal launch (no XCTest key) builds and registers one.
+        let path = try makeReplicaPath()
+        guard case let .ready(env) = WatchtowerMobileApp.Boot.make(
+            processEnvironment: [:],
+            makeEnvironment: { try self.demoEnvironment(at: path) }
+        ) else {
+            return XCTFail("a normal launch must boot")
+        }
+        XCTAssertTrue(AppDelegate.environment === env, "the push path reaches the booted environment")
+        AppDelegate.environment = nil
     }
 
     /// A replica that cannot open is a throw (the app shows BootFailureView),

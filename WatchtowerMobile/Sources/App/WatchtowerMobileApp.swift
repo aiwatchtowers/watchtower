@@ -49,12 +49,16 @@ struct WatchtowerMobileApp: App {
         }
 
         @MainActor
-        static func make(processEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+        /// `makeEnvironment` is for tests: the app builds its own.
+        static func make(
+            processEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+            makeEnvironment: @MainActor () throws -> AppEnvironment = { try AppEnvironment() }
+        ) -> Self {
             if isHostingTests(processEnvironment) {
                 return .hostingTests
             }
             do {
-                let env = try AppEnvironment()
+                let env = try makeEnvironment()
                 AppDelegate.environment = env
                 // Only the live transport has an engine for a push to wake;
                 // the demo path registers for nothing.
