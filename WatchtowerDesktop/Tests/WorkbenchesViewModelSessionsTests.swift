@@ -621,8 +621,9 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertNil(vm.boardReloads[p])
     }
 
-    /// A process that exits at once (`claude` missing, a refused resume) did
-    /// not start the work: the target stays todo.
+    /// An exit already reported by the time the session is back (the fake
+    /// reports it synchronously from `start`) writes nothing: the target stays
+    /// todo. A real quick exit arrives later and is the documented v1 limit.
     func testWorkOnWritesNoStatusWhenTheProcessExitsAtOnce() async throws {
         center = TerminalCenter { ExitingTerminalSession() }
         center.shell = { "/bin/zsh" }
