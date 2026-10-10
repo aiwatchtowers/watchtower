@@ -26,6 +26,31 @@ final class ObservedSetCounter {
     }
 }
 
+/// Collects every value an async sequence publishes, so a test waits for
+/// them with a bounded `poll` instead of an unbounded `next()`.
+@MainActor
+final class PublishedValues<Value: Sendable> {
+    private(set) var values: [Value] = []
+    private(set) var failure: (any Error)?
+    private var task: Task<Void, Never>?
+
+    init<S: AsyncSequence & Sendable>(_ sequence: S) where S.Element == Value {
+        task = Task { [weak self] in
+            do {
+                for try await value in sequence {
+                    self?.values.append(value)
+                }
+            } catch {
+                self?.failure = error
+            }
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+    }
+}
+
 /// A fetch-loop sleeper the test steps by hand: each sleep records its
 /// interval and waits for `tick()`; a cancelled sleep throws at once.
 @MainActor
