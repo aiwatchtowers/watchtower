@@ -1,4 +1,5 @@
 import Foundation
+import os
 import GRDB
 import XCTest
 @testable import WatchtowerDesktop
@@ -265,6 +266,41 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(try reopened.relayEcho("action-new"), Data("{}".utf8))
         // A second open over the migrated file is a no-op.
         XCTAssertEqual(try HubSyncState(path: path).relayEcho("action-new"), Data("{}".utf8))
+    }
+
+    /// Two instances opening an old file at once (a relaunch overlap) both
+    /// open: the upgrade runs in an IMMEDIATE transaction.
+    func testConcurrentOpensOfAnOldSidecarAllSucceed() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("RelayLedger-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("hubstate.db").path
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE relay_processed (
+                    record_name TEXT PRIMARY KEY,
+                    phase TEXT NOT NULL CHECK (phase IN ('begun', 'done')),
+                    outcome TEXT,
+                    updated_at REAL NOT NULL DEFAULT 0
+                );
+                INSERT INTO relay_processed (record_name, phase, outcome, updated_at) VALUES ('action-old', 'done', 'applied', 1);
+                """)
+        }
+        let failures = OSAllocatedUnfairLock<[String]>(initialState: [])
+
+        DispatchQueue.concurrentPerform(iterations: 8) { _ in
+            do {
+                _ = try HubSyncState(path: path)
+            } catch {
+                failures.withLock { $0.append(error.localizedDescription) }
+            }
+        }
+
+        XCTAssertEqual(failures.withLock { $0 }, [])
+        let reopened = try HubSyncState(path: path)
+        XCTAssertNil(try reopened.relayDoneSeq("action-old"), "an old row holds no buffer mark")
+        try reopened.markRelayDone("action-new", outcome: "applied", doneSeq: 7, at: Date())
+        XCTAssertEqual(try reopened.relayDoneSeq("action-new"), 7)
     }
 
     func testReceivedIsEchoedBeforeTheHandlerForStartLikeKinds() async throws {

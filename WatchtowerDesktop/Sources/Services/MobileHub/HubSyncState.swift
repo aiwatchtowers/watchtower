@@ -49,8 +49,12 @@ final class HubSyncState: Sendable {
         try HubSyncState(queue: DatabaseQueue())
     }
 
+    /// One IMMEDIATE transaction: two instances opening an old file at once
+    /// (a relaunch overlap, a duplicate app) take the write lock in turn
+    /// under the busy timeout, so the second sees the upgraded columns
+    /// instead of failing the read-to-write upgrade with SQLITE_BUSY.
     private func createSchema() throws {
-        try queue.write { db in
+        try queue.inTransaction(.immediate) { db in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS slice_state (
                     record_name TEXT PRIMARY KEY,
@@ -109,6 +113,7 @@ final class HubSyncState: Sendable {
             for (name, type) in [("echo", "BLOB"), ("done_seq", "INTEGER")] where !columns.contains(name) {
                 try db.execute(sql: "ALTER TABLE relay_processed ADD COLUMN \(name) \(type)")
             }
+            return .commit
         }
     }
 
