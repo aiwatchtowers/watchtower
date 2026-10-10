@@ -179,17 +179,23 @@ final class SettingsWiringTests: XCTestCase {
     /// the first one's failure reverts only its own change before the second
     /// write reads the choices.
     func testQuickTogglesWriteOneAtATimeAndAFailedFirstWriteCannotOverwriteTheSecond() async throws {
-        let transport = SpyTransport(failingSaves: [0], delay: .milliseconds(100))
+        let transport = SpyTransport(failingSaves: [0], holdSaves: true)
         let settings = DeviceSettings(transport: transport, defaults: try makeDefaults())
         settings.linkedDevice = device
+        defer { Task { await transport.release(0, 1) } }
 
         let first = Task { await settings.setTypingRequested(true) }
-        // The second toggle comes while the first write is in flight.
-        while await transport.saves.isEmpty {
-            await Task.yield()
-        }
-        await settings.setStartSessions(false)
+        // The second toggle comes while the first write is held in flight.
+        try await pollSaves(transport, 1)
+        let second = Task { await settings.setStartSessions(false) }
+        try await poll { !settings.startSessions }
+        let held = await transport.saves.count
+        XCTAssertEqual(held, 1, "the second write waits behind the first")
+        await transport.release(0)
         await first.value
+        try await pollSaves(transport, 2)
+        await transport.release(1)
+        await second.value
 
         let maxInFlight = await transport.maxInFlight
         XCTAssertEqual(maxInFlight, 1, "device-record writes must not overlap")
@@ -287,16 +293,14 @@ private actor SpyTransport: CloudSyncTransport {
     private(set) var maxInFlight = 0
     private var inFlight = 0
     private let failingSaves: Set<Int>
-    private let delay: Duration
     /// With `holdSaves`, each save waits for `release(index)` (sticky: a
     /// release before the save arrives lets it straight through).
     private let holdSaves: Bool
     private var released: Set<Int> = []
     private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
 
-    init(failingSaves: Set<Int> = [], delay: Duration = .zero, holdSaves: Bool = false) {
+    init(failingSaves: Set<Int> = [], holdSaves: Bool = false) {
         self.failingSaves = failingSaves
-        self.delay = delay
         self.holdSaves = holdSaves
     }
 
@@ -306,9 +310,6 @@ private actor SpyTransport: CloudSyncTransport {
         inFlight += 1
         maxInFlight = max(maxInFlight, inFlight)
         defer { inFlight -= 1 }
-        if delay > .zero {
-            try await Task.sleep(for: delay)
-        }
         if holdSaves, !released.contains(index) {
             await withCheckedContinuation { waiters[index] = $0 }
         }
