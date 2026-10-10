@@ -2,6 +2,7 @@ package claudesession
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,8 +163,8 @@ func TestFindSessionWithoutRegistryIsNotFound(t *testing.T) {
 // pidProc is a process table where only the listed pids run.
 type pidProc map[int]bool
 
-func (p pidProc) Exists(pid int) bool    { return p[pid] }
-func (pidProc) Start(int) (string, bool) { return "", false }
+func (p pidProc) Exists(pid int) bool     { return p[pid] }
+func (pidProc) Start(int) (string, error) { return "", errors.New("no start") }
 
 func entryJSONText(pid int, status string, statusUpdatedAt int64) string {
 	return fmt.Sprintf(`{"pid": %d, "sessionId": %q, "status": %q, "statusUpdatedAt": %d}`,
@@ -205,6 +206,49 @@ func TestFindSessionPrefersTheLiveEntryOfASession(t *testing.T) {
 	}
 }
 
+// A registry whose every entry file is unreadable cannot say "not found":
+// that is an error. A sessions dir with no *.json files at all is not found.
+func TestFindSessionUnreadableRegistryIsAnError(t *testing.T) {
+	configDir := t.TempDir()
+	sessions := filepath.Join(configDir, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "4242.abc.key"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := FindSessionWith(configDir, busyID, pidProc{}); ok || err != nil {
+		t.Errorf("no *.json files: found=%v err=%v; want not found, nil", ok, err)
+	}
+	for _, name := range []string{"4444.json", "4445.json"} {
+		if err := os.WriteFile(filepath.Join(sessions, name), []byte("{not json"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := FindSessionWith(configDir, busyID, pidProc{}); ok || err == nil {
+		t.Errorf("every *.json undecodable: found=%v err=%v; want an error", ok, err)
+	}
+}
+
+// Two entries of one session whose liveness ps cannot read: an error, not
+// whichever entry reads newest.
+func TestFindSessionPropagatesAnUnreadableProcessTable(t *testing.T) {
+	configDir := t.TempDir()
+	sessions := filepath.Join(configDir, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, pid := range []int{111, 222} {
+		data := fmt.Sprintf(`{"pid": %d, "sessionId": %q, "procStart": "Thu Jan  1 00:00:00 2026"}`, pid, busyID)
+		if err := os.WriteFile(filepath.Join(sessions, fmt.Sprintf("%d.json", pid)), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, ok, err := FindSessionWith(configDir, busyID, fakeProc{alive: true, startErr: true}); ok || err == nil {
+		t.Errorf("ps fails: found=%v err=%v; want an error", ok, err)
+	}
+}
+
 type fakeProc struct {
 	alive    bool
 	started  string
@@ -212,34 +256,37 @@ type fakeProc struct {
 }
 
 func (f fakeProc) Exists(int) bool { return f.alive }
-func (f fakeProc) Start(int) (string, bool) {
+func (f fakeProc) Start(int) (string, error) {
 	if f.startErr {
-		return "", false
+		return "", errors.New("ps timed out")
 	}
-	return f.started, true
+	return f.started, nil
 }
 
 func TestAliveRejectsAReusedPID(t *testing.T) {
 	const started = "Thu Jan  1 00:00:00 2026"
 	withStart := Entry{PID: 4242, ProcStart: started}
 	cases := []struct {
-		name  string
-		entry Entry
-		proc  fakeProc
-		want  bool
+		name    string
+		entry   Entry
+		proc    fakeProc
+		want    bool
+		wantErr bool
 	}{
-		{"same start", withStart, fakeProc{alive: true, started: started}, true},
-		{"same start, other spacing", withStart, fakeProc{alive: true, started: "Thu Jan 1 00:00:00 2026\n"}, true},
-		{"reused pid", withStart, fakeProc{alive: true, started: "Fri Jan  2 09:00:00 2026"}, false},
-		{"start unreadable", withStart, fakeProc{alive: true, startErr: true}, false},
-		{"gone", withStart, fakeProc{alive: false, started: started}, false},
-		{"no proc start, exists", Entry{PID: 4242}, fakeProc{alive: true, startErr: true}, true},
-		{"no proc start, gone", Entry{PID: 4242}, fakeProc{alive: false}, false},
-		{"no pid", Entry{}, fakeProc{alive: true}, false},
+		{"same start", withStart, fakeProc{alive: true, started: started}, true, false},
+		{"same start, other spacing", withStart, fakeProc{alive: true, started: "Thu Jan 1 00:00:00 2026\n"}, true, false},
+		{"reused pid", withStart, fakeProc{alive: true, started: "Fri Jan  2 09:00:00 2026"}, false, false},
+		// ps could not answer for a pid that exists: unknown, never dead.
+		{"start unreadable", withStart, fakeProc{alive: true, startErr: true}, false, true},
+		{"gone", withStart, fakeProc{alive: false, started: started}, false, false},
+		{"no proc start, exists", Entry{PID: 4242}, fakeProc{alive: true, startErr: true}, true, false},
+		{"no proc start, gone", Entry{PID: 4242}, fakeProc{alive: false}, false, false},
+		{"no pid", Entry{}, fakeProc{alive: true}, false, false},
 	}
 	for _, c := range cases {
-		if got := AliveWith(c.entry, c.proc); got != c.want {
-			t.Errorf("%s: alive = %v, want %v", c.name, got, c.want)
+		got, err := AliveWith(c.entry, c.proc)
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("%s: alive = %v, %v; want %v, error %v", c.name, got, err, c.want, c.wantErr)
 		}
 	}
 }
@@ -248,24 +295,24 @@ func TestAliveRejectsAReusedPID(t *testing.T) {
 // time, and a dead pid gone.
 func TestAliveSeesTheCurrentProcess(t *testing.T) {
 	pid := os.Getpid()
-	started, ok := SystemProcs{}.Start(pid)
-	if !ok || started == "" {
-		t.Fatalf("start(self) = %q, %v", started, ok)
+	started, err := SystemProcs{}.Start(pid)
+	if err != nil || started == "" {
+		t.Fatalf("start(self) = %q, %v", started, err)
 	}
-	if !AliveWith(Entry{PID: pid, ProcStart: started}, SystemProcs{}) {
-		t.Error("AliveWith(self with its start) = false")
+	if alive, err := AliveWith(Entry{PID: pid, ProcStart: started}, SystemProcs{}); !alive || err != nil {
+		t.Errorf("AliveWith(self with its start) = %v, %v", alive, err)
 	}
-	if AliveWith(Entry{PID: pid, ProcStart: "Thu Jan  1 00:00:00 1970"}, SystemProcs{}) {
-		t.Error("AliveWith(self with another start) = true")
+	if alive, err := AliveWith(Entry{PID: pid, ProcStart: "Thu Jan  1 00:00:00 1970"}, SystemProcs{}); alive || err != nil {
+		t.Errorf("AliveWith(self with another start) = %v, %v", alive, err)
 	}
 }
 
 // procStart is written in UTC: the probe's start time, read as UTC, is the
 // test process's real start, not one shifted by the local zone.
 func TestProcStartIsReadInUTC(t *testing.T) {
-	started, ok := SystemProcs{}.Start(os.Getpid())
-	if !ok {
-		t.Fatal("start(self) not read")
+	started, err := SystemProcs{}.Start(os.Getpid())
+	if err != nil {
+		t.Fatalf("start(self) not read: %v", err)
 	}
 	at, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(strings.Fields(started), " "), time.UTC)
 	if err != nil {

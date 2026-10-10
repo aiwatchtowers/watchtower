@@ -3,6 +3,7 @@ package cmd
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/claudesession"
 	"watchtower/internal/db"
 )
 
@@ -26,9 +28,22 @@ type fakeProbeProcs map[int]string
 
 func (f fakeProbeProcs) Exists(pid int) bool { _, ok := f[pid]; return ok }
 
-func (f fakeProbeProcs) Start(pid int) (string, bool) { s, ok := f[pid]; return s, ok }
+func (f fakeProbeProcs) Start(pid int) (string, error) {
+	if s, ok := f[pid]; ok {
+		return s, nil
+	}
+	return "", errors.New("ps: no such process")
+}
 
-func useProbeProcs(t *testing.T, p fakeProbeProcs) {
+// psFailingProcs is a process table whose pids all exist but whose ps cannot
+// answer (a timeout or failed fork).
+type psFailingProcs struct{}
+
+func (psFailingProcs) Exists(int) bool { return true }
+
+func (psFailingProcs) Start(int) (string, error) { return "", errors.New("signal: killed") }
+
+func useProbeProcs(t *testing.T, p claudesession.ProcInfo) {
 	t.Helper()
 	orig := probeProcs
 	probeProcs = p
@@ -40,7 +55,7 @@ func useProbeProcs(t *testing.T, p fakeProbeProcs) {
 type registrySetup struct {
 	name  string
 	entry string // registry entry JSON for probePID; "" = none
-	procs fakeProbeProcs
+	procs claudesession.ProcInfo
 }
 
 func registryEntry(status string) string {
@@ -187,6 +202,31 @@ func TestSessionProbeStageOneTable(t *testing.T) {
 		assert.Equal(t, "not_stale", got["outcome"])
 		assert.Equal(t, before, rowSnapshot(t, database, row))
 	})
+}
+
+// Board #411 (PROJ-11): a reading the probe could not take never ends a
+// count. A ps that cannot answer for an existing pid, or a registry whose
+// every entry file is unreadable, is ok: false with the row byte-identical,
+// so the Desktop retries instead of ending a live count.
+func TestProj11_ProbeNeverEndsOnAFailedReading(t *testing.T) {
+	stale := time.Now().Add(-31 * time.Minute)
+	for _, reg := range []registrySetup{
+		{"ps fails for a live pid", registryEntry("busy"), psFailingProcs{}},
+		{"every entry undecodable", "{not json", liveProbeProcs},
+	} {
+		t.Run(reg.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			countedRow(t, database, pid, row, 2, stale)
+			reg.apply(t)
+			before := rowSnapshot(t, database, row)
+
+			got := runSessionProbe(t, pid, row)
+
+			assert.Equal(t, false, got["ok"], "got %v", got)
+			assert.NotEmpty(t, got["error"])
+			assert.Equal(t, before, rowSnapshot(t, database, row), "the row changed")
+		})
+	}
 }
 
 // Board #411 (PROJ-11): only the Stop starts a count. Over a `waiting` with

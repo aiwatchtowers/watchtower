@@ -142,7 +142,16 @@ func registryOutcome(sessionID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading the claude session registry: %w", err)
 	}
-	if !found || !claudesession.AliveWith(entry, probeProcs) {
+	if !found {
+		return probeGone, nil
+	}
+	// A process table that cannot answer (a ps timeout or failed fork) is
+	// ok: false, never gone: ending a live count cannot be undone.
+	alive, err := claudesession.AliveWith(entry, probeProcs)
+	if err != nil {
+		return "", fmt.Errorf("checking claude process %d: %w", entry.PID, err)
+	}
+	if !alive {
 		return probeGone, nil
 	}
 	switch entry.Status {
