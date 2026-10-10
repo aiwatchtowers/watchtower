@@ -481,7 +481,11 @@ final class LinkingViewModelTests: XCTestCase {
 
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.last?.unlinked, true)
-        XCTAssertEqual(host.flushes, 1, "the unlinked record is sent before the stop")
+        XCTAssertEqual(
+            Array(log.events.suffix(2)), ["wipe private", "prepare private"],
+            "the queue is wiped first, so the flush sends only the unlinked record"
+        )
+        XCTAssertEqual(host.flushes, 1)
         XCTAssertEqual(host.wipes, 1)
         XCTAssertNil(model.link)
         XCTAssertNil(LinkStore(defaults: defaults).link)
@@ -502,7 +506,43 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(container.left, [owner])
         let writes = try await host.deviceWrites(in: .shared(ownerName: owner))
         XCTAssertEqual(writes.last?.unlinked, true)
+        XCTAssertEqual(
+            Array(log.events.suffix(4)),
+            ["wipe shared(\(owner))", "prepare shared(\(owner))", "leave \(owner)", "wipe private"],
+            "wipe the queue in the shared database, write unlinked there, leave, then the private database"
+        )
         XCTAssertNil(model.notice, "nothing was waiting")
+    }
+
+    /// Leaving the shares makes the Mac's zones vanish: the transport's
+    /// `unlinked` arriving meanwhile is the unlink's own, not a removal.
+    func testRemovedArrivingDuringAnUnlinkIsIgnored() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let model = try await linkedModel(code())
+        container.onLeave = { await model.removedByMac() }
+
+        await model.unlink()
+
+        XCTAssertEqual(host.wipes, 2, "only the unlink's own wipes")
+        XCTAssertEqual(host.links.filter { $0.device == nil }.count, 1, "one teardown")
+        XCTAssertNil(model.notice, "the owner unlinked; the Mac did not remove the phone")
+        XCTAssertNil(model.link)
+        XCTAssertEqual(model.phase, .idle)
+    }
+
+    func testAnAccountChangeArrivingDuringAnUnlinkIsIgnored() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let model = try await linkedModel(code())
+        container.onLeave = { [container] in
+            container?.userRecordNameValue = "_colleague-b"
+            await model.accountChanged()
+        }
+
+        await model.unlink()
+
+        XCTAssertEqual(host.wipes, 2, "only the unlink's own wipes")
+        XCTAssertEqual(host.links.filter { $0.device == nil }.count, 1, "one teardown")
+        XCTAssertEqual(model.phase, .idle)
     }
 
     // MARK: - Unlinked events

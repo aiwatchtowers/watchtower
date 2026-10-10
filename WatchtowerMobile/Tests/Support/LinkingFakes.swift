@@ -63,6 +63,9 @@ final class FakeLinkContainer: LinkContainer {
     var acceptError: (any Error)?
     private(set) var accepted: [[URL]] = []
     private(set) var left: [String] = []
+    /// Runs inside `leaveShares`, before it returns: what arrives while the
+    /// Mac's zones go away.
+    var onLeave: (@MainActor () async -> Void)?
     let log: LinkEventLog
 
     init(log: LinkEventLog) {
@@ -82,6 +85,7 @@ final class FakeLinkContainer: LinkContainer {
     func leaveShares(ownerName: String) async throws {
         log.append("leave \(ownerName)")
         left.append(ownerName)
+        await onLeave?()
     }
 }
 
@@ -174,8 +178,8 @@ final class FakeLinkHost: LinkHost {
         flushes += 1
     }
 
-    func wipeLocalData() async -> Int {
-        log.append("wipe")
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope) async -> Int {
+        log.append("wipe \(Self.describe(scope))")
         wipes += 1
         return notSentCount
     }

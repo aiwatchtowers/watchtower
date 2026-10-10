@@ -48,10 +48,11 @@ protocol LinkHost: AnyObject {
     func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
     /// Asks the transport to send what is queued now (before a stop).
     func flushSends() async
-    /// Stops sync, wipes the replica and the outbox, and restarts unlinked
-    /// on the phone's private database. Returns how many outbox items and
-    /// recordings were still waiting for the Mac (reported "Not sent").
-    func wipeLocalData() async -> Int
+    /// Stops sync, wipes the replica, the outbox and the transport's store
+    /// (buffer, send queue, engine state), and restarts unlinked on
+    /// `scope`'s database. Returns how many outbox items and recordings were
+    /// still waiting for the Mac (reported "Not sent").
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope) async -> Int
     func requestNotificationPermission() async
     /// Selects the Now tab.
     func openNow()
@@ -469,7 +470,8 @@ final class LinkingViewModel {
             Self.logger.warning("account check failed: \(error.localizedDescription, privacy: .public)")
             return
         }
-        guard current != link.userRecordName else { return }
+        // An unlink or a removal that ran during the check already ended it.
+        guard current != link.userRecordName, self.link == link else { return }
         Self.logger.notice("iCloud account changed while linked: unlinking")
         store.pending = nil
         _ = await unlinkCurrent(writeUnlinked: false)
@@ -508,29 +510,42 @@ final class LinkingViewModel {
     /// Ends the current link: the `unlinked` record (best effort), leaving
     /// the shares in `shared` scope, then the wipe. Returns what was not
     /// sent.
+    ///
+    /// The link ends before the first await: a removal or an account signal
+    /// arriving meanwhile (leaving the shares is what makes the Mac's zones
+    /// vanish) finds no link and is ignored, so one unlink wipes once.
+    /// The wipe runs first, in the link's own database: the restarted send
+    /// queue then holds only the `unlinked` record, so the flush sends
+    /// nothing of what is reported "Not sent".
     private func unlinkCurrent(writeUnlinked: Bool) async -> Int {
         guard let current = link, let host else { return 0 }
-        if writeUnlinked, let device = linkedDevice {
-            do {
-                let transport = try await host.prepare(scope: current.databaseScope)
-                try await transport.save([try deviceRecord(for: device, linkNonce: nil, unlinked: true)])
-                await host.flushSends()
-            } catch {
-                Self.logger.warning("unlinked record not written: \(error.localizedDescription, privacy: .public)")
-            }
-            if case let .shared(ownerName) = current.databaseScope {
-                do {
-                    try await container.leaveShares(ownerName: ownerName)
-                } catch {
-                    Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
+        let device = linkedDevice
         store.link = nil
         link = nil
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)
-        return await host.wipeLocalData()
+        guard writeUnlinked, let device else {
+            return await host.wipeLocalData(restartingOn: .private)
+        }
+        let scope = current.databaseScope
+        let notSent = await host.wipeLocalData(restartingOn: scope)
+        do {
+            let transport = try await host.prepare(scope: scope)
+            try await transport.save([try deviceRecord(for: device, linkNonce: nil, unlinked: true)])
+            await host.flushSends()
+        } catch {
+            Self.logger.warning("unlinked record not written: \(error.localizedDescription, privacy: .public)")
+        }
+        if case let .shared(ownerName) = scope {
+            do {
+                try await container.leaveShares(ownerName: ownerName)
+            } catch {
+                Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
+            }
+            // Back to the phone's own database: nothing is left to count.
+            _ = await host.wipeLocalData(restartingOn: .private)
+        }
+        return notSent
     }
 
     private func deviceRecord(for device: LinkedDevice, linkNonce: String?, unlinked: Bool = false) throws -> CloudRecord {

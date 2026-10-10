@@ -134,7 +134,7 @@ final class AppEnvironment {
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
-            let transportStore = try TransportStore(path: directory.appendingPathComponent("cloudkit-transport.sqlite").path)
+            let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
             try self.init(
                 transport: CloudKitTransport(store: transportStore, scope: scope),
                 replicaPath: Self.liveReplicaPath(in: directory),
@@ -368,8 +368,9 @@ final class AppEnvironment {
     var linkTransport: any CloudSyncTransport { transport }
 
     /// Asks a CloudKit transport to send its queue now (the unlinked record
-    /// before a stop).
+    /// before a stop), once the boot has started its engine.
     func sendNow() async {
+        await bootstrapTask?.value
         await (transport as? CloudKitTransport)?.sendNow()
     }
 
@@ -409,6 +410,11 @@ final class AppEnvironment {
     /// The live replica's file in the app group directory.
     static func liveReplicaPath(in directory: URL) -> String {
         directory.appendingPathComponent("replica.sqlite").path
+    }
+
+    /// The live CloudKit transport's store in the app group directory.
+    static func liveTransportStorePath(in directory: URL) -> String {
+        directory.appendingPathComponent("cloudkit-transport.sqlite").path
     }
 
     /// The app group container's Application Support directory. A signed
