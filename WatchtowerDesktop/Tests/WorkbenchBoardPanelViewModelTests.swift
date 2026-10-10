@@ -884,4 +884,83 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(try storedIntent(taskA), "Written on A")
         XCTAssertNil(vm.descriptionDraft(for: taskA))
     }
+
+    /// Closing the panel (✕, or Esc with it open) on a failing save keeps the
+    /// draft on its target, and the error — now the board's banner — names it.
+    func testClosingThePanelOnAFailingSaveKeepsTheDraftAndNamesTheTarget() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        try failIntentWrites()
+        for (target, close) in [(taskA, { vm.closeDetail() }), (taskB, { XCTAssertTrue(vm.escape()) })] {
+            vm.select(target)
+            vm.beginDescriptionEdit(target)
+            vm.setDescriptionDraft("Draft", for: target)
+
+            close()
+
+            XCTAssertNil(vm.selectedTargetID)
+            XCTAssertEqual(vm.descriptionDraft(for: target)?.text, "Draft")
+            let error = try XCTUnwrap(vm.boardBannerError)
+            XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(target)), error)
+            XCTAssertEqual(try storedIntent(target), "")
+        }
+    }
+
+    /// The target is deleted elsewhere and the panel leaves it before the
+    /// next poll noticed: one message, no draft left, dismissing is final.
+    func testLeavingATargetDeletedBeforeThePollDropsItsDraftWithOneMessage() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try delete(taskA)
+
+        vm.select(taskB)
+
+        XCTAssertEqual(vm.errorMessage,
+                       "Dropped the unsaved description of \(WorkbenchTargetNumber.label(taskA)): no longer on this board.")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        vm.dismissError()
+        vm.load()
+        vm.select(group)
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage, "dismissed for good")
+    }
+
+    func testPushAndBackSaveTheTargetBeingLeft() throws {
+        let (pid, group, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.push(group)
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        vm.beginDescriptionEdit(group)
+        vm.setDescriptionDraft("Written on the group", for: group)
+
+        vm.back()
+
+        XCTAssertEqual(vm.selectedTargetID, taskA)
+        XCTAssertEqual(try storedIntent(group), "Written on the group")
+        XCTAssertNil(vm.descriptionDraft(for: group))
+    }
+
+    /// A board click on the target already open is no move: the editor
+    /// stays open and nothing is saved.
+    func testReselectingTheOpenTargetKeepsTheEditorOpenAndUnsaved() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Half typed", for: taskA)
+
+        vm.select(taskA)
+
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Half typed")
+        XCTAssertEqual(try storedIntent(taskA), "")
+    }
 }
