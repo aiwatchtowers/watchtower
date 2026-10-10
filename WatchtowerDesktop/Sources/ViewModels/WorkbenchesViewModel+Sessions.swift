@@ -240,17 +240,18 @@ extension WorkbenchesViewModel {
 
     /// Work on It's status write (board #499), made only after the session
     /// started: `startTarget` returned its row — the target was read, the row
-    /// created or reopened and activated — and `TerminalCenter` did not refuse
-    /// the launch (`launchFailure`). A failed read, a target not on a board, a
-    /// failed create or open and a refused launch return before this and write
-    /// nothing. The write (`WorkbenchQueries.markInProgressOnWorkOn`) re-reads
+    /// created or reopened and activated — and its process is `.running` in
+    /// `TerminalCenter`. A failed read, a target not on a board, a failed
+    /// create or open, a refused launch (`.unavailable`) and a process that
+    /// already exited (`claude` missing, a refused resume) write nothing.
+    /// The write (`WorkbenchQueries.markInProgressOnWorkOn`) re-reads
     /// the status in its own transaction: only a `todo` task moves, never a
     /// group or a status the agent or the owner set meanwhile. The target and
     /// the parents the rollup moved are reported as the owner's writes (no
     /// notice), and the Board reloads at once (`boardReloads`). A failed write
     /// leaves the session running and says so on the page.
     private func markInProgressOnWorkOn(_ targetID: Int64, session row: TerminalSession) async {
-        guard launchFailure(row) == nil, let projectID = row.projectID else { return }
+        guard terminalCenter?.states[row.id] == .running, let projectID = row.projectID else { return }
         do {
             let rolledUp = try await dbPool.write {
                 try WorkbenchQueries.markInProgressOnWorkOn($0, targetID: targetID)

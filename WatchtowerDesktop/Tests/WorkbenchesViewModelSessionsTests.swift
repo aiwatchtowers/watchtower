@@ -21,6 +21,21 @@ private final class ProbedTerminalSession: TerminalSessionProcess {
     func sendInput(_ bytes: [UInt8]) {}
 }
 
+/// A process that exits the moment it starts, as a launch whose `claude`
+/// is missing or whose resume Claude Code refuses does.
+@MainActor
+private final class ExitingTerminalSession: TerminalSessionProcess {
+    let view = NSView()
+    let pid: pid_t = 0
+    var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)?
+    var bracketedPasteMode = true
+
+    func start(_ launch: TerminalLaunch) { onExit?(127) }
+    func detach() {}
+    func sendInput(_ bytes: [UInt8]) {}
+}
+
 @MainActor
 private final class Counter {
     var value = 0
@@ -518,6 +533,26 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         }
         let afterRefusedLaunch = try await status(target)
         XCTAssertEqual(afterRefusedLaunch, "todo", "a refused launch")
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// A process that exits at once (`claude` missing, a refused resume) did
+    /// not start the work: the target stays todo.
+    func testWorkOnWritesNoStatusWhenTheProcessExitsAtOnce() async throws {
+        center = TerminalCenter { ExitingTerminalSession() }
+        center.shell = { "/bin/zsh" }
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        await vm.reload()
+
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+
+        let stored = try await rows(p)
+        let row = try XCTUnwrap(stored.first { $0.targetID == target })
+        XCTAssertEqual(center.states[row.id], .exited(127))
+        let after = try await status(target)
+        XCTAssertEqual(after, "todo")
         XCTAssertNil(vm.boardReloads[p])
     }
 
