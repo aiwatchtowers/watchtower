@@ -602,6 +602,30 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertTrue(error.contains("changed while you were editing"), error)
     }
 
+    /// The agent's write lands after the board's last poll: the view model
+    /// still holds the old description, so only the write itself can see it.
+    func testAnAgentEditTheBoardHasNotPolledYetIsNeverOverwritten() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.select(taskA)
+        try agentWritesIntent("Agent's newer text", on: taskA)
+        // No load(): the panel still shows the empty description.
+        XCTAssertEqual(vm.selectedNode?.target.intent, "")
+
+        XCTAssertFalse(vm.saveIntent("Owner's draft", original: "", for: taskA))
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
+        XCTAssertEqual(stored?.intent, "Agent's newer text")
+        XCTAssertEqual(stored?.updatedAt, "2026-01-02T00:00:00Z", "nothing was written")
+        XCTAssertEqual(reported, 0)
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains("changed while you were editing"), error)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        XCTAssertEqual(vm.selectedNode?.target.intent, "Agent's newer text", "the conflict reloads the board")
+    }
+
     func testAnEditedDraftOverAnUnchangedDescriptionSaves() throws {
         let (pid, _, taskA, _) = try seedGroup()
         let vm = makeVM(project: pid)

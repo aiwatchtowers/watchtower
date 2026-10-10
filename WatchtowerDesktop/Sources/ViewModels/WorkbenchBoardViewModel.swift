@@ -533,8 +533,10 @@ final class WorkbenchBoardViewModel {
     /// `original` is the description the editor opened with: a draft equal
     /// to it (once trimmed) writes nothing, even when the agent changed the
     /// description meanwhile, and a changed draft over a description that
-    /// moved since then writes nothing either — the editor keeps the draft
-    /// and `errorMessage` says so. Nil skips both checks.
+    /// moved since then writes nothing either — checked by the write itself
+    /// (`updateIntent(_:id:intent:ifUnchangedFrom:)`), so an agent write the
+    /// poll has not seen yet counts too. The editor keeps the draft and
+    /// `errorMessage` says so, naming the target. Nil skips both checks.
     /// - Returns: whether the description is saved, so the editor keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
@@ -542,18 +544,27 @@ final class WorkbenchBoardViewModel {
         let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Nothing open and no editor's target: nothing to save, nothing to say.
         guard let id = id ?? selectedTargetID else { return false }
+        let label = WorkbenchTargetNumber.label(id)
         guard let node = WorkbenchBoardOutline.find(id, in: roots) else {
-            errorMessage = "Could not save the description: \(WorkbenchTargetNumber.label(id)) is no longer on this board."
+            errorMessage = "Could not save the description of \(label): it is no longer on this board."
             return false
         }
         if let original, intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
         guard node.target.intent != intent else { return true }
-        if let original, node.target.intent != original {
-            errorMessage = "The description changed while you were editing. Copy your text, press Esc and edit again."
-            return false
-        }
-        return write("save the description", target: id) { db in
-            try TargetQueries.updateIntent(db, id: id, intent: intent)
+        return write(
+            "save the description of \(label)",
+            target: id,
+            failure: { error in
+                guard error is TargetIntentConflictError else { return nil }
+                return "The description of \(label) changed while you were editing. "
+                    + "Copy your text, press Esc and edit again."
+            }
+        ) { db in
+            if let original {
+                try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
+            } else {
+                try TargetQueries.updateIntent(db, id: id, intent: intent)
+            }
         }
     }
 
@@ -610,11 +621,13 @@ final class WorkbenchBoardViewModel {
     /// reload. The hook fires only after the write succeeded — for the target
     /// the write touched (`target`, the selected one unless the caller names
     /// another, e.g. a kanban drop) and for every target `alsoTouched` names.
+    /// `failure` may word an error itself; nil falls back to "Could not …".
     @discardableResult
     private func write(
         _ what: String,
         target: Int? = nil,
         alsoTouched: () -> [Int64] = { [] },
+        failure: (Error) -> String? = { _ in nil },
         _ body: (Database) throws -> Void
     ) -> Bool {
         let touched = target ?? selectedTargetID
@@ -630,11 +643,13 @@ final class WorkbenchBoardViewModel {
             load()
             return true
         } catch {
-            errorMessage = "Could not \(what): \(error.localizedDescription)"
+            errorMessage = failure(error) ?? "Could not \(what): \(error.localizedDescription)"
             // Drop a card deleted elsewhere now rather than on the next poll
             // (this `load()` keeps `errorMessage`); from this board a
-            // `wrongWorkbench` means a row that is gone.
-            if error is TargetNotFoundError || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
+            // `wrongWorkbench` means a row that is gone. A refused
+            // description shows the newer text the same way.
+            if error is TargetNotFoundError || error is TargetIntentConflictError
+                || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
             return false
         }
     }
