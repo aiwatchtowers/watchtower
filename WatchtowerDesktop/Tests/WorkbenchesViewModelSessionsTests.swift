@@ -509,20 +509,46 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertNil(vm.boardReloads[p])
     }
 
-    /// The status is written only after the session started: a failed
-    /// create and a refused launch (the folder is gone) leave it todo.
+    /// The status is written only after the session started: a failed read
+    /// of the target's sessions leaves it todo.
+    func testWorkOnWritesNoStatusWhenTheReadFails() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        await vm.reload()
+
+        // `readTargetSessions` reads terminal_sessions before any create.
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
+
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not read the target"), error)
+        let after = try await status(target)
+        XCTAssertEqual(after, "todo")
+        XCTAssertTrue(launches.isEmpty)
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// A failed create (the read succeeded, the row insert is refused) and
+    /// a refused launch (the folder is gone) leave the target todo.
     func testWorkOnWritesNoStatusWhenTheSessionDidNotStart() async throws {
         let p = try await workbenchWithFolder()
         let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
         let vm = makeVM()
         await vm.reload()
 
-        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
+        try await pool.write { try $0.execute(sql: """
+            CREATE TEMP TRIGGER refuse_session_insert BEFORE INSERT ON terminal_sessions
+            BEGIN SELECT RAISE(ABORT, 'insert refused'); END
+            """) }
         await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
-        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
-        XCTAssertNotNil(vm.sessionErrors[p])
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER temp.refuse_session_insert") }
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not create a terminal session"), error)
         let afterFailedCreate = try await status(target)
         XCTAssertEqual(afterFailedCreate, "todo", "a failed create")
+        XCTAssertTrue(launches.isEmpty)
 
         try FileManager.default.removeItem(atPath: acme)
         await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
