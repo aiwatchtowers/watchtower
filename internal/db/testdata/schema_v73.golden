@@ -2020,7 +2020,8 @@ folder_path TEXT NOT NULL,
 claude_session_id TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 last_active_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-closed_at TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '', agent_turn_end INTEGER, agent_tool_run INTEGER NOT NULL DEFAULT 0,
+closed_at TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '', agent_turn_end INTEGER, agent_tool_run INTEGER NOT NULL DEFAULT 0, agent_background INTEGER
+CHECK (agent_background IS NULL OR agent_background >= 0), agent_background_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 )
@@ -4029,6 +4030,8 @@ GROUP BY up.ancestor
 16	agent_error	TEXT	notnull=1	dflt=''	pk=0
 17	agent_turn_end	INTEGER	notnull=0	dflt=NULL	pk=0
 18	agent_tool_run	INTEGER	notnull=1	dflt=0	pk=0
+19	agent_background	INTEGER	notnull=0	dflt=NULL	pk=0
+20	agent_background_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=0	dflt=NULL	pk=1

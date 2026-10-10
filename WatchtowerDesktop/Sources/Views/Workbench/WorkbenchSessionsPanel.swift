@@ -178,11 +178,14 @@ struct TerminalSessionRow: View {
 /// accessibility label is the state's caption.
 struct SessionLiveDot: View {
     let state: SessionSwitcherPresentation.State
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Image(systemName: SessionStatePresentation.isRing(state) ? "circle" : "circle.fill")
             .font(.system(size: 7))
             .foregroundStyle(SessionStatePresentation.color(for: state).color)
+            // Background agents run: the dot pulses; Reduce Motion keeps it still.
+            .symbolEffect(.pulse, isActive: SessionStatePresentation.pulses(state) && !reduceMotion)
             .accessibilityLabel(SessionStatePresentation.caption(for: state))
     }
 }
@@ -204,7 +207,8 @@ struct SessionStateLabel: View {
                 Image(systemName: glyph)
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(SessionStatePresentation.color(for: state).color)
-                if state.kind == .working {
+                // The ask count beside `questionmark`, never a 0 beside `person.2.fill`.
+                if state.kind == .working || (state.kind == .background && state.openAsks > 0) {
                     Text("\(state.openAsks)")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(SessionStatePresentation.color(for: state).color)

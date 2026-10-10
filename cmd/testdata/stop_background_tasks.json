@@ -1,0 +1,37 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000411",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000411.jsonl",
+  "cwd": "/tmp/example/work",
+  "prompt_id": "00000000-0000-4000-8000-000000000001",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "launched",
+  "background_tasks": [
+    {
+      "id": "agent-a",
+      "type": "subagent",
+      "status": "running",
+      "description": "sleeper one",
+      "agent_type": "general-purpose"
+    },
+    {
+      "id": "agent-b",
+      "type": "subagent",
+      "status": "running",
+      "description": "sleeper two",
+      "agent_type": "general-purpose"
+    },
+    {
+      "id": "task-shell-1",
+      "type": "shell",
+      "status": "running",
+      "description": "Sleep for 30 seconds in background",
+      "command": "sleep 30"
+    }
+  ],
+  "session_crons": []
+}

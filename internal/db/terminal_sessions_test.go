@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -573,5 +574,468 @@ func TestTerminalTurnOrder_ResetOnSwitchAndNewRun(t *testing.T) {
 	}
 	if s, _ := d.GetTerminalSession(id); s.TurnEnd.Valid {
 		t.Fatalf("after the clear: turn end %v", s.TurnEnd)
+	}
+}
+
+// backgroundColumns reads row id's agent_background and agent_background_at
+// as stored.
+func backgroundColumns(t *testing.T, d *DB, id int64) (sql.NullInt64, sql.NullString) {
+	t.Helper()
+	var n sql.NullInt64
+	var at sql.NullString
+	if err := d.QueryRow(`SELECT agent_background, agent_background_at FROM terminal_sessions WHERE id = ?`, id).
+		Scan(&n, &at); err != nil {
+		t.Fatal(err)
+	}
+	return n, at
+}
+
+// requireNoBackground fails unless row id stores neither background column.
+func requireNoBackground(t *testing.T, d *DB, id int64, what string) {
+	t.Helper()
+	if n, at := backgroundColumns(t, d, id); n.Valid || at.Valid {
+		t.Fatalf("%s: agent_background %v, agent_background_at %v, want both NULL", what, n, at)
+	}
+}
+
+// requireBackground fails unless row id stores count n reported at at.
+func requireBackground(t *testing.T, d *DB, id int64, n int64, at time.Time, what string) {
+	t.Helper()
+	gotN, gotAt := backgroundColumns(t, d, id)
+	if !gotN.Valid || gotN.Int64 != n || gotAt.String != at.UTC().Format(agentStateAtLayout) {
+		t.Fatalf("%s: agent_background %v at %v, want %d at %v", what, gotN, gotAt, n, at)
+	}
+}
+
+// terminalRowSnapshot renders every column of row id, for a byte-identical
+// comparison.
+func terminalRowSnapshot(t *testing.T, d *DB, id int64) string {
+	t.Helper()
+	rows, err := d.Query(`SELECT * FROM terminal_sessions WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rows.Next() {
+		t.Fatalf("row %d not found", id)
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		t.Fatal(err)
+	}
+	out := ""
+	for i, c := range cols {
+		out += fmt.Sprintf("%s=%#v;", c, vals[i])
+	}
+	return out
+}
+
+// otherAgentColumns renders the columns LowerTerminalBackground must never
+// touch.
+func otherAgentColumns(t *testing.T, d *DB, id int64) string {
+	t.Helper()
+	var state, stateAt, finishedAt, failedAt sql.NullString
+	var turnEnd sql.NullInt64
+	var toolRun int
+	var agentError string
+	if err := d.QueryRow(`SELECT agent_state, agent_state_at, finished_at, agent_turn_end, agent_tool_run,
+		agent_failed_at, agent_error FROM terminal_sessions WHERE id = ?`, id).
+		Scan(&state, &stateAt, &finishedAt, &turnEnd, &toolRun, &failedAt, &agentError); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%v|%v|%v|%v|%d|%v|%q", state, stateAt, finishedAt, turnEnd, toolRun, failedAt, agentError)
+}
+
+// stopWith is the Stop's order carrying snapshot n (n < 0: none).
+func stopWith(n int64) AgentOrder {
+	if n < 0 {
+		return AgentOrder{Stop: true}
+	}
+	return AgentOrder{Stop: true, Background: sql.NullInt64{Int64: n, Valid: true}}
+}
+
+// Board #411: the Stop stores its snapshot of in-flight background subagents
+// next to its `waiting`, stamped with the write; none or zero stores NULL.
+func TestProj11_StopWriteStoresTheSnapshot(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	s := storedSession(t, d, id)
+	if s.Background != (sql.NullInt64{Int64: 2, Valid: true}) || !s.BackgroundAt.Equal(s.AgentStateAt) || !s.BackgroundAt.Equal(t0) {
+		t.Fatalf("count %v at %v, want 2 at the state's time %v", s.Background, s.BackgroundAt, s.AgentStateAt)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		order AgentOrder
+	}{
+		{"a zero count", stopWith(0)},
+		{"no count", stopWith(-1)},
+	} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, tc.order)) {
+			t.Fatalf("%s: the Stop did not write", tc.name)
+		}
+		requireNoBackground(t, d, id, tc.name)
+	}
+}
+
+// Board #411 (db half): agent_background goes from NULL to a number only in
+// the Stop's write — LowerTerminalBackground and every other `waiting` leave
+// a NULL count alone.
+func TestProj11_OnlyTheStopStartsBackground(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	// A non-Stop write ignores a snapshot it carries.
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false,
+		AgentOrder{Background: sql.NullInt64{Int64: 3, Valid: true}})) {
+		t.Fatal("the plain waiting did not write")
+	}
+	requireNoBackground(t, d, id, "a plain waiting")
+
+	before := terminalRowSnapshot(t, d, id)
+	one := int64(1)
+	for _, count := range []*int64{nil, &one} {
+		if w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), count)) {
+			t.Fatalf("LowerTerminalBackground(%v) wrote over a NULL count", count)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("the row changed:\nbefore %s\nafter  %s", before, after)
+		}
+	}
+}
+
+// Board #411: LowerTerminalBackground only refreshes the report time and
+// lowers the count of a counted `waiting`, never raises it and never touches
+// another column.
+func TestProj11_LowerTerminalBackgroundOnlyLowers(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	ptr := func(n int64) *int64 { return &n }
+
+	// counted is a failed, finished `waiting` with a turn end, counted 3 at t0.
+	counted := func() int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(-time.Second), "",
+			&AgentFailure{Error: "rate_limit"}, false, AgentOrder{})) {
+			t.Fatal("the StopFailure did not write")
+		}
+		if !w(d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100)) {
+			t.Fatal("the turn end did not write")
+		}
+		if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(3))) {
+			t.Fatal("the Stop did not write")
+		}
+		requireBackground(t, d, id, 3, t0, "setup")
+		return id
+	}
+
+	for _, tc := range []struct {
+		name  string
+		count *int64
+		wantN int64
+	}{
+		{"a higher count", ptr(5), 3},
+		{"a lower count", ptr(1), 1},
+		{"a zero count", ptr(0), 0},
+		{"no count", nil, 3},
+	} {
+		id := counted()
+		others := otherAgentColumns(t, d, id)
+		at := t0.Add(time.Second)
+		if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, at, tc.count)) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		requireBackground(t, d, id, tc.wantN, at, tc.name)
+		if got := otherAgentColumns(t, d, id); got != others {
+			t.Fatalf("%s: other columns changed:\nbefore %s\nafter  %s", tc.name, others, got)
+		}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		setup     func(id int64)
+		workbench int64
+		uuid      string
+		at        time.Time
+	}{
+		{"an equal stamp", nil, pid, agentStateUUID, t0},
+		{"an older stamp", nil, pid, agentStateUUID, t0.Add(-time.Second)},
+		{"another conversation", nil, pid, otherUUID, t0.Add(time.Second)},
+		{"another workbench", nil, other, agentStateUUID, t0.Add(time.Second)},
+		{"over approval", func(id int64) {
+			if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "approval", t0.Add(time.Second), "", nil, false, AgentOrder{})) {
+				t.Fatal("approval did not write")
+			}
+		}, pid, agentStateUUID, t0.Add(2 * time.Second)},
+		{"over working", func(id int64) {
+			// No write path leaves a count under `working`; the guard holds anyway.
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID, t0.Add(2 * time.Second)},
+	} {
+		id := counted()
+		if tc.setup != nil {
+			tc.setup(id)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		for _, count := range []*int64{nil, ptr(1)} {
+			if w(d.LowerTerminalBackground(id, tc.workbench, tc.uuid, tc.at, count)) {
+				t.Fatalf("%s: wrote (count %v)", tc.name, count)
+			}
+			if after := terminalRowSnapshot(t, d, id); after != before {
+				t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
+			}
+		}
+	}
+}
+
+// Board #411 (db half): a Stop whose count differs from the stored
+// `waiting`'s is a change — it writes and advances agent_state_at; a failed
+// `waiting` keeps its error through a counted Stop and an idle notice.
+func TestProj11_StopOverWaitingWithAnotherCountWrites(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the first Stop did not write")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, stopWith(1))) {
+		t.Fatal("a Stop with another count did not write")
+	}
+	requireBackground(t, d, id, 1, t0.Add(time.Second), "a Stop with another count")
+	if s := storedSession(t, d, id); !s.AgentStateAt.Equal(t0.Add(time.Second)) {
+		t.Fatalf("agent_state_at %v, want it advanced to %v", s.AgentStateAt, t0.Add(time.Second))
+	}
+	if w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(2*time.Second), "", nil, false, stopWith(1))) {
+		t.Fatal("a Stop with the same count wrote a state")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(3*time.Second), "", nil, false, stopWith(-1))) {
+		t.Fatal("a Stop with no count over a counted waiting did not write")
+	}
+	requireNoBackground(t, d, id, "a Stop with no count")
+	if s := storedSession(t, d, id); !s.AgentStateAt.Equal(t0.Add(3 * time.Second)) {
+		t.Fatalf("agent_state_at %v, want it advanced to %v", s.AgentStateAt, t0.Add(3*time.Second))
+	}
+
+	// F3: a failed `waiting` keeps its error through a counted Stop and an
+	// idle notice, which still write the count columns. Error outranks
+	// background: agent_failed_at moves along with agent_state_at, so the
+	// Desktop (failed only when agent_failed_at == agent_state_at) still
+	// reads the row as failed.
+	failed := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(failed, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})) {
+		t.Fatal("the StopFailure did not write")
+	}
+	requireFailedNow := func(at time.Time, what string) {
+		t.Helper()
+		s := storedSession(t, d, failed)
+		want := AgentFailure{At: at.Format(agentStateAtLayout), Error: "rate_limit"}
+		if s.AgentFailure == nil || *s.AgentFailure != want {
+			t.Fatalf("after %s: failure %+v, want %+v", what, s.AgentFailure, want)
+		}
+		if got := AgentStateStamp(s.AgentStateAt); got != s.AgentFailure.At {
+			t.Fatalf("after %s: agent_state_at %s != agent_failed_at %s: the row no longer reads failed", what, got, s.AgentFailure.At)
+		}
+	}
+	if !w(d.SetTerminalAgentState(failed, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, stopWith(2))) {
+		t.Fatal("a counted Stop over a failed waiting did not write")
+	}
+	requireBackground(t, d, failed, 2, t0.Add(time.Second), "a counted Stop over a failed waiting")
+	requireFailedNow(t0.Add(time.Second), "the counted Stop")
+	if !w(d.SetTerminalAgentState(failed, pid, agentStateUUID, "waiting", t0.Add(2*time.Second), "", nil, false, AgentOrder{})) {
+		t.Fatal("an idle notice over a counted failed waiting did not write")
+	}
+	requireNoBackground(t, d, failed, "an idle notice over a counted failed waiting")
+	requireFailedNow(t0.Add(2*time.Second), "the idle notice")
+}
+
+// Board #411 (db half): a main turn (a prompt, a main or a subagent's tool
+// result), a StopFailure and an idle notice clear the count; a permission
+// prompt keeps it.
+func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	for _, tc := range []struct {
+		name     string
+		state    string
+		onlyFrom string
+		failure  *AgentFailure
+		prompt   bool
+		order    AgentOrder
+	}{
+		{"a prompt", "working", "", nil, true, AgentOrder{}},
+		{"a main-thread tool result", "working", "", nil, false, AgentOrder{ToolRun: true}},
+		{"a StopFailure", "waiting", "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{}},
+		{"an idle notice", "waiting", "", nil, false, AgentOrder{}},
+	} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+			t.Fatalf("%s: the Stop did not write", tc.name)
+		}
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, tc.state, t0.Add(time.Second), tc.onlyFrom, tc.failure, tc.prompt, tc.order)) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		requireNoBackground(t, d, id, tc.name)
+	}
+
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "approval", t0.Add(time.Second), "", nil, false, AgentOrder{})) {
+		t.Fatal("approval did not write")
+	}
+	requireBackground(t, d, id, 2, t0, "a permission prompt")
+	// A subagent's tool result after the grant: `working` outranks background.
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0.Add(2*time.Second), "approval", nil, false, AgentOrder{})) {
+		t.Fatal("the subagent's working over approval did not write")
+	}
+	requireNoBackground(t, d, id, "a subagent's working over approval")
+}
+
+// Board #411: a new run (the mark or the stampless clear) and a conversation
+// switch clear the count.
+func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	for _, tc := range []struct {
+		name  string
+		write func(id int64) (bool, error)
+	}{
+		{"MarkTerminalAgentRun", func(id int64) (bool, error) {
+			return d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(time.Second))
+		}},
+		{"ClearTerminalAgentState", func(id int64) (bool, error) {
+			return d.ClearTerminalAgentState(id, pid, agentStateUUID)
+		}},
+		{"SetTerminalClaudeSessionID", func(id int64) (bool, error) {
+			return d.SetTerminalClaudeSessionID(id, pid, otherUUID)
+		}},
+	} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+			t.Fatalf("%s: the Stop did not write", tc.name)
+		}
+		if !w(tc.write(id)) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		requireNoBackground(t, d, id, tc.name)
+	}
+}
+
+// Board #411: EndTerminalBackground NULLs the count only while the row still
+// carries the agent_background_at the probe read — a report or Stop that
+// landed since wins — and never touches another column.
+func TestEndTerminalBackgroundIsCompareAndClear(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	seen := t0.Format(agentStateAtLayout)
+	w := writeResult(t)
+
+	// counted is a finished `waiting` with a turn end, counted 2 at t0.
+	counted := func() int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100)) {
+			t.Fatal("the turn end did not write")
+		}
+		if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-01-01T00:00:00Z' WHERE id = ?`, id); err != nil {
+			t.Fatal(err)
+		}
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+			t.Fatal("the Stop did not write")
+		}
+		requireBackground(t, d, id, 2, t0, "setup")
+		return id
+	}
+
+	id := counted()
+	others := otherAgentColumns(t, d, id)
+	if !w(d.EndTerminalBackground(id, pid, agentStateUUID, seen)) {
+		t.Fatal("the matching stamp did not clear")
+	}
+	requireNoBackground(t, d, id, "the matching stamp")
+	if got := otherAgentColumns(t, d, id); got != others {
+		t.Fatalf("other columns changed:\nbefore %s\nafter  %s", others, got)
+	}
+	if w(d.EndTerminalBackground(id, pid, agentStateUUID, seen)) {
+		t.Fatal("a second end over a NULL count wrote")
+	}
+
+	for _, tc := range []struct {
+		name      string
+		setup     func(id int64)
+		workbench int64
+		uuid      string
+	}{
+		{"a newer report", func(id int64) {
+			if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), nil)) {
+				t.Fatal("the heartbeat did not write")
+			}
+		}, pid, agentStateUUID},
+		{"a newer Stop", func(id int64) {
+			if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, stopWith(1))) {
+				t.Fatal("the second Stop did not write")
+			}
+		}, pid, agentStateUUID},
+		{"over working", func(id int64) {
+			// No write path leaves a count under `working`; the guard holds anyway.
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID},
+		{"another conversation", nil, pid, otherUUID},
+		{"another workbench", nil, other, agentStateUUID},
+	} {
+		id := counted()
+		if tc.setup != nil {
+			tc.setup(id)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		if w(d.EndTerminalBackground(id, tc.workbench, tc.uuid, seen)) {
+			t.Fatalf("%s: wrote", tc.name)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
+		}
 	}
 }

@@ -226,9 +226,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// The Stop hook running the board drift check (PROJ-07). A workbench
     /// installed before it existed lacks it until a Repair.
     let stopHook: Bool
-    /// The session-state hooks (`UserPromptSubmit`, `Notification`,
-    /// `PostToolUse`, `StopFailure`, board #312): all of them present. A
-    /// workbench installed before them lacks them until a Repair.
+    /// The session-state hooks — the core four (`UserPromptSubmit`,
+    /// `Notification`, `PostToolUse`, `StopFailure`, board #312) and
+    /// `SubagentStop` (board #411): all five present. A workbench installed
+    /// before any of them lacks them until a Repair.
     let stateHooks: Bool
     /// The ask guard (owner asks, spec 2026-10-03 §6): the Stop prompt hook
     /// sending a plain-text request to `ask_owner`, and the PreToolUse hook

@@ -22,6 +22,8 @@ package enum SessionSwitcherPresentation {
             case stopped
             /// The agent called `finish_session`, live or not.
             case finished
+            /// The main turn is over, background subagents run.
+            case background
         }
 
         package let kind: Kind
@@ -35,21 +37,35 @@ package enum SessionSwitcherPresentation {
         /// The oldest open ask, the one a waiting caption names ("ask #12");
         /// nil without open asks.
         package let oldestAskID: Int64?
+        /// The background agents a background session counts; 0 for any
+        /// other kind.
+        package let backgroundAgents: Int
 
-        package init(kind: Kind, live: Bool, openAsks: Int = 0, error: String = "", oldestAskID: Int64? = nil) {
+        package init(
+            kind: Kind,
+            live: Bool,
+            openAsks: Int = 0,
+            error: String = "",
+            oldestAskID: Int64? = nil,
+            backgroundAgents: Int = 0
+        ) {
             self.kind = kind
             self.live = live
             self.openAsks = openAsks
             self.error = error
             self.oldestAskID = oldestAskID
+            self.backgroundAgents = backgroundAgents
         }
 
         /// Not running, no asks, not finished.
         package static let notStarted = Self(kind: .notStarted, live: false)
 
         /// A live session's state.
-        package static func live(_ kind: Kind, openAsks: Int = 0, error: String = "", oldestAskID: Int64? = nil) -> Self {
-            Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID)
+        package static func live(
+            _ kind: Kind, openAsks: Int = 0, error: String = "", oldestAskID: Int64? = nil, backgroundAgents: Int = 0
+        ) -> Self {
+            Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID,
+                 backgroundAgents: backgroundAgents)
         }
     }
 
