@@ -194,6 +194,51 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertEqual(RecordingsListModel.pillText(newCount: 0), "Recordings")
     }
 
+    /// The Calendar pill counts new recaps without building the list (no
+    /// formatters, no entry per recording): the same count the list has.
+    func testThePillCountsNewRecapsWithoutBuildingTheList() async throws {
+        let (store, recording, _) = try await ledger()
+        let recordings = try await snapshot(of: store)
+        let seen = RecordingsSeen(baseline: now.addingTimeInterval(-3_600), opened: [3])
+        let transcripts = [
+            transcript(id: 1, created: now.addingTimeInterval(-7_200)),
+            transcript(id: 2, phoneRecordingID: recording.id, created: now.addingTimeInterval(-60)),
+            transcript(id: 3, created: now.addingTimeInterval(-120)),
+            transcript(id: 4, created: now.addingTimeInterval(-30))
+        ]
+        let replica = CalendarReplicaSnapshot(transcripts: transcripts)
+        XCTAssertEqual(RecordingsListModel.newCount(transcripts: replica.transcripts, seen: seen), 2)
+        XCTAssertEqual(list(recordings, transcripts: transcripts, seen: seen).newCount, 2)
+    }
+
+    /// A write the recordings slices do not read publishes no new snapshot.
+    func testTheRecordingsModelPublishesOnlyRealChanges() async throws {
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        _ = try await hydrator.hydrateOnce()
+        let model = PhoneRecordingsModel()
+        model.start(store: store)
+        try await poll { model.snapshot.heartbeat != nil }
+        let first = model.snapshot.heartbeat?.updatedAt
+        var published = PhoneRecordingsModel.observation(store: store).values(in: store.reader).makeAsyncIterator()
+        let initial = try await published.next()
+        XCTAssertEqual(initial?.heartbeat?.updatedAt, first)
+        let sentinel = WorkbenchReplicaModel()
+        sentinel.start(store: store)
+
+        try await transport.save(try DemoSeed.workbenchRecords(now: now))
+        _ = try await hydrator.hydrateOnce()
+        try await poll { sentinel.snapshot.workbenches.count == 3 }
+
+        let later = now.addingTimeInterval(60)
+        try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later)])
+        _ = try await hydrator.hydrateOnce()
+        let next = try await published.next()
+        XCTAssertNotEqual(next?.heartbeat?.updatedAt, first, "a Workbench write must not republish the recordings snapshot")
+    }
+
     // MARK: - Recap
 
     func testARecapWithEmptyListsHidesThoseSections() throws {

@@ -127,12 +127,20 @@ final class PhoneRecordingsModel {
     @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "PhoneRecordingsModel")
 
-    func start(store: ReplicaStore) {
-        guard cancellable == nil else { return }
-        let observation = ValueObservation.tracking { db in
+    /// The recordings slices re-read on every replica write; a write that
+    /// leaves them equal publishes nothing.
+    nonisolated static func observation(
+        store: ReplicaStore
+    ) -> ValueObservation<ValueReducers.RemoveDuplicates<ValueReducers.Fetch<PhoneRecordingsSnapshot>>> {
+        ValueObservation.tracking { db in
             try PhoneRecordingsSnapshot.read(from: db, store: store)
         }
-        cancellable = observation.start(
+        .removeDuplicates()
+    }
+
+    func start(store: ReplicaStore) {
+        guard cancellable == nil else { return }
+        cancellable = Self.observation(store: store).start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
             onError: { Self.logger.error("recordings observation failed: \($0.localizedDescription, privacy: .public)") },

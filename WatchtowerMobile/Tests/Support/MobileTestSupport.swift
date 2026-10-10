@@ -1,6 +1,30 @@
 import Foundation
+import Observation
 import WatchtowerSync
 import XCTest
+
+/// Counts how often an `@Observable` property is SET (a set notifies its
+/// observers even when the value is equal), re-arming the tracking after
+/// each notification.
+@MainActor
+final class ObservedSetCounter {
+    private(set) var count = 0
+    private let read: @MainActor () -> Void
+
+    init(_ read: @escaping @MainActor () -> Void) {
+        self.read = read
+        arm()
+    }
+
+    private func arm() {
+        withObservationTracking { read() } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.count += 1
+                self?.arm()
+            }
+        }
+    }
+}
 
 extension XCTestCase {
     /// A pool-backed replica on a throwaway temp path: the production

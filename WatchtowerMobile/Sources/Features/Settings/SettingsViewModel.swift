@@ -106,6 +106,7 @@ final class SettingsViewModel {
         let observation = ValueObservation.tracking { db in
             try SettingsSnapshot.read(from: db, store: store, deviceID: deviceID)
         }
+        .removeDuplicates()
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),

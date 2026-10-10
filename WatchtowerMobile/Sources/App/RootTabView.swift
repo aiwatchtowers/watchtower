@@ -30,8 +30,8 @@ struct RootTabView: View {
 
         /// The Workbench tab's badge is the open-ask count (orange, set in
         /// `init`); 0 hides it. Other tabs carry none.
-        func badge(_ snapshot: WorkbenchReplicaSnapshot) -> Int {
-            self == .workbench ? snapshot.openAsks().count : 0
+        func badge(openAskCount: Int) -> Int {
+            self == .workbench ? openAskCount : 0
         }
 
         /// Spec §3: 5 s while Now or Workbench is on screen, 30 s otherwise.
@@ -57,7 +57,7 @@ struct RootTabView: View {
             ForEach(Tab.allCases) { tab in
                 content(for: tab)
                     .tabItem { Label(tab.title, systemImage: tab.systemImage) }
-                    .badge(tab.badge(env.workbenchReplica.snapshot))
+                    .badge(tab.badge(openAskCount: env.workbenchReplica.openAskCount))
                     .tag(tab)
             }
         }

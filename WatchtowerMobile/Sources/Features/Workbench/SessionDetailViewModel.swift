@@ -118,6 +118,7 @@ final class SessionDetailViewModel {
         let observation = ValueObservation.tracking { db in
             try SessionDetailRecords.read(sessionID: sessionID, from: db, store: store)
         }
+        .removeDuplicates()
         cancellable = observation.start(
             in: store.reader,
             scheduling: .async(onQueue: .main),

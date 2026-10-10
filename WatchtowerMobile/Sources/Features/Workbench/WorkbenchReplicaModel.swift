@@ -107,15 +107,26 @@ struct WorkbenchReplicaSnapshot: Equatable {
 @Observable
 final class WorkbenchReplicaModel {
     private(set) var snapshot = WorkbenchReplicaSnapshot()
+    /// The open asks across all workbenches: the Workbench tab's badge.
+    /// Its own property, so the tab bar re-renders only when it changes.
+    private(set) var openAskCount = 0
     @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "WorkbenchReplicaModel")
 
-    func start(store: ReplicaStore) {
-        guard cancellable == nil else { return }
-        let observation = ValueObservation.tracking { db in
+    /// The slices re-read on every replica write; a write that leaves them
+    /// equal (another kind's record, a sync token) publishes nothing.
+    nonisolated static func observation(
+        store: ReplicaStore
+    ) -> ValueObservation<ValueReducers.RemoveDuplicates<ValueReducers.Fetch<WorkbenchReplicaSnapshot>>> {
+        ValueObservation.tracking { db in
             try WorkbenchReplicaSnapshot.read(from: db, store: store)
         }
-        cancellable = observation.start(
+        .removeDuplicates()
+    }
+
+    func start(store: ReplicaStore) {
+        guard cancellable == nil else { return }
+        cancellable = Self.observation(store: store).start(
             in: store.reader,
             scheduling: .async(onQueue: .main),
             onError: { Self.logger.error("workbench observation failed: \($0.localizedDescription, privacy: .public)") },
@@ -134,5 +145,9 @@ final class WorkbenchReplicaModel {
             }
         }
         snapshot = value
+        let openAsks = value.openAsks().count
+        if openAsks != openAskCount {
+            openAskCount = openAsks
+        }
     }
 }

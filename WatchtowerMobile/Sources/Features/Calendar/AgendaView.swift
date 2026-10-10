@@ -34,17 +34,14 @@ struct AgendaView: View {
     }
 
     private var recordingsPill: some View {
-        let list = RecordingsListModel(
-            recordings: env.phoneRecordings.snapshot,
-            replica: env.calendarReplica.snapshot,
-            seen: env.recordingsSeen.value,
-            now: Date(),
-            calendar: .current
+        let newCount = RecordingsListModel.newCount(
+            transcripts: env.calendarReplica.snapshot.transcripts,
+            seen: env.recordingsSeen.value
         )
         return Button {
             env.navigation.calendarPath.append(.recordings)
         } label: {
-            Text(RecordingsListModel.pillText(newCount: list.newCount))
+            Text(RecordingsListModel.pillText(newCount: newCount))
                 .font(.footnote.weight(.medium))
                 .padding(.horizontal, 12)
                 .frame(minHeight: 44)

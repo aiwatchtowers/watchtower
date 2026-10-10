@@ -45,10 +45,10 @@ final class WorkbenchWiringTests: XCTestCase {
 
     /// The Workbench tab's badge is the open-ask count; the others have none.
     func testTheWorkbenchTabBadgeCountsOpenAsks() throws {
-        let snapshot = try demoSnapshot(now: now)
-        XCTAssertEqual(RootTabView.Tab.workbench.badge(snapshot), 3)
-        XCTAssertEqual(RootTabView.Tab.now.badge(snapshot), 0)
-        XCTAssertEqual(RootTabView.Tab.workbench.badge(WorkbenchReplicaSnapshot()), 0)
+        XCTAssertEqual(try demoSnapshot(now: now).openAsks().count, 3)
+        XCTAssertEqual(RootTabView.Tab.workbench.badge(openAskCount: 3), 3)
+        XCTAssertEqual(RootTabView.Tab.now.badge(openAskCount: 3), 0)
+        XCTAssertEqual(RootTabView.Tab.workbench.badge(openAskCount: 0), 0)
     }
 
     func testADetachedHeadReadsAsDetached() throws {
@@ -110,5 +110,45 @@ final class WorkbenchWiringTests: XCTestCase {
         XCTAssertEqual(model.snapshot.comments.count, 3)
         XCTAssertEqual(model.snapshot.heartbeat?.macName, DemoSeed.macName)
         XCTAssertEqual(model.snapshot.skippedRecords, [.workbench: 1])
+    }
+
+    /// A replica write the Workbench slices do not read publishes no new
+    /// snapshot, and the tab badge's count is set only when it changes, so
+    /// the tab bar is not re-rendered on every write.
+    func testTheModelPublishesOnlyRealChangesAndTheBadgeOnlyItsOwn() async throws {
+        let store = try makePoolStore()
+        let transport = InMemoryCloudTransport()
+        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        try await transport.save(try DemoSeed.workbenchRecords(now: now))
+        _ = try await hydrator.hydrateOnce()
+        let model = WorkbenchReplicaModel()
+        model.start(store: store)
+        try await poll { model.snapshot.workbenches.count == 3 }
+        XCTAssertEqual(model.openAskCount, 3)
+        var published = WorkbenchReplicaModel.observation(store: store).values(in: store.reader).makeAsyncIterator()
+        let initial = try await published.next()
+        XCTAssertEqual(initial?.workbenches.count, 3)
+        let badgeSets = ObservedSetCounter { _ = model.openAskCount }
+        // A sibling observation proves the unrelated write was seen.
+        let sentinel = CalendarReplicaModel()
+        sentinel.start(store: store)
+
+        try await transport.save(try DemoSeed.calendarRecords(now: now))
+        _ = try await hydrator.hydrateOnce()
+        try await poll { !sentinel.snapshot.events.isEmpty }
+
+        try await transport.save([try DemoSeed.record(kind: .workbench, id: 98, json: DemoSeed.JSON.workbench(98), modifiedAt: now)])
+        _ = try await hydrator.hydrateOnce()
+        let next = try await published.next()
+        XCTAssertEqual(next?.workbenches.count, 4, "a calendar write must not republish the Workbench snapshot")
+        try await poll { model.snapshot.workbenches.count == 4 }
+        XCTAssertEqual(badgeSets.count, 0, "a new workbench leaves the open-ask count alone")
+
+        try await transport.save([try DemoSeed.record(
+            kind: .ownerAsk, id: 199, json: DemoSeed.JSON.ask(199, workbench: 98), modifiedAt: now
+        )])
+        _ = try await hydrator.hydrateOnce()
+        try await poll { model.openAskCount == 4 }
+        XCTAssertEqual(badgeSets.count, 1)
     }
 }

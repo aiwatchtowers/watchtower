@@ -138,6 +138,13 @@ struct RecordingsListModel {
 
     var newCount: Int { earlier.filter(\.isNew).count }
 
+    /// The list's `newCount` without building the list: every transcript
+    /// is exactly one ready entry, new by `seen` alone. The Calendar pill
+    /// reads this on every render.
+    static func newCount(transcripts: [MeetingTranscript], seen: RecordingsSeen) -> Int {
+        transcripts.filter(seen.isNew).count
+    }
+
     /// The Calendar's pill: "Recordings · 1 new", or "Recordings".
     static func pillText(newCount: Int) -> String {
         newCount > 0 ? "Recordings · \(newCount) new" : "Recordings"
