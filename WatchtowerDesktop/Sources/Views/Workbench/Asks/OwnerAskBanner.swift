@@ -2,8 +2,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// Over the terminal of a session with open asks (spec 2026-10-03 Part 8):
-/// the oldest one's title and how many more wait; Open shows it in the
-/// drawer beside this terminal.
+/// the oldest one's number (board #500) and title and how many more wait;
+/// Open shows it in the drawer beside this terminal.
 struct OwnerAskBanner: View {
     /// The session's open asks, oldest first; never empty.
     let asks: [OwnerAsk]
@@ -15,7 +15,7 @@ struct OwnerAskBanner: View {
                 Image(systemName: OwnerAskPresentation.askKindIcon(first.kind))
                     .foregroundStyle(Color.accentColor)
                     .accessibilityLabel(OwnerAskPresentation.askKindLabel(first.kind))
-                Text("Agent asks: \(first.title)")
+                Text("Agent asks: \(Text.askNumber(first.id)) \(first.title)")
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if asks.count > 1 {

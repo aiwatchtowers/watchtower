@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import Observation
 import SwiftTerm
+import SwiftUI
 import WatchtowerCore
 
 /// One running terminal process. The center owns it; a view only hosts `view`.
@@ -27,10 +28,15 @@ protocol TerminalSessionProcess: AnyObject {
     /// ⌘-click on `path:line(:col)` resolving inside `folder` calls `open`
     /// instead of SwiftTerm's default handler (spec 2026-10-02 §9.5).
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void)
+    /// `ask #N` in the output (board #500): hovering one shows a card of the
+    /// ask `lookUp` finds for it in the session's workbench, and a click on
+    /// it calls `open`. A number `lookUp` finds nothing for is no link.
+    func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void)
 }
 
 extension TerminalSessionProcess {
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
+    func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {}
 }
 
 /// Process-group signalling seam, so tests never signal a real process.
@@ -142,6 +148,11 @@ final class TerminalCenter {
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
     /// inside its folder (`TerminalPathLinks`): workbench id, location.
     @ObservationIgnored var onPathLink: ((Int64, TerminalPathLinks.Location) -> Void)?
+    /// The ask an `ask #N` in a workbench session's terminal names, when it
+    /// is that workbench's (board #500): workbench id, ask id.
+    @ObservationIgnored var askLinkLookUp: ((Int64, Int64) async -> OwnerAsk?)?
+    /// An `ask #N` clicked there: workbench id, ask id.
+    @ObservationIgnored var onAskLink: ((Int64, Int64) -> Void)?
     @ObservationIgnored private let signaller: ProcessGroupSignaller
 
     // A closure literal used as a default *argument* value does not inherit
@@ -635,6 +646,11 @@ final class TerminalCenter {
             process.setPathLinkHandler(folder: session.folderPath) { [weak self] location in
                 self?.onPathLink?(workbenchID, location)
             }
+            // `ask #N` links to that ask of this workbench (board #500).
+            process.setAskLinkHandler(
+                lookUp: { [weak self] askID in await self?.askLinkLookUp?(workbenchID, askID) },
+                open: { [weak self] askID in self?.onAskLink?(workbenchID, askID) }
+            )
         }
         startedAt[id] = now()
         lastRun += 1
@@ -862,10 +878,15 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     /// SwiftTerm detects no quoted path with a space (`"a b.txt":1`): a
     /// ⌘-click it left alone is looked up here in the clicked line — the
-    /// rows a long path wrapped over joined back.
+    /// rows a long path wrapped over joined back. A click on an `ask #N`
+    /// opens that ask (board #500) as `OwnerAskTerminalLinks.click` says.
     override func mouseUp(with event: NSEvent) {
         openedLinkThisClick = false
         super.mouseUp(with: event)
+        if !openedLinkThisClick, let askID = askLinkID(at: event) {
+            clickedAskLink(askID, event: event)
+            return
+        }
         guard !openedLinkThisClick, event.modifierFlags.contains(.command), event.clickCount == 1, !selectionActive,
               let folder = pathLinkFolder, let openPathLink, let cell = cell(at: event),
               let hit = TerminalPathLinks.logicalLine(rows: screenRows(), row: cell.row, column: cell.col),
@@ -873,6 +894,132 @@ final class PalettedTerminalView: LocalProcessTerminalView {
               let location = TerminalPathLinks.resolve(candidate, folder: folder, folderRealPath: pathLinkFolderRealPath)
         else { return }
         openPathLink(location)
+    }
+
+    // MARK: ask #N links (board #500)
+
+    private var askLinkLookUp: ((Int64) async -> OwnerAsk?)?
+    private var openAskLink: ((Int64) -> Void)?
+    /// SwiftTerm's `mouseMoved` cannot be overridden from here (it is
+    /// `public`, not `open`): a tracking area of our own reports the
+    /// pointer to this object instead.
+    private lazy var askHoverTracker = AskLinkHoverTracker(view: self)
+    private var askHoverTracking: NSTrackingArea?
+    /// The link under the pointer, its card shown or being looked up.
+    private var askHover = OwnerAskTerminalLinks.Hover()
+    private var askCard: NSPopover?
+    /// A plain click's open, waiting out a double click.
+    private var pendingAskOpen: Task<Void, Never>?
+
+    func setAskLinks(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {
+        askLinkLookUp = lookUp
+        openAskLink = open
+        if askHoverTracking == nil {
+            let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                                      owner: askHoverTracker, userInfo: nil)
+            addTrackingArea(area)
+            askHoverTracking = area
+        }
+    }
+
+    /// The `ask #N` at the event's cell, by the number alone (whether it is
+    /// this workbench's ask is `askLinkLookUp`'s); nil without ask links.
+    private func askLinkID(at event: NSEvent) -> Int64? {
+        guard askLinkLookUp != nil, let cell = cell(at: event),
+              let hit = TerminalPathLinks.logicalLine(rows: screenRows(), row: cell.row, column: cell.col)
+        else { return nil }
+        return OwnerAskTerminalLinks.askID(inLine: hit.line, at: hit.column)
+    }
+
+    private func clickedAskLink(_ askID: Int64, event: NSEvent) {
+        let terminal = getTerminal()
+        let click = OwnerAskTerminalLinks.click(
+            clickCount: event.clickCount, command: event.modifierFlags.contains(.command), selectionActive: selectionActive,
+            mouseReporting: allowMouseReporting && terminal.mouseMode != .off
+        )
+        switch click {
+        case .openNow:
+            closeAskCard()
+            openAskLink?(askID)
+        case .openAfterDoubleClick:
+            pendingAskOpen = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(NSEvent.doubleClickInterval))
+                guard !Task.isCancelled, let self else { return }
+                self.closeAskCard()
+                self.openAskLink?(askID)
+            }
+        case .ignore:
+            break
+        }
+    }
+
+    /// A second click of a double or triple click cancels the first one's
+    /// open; any new click does.
+    override func mouseDown(with event: NSEvent) {
+        pendingAskOpen?.cancel()
+        pendingAskOpen = nil
+        super.mouseDown(with: event)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        pendingAskOpen?.cancel()
+        pendingAskOpen = nil
+        closeAskCard()
+    }
+
+    fileprivate func askLinkHovered(_ event: NSEvent) {
+        guard let askID = askLinkID(at: event) else {
+            closeAskCard()
+            return
+        }
+        guard let askLinkLookUp, let token = askHover.enter(askID) else {
+            // Still over the link whose card is up: keep the hand.
+            if askCard != nil { NSCursor.pointingHand.set() }
+            return
+        }
+        closeCard()
+        let anchor = cellRect(at: event)
+        Task { @MainActor [weak self] in
+            // A number naming no ask of this workbench shows nothing.
+            guard let ask = await askLinkLookUp(askID), let self, self.askHover.isCurrent(token), self.window != nil
+            else { return }
+            self.showAskCard(ask, at: anchor)
+        }
+    }
+
+    /// The pointer left the link (or the view its window): no card, no hand.
+    fileprivate func closeAskCard() {
+        askHover.leave()
+        closeCard()
+    }
+
+    private func closeCard() {
+        guard let askCard else { return }
+        askCard.close()
+        self.askCard = nil
+        NSCursor.iBeam.set()
+    }
+
+    private func showAskCard(_ ask: OwnerAsk, at anchor: NSRect) {
+        closeCard()
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.animates = false
+        popover.contentViewController = NSHostingController(rootView: OwnerAskLinkCard(ask: ask))
+        popover.show(relativeTo: anchor, of: self, preferredEdge: .maxY)
+        askCard = popover
+        NSCursor.pointingHand.set()
+    }
+
+    /// The cell under the pointer, in this view's coordinates (`cell(at:)`'s
+    /// grid); a zero rect at the pointer off the grid.
+    private func cellRect(at event: NSEvent) -> NSRect {
+        guard let cell = cell(at: event), let size = cellSize() else {
+            return NSRect(origin: convert(event.locationInWindow, from: nil), size: .zero)
+        }
+        return NSRect(x: CGFloat(cell.col) * size.width, y: frame.height - CGFloat(cell.row + 1) * size.height,
+                      width: size.width, height: size.height)
     }
 
     /// The visible rows, one character per cell (an empty cell a space, the
@@ -900,17 +1047,23 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// frame's height over the rows).
     private func cell(at event: NSEvent) -> (row: Int, col: Int)? {
         let terminal = getTerminal()
-        guard terminal.rows > 0, terminal.cols > 0 else { return nil }
-        let scale = window?.backingScaleFactor ?? 2
-        let advance = font.advancement(forGlyph: font.glyph(withName: "W")).width
-        let cellWidth = max(1, (advance * scale).rounded() / scale)
-        let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
-        guard cellHeight > 0 else { return nil }
+        guard terminal.cols > 0, let size = cellSize() else { return nil }
         let point = convert(event.locationInWindow, from: nil)
-        let row = Int((frame.height - point.y) / cellHeight)
-        let col = Int(point.x / cellWidth)
+        let row = Int((frame.height - point.y) / size.height)
+        let col = Int(point.x / size.width)
         guard (0..<terminal.rows).contains(row), (0..<terminal.cols).contains(col) else { return nil }
         return (row, col)
+    }
+
+    /// One cell's size; nil before the terminal has rows.
+    private func cellSize() -> NSSize? {
+        let terminal = getTerminal()
+        guard terminal.rows > 0 else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        let advance = font.advancement(forGlyph: font.glyph(withName: "W")).width
+        let cellHeight = getOptimalFrameSize().height / CGFloat(terminal.rows)
+        guard cellHeight > 0 else { return nil }
+        return NSSize(width: max(1, (advance * scale).rounded() / scale), height: cellHeight)
     }
 
     /// SwiftTerm's ⌘-hover link preview is the one text field it adds; it
@@ -929,6 +1082,26 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         nativeBackgroundColor = TerminalPalette.background
         backgroundOpacity = TerminalPalette.backgroundOpacity(for: effectiveAppearance)
     }
+}
+
+/// The owner of `PalettedTerminalView`'s ask-link tracking area: moves over
+/// the terminal show an `ask #N`'s card, leaving it closes the card.
+@MainActor
+private final class AskLinkHoverTracker: NSResponder {
+    private weak var view: PalettedTerminalView?
+
+    init(view: PalettedTerminalView) {
+        self.view = view
+        super.init()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
+    override func mouseMoved(with event: NSEvent) { view?.askLinkHovered(event) }
+    override func mouseExited(with event: NSEvent) { view?.closeAskCard() }
 }
 
 /// The real session: a SwiftTerm `LocalProcessTerminalView` running the
@@ -980,6 +1153,10 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
 
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
         terminal.setPathLinks(folder: folder, open: open)
+    }
+
+    func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {
+        terminal.setAskLinks(lookUp: lookUp, open: open)
     }
 
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}

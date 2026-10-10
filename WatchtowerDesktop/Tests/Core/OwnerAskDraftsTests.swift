@@ -101,6 +101,22 @@ final class OwnerAskDraftsTests: XCTestCase {
         XCTAssertEqual(draft.problem(for: check), .noteTooLong)
     }
 
+    /// Board #502: "What happened?" shows only on Doesn't work, so only a
+    /// broken item sends its note; the draft keeps it for a switch back.
+    func testOnlyABrokenItemSendsItsNote() throws {
+        let check = try ask("check", payload: Self.checklist)
+        var draft = OwnerAskDraft()
+        draft.checks["1"] = .broken
+        draft.checkNotes["1"] = "Crashes"
+        draft.checks["2"] = .ok
+        draft.checkNotes["2"] = "typed while it was broken"
+        let sent = draft.answer(for: check).checklist
+        XCTAssertEqual(sent.map(\.state), [.broken, .ok, .skipped], "an unmarked item goes as skipped")
+        XCTAssertEqual(sent.map(\.note), ["Crashes", "", ""])
+        draft.checks["2"] = .broken
+        XCTAssertEqual(draft.answer(for: check).checklist[1].note, "typed while it was broken")
+    }
+
     func testCommentsGoOnlyWithAReview() throws {
         var draft = OwnerAskDraft()
         draft.comments = [OwnerAskCommentDraft(anchor: CommentAnchor(quote: "q", prefix: "", suffix: "", heading: ""), body: "fix")]

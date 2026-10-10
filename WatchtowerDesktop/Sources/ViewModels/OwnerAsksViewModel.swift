@@ -247,6 +247,15 @@ final class OwnerAsksViewModel {
         }
     }
 
+    /// The ask an `ask #N` in a session's terminal names (board #500), any
+    /// status, only when it is one of `projectID`'s: from the open list,
+    /// else read. nil — no link — for a number of another workbench or one
+    /// that names no ask; a failed read throws. Writes no state.
+    func linkedAsk(askID: Int64, projectID: Int64) async throws -> OwnerAsk? {
+        if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
+        return try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
+    }
+
     /// The ask a stack row, a closed list or a notice names: from the open
     /// list, else read (a closed one is kept for the drawer, an open one not
     /// listed yet reloads the list). nil, with the reason in `loadErrors`,
@@ -462,7 +471,7 @@ final class OwnerAsksViewModel {
     /// would; nil when it names none or that button is off.
     @discardableResult
     func pressKey(on ask: OwnerAsk, shift: Bool) -> Task<Void, Never>? {
-        guard let action = OwnerAskPresentation.keyAction(for: ask, draft: drafts.askDraft(for: ask.id), shift: shift)
+        guard let action = OwnerAskPresentation.keyAction(for: ask, shift: shift)
         else { return nil }
         return press(action, on: ask)
     }

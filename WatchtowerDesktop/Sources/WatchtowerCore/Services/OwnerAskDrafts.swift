@@ -54,8 +54,10 @@ package struct OwnerAskDraft: Equatable, Sendable {
     }
 
     /// The answer as stored: questions and check items in the payload's
-    /// order, unmarked items `skipped`, empty comments (and any on a kind
-    /// other than a review) dropped, text trimmed.
+    /// order, unmarked items `skipped`, a check note only on a `broken` item
+    /// (the only one that shows its field; the draft keeps the others),
+    /// empty comments (and any on a kind other than a review) dropped, text
+    /// trimmed.
     package func answer(for ask: OwnerAsk) -> OwnerAskAnswer {
         OwnerAskAnswer(
             verdict: ask.kind == .review ? verdict : nil,
@@ -64,7 +66,8 @@ package struct OwnerAskDraft: Equatable, Sendable {
                 return .init(id: question.id, labels: entry.labels, other: Self.trimmed(entry.other ?? ""))
             },
             checklist: ask.payload.checklist.map { item in
-                .init(id: item.id, state: checks[item.id] ?? .skipped, note: Self.trimmed(checkNotes[item.id] ?? ""))
+                let state = checks[item.id] ?? .skipped
+                return .init(id: item.id, state: state, note: state == .broken ? Self.trimmed(checkNotes[item.id] ?? "") : "")
             },
             // Only a review has comments.
             comments: ask.kind != .review ? [] : comments.compactMap { draft in
