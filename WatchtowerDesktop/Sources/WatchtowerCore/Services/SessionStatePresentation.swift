@@ -22,8 +22,8 @@ package enum SessionStatePresentation {
         }
     }
 
-    /// The SF Symbol beside the dot; nil for none. A working session's
-    /// `questionmark` comes with the open-ask count.
+    /// The SF Symbol beside the dot; nil for none. A working or background
+    /// session's `questionmark` comes with the open-ask count.
     package static func glyph(for state: State) -> String? {
         switch state.kind {
         case .working: state.openAsks > 0 ? "questionmark" : nil
@@ -39,6 +39,9 @@ package enum SessionStatePresentation {
 
     /// A session that is not live draws a ring in its kind's colour.
     package static func isRing(_ state: State) -> Bool { !state.live }
+
+    /// A live session whose background agents run pulses its dot.
+    package static func pulses(_ state: State) -> Bool { state.live && state.kind == .background }
 
     /// The caption naming the state's own oldest open ask.
     package static func caption(for state: State) -> String {
