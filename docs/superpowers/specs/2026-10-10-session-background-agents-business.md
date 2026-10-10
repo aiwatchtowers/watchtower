@@ -38,9 +38,11 @@ agents working in the background beat "finished", "waiting for you" and "stopped
 
 ## Edge cases, in plain words
 
-- **An agent crashes or hangs.** The main agent normally wakes when an agent ends either way. If Claude Code
-  stops reporting anything about the session's agents for 30 minutes, the row falls back to Stopped
-  (with its one notice) — "Agents working" cannot stick forever.
+- **An agent crashes or hangs.** The main agent normally wakes when an agent ends either way. If nothing is
+  heard about the session's agents for 30 minutes, Watchtower asks Claude Code's own session list whether the
+  session is still busy (no message to the agent, no model turn): busy keeps Agents working; anything else —
+  idle, gone, unreadable — ends it as Stopped (with its one notice). A hung agent that Claude Code itself still
+  reports as busy keeps the row Agents working for as long as Claude Code says so.
 - **You restart or resume the session.** The new run starts clean: background agents of the old process are
   gone, and so is the state.
 - **An older Claude Code** that does not report background work: the session shows Stopped as today. Nothing
@@ -62,11 +64,12 @@ ends.
 subagent's tool result alone never changes the state (it writes only over `approval`).
 
 **New rule:** the stored `waiting` still means *the main agent's turn is over*. When the Stop hook of that turn
-reports in-flight background **subagents** (Claude Code's `background_tasks`, entries of type `subagent`), the
+reports in-flight background **subagents** (Claude Code's `background_tasks`, entries of type `subagent` or
+`workflow`), the
 row also stores their count, and the Desktop shows **Agents working** (green; "?" and the ask count when asks
 are open) instead of Stopped or Waiting for you. Only a Stop hook can start Agents working; a later event can
-only lower the count or end it (the main agent's next turn, the idle notice, a new run, or 30 minutes with no
-report about the agents). The order becomes approval > error > working > **agents working** > finished > open
+only lower the count or end it (the main agent's next turn, the idle notice, a new run, or — after 30 minutes
+with no report about the agents — Claude Code's session list no longer saying the session is busy). The order becomes approval > error > working > **agents working** > finished > open
 ask > stopped > running > not started. A subagent's tool result still never changes the state, the turn's end
 time, or "finished" (it only refreshes the "agents still alive" time). Agents working is never announced; the
 following Stopped / Finished is announced once. The ask answer's Return and code hand-offs treat Agents working
@@ -77,9 +80,10 @@ exactly as Stopped.
 Approved by the owner on 2026-10-10 (ask #139), including the PROJ-11 amendment above. Answers from ask #138:
 
 1. Counts: subagents and workflows.
-2. 30 min with no report about the agents: probe the session before falling back to Stopped (ask #140) —
-   first quietly (is the process alive, are the agents still writing), then, if that says nothing, a short
-   message to the session itself over Claude Code's session-to-session channel; its reply refreshes the count.
+2. 30 min with no report about the agents: check Claude Code's own session list before falling back to Stopped
+   (asks #140, #142: "the registry decides") — busy keeps Agents working, anything else ends it. The short
+   message to the session over Claude Code's session-to-session channel was explored and is not built: with the
+   session list deciding, it could never fire (recorded for later, board #481).
 3. After the count drops to zero, keep "Agents working" up to 2 min while the main agent wakes.
 4. The live-count hook is added (Re-run Setup once).
 5. Older Claude Code: Stopped as today (default taken).

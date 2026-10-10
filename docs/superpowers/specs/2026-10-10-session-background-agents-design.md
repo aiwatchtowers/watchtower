@@ -226,7 +226,7 @@ is pasted and submitted immediately and wakes the main agent. No code change; a 
 
 Add to PROJ-11 Observable, after the states paragraph:
 
-> Since 2026-10-XX (board #411): the Stop hook also stores the count of in-flight background subagents its input
+> Since 2026-10-10 (board #411): the Stop hook also stores the count of in-flight background subagents its input
 > reports (`background_tasks` entries of type `subagent` or `workflow`; `agent_background`, `agent_background_at`; NULL when
 > none or the field is absent). Only the Stop's write sets a count; a UserPromptSubmit, a main-thread
 > PostToolUse, a subagent's tool result over Needs approval (Working, ask #20), a StopFailure, the `idle_prompt` notice, a new run and a conversation switch clear it; a Stop repeating the same count only refreshes `agent_background_at`; a
@@ -240,7 +240,7 @@ Add to PROJ-11 Observable, after the states paragraph:
 
 Replace in the order sentence and in the guard list; v1 note (d) of "Session agent state ordering and subagents"
 gains the count's limits (unverified kill/crash `SubagentStop`, staleness double notice, teammates/shells not
-counted, older CLI without the field shows Stopped). The §10 probe paragraph follows the amendment (its text is in plan Task 9).
+counted, older CLI without the field shows Stopped). The §10 probe paragraph follows the amendment (the inventory's PROJ-11 carries its final text).
 
 ## 7. Guard tests
 
@@ -310,7 +310,7 @@ After 30 min with `agent_background > 0` and no report (`agent_background_at` ol
 reads Claude Code's own session registry rather than falling back to Stopped blindly (owner decision, ask #142:
 "the registry decides").
 
-**The probe — registry only, no model turn.**
+**Stage 1 — the probe: registry only, no model turn.**
 - Claude Code keeps a local session registry: one JSON file per running process under
   `<claude config dir>/sessions/<pid>.json` with `pid`, `sessionId`, `status`, `statusUpdatedAt`,
   `peerProtocol`, `peerFeatures` and `messagingSocketPath`. Find the entry whose `sessionId` is the row's Claude
