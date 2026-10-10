@@ -223,14 +223,48 @@ extension WorkbenchesViewModel {
     /// was started from (the session goes beside it); a single pane switches
     /// to the session. `projectID` is the target's own project, which keys a
     /// read error (the selection may change during the read).
+    ///
+    /// Once the session started, a task still `todo` moves to `in_progress`
+    /// as the owner's write (board #499, `markInProgressOnWorkOn`): the
+    /// brainstorm and the spec are work on it too.
     func workOn(
         targetID: Int64, targetText: String, projectID: Int64? = nil, placement: Placement = .keeping(.board)
     ) async {
         // Every failure is on the page already (or logged, if superseded).
-        _ = try? await startTarget(
+        guard let row = try? await startTarget(
             targetID, title: targetText, prompt: nil, mode: .openExisting, placement: placement,
             askedIn: projectID ?? selectedWorkbenchID
-        )
+        ) else { return }
+        await markInProgressOnWorkOn(targetID, session: row)
+    }
+
+    /// Work on It's status write (board #499), made only after the session
+    /// started: `startTarget` returned its row — the target was read, the row
+    /// created or reopened and activated — and `TerminalCenter` did not refuse
+    /// the launch (`launchFailure`). A failed read, a target not on a board, a
+    /// failed create or open and a refused launch return before this and write
+    /// nothing. The write (`WorkbenchQueries.markInProgressOnWorkOn`) re-reads
+    /// the status in its own transaction: only a `todo` task moves, never a
+    /// group or a status the agent or the owner set meanwhile. The target and
+    /// the parents the rollup moved are reported as the owner's writes (no
+    /// notice), and the Board reloads at once (`boardReloads`). A failed write
+    /// leaves the session running and says so on the page.
+    private func markInProgressOnWorkOn(_ targetID: Int64, session row: TerminalSession) async {
+        guard launchFailure(row) == nil, let projectID = row.projectID else { return }
+        do {
+            let rolledUp = try await dbPool.write {
+                try WorkbenchQueries.markInProgressOnWorkOn($0, targetID: targetID)
+            }
+            guard let rolledUp else { return }
+            for id in [targetID] + rolledUp {
+                onOwnerWrite?(projectID, .target(id))
+            }
+            boardReloads[projectID, default: 0] += 1
+        } catch {
+            setSessionError(
+                "Could not set target #\(targetID) in progress: \(error.localizedDescription)", projectID: projectID
+            )
+        }
     }
 
     /// A start on a board target from outside the board's own buttons (the
@@ -578,14 +612,19 @@ extension WorkbenchesViewModel {
     /// background session has no pane to show it, and an on-screen one
     /// shows `.unavailable` in its pane already.
     private func launchCheck(_ row: TerminalSession) throws {
-        let failure: String? = switch terminalCenter?.states[row.id] {
+        guard let failure = launchFailure(row) else { return }
+        NSLog("WorkbenchesViewModel: session %lld did not launch: %@", row.id, failure)
+        throw TargetStartError.failed(failure)
+    }
+
+    /// Why `row`'s launch did not run — no process state (no terminal center,
+    /// or it never started) or a launch `TerminalCenter` refused — else nil.
+    private func launchFailure(_ row: TerminalSession) -> String? {
+        switch terminalCenter?.states[row.id] {
         case nil: "Session #\(row.id) did not start."
         case let .unavailable(reason)?: reason
         default: nil
         }
-        guard let failure else { return }
-        NSLog("WorkbenchesViewModel: session %lld did not launch: %@", row.id, failure)
-        throw TargetStartError.failed(failure)
     }
 
     /// An owner's switch reports on the page (`reportSwitchError`); a
