@@ -10,13 +10,14 @@
 #   mac               signed macOS build (automatic signing, needs DEVELOPMENT_TEAM)
 #   ios               signed iOS device build (automatic signing, needs DEVELOPMENT_TEAM)
 #   ios-install <udid>  signed iOS build, then install on the connected device
+#   sim               iOS simulator build with the team's entitlements (Xcode signs it "to run locally")
 #
 # Optional overrides: SPIKE_MAC_BUNDLE_ID, SPIKE_IOS_BUNDLE_ID.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 export DEVELOPMENT_TEAM="${DEVELOPMENT_TEAM:-}"
-export SPIKE_MAC_BUNDLE_ID="${SPIKE_MAC_BUNDLE_ID:-com.aiwatchtowers.watchtower.ckspike}"
+export SPIKE_MAC_BUNDLE_ID="${SPIKE_MAC_BUNDLE_ID:-com.watchtower.desktop}"
 export SPIKE_IOS_BUNDLE_ID="${SPIKE_IOS_BUNDLE_ID:-com.aiwatchtowers.watchtower.mobile}"
 
 PROJECT=CKSpike.xcodeproj
@@ -49,9 +50,10 @@ case "$cmd" in
     ;;
   mac)
     need_team; gen
+    # The development profile needs this Mac registered as a team device.
     xcodebuild -project "$PROJECT" -scheme CKSpikeMac -configuration Debug \
-      -destination 'generic/platform=macOS' -derivedDataPath "$DERIVED/mac" \
-      -allowProvisioningUpdates build
+      -destination 'platform=macOS' -derivedDataPath "$DERIVED/mac" \
+      -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
     echo "binary: $PWD/$DERIVED/mac/Build/Products/Debug/CKSpikeMac.app/Contents/MacOS/CKSpikeMac"
     ;;
   ios)
@@ -61,11 +63,18 @@ case "$cmd" in
       -allowProvisioningUpdates build
     echo "app: $PWD/$DERIVED/ios/Build/Products/Debug-iphoneos/CKSpike.app"
     ;;
+  sim)
+    need_team; gen
+    xcodebuild -project "$PROJECT" -scheme CKSpikeiOS -configuration Debug \
+      -destination 'generic/platform=iOS Simulator' -derivedDataPath "$DERIVED/ios-sim-signed" \
+      -allowProvisioningUpdates build
+    echo "app: $PWD/$DERIVED/ios-sim-signed/Build/Products/Debug-iphonesimulator/CKSpike.app"
+    ;;
   ios-install)
     udid="${2:?usage: spike.sh ios-install <device-udid>  (xcrun devicectl list devices)}"
     "$0" ios
     xcrun devicectl device install app --device "$udid" "$DERIVED/ios/Build/Products/Debug-iphoneos/CKSpike.app"
     ;;
   *)
-    sed -n '2,16p' "$0"; exit 2 ;;
+    sed -n '2,17p' "$0"; exit 2 ;;
 esac

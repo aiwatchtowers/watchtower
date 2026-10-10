@@ -58,6 +58,7 @@ struct CKSpikeApp: App {
             ContentView()
                 .environmentObject(harness)
                 .onOpenURL { harness.open($0) }
+                .task { harness.runFromLaunchArguments() }
         }
     }
 }

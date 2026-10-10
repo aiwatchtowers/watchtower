@@ -29,7 +29,7 @@ One iPhone can play both roles: sign it into B for the participant items, then s
 **Identifiers**
 
 - Container: `iCloud.com.aiwatchtowers.watchtower`.
-- macOS bundle id: `com.aiwatchtowers.watchtower.ckspike`. You can override it with `SPIKE_MAC_BUNDLE_ID`.
+- macOS bundle id: `com.watchtower.desktop`, the real Mac App ID. You can override it with `SPIKE_MAC_BUNDLE_ID`. A fresh App ID (`com.aiwatchtowers.watchtower.ckspike`, registered by automatic signing on 2026-10-10) signed fine, but CloudKit refused every record save with `CKError 10 "Invalid bundle ID for container"`. Zone saves passed. The Mac build stays out of LaunchServices: run its binary directly, and after a build run `lsregister -u build/mac/Build/Products/Debug/CKSpikeMac.app`, so `com.watchtower.desktop` keeps resolving to the real app.
 - iOS bundle id: `com.aiwatchtowers.watchtower.mobile`, the real phone App ID. You can override it with `SPIKE_IOS_BUNDLE_ID`.
 
 **Before the first signed build, in the developer portal:**
@@ -51,6 +51,7 @@ Run these from `spikes/cloudkit-share/`. You need `xcodegen` (`brew install xcod
 DEVELOPMENT_TEAM=<team-id> ./spike.sh mac          # signed macOS build; prints the binary path
 DEVELOPMENT_TEAM=<team-id> ./spike.sh ios          # signed iOS device build
 DEVELOPMENT_TEAM=<team-id> ./spike.sh ios-install <udid>   # build + install (udid: xcrun devicectl list devices)
+DEVELOPMENT_TEAM=<team-id> ./spike.sh sim          # iOS simulator build (signed "to run locally", with the team's entitlements)
 ```
 
 You can also run `./spike.sh gen`, open `CKSpike.xcodeproj`, pick your team, and use Run on the device. On the iPhone, turn on Developer Mode (Settings → Privacy & Security). On first launch, trust the developer profile (Settings → General → VPN & Device Management).
@@ -64,6 +65,18 @@ spike            # prints the command list
 
 If CloudKit refuses the directly started binary (an entitlement or "missing container" error), start it through LaunchServices instead, and keep the output in the terminal:
 `open -W --stdout $(tty) --stderr $(tty) build/mac/Build/Products/Debug/CKSpikeMac.app --args whoami`.
+
+## Simulator run: (d) "same" and (e)
+
+A simulator signed into the Mac's Apple ID can stand in for iPhone 1. Its pass is indicative only; the device run decides.
+
+1. Build: `./spike.sh mac`, `./spike.sh sim`, then `./sim.sh install <udid>` (`xcrun simctl list devices`).
+2. Mac: `spike setup` once. `sim.sh` reads the link from the Mac log.
+3. CloudKit Console: the Queryable `kind` index (step 0.3 below).
+4. Simulator: Settings → Sign in to your iPhone → the Mac's Apple ID → iCloud → turn on iCloud Drive.
+5. `./sim.sh run <udid>`. It links the app, runs (d) "same", subscribes (e) (click **Allow** on the notification prompt), backgrounds the app, runs `alert DataZone` and `alert AlertZone`, reads the delivered alerts, and prints this run's log, redacted.
+
+`sim.sh` drives the app with launch arguments (`-ckspikeLink <url> -ckspikeRun d-same|e-subscribe|e-read`), because `simctl openurl` stops at an "Open in…?" prompt.
 
 ## Run, in this order
 

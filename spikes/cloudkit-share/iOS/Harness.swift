@@ -38,6 +38,22 @@ final class Harness: ObservableObject {
 
     // MARK: Link
 
+    /// Launch arguments `-ckspikeLink <url>` and `-ckspikeRun <item>` let `sim.sh` drive the
+    /// simulator through `simctl launch` (a custom-URL open asks for confirmation first).
+    /// Only the Mac's-Apple-ID items, the ones a simulator can run.
+    func runFromLaunchArguments() {
+        let args = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
+        if let text = args["ckspikeLink"] as? String, let url = URL(string: text) { open(url) }
+        guard let item = args["ckspikeRun"] as? String else { return }
+        log.line("run: \(item) (from launch arguments)")
+        switch item {
+        case "d-same": run { await self.itemD(sameAppleIDAsMac: true) }
+        case "e-subscribe": run { await self.itemESubscribe() }
+        case "e-read": run { await self.itemEReadDelivered() }
+        default: log.line("run: unknown item \(item)")
+        }
+    }
+
     func open(_ url: URL) {
         guard let parsed = SpikeLink(url: url) else {
             log.line("link: not a spike link: \(url.absoluteString)")
