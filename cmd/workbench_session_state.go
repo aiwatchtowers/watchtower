@@ -190,24 +190,18 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	if !ok || in.SessionID == "" {
 		return nil
 	}
-	// A SubagentStop lowers the Stop's count to the subagents its snapshot
-	// lists besides the stopping one; an internal agent's (no agent_type)
-	// or one without a list says nothing about them.
 	var remaining int64
 	if in.HookEventName == "SubagentStop" {
-		if remaining, ok = backgroundSubagents(in.BackgroundTasks, in.AgentID); !ok || in.AgentType == "" {
+		if remaining, ok = in.subagentStopRemaining(); !ok {
 			return nil
 		}
 	}
-	var turn hookTurn
-	subagentToolRun := in.HookEventName == "PostToolUse" && in.AgentID != ""
+	turn, subagentToolRun := in.toolRunTurn()
 	if subagentToolRun {
 		// A background subagent works on after the main turn stopped to
 		// wait for the owner: its tool results clear only a granted
 		// permission; over the Stop's count they are a heartbeat.
 		onlyFrom = agentStateApproval
-	} else if in.HookEventName == "PostToolUse" {
-		turn = hookTurn{toolRun: true, transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}
 	}
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
@@ -229,6 +223,28 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	}
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, in.agentFailure(),
 		in.HookEventName == "UserPromptSubmit", at, turn)
+}
+
+// subagentStopRemaining is the count a SubagentStop lowers the Stop's to:
+// the subagents its snapshot lists besides the stopping one. ok is false for
+// an internal agent's (no agent_type) or one without a list: it says
+// nothing about them.
+func (in sessionStateInput) subagentStopRemaining() (remaining int64, ok bool) {
+	remaining, ok = backgroundSubagents(in.BackgroundTasks, in.AgentID)
+	return remaining, ok && in.AgentType != ""
+}
+
+// toolRunTurn classifies a PostToolUse: subagent is true for one fired
+// inside a subagent, and a main-thread one gets its turn placement. The zero
+// values are every other event.
+func (in sessionStateInput) toolRunTurn() (turn hookTurn, subagent bool) {
+	if in.HookEventName != "PostToolUse" {
+		return hookTurn{}, false
+	}
+	if in.AgentID != "" {
+		return hookTurn{}, true
+	}
+	return hookTurn{toolRun: true, transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}, false
 }
 
 // hookTurn ties a main-thread PostToolUse or the Stop hook's write to its
