@@ -140,8 +140,8 @@ type fakeProc struct {
 	startErr bool
 }
 
-func (f fakeProc) exists(int) bool { return f.alive }
-func (f fakeProc) start(int) (string, bool) {
+func (f fakeProc) Exists(int) bool { return f.alive }
+func (f fakeProc) Start(int) (string, bool) {
 	if f.startErr {
 		return "", false
 	}
@@ -167,7 +167,7 @@ func TestAliveRejectsAReusedPID(t *testing.T) {
 		{"no pid", Entry{}, fakeProc{alive: true}, false},
 	}
 	for _, c := range cases {
-		if got := alive(c.entry, c.proc); got != c.want {
+		if got := AliveWith(c.entry, c.proc); got != c.want {
 			t.Errorf("%s: alive = %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -177,7 +177,7 @@ func TestAliveRejectsAReusedPID(t *testing.T) {
 // time, and a dead pid gone.
 func TestAliveSeesTheCurrentProcess(t *testing.T) {
 	pid := os.Getpid()
-	started, ok := osProc{}.start(pid)
+	started, ok := SystemProcs{}.Start(pid)
 	if !ok || started == "" {
 		t.Fatalf("start(self) = %q, %v", started, ok)
 	}
@@ -192,7 +192,7 @@ func TestAliveSeesTheCurrentProcess(t *testing.T) {
 // procStart is written in UTC: the probe's start time, read as UTC, is the
 // test process's real start, not one shifted by the local zone.
 func TestProcStartIsReadInUTC(t *testing.T) {
-	started, ok := osProc{}.start(os.Getpid())
+	started, ok := SystemProcs{}.Start(os.Getpid())
 	if !ok {
 		t.Fatal("start(self) not read")
 	}

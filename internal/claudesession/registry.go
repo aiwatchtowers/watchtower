@@ -96,26 +96,28 @@ func FindSession(configDir, sessionID string) (Entry, bool, error) {
 	return Entry{}, false, nil
 }
 
-// procInfo is the process table seam for Alive.
-type procInfo interface {
-	exists(pid int) bool
-	// start is the process's start time as `ps -o lstart=` prints it in UTC.
-	start(pid int) (string, bool)
+// ProcInfo is the process table seam for AliveWith: SystemProcs in
+// production, a fake in tests (callers outside this package included).
+type ProcInfo interface {
+	Exists(pid int) bool
+	// Start is the process's start time as `ps -o lstart=` prints it in UTC.
+	Start(pid int) (string, bool)
 }
 
 // Alive reports whether the entry's process still runs. When the entry
 // carries a procStart, the live process's start time must match it, so a
 // reused pid is not alive.
-func Alive(e Entry) bool { return alive(e, osProc{}) }
+func Alive(e Entry) bool { return AliveWith(e, SystemProcs{}) }
 
-func alive(e Entry, p procInfo) bool {
-	if e.PID <= 0 || !p.exists(e.PID) {
+// AliveWith is Alive over the process table p.
+func AliveWith(e Entry, p ProcInfo) bool {
+	if e.PID <= 0 || !p.Exists(e.PID) {
 		return false
 	}
 	if e.ProcStart == "" {
 		return true
 	}
-	started, ok := p.start(e.PID)
+	started, ok := p.Start(e.PID)
 	return ok && sameStart(started, e.ProcStart)
 }
 
@@ -128,14 +130,15 @@ func sameStart(a, b string) bool {
 // psTimeout bounds one ps call.
 const psTimeout = 2 * time.Second
 
-type osProc struct{}
+// SystemProcs is the live process table: kill(pid, 0) and ps.
+type SystemProcs struct{}
 
-func (osProc) exists(pid int) bool {
+func (SystemProcs) Exists(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
-func (osProc) start(pid int) (string, bool) {
+func (SystemProcs) Start(pid int) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), psTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
