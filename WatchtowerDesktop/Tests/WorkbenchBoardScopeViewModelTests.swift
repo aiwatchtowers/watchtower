@@ -207,8 +207,10 @@ final class WorkbenchBoardScopeViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedTargetID, board.leaf, "a panel on another target stays")
     }
 
-    /// The lane header's VoiceOver Open Group goes through `enterScope`: no
-    /// first click opened the panel, so a panel open on the group stays.
+    /// The contract the lane header's VoiceOver Open Group relies on:
+    /// `enterScope` (unlike the double-click's `enterLane`) leaves a panel
+    /// open on the group. The view wiring that picks `enterScope` for that
+    /// action is not covered here — it is checked by hand.
     func testOpenGroupOnALaneKeepsThePanelOnTheGroup() throws {
         let board = try seedBoard()
         let vm = makeVM(project: board.project)
