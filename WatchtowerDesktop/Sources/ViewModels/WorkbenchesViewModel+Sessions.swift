@@ -218,7 +218,8 @@ extension WorkbenchesViewModel {
 
     /// "Work on it" (spec §4): the target's most recently active session
     /// (resumed), else a new one named after the target
-    /// and started with the fixed work-on prompt. A split keeps the board it
+    /// and started with the fixed work-on prompt (the group prompt for a
+    /// target with sub-targets). A split keeps the board it
     /// was started from (the session goes beside it); a single pane switches
     /// to the session. `projectID` is the target's own project, which keys a
     /// read error (the selection may change during the read).
@@ -295,8 +296,8 @@ extension WorkbenchesViewModel {
         let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
         // A blank brief is no brief: the work-on prompt goes instead.
         let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let brief = given.flatMap { $0.isEmpty ? nil : $0 } ?? TerminalLaunch.workOnTargetPrompt(
-            targetID: targetID, vocabulary: vocabulary(projectID: found.project.id)
+        let brief = given.flatMap { $0.isEmpty ? nil : $0 } ?? TerminalLaunch.workOnPrompt(
+            targetID: targetID, isGroup: found.isGroup, vocabulary: vocabulary(projectID: found.project.id)
         )
         return try await createAndActivate(
             .init(projectID: found.project.id, kind: .claude, title: text.isEmpty ? "Target #\(targetID)" : text,
@@ -309,9 +310,9 @@ extension WorkbenchesViewModel {
         )
     }
 
-    /// A target's own workbench, its text, and the sessions of that
-    /// workbench working on it.
-    typealias TargetSessions = (project: Workbench, targetText: String, rows: [TerminalSession])
+    /// A target's own workbench, its text, whether it has sub-targets on that
+    /// workbench, and the sessions of that workbench working on it.
+    typealias TargetSessions = (project: Workbench, targetText: String, isGroup: Bool, rows: [TerminalSession])
 
     /// nil when the target is not on a workbench board.
     private func readTargetSessions(_ targetID: Int64) async throws -> TargetSessions? {
@@ -320,7 +321,8 @@ extension WorkbenchesViewModel {
                   let projectID = target.workbenchID,
                   let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
             let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
-            return (project, target.text, rows.filter { $0.projectID == projectID })
+            let isGroup = try TargetQueries.hasChildren(db, id: targetID, workbenchID: projectID)
+            return (project, target.text, isGroup, rows.filter { $0.projectID == projectID })
         }
     }
 

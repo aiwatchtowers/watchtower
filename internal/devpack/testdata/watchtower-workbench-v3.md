@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v4
+x-watchtower-pack: v3
 ---
 
 # Watchtower Workbench
@@ -51,21 +51,6 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 - **Group related targets — before every `create_targets`.** Read the board (`workbench_board`) and look for targets on the same topic as the new one: the same feature, screen, component or kind of fix. If they already sit under a common group target, create the new one under that group (`parent_id`). If they are loose at the top level, first create a group target for them (text = the shared topic, intent = what the group covers), move the related targets under it (`update_target` with `parent_id`), then create the new one under it too. Only a target with no topical neighbour goes to the top level. Do not regroup targets the owner placed on purpose; if a grouping is unclear, ask the owner (`ask_owner`, `kind: question`) instead of guessing.
 - **A spec, plan or design is written** → ask the owner to review it, every time, as "Asking the owner" below says. The review happens in Watchtower — not in a chat artifact, not in the terminal, anywhere else.
 - **A plan is written** → also `create_targets` in one call, one sub-target per plan task, under the feature target (`parent_id` = the feature target's id). Text = the task's title; intent = the plan path plus the task number, e.g. `docs/plans/feature-x.md — Task 3`, so any later session can find the task's steps. Nest deeper with `parent_key` only where the plan itself nests.
-
-## Working a target
-
-The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` with its `branch` in one `update_target`, and work it under the rules above (feature, spec, plan).
-
-## Working a group
-
-The first prompt `Work on group #<id>` hands you a target with sub-targets.
-
-1. Read the subtree: `workbench_board`, then `get_target` and `list_comments` on the group. The group's intent is the brief.
-2. Whichever way you pick the work below, skip a leaf that is `blocked`, waits on an open ask, or was already `in_progress` or `in_review` when you started — another session is on it.
-3. If the intent names a plan, run that plan as "Running a plan" says, in the order its dependencies allow.
-4. Otherwise take the open leaves in board order — priority, then status, then id. Leaves that do not depend on each other may run in parallel only where the folder's own rules allow parallel work.
-5. Set each leaf `in_progress` with its `branch` in one `update_target` when you start it. Set the leaves' statuses, never the group's: it follows its children.
-6. When the group's work is done or handed to the owner, call `finish_session` once with `target_id` = the group and a summary of the whole group.
 
 ## Asking the owner
 

@@ -15,28 +15,9 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class OwnerAsksViewModel {
-    /// Where a written answer's line went (PROJ-12, board #379).
-    enum Delivery: Equatable {
-        /// Pasted into the ask's session and submitted with Return (or by
-        /// the owner's own Return during the pause).
-        case submitted
-        /// Pasted without Return — the session's hooks reported nothing this
-        /// run, its prompt held text not submitted (the owner's, or another
-        /// line's — a hand-off's too, even one still in its pause), a state
-        /// read failed, or a permission prompt
-        /// appeared during the pause: the owner presses it.
-        case typed
-        /// Bracketed paste was off: on the clipboard, nothing typed.
-        case copied
-        /// The session waits on a permission prompt: nothing typed yet; the
-        /// line goes once the prompt is resolved (`deliverHeldAnswers`).
-        case held
-        /// Another answer is going to the session right now: nothing typed
-        /// yet; the line goes right after it.
-        case queued
-        /// No session, or not running: the session's next brief lists it.
-        case noSession
-    }
+    /// Where a written answer's line went (PROJ-12, board #379): the
+    /// session line delivery's own (`SessionLineDelivery.Delivery`).
+    typealias Delivery = SessionLineDelivery.Delivery
 
     /// What a structured answer (`answer(_:with:)`) came to.
     enum AnswerOutcome: Equatable {
@@ -170,20 +151,21 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var onLoaded: ((_ projectID: Int64) -> Void)?
     /// An answer was saved: the session states re-read their open asks.
     @ObservationIgnored var onAnswered: (() async -> Void)?
-    /// Whether a session's agent waits on a permission prompt (its
-    /// `SessionAgentStatus` is `needsApproval`): an answer's line is held,
-    /// never typed into the prompt.
-    @ObservationIgnored var needsApproval: (_ sessionID: Int64) -> Bool = { _ in false }
-    /// Whether the session's hooks reported during its current run — a
-    /// state, or the mark of a run the agent has not turned to yet
-    /// (`SessionAgentStatus.hooksReported`, board #396): only then may an
-    /// answer's Return follow — without hooks the app cannot tell a
-    /// permission prompt is on screen.
-    @ObservationIgnored var hasHookState: (_ sessionID: Int64) -> Bool = { _ in false }
-    /// A fresh read of the session states, before a line goes and again
-    /// after the paste's pause (the poll may be up to 1 s stale); returns
-    /// whether the read succeeded — a Return needs both reads.
-    @ObservationIgnored var refreshStates: () async -> Bool = { false }
+    /// The delivery's gates (`SessionLineDelivery`), set here by the
+    /// wiring and the tests: a permission prompt holds a line, the hooks'
+    /// report this run allows its Return, and a fresh read precedes it.
+    var needsApproval: (_ sessionID: Int64) -> Bool {
+        get { lineDelivery.needsApproval }
+        set { lineDelivery.needsApproval = newValue }
+    }
+    var hasHookState: (_ sessionID: Int64) -> Bool {
+        get { lineDelivery.hasHookState }
+        set { lineDelivery.hasHookState = newValue }
+    }
+    var refreshStates: () async -> Bool {
+        get { lineDelivery.refreshStates }
+        set { lineDelivery.refreshStates = newValue }
+    }
     /// Seams for tests: the poll's wait, the held hint's wait and the
     /// activation notifications.
     @ObservationIgnored var pollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -194,14 +176,10 @@ final class OwnerAsksViewModel {
     private let terminalCenter: TerminalCenter?
     private let defaults: UserDefaults
     @ObservationIgnored private var fingerprints: [Int64: String] = [:]
-    /// Answers written while their session waited on a permission prompt,
-    /// by ask id. In memory only: after a quit the ask stays `answered` and
-    /// the session's next brief lists it.
-    @ObservationIgnored private var heldAnswers: [Int64: HeldAnswer] = [:]
-    /// Sessions a line is going to right now (paste, pause, Return): another
-    /// line for one of them is held until it is done, so two answers never
-    /// land in one prompt.
-    @ObservationIgnored private var delivering: Set<Int64> = []
+    /// Where an answer's line goes (PROJ-12): its held and queued lines
+    /// (in memory only: after a quit the ask stays `answered` and the
+    /// session's next brief lists it), one queue per session.
+    @ObservationIgnored private let lineDelivery: SessionLineDelivery
     /// The latest held hint's watch per session (`watchHold`): an older
     /// watch never marks a newer hold.
     @ObservationIgnored private var heldSerials: [Int64: Int] = [:]
@@ -209,9 +187,15 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
-    init(dbPool: DatabasePool, terminalCenter: TerminalCenter?, defaults: UserDefaults = .standard) {
+    init(
+        dbPool: DatabasePool,
+        terminalCenter: TerminalCenter?,
+        lineDelivery: SessionLineDelivery,
+        defaults: UserDefaults = .standard
+    ) {
         self.dbPool = dbPool
         self.terminalCenter = terminalCenter
+        self.lineDelivery = lineDelivery
         self.defaults = defaults
         drawerWidth = Self.clampDrawerWidth(defaults.object(forKey: Self.drawerWidthKey) as? Double ?? Self.defaultDrawerWidth)
     }
@@ -485,7 +469,7 @@ final class OwnerAsksViewModel {
 
     /// Answers `ask` from its draft (spec 2026-10-03 Part 5, PROJ-12 as
     /// amended 2026-10-04): one guarded write, and only then the
-    /// `OwnerAskPrompt` line to the ask's session (`deliver`) — pasted and
+    /// `OwnerAskPrompt` line to the ask's session (`SessionLineDelivery`) — pasted and
     /// submitted, or held while that session waits on a permission prompt.
     /// An ask without a session, or one not running, gets nothing typed: the
     /// brief delivers it. An ask the agent withdrew meanwhile writes nothing
@@ -514,7 +498,7 @@ final class OwnerAsksViewModel {
 
     /// The step both entries share, for an answer already checked: one
     /// guarded write, then the `OwnerAskPrompt` line to the ask's session
-    /// (`deliver`), the held answers, notices and hints. An ask no longer
+    /// (`SessionLineDelivery`), the held answers, notices and hints. An ask no longer
     /// open writes nothing and keeps the draft.
     private func store(_ answer: OwnerAskAnswer, for ask: OwnerAsk) async -> AnswerOutcome {
         guard !isAnswering(ask.id) else { return .busy }
@@ -539,9 +523,8 @@ final class OwnerAsksViewModel {
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         var delivery = Delivery.noSession
         if let sessionID = ask.sessionID {
-            delivery = await deliver(line, sessionID: sessionID)
-            if delivery == .held || delivery == .queued {
-                heldAnswers[askID] = HeldAnswer(sessionID: sessionID, line: line, run: terminalCenter?.runs[sessionID])
+            delivery = await lineDelivery.deliverLine(line, key: .ask(askID), sessionID: sessionID) { [weak self] event in
+                self?.heldAnswerTried(event, askID: askID, sessionID: sessionID)
             }
         }
         answerNotices[askID] = .delivered(delivery)
@@ -557,102 +540,37 @@ final class OwnerAsksViewModel {
 
     /// The session states changed or were read again
     /// (`SessionAgentStateCenter.onChange`/`onRead`): each held answer whose
-    /// session no longer waits on a permission prompt goes now. One whose session stopped or started again meanwhile
-    /// goes nowhere — the session's brief lists it.
+    /// session no longer waits on a permission prompt goes now
+    /// (`SessionLineDelivery.deliverHeld`). One whose session stopped or
+    /// started again meanwhile goes nowhere — the session's brief lists it.
     func deliverHeldAnswers() async {
-        for askID in heldAnswers.keys.sorted() {
-            guard let held = heldAnswers[askID], !delivering.contains(held.sessionID) else { continue }
-            if needsApproval(held.sessionID) {
-                // Queued behind an answer that went meanwhile, and now a
-                // permission prompt holds it. Its own notice says so: the
-                // session's hint may be the earlier answer's by now.
-                if answerNotices[askID] == .delivered(.queued) {
-                    answerNotices[askID] = .delivered(.held)
-                    showHint(.held, sessionID: held.sessionID)
-                }
-                continue
-            }
-            // Taken before any wait, so an overlapping call never sends it twice.
-            heldAnswers[askID] = nil
-            let sameRun = terminalCenter?.runs[held.sessionID] == held.run
-            let delivery = sameRun ? await deliver(held.line, sessionID: held.sessionID) : .noSession
-            if delivery == .held || delivery == .queued {
-                heldAnswers[askID] = held
-                answerNotices[askID] = .delivered(delivery)
-                showHint(delivery, sessionID: held.sessionID)
-                continue
-            }
+        await lineDelivery.deliverHeld()
+    }
+
+    /// A held answer's line was tried again: its notice and the session's
+    /// hint follow.
+    private func heldAnswerTried(_ event: SessionLineDelivery.HeldEvent, askID: Int64, sessionID: Int64) {
+        switch event {
+        case .awaitingApproval:
+            // Queued behind a line that went meanwhile, and now a
+            // permission prompt holds it. Its own notice says so: the
+            // session's hint may be the earlier answer's by now.
+            guard answerNotices[askID] == .delivered(.queued) else { return }
+            answerNotices[askID] = .delivered(.held)
+            showHint(.held, sessionID: sessionID)
+        case let .tried(delivery):
             answerNotices[askID] = .delivered(delivery)
-            showHint(delivery, sessionID: held.sessionID)
+            showHint(delivery, sessionID: sessionID)
         }
     }
 
     /// The held bar's Dismiss: the session's held answers are not typed
     /// at all — they stay answered, and the session's next brief lists them.
     func cancelHeldAnswers(sessionID: Int64) {
-        for (askID, held) in heldAnswers where held.sessionID == sessionID {
-            heldAnswers[askID] = nil
-            answerNotices[askID] = .delivered(.noSession)
+        for key in lineDelivery.dropHeld(sessionID: sessionID, where: { $0.askID != nil }) {
+            if let askID = key.askID { answerNotices[askID] = .delivered(.noSession) }
         }
         terminalCenter?.dismissClipboardHint(sessionID: sessionID)
-    }
-
-    /// The line goes to a running session: queued while another line is
-    /// going to it, held while it waits on a permission prompt (a Return
-    /// could confirm the prompt's default) or while its state cannot be read
-    /// right before the paste, otherwise pasted, and submitted after
-    /// `TerminalCenter.answerSubmitDelay` only when the state read after the
-    /// pause succeeded too, the session's hooks
-    /// reported this run (a state, or the run's mark) and still show no
-    /// permission prompt after
-    /// the pause, and its prompt held no text not submitted; else the paste
-    /// waits for the owner's Return. While the agent works, Claude Code
-    /// queues the submitted line for its next turn. Without bracketed paste
-    /// the line is copied, never typed.
-    private func deliver(_ line: String, sessionID: Int64) async -> Delivery {
-        guard let center = terminalCenter, center.liveIDs.contains(sessionID),
-              let run = center.runs[sessionID] else { return .noSession }
-        guard !delivering.contains(sessionID) else { return .queued }
-        delivering.insert(sessionID)
-        defer {
-            delivering.remove(sessionID)
-            // The lines held behind this one go next.
-            if heldAnswers.values.contains(where: { $0.sessionID == sessionID }) {
-                Task { [weak self] in await self?.deliverHeldAnswers() }
-            }
-        }
-        // A failed read leaves the last good state, which may miss a
-        // permission prompt shown since: hold, and try again on the next
-        // read that succeeds (`SessionAgentStateCenter.onRead`).
-        let fresh = await refreshStates()
-        // A relaunch during the read is a new run: the line was answered
-        // into the one before, whose brief lists it (board #387).
-        guard center.liveIDs.contains(sessionID), center.runs[sessionID] == run else { return .noSession }
-        if !fresh || needsApproval(sessionID) {
-            NSLog("OwnerAsks: session %lld: answer held — %@", sessionID,
-                  fresh ? "permission prompt (needsApproval)" : "state read failed")
-            return .held
-        }
-        let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
-                                               delay: TerminalCenter.answerSubmitDelay,
-                                               refresh: refreshStates) { [weak self] in
-            guard let self else { return false }
-            let withheld: String? = if !hasHookState(sessionID) {
-                "no hook state this run"
-            } else if needsApproval(sessionID) {
-                "permission prompt (needsApproval)"
-            } else {
-                nil
-            }
-            if let withheld { NSLog("OwnerAsks: session %lld: Return withheld — %@", sessionID, withheld) }
-            return withheld == nil
-        }
-        switch result {
-        case .submitted: return .submitted
-        case .pasted: return .typed
-        case .copied: return .copied
-        case .noSession: return .noSession
-        }
     }
 
     /// The pane's hint for a line not sent yet. A submitted one needs none
@@ -689,16 +607,6 @@ final class OwnerAsksViewModel {
     }
 
     private func heldAskIDs(sessionID: Int64) -> Set<Int64> {
-        Set(heldAnswers.filter { $0.value.sessionID == sessionID }.keys)
+        Set(lineDelivery.heldKeys(sessionID: sessionID).compactMap(\.askID))
     }
-}
-
-/// An answer's line waiting for its session to leave a permission prompt.
-private struct HeldAnswer {
-    let sessionID: Int64
-    let line: String
-    /// The session's process run (`TerminalCenter.runs`) when the answer
-    /// was written; a line never goes into a later run (that run's brief
-    /// listed the answer).
-    let run: Int?
 }

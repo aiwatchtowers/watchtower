@@ -159,6 +159,13 @@ package enum TargetQueries {
         try Target.fetchOne(db, sql: "SELECT * FROM targets WHERE id = ?", arguments: [id])
     }
 
+    /// Whether a workbench target has sub-targets on the same workbench (a group).
+    /// Closed and archived children count too: the group skill reads the subtree itself.
+    package static func hasChildren(_ db: Database, id: Int64, workbenchID: Int64) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM targets WHERE parent_id = ? AND project_id = ?)",
+                          arguments: [id, workbenchID]) ?? false
+    }
+
     package static func fetchBySourceRef(
         _ db: Database,
         sourceType: String,
