@@ -119,6 +119,22 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertEqual(kinds.count, 9, "every §4b kind is covered")
     }
 
+    /// PROJ-11 (#411, ruling F3): error outranks background on the row shape
+    /// Go actually stores (`TestProj11_StopOverWaitingWithAnotherCountWrites`):
+    /// a StopFailure at t0, then a counted Stop at t1 keeps the error and
+    /// moves both agent_state_at and agent_failed_at to t1, stamping the
+    /// count at t1; then an idle notice at t2 drops the count and moves both
+    /// again.
+    func testProj11_ErrorOutranksACountedStopOnGosRowShape() {
+        let afterCountedStop = row("waiting", at: stamp(2), failedAt: stamp(2), error: "rate_limit",
+                                   background: 2, backgroundAt: stamp(2))
+        XCTAssertEqual(SessionAgentStatus.effective(row: afterCountedStop, live: true, startedAt: started, now: readAt),
+                       .live(.failed, error: "rate_limit"), "a counted Stop over a failed waiting")
+        let afterIdleNotice = row("waiting", at: stamp(3), failedAt: stamp(3), error: "rate_limit")
+        XCTAssertEqual(SessionAgentStatus.effective(row: afterIdleNotice, live: true, startedAt: started, now: readAt),
+                       .live(.failed, error: "rate_limit"), "an idle notice after it")
+    }
+
     /// PROJ-11 (amended 2026-10-03): a stored `waiting` is a turn that is
     /// over — Stopped, grey — never "waiting for you"; only an open ask or a
     /// permission dialog turns a session to the owner.

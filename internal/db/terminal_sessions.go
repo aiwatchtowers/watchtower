@@ -45,7 +45,8 @@ type TerminalSession struct {
 
 // AgentFailure flags a stored `waiting` as a turn that ended on an error (a
 // StopFailure hook). At is agent_failed_at, the agent_state_at of the write
-// that set it: a write stamps it with its own time, so At is read-only.
+// that set it or, when a counted Stop kept the error, of that write: a write
+// stamps it with its own time, so At is read-only.
 type AgentFailure struct {
 	At    string
 	Error string // the StopFailure error type, clipped by the hook; '' = unknown
@@ -239,7 +240,9 @@ type AgentOrder struct {
 // both; an `approval` keeps both. A `waiting` whose count differs from the stored
 // one is a change, not a repeat, and advances agent_state_at; when only
 // that let it through over a failed `waiting`, the error is kept as by
-// any plain `waiting`. One guarded UPDATE, no transaction; false when a
+// any plain `waiting` and agent_failed_at moves to the new agent_state_at
+// (Error outranks background: the Desktop reads a row as failed only while
+// the two match). One guarded UPDATE, no transaction; false when a
 // guard held it back.
 func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string,
 	failure *AgentFailure, prompt bool, order AgentOrder) (bool, error) {
@@ -275,7 +278,9 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		agent_state_at = CASE WHEN agent_state_at GLOB '`+agentStateAtGlob+`' AND agent_state_at > ?
 		                      THEN agent_state_at ELSE ? END,
 		agent_failed_at = CASE WHEN ? = 0 AND ? = 'waiting' AND agent_state = 'waiting' AND agent_failed_at IS NOT NULL
-		                       THEN agent_failed_at ELSE ? END,
+		                       THEN CASE WHEN agent_state_at GLOB '`+agentStateAtGlob+`' AND agent_state_at > ?
+		                                 THEN agent_state_at ELSE ? END
+		                       ELSE ? END,
 		agent_error = CASE WHEN ? = 0 AND ? = 'waiting' AND agent_state = 'waiting' AND agent_failed_at IS NOT NULL
 		                   THEN agent_error ELSE ? END,
 		agent_tool_run = ?,
@@ -292,7 +297,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		  AND (? = '' OR agent_state = ?)
 		  AND (? = 0 OR agent_turn_end IS ?)`,
 		state, stamp, stamp,
-		failed, state, failedAt, failed, state, agentError,
+		failed, state, stamp, stamp, failedAt, failed, state, agentError,
 		toolRun, keepBackground, background, keepBackground, backgroundAt,
 		state, fromPrompt, id, workbenchID, sessionID, state, failed, agentError,
 		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, toolRun, order.SeenTurnEnd)

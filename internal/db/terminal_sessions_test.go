@@ -848,26 +848,35 @@ func TestProj11_StopOverWaitingWithAnotherCountWrites(t *testing.T) {
 	}
 
 	// F3: a failed `waiting` keeps its error through a counted Stop and an
-	// idle notice, which still write the count columns.
+	// idle notice, which still write the count columns. Error outranks
+	// background: agent_failed_at moves along with agent_state_at, so the
+	// Desktop (failed only when agent_failed_at == agent_state_at) still
+	// reads the row as failed.
 	failed := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
 	if !w(d.SetTerminalAgentState(failed, pid, agentStateUUID, "waiting", t0, "", &AgentFailure{Error: "rate_limit"}, false, AgentOrder{})) {
 		t.Fatal("the StopFailure did not write")
 	}
-	wantFailure := AgentFailure{At: t0.Format(agentStateAtLayout), Error: "rate_limit"}
+	requireFailedNow := func(at time.Time, what string) {
+		t.Helper()
+		s := storedSession(t, d, failed)
+		want := AgentFailure{At: at.Format(agentStateAtLayout), Error: "rate_limit"}
+		if s.AgentFailure == nil || *s.AgentFailure != want {
+			t.Fatalf("after %s: failure %+v, want %+v", what, s.AgentFailure, want)
+		}
+		if got := AgentStateStamp(s.AgentStateAt); got != s.AgentFailure.At {
+			t.Fatalf("after %s: agent_state_at %s != agent_failed_at %s: the row no longer reads failed", what, got, s.AgentFailure.At)
+		}
+	}
 	if !w(d.SetTerminalAgentState(failed, pid, agentStateUUID, "waiting", t0.Add(time.Second), "", nil, false, stopWith(2))) {
 		t.Fatal("a counted Stop over a failed waiting did not write")
 	}
 	requireBackground(t, d, failed, 2, t0.Add(time.Second), "a counted Stop over a failed waiting")
-	if s := storedSession(t, d, failed); s.AgentFailure == nil || *s.AgentFailure != wantFailure {
-		t.Fatalf("after the counted Stop: failure %+v, want %+v", s.AgentFailure, wantFailure)
-	}
+	requireFailedNow(t0.Add(time.Second), "the counted Stop")
 	if !w(d.SetTerminalAgentState(failed, pid, agentStateUUID, "waiting", t0.Add(2*time.Second), "", nil, false, AgentOrder{})) {
 		t.Fatal("an idle notice over a counted failed waiting did not write")
 	}
 	requireNoBackground(t, d, failed, "an idle notice over a counted failed waiting")
-	if s := storedSession(t, d, failed); s.AgentFailure == nil || *s.AgentFailure != wantFailure {
-		t.Fatalf("after the idle notice: failure %+v, want %+v", s.AgentFailure, wantFailure)
-	}
+	requireFailedNow(t0.Add(2*time.Second), "the idle notice")
 }
 
 // Board #411 (db half): a main turn (a prompt, a main or a subagent's tool
