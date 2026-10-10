@@ -32,6 +32,14 @@
 - Inner loop only per task (`go test ./internal/<pkg>`, `go test ./cmd -run '<regex>'`, `make test-swift FILTER=…`, `make lint-diff`). No `-count=1`. Logs to a file with an explicit exit code (`cmd > log 2>&1; echo "exit=$?"`), never piped through `tail`.
 - Swift tasks (6, 7, 8, 14) run strictly one at a time.
 
+## Who runs the probe, and why (dual-path rules)
+
+The probe runs in **Go** (`watchtower workbench session-probe`, Tasks 11 and 13); the Desktop only decides *when* (Task 14).
+- `agent_background` / `agent_background_at` are hook-written columns read by Swift. If the Desktop also wrote them, every Go write guard (turn order, compare-and-clear, the "only the Stop starts background" invariant) would need a Swift twin with collision tests (review-rules "Go ↔ Swift dual-path contracts"). One writer keeps those guards in one place.
+- The probe needs the registry, the pid check (`kill(pid, 0)` + process start time) and a Unix-socket client. All three are plain Go and testable with `t.TempDir()` listeners, next to the hook code that parses the same Claude Code inputs (`internal/claudesession`).
+- Not the daemon: the daemon does not know which terminal is live, whether the owner typed in the last 2 minutes, or whether the row reads Needs approval. The Desktop knows all three (TerminalCenter, `SessionAgentStateCenter`). The trigger stays there, and it costs nothing when no session is live (the 1 s poll already stops).
+- The Desktop keeps only in-memory bookkeeping (ping in flight, window used, 5-min timer). Losing it on relaunch at worst repeats one stage-1 probe.
+
 ## Review Focus
 
 1. **Grace/staleness expiry with no DB write.** Nothing writes when the 120 s grace or a staleness bound runs out; the row must still turn Stopped within one poll and post its one notice. Pinned in Task 6 (`testBackgroundEndsOnTheClockWithoutAWrite`, center level).
@@ -348,7 +356,11 @@ No production change expected (spec §5.4); this task pins it. If a test fails, 
 - Modify: `docs/app-guide.md` — the session states list: Agents working, its caption and glyph, the order, "never announced", Re-run Setup once.
 - Modify: `CLAUDE.md` feature-notes bullet for the workbench — append a short "(2026-10-10: Agents working, migration 00106, `SubagentStop` state hook, PROJ-11 amended)" clause.
 
-Write the staleness clause of PROJ-11 as "after 30 minutes with no report the session is probed (spec §10); a probe that cannot confirm the agents ends the count" — Task 14 adds the probe's details (stages, caption, 5-min ping timeout, gates) to the inventory, feature notes and app guide once they are built.
+Write the final PROJ-11 staleness text now (spec §10, asks #138/#140), replacing the spec §6 sentence "30 minutes with no report about the agents":
+
+> A count with no report for 30 minutes is probed, never ended on the clock alone. Stage 1 (passive, no model turn) reads Claude Code's session registry entry for the session (`<claude config dir>/sessions/<pid>.json`, matched by `sessionId`): no entry or a dead process (pid gone or reused) ends the count; `status = busy` leaves the row alone; a subagent transcript of the session written in the last 30 minutes refreshes `agent_background_at`. Otherwise stage 2 sends the main agent one message over Claude Code's peer messaging channel (version-gated on `peerProtocol`/`peerFeatures`; at most one per run per 30-minute silence window; never while `busy`, at Needs approval, or within 2 minutes of the owner typing into that terminal); the row reads "… · checking…" while it is in flight, and the main agent's next Stop re-snapshots the count. No Stop within 5 minutes of the ping, or any channel failure, ends the count. Ending the count is a compare-and-clear on `agent_background_at` written by Go only; the row then reads Stopped (or its ask / finished state) with one notice.
+
+Add the v1 limits line: the registry and the peer channel are undocumented Claude Code internals — a change in them loses the probe (the count ends at the first stale probe, as Stopped), never sticks the state; the known double notice (§5.3). If Task 12 later returns NO-GO, Task 14 replaces the stage-2 sentence with "Otherwise the count ends" and records the NO-GO reason in v1 limits; nothing else in this text changes.
 
 - [ ] **Step 1: Edit the four documents.**
 - [ ] **Step 2: Verify** guard names in the inventory exist: for each `TestProj11_…`/`testProj11_…` named, `grep -rn "<name>" cmd internal WatchtowerDesktop/Tests` finds it. `bash scripts/leak-check.sh` style scan over the diff (no ids, no paths).
