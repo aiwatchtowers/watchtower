@@ -385,16 +385,17 @@ final class MobileHubService {
         }
         guard status == .starting, epoch == startEpoch else { return nil }
         do {
-            // A pull that failed or timed out before this hub ever read the
-            // heartbeat leaves an empty buffer that proves nothing: claiming
-            // on it would silently take over a live hub (spec §8 I-1). Once
-            // a read completed, the buffered heartbeat decides.
-            if pulled != true, !takingOver, try !identity.hasReadHeartbeat() {
+            // A pull that failed or timed out leaves a buffer that proves
+            // nothing: empty, or as old as the last fetch that got through,
+            // so a live hub's newer heartbeat may be missing from it.
+            // Claiming on it would silently take over that hub (spec §8 I-1).
+            // Only the owner's explicit Take over goes ahead without it.
+            if pulled != true, !takingOver {
                 let why = pulled == nil ? "iCloud didn't answer in time" : "iCloud fetch failed"
-                logger.warning("single-hub check deferred: \(why, privacy: .public), no heartbeat read yet")
+                logger.warning("single-hub check deferred: \(why, privacy: .public)")
                 return .failed("Couldn't check which Mac is the hub: \(why)")
             }
-            if pulled == nil { logger.warning("heartbeat pull timed out; checking the buffered heartbeat") }
+            if pulled != true { logger.warning("heartbeat pull did not complete; taking over on the buffered heartbeat") }
             let hubID = try identity.hubID()
             let latest = try await identity.readHeartbeat(from: transport)
             if !takingOver, let latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {

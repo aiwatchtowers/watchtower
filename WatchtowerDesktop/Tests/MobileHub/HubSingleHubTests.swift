@@ -140,18 +140,40 @@ final class HubSingleHubTests: XCTestCase {
         XCTAssertEqual(result, .running, "this hub's own heartbeat from an earlier run is not another hub")
     }
 
-    func testAHungPullTimesOutAndTheBufferedHeartbeatDecides() async throws {
+    func testAHungPullAfterAnEarlierReadDoesNotClaim() async throws {
         let cloud = InMemoryCloudTransport()
         let sidecar = try HubSyncState.inMemory()
         _ = try await HubIdentity(sidecar: sidecar).readHeartbeat(from: cloud)  // an earlier run read the zone
-        try await seed(foreignHeartbeat(age: 10, macName: "Mac B"), into: cloud)
         let transport = StubHubTransport(cloud: cloud)
         transport.setPullHangs(true)
         let hub = try makeHub(transport: transport, sidecar: sidecar, cloudTimeout: .milliseconds(50))
 
         let result = await hub.enable()
 
-        XCTAssertEqual(result, .otherHub("Mac B"), "the check runs on the buffer once the pull times out")
+        XCTAssertEqual(result, .unavailable("Couldn't check which Mac is the hub: iCloud didn't answer in time"))
+        XCTAssertTrue(try savedHeartbeats(transport).isEmpty, "a stale buffer is no proof that no hub is live")
+    }
+
+    func testAFailingPullWithAStaleCursorDoesNotClaimButATakeOverDoes() async throws {
+        let cloud = InMemoryCloudTransport()
+        let sidecar = try HubSyncState.inMemory()
+        // An earlier run read the zone: the cursor exists, and the newest
+        // heartbeat it holds is this hub's own, long stale. A live foreign
+        // heartbeat written since stays unread while the pull fails.
+        try await seed(foreignHeartbeat(age: 3600, hubID: try sidecar.ensureHubID(), macName: "Mac acme"), into: cloud)
+        _ = try await HubIdentity(sidecar: sidecar).readHeartbeat(from: cloud)
+        let transport = StubHubTransport(cloud: cloud)
+        transport.setPullFails(true)
+        let hub = try makeHub(transport: transport, sidecar: sidecar)
+
+        let result = await hub.enable()
+
+        XCTAssertEqual(result, .unavailable("Couldn't check which Mac is the hub: iCloud fetch failed"))
+        XCTAssertFalse(hub.isPublishing)
+        XCTAssertTrue(try savedHeartbeats(transport).isEmpty, "no heartbeat on a stale copy")
+
+        let takeOver = await hub.takeOver()
+        XCTAssertEqual(takeOver, .running, "the owner's explicit take over does not need the pull")
     }
 
     func testAHungPullBeforeAnyHeartbeatReadDoesNotClaim() async throws {

@@ -79,12 +79,6 @@ struct HubIdentity: Sendable {
         try sidecar.setMetaValue(raw, forKey: Self.heartbeatSeenKey)
     }
 
-    /// Whether a heartbeat read ever completed in this account (the cursor
-    /// exists). Until then an empty buffer proves nothing.
-    func hasReadHeartbeat() throws -> Bool {
-        try sidecar.metaValue(forKey: Self.heartbeatCursorKey) != nil
-    }
-
     private func storedHeartbeat() throws -> HeartbeatPayload? {
         guard let raw = try sidecar.metaValue(forKey: Self.heartbeatSeenKey), !raw.isEmpty else { return nil }
         return try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: Data(raw.utf8))
