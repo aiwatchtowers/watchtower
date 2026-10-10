@@ -582,21 +582,19 @@ final class WorkbenchBoardViewModel {
         }
         if let original, intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
         guard node.target.intent != intent else { return true }
-        return write(
-            "save the description of \(label)",
-            target: id,
-            failure: { error in
-                guard error is TargetIntentConflictError else { return nil }
-                return "The description of \(label) changed while you were editing. "
-                    + "Copy your text, press Esc and edit again."
-            }
-        ) { db in
+        let conflict: (Error) -> String? = { error in
+            guard error is TargetIntentConflictError else { return nil }
+            return "The description of \(label) changed while you were editing. "
+                + "Copy your text, press Esc and edit again."
+        }
+        let body: (Database) throws -> Void = { db in
             if let original {
                 try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
             } else {
                 try TargetQueries.updateIntent(db, id: id, intent: intent)
             }
         }
+        return write("save the description of \(label)", target: id, failure: conflict, body)
     }
 
     /// The open editor on `id`, nil when its description is not being edited.
