@@ -64,6 +64,27 @@ func FindSessionWith(configDir, sessionID string, p ProcInfo) (Entry, bool, erro
 	if err != nil {
 		return Entry{}, false, err
 	}
+	matches, err := matchingEntries(dir, files, sessionID)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	switch len(matches) {
+	case 0:
+		return Entry{}, false, nil
+	case 1:
+		return matches[0], true, nil
+	}
+	best, err := liveNewestEntry(matches, p)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	return best, true, nil
+}
+
+// matchingEntries decodes the regular *.json files among files (the listing
+// of dir) and keeps those of sessionID. A file that cannot be read is
+// skipped; when none of them can, the registry is unreadable: an error.
+func matchingEntries(dir string, files []fs.DirEntry, sessionID string) ([]Entry, error) {
 	var matches []Entry
 	jsonFiles, decoded := 0, 0
 	for _, f := range files {
@@ -81,29 +102,29 @@ func FindSessionWith(configDir, sessionID string, p ProcInfo) (Entry, bool, erro
 		}
 	}
 	if jsonFiles > 0 && decoded == 0 {
-		return Entry{}, false, fmt.Errorf("none of the %d registry files in %s could be read", jsonFiles, dir)
+		return nil, fmt.Errorf("none of the %d registry files in %s could be read", jsonFiles, dir)
 	}
-	switch len(matches) {
-	case 0:
-		return Entry{}, false, nil
-	case 1:
-		return matches[0], true, nil
-	}
+	return matches, nil
+}
+
+// liveNewestEntry picks among several entries of one session id: a live one
+// wins over a dead one, then the newest statusUpdatedAt.
+func liveNewestEntry(matches []Entry, p ProcInfo) (Entry, error) {
 	best := matches[0]
 	bestAlive, err := AliveWith(best, p)
 	if err != nil {
-		return Entry{}, false, err
+		return Entry{}, err
 	}
 	for _, e := range matches[1:] {
 		eAlive, err := AliveWith(e, p)
 		if err != nil {
-			return Entry{}, false, err
+			return Entry{}, err
 		}
 		if (eAlive && !bestAlive) || (eAlive == bestAlive && e.StatusUpdatedAt.After(best.StatusUpdatedAt)) {
 			best, bestAlive = e, eAlive
 		}
 	}
-	return best, true, nil
+	return best, nil
 }
 
 func readEntry(path string) (Entry, bool) {
