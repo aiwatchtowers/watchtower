@@ -1523,3 +1523,55 @@ func TestProj11_StopStateWriteNeedsOnlyTheCoreHooks(t *testing.T) {
 		assert.Contains(t, out.String(), `"stop_hook": true`)
 	})
 }
+
+// malformHookEvent replaces hooks.<event> in folder's settings file with an
+// object where Claude Code expects an array: an owner's malformed entry.
+func malformHookEvent(t *testing.T, folder, event string) {
+	t.Helper()
+	file := filepath.Join(folder, ".claude", "settings.local.json")
+	b, err := os.ReadFile(file)
+	require.NoError(t, err)
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(b, &settings))
+	settings["hooks"].(map[string]any)[event] = map[string]any{"hooks": []any{}}
+	b, err = json.Marshal(settings)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(file, b, 0o644))
+}
+
+// PROJ-11/PROJ-04, board #411: a malformed owner hooks.SubagentStop is
+// refused by the status, which reads state_hooks false, while the Stop's
+// state write reads only the core hooks and still records waiting.
+func TestProj11_MalformedSubagentStopKeepsTheStopWaiting(t *testing.T) {
+	t.Run("the Stop records waiting", func(t *testing.T) {
+		database, pid, row := stopStateFixture(t, "open")
+		malformHookEvent(t, mustFolder(t, database, pid), "SubagentStop")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+		out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), statePayload("Stop", briefLaunchID, ""))
+
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+		assert.Equal(t, "waiting", storedAgentState(t, database, row))
+	})
+	t.Run("the status reads state_hooks false", func(t *testing.T) {
+		useFakeWorkbenchClaude(t)
+		p := testWorkbench(t)
+		var out bytes.Buffer
+		require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))
+		malformHookEvent(t, p.FolderPath, "SubagentStop")
+		o, err := workbenchInstallOptions(p)
+		require.NoError(t, err)
+
+		st, err := devpack.StatusWorkbench(context.Background(), o)
+
+		require.ErrorIs(t, err, devpack.ErrMalformedSettings)
+		assert.False(t, st.StateHooks)
+		has, err := devpack.HasCoreStateHooks(p.FolderPath, p.ID)
+		require.NoError(t, err)
+		assert.True(t, has, "the core hooks still read installed")
+		out.Reset()
+		require.ErrorIs(t, runWorkbenchStatus(context.Background(), &out, p, true), devpack.ErrMalformedSettings)
+		assert.NotContains(t, out.String(), `"state_hooks": true`)
+	})
+}

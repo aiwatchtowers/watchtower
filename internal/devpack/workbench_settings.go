@@ -307,9 +307,23 @@ func HasStateHooks(dir string, workbenchID int64) (bool, error) {
 }
 
 // HasCoreStateHooks reports whether every core state hook of workbenchID
-// (coreStateHookSpecs) is installed; one missing is false.
+// (coreStateHookSpecs) is installed; one missing is false. It reads only the
+// core events: a malformed entry in another event we own (an owner's
+// hooks.SubagentStop) is refused by install and status but never costs the
+// Stop its "waiting" (board #411).
 func HasCoreStateHooks(dir string, workbenchID int64) (bool, error) {
-	return hasHooks(dir, coreStateHookSpecs, workbenchID)
+	file := settingsLocalPath(dir)
+	settings, _, existed, err := readSettings(file)
+	if err != nil || !existed {
+		return false, err
+	}
+	for _, spec := range coreStateHookSpecs {
+		_, groups, err := rawEventGroups(settings, file, spec.event)
+		if err != nil || !hasOurHook(groups, spec, workbenchID) {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func hasHooks(dir string, specs []hookSpec, workbenchID int64) (bool, error) {
