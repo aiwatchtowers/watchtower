@@ -99,9 +99,10 @@ struct WorkbenchPanelDescription: View {
         // on its own target, so returning to it reopens the editor.
         .onChange(of: targetID) { expanded = false }
         // The pane leaving the screen some other way saves explicitly rather
-        // than trusting the editor's teardown focus loss; a save that already
-        // ran dropped the draft, so this one is a no-op then.
-        .onDisappear { save() }
+        // than trusting the editor's teardown focus loss. After `open` or
+        // `closeDetail` this target is no longer the open one, so this does
+        // nothing then — a failed save is not retried behind its error.
+        .onDisappear { vm.saveDescriptionOnFocusLoss(for: targetID) }
     }
 
     private var text: some View {
@@ -147,7 +148,8 @@ struct WorkbenchPanelDescription: View {
     private var editor: some View {
         VStack(alignment: .leading, spacing: 4) {
             CommentTextEditor(text: draft, placeholder: "Describe the target…", focusOnAppear: true,
-                              minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel, onEndEditing: save)
+                              minHeight: 80, maxHeight: 360, onSubmit: save, onCancel: cancel,
+                              onEndEditing: { vm.saveDescriptionOnFocusLoss(for: targetID) })
             Text("⌘↩ saves, Esc cancels")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -158,9 +160,9 @@ struct WorkbenchPanelDescription: View {
         vm.beginDescriptionEdit(targetID)
     }
 
-    /// ⌘↩ and focus loss, on the target this view shows. After a save or a
-    /// cancel the editor is gone, so the focus loss its removal causes saves
-    /// nothing.
+    /// ⌘↩ on the target this view shows. The focus loss after a switch or a
+    /// close arrives late, for a target no longer open, and saves nothing
+    /// (`saveDescriptionOnFocusLoss`): the move already saved it.
     private func save() {
         vm.saveDescription(for: targetID)
     }

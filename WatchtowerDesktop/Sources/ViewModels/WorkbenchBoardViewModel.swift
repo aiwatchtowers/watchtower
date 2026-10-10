@@ -633,6 +633,15 @@ final class WorkbenchBoardViewModel {
         return saved
     }
 
+    /// The editor's focus loss and the pane leaving the screen: saves `id`
+    /// only while it is the open target. Once the panel moved on or closed,
+    /// `open` and `closeDetail` already saved it, and the editor's late
+    /// end-of-editing must not retry a failed save behind the error row.
+    func saveDescriptionOnFocusLoss(for id: Int) {
+        guard id == selectedTargetID else { return }
+        saveDescription(for: id)
+    }
+
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
     /// the "Waiting for you" stack row's path, so a click never starts an
     /// agent. When it opens nothing, the panel's error row says why.

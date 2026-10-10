@@ -850,4 +850,38 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.closeDetail()
         XCTAssertNil(vm.errorMessage)
     }
+
+    /// The editor's end-of-editing arrives after the move already saved —
+    /// and failed — the target it was open on: it does not retry behind the
+    /// error row.
+    func testALateFocusLossAfterAFailedSwitchSaveDoesNotRetry() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+        vm.select(taskB)
+        let error = try XCTUnwrap(vm.errorMessage)
+        try allowIntentWrites()
+
+        vm.saveDescriptionOnFocusLoss(for: taskA)
+
+        XCTAssertEqual(try storedIntent(taskA), "", "no retry once the panel moved on")
+        XCTAssertEqual(vm.errorMessage, error)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A")
+    }
+
+    func testAFocusLossOnTheOpenTargetSaves() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.saveDescriptionOnFocusLoss(for: taskA)
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+    }
 }
