@@ -34,13 +34,25 @@ struct WatchtowerMobileApp: App {
 
     /// The live environment, or why the replica could not open. Every tab
     /// needs the store, so an open failure is a readable full-screen state,
-    /// never a crash.
-    private enum Boot {
+    /// never a crash. While the app only hosts XCTest it boots nothing: no
+    /// replica, demo seed, recorder recovery, fetch loop or push
+    /// registration runs beside the environments the tests build.
+    enum Boot {
         case ready(AppEnvironment)
         case failed(String)
+        case hostingTests
+
+        /// XCTest sets `XCTestConfigurationFilePath` in the process it
+        /// injects the test bundle into; a normal launch never has it.
+        nonisolated static func isHostingTests(_ environment: [String: String]) -> Bool {
+            environment["XCTestConfigurationFilePath"] != nil
+        }
 
         @MainActor
-        static func make() -> Self {
+        static func make(processEnvironment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+            if isHostingTests(processEnvironment) {
+                return .hostingTests
+            }
             do {
                 let env = try AppEnvironment()
                 AppDelegate.environment = env
@@ -68,6 +80,8 @@ struct WatchtowerMobileApp: App {
                     .environment(env)
             case let .failed(message):
                 BootFailureView(message: message)
+            case .hostingTests:
+                Color.clear
             }
         }
     }

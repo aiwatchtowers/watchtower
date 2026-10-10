@@ -7,11 +7,11 @@ import XCTest
 /// suites cover that): `AppEnvironment` picks the transport, boots, and
 /// hydrates exactly the demo seed.
 ///
-/// Coupling note (spec §10): `AppEnvironment()` here and the TEST_HOST app's
-/// own environment share ONE on-disk replica. The exact counts hold only
-/// because DemoSeed uses fixed record names and `apply` is an idempotent
-/// upsert, and only on a replica a previous build did not leave behind:
-/// uninstall the simulator app before `make mobile-test` (the recipe does).
+/// Coupling note (spec §10): `AppEnvironment()` here opens the app's own
+/// on-disk replica. The TEST_HOST app boots nothing while it hosts the tests
+/// (`WatchtowerMobileApp.Boot.hostingTests`), but a replica a previous
+/// `make mobile-run` left behind would skew the exact counts: uninstall the
+/// simulator app before `make mobile-test` (the recipe does).
 @MainActor
 final class ReplicaWiringTests: XCTestCase {
     /// DemoSeed's record tally per kind.
@@ -215,6 +215,25 @@ final class ReplicaWiringTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
         XCTAssertEqual(rows, 0, "the cloudKit kind must start empty")
+    }
+
+    // MARK: - Test host
+
+    /// The app hosting XCTest starts nothing of its own: no replica, demo
+    /// seed, recorder recovery, fetch loop or push registration beside the
+    /// tests' environments. A normal launch still boots.
+    func testTheTestHostBootsNoLiveEnvironment() {
+        XCTAssertTrue(
+            WatchtowerMobileApp.Boot.isHostingTests(ProcessInfo.processInfo.environment),
+            "this process hosts XCTest"
+        )
+        XCTAssertNil(AppDelegate.environment, "the test host booted a live AppEnvironment")
+        XCTAssertFalse(WatchtowerMobileApp.Boot.isHostingTests([:]), "a normal launch must boot")
+        guard case .hostingTests = WatchtowerMobileApp.Boot.make(
+            processEnvironment: ["XCTestConfigurationFilePath": "/tmp/acme.xctestconfiguration"]
+        ) else {
+            return XCTFail("a test host must not build an environment")
+        }
     }
 
     /// A replica that cannot open is a throw (the app shows BootFailureView),
