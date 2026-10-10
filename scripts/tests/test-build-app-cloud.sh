@@ -29,6 +29,13 @@
 #     push, never a team id, and stay a superset of the base entitlements
 set -euo pipefail
 
+# The signing blocks and these checks use PlistBuddy and plutil, which exist
+# only on macOS; CI runs the script tests on Linux.
+if [ "$(uname -s)" != "Darwin" ]; then
+    echo "skip: cloud-signing tests need macOS (PlistBuddy, plutil)"
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_APP="$SCRIPT_DIR/../build-app.sh"
 BASE_ENT="$SCRIPT_DIR/../Watchtower.entitlements"
