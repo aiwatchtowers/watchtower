@@ -861,6 +861,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// phone deleted on the hub's `received` echo while the save was still
     /// queued. It is rejected like a record too large alone: dropped from
     /// the queue, logged, and handed to the rejected-record handler.
+    /// `dropPending` ignores the stamp, so a newer version re-enqueued after
+    /// the failed batch was built goes too — this heals only where the
+    /// rejected handler republishes (the hub's `.data` slices); a caller
+    /// without such a handler loses that newer save.
     private func dropSavesWithMissingAssets(_ failures: [(record: CKRecord, error: CKError)]) throws {
         for failure in failures where failure.error.code == .assetFileNotFound {
             guard let zone = scope.cloudZone(for: failure.record.recordID.zoneID) else { continue }
