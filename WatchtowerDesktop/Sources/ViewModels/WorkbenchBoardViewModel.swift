@@ -555,11 +555,13 @@ final class WorkbenchBoardViewModel {
         write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
     }
 
-    /// The panel's description editor (⌘↩ or focus loss) on `id`, the
-    /// target the editor was opened on (nil = the open one): a focus loss
-    /// that lands after the panel moved on still saves to its own target.
-    /// The text is trimmed like a rename; a description unchanged once
-    /// trimmed writes nothing.
+    /// The description write behind the panel's editor
+    /// (`saveDescription(for:)`) on `id`, the target the editor was opened on
+    /// — after a move that is the target the panel left (`open`,
+    /// `closeDetail`), never the new one; a late focus loss there saves
+    /// nothing (`saveDescriptionOnFocusLoss`). Nil = the open target. The
+    /// text is trimmed like a rename; a description unchanged once trimmed
+    /// writes nothing.
     ///
     /// `original` is the description the editor opened with: a draft equal
     /// to it (once trimmed) writes nothing, even when the agent changed the
@@ -616,8 +618,9 @@ final class WorkbenchBoardViewModel {
         descriptionDrafts[id] = nil
     }
 
-    /// ⌘↩ or focus loss in the editor on `id` (`saveIntent` with the text it
-    /// opened with). A saved draft closes the editor; a failed one stays on
+    /// ⌘↩, a focus loss on the open target, or the panel leaving `id`
+    /// (`open`, `closeDetail`): `saveIntent` with the text the editor
+    /// opened with. A saved draft closes the editor; a failed one stays on
     /// its own target (`errorMessage` says why), unless the target is gone
     /// and there is nothing left to save it to.
     /// - Returns: whether nothing is left unsaved — true with no editor open.
