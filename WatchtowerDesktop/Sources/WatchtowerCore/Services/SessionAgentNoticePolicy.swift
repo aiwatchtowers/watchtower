@@ -76,7 +76,7 @@ package struct SessionAgentNoticePolicy: Sendable {
         guard let status, status.state.live, let at = status.at else { return nil }
         switch status.state.kind {
         case .needsApproval, .failed, .stopped, .finished: return "\(status.state.kind)@\(at)"
-        case .notStarted, .running, .working, .waitingOnAsk: return nil
+        case .notStarted, .running, .working, .waitingOnAsk, .background: return nil
         }
     }
 

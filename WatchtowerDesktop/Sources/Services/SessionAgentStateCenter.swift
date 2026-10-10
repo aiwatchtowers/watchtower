@@ -47,6 +47,10 @@ final class SessionAgentStateCenter {
     @ObservationIgnored private let notifier: SessionAgentNotifying
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let notificationCenter: NotificationCenter
+    /// The time a resolve judges the background count at; every poll
+    /// re-resolves, so a count that ages out shows within a tick, with no
+    /// write.
+    @ObservationIgnored private let clock: @Sendable () -> Date
     @ObservationIgnored private var notices = SessionAgentNoticePolicy()
     /// Whether the app is frontmost, when a banner is not needed. Without an
     /// application object (a test host) nothing is posted.
@@ -78,13 +82,15 @@ final class SessionAgentStateCenter {
         notifier: SessionAgentNotifying = NotificationService.shared,
         defaults: UserDefaults = .standard,
         notificationCenter: NotificationCenter = .default,
-        read: Reader? = nil
+        read: Reader? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.terminalCenter = terminalCenter
         self.interval = interval
         self.notifier = notifier
         self.defaults = defaults
         self.notificationCenter = notificationCenter
+        self.clock = clock
         self.read = read ?? { ids in
             try await dbPool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: ids) }
         }
@@ -160,7 +166,7 @@ final class SessionAgentStateCenter {
     /// state at once, not a read later.
     private func publishResolved() {
         publish(SessionAgentStatus.resolve(
-            rows, liveIDs: terminalCenter.liveClaudeIDs, startedAt: terminalCenter.startedAt
+            rows, liveIDs: terminalCenter.liveClaudeIDs, startedAt: terminalCenter.startedAt, now: clock()
         ))
     }
 

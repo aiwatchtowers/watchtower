@@ -65,4 +65,39 @@ final class SessionStatePresentationTests: XCTestCase {
         XCTAssertEqual(SessionStatePresentation.caption(for: .live(.failed), oldestAskID: nil), "Stopped on an error",
                        "an unknown error type")
     }
+
+    /// Spec 2026-10-10-session-background-agents §5.2: green; `person.2.fill`
+    /// without asks, `questionmark` with them; the caption counts the agents.
+    func testBackgroundIsGreenWithAgentCount() {
+        let rows: [(State, String?, String)] = [
+            (.live(.background), "person.2.fill", "Agents working"),
+            (.live(.background, backgroundAgents: 1), "person.2.fill", "1 agent working"),
+            (.live(.background, backgroundAgents: 3), "person.2.fill", "3 agents working"),
+            (.live(.background, openAsks: 1, backgroundAgents: 1), "questionmark", "1 agent working · 1 ask open"),
+            (.live(.background, openAsks: 2, backgroundAgents: 3), "questionmark", "3 agents working · 2 asks open"),
+            (.live(.background, openAsks: 2), "questionmark", "Agents working · 2 asks open")
+        ]
+        for (state, glyph, caption) in rows {
+            XCTAssertEqual(SessionStatePresentation.color(for: state), .green, "\(state)")
+            XCTAssertEqual(SessionStatePresentation.glyph(for: state), glyph, "\(state)")
+            XCTAssertEqual(SessionStatePresentation.caption(for: state), caption, "\(state)")
+            XCTAssertFalse(SessionStatePresentation.isRing(state), "\(state)")
+            XCTAssertTrue(SessionStatePresentation.pulses(state), "\(state)")
+        }
+        let closed = State(kind: .background, live: false, backgroundAgents: 2)
+        XCTAssertTrue(SessionStatePresentation.isRing(closed), "not live: a ring")
+        XCTAssertFalse(SessionStatePresentation.pulses(closed), "a ring never pulses")
+    }
+
+    func testOnlyALiveBackgroundPulses() {
+        let kinds: [State.Kind] = [
+            .notStarted, .running, .working, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .background
+        ]
+        for kind in kinds {
+            for live in [true, false] {
+                XCTAssertEqual(SessionStatePresentation.pulses(State(kind: kind, live: live)),
+                               kind == .background && live, "\(kind) live=\(live)")
+            }
+        }
+    }
 }
