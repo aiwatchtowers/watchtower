@@ -87,12 +87,16 @@ final class AppEnvironment {
     private(set) var isActive = true
     /// true while the fetch loop runs.
     var isLooping: Bool { loopTask != nil }
+    /// Fetch cycles the loop has begun (a cancelled loop begins none).
+    @ObservationIgnored private(set) var fetchCycles = 0
 
     @ObservationIgnored private let transport: any CloudSyncTransport
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored private let uploader: RecordingUploader
     @ObservationIgnored private var loopTask: Task<Void, Never>?
+    /// The loop's wait between cycles; tests step it by hand.
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
@@ -129,20 +133,23 @@ final class AppEnvironment {
     /// wiring tests build isolated environments. Throws when the replica
     /// cannot open (the app then shows `BootFailureView`). `makeRecorder`
     /// builds the recorder over the environment's uploader; tests pass a
-    /// fake audio engine and clock, the app the microphone.
+    /// fake audio engine and clock, the app the microphone. `sleep` is the
+    /// fetch loop's wait between cycles.
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
-        makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil
+        makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) throws {
         assert(
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
             "a CloudKitTransport must not run under the demo kind"
         )
         store = try ReplicaStore(path: replicaPath)
+        self.sleep = sleep
         self.transport = transport
         self.transportKind = transportKind
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : nil
@@ -330,11 +337,13 @@ final class AppEnvironment {
         loopTask = nil
         guard isBootstrapped, isActive, !stopped else { return }
         let interval = fetchInterval
+        let sleep = sleep
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                self.fetchCycles += 1
                 await self.refresh()
-                try? await Task.sleep(for: interval)
+                try? await sleep(interval)
             }
         }
     }
