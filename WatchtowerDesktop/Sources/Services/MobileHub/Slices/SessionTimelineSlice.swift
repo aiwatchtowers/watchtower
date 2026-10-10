@@ -124,6 +124,7 @@ struct SessionTimelineSlice: SliceSource {
         switch state.kind {
         case .running: "Started"
         case .working: "Working"
+        case .background: "Agents working"
         case .waitingOnAsk: "Waiting for you"
         case .needsApproval: "Needs approval"
         case .finished: "Finished"

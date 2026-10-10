@@ -54,13 +54,17 @@ struct TerminalSessionSlice: SliceSource {
     /// The report summary runner's last good summary of a session
     /// (workbench id, session id); nil before its first run.
     let reportSummary: @Sendable (Int64, Int64) -> SessionReportSummary?
+    /// The time a resolve judges the background agent count at (#411).
+    let now: @Sendable () -> Date
 
     init(
         liveness: @escaping @Sendable () -> SessionLiveness,
-        reportSummary: @escaping @Sendable (Int64, Int64) -> SessionReportSummary?
+        reportSummary: @escaping @Sendable (Int64, Int64) -> SessionReportSummary?,
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.liveness = liveness
         self.reportSummary = reportSummary
+        self.now = now
     }
 
     struct Payload: Encodable, Equatable {
@@ -134,14 +138,14 @@ struct TerminalSessionSlice: SliceSource {
     }
 
     /// `session_counts` of the `workbench` slice, over the same published
-    /// sessions and states. `working` counts working and running (both
-    /// green), `not_running` counts not started.
+    /// sessions and states. `working` counts working, running and Agents
+    /// working (all green), `not_running` counts not started.
     func sessionCounts(_ db: Database) throws -> [Int64: WorkbenchSlice.Payload.SessionCounts] {
         var counts: [Int64: WorkbenchSlice.Payload.SessionCounts] = [:]
         for item in try publishedSessions(db) {
             var entry = counts[item.workbenchID] ?? .init()
             switch item.state.kind {
-            case .working, .running: entry.working += 1
+            case .working, .running, .background: entry.working += 1
             case .waitingOnAsk: entry.waiting += 1
             case .needsApproval: entry.needsApproval += 1
             case .finished: entry.finished += 1
@@ -167,7 +171,7 @@ struct TerminalSessionSlice: SliceSource {
         guard !windowed.isEmpty else { return [] }
         // Only workbench `claude` rows: no standalone live ids are passed.
         let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
-        let statuses = SessionAgentStatus.resolve(rows, liveIDs: live.liveIDs, startedAt: live.startedAt)
+        let statuses = SessionAgentStatus.resolve(rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now())
         let rowsByID = Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
         return windowed.compactMap { session in
             guard let workbenchID = session.projectID else { return nil }
@@ -255,10 +259,12 @@ struct TerminalSessionSlice: SliceSource {
         return nil
     }
 
-    /// The Kit's `TerminalSessionState.Kind` raw values.
+    /// The Kit's `TerminalSessionState.Kind` raw values. Agents working
+    /// (#411) has no wire kind of its own: it goes out as `working`, its
+    /// caption and glyph saying the rest.
     static func wire(_ kind: SessionSwitcherPresentation.State.Kind) -> String {
         switch kind {
-        case .working: "working"
+        case .working, .background: "working"
         case .running: "running"
         case .waitingOnAsk: "waiting_on_ask"
         case .needsApproval: "needs_approval"
