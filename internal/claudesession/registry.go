@@ -61,39 +61,67 @@ type entryJSON struct {
 // FindSession returns the registry entry of sessionID. Only *.json files are
 // read (the <pid>.<hash>.key beside each entry never is); an unreadable or
 // undecodable file is skipped. No match, or no sessions dir, is (_, false, nil).
+// Several entries can carry one session id (a stale file left by a crash, then
+// a --resume under a new pid): a live one wins over a dead one, then the
+// newest statusUpdatedAt.
 func FindSession(configDir, sessionID string) (Entry, bool, error) {
+	return FindSessionWith(configDir, sessionID, SystemProcs{})
+}
+
+// FindSessionWith is FindSession over the process table p.
+func FindSessionWith(configDir, sessionID string, p ProcInfo) (Entry, bool, error) {
 	if sessionID == "" {
 		return Entry{}, false, nil
 	}
-	matches, err := filepath.Glob(filepath.Join(configDir, "sessions", "*.json"))
+	paths, err := filepath.Glob(filepath.Join(configDir, "sessions", "*.json"))
 	if err != nil {
 		return Entry{}, false, err
 	}
-	for _, path := range matches {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
+	var matches []Entry
+	for _, path := range paths {
+		if e, ok := readEntry(path); ok && e.SessionID == sessionID {
+			matches = append(matches, e)
 		}
-		var raw entryJSON
-		if json.Unmarshal(data, &raw) != nil || raw.SessionID != sessionID {
-			continue
-		}
-		e := Entry{
-			PID:                 raw.PID,
-			SessionID:           raw.SessionID,
-			Status:              raw.Status,
-			Version:             raw.Version,
-			MessagingSocketPath: raw.MessagingSocketPath,
-			ProcStart:           raw.ProcStart,
-			PeerProtocol:        raw.PeerProtocol,
-			PeerFeatures:        raw.PeerFeatures,
-		}
-		if raw.StatusUpdatedAt > 0 {
-			e.StatusUpdatedAt = time.UnixMilli(raw.StatusUpdatedAt)
-		}
-		return e, true, nil
 	}
-	return Entry{}, false, nil
+	switch len(matches) {
+	case 0:
+		return Entry{}, false, nil
+	case 1:
+		return matches[0], true, nil
+	}
+	best, bestAlive := matches[0], AliveWith(matches[0], p)
+	for _, e := range matches[1:] {
+		eAlive := AliveWith(e, p)
+		if (eAlive && !bestAlive) || (eAlive == bestAlive && e.StatusUpdatedAt.After(best.StatusUpdatedAt)) {
+			best, bestAlive = e, eAlive
+		}
+	}
+	return best, true, nil
+}
+
+func readEntry(path string) (Entry, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Entry{}, false
+	}
+	var raw entryJSON
+	if json.Unmarshal(data, &raw) != nil {
+		return Entry{}, false
+	}
+	e := Entry{
+		PID:                 raw.PID,
+		SessionID:           raw.SessionID,
+		Status:              raw.Status,
+		Version:             raw.Version,
+		MessagingSocketPath: raw.MessagingSocketPath,
+		ProcStart:           raw.ProcStart,
+		PeerProtocol:        raw.PeerProtocol,
+		PeerFeatures:        raw.PeerFeatures,
+	}
+	if raw.StatusUpdatedAt > 0 {
+		e.StatusUpdatedAt = time.UnixMilli(raw.StatusUpdatedAt)
+	}
+	return e, true
 }
 
 // ProcInfo is the process table seam for AliveWith: SystemProcs in

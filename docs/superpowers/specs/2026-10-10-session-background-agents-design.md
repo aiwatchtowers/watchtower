@@ -400,5 +400,11 @@ registry entry polled once a second. Redacted fixtures: `cmd/testdata/stop_backg
   sat between turns waiting on its subagents, and turned `idle` only once at the end; the entry is removed when the
   process exits. Whether an *interactive* session waiting on background agents reports `idle` or `busy`: not
   observed. A `<pid>.<hash>.key` file sits beside each entry; it was never opened, copied or committed.
+- Registry `procStart` is `ps -o lstart=` output **in UTC** and the C locale (e.g. `Thu Jan  1 00:00:00 2026`), not
+  in the machine's local zone: on a machine outside UTC every live entry matched `TZ=UTC LC_ALL=C ps -o lstart= -p
+  <pid>` and none matched plain `ps`. A pid-reuse check must read the process start the same way, or every live
+  session reads as gone (Task 10, `claudesession.SystemProcs`).
+- One session id can have several registry entries (a stale file left by a crash, then `--resume` under a new pid):
+  not observed, but nothing prevents it, so a lookup prefers a live entry, then the newest `statusUpdatedAt`.
 - Inbound peer frame: not captured. Making a decoy discoverable needs a decoy entry written into
   `<config dir>/sessions/`, which this capture did not do; Task 12 starts from discovery.

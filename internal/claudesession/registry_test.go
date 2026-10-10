@@ -2,6 +2,7 @@ package claudesession
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -131,6 +132,52 @@ func TestFindSessionWithoutRegistryIsNotFound(t *testing.T) {
 	_, ok, err := FindSession(t.TempDir(), busyID)
 	if ok || err != nil {
 		t.Errorf("no sessions dir: found=%v err=%v; want not found, nil", ok, err)
+	}
+}
+
+// pidProc is a process table where only the listed pids run.
+type pidProc map[int]bool
+
+func (p pidProc) Exists(pid int) bool    { return p[pid] }
+func (pidProc) Start(int) (string, bool) { return "", false }
+
+func entryJSONText(pid int, status string, statusUpdatedAt int64) string {
+	return fmt.Sprintf(`{"pid": %d, "sessionId": %q, "status": %q, "statusUpdatedAt": %d}`,
+		pid, busyID, status, statusUpdatedAt)
+}
+
+// A stale entry left by a crashed process must not hide the live entry of
+// the same session resumed under a new pid, whichever file sorts first; with
+// no live entry the newest status wins.
+func TestFindSessionPrefersTheLiveEntryOfASession(t *testing.T) {
+	for _, order := range []struct{ stale, live string }{
+		{"1000.json", "2000.json"},
+		{"2000.json", "1000.json"},
+	} {
+		configDir := t.TempDir()
+		sessions := filepath.Join(configDir, "sessions")
+		if err := os.MkdirAll(sessions, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// The stale entry carries the newer status: liveness must win over it.
+		files := map[string]string{
+			order.stale: entryJSONText(111, "busy", 1767225699000),
+			order.live:  entryJSONText(222, "idle", 1767225600000),
+		}
+		for name, data := range files {
+			if err := os.WriteFile(filepath.Join(sessions, name), []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		got, ok, err := FindSessionWith(configDir, busyID, pidProc{222: true})
+		if err != nil || !ok || got.PID != 222 {
+			t.Errorf("stale %s, live %s: got pid %d, %v, %v; want the live 222", order.stale, order.live, got.PID, ok, err)
+		}
+		got, ok, err = FindSessionWith(configDir, busyID, pidProc{})
+		if err != nil || !ok || got.PID != 111 {
+			t.Errorf("stale %s, live %s, none alive: got pid %d, %v, %v; want the newest status 111", order.stale, order.live, got.PID, ok, err)
+		}
 	}
 }
 
