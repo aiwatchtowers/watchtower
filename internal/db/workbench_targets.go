@@ -27,21 +27,18 @@ type WorkbenchTargetInput struct {
 // projectID inside tx and returns their ids. Every item gets the board
 // defaults: level custom, custom_label project (persisted, kept by the rename), period = the UTC day of
 // creation, source chat, ownership mine, status todo, and priority medium
-// unless the item sets one. The creation is recorded as actor's (status_actor,
-// PROJ-06): ActorAgent for the agent's create_targets tool, ActorOwner for
-// `watchtower workbench target add`. The first invalid item
+// unless the item sets one. Its one production caller is the agent's
+// create_targets tool, so the creation is recorded as the agent's
+// (status_actor, PROJ-06). The first invalid item
 // fails the call; the caller's transaction then rolls the whole batch back.
-func (db *DB) CreateWorkbenchTargetsTx(tx *sql.Tx, projectID int64, actor string, items []WorkbenchTargetInput) ([]int64, error) {
-	if actor != ActorAgent && actor != ActorOwner {
-		return nil, fmt.Errorf("invalid creation actor %q", actor)
-	}
+func (db *DB) CreateWorkbenchTargetsTx(tx *sql.Tx, projectID int64, items []WorkbenchTargetInput) ([]int64, error) {
 	if err := requireWorkbench(tx, projectID); err != nil {
 		return nil, err
 	}
 	day := time.Now().UTC().Format("2006-01-02")
 	ids := make([]int64, 0, len(items))
 	for i, it := range items {
-		id, err := insertWorkbenchTarget(tx, projectID, day, actor, it, ids)
+		id, err := insertWorkbenchTarget(tx, projectID, day, it, ids)
 		if err != nil {
 			return nil, fmt.Errorf("target %d of %d: %w", i+1, len(items), err)
 		}
@@ -50,7 +47,7 @@ func (db *DB) CreateWorkbenchTargetsTx(tx *sql.Tx, projectID int64, actor string
 	return ids, nil
 }
 
-func insertWorkbenchTarget(tx *sql.Tx, projectID int64, day, actor string, it WorkbenchTargetInput, created []int64) (int64, error) {
+func insertWorkbenchTarget(tx *sql.Tx, projectID int64, day string, it WorkbenchTargetInput, created []int64) (int64, error) {
 	title := strings.TrimSpace(it.Title)
 	if title == "" {
 		return 0, errors.New("empty title")
@@ -69,8 +66,8 @@ func insertWorkbenchTarget(tx *sql.Tx, projectID int64, day, actor string, it Wo
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
 		 status, priority, ownership, source_type, project_id, status_actor, branch, pr)
-		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, ?, ?, ?)`,
-		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID, actor,
+		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, 'agent', ?, ?)`,
+		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID,
 		strings.TrimSpace(it.Branch), strings.TrimSpace(it.PR))
 	if err != nil {
 		return 0, fmt.Errorf("inserting workbench target: %w", err)

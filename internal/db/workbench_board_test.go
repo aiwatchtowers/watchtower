@@ -14,7 +14,7 @@ func TestGetProjectBoard_TreeOrderAndCounts(t *testing.T) {
 	var ids []int64
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, []WorkbenchTargetInput{
+		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{
 			{Title: "todo root"},
 			{Title: "done root"},
 			{Title: "active root"},
@@ -61,7 +61,7 @@ func TestGetProjectBoard_SiblingsSortByPriorityThenStatus(t *testing.T) {
 	var ids []int64
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, []WorkbenchTargetInput{
+		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{
 			{Title: "low todo", Priority: "low"},
 			{Title: "medium todo"},
 			{Title: "high todo", Priority: "high"},
@@ -89,7 +89,7 @@ func TestCreateProjectTargets_InvalidPriorityFailsTheBatch(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	err := d.WithTx(func(tx *sql.Tx) error {
-		_, err := d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, []WorkbenchTargetInput{{Title: "x", Priority: "urgent"}})
+		_, err := d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{{Title: "x", Priority: "urgent"}})
 		return err
 	})
 	require.ErrorContains(t, err, "invalid priority")
