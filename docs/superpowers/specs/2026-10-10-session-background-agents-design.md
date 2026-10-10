@@ -426,9 +426,8 @@ exactly this and skips the probe otherwise.
 - A connection that sends no complete line within 30 s is closed.
 
 ### The frame Watchtower sends
-Optional first line, then the message line:
+One line (a Claude Code sender prepends an optional `auth` line — see below; Watchtower does not):
 ```
-{"type":"auth","token":"<peerToken>"}
 {"msgV":1,"msg_id":"<uuidv4>","type":"user","message":{"role":"user","content":"<ping text>"},"priority":"next","from":"uds:<sender socket path>"}
 ```
 - `priority`: `next` (after the current turn) or `now` (ahead of the queue).
@@ -445,8 +444,20 @@ Optional first line, then the message line:
   started a turn and fired Stop. The `auth` line is only load-bearing on Windows, where the key file
   (`<pid>.<sha256(canonical socket path)>.key`, mode 0600, holding `peerToken`) must be read.
 - Therefore Watchtower — running as the session owner's own uid — reproduces the frame from **public
-  inputs it already owns** (the registry entry) and never needs to read key material. (The key filename
-  is derivable as `sha256` of the canonicalised socket path, should a future Windows path need it.)
+  inputs it already owns** (the registry entry) and never needs to read key material. **GO uses the
+  keyless path: Task 13 sends no `auth` line and adds no key handling to its interfaces.**
+- The key, for the record (not used by the GO path):
+  - Path: `<config dir>/sessions/<pid>.<hex>.key` — `<pid>` is the receiver's pid, `<hex>` the lowercase
+    SHA-256 of the receiver's absolute, normalised `messagingSocketPath` (as in its registry entry).
+    Mode 0600; written by the receiving session when its inbox starts, removed on exit.
+  - Content: a JSON object with `peerToken` (32 hex chars), `procStart`, `pidDomain`.
+  - Reader: the **sending** Claude Code session, before it connects. It is mandatory only on Windows,
+    where a missing key aborts the send.
+  - Use in the frame: the sender's first line is `{"type":"auth","token":"<peerToken>"}`; the receiver
+    then marks the connection authenticated (`peer`). A second token, handed to the session's own child
+    processes as `CLAUDE_CODE_MESSAGING_TOKEN`, authenticates as `child`. On macOS a wrong or missing
+    token does not change delivery (observed: `wrongkey` and `nokey` both started a turn); it only
+    affects the subscription class of `notify_when_idle` control frames, which the ping does not use.
 
 ### Response / ack shape
 - **No response on the inbox connection** — the server only reads; `peer_response.bin`'s on-wire length

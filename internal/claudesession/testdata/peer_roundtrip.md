@@ -7,17 +7,18 @@ placeholders.
 
 ## What Watchtower sends
 
-`peer_request.bin` — two newline-delimited JSON objects written to the receiver's
-`messagingSocketPath` (a `AF_UNIX` `SOCK_STREAM` socket named in its session-registry entry):
+`peer_request.bin` — one newline-terminated JSON object written to the receiver's
+`messagingSocketPath` (a `AF_UNIX` `SOCK_STREAM` socket named in its session-registry entry), then the
+write side is closed. This is the keyless frame (observed as the `nokey` trial: accepted, turn, Stop).
 
-1. An optional `auth` line. On macOS the receiving inbox does **not** require it (`authRequired` is true
-   only on Windows): a same-uid local connection is accepted without a token. The line is harmless to
-   send and is what a cross-platform sender would include; the token is the `peerToken` from the
-   receiver's key file.
-2. The `user` message frame. `msgV` is the protocol minor (1). `msg_id` is a fresh UUIDv4. `priority`
-   is `next` (queued after the current turn) — `now` injects ahead of the queue. `from` is the sender's
-   own `uds:<socket path>` reply address; it is used only for receipts and loop/self detection, not for
-   acceptance, so a sender that wants no receipts may omit it.
+The `user` message frame: `msgV` is the protocol minor (1). `msg_id` is a fresh UUIDv4. `priority` is
+`next` (queued after the current turn) — `now` injects ahead of the queue. `from` is the sender's own
+`uds:<socket path>` reply address; it is used only for receipts and loop/self detection, not for
+acceptance, so a sender that wants no receipts may omit it.
+
+A Claude Code sender also prepends `{"type":"auth","token":"<peerToken>"}` read from the receiver's
+key file. On macOS the inbox does not require it (`authRequired` is true only on Windows) and a wrong
+or missing token does not change delivery, so Watchtower sends no auth line and reads no key.
 
 The receiver verifies the connecting process's uid (and, when it can, its pid via `getPeerPid`) against
 its own uid. It wraps the content as a `<cross-session-message from="…">…</cross-session-message>`
