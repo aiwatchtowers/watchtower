@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -152,5 +153,73 @@ func TestResolveMCPScopeMCPOnlySkipsSkillsAndForcesMCP(t *testing.T) {
 func TestResolveMCPScopeRejectsBothOnlyFlags(t *testing.T) {
 	if _, err := resolveMCPScope("user", "", true, true); err == nil {
 		t.Fatalf("expected an error when --skills-only and --mcp-only are both set")
+	}
+}
+
+// claudeStub writes an executable `claude` into a fresh dir (not on PATH)
+// that records its arguments next to itself; it exits at once, and
+// CombinedOutput waits for it.
+func claudeStub(t *testing.T) (bin, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	bin = filepath.Join(dir, "claude")
+	argsFile = filepath.Join(dir, "args")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/args\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil { //nolint:gosec // a test stub must be executable
+		t.Fatal(err)
+	}
+	return bin, argsFile
+}
+
+func TestRegisterMCPRunsTheGivenClaudeBinary(t *testing.T) {
+	bin, argsFile := claudeStub(t)
+	if err := registerMCPWithClaudeCode(bin); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), "mcp\nadd\nwatchtower\n--\n") || !strings.HasSuffix(string(got), "\nmcp\n") {
+		t.Fatalf("claude got %q", got)
+	}
+}
+
+func TestUnregisterMCPRunsTheGivenClaudeBinary(t *testing.T) {
+	bin, argsFile := claudeStub(t)
+	if err := unregisterMCPFromClaudeCode(bin); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "mcp\nremove\nwatchtower\n" {
+		t.Fatalf("claude got %q", got)
+	}
+}
+
+func TestRegisterMCPWithoutClaudeSucceedsAndRunsNothing(t *testing.T) {
+	if err := registerMCPWithClaudeCode(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := unregisterMCPFromClaudeCode(""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The configured claude_path wins even when it is not on PATH — the
+// Desktop terminal's binary (Constants.claudeBinary) and this one agree.
+func TestIntegrateClaudeBinaryUsesTheConfiguredPath(t *testing.T) {
+	bin, _ := claudeStub(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("claude_path: '"+bin+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := flagConfig
+	flagConfig = cfgPath
+	t.Cleanup(func() { flagConfig = old })
+	if got := integrateClaudeBinary(); got != bin {
+		t.Fatalf("integrateClaudeBinary() = %q, want %q", got, bin)
 	}
 }
