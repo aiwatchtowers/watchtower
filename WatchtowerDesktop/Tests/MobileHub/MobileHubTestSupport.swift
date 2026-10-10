@@ -195,6 +195,20 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 }
 
+/// A relay buffer like CloudKitTransport's: it holds only what the phone
+/// saved (`phone`), never the hub's own saves, which land in `echoes`. After
+/// a pass, the latest buffered event of each record is still the phone's
+/// `pending` write.
+actor PhoneOnlyBuffer: CloudSyncTransport {
+    let phone = InMemoryCloudTransport()
+    private(set) var echoes: [CloudRecord] = []
+    func save(_ records: [CloudRecord]) async throws { echoes += records }
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        try await phone.changes(in: zone, since: token)
+    }
+}
+
 /// A sticky gate for a stub call: `park()` fulfils `arrived`, then waits
 /// for `release()`, which lets a park that comes before or after it through.
 final class SaveGate: @unchecked Sendable {

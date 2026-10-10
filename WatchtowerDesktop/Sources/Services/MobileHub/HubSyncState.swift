@@ -71,7 +71,8 @@ final class HubSyncState: Sendable {
                     phase TEXT NOT NULL CHECK (phase IN ('begun', 'done')),
                     outcome TEXT,
                     updated_at REAL NOT NULL DEFAULT 0,
-                    echo BLOB
+                    echo BLOB,
+                    done_seq INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS ask_answer_deliveries (
                     record_name TEXT PRIMARY KEY,
@@ -101,10 +102,12 @@ final class HubSyncState: Sendable {
                 );
                 CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
                 """)
-            // A sidecar created before the ledger kept echoes gains the column;
-            // its old `done` rows hold none and are skipped as before.
-            if try !db.columns(in: "relay_processed").contains(where: { $0.name == "echo" }) {
-                try db.execute(sql: "ALTER TABLE relay_processed ADD COLUMN echo BLOB")
+            // A sidecar created before the ledger kept echoes and buffer
+            // marks gains the columns; its old `done` rows hold neither (no
+            // echo: skipped as before; no mark: the pre-mark behaviour).
+            let columns = Set(try db.columns(in: "relay_processed").map(\.name))
+            for (name, type) in [("echo", "BLOB"), ("done_seq", "INTEGER")] where !columns.contains(name) {
+                try db.execute(sql: "ALTER TABLE relay_processed ADD COLUMN \(name) \(type)")
             }
         }
     }
@@ -300,18 +303,32 @@ final class HubSyncState: Sendable {
     /// a recording upload's retry decides on, diagnostics for an action.
     /// `echo` is the full echoed outcome of an action, re-echoed as is when
     /// the record reads `pending` or `received` again (a lost ack); nil
-    /// for a recording upload.
-    func markRelayDone(_ recordName: String, outcome: String, echo: Data? = nil, at date: Date) throws {
+    /// for a recording upload. `doneSeq` is the relay buffer mark the
+    /// marking pass read up to: only a change buffered past it is a phone
+    /// save made after this outcome (see `RelayProcessor`).
+    func markRelayDone(_ recordName: String, outcome: String, echo: Data? = nil, doneSeq: Int? = nil, at date: Date) throws {
         try queue.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO relay_processed (record_name, phase, outcome, updated_at, echo)
-                    VALUES (?, 'done', ?, ?, ?)
+                    INSERT INTO relay_processed (record_name, phase, outcome, updated_at, echo, done_seq)
+                    VALUES (?, 'done', ?, ?, ?, ?)
                     ON CONFLICT(record_name) DO UPDATE SET
                         phase = 'done', outcome = excluded.outcome, updated_at = excluded.updated_at,
-                        echo = excluded.echo
+                        echo = excluded.echo, done_seq = excluded.done_seq
                     """,
-                arguments: [recordName, outcome, date.timeIntervalSince1970, echo]
+                arguments: [recordName, outcome, date.timeIntervalSince1970, echo, doneSeq]
+            )
+        }
+    }
+
+    /// The relay buffer mark a `done` record was marked at; nil for an
+    /// unknown or `begun` record, or a row written before marks were kept.
+    func relayDoneSeq(_ recordName: String) throws -> Int? {
+        try queue.read { db in
+            try Int.fetchOne(
+                db,
+                sql: "SELECT done_seq FROM relay_processed WHERE record_name = ? AND phase = 'done'",
+                arguments: [recordName]
             )
         }
     }

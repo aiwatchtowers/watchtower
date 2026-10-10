@@ -13,10 +13,16 @@ import WatchtowerSync
 /// its handler runs and `done` after its echo; a record a later pass finds
 /// still `begun` (the hub stopped mid-apply) is never re-applied but echoed
 /// `failed` / `outcome_unknown`. Idempotent kinds simply re-run. The ledger
-/// keeps each action's echoed outcome: a `done` action that reads `pending`
-/// or `received` again (a lost ack, the phone's save winning over the echo,
-/// a relay re-read after a reset) gets that stored outcome echoed once more,
-/// without dispatching.
+/// keeps each action's echoed outcome and the relay buffer mark (`newToken`)
+/// of the pass that marked it: a `done` action that reads `pending` or
+/// `received` in a change buffered PAST that mark (a phone save made after
+/// the outcome: a lost ack, the phone's save winning over the echo) gets the
+/// stored outcome echoed once more, without dispatching. A change at or
+/// below the mark is the hub's own stale copy — CloudKit never buffers the
+/// hub's own echo, so a re-read (a reset rewinding the cursor, a pass that
+/// left a backlog) still shows the phone's first save — and is no work.
+/// The same rule gates a `done` upload's `received` re-echo and its failed
+/// retry. A re-echo never counts toward `batchLimit`.
 ///
 /// Phone recordings (§5.3, §6.4): a pending `recording_upload` from a linked
 /// device is claimed `begun`, its asset handed to `RecordingUploads.ingest` (the
@@ -46,7 +52,8 @@ final class RelayProcessor: Sendable {
     }
 
     struct Pass: Equatable, Sendable {
-        /// Records handled (echoed) in this pass.
+        /// Records handled (applied or ingested, and echoed) in this pass;
+        /// re-echoes are not counted.
         let handled: Int
         /// Records still waiting; > 0 means "run again now".
         let remaining: Int
@@ -130,12 +137,14 @@ final class RelayProcessor: Sendable {
     }
 
     private func processPass() async throws -> Pass {
-        let batch = try await transport.changes(in: .relay, since: try storedToken())
+        let since = try storedToken()
+        let batch = try await transport.changes(in: .relay, since: since)
+        var window = RelayWindow(since: since?.value ?? 0, mark: batch.newToken.value)
         var handled = 0
         var remaining = 0
         for record in batch.changed {
-            guard let work = try pendingWork(in: record) else { continue }
-            guard handled < batchLimit else {
+            guard let work = try await pendingWork(in: record, window: &window) else { continue }
+            if work.budgeted, handled >= batchLimit {
                 remaining += 1
                 continue
             }
@@ -144,8 +153,9 @@ final class RelayProcessor: Sendable {
             // stopping the hub ends a pass only between two records, so a
             // handler's cancellation-aware awaits (GRDB, sleeps, URLSession)
             // never turn a stop into a false `write_failed`.
-            try await Task { try await work() }.value
-            handled += 1
+            let run = work.run
+            try await Task { try await run() }.value
+            if work.budgeted { handled += 1 }
         }
         let left = remaining
         backlog.withLock { $0 = left }
@@ -155,25 +165,36 @@ final class RelayProcessor: Sendable {
         return Pass(handled: handled, remaining: remaining)
     }
 
+    private struct Work {
+        let run: @Sendable () async throws -> Void
+        /// Counts toward `batchLimit`: an apply or an ingest, not a re-echo.
+        let budgeted: Bool
+    }
+
     /// The work a record still needs; nil when there is none.
-    private func pendingWork(in record: CloudRecord) throws -> (@Sendable () async throws -> Void)? {
+    private func pendingWork(in record: CloudRecord, window: inout RelayWindow) async throws -> Work? {
+        let mark = window.mark
         switch record.kind {
         case RelayRecordKind.action.rawValue:
-            switch try pendingAction(in: record) {
+            switch try await pendingAction(in: record, window: &window) {
             case nil:
                 return nil
             case .apply(let action):
-                return { try await self.processAction(action) }
+                return Work(run: { try await self.processAction(action, doneSeq: mark) }, budgeted: true)
             case let .reEcho(action, outcome):
-                return { try await self.reEchoAction(action, outcome) }
+                return Work(run: { try await self.reEchoAction(action, outcome) }, budgeted: false)
             }
         case RelayRecordKind.recordingUpload.rawValue:
-            guard let uploads = recordingUploads, let pending = try pendingUpload(in: record) else { return nil }
+            guard let uploads = recordingUploads, let pending = try await pendingUpload(in: record, window: &window) else {
+                return nil
+            }
             switch pending {
             case .ingest(let upload):
-                return { try await self.processUpload(upload, asset: record.assetFileURL, uploads: uploads) }
+                let asset = record.assetFileURL
+                return Work(run: { try await self.processUpload(upload, asset: asset, uploads: uploads, doneSeq: mark) }, budgeted: true)
             case .reEchoReceived(let upload):
-                return { try await self.reEchoReceived(upload, asset: record.assetFileURL) }
+                let asset = record.assetFileURL
+                return Work(run: { try await self.reEchoReceived(upload, asset: asset) }, budgeted: false)
             }
         default:
             // Device records and future kinds have no relay work.
@@ -190,9 +211,10 @@ final class RelayProcessor: Sendable {
     }
 
     /// The work the record's action still needs: nil when it is
-    /// undecodable, moved past `received` by an echo, or `done` without a
-    /// readable stored echo (a row from before echoes were kept).
-    private func pendingAction(in record: CloudRecord) throws -> PendingAction? {
+    /// undecodable, moved past `received` by an echo, `done` and not changed
+    /// by the phone since, or `done` without a readable stored echo (a row
+    /// from before echoes were kept).
+    private func pendingAction(in record: CloudRecord, window: inout RelayWindow) async throws -> PendingAction? {
         let action: ActionRequestPayload
         do {
             action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
@@ -203,7 +225,8 @@ final class RelayProcessor: Sendable {
         }
         guard action.status == .pending || action.status == .received else { return nil }
         guard try sidecar.relayPhase(action.recordName) == .done else { return .apply(action) }
-        guard let stored = try sidecar.relayEcho(action.recordName) else { return nil }
+        guard try await phoneChanged(action.recordName, window: &window),
+              let stored = try sidecar.relayEcho(action.recordName) else { return nil }
         do {
             return .reEcho(action, try JSONDecoder().decode(ActionOutcome.self, from: stored))
         } catch {
@@ -221,7 +244,13 @@ final class RelayProcessor: Sendable {
         logger.info("action \(action.recordName, privacy: .public) read \(action.status.rawValue, privacy: .public) after its echo: echoed again")
     }
 
-    private func processAction(_ action: ActionRequestPayload) async throws {
+    /// Whether the buffered change of a `done` record came after the pass
+    /// that marked it (a phone save), not the hub's own stale copy.
+    private func phoneChanged(_ recordName: String, window: inout RelayWindow) async throws -> Bool {
+        try await window.changedAfter(try sidecar.relayDoneSeq(recordName), recordName, in: transport)
+    }
+
+    private func processAction(_ action: ActionRequestPayload, doneSeq: Int) async throws {
         lastActivity.withLock { $0 = now() }
         let outcome: ActionOutcome
         if try sidecar.relayPhase(action.recordName) == .begun {
@@ -235,7 +264,8 @@ final class RelayProcessor: Sendable {
         }
         try await writeEcho(action, outcome)
         try sidecar.markRelayDone(
-            action.recordName, outcome: Self.ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome), at: now()
+            action.recordName, outcome: Self.ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome),
+            doneSeq: doneSeq, at: now()
         )
     }
 
@@ -299,8 +329,9 @@ final class RelayProcessor: Sendable {
         case reEchoReceived(RecordingUploadPayload)
     }
 
-    /// The work a decodable, still `pending` upload needs; nil for none.
-    private func pendingUpload(in record: CloudRecord) throws -> PendingUpload? {
+    /// The work a decodable, still `pending` upload needs; nil for none (a
+    /// `done` upload the phone has not saved again since is none).
+    private func pendingUpload(in record: CloudRecord, window: inout RelayWindow) async throws -> PendingUpload? {
         let upload: RecordingUploadPayload
         do {
             upload = try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: record.payload)
@@ -310,6 +341,7 @@ final class RelayProcessor: Sendable {
         }
         guard upload.status == .pending else { return nil }
         guard try sidecar.relayPhase(upload.recordName) == .done else { return .ingest(upload) }
+        guard try await phoneChanged(upload.recordName, window: &window) else { return nil }
         let outcome = try sidecar.relayOutcome(upload.recordName)
         if outcome == RecordingUploadStatus.received.rawValue { return .reEchoReceived(upload) }
         return outcome?.hasPrefix(ActionStatus.failed.rawValue) == true ? .ingest(upload) : nil
@@ -332,7 +364,7 @@ final class RelayProcessor: Sendable {
         removeConsumedAsset(asset)
     }
 
-    private func processUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads) async throws {
+    private func processUpload(_ upload: RecordingUploadPayload, asset: URL?, uploads: RecordingUploads, doneSeq: Int) async throws {
         lastActivity.withLock { $0 = now() }
         let name = upload.recordName
         let outcome: ActionOutcome
@@ -350,7 +382,7 @@ final class RelayProcessor: Sendable {
         // The rewrite carries no asset: that is what frees the iCloud storage.
         try await transport.save([try CloudRecordFactory.record(for: echoed, modifiedAt: now(), assetFileURL: nil)])
         let ledger = echoed.status == .received ? RecordingUploadStatus.received.rawValue : Self.ledgerOutcome(outcome)
-        try sidecar.markRelayDone(name, outcome: ledger, at: now())
+        try sidecar.markRelayDone(name, outcome: ledger, doneSeq: doneSeq, at: now())
         guard echoed.status == .received else {
             logger.warning("recording upload \(name, privacy: .public) failed: \(ledger, privacy: .public)")
             return
@@ -475,6 +507,36 @@ final class RelayProcessor: Sendable {
         let data = try JSONEncoder().encode(token)
         guard let raw = String(bytes: data, encoding: .utf8) else { return }
         try sidecar.setMetaValue(raw, forKey: Self.relayTokenKey)
+    }
+}
+
+/// One pass's view of the relay buffer: tells a phone change made after a
+/// record's outcome from the hub's own stale copy of it.
+private struct RelayWindow {
+    /// The cursor the pass read from.
+    let since: Int
+    /// The buffer mark the pass read up to (`newToken`), stored with `done`.
+    let mark: Int
+    /// Mark → the records changed past it, one buffer read per mark.
+    private var changedPast: [Int: Set<String>] = [:]
+
+    init(since: Int, mark: Int) {
+        self.since = since
+        self.mark = mark
+    }
+
+    /// True when `recordName`'s buffered change lies past `doneSeq`. Every
+    /// change this pass reads lies past `since`, so a mark at or below it
+    /// needs no lookup. A row without a mark (written before marks were
+    /// kept) keeps the old behaviour: true.
+    mutating func changedAfter(
+        _ doneSeq: Int?, _ recordName: String, in transport: any CloudSyncTransport & Sendable
+    ) async throws -> Bool {
+        guard let doneSeq, doneSeq > since else { return true }
+        if let names = changedPast[doneSeq] { return names.contains(recordName) }
+        let names = Set(try await transport.changes(in: .relay, since: CloudChangeToken(value: doneSeq)).changed.map(\.recordName))
+        changedPast[doneSeq] = names
+        return names.contains(recordName)
     }
 }
 

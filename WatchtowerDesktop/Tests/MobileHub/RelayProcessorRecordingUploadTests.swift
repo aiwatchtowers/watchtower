@@ -243,17 +243,55 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
     // MARK: - Data-zone reset (final-review P2-I1)
 
-    /// The CloudKit buffer never holds the hub's own saves, so after a pass
-    /// the latest buffered event of each upload is still the phone's
-    /// `pending` write. Hub saves land in `echoes`, reads see the phone only.
-    private actor PhoneOnlyBuffer: CloudSyncTransport {
-        let phone = InMemoryCloudTransport()
-        private(set) var echoes: [CloudRecord] = []
-        func save(_ records: [CloudRecord]) async throws { echoes += records }
-        func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
-        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
-            try await phone.changes(in: zone, since: token)
-        }
+    /// A processor over `buffer` (`PhoneOnlyBuffer`: reads see the phone's
+    /// saves only, the hub's land in `echoes`).
+    private func processor(
+        over buffer: PhoneOnlyBuffer, linked: @escaping @Sendable (String) -> Bool = { !$0.isEmpty }
+    ) throws -> RelayProcessor {
+        let jobs = try XCTUnwrap(self.jobs)
+        let sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        let uploads = RelayProcessor.RecordingUploads(
+            ingest: { upload, audio in try await jobs.ingest(upload, audio: audio) },
+            isDeviceLinked: linked,
+            sleep: sleep
+        )
+        return RelayProcessor(
+            transport: buffer, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
+            recordingUploads: uploads
+        ) { [now] in now }
+    }
+
+    /// CloudKit never buffers the hub's own echo, so a re-read of the relay
+    /// (a reset rewinding the cursor, a pass that stopped short) still shows
+    /// the phone's `pending` save: that stale copy is neither re-echoed nor
+    /// re-ingested; only a later phone save is.
+    func testAReReadOfTheHubsOwnStaleCopiesEchoesAndIngestsNothing() async throws {
+        let buffer = PhoneOnlyBuffer()
+        let failed = try CloudRecordFactory.record(
+            for: uploadPayload(id: "R1", deviceID: "device-x"), modifiedAt: now, assetFileURL: try makeAsset("r1.m4a")
+        )
+        let received = try CloudRecordFactory.record(
+            for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: try makeAsset("r2.m4a")
+        )
+        try await buffer.phone.save([failed, received])
+        _ = try await processor(over: buffer) { $0 == "device-a" }.processOnce()
+        let echoCount = await buffer.echoes.count
+        XCTAssertEqual(echoCount, 2)
+
+        try sidecar.wipeSyncState(now: now)  // an account reset: the relay is read from the start
+        _ = try await processor(over: buffer).processOnce()
+
+        let echoesAfter = await buffer.echoes.count
+        XCTAssertEqual(echoesAfter, echoCount, "the hub's own stale copies are no phone change")
+        XCTAssertEqual(enqueued.count, 1, "the failed upload is not ingested without a phone retry")
+
+        // The phone's Retry is a later save: it is ingested.
+        let retry = try CloudRecordFactory.record(
+            for: uploadPayload(id: "R1", deviceID: "device-x"), modifiedAt: now, assetFileURL: try makeAsset("r1-again.m4a")
+        )
+        try await buffer.phone.save([retry])
+        _ = try await processor(over: buffer).processOnce()
+        XCTAssertEqual(enqueued.count, 2)
     }
 
     /// After a DataZone-only reset the relay cursor stays, so a failed

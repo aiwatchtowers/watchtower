@@ -158,6 +158,49 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(try echoes(of: record.recordName).count, 2)
     }
 
+    /// CloudKit never buffers the hub's own echo: a re-read (a pass that
+    /// left a backlog, a reset rewinding the cursor) still shows the phone's
+    /// `pending` save of every action already done. Those stale copies are
+    /// no work, so the backlog drains; a later phone save is re-echoed
+    /// outside the batch budget.
+    func testOwnStaleBufferedCopiesAreNotReEchoedAndNeverStallTheBacklog() async throws {
+        let buffer = PhoneOnlyBuffer()
+        var calls = 0
+        dispatcher.register(.boardCommentAdd) { _ in
+            calls += 1
+            return .applied(["comment_id": .integer(42)])
+        }
+        let records = try (0..<2).map { _ in try pendingActionRecord(kind: .boardCommentAdd, entityID: "7") }
+        try await buffer.phone.save(records)
+        let processor = RelayProcessor(
+            transport: buffer, sidecar: sidecar, dispatcher: dispatcher, hubID: "hub-acme", batchLimit: 1
+        )
+
+        var passes = [try await processor.processOnce()]
+        while let last = passes.last, last.remaining > 0, passes.count < 5 {
+            passes.append(try await processor.processOnce())
+        }
+
+        XCTAssertEqual(passes.map(\.remaining), [1, 0], "the second pass finishes the backlog")
+        XCTAssertEqual(calls, 2)
+        let echoed = await buffer.echoes.map(\.recordName)
+        XCTAssertEqual(echoed.sorted(), records.map(\.recordName).sorted(), "one echo each")
+        XCTAssertNotNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "the token advances")
+
+        try sidecar.wipeSyncState(now: Date())  // an account reset rewinds the relay cursor
+        _ = try await processor.processOnce()
+        let afterReset = await buffer.echoes.count
+        XCTAssertEqual(afterReset, 2, "a re-read from the start re-echoes nothing")
+
+        // A lost ack: the phone saves its pending copy again.
+        try await buffer.phone.save([records[0]])
+        let pass = try await processor.processOnce()
+        XCTAssertEqual(pass.remaining, 0, "a re-echo never takes the batch budget")
+        let after = await buffer.echoes.map(\.recordName)
+        XCTAssertEqual(after.filter { $0 == records[0].recordName }.count, 2, "the later phone save is re-echoed")
+        XCTAssertEqual(calls, 2)
+    }
+
     func testADoneActionStuckAtReceivedIsReEchoedWithItsFinalOutcome() async throws {
         var calls = 0
         dispatcher.register(.sessionStart) { _ in
