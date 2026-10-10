@@ -1,6 +1,6 @@
 # Session state: background agents (board #411) — design
 
-**Status:** Draft for owner review (PROJ-11 amendment needs explicit approval via an ask).
+**Status:** Approved by the owner on 2026-10-10 — the PROJ-11 amendment in ask #139 (what counts, the grace and `SubagentStop` in ask #138; the staleness probe in asks #138, #140 and #142).
 **Business spec:** `2026-10-10-session-background-agents-business.md`.
 **Touches:** `cmd/workbench_session_state.go`, `cmd/workbench_check.go` (Stop hook), `internal/db/terminal_sessions.go`,
 migration `00106`, `internal/devpack/workbench_settings.go`, WatchtowerCore `SessionAgentStatus`,
