@@ -185,8 +185,9 @@ public final class TransportStore: Sendable {
         return (saves, deletes)
     }
 
-    /// The first `limit` pending rows (only `columns`, plus rowid and zone)
-    /// with their mapped zone. Rows whose zone no longer maps are evicted.
+    /// The first `limit` pending rows (`columns`, which must include `zone`,
+    /// plus rowid) with their mapped zone. Rows whose zone no longer maps are
+    /// evicted.
     private func pendingRows(columns: String, limit: Int) throws -> [(row: Row, zone: CloudZoneID)] {
         // rowid survives ON CONFLICT DO UPDATE, so batches are ordered by
         // FIRST enqueue — a hot record cannot starve older pending sends.
@@ -194,7 +195,7 @@ public final class TransportStore: Sendable {
         let rows = try queue.read { db in
             try Row.fetchAll(
                 db,
-                sql: "SELECT rowid, zone, \(columns) FROM pending ORDER BY rowid LIMIT ?",
+                sql: "SELECT rowid, \(columns) FROM pending ORDER BY rowid LIMIT ?",
                 arguments: [limit]
             )
         }
