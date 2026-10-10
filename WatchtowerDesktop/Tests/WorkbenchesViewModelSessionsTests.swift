@@ -496,6 +496,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
             return (group, try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Task", parentID: group))
         }
         let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
         await vm.reload()
 
         await vm.workOn(targetID: group, targetText: "Group", projectID: p)
@@ -506,7 +508,31 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(started.count, 1)
         XCTAssertEqual(groupStatus, "todo")
         XCTAssertEqual(childStatus, "todo")
+        XCTAssertEqual(ownerWrites, [])
         XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// The write is keyed by the target's own workbench, never the selected
+    /// one: Work on it on workbench B's target while A is selected (no
+    /// `projectID` given) reloads and reports B only.
+    func testWorkOnStatusWriteIsKeyedByTheTargetsWorkbench() async throws {
+        let a = try await workbenchWithFolder("a")
+        let b = try await workbenchWithFolder("b")
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: b) }
+        let vm = makeVM()
+        var ownerWrites: [(Int64, WorkbenchSubject)] = []
+        vm.onOwnerWrite = { project, subject in ownerWrites.append((project, subject)) }
+        await vm.reload()
+        vm.selectedWorkbenchID = a
+
+        await vm.workOn(targetID: target, targetText: "Feature")
+
+        let after = try await status(target)
+        XCTAssertEqual(after, "in_progress")
+        XCTAssertEqual(vm.boardReloads[b], 1)
+        XCTAssertNil(vm.boardReloads[a])
+        XCTAssertEqual(ownerWrites.map(\.0), [b])
+        XCTAssertEqual(ownerWrites.map(\.1), [.target(target)])
     }
 
     /// The status is written only after the session started: a failed read
