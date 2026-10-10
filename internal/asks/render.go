@@ -84,7 +84,8 @@ func renderChecklist(items []ChecklistItem, marks []CheckAnswer) string {
 	}
 	header := make([]string, 0, 3)
 	for _, state := range []string{StateOK, StateBroken, StateSkipped} {
-		header = append(header, fmt.Sprintf("%s %d", checkLabel(state), counts[checkLabel(state)]))
+		label := checkLabel(state)
+		header = append(header, fmt.Sprintf("%s %d", label, counts[label]))
 	}
 	return strings.Join(append([]string{"Checklist: " + strings.Join(header, ", ")}, steps...), "\n")
 }
@@ -102,7 +103,10 @@ func checkLabel(state string) string {
 	return "Didn't check"
 }
 
-// checkCounts is the check's short form: `N ok, M broken, K skipped`.
+// checkCounts is the check's short form: `N ok, M broken, K skipped`. It
+// keeps the stored state names on purpose, unlike Render's Desktop labels:
+// it is the delivery line's `<short>`, pinned by PROJ-12 and the Swift
+// `OwnerAskPrompt` twin (testdata/lines).
 func checkCounts(marks []CheckAnswer) string {
 	counts := map[string]int{}
 	for _, m := range marks {

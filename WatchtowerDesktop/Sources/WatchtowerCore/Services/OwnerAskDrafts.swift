@@ -56,8 +56,8 @@ package struct OwnerAskDraft: Equatable, Sendable {
     /// The answer as stored: questions and check items in the payload's
     /// order, unmarked items `skipped`, a check note only on a `broken` item
     /// (the only one that shows its field; the draft keeps the others),
-    /// empty comments (and any on a kind
-    /// other than a review) dropped, text trimmed.
+    /// empty comments (and any on a kind other than a review) dropped, text
+    /// trimmed.
     package func answer(for ask: OwnerAsk) -> OwnerAskAnswer {
         OwnerAskAnswer(
             verdict: ask.kind == .review ? verdict : nil,

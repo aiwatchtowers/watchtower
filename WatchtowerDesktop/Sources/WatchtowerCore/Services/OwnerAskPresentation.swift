@@ -38,7 +38,7 @@ package enum OwnerAskPresentation {
 
     /// A check item's buttons (board #502): what the owner found, with its
     /// SF Symbol; the stored values stay `ok`/`broken`/`skipped`.
-    package struct CheckStateOption: Equatable, Sendable {
+    package struct CheckStateOption: Sendable {
         package let state: OwnerAskAnswer.CheckState
         package let label: String
         package let icon: String
