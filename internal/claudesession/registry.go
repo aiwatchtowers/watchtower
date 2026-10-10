@@ -67,7 +67,7 @@ func FindSessionWith(configDir, sessionID string, p ProcInfo) (Entry, bool, erro
 	var matches []Entry
 	jsonFiles, decoded := 0, 0
 	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+		if !f.Type().IsRegular() || !strings.HasSuffix(f.Name(), ".json") {
 			continue
 		}
 		jsonFiles++

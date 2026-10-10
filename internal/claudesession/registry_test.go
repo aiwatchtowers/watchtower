@@ -153,6 +153,32 @@ func TestFindSessionTakesTheConfigDirLiterally(t *testing.T) {
 	}
 }
 
+// Only regular files are read: a symlink named *.json (or a FIFO, which
+// would block the read) is skipped.
+func TestFindSessionReadsOnlyRegularFiles(t *testing.T) {
+	configDir := t.TempDir()
+	sessions := filepath.Join(configDir, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "4242.json"), []byte(entryJSONText(4242, "busy", 1767225600000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The link's target carries a newer status: read, it would win.
+	target := filepath.Join(configDir, "elsewhere.txt")
+	if err := os.WriteFile(target, []byte(entryJSONText(7777, "idle", 1767225699000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(sessions, "7777.json")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := FindSessionWith(configDir, busyID, pidProc{})
+	if err != nil || !ok || got.PID != 4242 {
+		t.Errorf("FindSessionWith = %+v, %v, %v; want the regular file's 4242", got, ok, err)
+	}
+}
+
 func TestFindSessionWithoutRegistryIsNotFound(t *testing.T) {
 	_, ok, err := FindSessionWith(t.TempDir(), busyID, pidProc{})
 	if ok || err != nil {
