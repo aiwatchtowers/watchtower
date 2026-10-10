@@ -15,9 +15,11 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     /// Sends the pending queue at once (the fast lane, spec §4.5); a no-op
     /// while stopped, unlinked, paused or throttled.
     func sendNow() async
-    /// Set the reset callback before `start()`: an account change, or (private
-    /// scope) the server deleting DataZone — either way nothing published survives.
+    /// Set the account-change reset callback before `start()`.
     func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) async
+    /// Set before `start()`: the server deleted the private DataZone, so
+    /// nothing published survives — but the relay zone and its cursor do.
+    func setDataZoneResetHandler(_ handler: (@Sendable () -> Void)?) async
     /// A record CloudKit rejects even alone (`.limitExceeded`, spec §9).
     func setRecordRejectedHandler(_ handler: (@Sendable (_ recordName: String, _ zone: CloudZoneID) -> Void)?) async
 }
@@ -258,9 +260,12 @@ final class MobileHubService {
     }
 
     /// Registered BEFORE `transport.start()`, so an account change seen
-    /// during startup still wipes the derived sync state. The same handler
-    /// covers a server-side DataZone deletion (`.encryptedDataReset`, the
-    /// owner deleting iCloud data): the recreated zone gets every record again.
+    /// during startup still wipes the derived sync state. A server-side
+    /// DataZone deletion (`.encryptedDataReset`, the owner deleting iCloud
+    /// data) wipes the same publish state so the recreated zone gets every
+    /// record again, but KEEPS the relay token: the relay buffer survived,
+    /// and re-reading it from the start would re-ingest a failed upload the
+    /// phone never retried and re-echo received ones (P2-I1).
     private func installTransportHandlers() async {
         let sidecar = self.sidecar
         let publisher = self.publisher
@@ -273,6 +278,15 @@ final class MobileHubService {
                 logger.error("account reset: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
             }
             // The new account's zone gets every record again, restaged.
+            publisher.removeStagedAssets()
+        }
+        await transport.setDataZoneResetHandler {
+            do {
+                try sidecar.wipeSyncState(now: now(), keepingRelayToken: true)
+            } catch {
+                logger.error("data-zone reset: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
+            }
+            // The recreated zone gets every record again, restaged.
             publisher.removeStagedAssets()
         }
         await transport.setRecordRejectedHandler { recordName, zone in

@@ -637,7 +637,13 @@ final class HubSyncState: Sendable {
     /// its workbench, may alert once more in the new zone.
     /// The generation counter is bumped so an in-flight publish cycle can
     /// detect the reset and abort before recording stale hashes.
-    func wipeSyncState(now: Date) throws {
+    ///
+    /// `keepingRelayToken`: a server-side DataZone deletion (no account
+    /// change) lost the published records but not the relay buffer, so the
+    /// relay cursor stays — rewinding it would re-read relay records the
+    /// ledger lets through again (a failed upload is re-ingested, a received
+    /// one re-echoed).
+    func wipeSyncState(now: Date, keepingRelayToken: Bool = false) throws {
         try queue.write { db in
             try db.execute(
                 sql: """
@@ -652,7 +658,8 @@ final class HubSyncState: Sendable {
                 ]
             )
             try db.execute(sql: "DELETE FROM slice_state")
-            for key in [RelayProcessor.relayTokenKey] + HubIdentity.heartbeatReadKeys {
+            let relayKeys = keepingRelayToken ? [] : [RelayProcessor.relayTokenKey]
+            for key in relayKeys + HubIdentity.heartbeatReadKeys {
                 try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
             }
             try db.execute(

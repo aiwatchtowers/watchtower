@@ -125,37 +125,42 @@ final class CloudKitTransportScopeTests: XCTestCase {
 
     /// A deleted private DataZone (`.encryptedDataReset`, the owner deleting
     /// iCloud data) lost every published record: the owner must hear it
-    /// through the reset handler — exactly once per deletion batch — so the
-    /// hub forgets its `slice_state` and republishes (final-review i-F3).
-    func testPrivateScopeDataZoneDeletionFiresTheResetHandlerOnce() async throws {
+    /// through the DATA-ZONE reset handler — exactly once per deletion batch —
+    /// so the hub forgets its `slice_state` and republishes (final-review
+    /// i-F3). It is not an account change: the account-reset handler, which
+    /// also rewinds the hub's relay cursor, stays silent (P2-I1).
+    func testPrivateScopeDataZoneDeletionFiresTheDataZoneResetHandlerOnce() async throws {
         let transport = await CloudKitTransport.testing(store: try .inMemory())
-        let resets = Collector<Int>()
-        await transport.setAccountResetHandler { resets.append(1) }
+        let dataResets = Collector<Int>()
+        let accountResets = Collector<Int>()
+        await transport.setDataZoneResetHandler { dataResets.append(1) }
+        await transport.setAccountResetHandler { accountResets.append(1) }
 
         await transport.handleDeletedZones([
             CloudDatabaseScope.private.zoneID(for: .data),
             CloudDatabaseScope.private.zoneID(for: .relay)
         ])
 
-        XCTAssertEqual(resets.values.count, 1, "one reset for one deletion batch")
-        let accountResets = await transport.accountResetCount
-        XCTAssertEqual(accountResets, 0, "a zone deletion is not an account change")
+        XCTAssertEqual(dataResets.values.count, 1, "one reset for one deletion batch")
+        XCTAssertTrue(accountResets.values.isEmpty, "a zone deletion is not an account change")
+        let accountResetCount = await transport.accountResetCount
+        XCTAssertEqual(accountResetCount, 0)
     }
 
-    func testPrivateScopeRelayOnlyDeletionDoesNotFireTheResetHandler() async throws {
+    func testPrivateScopeRelayOnlyDeletionDoesNotFireTheDataZoneResetHandler() async throws {
         let transport = await CloudKitTransport.testing(store: try .inMemory())
         let resets = Collector<Int>()
-        await transport.setAccountResetHandler { resets.append(1) }
+        await transport.setDataZoneResetHandler { resets.append(1) }
 
         await transport.handleDeletedZones([CloudDatabaseScope.private.zoneID(for: .relay)])
 
         XCTAssertTrue(resets.values.isEmpty, "published slice records live in DataZone only")
     }
 
-    func testSharedScopeZoneDeletionDoesNotFireTheResetHandler() async throws {
+    func testSharedScopeZoneDeletionDoesNotFireTheDataZoneResetHandler() async throws {
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared)
         let resets = Collector<Int>()
-        await transport.setAccountResetHandler { resets.append(1) }
+        await transport.setDataZoneResetHandler { resets.append(1) }
 
         await transport.handleDeletedZones([shared.zoneID(for: .data)])
 

@@ -241,6 +241,60 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "received")
     }
 
+    // MARK: - Data-zone reset (final-review P2-I1)
+
+    /// The CloudKit buffer never holds the hub's own saves, so after a pass
+    /// the latest buffered event of each upload is still the phone's
+    /// `pending` write. Hub saves land in `echoes`, reads see the phone only.
+    private actor PhoneOnlyBuffer: CloudSyncTransport {
+        let phone = InMemoryCloudTransport()
+        private(set) var echoes: [CloudRecord] = []
+        func save(_ records: [CloudRecord]) async throws { echoes += records }
+        func delete(recordNames: [String], in zone: CloudZoneID) async throws {}
+        func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+            try await phone.changes(in: zone, since: token)
+        }
+    }
+
+    /// After a DataZone-only reset the relay cursor stays, so a failed
+    /// upload the phone never retried is not ingested behind its back and a
+    /// received one is not re-echoed.
+    func testADataZoneResetNeitherReingestsAFailedUploadNorReEchoesAReceivedOne() async throws {
+        let buffer = PhoneOnlyBuffer()
+        let jobs = try XCTUnwrap(self.jobs)
+        let sleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        func processor(linked: @escaping @Sendable (String) -> Bool) -> RelayProcessor {
+            let uploads = RelayProcessor.RecordingUploads(
+                ingest: { upload, audio in try await jobs.ingest(upload, audio: audio) },
+                isDeviceLinked: linked,
+                sleep: sleep
+            )
+            return RelayProcessor(
+                transport: buffer, sidecar: sidecar, dispatcher: MobileHubCommandDispatcher(), hubID: "hub-acme",
+                recordingUploads: uploads
+            ) { [now] in now }
+        }
+        let failed = try CloudRecordFactory.record(
+            for: uploadPayload(id: "R1", deviceID: "device-x"), modifiedAt: now, assetFileURL: try makeAsset("r1.m4a")
+        )
+        let received = try CloudRecordFactory.record(
+            for: uploadPayload(id: "R2"), modifiedAt: now, assetFileURL: try makeAsset("r2.m4a")
+        )
+        try await buffer.phone.save([failed, received])
+        _ = try await processor { $0 == "device-a" }.processOnce()
+        XCTAssertEqual(try sidecar.relayOutcome(failed.recordName), "failed:device_not_linked")
+        XCTAssertEqual(try sidecar.relayOutcome(received.recordName), "received")
+        let echoCount = await buffer.echoes.count
+
+        try sidecar.wipeSyncState(now: now, keepingRelayToken: true)
+        _ = try await processor { !$0.isEmpty }.processOnce()
+
+        XCTAssertEqual(enqueued.count, 1, "the failed upload is not ingested without a phone retry")
+        let echoesAfter = await buffer.echoes.count
+        XCTAssertEqual(echoesAfter, echoCount, "the received upload is not re-echoed")
+        XCTAssertEqual(try sidecar.relayOutcome(failed.recordName), "failed:device_not_linked")
+    }
+
     // MARK: - Review focus 3: the Mac cannot write the recording
 
     func testUnwritableRecordingsDirFailsWriteFailedAndLeavesNoPartialFile() async throws {

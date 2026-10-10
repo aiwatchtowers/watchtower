@@ -195,6 +195,27 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(try sidecar.relayPhase("action-1"), .done, "phone UUIDs cannot collide across accounts")
     }
 
+    /// A server-side DataZone deletion wipes what the hub believes is
+    /// published (and the staged assets), but not the relay cursor: the
+    /// relay buffer survived (final-review P2-I1).
+    func testDataZoneResetWipesHashesButKeepsTheRelayTokenAndTheLedger() async throws {
+        try sidecar.setHash("hash", for: "workbench-1")
+        try sidecar.setMetaValue("{}", forKey: RelayProcessor.relayTokenKey)
+        try sidecar.markRelayDone("action-1", outcome: "applied", at: Date())
+        let store = try stagedAssetStore()
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, relayInterval: .seconds(600), assets: store)
+        await service.start()
+        defer { service.stop() }
+
+        transport.fireDataZoneReset()
+
+        XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
+        XCTAssertNotNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "the relay buffer was not reset")
+        XCTAssertEqual(try sidecar.relayPhase("action-1"), .done)
+        XCTAssertFalse(store.isStaged(recordName: "meeting_transcript-1", fileName: "segments.json"))
+    }
+
     private func stagedAssetStore() throws -> SliceAssetStore {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hub-assets-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }

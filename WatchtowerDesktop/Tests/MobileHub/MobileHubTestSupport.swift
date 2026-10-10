@@ -25,6 +25,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var savedLog: [Saved] = []
     private var sendNowCount = 0
     private var resetHandler: (@Sendable () -> Void)?
+    private var dataZoneResetHandler: (@Sendable () -> Void)?
     private var rejectedHandler: (@Sendable (String, CloudZoneID) -> Void)?
     private var pullHangs = false
     private var pullFails = false
@@ -98,6 +99,11 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
         handler?()
     }
 
+    func fireDataZoneReset() {
+        let handler = lock.withLock { dataZoneResetHandler }
+        handler?()
+    }
+
     func fireRecordRejected(_ recordName: String, zone: CloudZoneID) {
         let handler = lock.withLock { rejectedHandler }
         handler?(recordName, zone)
@@ -135,6 +141,10 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
         }
         if let gate { await gate.park() }
         lock.withLock { resetHandler = handler }
+    }
+
+    func setDataZoneResetHandler(_ handler: (@Sendable () -> Void)?) async {
+        lock.withLock { dataZoneResetHandler = handler }
     }
 
     func setRecordRejectedHandler(_ handler: (@Sendable (String, CloudZoneID) -> Void)?) async {
