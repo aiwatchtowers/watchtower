@@ -4,7 +4,7 @@
 
 **Goal:** A workbench session whose main agent ended its turn while background subagents/workflows still run shows **Agents working** (green, pulsing, with the count) instead of Stopped / Waiting for you, and announces Stopped once when the background work is really over.
 
-**Architecture:** The sync Stop hook snapshots `background_tasks` (types `subagent` + `workflow`) into two new `terminal_sessions` columns next to the stored `waiting`; later hook events (subagent `PostToolUse`, a new async `SubagentStop` state hook) can only refresh the report time or lower the count, and main-turn events / new runs clear it. No new `agent_state` value: the Desktop derives `.background` from "trusted `waiting` + live count" in `SessionAgentStatus.effective`, behind one staleness seam (`SessionBackgroundPolicy`) whose final shape is pending owner ask #140.
+**Architecture:** The sync Stop hook snapshots `background_tasks` (types `subagent` + `workflow`) into two new `terminal_sessions` columns next to the stored `waiting`; later hook events (subagent `PostToolUse`, a new async `SubagentStop` state hook) can only refresh the report time or lower the count, and main-turn events / new runs clear it. No new `agent_state` value: the Desktop derives `.background` from "trusted `waiting` + live count" in `SessionAgentStatus.effective`, behind one seam (`SessionBackgroundPolicy`). A count that goes 30 min without a report is never ended blindly: the Desktop asks Go to probe the session (spec §10) — stage 1 reads Claude Code's session registry and subagent transcripts, stage 2 pings the main agent over Claude Code's peer messaging socket so its next Stop re-snapshots; every probe failure ends the count (Stopped, one notice). Go stays the only writer of the two columns.
 
 **Tech Stack:** Go 1.25 (`cmd/`, `internal/db`, `internal/devpack`), SQLite + goose migrations, SwiftUI / GRDB (WatchtowerCore + app target).
 
@@ -16,7 +16,8 @@
 
 - Work only in the worktree `/Users/user/PhpstormProjects/watchtower-411`, branch `feat/411-background-agents`. Before every git command: `cd /Users/user/PhpstormProjects/watchtower-411 && git branch --show-current` must print `feat/411-background-agents`.
 - What counts: `background_tasks` entries with `type` `subagent` or `workflow` (ask #138). `shell`, `monitor`, `teammate`, `cloud session`, `MCP task` and unknown types never count.
-- Grace after the count reaches 0: **120 s** (ask #138). Staleness bound (count > 0, no report): **30 min**, then the probe — shape pending ask #140 (Tasks 10–11 only).
+- Grace after the count reaches 0: **120 s** (ask #138). Staleness (count > 0, no report for **30 min**): the two-stage probe of spec §10 (asks #138, #140), Tasks 10–14 only. Stage 1 passive (registry `<claude config dir>/sessions/<pid>.json` + subagent transcript mtimes); stage 2 one ping over the peer socket, "checking…" caption while in flight, **5 min** to a Stop, at most one ping per run per 30-min silence window, never while `status == busy`, never at Needs approval, never within **2 min** of the owner typing into that terminal. Every failure → Stopped (one notice). Registry and peer channel are Claude Code internals: version-gated, failure falls through to Stopped, never sticks the state.
+- Go is the only writer of `agent_background` / `agent_background_at`, the probe's writes included; the Desktop triggers the probe through the CLI and keeps only in-memory probe bookkeeping (ping in flight, window used).
 - `SubagentStop` state hook is installed (async, timeout 5, no matcher). `SubagentStart` is **not** installed.
 - Older Claude Code without `background_tasks` in the Stop input: Stopped as today (no fallback).
 - Label/glyph: caption "Agents working" / "1 agent working" / "N agents working"; with asks + " · 1 ask open" / " · N asks open"; glyph `person.2.fill` (no asks) or `questionmark` (asks open); tone `.green`; dot filled and pulsing, honouring Reduce Motion. UI strings English only.
@@ -29,7 +30,7 @@
 - Public repo: fixtures and docs carry no real session ids, agent ids, user names or local absolute paths (placeholders, `example`); `make hooks` must be installed in the worktree.
 - Commit messages in English, ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. No push from task implementers.
 - Inner loop only per task (`go test ./internal/<pkg>`, `go test ./cmd -run '<regex>'`, `make test-swift FILTER=…`, `make lint-diff`). No `-count=1`. Logs to a file with an explicit exit code (`cmd > log 2>&1; echo "exit=$?"`), never piped through `tail`.
-- Swift tasks (6, 7, 8, 10, 11) run strictly one at a time.
+- Swift tasks (6, 7, 8, 14) run strictly one at a time.
 
 ## Review Focus
 
@@ -55,11 +56,14 @@
 | 7 | Swift presentation and notices | Task 6 |
 | 8 | Hand-off and ask-answer guards for Agents working | Task 7 |
 | 9 | Inventory (PROJ-11 amendment), feature notes, app guide | Task 5, Task 8 |
-| 10 | Subagent transcript probe — **shape pending ask #140** | Task 8 |
-| 11 | Staleness verdict wiring — **shape pending ask #140** | Task 9, Task 10 |
-| 12 | Final gate | Task 11 |
+| 10 | Go: Claude session registry + subagent transcript reader (`internal/claudesession`) | Task 0 |
+| 11 | Go: `workbench session-probe` stage 1 + `EndTerminalBackground` | Task 5, Task 10 |
+| 12 | Peer messaging protocol discovery + go/no-go (no product code) | Task 0 |
+| 13 | Go: stage 2 ping (`--ping`, `--expire`) — or the no-go fallback | Task 11, Task 12 |
+| 14 | Desktop: probe trigger, "checking…" caption, ping timeout, docs | Task 8, Task 9, Task 13 |
+| 15 | Final gate | Task 14 |
 
-Parallel lanes allowed by the dependencies: Task 0 ‖ Task 1; after Task 1, the Go lane (2 → 3 → 4 → 5) ‖ the Swift lane (6 → 7 → 8). Each lane in its own worktree/branch merged by the controller; never two implementers in one tree.
+Parallel lanes allowed by the dependencies: Task 0 ‖ Task 1; after Task 1, the Go lane (2 → 3 → 4 → 5 → 11 → 13) ‖ the Swift lane (6 → 7 → 8 → 14); Tasks 10 and 12 (after Task 0) ‖ either lane. Each lane in its own worktree/branch merged by the controller; never two implementers in one tree.
 
 ---
 
@@ -71,19 +75,23 @@ Pins the parse against what Claude Code actually sends and answers the spec's un
 - Create: `cmd/testdata/stop_background_tasks.json` (a Stop input with ≥ 2 in-flight background subagents)
 - Create: `cmd/testdata/subagentstop_background_tasks.json` (a `SubagentStop` of one of those subagents, with the parent's `background_tasks`)
 - Create: `cmd/testdata/stop_no_background_tasks.json` (a Stop input with nothing in flight — expected `"background_tasks": []`)
+- Create: `internal/claudesession/testdata/registry_idle.json`, `registry_busy.json` (a redacted `<claude config dir>/sessions/<pid>.json` entry of an idle and of a busy session)
+- Create: `internal/claudesession/testdata/peer_inbound_frame.bin` + `peer_inbound_frame.md` (the bytes a local session sends when it messages another session, captured on a decoy socket, and a one-paragraph note of how they were captured) — only if Step 8 succeeds
 - Modify: `docs/superpowers/specs/2026-10-10-session-background-agents-design.md` — add Appendix A.7 "Observed inputs (Claude Code <version>, 2026-10-xx)"
 
 **Interfaces:**
 - Consumes: none.
-- Produces: the three fixture files (consumed by Tasks 3 and 4 tests by file name); A.7 answers (consumed by Task 3: whether to filter a `status` value; Task 4: whether the stopping subagent is listed in its own `SubagentStop` and whether task `id` equals `agent_id`).
+- Produces: the three hook fixtures (consumed by Tasks 3 and 4 tests by file name); the registry fixtures (Task 10); the inbound frame (Task 12 starts from it); A.7 answers (consumed by Task 3: whether to filter a `status` value; Task 4: whether the stopping subagent is listed in its own `SubagentStop` and whether task `id` equals `agent_id`).
 
 - [ ] **Step 1: Set up a capture folder outside the repo.** In the scratchpad, make an empty folder with `.claude/settings.local.json` holding two command hooks, `Stop` and `SubagentStop`, each `cat > <capture dir>/<event>-$(date +%s%N).json` (plain shell, exits 0). Record `claude --version`.
 - [ ] **Step 2: Produce the events.** In that folder run an interactive `claude` session (or `claude -p` first; if its Stop input carries no in-flight entries, use an interactive session) with a prompt asking it to launch two background subagents that each run `sleep 20` via Bash then report, a background `Bash` `sleep 30` (shell, must not count), and to end its turn immediately. Wait until both subagents finish and the main agent wakes and stops again.
 - [ ] **Step 3: If capture is impossible from the agent's session** (no interactive TTY, CLI missing), raise one owner ask (via the workbench skill) with the exact two-step recipe above and stop the task until the files arrive. Do not invent fixtures.
 - [ ] **Step 4: Redact.** Replace every `session_id` with `00000000-0000-4000-8000-000000000411`, every `agent_id`/task `id` with stable fakes (`agent-a`, `agent-b`, `task-shell-1`, keeping equal ids equal), paths with `/tmp/example/...`, `description`/`last_assistant_message` with neutral text. Keep every key, value type and `status` value as observed. Run `bash scripts/leak-check.sh` (or the pre-push hook path) over the new files.
 - [ ] **Step 5: Write A.7.** One line per unverified fact: observed `status` values; whether the stopping subagent appears in its own `SubagentStop`'s `background_tasks`; whether a task `id` equals the subagent's `agent_id`; the `agent_type` of the user's subagents; whether `background_tasks` is present in an empty Stop. Facts the capture could not show stay "not observed".
-- [ ] **Step 6: Verify.** `jq . cmd/testdata/stop_background_tasks.json cmd/testdata/subagentstop_background_tasks.json cmd/testdata/stop_no_background_tasks.json > /dev/null; echo "exit=$?"` → `exit=0`.
-- [ ] **Step 7: Commit** `test(workbench): real Stop and SubagentStop inputs with background tasks (#411)`.
+- [ ] **Step 6a: Registry entry.** While the Step 2 session runs, copy its `<claude config dir>/sessions/<pid>.json` (the one whose `sessionId` matches the captured hook input) once while it is idle and once while busy. Redact `pid` → `4242`, `sessionId` → the Step 4 placeholder, `cwd`/`messagingSocketPath` → `/tmp/example/...`, `name` → `example`, timestamps kept as numbers but shifted to 2026-01-01. Keep every key, its type, `version`, `peerProtocol`, `peerFeatures`, `status`, `kind`, `entrypoint`, `pidDomain`. Note in A.7 that a `<pid>.<hash>.key` file sits beside each entry; never open, copy or commit a `.key` file.
+- [ ] **Step 6b: Inbound peer frame (decoy socket).** In the scratchpad, start a Unix-socket listener (a short Go or Python `-I` script outside the repo) that writes every received byte to a file and accepts but never answers; write a decoy registry entry for it (own pid, a fake `sessionId`, `messagingSocketPath` = the listener, `peerProtocol`/`peerFeatures` copied from Step 6a). From an agent session that has a cross-session `SendMessage` tool, send one plain message to the decoy's name. Save the received bytes as `peer_inbound_frame.bin` after redacting ids/paths in place (same lengths where the frame carries lengths — if lengths make redaction impossible, keep only `peer_inbound_frame.md` with the structure described and no bytes). Remove the decoy entry and stop the listener. If the sender refuses the decoy (it checks something else), write that in `peer_inbound_frame.md` and move on — Task 12 picks it up.
+- [ ] **Step 6: Verify.** `jq . cmd/testdata/stop_background_tasks.json cmd/testdata/subagentstop_background_tasks.json cmd/testdata/stop_no_background_tasks.json internal/claudesession/testdata/registry_idle.json internal/claudesession/testdata/registry_busy.json > /dev/null; echo "exit=$?"` → `exit=0`; `git status --short` shows no `.key` file.
+- [ ] **Step 7: Commit** `test(workbench): real Stop, SubagentStop, registry and peer frame fixtures (#411)`.
 
 ---
 
@@ -256,9 +264,9 @@ Exhaustive `switch`es over `Kind` that must gain `.background` in this task to c
   - `SessionAgentStateRow.agentBackground: Int?` (`agent_background`), `.agentBackgroundAt: String?` (`agent_background_at`); init params with `nil` defaults.
   - `SessionSwitcherPresentation.State.Kind.background` (doc: "the main turn is over, background subagents run"); `State.backgroundAgents: Int` (0 unless `.background`), added to `init` and `live(...)` with default 0.
   - `SessionBackgroundPolicy` (the one staleness seam):
-    - `package enum SessionBackgroundVerdict: Equatable, Sendable { case running, over }` (Task 11 may add cases; nothing else switches on it outside this file and `SessionAgentStatus`).
+    - `package enum SessionBackgroundVerdict: Equatable, Sendable { case running, over }` (Task 14 may add cases; nothing else switches on it outside this file and `SessionAgentStatus`).
     - `package struct SessionBackgroundPolicy: Sendable { package static let grace: TimeInterval = 120; package func verdict(count: Int, lastReport: Date, now: Date, sessionID: Int64) -> SessionBackgroundVerdict; package static let current: Self }`.
-    - Task 6 rule: `lastReport > now` (future) → `.over`; `count == 0` → `.running` while `now - lastReport < grace`, else `.over`; `count > 0` → `.running`. The bound for `count > 0` is **deliberately absent here** and lives only in Task 11 behind `verdict`; no other code may compare `agentBackgroundAt` with a duration. Doc comment says so and names ask #140. The branch must not merge without Task 11.
+    - Task 6 rule: `lastReport > now` (future) → `.over`; `count == 0` → `.running` while `now - lastReport < grace`, else `.over`; `count > 0` → `.running`. `count > 0` never ends on the Desktop's clock: Go ends it (Tasks 11, 13). The 30-min "needs a probe" check is added in Task 14 behind this same type (`needsProbe`); no other code may compare `agentBackgroundAt` with a duration. Doc comment says so and names spec §10. The branch must not merge without Tasks 11–14.
   - `SessionAgentStatus.effective(row:live:startedAt:now:policy:)` — `now: Date`, `policy: SessionBackgroundPolicy = .current`; new branch after `working`: `hook == .waiting && !failed && count != nil && stamp parses && verdict == .running` → `.background` with `backgroundAgents = count`. An unreadable `agentBackgroundAt` → not background.
   - `SessionAgentStatus.resolve(_:liveIDs:startedAt:now:policy:)` — same new params.
   - `isAtPrompt` true set gains `.background`; `hooksReported` unchanged.
@@ -340,7 +348,7 @@ No production change expected (spec §5.4); this task pins it. If a test fails, 
 - Modify: `docs/app-guide.md` — the session states list: Agents working, its caption and glyph, the order, "never announced", Re-run Setup once.
 - Modify: `CLAUDE.md` feature-notes bullet for the workbench — append a short "(2026-10-10: Agents working, migration 00106, `SubagentStop` state hook, PROJ-11 amended)" clause.
 
-The staleness sentence in the PROJ-11 text is written as "30 minutes with no report, then the probe described in Task 11" only after Task 11; in this task write the spec's §6 text but leave the staleness clause as "a staleness bound (see v1 limits)" and add one v1 limit line "staleness shape: owner ask #140" that Task 11 replaces.
+Write the staleness clause of PROJ-11 as "after 30 minutes with no report the session is probed (spec §10); a probe that cannot confirm the agents ends the count" — Task 14 adds the probe's details (stages, caption, 5-min ping timeout, gates) to the inventory, feature notes and app guide once they are built.
 
 - [ ] **Step 1: Edit the four documents.**
 - [ ] **Step 2: Verify** guard names in the inventory exist: for each `TestProj11_…`/`testProj11_…` named, `grep -rn "<name>" cmd internal WatchtowerDesktop/Tests` finds it. `bash scripts/leak-check.sh` style scan over the diff (no ids, no paths).
@@ -348,64 +356,151 @@ The staleness sentence in the PROJ-11 text is written as "30 minutes with no rep
 
 ---
 
-### Task 10: Subagent transcript probe — **shape pending ask #140**
 
-**Before starting:** read owner ask #140's answer (`get_ask 140`). If the answer differs from the shape below (30 min → probe; process alive + subagent transcript freshness; fresh → stay; silent → stay green with a "no news" caption, Stopped after another 30 min with one notice), stop and hand back to the controller for a plan amendment. Do not start on an open ask.
+### Task 10: Go — Claude session registry + subagent transcript reader (`internal/claudesession`)
 
-**Files:**
-- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SubagentTranscriptProbe.swift`
-- Test: `WatchtowerDesktop/Tests/Core/SubagentTranscriptProbeTests.swift`
-
-**Interfaces:**
-- Consumes: Task 0 A.7 (the observed transcript layout).
-- Produces:
-  - `package struct SubagentTranscriptProbe: Sendable { package init(projectsRoot: URL, fileManager: FileManager = .default); package func latestActivity(claudeSessionID: String) -> Date? }` — finds `<projectsRoot>/*/<claudeSessionID>/subagents/agent-*.jsonl` (glob by the session id, so no project-slug derivation) and returns the newest modification date; nil when none exists or the directory cannot be read. Never throws, never reads file contents.
-  - `package static func defaultProjectsRoot(environment: [String: String]) -> URL` — `$CLAUDE_CONFIG_DIR/projects` when set, else `~/.claude/projects`.
-  - Liveness of the claude process is already `live` (TerminalCenter); the probe does not re-check it.
-
-- [ ] **Step 1: Write the failing tests** (temp directory as root):
-  - `testNewestSubagentTranscriptWins` — two projects dirs, the session's `subagents/` holds `agent-a.jsonl` (mtime T1) and `agent-b.jsonl` (T2 > T1) → T2; another session's files ignored.
-  - `testNoSubagentsDirectoryIsNil` and `testUnreadableDirectoryIsNil` (permissions 000, restored in teardown).
-  - `testOnlyAgentJSONLFilesCount` — `notes.txt` newer than the agent files is ignored.
-  - `testProjectsRootHonoursClaudeConfigDir`.
-  - `testAnInvalidSessionIDNeverEscapesTheRoot` — a session id with `/` or `..` → nil, nothing outside root touched.
-- [ ] **Step 2: Run, expect FAIL**, implement, **run, expect PASS** — `make test-swift FILTER=SubagentTranscriptProbeTests > log 2>&1; echo "exit=$?"`; `make lint-diff`.
-- [ ] **Step 3: Commit** `feat(desktop): subagent transcript probe for quiet background sessions (#411)`.
-
----
-
-### Task 11: Staleness verdict wiring — **shape pending ask #140**
-
-Same pre-check as Task 10 (ask #140 answered and matching; otherwise stop).
+Stage 1's read side (spec §10), pure reads, no DB, no network.
 
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/SessionBackgroundPolicy.swift` (the seam), `SessionSwitcherPresentation.swift` (`State.backgroundQuietSince`), `SessionStatePresentation.swift` (quiet caption), `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift` (throttled probe off the main actor)
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift` (select `claude_session_id` into the row if not already there) and `SessionAgentStateRow`
-- Modify: `docs/inventory/workbench.md`, `docs/features/workbench.md`, `docs/app-guide.md` (replace Task 9's staleness placeholder lines with the decided shape)
-- Test: `Tests/Core/SessionBackgroundPolicyTests.swift` (create), `Tests/Core/SessionAgentStatusTests.swift`, `Tests/Core/SessionStatePresentationTests.swift`, `Tests/Core/SessionAgentNoticePolicyTests.swift`, `Tests/SessionAgentStateCenterTests.swift`
+- Create: `internal/claudesession/registry.go`, `internal/claudesession/transcripts.go`
+- Test: `internal/claudesession/registry_test.go`, `internal/claudesession/transcripts_test.go` (fixtures from Task 0)
 
 **Interfaces:**
-- Consumes: Task 6 seam, Task 10 probe.
+- Consumes: Task 0 registry fixtures and A.7.
 - Produces:
-  - `SessionBackgroundPolicy` gains `staleAfter: TimeInterval = 30 * 60`, `quietFor: TimeInterval = 30 * 60` and `evidence: [Int64: Date]` (latest probe activity per session id); `verdict` uses `lastSeen = max(lastReport, evidence[sessionID])`: `now - lastSeen < staleAfter` → `.running`; `< staleAfter + quietFor` → `.quiet(since: lastSeen)`; else `.over`. The count-0 grace rule is unchanged.
-  - `SessionBackgroundVerdict` gains `.quiet(since: Date)`; `effective` maps `.running` and `.quiet` to `.background`, the latter with `State.backgroundQuietSince = since`.
-  - Caption with `backgroundQuietSince`: the background caption + `" · no news for 30 min"` (exact copy per ask #140's answer).
-  - The center probes a live background session only when `now - lastReport ≥ staleAfter`, at most once per 60 s per session, on a background task (never on the main actor), and resolves with the evidence map; probe results never write the DB.
-  - Notice: `.over` yields `.stopped` keyed `stopped@agent_state_at` → one notice (existing policy; no new code expected).
+  - `func ConfigDir(env func(string) string) string` — `$CLAUDE_CONFIG_DIR` when set, else `~/.claude`.
+  - `type Entry struct { PID int; SessionID, Status, Version, MessagingSocketPath, ProcStart string; PeerProtocol int; PeerFeatures []string; StatusUpdatedAt time.Time }` — unknown keys ignored; `Status` raw (`busy`/`idle`/anything else).
+  - `func FindSession(configDir, sessionID string) (Entry, bool, error)` — scans `<configDir>/sessions/*.json` (never `*.key`), returns the entry whose `sessionId` matches; `false, nil` when none; an unreadable/undecodable file is skipped, not an error (a third state is not needed here: any non-match means "not found", and the caller treats not found as gone). A missing `sessions` dir → `false, nil`.
+  - `func Alive(e Entry) bool` — `syscall.Kill(pid, 0)` succeeds or fails with `EPERM`; and, when `ProcStart` is non-empty, the process's start time (via `ps -o lstart= -p <pid>` or `sysctl kern.proc.pid`, bounded 2 s) still matches — a reused pid is not alive. Injected seams for tests: `type procInfo interface { exists(pid int) bool; start(pid int) (string, bool) }`.
+  - `func LatestSubagentWrite(configDir, sessionID string) (time.Time, bool)` — newest mtime of `<configDir>/projects/*/<sessionID>/subagents/agent-*.jsonl` (glob by session id, no slug derivation); `false` when none. A session id that is not `terminal.IsSessionID` → `false` (no path escape).
 
 - [ ] **Step 1: Write the failing tests:**
-  - `SessionBackgroundPolicyTests.testVerdictTable` — count > 0 with lastSeen 29 min ago → running; 31 min → quiet; 61 min → over; fresh evidence 5 min ago with an old report → running; future evidence ignored; count 0 grace rows unchanged.
-  - `testProj11_BackgroundEndsOnStalenessAndGrace` (SessionAgentStatusTests) — the full ladder running → quiet (still green, still `isAtPrompt`) → stopped.
-  - `SessionStatePresentationTests.testQuietBackgroundCaption` — "2 agents working · no news for 30 min", with asks appended after.
-  - `SessionAgentNoticePolicyTests.testAQuietBackgroundIsNotAnnouncedItsEndIsOnce` — quiet posts nothing; over → one "stopped"; the known double (a revived count then a later Stop) posts a second notice, pinned as the v1 limit.
-  - `SessionAgentStateCenterTests.testTheProbeRunsOnlyForQuietSessionsAndAtMostOncePerMinute` — fake probe counting calls: none before 30 min; one per 60 s of injected clock after; a fresh probe result keeps `.background` without `quiet`.
-- [ ] **Step 2: Run, expect FAIL**, implement, **run, expect PASS** — `make test-swift FILTER='SessionBackgroundPolicyTests|SessionAgentStatusTests|SessionStatePresentationTests|SessionAgentNoticePolicyTests|SessionAgentStateCenterTests' > log 2>&1; echo "exit=$?"`; `make lint-diff`.
-- [ ] **Step 3: Update the docs** (inventory PROJ-11 staleness clause and v1 limit, feature notes, app guide) to the decided shape; verify guard names as in Task 9 Step 2.
-- [ ] **Step 4: Commit** `feat(desktop): staleness probe for quiet background sessions, ask #140 shape (#411)`.
+  - `TestFindSessionMatchesBySessionID` — temp `sessions/` with the two fixtures (ids changed per file) + a `.key` file + a garbage `.json`: finds the right entry with every field decoded; the `.key` is never opened (make it mode 000); garbage skipped.
+  - `TestFindSessionWithoutRegistryIsNotFound` — no `sessions` dir → `false, nil`.
+  - `TestAliveRejectsAReusedPID` — fake procInfo: pid exists with another start → false; same start → true; gone → false; `ProcStart` empty → existence only.
+  - `TestLatestSubagentWriteNewestAgentFileWins` — two project dirs, files `agent-a.jsonl`/`agent-b.jsonl` with set mtimes, a newer `notes.txt` ignored, another session's files ignored.
+  - `TestLatestSubagentWriteRejectsAnInvalidSessionID` — `../x`, `a/b` → false, nothing outside root stat'ed.
+  - `TestConfigDirHonoursClaudeConfigDir`.
+- [ ] **Step 2: Run, expect FAIL**, implement, **run, expect PASS** — `go test ./internal/claudesession > log 2>&1; echo "exit=$?"`; `make lint-diff`.
+- [ ] **Step 3: Commit** `feat(claudesession): read Claude Code's session registry and subagent transcripts (#411)`.
 
 ---
 
-### Task 12: Final gate
+### Task 11: Go — `workbench session-probe` stage 1 + `EndTerminalBackground`
+
+**Files:**
+- Create: `cmd/workbench_session_probe.go`, `cmd/workbench_session_probe_test.go`
+- Modify: `internal/db/terminal_sessions.go` (new `EndTerminalBackground`), `internal/db/terminal_sessions_test.go`
+
+**Interfaces:**
+- Consumes: Task 2 `LowerTerminalBackground`; Task 10 `FindSession`, `Alive`, `LatestSubagentWrite`, `ConfigDir`.
+- Produces:
+  - `func (db *DB) EndTerminalBackground(id, workbenchID int64, sessionID string, seenAt string) (bool, error)` — NULLs both columns only while `agent_state = 'waiting' AND agent_background IS NOT NULL AND agent_background_at = seenAt` (compare-and-clear: a Stop or report that landed since the probe read the row wins). Never touches any other column. The Desktop's notice key stays `stopped@agent_state_at` → one notice.
+  - CLI `watchtower workbench session-probe --workbench <id> --session <terminal row id>` (stage 1; flags `--ping`, `--expire` are added in Task 13 and rejected here as unknown). Reads the row (`GetTerminalSession`); acts only when the row is `waiting` with `Background > 0` and `BackgroundAt` ≥ 30 min old (`probeStaleAfter = 30 * time.Minute`); otherwise outcome `not_stale`.
+  - Stage 1 decision, in this order: no registry entry or `!Alive` → `EndTerminalBackground` → `gone`; `Status == "busy"` → nothing → `busy`; `LatestSubagentWrite` within 30 min → `LowerTerminalBackground(…, now, nil)` → `fresh`; otherwise → `silent` (no write; the Desktop decides on the ping).
+  - stdout: one JSON object `{"ok": true, "outcome": "<not_stale|gone|busy|fresh|silent>", "agent_background_at": "<stamp or empty>", "peer": {"available": <bool>, "reason": "<string>"}}`; `peer.available` is computed in Task 13 and always `false` with reason `"not built"` here. On a failure: `{"ok": false, "error": "<one line>"}`, exit 0 (the Desktop reads the envelope; review-rules "Envelope symmetry"). Empty slices/strings never `null`.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `TestEndTerminalBackgroundIsCompareAndClear` (db) — clears with the matching stamp; a newer `agent_background_at` → no write; over `working` → no write; other columns untouched.
+  - `TestProj11_ProbeNeverStartsBackground` (cmd) — over a NULL-count `waiting` every outcome writes nothing (row byte-identical).
+  - `TestSessionProbeStageOneTable` — fake registry/transcript roots via `CLAUDE_CONFIG_DIR` in `t.Setenv`, fake procInfo: not stale → `not_stale`, nothing written; no entry → `gone`, count NULL; dead pid → `gone`; busy → `busy`, row unchanged; fresh transcript → `fresh`, only `agent_background_at` advanced; old transcript → `silent`, row unchanged.
+  - `TestSessionProbeEnvelopeShape` — success and failure JSON decode into the documented keys; no `null`; exit 0 on a missing row (`ok: false`).
+  - `TestSessionProbeNeverTouchesStateOrFinished` — across all outcomes `agent_state`, `agent_state_at`, `finished_at`, `agent_turn_end`, `agent_tool_run` unchanged.
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/db -run TestEndTerminalBackground > log 2>&1; echo "exit=$?"`; `go test ./cmd -run 'TestSessionProbe|TestProj11_ProbeNeverStartsBackground' > log2 2>&1; echo "exit=$?"`.
+- [ ] **Step 3: Implement**, **run, expect PASS** (same commands), `make lint-diff`.
+- [ ] **Step 4: Commit** `feat(workbench): session-probe stage 1 ends or refreshes a silent background count (#411)`.
+
+---
+
+### Task 12: Peer messaging protocol discovery + go/no-go (no product code)
+
+The ping uses Claude Code's local session-to-session channel, an undocumented internal. This task decides whether Task 13 builds it.
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-10-10-session-background-agents-design.md` — add Appendix B "Peer messaging channel (observed, Claude Code <version>)"
+- Create (go only): `internal/claudesession/testdata/peer_roundtrip.md` and redacted request/response byte fixtures (`peer_request.bin`, `peer_response.bin`)
+
+**Interfaces:**
+- Consumes: Task 0 inbound frame and registry fixtures.
+- Produces: Appendix B with the frame format (framing, encoding, fields, how the sender is identified, whether the `.key` file or another secret authenticates the sender, the response/ack shape, error replies), which `peerProtocol` values and `peerFeatures` it applies to, and how the receiver treats a message (does it start a turn when idle; does a different permission mode hold it for approval; does it show the message to the owner); and a verdict line **GO** or **NO-GO** with reasons.
+
+- [ ] **Step 1: Read only.** Inspect the installed Claude Code CLI's handling of `messagingSocketPath` (read-only grep of the installed package; nothing copied into the repo beyond a description in Appendix B) and the Task 0 inbound frame.
+- [ ] **Step 2: Round trip on throwaway sessions.** In a scratch folder, start a throwaway interactive `claude` session (default permission mode, as workbench sessions run). Using a scratch client (outside the repo), send it the frame built per Step 1 with the ping text from spec §10; record the response bytes, whether the session started a turn, whether its Stop hook fired (a capture hook as in Task 0), and what the owner sees in that terminal. Repeat with the session in another permission mode, with a wrong/omitted key, and with a closed socket.
+- [ ] **Step 3: Decide.** **GO** only if all hold: the frame is reproducible from public inputs the Desktop's user owns (registry entry, and the `.key` file only if the CLI itself uses it for exactly this purpose); an idle default-mode session starts a turn and its Stop hook fires; the owner sees the message as a normal incoming message; failures are detectable (error reply, connect/write error, or no Stop). Anything else → **NO-GO**. Do not attempt to bypass a check the CLI enforces (approval holds, permission modes): that is a NO-GO, not a workaround.
+- [ ] **Step 4: Redact and save fixtures** (GO only): ids/paths placeholders, no key material; leak-check the files.
+- [ ] **Step 5: Report** the verdict to the controller; on NO-GO the controller raises an owner ask with the reason before Task 13 runs its fallback branch.
+- [ ] **Step 6: Commit** `docs(spec): peer messaging channel findings for the staleness ping (#411)`.
+
+---
+
+### Task 13: Go — stage 2 ping (`--ping`, `--expire`) — or the no-go fallback
+
+Run exactly one branch, chosen by Task 12's verdict.
+
+**Files:**
+- GO: Create `internal/claudesession/peer.go`, `internal/claudesession/peer_test.go`; modify `cmd/workbench_session_probe.go`, `cmd/workbench_session_probe_test.go`
+- NO-GO: modify `cmd/workbench_session_probe.go`, `cmd/workbench_session_probe_test.go` only
+
+**Interfaces:**
+- Consumes: Task 11 CLI and `EndTerminalBackground`; Task 12 Appendix B.
+- Produces (both branches):
+  - `--expire --seen <agent_background_at stamp>` → `EndTerminalBackground(…, seen)` → outcome `expired` (or `not_stale` when the compare-and-clear did nothing because a fresh report landed).
+  - `peer.available` / `peer.reason` in every stage-1 envelope.
+- GO branch:
+  - `const supportedPeerProtocol = <value from Appendix B>`; `func PeerAvailable(e Entry) (bool, string)` — socket path set, `PeerProtocol == supportedPeerProtocol`, required feature(s) present; reason names the failed check.
+  - `func Ping(ctx context.Context, e Entry, text string) error` — one connect + one frame + read the ack per Appendix B, 2 s connect / 2 s write / 2 s read deadlines, never retries.
+  - `const backgroundPingText` — the spec §10 message, fixed: asks the main agent to check on its background agents, reply in one line and end the turn without starting new work.
+  - `--ping` (only after a stage-1 `silent` in the same run of the command; the command re-runs stage 1 first): `PeerAvailable` false → `EndTerminalBackground` → `ping_unavailable`; `Ping` error → `EndTerminalBackground` → `ping_failed`; success → no write → `pinged` (the main agent's Stop re-snapshots through the existing path).
+- NO-GO branch: `peer.available` is always `false` with Task 12's reason; `--ping` behaves as `ping_unavailable` (ends the count). The ping code is not written.
+
+- [ ] **Step 1: Write the failing tests:**
+  - GO: `TestPeerAvailableGates` (table over socket path / protocol / features); `TestPingWritesTheRecordedFrame` — a test Unix listener (in `t.TempDir()`, closed in `t.Cleanup`) receives bytes equal to `peer_request.bin` modulo the redacted fields and answers `peer_response.bin` → nil; listener closes without ack → error; nothing listening → error within the deadline.
+  - `TestSessionProbePingOutcomes` — unavailable → `ping_unavailable` + count NULL; failed write → `ping_failed` + count NULL; success → `pinged`, row byte-identical (GO); NO-GO: `--ping` → `ping_unavailable` + count NULL.
+  - `TestSessionProbeExpireIsCompareAndClear` — matching `--seen` clears; a newer report → `not_stale`, nothing cleared.
+  - `TestSessionProbePingNeverWhileBusy` — a busy entry with `--ping` → `busy`, no frame sent (listener sees nothing).
+- [ ] **Step 2: Run, expect FAIL**, implement, **run, expect PASS** — `go test ./internal/claudesession > log 2>&1; echo "exit=$?"`; `go test ./cmd -run 'TestSessionProbe' > log2 2>&1; echo "exit=$?"`; `make lint-diff`.
+- [ ] **Step 3: Commit** GO: `feat(workbench): session-probe pings a silent session over the peer channel (#411)`; NO-GO: `feat(workbench): session-probe ends a silent background count without a ping (#411)`.
+
+---
+
+### Task 14: Desktop — probe trigger, "checking…" caption, ping timeout, docs
+
+**Files:**
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/SessionBackgroundPolicy.swift` (`needsProbe`), `SessionSwitcherPresentation.swift` (`State.backgroundChecking`), `SessionStatePresentation.swift` (caption)
+- Create: `WatchtowerDesktop/Sources/Services/SessionBackgroundProber.swift` (owned by `SessionAgentStateCenter`; runs the CLI through `CLIRunnerProtocol`)
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Models/SessionProbeResult.swift` (decoder for the Task 11/13 envelope)
+- Modify: `WatchtowerDesktop/Sources/Services/SessionAgentStateCenter.swift`, `WatchtowerDesktop/Sources/Services/TerminalCenter.swift` (`lastOwnerInputAt[id]`, stamped in the terminal delegate's `send(source:data:)` for owner keystrokes only — not for lines `SessionLineDelivery` types)
+- Modify: `docs/inventory/workbench.md`, `docs/features/workbench.md`, `docs/app-guide.md` (probe details)
+- Test: `Tests/Core/SessionBackgroundPolicyTests.swift` (create), `Tests/Core/SessionProbeResultTests.swift` (create), `Tests/Core/SessionStatePresentationTests.swift`, `Tests/SessionBackgroundProberTests.swift` (create), `Tests/SessionAgentStateCenterTests.swift`
+
+**Interfaces:**
+- Consumes: Task 6 seam and clock; Tasks 11/13 CLI envelope (`outcome`, `agent_background_at`, `peer.available`).
+- Produces:
+  - `SessionBackgroundPolicy.staleAfter: TimeInterval = 30 * 60`; `func needsProbe(count: Int, lastReport: Date, now: Date) -> Bool` (count > 0 and `now - lastReport ≥ staleAfter`). The verdict for `count > 0` stays `.running`: the Desktop never ends a count itself.
+  - `State.backgroundChecking: Bool` — set by `resolve` from the prober's in-flight set; caption = the background caption + `" · checking…"` (asks suffix after it).
+  - `SessionProbeResult: Decodable` (`ok`, `outcome`, `error`, `agentBackgroundAt`, `peer.available`, `peer.reason`), unknown outcome decodes as `.unknown` (treated like `silent` without a ping: no action, retried next window).
+  - `@MainActor final class SessionBackgroundProber` — per session row and run: at most one stage-1 probe per 60 s while `needsProbe`; on `silent` with `peer.available` and all gates (row not Needs approval, registry status not busy — re-checked by the CLI —, no owner input for 2 min, no ping yet in this 30-min silence window of this run) runs `--ping`; on `pinged` marks the session checking with `pingedAt`; 5 min after `pingedAt` with `agent_background_at` unchanged runs `--expire --seen <stamp>`; on `silent` without `peer.available` runs `--ping` (Go ends it as `ping_unavailable`). A new run (`startedAt` changed) or a new `agent_background_at` resets the bookkeeping. CLI calls never on the main actor's critical path (async, one in flight per session); `ok: false` is logged once per streak and retried next window, never ends the count.
+  - Notices unchanged: the end is a plain `stopped@agent_state_at` → one notice.
+
+- [ ] **Step 1: Write the failing tests:**
+  - `SessionBackgroundPolicyTests.testNeedsProbeTable` — count 2 at 29:59 → false, 30:00 → true; count 0 → false; future stamp → false.
+  - `SessionProbeResultTests.testDecodesEveryOutcomeAndTheFailureEnvelope` — fixtures for each outcome; `ok: false` with `error`; an unknown outcome.
+  - `SessionStatePresentationTests.testCheckingCaption` — "2 agents working · checking…", with asks "2 agents working · checking… · 1 ask open".
+  - `SessionBackgroundProberTests` (fake runner + injected clock + fake owner-input map):
+    - `testNoProbeBeforeThirtyMinutes`, `testStageOneAtMostOncePerMinute`;
+    - `testSilentWithPeerPingsOnceAndShowsChecking`; `testNoPingWithinTwoMinutesOfOwnerInput` (ping deferred, not skipped); `testNoPingAtNeedsApproval`;
+    - `testPingWithoutAStopExpiresAfterFiveMinutes` — runs `--expire --seen` with the stamp read before the ping; `testAStopAfterThePingCancelsTheExpiry`;
+    - `testOnePingPerSilenceWindowPerRun` — a second silent window after a fresh report may ping again; the same window never;
+    - `testANewRunResetsTheBookkeeping`; `testAFailedProbeNeverEndsTheCount` (`ok: false` → no `--expire`, no `--ping`).
+  - `SessionAgentStateCenterTests.testAProbeThatEndsTheCountPostsOneStoppedNotice` — fake reader: count 2 old stamp → prober `gone` → next read count NULL → `.stopped`, exactly one notice.
+- [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER='SessionBackgroundPolicyTests|SessionProbeResultTests|SessionStatePresentationTests|SessionBackgroundProberTests|SessionAgentStateCenterTests' > log 2>&1; echo "exit=$?"`.
+- [ ] **Step 3: Implement**, **run, expect PASS** (same command; check the log for XCTest failures), `make lint-diff`.
+- [ ] **Step 4: Docs.** Inventory PROJ-11: the probe paragraph (stage 1/2, 5 min, gates, Go-only writes, every failure ends the count, notice once); v1 limits: registry and peer channel are undocumented internals (version-gated, failure → Stopped), the known double notice, NO-GO if Task 12 said so. `docs/features/workbench.md` and `docs/app-guide.md`: the "checking…" caption and what the owner sees in the terminal when pinged. Verify guard names as in Task 9 Step 2.
+- [ ] **Step 5: Commit** `feat(desktop): probe silent background sessions, checking caption, ping timeout (#411)`.
+
+---
+
+### Task 15: Final gate
 
 **Files:** none expected (fixes only, each its own commit).
 
@@ -413,5 +508,5 @@ Same pre-check as Task 10 (ask #140 answered and matching; otherwise stop).
 - [ ] **Step 2:** `make test > gate-go.log 2>&1; echo "exit=$?"` → `exit=0`.
 - [ ] **Step 3:** `make test-swift > gate-swift.log 2>&1; echo "exit=$?"` → `exit=0`; grep the log for XCTest failures (not only the swift-testing tail).
 - [ ] **Step 4:** `make lint-all > gate-lint.log 2>&1; echo "exit=$?"` → `exit=0`.
-- [ ] **Step 5:** Self-check against the spec: every row of §4.2 has a test; every §7 guard name exists (`grep`); migration number still free against `origin/main` (`git fetch && git ls-tree origin/main internal/db/migrations/ | tail -2`); renumber if not (rename + golden + Swift schema regen, own commit).
-- [ ] **Step 6:** Hand back to the controller for the `local-review` / `debate-review` pass and the manual check ask (Re-run Setup on a real folder; a session with two background subagents shows "2 agents working", counts down, turns Stopped once with one notice).
+- [ ] **Step 5:** Self-check against the spec: every row of §4.2 and every bullet of §10 has a test; every §7 guard name exists (`grep`); no `.key` file or real id in the diff (`bash scripts/leak-check.sh` over the branch); migration number still free against `origin/main` (`git fetch && git ls-tree origin/main internal/db/migrations/ | tail -2`), renumber if not (rename + golden + Swift schema regen, own commit).
+- [ ] **Step 6:** Hand back to the controller for the `local-review` / `debate-review` pass and the manual check ask (Re-run Setup on a real folder; two background subagents show "2 agents working", count down, Stopped once with one notice; a session left silent 30 min is probed — and, on GO, pinged once with "checking…").
