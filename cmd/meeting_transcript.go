@@ -173,27 +173,9 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	// A queued recording can outlive its calendar event (calendar sync
-	// deletes it while the job waits): a gone event is dropped with a
-	// warning and the transcript saved as a plain recording, instead of
-	// failing the event_id foreign key and losing it. A lookup error is
-	// not "gone" and fails the save.
-	title := transcriptSaveFlagTitle
-	eventID := transcriptSaveFlagEventID
-	if eventID != "" {
-		ev, err := database.GetCalendarEventByID(eventID)
-		if err != nil {
-			return fmt.Errorf("looking up calendar event %s: %w", eventID, err)
-		}
-		if ev == nil {
-			warnDroppedTranscriptEvent(cmd.ErrOrStderr(), eventID)
-			eventID = ""
-		} else if title == "" {
-			title = ev.Title
-		}
-	}
-	if title == "" {
-		title = "Recording " + time.Now().Local().Format("2006-01-02 15:04")
+	eventID, title, err := resolveTranscriptSaveEvent(database, transcriptSaveFlagEventID, transcriptSaveFlagTitle, cmd.ErrOrStderr())
+	if err != nil {
+		return err
 	}
 
 	segments, segmentsErr := loadTranscriptSegments(transcriptSaveFlagSegments, text, cmd.ErrOrStderr())
@@ -212,14 +194,7 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	if transcriptSaveFlagAudio != "" {
 		tr.AudioPath = sql.NullString{String: transcriptSaveFlagAudio, Valid: true}
 	}
-	id, err := insertMeetingTranscript(database, tr)
-	if err != nil && tr.EventID.Valid && db.IsForeignKeyViolation(err) {
-		// The event was deleted between the lookup and the insert: retry
-		// once unlinked. The post-insert steps read the stored row's link.
-		warnDroppedTranscriptEvent(cmd.ErrOrStderr(), eventID)
-		tr.EventID = sql.NullString{}
-		id, err = insertMeetingTranscript(database, tr)
-	}
+	id, err := insertTranscriptDroppingGoneEvent(database, &tr, cmd.ErrOrStderr())
 	if err != nil {
 		return fmt.Errorf("persisting transcript: %w", err)
 	}
@@ -229,6 +204,45 @@ func runTranscriptSave(cmd *cobra.Command, _ []string) error {
 	recapSkipped, chaptersOutcome, recapErr := runSaveGenerations(
 		cmd.Context(), database, cfg, id, text, tr.SegmentsJSON.Valid, cmd.ErrOrStderr())
 	return printTranscriptEnvelope(cmd, database, id, recapErr, segmentsErr, speakersErr, chaptersOutcome, recapSkipped)
+}
+
+// resolveTranscriptSaveEvent returns save's event link and title. A queued
+// recording can outlive its calendar event (calendar sync deletes it while
+// the job waits): a gone event is dropped with a warning and the transcript
+// saved as a plain recording, instead of failing the event_id foreign key
+// and losing it. A lookup error is not "gone" and fails the save. An empty
+// title falls back to the event's, then to "Recording <now>".
+func resolveTranscriptSaveEvent(database *db.DB, eventID, title string, errOut io.Writer) (string, string, error) {
+	if eventID != "" {
+		ev, err := database.GetCalendarEventByID(eventID)
+		if err != nil {
+			return "", "", fmt.Errorf("looking up calendar event %s: %w", eventID, err)
+		}
+		if ev == nil {
+			warnDroppedTranscriptEvent(errOut, eventID)
+			eventID = ""
+		} else if title == "" {
+			title = ev.Title
+		}
+	}
+	if title == "" {
+		title = "Recording " + time.Now().Local().Format("2006-01-02 15:04")
+	}
+	return eventID, title, nil
+}
+
+// insertTranscriptDroppingGoneEvent inserts tr; when the event was deleted
+// between the lookup and the insert (an event_id foreign key violation) it
+// warns and retries once unlinked, clearing tr.EventID. The post-insert
+// steps read the stored row's link.
+func insertTranscriptDroppingGoneEvent(database *db.DB, tr *db.MeetingTranscript, errOut io.Writer) (int64, error) {
+	id, err := insertMeetingTranscript(database, *tr)
+	if err != nil && tr.EventID.Valid && db.IsForeignKeyViolation(err) {
+		warnDroppedTranscriptEvent(errOut, tr.EventID.String)
+		tr.EventID = sql.NullString{}
+		id, err = insertMeetingTranscript(database, *tr)
+	}
+	return id, err
 }
 
 // warnDroppedTranscriptEvent is save's one stderr line for an --event-id
