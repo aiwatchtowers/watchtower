@@ -222,9 +222,10 @@ final class RecordingsWiringTests: XCTestCase {
         model.start(store: store)
         try await poll { model.snapshot.heartbeat != nil }
         let first = model.snapshot.heartbeat?.updatedAt
-        var published = PhoneRecordingsModel.observation(store: store).values(in: store.reader).makeAsyncIterator()
-        let initial = try await published.next()
-        XCTAssertEqual(initial?.heartbeat?.updatedAt, first)
+        let published = PublishedValues(PhoneRecordingsModel.observation(store: store).values(in: store.reader))
+        defer { published.cancel() }
+        try await poll({ published.values.count == 1 }, "the initial value was not published")
+        XCTAssertEqual(published.values.first?.heartbeat?.updatedAt, first)
         let sentinel = WorkbenchReplicaModel()
         sentinel.start(store: store)
 
@@ -235,8 +236,11 @@ final class RecordingsWiringTests: XCTestCase {
         let later = now.addingTimeInterval(60)
         try await transport.save([try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later)])
         _ = try await hydrator.hydrateOnce()
-        let next = try await published.next()
-        XCTAssertNotEqual(next?.heartbeat?.updatedAt, first, "a Workbench write must not republish the recordings snapshot")
+        try await poll({ published.values.count >= 2 }, "the new heartbeat was not published")
+        XCTAssertNotEqual(
+            published.values.dropFirst().first?.heartbeat?.updatedAt, first,
+            "a Workbench write must not republish the recordings snapshot"
+        )
     }
 
     // MARK: - Recap

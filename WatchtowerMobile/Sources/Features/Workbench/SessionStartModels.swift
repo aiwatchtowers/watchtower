@@ -73,10 +73,11 @@ enum StartStage: Equatable {
                 return session.stateKind == .notStarted ? .starting(sessionID: sessionID) : .open(sessionID: sessionID)
             }
             // A resumed session's record may still read stopped from before
-            // the start: only a record the Mac wrote after the applied echo
-            // ends it (the Mac's clock is never compared with the phone's).
-            let writtenSinceEcho = session != attempt.echoedSession
-            return attempt.params.mode == .new || writtenSinceEcho ? .ended(sessionID: sessionID) : .starting(sessionID: sessionID)
+            // the start: only a newer Mac state than the one the start was
+            // sent over ends it (the Mac's clock is never compared with the
+            // phone's).
+            let newerState = attempt.baseline[sessionID].map { session.hasNewerState(than: $0) } ?? true
+            return attempt.params.mode == .new || newerState ? .ended(sessionID: sessionID) : .starting(sessionID: sessionID)
         }
         // No row yet: the replica read has not caught up with the save.
         return rows.first { $0.id == attempt.actionID }.map(Self.init) ?? .sent
@@ -358,5 +359,17 @@ struct SessionActionsModel: Equatable {
         let stopping = inFlight.contains(SessionStarter.stopKey(session.id))
             || stopRows.contains { if case .sending = $0.state { true } else { false } }
         canStop = session.live && !stopping
+    }
+}
+
+extension TerminalSessionState {
+    /// The Mac wrote a newer state than `baseline`'s: it went live or not,
+    /// its kind changed, or its own stamps moved on (Mac clock against Mac
+    /// clock). Other fields (ask counts, report counts, title) do not count.
+    func hasNewerState(than baseline: Self) -> Bool {
+        live != baseline.live
+            || stateKind != baseline.stateKind
+            || (stateAt ?? .distantPast) > (baseline.stateAt ?? .distantPast)
+            || lastActiveAt > baseline.lastActiveAt
     }
 }

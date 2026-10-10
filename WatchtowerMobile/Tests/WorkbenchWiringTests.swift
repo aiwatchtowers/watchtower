@@ -125,9 +125,10 @@ final class WorkbenchWiringTests: XCTestCase {
         model.start(store: store)
         try await poll { model.snapshot.workbenches.count == 3 }
         XCTAssertEqual(model.openAskCount, 3)
-        var published = WorkbenchReplicaModel.observation(store: store).values(in: store.reader).makeAsyncIterator()
-        let initial = try await published.next()
-        XCTAssertEqual(initial?.workbenches.count, 3)
+        let published = PublishedValues(WorkbenchReplicaModel.observation(store: store).values(in: store.reader))
+        defer { published.cancel() }
+        try await poll({ published.values.count == 1 }, "the initial value was not published")
+        XCTAssertEqual(published.values.first?.workbenches.count, 3)
         let badgeSets = ObservedSetCounter { _ = model.openAskCount }
         // A sibling observation proves the unrelated write was seen.
         let sentinel = CalendarReplicaModel()
@@ -139,8 +140,8 @@ final class WorkbenchWiringTests: XCTestCase {
 
         try await transport.save([try DemoSeed.record(kind: .workbench, id: 98, json: DemoSeed.JSON.workbench(98), modifiedAt: now)])
         _ = try await hydrator.hydrateOnce()
-        let next = try await published.next()
-        XCTAssertEqual(next?.workbenches.count, 4, "a calendar write must not republish the Workbench snapshot")
+        try await poll({ published.values.count >= 2 }, "the new workbench was not published")
+        XCTAssertEqual(published.values.dropFirst().first?.workbenches.count, 4, "a calendar write must not republish the Workbench snapshot")
         try await poll { model.snapshot.workbenches.count == 4 }
         XCTAssertEqual(badgeSets.count, 0, "a new workbench leaves the open-ask count alone")
 

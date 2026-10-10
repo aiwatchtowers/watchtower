@@ -14,10 +14,11 @@ struct StartAttempt: Equatable {
     var applied = false
     /// `result.session_id` of the applied echo.
     var sessionID: Int64?
-    /// That session's record as the phone held it when the applied echo
-    /// came (nil: none yet). A resume's record from before the start reads
-    /// not live; only a record the Mac writes after it can end the start.
-    var echoedSession: TerminalSessionState?
+    /// The target's session records as the phone held them when the start
+    /// was sent (for an attempt rebuilt after a relaunch: when its applied
+    /// echo came), by session id. A resume's record from before the start
+    /// reads not live; only a newer Mac state than this ends the start.
+    var baseline: [Int64: TerminalSessionState] = [:]
 }
 
 /// Starts and stops sessions from the phone (spec §5.2, §6.5) through the
@@ -43,21 +44,20 @@ final class SessionStarter {
     @ObservationIgnored private let remove: (String) throws -> Void
     /// The failed overlay rows of one kind on one entity (ids).
     @ObservationIgnored private let failedRows: (ActionKind, String) throws -> [String]
-    /// The replica's record of a session, read when its start's applied
-    /// echo arrives.
-    @ObservationIgnored private let sessionRecord: (Int64) -> TerminalSessionState?
+    /// The replica's session records of a target: a start's baseline.
+    @ObservationIgnored private let targetSessions: (Int64) -> [TerminalSessionState]
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionStarter")
 
     init(
         enqueue: @escaping Enqueue,
         remove: @escaping (String) throws -> Void,
         failedRows: @escaping (ActionKind, String) throws -> [String] = { _, _ in [] },
-        sessionRecord: @escaping (Int64) -> TerminalSessionState? = { _ in nil }
+        targetSessions: @escaping (Int64) -> [TerminalSessionState] = { _ in [] }
     ) {
         self.enqueue = enqueue
         self.remove = remove
         self.failedRows = failedRows
-        self.sessionRecord = sessionRecord
+        self.targetSessions = targetSessions
     }
 
     /// The app's starter: actions through the outbox, Dismiss on the overlay.
@@ -72,19 +72,25 @@ final class SessionStarter {
                     .filter { $0.state == .failed && $0.action.kind == kind }
                     .map(\.id)
             },
-            sessionRecord: { sessionID in
+            targetSessions: { targetID in
                 do {
-                    return try store.reader.read { db in
-                        try store.payload(forRecordName: sessionRecordName(sessionID), from: db)
-                            .map { try TerminalSessionState.decode(payload: $0) }
-                    }
+                    let payloads = try store.reader.read { db in try store.payloads(of: .terminalSession, from: db) }
+                    // An undecodable record is skipped, as the Workbench
+                    // snapshot skips (and counts) it.
+                    return payloads
+                        .compactMap { try? TerminalSessionState.decode(payload: $0) }
+                        .filter { $0.targetID == targetID }
                 } catch {
-                    // Read as no record: the next not-live record ends the start.
-                    logger.warning("session record not read: \(error.localizedDescription, privacy: .public)")
-                    return nil
+                    // Read as no records: the next not-live record ends the start.
+                    logger.warning("session records not read: \(error.localizedDescription, privacy: .public)")
+                    return []
                 }
             }
         )
+    }
+
+    private static func byID(_ sessions: [TerminalSessionState]) -> [Int64: TerminalSessionState] {
+        Dictionary(sessions.map { ($0.id, $0) }) { first, _ in first }
     }
 
     nonisolated static func targetRecordName(_ targetID: Int64) -> String {
@@ -112,12 +118,15 @@ final class SessionStarter {
         let entity = Self.targetRecordName(targetID)
         let wire = try params.wireParams()
         let stale = try failedRows(.sessionStart, entity)
+        // Read before the send: whatever lands after it may already be the
+        // Mac's work on this start.
+        let baseline = Self.byID(targetSessions(targetID))
         var actionID: String?
         let sent = try await sendGuard.run(Self.startKey(targetID)) {
             actionID = try await enqueue(.sessionStart, entity, wire)
         }
         guard sent, let actionID else { return false }
-        attempts[targetID] = StartAttempt(actionID: actionID, targetID: targetID, params: params)
+        attempts[targetID] = StartAttempt(actionID: actionID, targetID: targetID, params: params, baseline: baseline)
         for id in stale {
             try remove(id)
         }
@@ -140,13 +149,14 @@ final class SessionStarter {
         var attempt = attempts[targetID]
         if attempt?.actionID != action.id {
             guard let params = try? SessionStartParams(wireParams: action.params) else { return }
-            attempt = StartAttempt(actionID: action.id, targetID: targetID, params: params)
+            attempt = StartAttempt(
+                actionID: action.id, targetID: targetID, params: params, baseline: Self.byID(targetSessions(targetID))
+            )
         }
         guard var attempt else { return }
         attempt.applied = true
         if case let .integer(sessionID)? = action.result?["session_id"] {
             attempt.sessionID = sessionID
-            attempt.echoedSession = sessionRecord(sessionID)
         }
         attempts[targetID] = attempt
     }
