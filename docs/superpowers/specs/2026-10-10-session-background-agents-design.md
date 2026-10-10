@@ -86,13 +86,13 @@ Down: drop both columns (SQLite ≥ 3.35 `DROP COLUMN`, as earlier column migrat
 
 | Event | Today | New |
 |---|---|---|
-| Stop (sync, `workbench check --stop-hook`) | `waiting` (turn-ordered) | `waiting` **plus** `agent_background = n`, `agent_background_at = at` where n = count of `background_tasks` entries with `type` `subagent` or `workflow` (owner, ask #138); `n == 0` or the field absent → both NULL. A Stop over a stored `waiting` whose count differs is **not** a repeat: it writes, and advances `agent_state_at` (so the following Stopped is a new transition for the notice policy). |
+| Stop (sync, `workbench check --stop-hook`) | `waiting` (turn-ordered) | `waiting` **plus** `agent_background = n`, `agent_background_at = at` where n = count of `background_tasks` entries with `type` `subagent` or `workflow` (owner, ask #138); `n == 0` or the field absent, `null` or not an array → both NULL. A Stop over a stored `waiting` whose count differs is **not** a repeat: it writes, and advances `agent_state_at` (so the following Stopped is a new transition for the notice policy). A Stop repeating the same non-zero count is a state repeat but a fresh report: it only refreshes `agent_background_at`. A count-bearing Stop (or `idle_prompt`) over a failed `waiting` keeps `agent_failed_at`/`agent_error` (a plain `waiting` keeps the error until a real state change). |
 | UserPromptSubmit, main-thread PostToolUse (`working`) | as today | as today, and NULL both columns (a main turn began; its Stop re-snapshots). |
 | StopFailure | `waiting` + error | as today, and NULL both (Error outranks anyway; no snapshot in its input). |
 | Notification `idle_prompt` | `waiting` | `waiting`, and NULL both (F5: positive evidence nothing runs). A stored `waiting` with a non-NULL count is a change, not a repeat. |
 | Notification `permission_prompt` / `elicitation_dialog` | `approval` | unchanged; columns kept (after the grant the row goes `working` by ask #20 rules, and the main's next Stop re-snapshots). |
-| Subagent PostToolUse (`agent_id` set) | writes only over `approval` | over `approval`: unchanged. Over `waiting` with `agent_background > 0`: **only** `agent_background_at = at` (heartbeat), guarded `at > agent_background_at`. `agent_state`, `agent_state_at`, `finished_at`, turn order untouched. Otherwise nothing. |
-| **SubagentStop** (new async state hook) | — | Ignored when `agent_type == ""` (F3 internal agents) or the input has no `background_tasks`. Over `waiting` with `agent_background > 0` and `at > agent_background_at`: `agent_background = min(stored, m)` where m = `subagent` and `workflow` entries of its `background_tasks` whose `id != agent_id` (a finished workflow has no SubagentStop of its own, so it drops out at the next SubagentStop or Stop snapshot); `agent_background_at = at`. Never raises the count; never touches `agent_state`/`agent_state_at`/`finished_at`. |
+| Subagent PostToolUse (`agent_id` set) | writes only over `approval` | over `approval`: unchanged (`working`, ask #20), and NULL both (Working outranks; the next Stop re-snapshots). Over `waiting` with `agent_background > 0`: **only** `agent_background_at = at` (heartbeat), guarded `at > agent_background_at`. `agent_state`, `agent_state_at`, `finished_at`, turn order untouched. Otherwise nothing. |
+| **SubagentStop** (new async state hook) | — | Ignored when `agent_type == ""` (F3 internal agents) or the input has no `background_tasks` (absent, `null` or not an array). Over `waiting` with `agent_background > 0` and `at > agent_background_at`: `agent_background = min(stored, m)` where m = `subagent` and `workflow` entries of its `background_tasks` whose `id != agent_id` (a finished workflow has no SubagentStop of its own, so it drops out at the next SubagentStop or Stop snapshot); `agent_background_at = at`. Never raises the count; never touches `agent_state`/`agent_state_at`/`finished_at`. |
 | SessionStart mark/clear, conversation switch | clear state / mark run | also NULL both (`MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`). |
 
 **Invariant (guarded):** `agent_background` goes from NULL to a number only in the Stop's write; every other
@@ -106,12 +106,17 @@ type stopHookInput struct {
     SessionID      string `json:"session_id"`
     TranscriptPath string `json:"transcript_path"`
     StopHookActive bool   `json:"stop_hook_active"`
-    BackgroundTasks *[]backgroundTask `json:"background_tasks"` // nil = field absent (older CLI)
+    BackgroundTasks backgroundTasks `json:"background_tasks"`
 }
 type backgroundTask struct{ ID, Type string } // other fields ignored; malformed entry = not a subagent
+// backgroundTasks decodes tolerantly and never fails the input: absent, null or a non-array ->
+// present == false (older CLI or malformed: the Stop stores NULL, a SubagentStop is ignored);
+// an array -> present; a non-object entry or a non-string id/type is kept with empty fields.
+type backgroundTasks struct{ present bool; list []backgroundTask }
 
-// backgroundSubagents counts in-flight subagents; ok is false when the field is absent.
-func backgroundSubagents(tasks *[]backgroundTask, except string) (n int, ok bool)
+// backgroundSubagents counts in-flight subagents and workflows except id `except`;
+// ok is false when the field is absent, null or not an array.
+func backgroundSubagents(tasks backgroundTasks, except string) (n int64, ok bool)
 
 // internal/db/terminal_sessions.go
 // AgentOrder gains the Stop's snapshot; zero value = "not a Stop" (columns follow §4.2).
@@ -131,7 +136,7 @@ func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, a
     count *int64) (bool, error)
 ```
 
-`sessionStateInput` gains `AgentType string` and `BackgroundTasks *[]backgroundTask`. `agentStateFor` gains
+`sessionStateInput` gains `AgentType string` and `BackgroundTasks backgroundTasks`. A `Stop` event reaching `workbench session-state` (not installed there) records no count. `agentStateFor` gains
 `SubagentStop` → no state (`ok` true, routed to `LowerTerminalBackground`); `recordHookAgentState` routes a
 subagent `PostToolUse` over `waiting` to the heartbeat instead of returning on `onlyFrom`. Read-first stays
 (the common no-change path never takes the write lock).
@@ -176,8 +181,10 @@ poll). New branch after `working`:
 
 ```
 hook == .waiting && !failed && backgroundRuns(row, now) → .background
-backgroundRuns: count = row.agentBackground, at = parse(row.agentBackgroundAt)
-    count > 0  && now - at < backgroundStaleAfter (30 min)
+backgroundRuns (SessionBackgroundPolicy): count = row.agentBackground, at = parse(row.agentBackgroundAt)
+    at unreadable or in the future → false
+    count > 0  → true: never ended on the Desktop's clock — Go's probe ends it (§10); display-only
+                 end after 2 consecutive failed probes (§10)
     count == 0 && now - at < backgroundGrace (120 s)        // lowered to zero, main about to wake
 ```
 
@@ -220,20 +227,20 @@ is pasted and submitted immediately and wakes the main agent. No code change; a 
 Add to PROJ-11 Observable, after the states paragraph:
 
 > Since 2026-10-XX (board #411): the Stop hook also stores the count of in-flight background subagents its input
-> reports (`background_tasks` entries of type `subagent`; `agent_background`, `agent_background_at`; NULL when
+> reports (`background_tasks` entries of type `subagent` or `workflow`; `agent_background`, `agent_background_at`; NULL when
 > none or the field is absent). Only the Stop's write sets a count; a UserPromptSubmit, a main-thread
-> PostToolUse, a StopFailure, the `idle_prompt` notice, a new run and a conversation switch clear it; a
+> PostToolUse, a subagent's tool result over Needs approval (Working, ask #20), a StopFailure, the `idle_prompt` notice, a new run and a conversation switch clear it; a Stop repeating the same count only refreshes `agent_background_at`; a
 > subagent's PostToolUse over `waiting` only refreshes `agent_background_at`, and a `SubagentStop` (async state
 > hook) only lowers the count, never below its own snapshot, ignoring an empty `agent_type`. Neither touches
 > `agent_state`, `agent_state_at`, `finished_at` or the turn order. The Desktop shows a trusted `waiting` with a
-> count > 0 reported in the last 30 minutes, or lowered to 0 in the last 120 s, as **Agents working** (green, the
+> count > 0 (ended only by the probe below), or lowered to 0 in the last 120 s, as **Agents working** (green, the
 > count in the caption, `?` and the ask count with open asks). The order becomes approval > error > working >
 > agents working > finished > open ask > stopped > running > not started. Agents working is never announced; it
 > counts as at the prompt (`isAtPrompt`) and gets an ask answer's Return like Stopped.
 
 Replace in the order sentence and in the guard list; v1 note (d) of "Session agent state ordering and subagents"
 gains the count's limits (unverified kill/crash `SubagentStop`, staleness double notice, teammates/shells not
-counted, older CLI without the field shows Stopped).
+counted, older CLI without the field shows Stopped). The §10 probe paragraph follows the amendment (its text is in plan Task 9).
 
 ## 7. Guard tests
 
@@ -252,9 +259,10 @@ New Go:
   malformed entries ignored)
 - `TestProj11_OnlyTheStopStartsBackground` (late subagent PostToolUse / SubagentStop / idle_prompt over a
   NULL-count `waiting` write nothing; db and hook halves)
-- `TestProj11_SubagentStopOnlyLowersTheCount` (min rule; own id excluded; `agent_type == ""` ignored; older stamp
-  ignored; never touches state/stamp/finished)
-- `TestProj11_StopOverWaitingWithAnotherCountWrites` (repeat rule; stamp advances)
+- `TestProj11_SubagentStopOnlyLowersTheCount` (min rule; own id excluded; `agent_type == ""` ignored; a `null` or
+  non-array list ignored; older stamp ignored; never touches state/stamp/finished)
+- `TestProj11_StopOverWaitingWithAnotherCountWrites` (repeat rule; stamp advances; a failed `waiting` keeps its error)
+- `TestProj11_StopWithTheSameCountRefreshesTheReportTime` (same count: only `agent_background_at` moves)
 - `TestProj11_MainTurnAndIdleNoticeClearTheCount` (UserPromptSubmit, main PostToolUse, StopFailure, idle_prompt)
 - `TestProj11_NewRunAndConversationSwitchClearTheCount` (`MarkTerminalAgentRun`, `ClearTerminalAgentState`,
   `SetTerminalClaudeSessionID`)
@@ -267,12 +275,12 @@ New Go:
 New Swift (`Tests/Core`):
 - `SessionAgentStatusTests::testProj11_BackgroundAgentsAreNotStopped`
 - `SessionAgentStatusTests::testProj11_BackgroundWithAsksIsNotWaitingOnAsk`
-- `SessionAgentStatusTests::testProj11_BackgroundEndsOnStalenessAndGrace`
+- `SessionAgentStatusTests::testProj11_BackgroundEndsOnGrace` (a count > 0 never ends on the Desktop's clock, §10)
 - `SessionAgentStatusTests::testProj11_StateFromAnEarlierRunIsIgnored` — extended with an earlier run's count
 - `SessionAgentStatusTests::testProj11_BackgroundIsAtPrompt`
 - `SessionStatePresentationTests::testBackgroundIsGreenWithAgentCount`
 - `SessionAgentNoticePolicyTests::testProj11_BackgroundIsNeverAnnouncedTheStopAfterOnce`
-- `SessionLineDeliveryTests::testProj12_AnAnswerIntoABackgroundSessionGetsTheReturn`
+- `OwnerAsksViewModelTests::testProj12_AnAnswerIntoABackgroundSessionGetsTheReturn` (beside the PROJ-12 guard it mirrors)
 
 ## 8. Rollout and docs
 
@@ -322,6 +330,9 @@ subagent inside a 20-minute test command writes nothing).
 - At most one ping per run per 30-min silence window; never while `status == busy`, never while the row is
   Needs approval, never when the owner typed into the session in the last 2 min (the Desktop knows its own
   terminal input) — so a ping cannot collide with the owner's input.
+- A probe that cannot run (the CLI answers `ok: false`) twice in a row for the same count: the Desktop shows the
+  count as over (Stopped, one notice) without a write — display only, Go stays the sole writer; a new report, a new
+  run or a successful probe clears it.
 
 **Risk.** The peer channel and the registry are Claude Code internals, not a documented API. The probe is
 version-gated and every failure falls through to the old outcome (Stopped), so a Claude Code change can only
