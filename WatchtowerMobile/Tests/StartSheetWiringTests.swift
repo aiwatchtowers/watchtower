@@ -102,7 +102,9 @@ final class StartSheetWiringTests: XCTestCase {
         return json
     }
 
-    /// Lands `records` in the store, as a hydrate does.
+    /// Lands `records` in the store, as a hydrate does. Once per store: a
+    /// second call's fresh transport restarts the change cursor, so its
+    /// records may not land (use one transport for several hydrates).
     private func hydrate(_ store: ReplicaStore, _ records: [CloudRecord]) async throws {
         let transport = InMemoryCloudTransport()
         try await transport.save(records)
@@ -224,17 +226,13 @@ final class StartSheetWiringTests: XCTestCase {
     }
 
     /// Final-review iii-M4: a resumed start's end is read off the Mac's own
-    /// record, never by comparing the Mac's clock with the phone's. The
-    /// record the phone held when the applied echo came is the one from
-    /// before the start, even stamped by a Mac clock ahead of the phone's;
-    /// a not-live record the Mac wrote after it ends the start, even
-    /// stamped by a Mac clock behind.
-    func testAResumedStartEndsOnANotLiveRecordWrittenAfterTheEcho() async throws {
+    /// state fields against the record the phone held when it sent the
+    /// start, Mac clock against Mac clock, never against the phone's clock.
+    /// Here the Mac's clock runs ten minutes ahead of the phone's.
+    func testAResumedStartEndsOnANewerMacStateThanTheOneItWasSentOver() async throws {
         let fixture = try await makeFixture()
-        let staleJSON = sessionJSON(16, target: 416, [
-            "state_kind": "stopped", "state_caption": "Stopped", "live": false, "is_ring": true,
-            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(600))
-        ])
+        let ahead = now.addingTimeInterval(600)
+        let staleJSON = stoppedSessionJSON(16, at: ahead)
         try await hydrate(fixture.store, [try DemoSeed.record(kind: .terminalSession, id: 16, json: staleJSON, modifiedAt: now)])
         try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
         try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
@@ -245,17 +243,79 @@ final class StartSheetWiringTests: XCTestCase {
         replica.sessions.append(try mirror(TerminalSessionState.self, staleJSON))
         XCTAssertEqual(
             try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16),
-            "the record from before the resume is not its end, whatever the Mac's clock says"
+            "the record from before the resume is not its end, though the Mac stamped it after the phone sent"
         )
 
-        replica.sessions[replica.sessions.count - 1] = try session(16, target: 416, [
-            "state_kind": "stopped", "state_caption": "Exited", "live": false, "is_ring": true,
-            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-600))
-        ])
-        XCTAssertEqual(
-            try form(416, replica, fixture.starter).progress?.stage, .ended(sessionID: 16),
-            "a not-live record written after the echo ends the start, whatever the Mac's clock says"
+        replica.sessions[replica.sessions.count - 1] = try mirror(
+            TerminalSessionState.self, stoppedSessionJSON(16, at: ahead.addingTimeInterval(60), caption: "Exited")
         )
+        XCTAssertEqual(try form(416, replica, fixture.starter).progress?.stage, .ended(sessionID: 16))
+    }
+
+    /// Final-review I1: a resumed session that goes live and exits before
+    /// the phone's next cycle lands its exited record in the same hydrate
+    /// that precedes the applied echo. The baseline is the record held when
+    /// the start was SENT, so the start still ends. The Mac's clock runs
+    /// behind the phone's here.
+    func testAResumedSessionThatExitsBeforeTheEchoIsRoutedEndsTheStart() async throws {
+        let fixture = try await makeFixture()
+        let behind = now.addingTimeInterval(-1_200)
+        // One transport for both hydrates: its change cursor carries over.
+        let transport = InMemoryCloudTransport()
+        let hydrator = ReplicaHydrator(transport: transport, store: fixture.store)
+        try await transport.save([try DemoSeed.record(
+            kind: .terminalSession, id: 16, json: stoppedSessionJSON(16, at: behind), modifiedAt: now
+        )])
+        _ = try await hydrator.hydrateOnce()
+        try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
+        let exitedJSON = stoppedSessionJSON(16, at: behind.addingTimeInterval(30), caption: "Exited")
+        try await transport.save([try DemoSeed.record(
+            kind: .terminalSession, id: 16, json: exitedJSON, modifiedAt: now.addingTimeInterval(1)
+        )])
+        _ = try await hydrator.hydrateOnce()
+        let held = try await fixture.store.reader.read { db in
+            try fixture.store.payload(forRecordName: SessionStarter.sessionRecordName(16), from: db)
+        }
+        XCTAssertEqual(try TerminalSessionState.decode(payload: try XCTUnwrap(held)).stateCaption, "Exited",
+                       "the exited record is in the replica before the echo is routed")
+        try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
+        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+
+        var replica = try snapshot(fixture.store)
+        replica.sessions.removeAll { $0.id == 16 }
+        replica.sessions.append(try mirror(TerminalSessionState.self, exitedJSON))
+        XCTAssertEqual(try form(416, replica, fixture.starter).progress?.stage, .ended(sessionID: 16))
+    }
+
+    /// Final-review I1: the old stopped record changing in a field that is
+    /// not its state (an ask count, the report counts) does not end the
+    /// start.
+    func testANonStateChangeOnTheOldStoppedRecordDoesNotEndTheStart() async throws {
+        let fixture = try await makeFixture()
+        let stamp = now.addingTimeInterval(-1_200)
+        try await hydrate(fixture.store, [try DemoSeed.record(
+            kind: .terminalSession, id: 16, json: stoppedSessionJSON(16, at: stamp), modifiedAt: now
+        )])
+        try await fixture.starter.start(targetID: 416, params: try startParams(416, mode: .openExisting))
+        try await echo(fixture, .applied, result: ["session_id": .integer(16), "stage": .string("starting")])
+        try await poll(timeout: 2, { fixture.starter.attempts[416]?.applied == true }, "the applied observer reached the starter")
+
+        var replica = try snapshot(fixture.store)
+        replica.sessions.removeAll { $0.id == 16 }
+        var changed = stoppedSessionJSON(16, at: stamp)
+        changed["open_asks"] = 1
+        changed["closed_asks"] = 4
+        replica.sessions.append(try mirror(TerminalSessionState.self, changed))
+        XCTAssertEqual(try form(416, replica, fixture.starter).progress?.stage, .starting(sessionID: 16))
+    }
+
+    /// Session #16 of target 416, stopped, its state stamped `at` by the
+    /// Mac's clock.
+    private func stoppedSessionJSON(_ id: Int64, at: Date, caption: String = "Stopped") -> [String: Any] {
+        sessionJSON(id, target: 416, [
+            "state_kind": "stopped", "state_caption": caption, "live": false, "is_ring": true,
+            "last_active_at": DemoSeed.JSON.stamp(at), "state_at": DemoSeed.JSON.stamp(at)
+        ])
     }
 
     /// Review Minor 1: the app's one applied observer feeds both consumers.
