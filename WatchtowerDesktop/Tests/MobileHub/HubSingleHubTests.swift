@@ -288,6 +288,20 @@ final class HubSingleHubTests: XCTestCase {
         XCTAssertGreaterThan(next, stamp, "a later heartbeat never falls behind the take over")
     }
 
+    func testAHeartbeatFromAClockADayAheadIsNotFollowed() async throws {
+        let cloud = InMemoryCloudTransport()
+        try await seed(foreignHeartbeat(age: -86_400, macName: "Mac B"), into: cloud)
+        let transport = StubHubTransport(cloud: cloud)
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory())
+
+        let takeOver = await hub.takeOver()
+
+        XCTAssertEqual(takeOver, .running)
+        let stamp = try XCTUnwrap(try savedHeartbeats(transport).last).updatedAt
+        XCTAssertLessThanOrEqual(stamp, now.addingTimeInterval(HubIdentity.liveWindow), "a broken clock is not carried on")
+        XCTAssertEqual(stamp, now)
+    }
+
     func testATakenOverHubRestartsAtOnceOnATransportThatNeverEchoesItsOwnSaves() async throws {
         let cloud = InMemoryCloudTransport()
         let hubA = try makeHub(

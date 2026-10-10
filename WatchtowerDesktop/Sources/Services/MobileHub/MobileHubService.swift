@@ -483,8 +483,23 @@ final class MobileHubService {
     /// read as the later write on the old hub even when this Mac's clock
     /// runs behind it, and every later write keeps that order (the newest
     /// known is then this hub's own), so clock skew cannot hand the hub back.
+    /// A newest heartbeat more than `liveWindow` (720 s) ahead of this Mac's
+    /// clock is a broken clock, not skew: it is logged and not followed (the
+    /// stamp is `now`), so one wrong date cannot keep the record fresh for
+    /// every later hub.
     private func writeHeartbeat(hubID: String, after latest: HeartbeatPayload?) async throws {
-        let at = max(now(), latest.map { $0.updatedAt.addingTimeInterval(1) } ?? .distantPast)
+        let current = now()
+        var at = current
+        if let latest {
+            let bumped = latest.updatedAt.addingTimeInterval(1)
+            if bumped.timeIntervalSince(current) > HubIdentity.liveWindow {
+                logger.warning(
+                    "newest heartbeat is \(Int(bumped.timeIntervalSince(current)), privacy: .public) s ahead of this Mac's clock; not following it"
+                )
+            } else {
+                at = max(current, bumped)
+            }
+        }
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
             appVersion: hostInfo.appVersion,
