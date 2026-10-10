@@ -132,6 +132,8 @@ final class HubSyncState: Sendable {
         }
     }
 
+    /// Unconditional (no generation check): test seeding only. The publisher
+    /// records hashes through `setHashes(_:ifGeneration:)`.
     func setHash(_ hash: String, for recordName: String) throws {
         try queue.write { try Self.upsertHash(hash, for: recordName, $0) }
     }
