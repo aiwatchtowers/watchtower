@@ -9,10 +9,14 @@ import WatchtowerSync
 /// the main-actor `MobileHubCommandDispatcher`.
 ///
 /// Exactly-once (§5.2 rule 1): a record the sidecar holds as `done` is
-/// skipped. A non-idempotent kind is committed `begun` before its handler
-/// runs and `done` after its echo; a record a later pass finds still
-/// `begun` (the hub stopped mid-apply) is never re-applied but echoed
-/// `failed` / `outcome_unknown`. Idempotent kinds simply re-run.
+/// never handled again. A non-idempotent kind is committed `begun` before
+/// its handler runs and `done` after its echo; a record a later pass finds
+/// still `begun` (the hub stopped mid-apply) is never re-applied but echoed
+/// `failed` / `outcome_unknown`. Idempotent kinds simply re-run. The ledger
+/// keeps each action's echoed outcome: a `done` action that reads `pending`
+/// or `received` again (a lost ack, the phone's save winning over the echo,
+/// a relay re-read after a reset) gets that stored outcome echoed once more,
+/// without dispatching.
 ///
 /// Phone recordings (§5.3, §6.4): a pending `recording_upload` from a linked
 /// device is claimed `begun`, its asset handed to `RecordingUploads.ingest` (the
@@ -155,8 +159,14 @@ final class RelayProcessor: Sendable {
     private func pendingWork(in record: CloudRecord) throws -> (@Sendable () async throws -> Void)? {
         switch record.kind {
         case RelayRecordKind.action.rawValue:
-            guard let action = try pendingAction(in: record) else { return nil }
-            return { try await self.processAction(action) }
+            switch try pendingAction(in: record) {
+            case nil:
+                return nil
+            case .apply(let action):
+                return { try await self.processAction(action) }
+            case let .reEcho(action, outcome):
+                return { try await self.reEchoAction(action, outcome) }
+            }
         case RelayRecordKind.recordingUpload.rawValue:
             guard let uploads = recordingUploads, let pending = try pendingUpload(in: record) else { return nil }
             switch pending {
@@ -171,9 +181,18 @@ final class RelayProcessor: Sendable {
         }
     }
 
-    /// The record's action when it still needs work: decodable, not yet
-    /// moved past `received` by an echo, and not `done` in the ledger.
-    private func pendingAction(in record: CloudRecord) throws -> ActionRequestPayload? {
+    private enum PendingAction {
+        /// Not `done` in the ledger: handle it.
+        case apply(ActionRequestPayload)
+        /// `done`, but the record reads `pending` or `received` again: the
+        /// echo was lost or overwritten. Echo the stored outcome again.
+        case reEcho(ActionRequestPayload, ActionOutcome)
+    }
+
+    /// The work the record's action still needs: nil when it is
+    /// undecodable, moved past `received` by an echo, or `done` without a
+    /// readable stored echo (a row from before echoes were kept).
+    private func pendingAction(in record: CloudRecord) throws -> PendingAction? {
         let action: ActionRequestPayload
         do {
             action = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: record.payload)
@@ -183,8 +202,23 @@ final class RelayProcessor: Sendable {
             return nil
         }
         guard action.status == .pending || action.status == .received else { return nil }
-        guard try sidecar.relayPhase(action.recordName) != .done else { return nil }
-        return action
+        guard try sidecar.relayPhase(action.recordName) == .done else { return .apply(action) }
+        guard let stored = try sidecar.relayEcho(action.recordName) else { return nil }
+        do {
+            return .reEcho(action, try JSONDecoder().decode(ActionOutcome.self, from: stored))
+        } catch {
+            logger.warning("unreadable stored echo \(action.recordName, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Rewrites a `done` action with its stored outcome: no claim, no
+    /// dispatch, no ledger write. The re-saved echo reads back as past
+    /// `received`, so this does not loop.
+    private func reEchoAction(_ action: ActionRequestPayload, _ outcome: ActionOutcome) async throws {
+        lastActivity.withLock { $0 = now() }
+        try await writeEcho(action, outcome)
+        logger.info("action \(action.recordName, privacy: .public) read \(action.status.rawValue, privacy: .public) after its echo: echoed again")
     }
 
     private func processAction(_ action: ActionRequestPayload) async throws {
@@ -200,7 +234,9 @@ final class RelayProcessor: Sendable {
             return
         }
         try await writeEcho(action, outcome)
-        try sidecar.markRelayDone(action.recordName, outcome: Self.ledgerOutcome(outcome), at: now())
+        try sidecar.markRelayDone(
+            action.recordName, outcome: Self.ledgerOutcome(outcome), echo: try JSONEncoder().encode(outcome), at: now()
+        )
     }
 
     private func isExpired(_ action: ActionRequestPayload) -> Bool {

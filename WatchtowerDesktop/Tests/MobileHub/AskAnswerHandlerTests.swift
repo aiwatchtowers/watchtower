@@ -146,7 +146,7 @@ final class AskAnswerHandlerTests: XCTestCase {
 
     /// Through the relay: the same pending record arriving again is never
     /// handled a second time.
-    func testTheSameRecordRelayedTwiceIsEchoedOnceWithOneLine() async throws {
+    func testTheSameRecordRelayedTwiceTypesOneLineAndReEchoesTheSameOutcome() async throws {
         let (p, s, ask) = try await seed()
         center.start(s, fresh: true)
         let handler = makeHandler(makeVM())
@@ -164,8 +164,8 @@ final class AskAnswerHandlerTests: XCTestCase {
         _ = try await processor.processOnce()
 
         let echoes = try transport.saved.map { try decodeAction($0.record) }.filter { $0.status != .pending }
-        XCTAssertEqual(echoes.map(\.status), [.applied])
-        XCTAssertEqual(echoes.first?.result, ["delivery": .string("submitted")])
+        XCTAssertEqual(echoes.map(\.status), [.applied, .applied], "the second read re-echoes the stored outcome")
+        XCTAssertEqual(echoes.map(\.result), Array(repeating: ["delivery": .string("submitted")], count: 2))
         XCTAssertEqual(try stored(ask).status, "answered")
         XCTAssertEqual(typed.count, 2, "one paste and its Return")
     }

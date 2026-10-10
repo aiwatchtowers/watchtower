@@ -70,7 +70,8 @@ final class HubSyncState: Sendable {
                     record_name TEXT PRIMARY KEY,
                     phase TEXT NOT NULL CHECK (phase IN ('begun', 'done')),
                     outcome TEXT,
-                    updated_at REAL NOT NULL DEFAULT 0
+                    updated_at REAL NOT NULL DEFAULT 0,
+                    echo BLOB
                 );
                 CREATE TABLE IF NOT EXISTS ask_answer_deliveries (
                     record_name TEXT PRIMARY KEY,
@@ -100,6 +101,11 @@ final class HubSyncState: Sendable {
                 );
                 CREATE INDEX IF NOT EXISTS session_milestones_by_session ON session_milestones (session_id, at);
                 """)
+            // A sidecar created before the ledger kept echoes gains the column;
+            // its old `done` rows hold none and are skipped as before.
+            if try !db.columns(in: "relay_processed").contains(where: { $0.name == "echo" }) {
+                try db.execute(sql: "ALTER TABLE relay_processed ADD COLUMN echo BLOB")
+            }
         }
     }
 
@@ -290,18 +296,34 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// `outcome` is the echoed status (and reason, when there is one), for
-    /// diagnostics only: a `done` record is skipped whatever it holds.
-    func markRelayDone(_ recordName: String, outcome: String, at date: Date) throws {
+    /// `outcome` is the echoed status (and reason, when there is one): what
+    /// a recording upload's retry decides on, diagnostics for an action.
+    /// `echo` is the full echoed outcome of an action, re-echoed as is when
+    /// the record reads `pending` or `received` again (a lost ack); nil
+    /// for a recording upload.
+    func markRelayDone(_ recordName: String, outcome: String, echo: Data? = nil, at date: Date) throws {
         try queue.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO relay_processed (record_name, phase, outcome, updated_at)
-                    VALUES (?, 'done', ?, ?)
+                    INSERT INTO relay_processed (record_name, phase, outcome, updated_at, echo)
+                    VALUES (?, 'done', ?, ?, ?)
                     ON CONFLICT(record_name) DO UPDATE SET
-                        phase = 'done', outcome = excluded.outcome, updated_at = excluded.updated_at
+                        phase = 'done', outcome = excluded.outcome, updated_at = excluded.updated_at,
+                        echo = excluded.echo
                     """,
-                arguments: [recordName, outcome, date.timeIntervalSince1970]
+                arguments: [recordName, outcome, date.timeIntervalSince1970, echo]
+            )
+        }
+    }
+
+    /// The echo a `done` action was marked with; nil for an unknown or
+    /// `begun` record, an upload, or a row written before echoes were kept.
+    func relayEcho(_ recordName: String) throws -> Data? {
+        try queue.read { db in
+            try Data.fetchOne(
+                db,
+                sql: "SELECT echo FROM relay_processed WHERE record_name = ? AND phase = 'done'",
+                arguments: [recordName]
             )
         }
     }

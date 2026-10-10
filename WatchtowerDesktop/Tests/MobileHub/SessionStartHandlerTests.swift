@@ -424,8 +424,8 @@ final class SessionStartHandlerTests: XCTestCase {
         _ = try await processor.processOnce()
 
         let echoes = try echoes(transport, of: record.recordName)
-        XCTAssertEqual(echoes.map(\.status), [.failed])
-        XCTAssertEqual(echoes.first?.reason, .outcomeUnknown)
+        XCTAssertEqual(echoes.map(\.status), [.failed, .failed], "the second read re-echoes the stored outcome")
+        XCTAssertEqual(echoes.map(\.reason), [.outcomeUnknown, .outcomeUnknown])
         XCTAssertTrue(launches.isEmpty)
         let stored = try await rows(p)
         XCTAssertTrue(stored.isEmpty)

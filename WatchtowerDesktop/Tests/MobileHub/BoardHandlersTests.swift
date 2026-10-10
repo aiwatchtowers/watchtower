@@ -511,8 +511,8 @@ final class BoardHandlersTests: XCTestCase {
         _ = try await processor.processOnce()
 
         let echoes = try transport.saved.map { try decodeAction($0.record) }.filter { $0.status != .pending }
-        XCTAssertEqual(echoes.map(\.status), [.failed])
-        XCTAssertEqual(echoes.first?.reason, .outcomeUnknown)
+        XCTAssertEqual(echoes.map(\.status), [.failed, .failed], "the second read re-echoes the stored outcome")
+        XCTAssertEqual(echoes.map(\.reason), [.outcomeUnknown, .outcomeUnknown])
         XCTAssertEqual(try comments(on: t), 0, "never applied")
     }
 
@@ -536,7 +536,8 @@ final class BoardHandlersTests: XCTestCase {
         _ = try await processor.processOnce()
 
         let echoes = try transport.saved.map { try decodeAction($0.record) }.filter { $0.status != .pending }
-        XCTAssertEqual(echoes.map(\.status), [.applied])
+        XCTAssertEqual(echoes.map(\.status), [.applied, .applied], "the second read re-echoes the stored outcome")
+        XCTAssertEqual(echoes.first?.result, echoes.last?.result, "the same comment id")
         XCTAssertEqual(try comments(on: t), 1)
     }
 }

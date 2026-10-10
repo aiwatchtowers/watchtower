@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerSync
@@ -40,20 +41,20 @@ final class RelayProcessorTests: XCTestCase {
 
     // MARK: - Probe
 
-    func testProbeDeliveredTwiceEchoesAppliedOnceWithNonceAndHubID() async throws {
+    func testProbeDeliveredTwiceEchoesTheSameAppliedNonceAndHubID() async throws {
         let record = try pendingActionRecord(kind: .probe, params: ["nonce": .string("n-1")])
         try await transport.save([record])
         let processor = makeProcessor()
 
         _ = try await processor.processOnce()
-        // The same pending record arrives again (re-fetch, push twice).
+        // The same pending record arrives again (the phone's save won over the echo).
         try await transport.save([record])
         _ = try await processor.processOnce()
 
         let echoes = try echoes(of: record.recordName)
-        XCTAssertEqual(echoes.count, 1, "a probe is echoed exactly once")
-        XCTAssertEqual(echoes.first?.status, .applied)
-        XCTAssertEqual(echoes.first?.result, ["nonce": .string("n-1"), "hub_id": .string("hub-acme")])
+        XCTAssertEqual(echoes.count, 2, "a done probe read pending again is re-echoed")
+        XCTAssertEqual(echoes.map(\.status), [.applied, .applied])
+        XCTAssertEqual(echoes.map(\.result), Array(repeating: ["nonce": .string("n-1"), "hub_id": .string("hub-acme")], count: 2))
         XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
     }
 
@@ -125,10 +126,102 @@ final class RelayProcessorTests: XCTestCase {
 
         XCTAssertEqual(calls, 0, "an interrupted apply is never re-run")
         let echoes = try echoes(of: record.recordName)
-        XCTAssertEqual(echoes.count, 1)
-        XCTAssertEqual(echoes.first?.status, .failed)
-        XCTAssertEqual(echoes.first?.reason, .outcomeUnknown)
+        XCTAssertEqual(echoes.count, 2, "the second read re-echoes the stored outcome")
+        XCTAssertEqual(echoes.map(\.status), [.failed, .failed])
+        XCTAssertEqual(echoes.map(\.reason), [.outcomeUnknown, .outcomeUnknown])
         XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
+    }
+
+    func testADoneActionReadPendingAgainIsReEchoedFromTheStoredOutcomeWithoutDispatching() async throws {
+        var calls = 0
+        dispatcher.register(.boardCommentAdd) { _ in
+            calls += 1
+            return .applied(["comment_id": .integer(42)])
+        }
+        let record = try pendingActionRecord(kind: .boardCommentAdd, entityID: "7")
+        try await transport.save([record])
+        _ = try await makeProcessor().processOnce()
+
+        // A lost ack: the phone re-saved its pending copy and that save won.
+        try await transport.save([record])
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertEqual(calls, 1, "a re-echo never dispatches again")
+        let written = try echoes(of: record.recordName)
+        XCTAssertEqual(written.map(\.status), [.applied, .applied])
+        XCTAssertEqual(written.last?.result, ["comment_id": .integer(42)], "the same comment, not a second one")
+        let stored = try await transport.changes(in: .relay, since: nil).changed.first { $0.recordName == record.recordName }
+        XCTAssertEqual(try decodeAction(try XCTUnwrap(stored)).status, .applied, "the record reads applied again")
+
+        // Its own echo read back is no work.
+        _ = try await makeProcessor().processOnce()
+        XCTAssertEqual(try echoes(of: record.recordName).count, 2)
+    }
+
+    func testADoneActionStuckAtReceivedIsReEchoedWithItsFinalOutcome() async throws {
+        var calls = 0
+        dispatcher.register(.sessionStart) { _ in
+            calls += 1
+            return .applied(["stage": .string("starting")])
+        }
+        let record = try pendingActionRecord(kind: .sessionStart, entityID: "7")
+        try await transport.save([record])
+        _ = try await makeProcessor().processOnce()
+
+        // Only the `received` echo reached the server; the final one was lost.
+        var received = try decodeAction(record)
+        received.status = .received
+        try await transport.save([try CloudRecordFactory.record(for: received, modifiedAt: Date())])
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertEqual(calls, 1)
+        let last = try XCTUnwrap(try echoes(of: record.recordName).last)
+        XCTAssertEqual(last.status, .applied)
+        XCTAssertEqual(last.result, ["stage": .string("starting")])
+    }
+
+    func testADoneLedgerRowWithoutAStoredEchoIsSkipped() async throws {
+        var calls = 0
+        dispatcher.register(.boardCommentAdd) { _ in
+            calls += 1
+            return .applied()
+        }
+        let record = try pendingActionRecord(kind: .boardCommentAdd, entityID: "7")
+        // A row written before the ledger kept echoes.
+        try sidecar.markRelayDone(record.recordName, outcome: "applied", at: Date())
+        try await transport.save([record])
+
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertEqual(calls, 0)
+        XCTAssertTrue(try echoes(of: record.recordName).isEmpty, "nothing stored, nothing to re-echo")
+    }
+
+    func testASidecarWithoutTheEchoColumnGainsIt() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("RelayLedger-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("hubstate.db").path
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(sql: """
+                CREATE TABLE relay_processed (
+                    record_name TEXT PRIMARY KEY,
+                    phase TEXT NOT NULL CHECK (phase IN ('begun', 'done')),
+                    outcome TEXT,
+                    updated_at REAL NOT NULL DEFAULT 0
+                );
+                INSERT INTO relay_processed (record_name, phase, outcome, updated_at) VALUES ('action-old', 'done', 'applied', 1);
+                """)
+        }
+
+        let reopened = try HubSyncState(path: path)
+
+        XCTAssertEqual(try reopened.relayPhase("action-old"), .done)
+        XCTAssertNil(try reopened.relayEcho("action-old"))
+        try reopened.markRelayDone("action-new", outcome: "applied", echo: Data("{}".utf8), at: Date())
+        XCTAssertEqual(try reopened.relayEcho("action-new"), Data("{}".utf8))
+        // A second open over the migrated file is a no-op.
+        XCTAssertEqual(try HubSyncState(path: path).relayEcho("action-new"), Data("{}".utf8))
     }
 
     func testReceivedIsEchoedBeforeTheHandlerForStartLikeKinds() async throws {
@@ -393,5 +486,6 @@ final class RelayProcessorTests: XCTestCase {
 
         XCTAssertEqual(calls, 1, "a reset never re-applies a done record")
         XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
+        XCTAssertEqual(try echoes(of: record.recordName).map(\.status), [.applied, .applied], "at most a re-echo")
     }
 }

@@ -2,8 +2,9 @@ import Foundation
 import WatchtowerSync
 
 /// What a handler (or the hub itself) answers one phone action with; the
-/// relay processor writes it into the action's echo (mobile POC spec §5.2).
-struct ActionOutcome: Equatable {
+/// relay processor writes it into the action's echo (mobile POC spec §5.2)
+/// and keeps it in the exactly-once ledger (Codable for that, never wire).
+struct ActionOutcome: Equatable, Codable {
     let status: ActionStatus
     let reason: ActionReason?
     let result: [String: JSONValue]?
