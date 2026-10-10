@@ -86,13 +86,13 @@ Down: drop both columns (SQLite ≥ 3.35 `DROP COLUMN`, as earlier column migrat
 
 | Event | Today | New |
 |---|---|---|
-| Stop (sync, `workbench check --stop-hook`) | `waiting` (turn-ordered) | `waiting` **plus** `agent_background = n`, `agent_background_at = at` where n = count of `background_tasks` entries with `type == "subagent"`; `n == 0` or the field absent → both NULL. A Stop over a stored `waiting` whose count differs is **not** a repeat: it writes, and advances `agent_state_at` (so the following Stopped is a new transition for the notice policy). |
+| Stop (sync, `workbench check --stop-hook`) | `waiting` (turn-ordered) | `waiting` **plus** `agent_background = n`, `agent_background_at = at` where n = count of `background_tasks` entries with `type` `subagent` or `workflow` (owner, ask #138); `n == 0` or the field absent → both NULL. A Stop over a stored `waiting` whose count differs is **not** a repeat: it writes, and advances `agent_state_at` (so the following Stopped is a new transition for the notice policy). |
 | UserPromptSubmit, main-thread PostToolUse (`working`) | as today | as today, and NULL both columns (a main turn began; its Stop re-snapshots). |
 | StopFailure | `waiting` + error | as today, and NULL both (Error outranks anyway; no snapshot in its input). |
 | Notification `idle_prompt` | `waiting` | `waiting`, and NULL both (F5: positive evidence nothing runs). A stored `waiting` with a non-NULL count is a change, not a repeat. |
 | Notification `permission_prompt` / `elicitation_dialog` | `approval` | unchanged; columns kept (after the grant the row goes `working` by ask #20 rules, and the main's next Stop re-snapshots). |
 | Subagent PostToolUse (`agent_id` set) | writes only over `approval` | over `approval`: unchanged. Over `waiting` with `agent_background > 0`: **only** `agent_background_at = at` (heartbeat), guarded `at > agent_background_at`. `agent_state`, `agent_state_at`, `finished_at`, turn order untouched. Otherwise nothing. |
-| **SubagentStop** (new async state hook) | — | Ignored when `agent_type == ""` (F3 internal agents) or the input has no `background_tasks`. Over `waiting` with `agent_background > 0` and `at > agent_background_at`: `agent_background = min(stored, m)` where m = `subagent` entries of its `background_tasks` whose `id != agent_id`; `agent_background_at = at`. Never raises the count; never touches `agent_state`/`agent_state_at`/`finished_at`. |
+| **SubagentStop** (new async state hook) | — | Ignored when `agent_type == ""` (F3 internal agents) or the input has no `background_tasks`. Over `waiting` with `agent_background > 0` and `at > agent_background_at`: `agent_background = min(stored, m)` where m = `subagent` and `workflow` entries of its `background_tasks` whose `id != agent_id` (a finished workflow has no SubagentStop of its own, so it drops out at the next SubagentStop or Stop snapshot); `agent_background_at = at`. Never raises the count; never touches `agent_state`/`agent_state_at`/`finished_at`. |
 | SessionStart mark/clear, conversation switch | clear state / mark run | also NULL both (`MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`). |
 
 **Invariant (guarded):** `agent_background` goes from NULL to a number only in the Stop's write; every other
@@ -283,14 +283,12 @@ subagents (redacted, under `cmd/testdata/`, like `stopfailure_rate_limit.json`) 
 
 ## 9. Owner decisions (recommended default first)
 
-1. **What counts.** (a) **`subagent` only** — rec.; (b) `subagent` + `workflow`; (c) everything but `shell`;
-   (d) every task. Teammates and shells would make a session look busy indefinitely.
-2. **Staleness bound** (count > 0, no report): (a) **30 min** — rec.; (b) 60 min; (c) none (stays until the main
-   agent wakes or the session restarts).
-3. **Grace after the count reaches 0:** (a) **120 s** — rec.; (b) 0 (Stopped at once, possibly a second
-   "stopped" notice when the main agent wakes); (c) 5 min.
-4. **Live count via `SubagentStop`:** (a) **install it** (Re-run Setup once) — rec.; (b) no new hook, count only
-   at turn end (simpler, still correct).
+1. **What counts.** **Decided (ask #138): `subagent` + `workflow`.** Teammates and shells stay out: they would
+   make a session look busy indefinitely.
+2. **Staleness bound** (count > 0, no report): 30 min, then the owner asked for a probe of the session
+   instead of a blind fall-back — the probe's shape is open in ask #140.
+3. **Grace after the count reaches 0:** **Decided (ask #138): 120 s.**
+4. **Live count via `SubagentStop`:** **Decided (ask #138): install it** (Re-run Setup once).
 5. **Older Claude Code without `background_tasks`:** (a) **Stopped as today** — rec.; (b) fallback "subagent
    PostToolUse over `waiting` → Agents working, no count" (weaker guard, sticky on late events).
 6. **Label/glyph:** (a) **"Agents working", `person.2.fill`, pulsing green** — rec.; (b) "Background work",

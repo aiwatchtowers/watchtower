@@ -46,7 +46,7 @@ agents working in the background beat "finished", "waiting for you" and "stopped
 - **An older Claude Code** that does not report background work: the session shows Stopped as today. Nothing
   gets worse.
 - **Long-lived teammates and background shells** (for example a `tail -f`) do not count as agents working —
-  only subagents do. Otherwise a session with a log tail would look busy forever.
+  only subagents and workflows do. Otherwise a session with a log tail would look busy forever.
 - **A background agent asks for a permission:** Needs approval, as today.
 
 ## What you need to do once
@@ -72,10 +72,13 @@ time, or "finished" (it only refreshes the "agents still alive" time). Agents wo
 following Stopped / Finished is announced once. The ask answer's Return and code hand-offs treat Agents working
 exactly as Stopped.
 
-## Your decisions (recommended answers in bold, details in the tech spec §9)
+## Decisions
 
-1. Count only subagents — **yes** / also workflows / every background task.
-2. Fallback to Stopped after **30 min** / 60 min / never, with no report about the agents.
-3. After the count drops to zero, keep "Agents working" up to **2 min** waiting for the main agent to wake / 0 / 5 min.
-4. Add the live-count hook (needs Re-run Setup once) — **yes** / no, count only at turn end.
-5. Older Claude Code: **show Stopped as today** / guess "Agents working" from subagent activity.
+Approved by the owner on 2026-10-10 (ask #139), including the PROJ-11 amendment above. Answers from ask #138:
+
+1. Counts: subagents and workflows.
+2. 30 min with no report about the agents: probe the session before falling back to Stopped (shape of the probe:
+   ask #140).
+3. After the count drops to zero, keep "Agents working" up to 2 min while the main agent wakes.
+4. The live-count hook is added (Re-run Setup once).
+5. Older Claude Code: Stopped as today (default taken).
