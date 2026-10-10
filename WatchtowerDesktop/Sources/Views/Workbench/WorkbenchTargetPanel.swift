@@ -275,9 +275,7 @@ struct WorkbenchTargetPanel: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 20) {
-            WorkbenchPanelDescription(targetID: target.id, intent: target.intent) { text, original, id in
-                vm.saveIntent(text, original: original, for: id)
-            }
+            WorkbenchPanelDescription(vm: vm, targetID: target.id, intent: target.intent)
             if mode == .group {
                 WorkbenchGroupSubtasks(group: node, showArchived: vm.showArchived) { vm.push($0) }
                     // Its folds are this group's own: another group starts unfolded.

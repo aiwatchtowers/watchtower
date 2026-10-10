@@ -636,4 +636,95 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(stored?.intent, "Owner's draft")
     }
+
+    // MARK: - Description drafts per target (board #417)
+
+    private func failIntentWrites() throws {
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_intent_update BEFORE UPDATE OF intent ON targets
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+    }
+
+    private func allowIntentWrites() throws {
+        try dbManager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_intent_update") }
+    }
+
+    private func storedIntent(_ id: Int) throws -> String? {
+        try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: id)?.intent }
+    }
+
+    func testBeginOnAnOpenEditorKeepsItsDraft() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA), .init(text: "", original: ""))
+        vm.setDescriptionDraft("Half typed", for: taskA)
+
+        vm.beginDescriptionEdit(taskA)
+
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Half typed")
+    }
+
+    func testCancelDropsTheDraftAndWritesNothing() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Never mind", for: taskA)
+
+        vm.cancelDescriptionEdit(taskA)
+        vm.select(taskB)
+
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        XCTAssertTrue(vm.saveDescription(for: taskA), "no editor open: nothing left unsaved")
+        XCTAssertEqual(try storedIntent(taskA), "")
+    }
+
+    /// Editing another target's description never touches a draft kept on
+    /// the first one after its save failed.
+    func testEditingAnotherTargetKeepsTheFirstTargetsDraft() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+        XCTAssertFalse(vm.saveDescription(for: taskA))
+        vm.select(taskB)
+        try allowIntentWrites()
+
+        vm.beginDescriptionEdit(taskB)
+        vm.setDescriptionDraft("Written on B", for: taskB)
+        XCTAssertTrue(vm.saveDescription(for: taskB))
+
+        XCTAssertEqual(try storedIntent(taskB), "Written on B")
+        XCTAssertNil(vm.descriptionDraft(for: taskB))
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A")
+        vm.select(taskA)
+        XCTAssertEqual(try storedIntent(taskA), "", "coming back does not save it by itself")
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A", "the editor reopens with it")
+        XCTAssertTrue(vm.saveDescription(for: taskA))
+        XCTAssertEqual(try storedIntent(taskA), "Draft on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+    }
+
+    /// The draft keeps the description it opened with: an agent edit that
+    /// lands meanwhile is refused at save, and the draft stays.
+    func testADraftKeepsItsOriginalForTheConflictCheck() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Owner's draft", for: taskA)
+        try agentWritesIntent("Agent's newer text", on: taskA)
+
+        XCTAssertFalse(vm.saveDescription(for: taskA))
+
+        XCTAssertEqual(try storedIntent(taskA), "Agent's newer text")
+        XCTAssertEqual(vm.descriptionDraft(for: taskA), .init(text: "Owner's draft", original: ""))
+    }
 }

@@ -57,6 +57,20 @@ final class WorkbenchBoardViewModel {
         }
     }
 
+    /// An open description editor: the text typed so far and the
+    /// description it opened with (`saveIntent`'s `original`).
+    struct DescriptionDraft: Equatable {
+        var text: String
+        let original: String
+    }
+
+    /// Open description editors by target id (board #417): like comment
+    /// drafts, each stays with its own target, so editing another target's
+    /// description never replaces a draft kept after a failed save, and
+    /// returning to the target reopens its editor. Session state, never
+    /// remembered.
+    private var descriptionDrafts: [Int: DescriptionDraft] = [:]
+
     /// List or Kanban, remembered per project.
     var mode: WorkbenchBoardMode {
         didSet { preferences.mode = mode }
@@ -566,6 +580,42 @@ final class WorkbenchBoardViewModel {
                 try TargetQueries.updateIntent(db, id: id, intent: intent)
             }
         }
+    }
+
+    /// The open editor on `id`, nil when its description is not being edited.
+    func descriptionDraft(for id: Int) -> DescriptionDraft? {
+        descriptionDrafts[id]
+    }
+
+    /// A click on the description (or Add a description): opens the editor
+    /// on `id` with its description as shown. An editor already open there
+    /// keeps its draft; a target not on the board opens nothing.
+    func beginDescriptionEdit(_ id: Int) {
+        guard descriptionDrafts[id] == nil, let node = WorkbenchBoardOutline.find(id, in: roots) else { return }
+        descriptionDrafts[id] = DescriptionDraft(text: node.target.intent, original: node.target.intent)
+    }
+
+    /// Typing in the editor on `id`; ignored with no editor open there.
+    func setDescriptionDraft(_ text: String, for id: Int) {
+        descriptionDrafts[id]?.text = text
+    }
+
+    /// Esc in the editor: the draft is dropped, nothing is written.
+    func cancelDescriptionEdit(_ id: Int) {
+        descriptionDrafts[id] = nil
+    }
+
+    /// ⌘↩ or focus loss in the editor on `id` (`saveIntent` with the text it
+    /// opened with). A saved draft closes the editor; a failed one stays on
+    /// its own target (`errorMessage` says why), unless the target is gone
+    /// and there is nothing left to save it to.
+    /// - Returns: whether nothing is left unsaved — true with no editor open.
+    @discardableResult
+    func saveDescription(for id: Int) -> Bool {
+        guard let draft = descriptionDrafts[id] else { return true }
+        let saved = saveIntent(draft.text, original: draft.original, for: id)
+        if saved || WorkbenchBoardOutline.find(id, in: roots) == nil { descriptionDrafts[id] = nil }
+        return saved
     }
 
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
