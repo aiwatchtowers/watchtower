@@ -6,7 +6,9 @@ import XCTest
 /// The Now tab (spec §13 B2): Waiting for you across workbenches, newest
 /// first and 20 shown, the Mac chip and the session summary chips.
 final class NowWiringTests: XCTestCase {
-    private let now = Date()
+    /// Pinned at local noon today, as the Calendar tests are: an offset of
+    /// a few hours never crosses midnight.
+    private let now = Calendar.current.date(bySettingHour: 12, minute: 0, second: 0, of: Date()) ?? Date()
 
     func testZeroOpenAsksShowNothingIsWaiting() throws {
         var snapshot = try demoSnapshot(now: now)
