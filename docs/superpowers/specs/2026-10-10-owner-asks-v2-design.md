@@ -153,6 +153,7 @@ The model returns exactly one JSON object:
 ```
 {"request": "none" | "chat" | "full",
  "names_ask": true | false,
+ "closing_summary": true | false,
  "complete_unreported": true | false,
  "question": "<the question to the owner, ≤ 300 runes; '' when request is none>",
  "options": [{"label": "<≤ 40 runes>", "recommended": true|false}]   // 0-4, the options the message itself offers
@@ -166,12 +167,13 @@ Go clips `question` to 300 runes and labels to 40, drops options past 4, and tre
 Pinned by a golden (`internal/devpack/testdata/askguard_prompt_v4.golden`); v1–v3 kept as fixtures for the upgrade test. Outline, in this order:
 
 1. Role: classify a coding agent's final message of a turn. Input is the message only.
-2. **Default:** `request: none`, `names_ask: false`, `complete_unreported: false` — return the default when unsure (v3 rule 1).
-3. `names_ask` is true when the message names an ask it filed (`ask #<number>`); a named ask is never a request (v3 rule 4).
+2. **Default:** `request: none`, `names_ask: false`, `closing_summary: false`, `complete_unreported: false` — return the default when no case below clearly applies, and when unsure (v3: "unless a failure case below clearly applies").
+3. `names_ask` is true when the message names an ask (`ask #<number>`), including step-by-step help for the owner on that ask; a named ask is never a request (v3 pass list).
+3a. `closing_summary` is true when the message says it called `finish_session` (for example "session finished") and lists what is left on the owner — those items are filed as asks separately, so it is never a request; it never affects `complete_unreported` (v3 pass list).
 4. `request: full` — the message waits on the owner to review a document, run a manual check, or make several related decisions, or the owner would need more than the message to answer.
 5. `request: chat` — the message waits on the owner for one thing answerable from the conversation: a clarification, a yes/no, a choice among a few named options. Extract `question` and the `options` the message itself names (never invent options).
-6. Not requests: rhetorical questions, questions the agent answers itself, summaries of finished work, offers ("say if you want X"), a progress report, unfinished work it will continue (v3 rule 3).
-7. `complete_unreported` — the message reports the session's work complete (every task done, a PR opened or merged, nothing left) and does not say it called `finish_session` ("session finished"). A progress report, a pause for an answer or a partial result is not complete (v2/v3 rule).
+6. Not requests: rhetorical questions, questions the agent answers itself, offers ("say if you want X"). **The request check takes priority over the not-complete list in 7** (v3: "failure case 1 takes priority over this list"): a question or request to the owner inside a progress report is still `chat` or `full`.
+7. `complete_unreported` — the message reports the session's work complete (every task done, a PR opened or merged, nothing left) and does not say it called `finish_session` ("session finished"). Unfinished work is never complete: a progress report, a partial result, a next step the agent itself will take, work still left, a pause for an answer (v3 pass list).
 8. Output only the JSON object.
 
 The two v3 "explicit failure cases" become `request ∈ {chat, full}` (the request case) and `complete_unreported` (the finish case); Go returns the first failure in that order, as v2/v3 did.
@@ -182,10 +184,10 @@ The two v3 "explicit failure cases" become `request ∈ {chat, full}` (the reque
 |---|---|---|
 | 1 | `stop_hook_active` | pass |
 | 2 | input unreadable / message empty / model failed | pass |
-| 3 | `names_ask` and not `complete_unreported` | pass |
-| 4 | `request = full`, `names_ask` false | block **R-full**: "You asked the owner for a review, a check or several decisions in plain text. File it with ask_owner (kind review, check or question with up to 4 questions), name it as 'ask #<id>' in your text, then stop." |
-| 5 | `request = chat`, `names_ask` false, owner **present**, chat question written | pass (**Chat**) |
-| 6 | `request = chat`, `names_ask` false, otherwise | block **R-away**: "The owner is not in this session, so a question in the terminal would wait unseen. File it with ask_owner (kind question; one decision with 2-3 short options shows as a one-tap Quick ask), name it as 'ask #<id>' in your text, then stop." |
+| 3 | (`names_ask` or `closing_summary`) and not `complete_unreported` | pass |
+| 4 | `request = full`, `names_ask` and `closing_summary` false | block **R-full**: "You asked the owner for a review, a check or several decisions in plain text. File it with ask_owner (kind review, check or question with up to 4 questions), name it as 'ask #<id>' in your text, then stop." |
+| 5 | `request = chat`, `names_ask` and `closing_summary` false, owner **present**, chat question written | pass (**Chat**) |
+| 6 | `request = chat`, `names_ask` and `closing_summary` false, otherwise | block **R-away**: "The owner is not in this session, so a question in the terminal would wait unseen. File it with ask_owner (kind question; one decision with 2-3 short options shows as a one-tap Quick ask), name it as 'ask #<id>' in your text, then stop." |
 | 7 | `complete_unreported` | block **R-finish** (the v2 text, unchanged) |
 | 8 | otherwise | pass |
 
@@ -402,6 +404,9 @@ Test guards added: `OwnerAsksViewModelTests::testProj12_AQuickAnswerFromTheBanne
 | E7 | Message "filed ask #12 for the spec review; which branch name do you prefer?" | pass (named ask) | decision table |
 | E8 | Message reports all done, no "session finished", present, no question | `R-finish` | decision table |
 | E9 | Message has a chat question and reports done, absent | `R-away` (first failure) | decision table |
+| E9a | Progress report ("tests green, next I wire the view") that also asks "should the badge be red or orange?", absent | `R-away` (the request outranks the progress report) | decision table |
+| E9b | "session finished"; the summary lists two items left on the owner as plain text, absent | pass (`closing_summary`) | decision table |
+| E9c | Progress report whose last line is "next I will run the migration" | pass (a next step the agent takes is neither a request nor complete) | decision table |
 | E10 | Model returns prose / times out | pass, nothing recorded | `TestProj13_AskGuardFailurePrintsNothingAndExitsZero` |
 | E11 | Chat question recorded; owner answers in the terminal at minute 4 | cleared by `UserPromptSubmit`; no escalation | `cmd/workbench_session_state_test.go::TestChatQuestionClearedByTheOwnersPrompt`; Swift `ChatQuestionEscalationPolicyTests.testClearedQuestionNeverEscalates` |
 | E12 | Recorded; owner present and silent 10 min, no draft | Quick ask filed, `origin chat`, same options, banner "From chat · 10 min" | `ChatQuestionEscalationPolicyTests.testTenMinutesPresentEscalates`; `cmd/workbench_escalate_test.go::TestEscalateFilesAQuickAskWithTheSameOptions` |
