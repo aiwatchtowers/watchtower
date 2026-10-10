@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"testing"
 )
 
@@ -295,5 +296,26 @@ func TestTranscriptSurvivesEventDeletion(t *testing.T) {
 	}
 	if got.EventID.Valid {
 		t.Errorf("event_id should be NULL after event deletion, got %+v", got.EventID)
+	}
+}
+
+func TestIsForeignKeyViolation(t *testing.T) {
+	database := openTestDB(t)
+
+	_, err := database.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-missing", Valid: true}, Title: "t", TranscriptText: "body",
+	})
+	if err == nil || !IsForeignKeyViolation(err) {
+		t.Fatalf("a missing event must read as an FK violation, got %v", err)
+	}
+	_, err = database.Exec(`INSERT INTO no_such_table (x) VALUES (1)`)
+	if err == nil || IsForeignKeyViolation(err) {
+		t.Fatalf("a non-FK error must not read as an FK violation, got %v", err)
+	}
+	if IsForeignKeyViolation(errors.New("FOREIGN KEY constraint failed")) {
+		t.Fatal("never matched by message")
+	}
+	if IsForeignKeyViolation(nil) {
+		t.Fatal("nil is not an FK violation")
 	}
 }

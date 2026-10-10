@@ -1,0 +1,14 @@
+// Base.xcconfig — project-wide signing defaults, wired via xcodegen `configFiles`.
+//
+// Unsigned by default: simulator and CI builds must keep working with no team
+// ID and no provisioning. The Makefile / CI mobile jobs additionally force
+// CODE_SIGNING_ALLOWED=NO on the xcodebuild command line, which always wins.
+CODE_SIGNING_ALLOWED = NO
+CODE_SIGNING_REQUIRED = NO
+CODE_SIGN_IDENTITY =
+
+// Optional signing overrides: Signing.xcconfig (gitignored — copy
+// Signing.xcconfig.template) re-enables signing with a real DEVELOPMENT_TEAM
+// for device/archive builds. `#include?` silently skips a missing file, so the
+// committed project never depends on it existing.
+#include? "Signing.xcconfig"

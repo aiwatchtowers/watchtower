@@ -1,0 +1,9 @@
+{
+  "milestones": [
+    {"at": 1700000100, "kind": "ask_opened", "ref": 12, "text": "Asked: Which release?"},
+    {"at": 1700000050, "kind": "target_status", "ref": 415, "text": "todo → in_progress (agent)"},
+    {"at": 1700000000, "kind": "state", "text": "Started"}
+  ],
+  "milestones_more": 4,
+  "session_id": 31
+}

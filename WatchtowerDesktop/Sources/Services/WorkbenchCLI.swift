@@ -10,6 +10,15 @@ struct WorkbenchCreated: Decodable, Equatable {
     let name: String
 }
 
+/// `watchtower workbench target add … --json` output.
+struct WorkbenchTargetAdded: Decodable, Equatable {
+    let targetID: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case targetID = "target_id"
+    }
+}
+
 /// `watchtower workbench delete N --json` envelope. The workbench rows are gone
 /// whenever the command exits 0; `removalOK == false` means only the folder
 /// cleanup failed, and `removalError` says why; `filesOK == false` means
@@ -403,6 +412,19 @@ struct WorkbenchCLI {
         if let name, !name.isEmpty { args += ["--name", name] }
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchCreated.self, from: data)
+    }
+
+    /// A board target recorded as the owner's (spec §6.3): Go applies the
+    /// board defaults, the parent checks (PROJ-09) and the parent's progress
+    /// in the same writer as the agent's `create_targets`. Values travel as
+    /// `--flag=value`, so one starting with "-" is never read as a flag.
+    func addTarget(workbenchID: Int64, title: String, intent: String, priority: String, parentID: Int64?) async throws -> Int64 {
+        var args = ["workbench", "target", "add", "--workbench=\(workbenchID)", "--title=\(title)", "--priority=\(priority)"]
+        if !intent.isEmpty { args.append("--intent=\(intent)") }
+        if let parentID { args.append("--parent=\(parentID)") }
+        args.append("--json")
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorkbenchTargetAdded.self, from: data).targetID
     }
 
     /// Installs the skill, the SessionStart and Stop hooks and the local MCP

@@ -1,0 +1,1160 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		04B35957623707A41C2781B9 /* PhoneRecorderController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */; };
+		0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */; };
+		055004AE372755F08479F977 /* WorkbenchReplicaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */; };
+		069F7E73436AE73C0D41AC77 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */; };
+		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
+		151770A7D2209403DADBD038 /* NowModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2D287A1BE3B31FA6D711C52 /* NowModel.swift */; };
+		16EC22651D352689E7F327B5 /* SessionDetailWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEC6D907F03F9B14B2029703 /* SessionDetailWiringTests.swift */; };
+		18536A303A19737F9757FE1E /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C8A95C95B93D99054219A43 /* RootTabView.swift */; };
+		1BA03E2FF0F8F0F44C9ED1AD /* NowWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF8889CE92604290450CD690 /* NowWiringTests.swift */; };
+		1E2DBADC13EAC353D9EDED50 /* CalendarReplicaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DFB18941483AAB533E516E7 /* CalendarReplicaModel.swift */; };
+		2136FE8F54449CEC21A48FCC /* AskFormModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7D008B26401148680559F68 /* AskFormModel.swift */; };
+		22E005323043FC1739040C9E /* SessionRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 213E158A5D0210D86957A491 /* SessionRowTests.swift */; };
+		2356080241E92BE3213EDD38 /* SessionStarter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 632B2CCD45974D7A72711DA9 /* SessionStarter.swift */; };
+		27584DAE11AFC12EC9AB005B /* DeviceSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED010731D72C66201D5B0A4C /* DeviceSettings.swift */; };
+		2845132B2A7150A900A1A0F2 /* RecapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB27E8159B7BFF1EF9ED5A1C /* RecapView.swift */; };
+		2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */; };
+		2EDD7B7533E80AD3C0747DC2 /* NotifyService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CE1581266064A628CA86BA7B /* NotifyService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		2F2911983E54E9247F9C839C /* BoardWriteModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46CDBFA25D9AFF13C4D67ECB /* BoardWriteModel.swift */; };
+		2F47C10DBB0A5DCFEB6B5474 /* QuestionAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CED16A10567DDD56CD668EE /* QuestionAskView.swift */; };
+		3797D2F34049E3A69D4E55C2 /* SendGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33A9A8CE46252B64C968083D /* SendGuard.swift */; };
+		390A2DF54CDB7734D895E9F2 /* StartSheetWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */; };
+		3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */; };
+		3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */; };
+		3F6F9974DD5384B247B7FCDD /* CalendarWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */; };
+		435FFB8059956A11F8DAE21B /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 73828104AEDF42B7DD8514E7 /* GRDB */; };
+		45583C3714F8D53FB5EE744C /* AskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF496EC3CD5D473675267EB /* AskView.swift */; };
+		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
+		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
+		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
+		46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */; };
+		4D6748338C1E07858C8D01CE /* AppNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */; };
+		50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */; };
+		51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D1C1D5173ED2758596AA8F /* SettingsView.swift */; };
+		539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43762D471529DE769FDD240A /* WorkbenchView.swift */; };
+		5679863B13AEE6564739DBE9 /* ConflictPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30368F9308E6A9844739763B /* ConflictPrompt.swift */; };
+		63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */; };
+		645E4C039AA033B8351C973D /* StartSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2EA3DB88312AF8F548C2C0 /* StartSessionSheet.swift */; };
+		64C8CAD21EE74571ED1A0A2B /* SessionStartModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CE2AFF40128A95677A48428 /* SessionStartModels.swift */; };
+		6612C16C080C84633E82CA43 /* RecordingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86DE68E84DD6BBD3754E6B69 /* RecordingView.swift */; };
+		6B53905088D5CF5CBCC67FBA /* AskFormTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8929F28520AC73CF61CD217 /* AskFormTests.swift */; };
+		6D2113501104D37D681C2F8E /* BoardTargetDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FAE97205CCE121E8E1FCA91 /* BoardTargetDetailModel.swift */; };
+		6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */; };
+		6E7B3F11235C858E711FE47D /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */; };
+		71A2CD9D94F2A18352A57702 /* WorkbenchComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */; };
+		724D4F6D764BE308D0DED2B7 /* BoardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D88CC35762ED750977196374 /* BoardView.swift */; };
+		7735F8B89F2AF40CFCE440AA /* EventDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFD1B72C6372CD07A0ACE6A7 /* EventDetailModel.swift */; };
+		7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */; };
+		7D5206DBFB791C53D0C5D0B0 /* PhoneTone.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3200FD0FDC1FE7323860CCCF /* PhoneTone.swift */; };
+		7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */; };
+		7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */; };
+		80B679DC462012FD3C8DA200 /* ReviewAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B49C9F3C607137081E616A5F /* ReviewAskView.swift */; };
+		82E1B2966847B84D12131831 /* NotifyContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C3F9240000D56B30D4AB7332 /* NotifyContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		86886F1BC8E073451E37DFCD /* SessionDetailModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C31DCEEDF952183BAF4ECC6 /* SessionDetailModel.swift */; };
+		87B5A9169905994CA11D1762 /* EventDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69EA29ACA1FC531EAFBFC1EC /* EventDetailView.swift */; };
+		926ADD6EE6A569AE60930F1A /* AVAudioCaptureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2FF6957297A743DA4709CA /* AVAudioCaptureEngine.swift */; };
+		967B04AA367ACC272253AA96 /* AskAnswerer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */; };
+		97A451BD079C48489C7E920E /* AgendaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CC7B3E7EA9A863558A8DE6 /* AgendaModel.swift */; };
+		9BE46824C76328CE009F8E27 /* WorkbenchListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BDF7C4C729D997505169333 /* WorkbenchListView.swift */; };
+		9C610711EE9CC1868303C95B /* RecordingsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */; };
+		9F28AD417086206121616519 /* NowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27F9F7B9E929C013BC8C456F /* NowView.swift */; };
+		A40CDAE6323A6FC846928E59 /* DemoSeed+Calendar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */; };
+		AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */; };
+		AABE1CB3835D3B2E87CD6EEB /* AskDraft.swift in Sources */ = {isa = PBXBuildFile; fileRef = 359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */; };
+		B3EC881E10827862686ACBB0 /* SettingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */; };
+		B521C0A7CE08614B0B07701E /* RootTabTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E0130D4D7506019B5820AB5 /* RootTabTests.swift */; };
+		BA607823AC1A146724C0F666 /* AgendaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D576A6CEC011983BF063A3B7 /* AgendaView.swift */; };
+		C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */; };
+		C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC12186E8FC140813F1BFDBF /* BoardWriter.swift */; };
+		C5A4DBFA5BA08D2CEE2ABA22 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = 5CF9E51BB968298C0AAB2FD5 /* GRDB */; };
+		CA0CA270D0CC9FF8CE62518A /* DemoSeed+SessionDetail.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */; };
+		CBAC6DFC16DA706DE9C73921 /* CheckAskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFCBBC92D3DFC415396C183C /* CheckAskView.swift */; };
+		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
+		CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */; };
+		D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */; };
+		D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */; };
+		D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */; };
+		DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */; };
+		E2D1DF70951969EA75CEBE0C /* WorkbenchModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9759126D122152063D8BFFD8 /* WorkbenchModels.swift */; };
+		E4011CFC35072FB026DCAAF3 /* SessionDetailViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97CC9289784B65CCD3F4654A /* SessionDetailViewModel.swift */; };
+		E82759D734B8F4E2ECEB8B6D /* AskViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B954B0B07DB7C38EB952181 /* AskViewModel.swift */; };
+		EA24F0F9A7FA7AC5481E8A53 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B73829BDCC72FD6095664C /* SettingsViewModel.swift */; };
+		EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */; };
+		ECBCFA171FBB2757D78073D8 /* WatchtowerSync in Frameworks */ = {isa = PBXBuildFile; productRef = 82E2DC2033E6312FAD9B717C /* WatchtowerSync */; };
+		EF815CB0B85756C4BAAE485A /* WorkbenchFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */; };
+		F4923AAF0BE95CB20DA6BFE0 /* SessionDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6424A216FEC94930AA9E406 /* SessionDetailView.swift */; };
+		F68A1D786C431F915FD26888 /* RecorderFakes.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAA24B2C4477589205240AF /* RecorderFakes.swift */; };
+		F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		46D8BB95E25C4EF80828980C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9B1FFF752C81D22007C233AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6621334D5B9A491914D4916B;
+			remoteInfo = NotifyService;
+		};
+		81396448DDC6586AEA82A589 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9B1FFF752C81D22007C233AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6C8FC1410A60203BF6A3E37F;
+			remoteInfo = NotifyContent;
+		};
+		A897B56BFE07E2FD325D2469 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9B1FFF752C81D22007C233AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 29B2C64EE70EB083FCF14A74;
+			remoteInfo = WatchtowerMobile;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		922078EC5F691DF490F9B399 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				2EDD7B7533E80AD3C0747DC2 /* NotifyService.appex in Embed Foundation Extensions */,
+				82E1B2966847B84D12131831 /* NotifyContent.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModel.swift; sourceTree = "<group>"; };
+		02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecorderController.swift; sourceTree = "<group>"; };
+		0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileTestSupport.swift; sourceTree = "<group>"; };
+		1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewBoardTargetSheet.swift; sourceTree = "<group>"; };
+		1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardTargetDetailView.swift; sourceTree = "<group>"; };
+		213E158A5D0210D86957A491 /* SessionRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionRowTests.swift; sourceTree = "<group>"; };
+		2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Calendar.swift"; sourceTree = "<group>"; };
+		27F9F7B9E929C013BC8C456F /* NowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowView.swift; sourceTree = "<group>"; };
+		30368F9308E6A9844739763B /* ConflictPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConflictPrompt.swift; sourceTree = "<group>"; };
+		3200FD0FDC1FE7323860CCCF /* PhoneTone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTone.swift; sourceTree = "<group>"; };
+		33A9A8CE46252B64C968083D /* SendGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SendGuard.swift; sourceTree = "<group>"; };
+		359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskDraft.swift; sourceTree = "<group>"; };
+		3CE2AFF40128A95677A48428 /* SessionStartModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStartModels.swift; sourceTree = "<group>"; };
+		3D6F6F3D895505750B9F5892 /* DemoSeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoSeed.swift; sourceTree = "<group>"; };
+		3E0130D4D7506019B5820AB5 /* RootTabTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabTests.swift; sourceTree = "<group>"; };
+		3FAE97205CCE121E8E1FCA91 /* BoardTargetDetailModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardTargetDetailModel.swift; sourceTree = "<group>"; };
+		43762D471529DE769FDD240A /* WorkbenchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchView.swift; sourceTree = "<group>"; };
+		46CDBFA25D9AFF13C4D67ECB /* BoardWriteModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardWriteModel.swift; sourceTree = "<group>"; };
+		4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarWiringTests.swift; sourceTree = "<group>"; };
+		4CED16A10567DDD56CD668EE /* QuestionAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuestionAskView.swift; sourceTree = "<group>"; };
+		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilterTests.swift; sourceTree = "<group>"; };
+		529DCD91B3058908D98062C3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		55D1C1D5173ED2758596AA8F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		5B2FF6957297A743DA4709CA /* AVAudioCaptureEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AVAudioCaptureEngine.swift; sourceTree = "<group>"; };
+		5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchWiringTests.swift; sourceTree = "<group>"; };
+		632B2CCD45974D7A72711DA9 /* SessionStarter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStarter.swift; sourceTree = "<group>"; };
+		65A248911BCA77C513E94FC2 /* NotifyService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotifyService.entitlements; sourceTree = "<group>"; };
+		67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderNotices.swift; sourceTree = "<group>"; };
+		69EA29ACA1FC531EAFBFC1EC /* EventDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDetailView.swift; sourceTree = "<group>"; };
+		6B954B0B07DB7C38EB952181 /* AskViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskViewModel.swift; sourceTree = "<group>"; };
+		6C31DCEEDF952183BAF4ECC6 /* SessionDetailModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailModel.swift; sourceTree = "<group>"; };
+		6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchFixtures.swift; sourceTree = "<group>"; };
+		73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchComponents.swift; sourceTree = "<group>"; };
+		7BDF7C4C729D997505169333 /* WorkbenchListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchListView.swift; sourceTree = "<group>"; };
+		7DFB18941483AAB533E516E7 /* CalendarReplicaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarReplicaModel.swift; sourceTree = "<group>"; };
+		84659903ACFF8DB646E65E9A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingUploadWiringTests.swift; sourceTree = "<group>"; };
+		85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartSheetWiringTests.swift; sourceTree = "<group>"; };
+		86DE68E84DD6BBD3754E6B69 /* RecordingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingView.swift; sourceTree = "<group>"; };
+		89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsWiringTests.swift; sourceTree = "<group>"; };
+		8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderTests.swift; sourceTree = "<group>"; };
+		9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListView.swift; sourceTree = "<group>"; };
+		966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskAnswerer.swift; sourceTree = "<group>"; };
+		9759126D122152063D8BFFD8 /* WorkbenchModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchModels.swift; sourceTree = "<group>"; };
+		97CC9289784B65CCD3F4654A /* SessionDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailViewModel.swift; sourceTree = "<group>"; };
+		9830582A7A7341EA949DD972 /* NotifyContent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotifyContent.entitlements; sourceTree = "<group>"; };
+		9C8A95C95B93D99054219A43 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecapModel.swift; sourceTree = "<group>"; };
+		9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
+		A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardWriteWiringTests.swift; sourceTree = "<group>"; };
+		A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationViewController.swift; sourceTree = "<group>"; };
+		AB2EA3DB88312AF8F548C2C0 /* StartSessionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StartSessionSheet.swift; sourceTree = "<group>"; };
+		ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaWiringTests.swift; sourceTree = "<group>"; };
+		AC12186E8FC140813F1BFDBF /* BoardWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardWriter.swift; sourceTree = "<group>"; };
+		ADAA24B2C4477589205240AF /* RecorderFakes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderFakes.swift; sourceTree = "<group>"; };
+		AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppNavigation.swift; sourceTree = "<group>"; };
+		AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+SessionDetail.swift"; sourceTree = "<group>"; };
+		AFD1B72C6372CD07A0ACE6A7 /* EventDetailModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventDetailModel.swift; sourceTree = "<group>"; };
+		B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchtowerMobileApp.swift; sourceTree = "<group>"; };
+		B49C9F3C607137081E616A5F /* ReviewAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewAskView.swift; sourceTree = "<group>"; };
+		B8929F28520AC73CF61CD217 /* AskFormTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormTests.swift; sourceTree = "<group>"; };
+		BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListModel.swift; sourceTree = "<group>"; };
+		BFCBBC92D3DFC415396C183C /* CheckAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckAskView.swift; sourceTree = "<group>"; };
+		C3F9240000D56B30D4AB7332 /* NotifyContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C7D008B26401148680559F68 /* AskFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormModel.swift; sourceTree = "<group>"; };
+		CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrangeToneTests.swift; sourceTree = "<group>"; };
+		CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Workbench.swift"; sourceTree = "<group>"; };
+		CE1581266064A628CA86BA7B /* NotifyService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		CE2FB594649A1BFF585627DD /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecordingsModel.swift; sourceTree = "<group>"; };
+		D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchtowerMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D576A6CEC011983BF063A3B7 /* AgendaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgendaView.swift; sourceTree = "<group>"; };
+		D88CC35762ED750977196374 /* BoardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardView.swift; sourceTree = "<group>"; };
+		D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
+		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD5811CC2EAE68324393DCDB /* WatchtowerKit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = WatchtowerKit; path = ../WatchtowerKit; sourceTree = SOURCE_ROOT; };
+		DF8889CE92604290450CD690 /* NowWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowWiringTests.swift; sourceTree = "<group>"; };
+		EB27E8159B7BFF1EF9ED5A1C /* RecapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecapView.swift; sourceTree = "<group>"; };
+		EBF496EC3CD5D473675267EB /* AskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskView.swift; sourceTree = "<group>"; };
+		ED010731D72C66201D5B0A4C /* DeviceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceSettings.swift; sourceTree = "<group>"; };
+		F2D287A1BE3B31FA6D711C52 /* NowModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowModel.swift; sourceTree = "<group>"; };
+		F5B73829BDCC72FD6095664C /* SettingsViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViewModel.swift; sourceTree = "<group>"; };
+		F6424A216FEC94930AA9E406 /* SessionDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailView.swift; sourceTree = "<group>"; };
+		F6CC7B3E7EA9A863558A8DE6 /* AgendaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgendaModel.swift; sourceTree = "<group>"; };
+		F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWiringTests.swift; sourceTree = "<group>"; };
+		FEC6D907F03F9B14B2029703 /* SessionDetailWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailWiringTests.swift; sourceTree = "<group>"; };
+		FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchReplicaModel.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		0807FFB672C30CE1EA315B4B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				069F7E73436AE73C0D41AC77 /* UserNotificationsUI.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1B17DC0E1441EED4BDB46F01 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */,
+				ECBCFA171FBB2757D78073D8 /* WatchtowerSync in Frameworks */,
+				C5A4DBFA5BA08D2CEE2ABA22 /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6CA16831CFAAB8D1129DBF29 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */,
+				6E7B3F11235C858E711FE47D /* WatchtowerSync in Frameworks */,
+				435FFB8059956A11F8DAE21B /* GRDB in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		07F497CE33EEF4C1704BA787 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				4EF0E3D3509281E6EB30B918 /* Assets.xcassets */,
+				B49576F65C5F65C311E0CAD8 /* App */,
+				CAACBBFD9417C7BE0E2A7C31 /* Features */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		10B92AF1A2ADDFE713651E9B /* Now */ = {
+			isa = PBXGroup;
+			children = (
+				F2D287A1BE3B31FA6D711C52 /* NowModel.swift */,
+				27F9F7B9E929C013BC8C456F /* NowView.swift */,
+			);
+			path = Now;
+			sourceTree = "<group>";
+		};
+		12FE0E567667D5510172D256 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		1C5ACBF8CC271AA4653F3151 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				B8929F28520AC73CF61CD217 /* AskFormTests.swift */,
+				51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */,
+				A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */,
+				4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */,
+				DF8889CE92604290450CD690 /* NowWiringTests.swift */,
+				CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */,
+				8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */,
+				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
+				8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */,
+				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
+				3E0130D4D7506019B5820AB5 /* RootTabTests.swift */,
+				FEC6D907F03F9B14B2029703 /* SessionDetailWiringTests.swift */,
+				213E158A5D0210D86957A491 /* SessionRowTests.swift */,
+				F7CFE5AE719977FA1B0F3599 /* SettingsWiringTests.swift */,
+				85CF6FB6B18EC8CAC1C2671C /* StartSheetWiringTests.swift */,
+				5EDE2898F38881978E85D337 /* WorkbenchWiringTests.swift */,
+				EEFE28A121A72623301B09B2 /* Support */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		38BDD6032E24504C9A3721D0 /* Recording */ = {
+			isa = PBXGroup;
+			children = (
+				5B2FF6957297A743DA4709CA /* AVAudioCaptureEngine.swift */,
+				02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */,
+				CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */,
+				67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */,
+				86DE68E84DD6BBD3754E6B69 /* RecordingView.swift */,
+			);
+			path = Recording;
+			sourceTree = "<group>";
+		};
+		4899220A8EF49DBAA83A3667 /* NotifyService */ = {
+			isa = PBXGroup;
+			children = (
+				529DCD91B3058908D98062C3 /* Info.plist */,
+				9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */,
+				65A248911BCA77C513E94FC2 /* NotifyService.entitlements */,
+			);
+			path = NotifyService;
+			sourceTree = "<group>";
+		};
+		4A4E31203F3F3896B4ABF4B5 /* WatchtowerMobile */ = {
+			isa = PBXGroup;
+			children = (
+				CE2FB594649A1BFF585627DD /* Base.xcconfig */,
+			);
+			name = WatchtowerMobile;
+			path = .;
+			sourceTree = "<group>";
+		};
+		4BBAEC9D313266F0A1986AE4 = {
+			isa = PBXGroup;
+			children = (
+				A3CC0073E1025D608CEC1B9B /* NotifyContent */,
+				4899220A8EF49DBAA83A3667 /* NotifyService */,
+				B20270D5970103A55888D3C5 /* Packages */,
+				07F497CE33EEF4C1704BA787 /* Sources */,
+				1C5ACBF8CC271AA4653F3151 /* Tests */,
+				4A4E31203F3F3896B4ABF4B5 /* WatchtowerMobile */,
+				12FE0E567667D5510172D256 /* Frameworks */,
+				802B65C47F0038840E7CBA70 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		67798704F2F6E8DB0C679F38 /* Calendar */ = {
+			isa = PBXGroup;
+			children = (
+				F6CC7B3E7EA9A863558A8DE6 /* AgendaModel.swift */,
+				D576A6CEC011983BF063A3B7 /* AgendaView.swift */,
+				7DFB18941483AAB533E516E7 /* CalendarReplicaModel.swift */,
+				AFD1B72C6372CD07A0ACE6A7 /* EventDetailModel.swift */,
+				69EA29ACA1FC531EAFBFC1EC /* EventDetailView.swift */,
+			);
+			path = Calendar;
+			sourceTree = "<group>";
+		};
+		7509E4E9E453B73FC97C9B45 /* Workbench */ = {
+			isa = PBXGroup;
+			children = (
+				02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */,
+				3FAE97205CCE121E8E1FCA91 /* BoardTargetDetailModel.swift */,
+				1E008E946FEC72751D61A954 /* BoardTargetDetailView.swift */,
+				D88CC35762ED750977196374 /* BoardView.swift */,
+				46CDBFA25D9AFF13C4D67ECB /* BoardWriteModel.swift */,
+				AC12186E8FC140813F1BFDBF /* BoardWriter.swift */,
+				30368F9308E6A9844739763B /* ConflictPrompt.swift */,
+				1508284C80622A164AB320D1 /* NewBoardTargetSheet.swift */,
+				3200FD0FDC1FE7323860CCCF /* PhoneTone.swift */,
+				33A9A8CE46252B64C968083D /* SendGuard.swift */,
+				6C31DCEEDF952183BAF4ECC6 /* SessionDetailModel.swift */,
+				F6424A216FEC94930AA9E406 /* SessionDetailView.swift */,
+				97CC9289784B65CCD3F4654A /* SessionDetailViewModel.swift */,
+				632B2CCD45974D7A72711DA9 /* SessionStarter.swift */,
+				3CE2AFF40128A95677A48428 /* SessionStartModels.swift */,
+				AB2EA3DB88312AF8F548C2C0 /* StartSessionSheet.swift */,
+				73C44BFFCC7A9B45EC6C8469 /* WorkbenchComponents.swift */,
+				7BDF7C4C729D997505169333 /* WorkbenchListView.swift */,
+				9759126D122152063D8BFFD8 /* WorkbenchModels.swift */,
+				FF4654FD829A3CB9BFC8590E /* WorkbenchReplicaModel.swift */,
+				43762D471529DE769FDD240A /* WorkbenchView.swift */,
+			);
+			path = Workbench;
+			sourceTree = "<group>";
+		};
+		78C70DD91E29327931E45088 /* Asks */ = {
+			isa = PBXGroup;
+			children = (
+				966D1C67FDCDE327204EEB07 /* AskAnswerer.swift */,
+				359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */,
+				C7D008B26401148680559F68 /* AskFormModel.swift */,
+				EBF496EC3CD5D473675267EB /* AskView.swift */,
+				6B954B0B07DB7C38EB952181 /* AskViewModel.swift */,
+				BFCBBC92D3DFC415396C183C /* CheckAskView.swift */,
+				4CED16A10567DDD56CD668EE /* QuestionAskView.swift */,
+				B49C9F3C607137081E616A5F /* ReviewAskView.swift */,
+			);
+			path = Asks;
+			sourceTree = "<group>";
+		};
+		802B65C47F0038840E7CBA70 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C3F9240000D56B30D4AB7332 /* NotifyContent.appex */,
+				CE1581266064A628CA86BA7B /* NotifyService.appex */,
+				D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */,
+				D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		A3CC0073E1025D608CEC1B9B /* NotifyContent */ = {
+			isa = PBXGroup;
+			children = (
+				84659903ACFF8DB646E65E9A /* Info.plist */,
+				A7EAF16DACB4176FE3005721 /* NotificationViewController.swift */,
+				9830582A7A7341EA949DD972 /* NotifyContent.entitlements */,
+			);
+			path = NotifyContent;
+			sourceTree = "<group>";
+		};
+		B20270D5970103A55888D3C5 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				DD5811CC2EAE68324393DCDB /* WatchtowerKit */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		B49576F65C5F65C311E0CAD8 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				0246A90AC5DFD639AA21E4D3 /* AppEnvironment.swift */,
+				AE8CBE8F6FE96F94C560CA24 /* AppNavigation.swift */,
+				3D6F6F3D895505750B9F5892 /* DemoSeed.swift */,
+				2265BBA8FDC88ACD5E793E5E /* DemoSeed+Calendar.swift */,
+				AEBDA5069E71CF42F0A6AC4D /* DemoSeed+SessionDetail.swift */,
+				CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */,
+				ED010731D72C66201D5B0A4C /* DeviceSettings.swift */,
+				9C8A95C95B93D99054219A43 /* RootTabView.swift */,
+				B1C359565330A7E52F22BF8B /* WatchtowerMobileApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		C30C4CB858ACD71234F6329E /* Recordings */ = {
+			isa = PBXGroup;
+			children = (
+				9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */,
+				EB27E8159B7BFF1EF9ED5A1C /* RecapView.swift */,
+				BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */,
+				9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */,
+			);
+			path = Recordings;
+			sourceTree = "<group>";
+		};
+		CAACBBFD9417C7BE0E2A7C31 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				78C70DD91E29327931E45088 /* Asks */,
+				67798704F2F6E8DB0C679F38 /* Calendar */,
+				10B92AF1A2ADDFE713651E9B /* Now */,
+				38BDD6032E24504C9A3721D0 /* Recording */,
+				C30C4CB858ACD71234F6329E /* Recordings */,
+				D4E1DC259783359FE98A6301 /* Settings */,
+				7509E4E9E453B73FC97C9B45 /* Workbench */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+		D4E1DC259783359FE98A6301 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				55D1C1D5173ED2758596AA8F /* SettingsView.swift */,
+				F5B73829BDCC72FD6095664C /* SettingsViewModel.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		EEFE28A121A72623301B09B2 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				0B65C9C102B9642AC8CD236F /* MobileTestSupport.swift */,
+				ADAA24B2C4477589205240AF /* RecorderFakes.swift */,
+				6F2951765F447B4F2CD0F1C9 /* WorkbenchFixtures.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F82D44D2B8EEB447D73215A3 /* Build configuration list for PBXNativeTarget "WatchtowerMobile" */;
+			buildPhases = (
+				7F524EA75B34C1BED76F0C7E /* Sources */,
+				DCCBB8A6A34D3BA6586D9B70 /* Resources */,
+				6CA16831CFAAB8D1129DBF29 /* Frameworks */,
+				922078EC5F691DF490F9B399 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				9F3BE30D40F0D48220344FD6 /* PBXTargetDependency */,
+				69DE201250709217939EEE81 /* PBXTargetDependency */,
+			);
+			name = WatchtowerMobile;
+			packageProductDependencies = (
+				507F22E0F36461C091AD6154 /* WatchtowerKit */,
+				5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */,
+				73828104AEDF42B7DD8514E7 /* GRDB */,
+			);
+			productName = WatchtowerMobile;
+			productReference = D47AD40C7EB5FC5BF1C1CD58 /* WatchtowerMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+		36F4F1051A4270361351E3CC /* WatchtowerMobileTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB6216661A8BDDC36764147C /* Build configuration list for PBXNativeTarget "WatchtowerMobileTests" */;
+			buildPhases = (
+				C6ECA671E3B5ADAB3DA8541A /* Sources */,
+				1B17DC0E1441EED4BDB46F01 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				67B6518D5AD18ECF1FD61564 /* PBXTargetDependency */,
+			);
+			name = WatchtowerMobileTests;
+			packageProductDependencies = (
+				EB447CB107767855A2DBBA0F /* WatchtowerKit */,
+				82E2DC2033E6312FAD9B717C /* WatchtowerSync */,
+				5CF9E51BB968298C0AAB2FD5 /* GRDB */,
+			);
+			productName = WatchtowerMobileTests;
+			productReference = D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		6621334D5B9A491914D4916B /* NotifyService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C11809C6A2493C0395F7CB55 /* Build configuration list for PBXNativeTarget "NotifyService" */;
+			buildPhases = (
+				DE30D88005DCFE47382396D3 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotifyService;
+			packageProductDependencies = (
+			);
+			productName = NotifyService;
+			productReference = CE1581266064A628CA86BA7B /* NotifyService.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		6C8FC1410A60203BF6A3E37F /* NotifyContent */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 51362AFDD64FC68AC17C3B1C /* Build configuration list for PBXNativeTarget "NotifyContent" */;
+			buildPhases = (
+				C7F8AC12C5F17865FCAE307E /* Sources */,
+				0807FFB672C30CE1EA315B4B /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NotifyContent;
+			packageProductDependencies = (
+			);
+			productName = NotifyContent;
+			productReference = C3F9240000D56B30D4AB7332 /* NotifyContent.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		9B1FFF752C81D22007C233AF /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 267BDAF21673B9EE2DA899C6 /* Build configuration list for PBXProject "WatchtowerMobile" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 4BBAEC9D313266F0A1986AE4;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 802B65C47F0038840E7CBA70 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */,
+				6621334D5B9A491914D4916B /* NotifyService */,
+				6C8FC1410A60203BF6A3E37F /* NotifyContent */,
+				36F4F1051A4270361351E3CC /* WatchtowerMobileTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		DCCBB8A6A34D3BA6586D9B70 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		7F524EA75B34C1BED76F0C7E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				926ADD6EE6A569AE60930F1A /* AVAudioCaptureEngine.swift in Sources */,
+				97A451BD079C48489C7E920E /* AgendaModel.swift in Sources */,
+				BA607823AC1A146724C0F666 /* AgendaView.swift in Sources */,
+				0504D8CF3A63CEB37B159927 /* AppEnvironment.swift in Sources */,
+				4D6748338C1E07858C8D01CE /* AppNavigation.swift in Sources */,
+				967B04AA367ACC272253AA96 /* AskAnswerer.swift in Sources */,
+				AABE1CB3835D3B2E87CD6EEB /* AskDraft.swift in Sources */,
+				2136FE8F54449CEC21A48FCC /* AskFormModel.swift in Sources */,
+				45583C3714F8D53FB5EE744C /* AskView.swift in Sources */,
+				E82759D734B8F4E2ECEB8B6D /* AskViewModel.swift in Sources */,
+				CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */,
+				6D2113501104D37D681C2F8E /* BoardTargetDetailModel.swift in Sources */,
+				AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */,
+				724D4F6D764BE308D0DED2B7 /* BoardView.swift in Sources */,
+				2F2911983E54E9247F9C839C /* BoardWriteModel.swift in Sources */,
+				C341C37F6264E34CCAB8BB5F /* BoardWriter.swift in Sources */,
+				1E2DBADC13EAC353D9EDED50 /* CalendarReplicaModel.swift in Sources */,
+				CBAC6DFC16DA706DE9C73921 /* CheckAskView.swift in Sources */,
+				5679863B13AEE6564739DBE9 /* ConflictPrompt.swift in Sources */,
+				A40CDAE6323A6FC846928E59 /* DemoSeed+Calendar.swift in Sources */,
+				CA0CA270D0CC9FF8CE62518A /* DemoSeed+SessionDetail.swift in Sources */,
+				CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */,
+				4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */,
+				27584DAE11AFC12EC9AB005B /* DeviceSettings.swift in Sources */,
+				7735F8B89F2AF40CFCE440AA /* EventDetailModel.swift in Sources */,
+				87B5A9169905994CA11D1762 /* EventDetailView.swift in Sources */,
+				50BA1DEC7AE8647281478CA1 /* NewBoardTargetSheet.swift in Sources */,
+				151770A7D2209403DADBD038 /* NowModel.swift in Sources */,
+				9F28AD417086206121616519 /* NowView.swift in Sources */,
+				04B35957623707A41C2781B9 /* PhoneRecorderController.swift in Sources */,
+				D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */,
+				7D5206DBFB791C53D0C5D0B0 /* PhoneTone.swift in Sources */,
+				2F47C10DBB0A5DCFEB6B5474 /* QuestionAskView.swift in Sources */,
+				F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */,
+				2845132B2A7150A900A1A0F2 /* RecapView.swift in Sources */,
+				7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */,
+				6612C16C080C84633E82CA43 /* RecordingView.swift in Sources */,
+				63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */,
+				9C610711EE9CC1868303C95B /* RecordingsListView.swift in Sources */,
+				80B679DC462012FD3C8DA200 /* ReviewAskView.swift in Sources */,
+				18536A303A19737F9757FE1E /* RootTabView.swift in Sources */,
+				3797D2F34049E3A69D4E55C2 /* SendGuard.swift in Sources */,
+				86886F1BC8E073451E37DFCD /* SessionDetailModel.swift in Sources */,
+				F4923AAF0BE95CB20DA6BFE0 /* SessionDetailView.swift in Sources */,
+				E4011CFC35072FB026DCAAF3 /* SessionDetailViewModel.swift in Sources */,
+				64C8CAD21EE74571ED1A0A2B /* SessionStartModels.swift in Sources */,
+				2356080241E92BE3213EDD38 /* SessionStarter.swift in Sources */,
+				51B012D3BEEDE7C564291497 /* SettingsView.swift in Sources */,
+				EA24F0F9A7FA7AC5481E8A53 /* SettingsViewModel.swift in Sources */,
+				645E4C039AA033B8351C973D /* StartSessionSheet.swift in Sources */,
+				DD8721FE3C3E934F209AF425 /* WatchtowerMobileApp.swift in Sources */,
+				71A2CD9D94F2A18352A57702 /* WorkbenchComponents.swift in Sources */,
+				9BE46824C76328CE009F8E27 /* WorkbenchListView.swift in Sources */,
+				E2D1DF70951969EA75CEBE0C /* WorkbenchModels.swift in Sources */,
+				055004AE372755F08479F977 /* WorkbenchReplicaModel.swift in Sources */,
+				539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C6ECA671E3B5ADAB3DA8541A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6B53905088D5CF5CBCC67FBA /* AskFormTests.swift in Sources */,
+				3DCA97C1B1714F027E9818BA /* BoardFilterTests.swift in Sources */,
+				D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */,
+				3F6F9974DD5384B247B7FCDD /* CalendarWiringTests.swift in Sources */,
+				46E258EE2C1E84B92A1CB9B5 /* MobileTestSupport.swift in Sources */,
+				1BA03E2FF0F8F0F44C9ED1AD /* NowWiringTests.swift in Sources */,
+				EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */,
+				F68A1D786C431F915FD26888 /* RecorderFakes.swift in Sources */,
+				7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */,
+				2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */,
+				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
+				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,
+				B521C0A7CE08614B0B07701E /* RootTabTests.swift in Sources */,
+				16EC22651D352689E7F327B5 /* SessionDetailWiringTests.swift in Sources */,
+				22E005323043FC1739040C9E /* SessionRowTests.swift in Sources */,
+				B3EC881E10827862686ACBB0 /* SettingsWiringTests.swift in Sources */,
+				390A2DF54CDB7734D895E9F2 /* StartSheetWiringTests.swift in Sources */,
+				EF815CB0B85756C4BAAE485A /* WorkbenchFixtures.swift in Sources */,
+				6E20FEC5D76DB30D07FE3BD4 /* WorkbenchWiringTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C7F8AC12C5F17865FCAE307E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C2D91BEDAB5111552D11E1D7 /* NotificationViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DE30D88005DCFE47382396D3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7F00F3800B6D983D9681DCA1 /* NotificationService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		67B6518D5AD18ECF1FD61564 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 29B2C64EE70EB083FCF14A74 /* WatchtowerMobile */;
+			targetProxy = A897B56BFE07E2FD325D2469 /* PBXContainerItemProxy */;
+		};
+		69DE201250709217939EEE81 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6C8FC1410A60203BF6A3E37F /* NotifyContent */;
+			targetProxy = 81396448DDC6586AEA82A589 /* PBXContainerItemProxy */;
+		};
+		9F3BE30D40F0D48220344FD6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6621334D5B9A491914D4916B /* NotifyService */;
+			targetProxy = 46D8BB95E25C4EF80828980C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		161D1F343B6FC4410ACE060E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NotifyService/NotifyService.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotifyService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Watchtower Notifications";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.aiwatchtowers.watchtower.mobile.notify-service";
+				PRODUCT_NAME = NotifyService;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		181F4452963DE83A9ADF763C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.10;
+			};
+			name = Debug;
+		};
+		223AC0E66AC3233FE25F2FC2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NotifyService/NotifyService.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotifyService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Watchtower Notifications";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.aiwatchtowers.watchtower.mobile.notify-service";
+				PRODUCT_NAME = NotifyService;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		308DDF52E71653EC48B6FA86 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobileTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchtowerMobile.app/WatchtowerMobile";
+			};
+			name = Release;
+		};
+		4EF2760F7B56A6AB4616BFF7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobileTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchtowerMobile.app/WatchtowerMobile";
+			};
+			name = Debug;
+		};
+		678AC411382202E787B1A2FC /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NotifyContent/NotifyContent.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotifyContent/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Watchtower Ask";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.aiwatchtowers.watchtower.mobile.notify-content";
+				PRODUCT_NAME = NotifyContent;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		7801978A3183BC2FAFE1DE8F /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = WatchtowerMobile.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Watchtower;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobile;
+				PRODUCT_NAME = WatchtowerMobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A5A2A03786B6FB0E6B9DACE9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NotifyContent/NotifyContent.entitlements;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotifyContent/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Watchtower Ask";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "com.aiwatchtowers.watchtower.mobile.notify-content";
+				PRODUCT_NAME = NotifyContent;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		ADEAA2E526189D76891FF69D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.10;
+			};
+			name = Release;
+		};
+		BA06701CDEF8F3D4AF6E9C65 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = CE2FB594649A1BFF585627DD /* Base.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = WatchtowerMobile.entitlements;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Watchtower;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.aiwatchtowers.watchtower.mobile;
+				PRODUCT_NAME = WatchtowerMobile;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		267BDAF21673B9EE2DA899C6 /* Build configuration list for PBXProject "WatchtowerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				181F4452963DE83A9ADF763C /* Debug */,
+				ADEAA2E526189D76891FF69D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		51362AFDD64FC68AC17C3B1C /* Build configuration list for PBXNativeTarget "NotifyContent" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A5A2A03786B6FB0E6B9DACE9 /* Debug */,
+				678AC411382202E787B1A2FC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		AB6216661A8BDDC36764147C /* Build configuration list for PBXNativeTarget "WatchtowerMobileTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4EF2760F7B56A6AB4616BFF7 /* Debug */,
+				308DDF52E71653EC48B6FA86 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C11809C6A2493C0395F7CB55 /* Build configuration list for PBXNativeTarget "NotifyService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				161D1F343B6FC4410ACE060E /* Debug */,
+				223AC0E66AC3233FE25F2FC2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F82D44D2B8EEB447D73215A3 /* Build configuration list for PBXNativeTarget "WatchtowerMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BA06701CDEF8F3D4AF6E9C65 /* Debug */,
+				7801978A3183BC2FAFE1DE8F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		163F9FBC8299558C63C82C1B /* XCLocalSwiftPackageReference "../WatchtowerKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../WatchtowerKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		507F22E0F36461C091AD6154 /* WatchtowerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerKit;
+		};
+		5CF9E51BB968298C0AAB2FD5 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		5E8A4B525DB7EC3A6C6BE10B /* WatchtowerSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerSync;
+		};
+		73828104AEDF42B7DD8514E7 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 57A8BB07E502CA877CC07F5C /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			productName = GRDB;
+		};
+		82E2DC2033E6312FAD9B717C /* WatchtowerSync */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerSync;
+		};
+		EB447CB107767855A2DBBA0F /* WatchtowerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = WatchtowerKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 9B1FFF752C81D22007C233AF /* Project object */;
+}

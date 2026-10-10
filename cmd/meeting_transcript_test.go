@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1701,4 +1702,175 @@ func TestTranscriptRecapRetryRefreshesAnOrphanOwnRecapAndItsSummary(t *testing.T
 	tr, err := database.GetMeetingTranscript(id)
 	require.NoError(t, err)
 	assert.Contains(t, tr.SummaryJSON.String, `"summary":"regenerated"`, "the summary copy is refreshed too")
+}
+
+// seedSaveEvent inserts a calendar + event a save can link to, timed from now
+// (no fixed calendar dates).
+func seedSaveEvent(t *testing.T, eventID, title string) {
+	t.Helper()
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	start := time.Now().UTC().Add(-time.Hour).Truncate(time.Minute)
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
+	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
+		ID: eventID, CalendarID: "primary", Title: title,
+		StartTime: start.Format(time.RFC3339), EndTime: start.Add(30 * time.Minute).Format(time.RFC3339),
+	}))
+}
+
+// runDroppedEventSave runs `transcript save --event-id <eventID>` and returns
+// the envelope, the stored row and stderr.
+func runDroppedEventSave(t *testing.T, eventID string) (transcriptEnvelope, *db.MeetingTranscript, string) {
+	t.Helper()
+	transcriptSaveFlagFile = writeTranscriptFile(t, "phone recording body")
+	transcriptSaveFlagEventID = eventID
+	var out, errOut bytes.Buffer
+	transcriptSaveCmd.SetOut(&out)
+	transcriptSaveCmd.SetErr(&errOut)
+	t.Cleanup(func() { transcriptSaveCmd.SetOut(nil); transcriptSaveCmd.SetErr(nil) })
+
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(out.Bytes(), &env))
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	row, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, row, "the transcript must be saved")
+	return env, row, errOut.String()
+}
+
+// A phone recording queued for an event that calendar sync deleted meanwhile
+// is saved as a plain recording instead of failing the event FK (#477).
+func TestTranscriptSaveDeletedEventSavesUnlinked(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	env, row, stderr := runDroppedEventSave(t, "evt-gone")
+
+	assert.Equal(t, "", env.EventID)
+	assert.False(t, row.EventID.Valid, "event_id must be NULL for a gone event")
+	assert.True(t, strings.HasPrefix(row.Title, "Recording "), "default title, got %q", row.Title)
+	assert.Equal(t, row.Title, env.Title)
+	assert.Contains(t, stderr, "evt-gone")
+	assert.Equal(t, 1, strings.Count(stderr, "evt-gone"), "one warning naming the dropped event")
+}
+
+func TestTranscriptSaveDeletedEventKeepsExplicitTitle(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+	transcriptSaveFlagTitle = "Standup with colleague A"
+
+	env, row, _ := runDroppedEventSave(t, "evt-gone")
+
+	assert.False(t, row.EventID.Valid)
+	assert.Equal(t, "Standup with colleague A", row.Title)
+	assert.Equal(t, "", env.EventID)
+}
+
+// With --title given, an existing event is still linked (the lookup now runs
+// for every --event-id, not only to default the title).
+func TestTranscriptSavePresentEventWithTitleStaysLinked(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+	seedSaveEvent(t, "evt-here", "Acme sync")
+	transcriptSaveFlagTitle = "My title"
+
+	env, row, stderr := runDroppedEventSave(t, "evt-here")
+
+	assert.Equal(t, "evt-here", env.EventID)
+	require.True(t, row.EventID.Valid)
+	assert.Equal(t, "evt-here", row.EventID.String)
+	assert.Equal(t, "My title", row.Title)
+	assert.NotContains(t, stderr, "evt-here")
+}
+
+// The residual window: the event is deleted between the lookup and the
+// insert. The insert fails on the event FK and is retried once unlinked.
+func TestTranscriptSaveEventDeletedBeforeInsertRetriesUnlinked(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+	seedSaveEvent(t, "evt-race", "Acme sync")
+
+	old := insertMeetingTranscript
+	t.Cleanup(func() { insertMeetingTranscript = old })
+	calls := 0
+	insertMeetingTranscript = func(database *db.DB, tr db.MeetingTranscript) (int64, error) {
+		calls++
+		_, err := database.Exec(`DELETE FROM calendar_events WHERE id = ?`, "evt-race")
+		require.NoError(t, err)
+		return old(database, tr)
+	}
+
+	env, row, stderr := runDroppedEventSave(t, "evt-race")
+
+	assert.Equal(t, 2, calls, "one failed linked insert, one unlinked retry")
+	assert.Equal(t, "", env.EventID)
+	assert.False(t, row.EventID.Valid)
+	assert.Equal(t, "Acme sync", row.Title, "the title read at lookup is kept")
+	assert.Equal(t, 1, strings.Count(stderr, "evt-race"), "one warning naming the dropped event")
+}
+
+// Any other insert failure is not mistaken for a gone event: no retry.
+func TestTranscriptSaveNonFKInsertErrorFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	seedSaveEvent(t, "evt-here", "Acme sync")
+
+	old := insertMeetingTranscript
+	t.Cleanup(func() { insertMeetingTranscript = old })
+	calls := 0
+	insertMeetingTranscript = func(*db.DB, db.MeetingTranscript) (int64, error) {
+		calls++
+		return 0, errors.New("disk I/O error")
+	}
+	transcriptSaveFlagFile = writeTranscriptFile(t, "phone recording body")
+	transcriptSaveFlagEventID = "evt-here"
+
+	err := transcriptSaveCmd.RunE(transcriptSaveCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "disk I/O error")
+	assert.Equal(t, 1, calls)
+}
+
+// A real lookup error never becomes "unlinked": the save fails and nothing
+// is persisted.
+func TestTranscriptSaveEventLookupErrorFails(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	// Breaks the event lookup's SELECT only (the FK target id stays).
+	_, err = database.Exec(`ALTER TABLE calendar_events DROP COLUMN raw_json`)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, "phone recording body")
+	transcriptSaveFlagEventID = "evt-any"
+
+	err = transcriptSaveCmd.RunE(transcriptSaveCmd, nil)
+	require.Error(t, err)
+	// Pins the lookup branch, not a later insert failure naming the id.
+	assert.Contains(t, err.Error(), "looking up calendar event evt-any")
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	rows, err := database.ListMeetingTranscripts(db.MeetingTranscriptFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 }

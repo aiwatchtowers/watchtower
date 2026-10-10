@@ -1,0 +1,138 @@
+import Foundation
+
+/// CloudKit zone identifiers. rawValue is the CKRecordZone name (Plan 2).
+public enum CloudZoneID: String, Codable, CaseIterable {
+    case data = "DataZone"
+    case relay = "RelayZone"
+}
+
+/// One record on the wire: identity + opaque payload. The real transport
+/// (Plan 2) maps this 1:1 onto a CKRecord with `payload` in encryptedValues.
+public struct CloudRecord: Equatable {
+    public let recordName: String
+    public let zone: CloudZoneID
+    public let kind: String
+    public let modifiedAt: Date
+    public let payload: Data
+    /// Carries `SliceRecord.notifyLevel` across the wire (Plan 6 Decision 3).
+    /// Rides as a plain CKRecord field next to `kind`/`modifiedAt`; nil is an
+    /// ABSENT field, never a null — pre-Plan-6 records decode to nil and nil
+    /// encodes to nothing. Always nil for relay-zone records.
+    public let notifyLevel: String?
+    /// Local path of a file riding along as a `CKAsset` — the escape hatch
+    /// past the ~1 MB payload cap: phone `recording_upload` records in the
+    /// relay zone, and asset-backed slice records in the data zone (e.g. a
+    /// meeting transcript's segments). On save the CloudKit adapter attaches
+    /// the file; on fetch it points at a durable stashed copy
+    /// (`TransportStore.stashAsset`) that the consumer reads before the
+    /// stash is cleaned up. nil means no asset field, and a rewrite with nil
+    /// REMOVES a previously attached asset.
+    public let assetFileURL: URL?
+
+    public init(
+        recordName: String,
+        zone: CloudZoneID,
+        kind: String,
+        modifiedAt: Date,
+        payload: Data,
+        notifyLevel: String? = nil,
+        assetFileURL: URL? = nil
+    ) {
+        self.recordName = recordName
+        self.zone = zone
+        self.kind = kind
+        self.modifiedAt = modifiedAt
+        self.payload = payload
+        self.notifyLevel = notifyLevel
+        self.assetFileURL = assetFileURL
+    }
+}
+
+/// Opaque, monotonically increasing per-zone change cursor.
+public struct CloudChangeToken: Codable, Equatable {
+    public let value: Int
+
+    public init(value: Int) {
+        self.value = value
+    }
+}
+
+public struct CloudChangeBatch: Equatable {
+    public let changed: [CloudRecord]
+    public let deletedRecordNames: [String]
+    public let newToken: CloudChangeToken
+
+    public init(changed: [CloudRecord], deletedRecordNames: [String], newToken: CloudChangeToken) {
+        self.changed = changed
+        self.deletedRecordNames = deletedRecordNames
+        self.newToken = newToken
+    }
+}
+
+/// The seam that hides CloudKit. Everything above this protocol is unit-testable
+/// against InMemoryCloudTransport; only Plan 2's CKSyncEngine adapter touches CloudKit.
+public protocol CloudSyncTransport {
+    func save(_ records: [CloudRecord]) async throws
+    /// Deleting is idempotent: deleting a recordName that was never saved
+    /// (or is already deleted) succeeds silently. CloudKit adapters must
+    /// swallow the server's unknown-item error to honor this.
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws
+    /// `changed` and `deletedRecordNames` are in first-seen event order.
+    /// Consumers should not rely on stricter ordering — the real CloudKit
+    /// adapter only guarantees this much. Visibility of a device's OWN saves
+    /// in `changes` is transport-dependent and possibly delayed: the in-memory
+    /// fake sees them immediately, the CloudKit adapter only after the engine
+    /// re-fetches them.
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch
+}
+
+/// Transport extension for consumer-driven compaction. Separated from
+/// `CloudSyncTransport` (Plan 2 binding rule: the seam gains no new
+/// requirements) so conformers that don't buffer (e.g. the test fake) need
+/// not provide an implementation.
+///
+/// Retention/hygiene interaction: the desktop hub's relay buffer must retain
+/// full history until hygiene's aged-record scan (`changes(in: .relay,
+/// since: nil)`) finds and deletes stale records, so the hub never compacts
+/// .relay (it sweeps by age, see `SweepingTransport`). Consumers: the phone's
+/// replica hydrator compacts .data, and the phone's `RelayFeed` — the only
+/// relay consumer on a device that runs no hygiene — compacts .relay.
+/// Data-zone compaction also deletes the stashed asset files of the
+/// compacted events (`TransportStore.compactEvents`): a consumer must have
+/// copied a record's asset bytes before it compacts past that record.
+///
+/// A silent no-op default is intentionally absent: a conformer that forgets
+/// to implement compaction would silently accumulate the buffer forever.
+public protocol CompactingTransport: CloudSyncTransport {
+    func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
+}
+
+/// Transport extension for age-based retention of the local event buffer —
+/// like `CompactingTransport`, kept off the seam so conformers that don't
+/// buffer need not implement it. Intended caller: the desktop relay hygiene,
+/// whose server-side deletes only ever APPEND (deletion) events, so without
+/// a sweep the relay buffer grows forever.
+///
+/// Semantics (see `TransportStore.sweepEvents` for the full argument): delete
+/// only events older than `cutoff` AND at or below the consumer floor `token`.
+/// Age-based so it cannot re-blind hygiene's full-zone aged-record scan;
+/// token-floored so it can never delete an event a consumer has not read yet
+/// (a device offline past the cutoff buffers old-modifiedAt records on its
+/// first pull — those must survive until processed).
+public protocol SweepingTransport: CloudSyncTransport {
+    @discardableResult
+    func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int
+}
+
+/// Transport-level conditions the owner of a transport must act on
+/// (mobile POC spec §9). Delivered through
+/// `CloudKitTransport.setEventHandler`.
+public enum TransportEvent: Equatable, Sendable {
+    /// `shared` scope only: the Mac's zones are gone for this participant —
+    /// a zone-deleted event, `.zoneNotFound`, or `.changeTokenExpired` on a
+    /// zone that no longer exists. The phone shows "This Mac removed this
+    /// phone", wipes its replica and returns to Welcome.
+    case unlinked
+    /// The iCloud owner's quota is full. Sends pause until `resume()`.
+    case quotaExceeded
+}

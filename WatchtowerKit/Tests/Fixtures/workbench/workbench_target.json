@@ -1,0 +1,23 @@
+{
+  "archived": false,
+  "branch": "feature/acme-export",
+  "children_count": 0,
+  "created_at": 1699990000,
+  "id": 415,
+  "intent": "Archive closed targets on demand from the header menu.",
+  "last_status_actor": "agent",
+  "last_status_at": 1699999000,
+  "open_asks": 1,
+  "open_comments": 2,
+  "parent_id": 400,
+  "pr": "175",
+  "priority": "high",
+  "progress": 0.5,
+  "session_ids": [31, 32],
+  "status": "in_progress",
+  "text": "Archive Closed Targets Now",
+  "unread_for_owner": 1,
+  "updated_at": 1700000000,
+  "work_on_prompt": "Work on target #415: Archive Closed Targets Now.",
+  "workbench_id": 7
+}
