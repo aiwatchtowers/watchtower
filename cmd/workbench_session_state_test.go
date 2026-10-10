@@ -87,6 +87,7 @@ func TestSessionState_AgentStateFor(t *testing.T) {
 		{"Stop", "", "waiting", "", true},
 		{"StopFailure", "", "waiting", "", true},
 		{"PostToolUse", "", "working", "", true},
+		{"SubagentStop", "", "", "", true},
 		{"Notification", "permission_prompt", "approval", "", true},
 		{"Notification", "elicitation_dialog", "approval", "", true},
 		{"Notification", "idle_prompt", "waiting", "", true},
@@ -291,6 +292,15 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 			_, err := database.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, row)
 			require.NoError(t, err)
 		}},
+		{name: "subagent stop", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(subagentStop("a", "general-purpose", subagents("a", "b")))
+		}},
+		{name: "subagent stop bad json", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(`{"hook_event_name":"SubagentStop","session_id":`)
+		}, wantStderr: "reading the hook input"},
+		{name: "subagent stop list not an array", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(subagentStop("a", "general-purpose", `{"a":1}`))
+		}},
 		{name: "panic", setup: func(t *testing.T, _ *db.DB, _ int64) {
 			orig := hookNow
 			hookNow = func() time.Time { panic("boom") }
@@ -359,6 +369,24 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 	assert.Empty(t, errOut)
 
 	assert.Equal(t, "working", storedAgentState(t, database, row))
+
+	// Board #411: over a counted `waiting`, the nested run's SubagentStop and
+	// its subagent's tool result neither lower nor stamp the count.
+	_, err = database.SetTerminalAgentState(row, pid, briefLaunchID, "waiting", hookNow(), "", nil, false,
+		db.AgentOrder{Stop: true, Background: sql.NullInt64{Int64: 3, Valid: true}})
+	require.NoError(t, err)
+	before := rowSnapshot(t, database, row)
+	require.Equal(t, int64(3), before["agent_background"])
+	for _, p := range []string{
+		strings.ReplaceAll(subagentStop("x", "general-purpose", "[]"), briefLaunchID, nestedSessionID),
+		subagentToolResult(nestedSessionID),
+	} {
+		out, errOut, err := runSessionState(t, pid, strings.NewReader(p))
+		require.NoError(t, err)
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+	}
+	assert.Equal(t, before, rowSnapshot(t, database, row))
 }
 
 // stopStateFixture: a drift workbench (branch "merged" drifts, "open" does
@@ -784,38 +812,100 @@ func TestProj11_PostToolUseOverWorkingKeepsFinished(t *testing.T) {
 	assert.Equal(t, "working", storedAgentState(t, database, row))
 }
 
+// rowSnapshot is every column of terminal_sessions row rowID, by name.
+func rowSnapshot(t *testing.T, database *db.DB, rowID int64) map[string]any {
+	t.Helper()
+	rows, err := database.Query(`SELECT * FROM terminal_sessions WHERE id = ?`, rowID)
+	require.NoError(t, err)
+	defer rows.Close()
+	cols, err := rows.Columns()
+	require.NoError(t, err)
+	require.True(t, rows.Next(), "row %d is gone", rowID)
+	values := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range values {
+		ptrs[i] = &values[i]
+	}
+	require.NoError(t, rows.Scan(ptrs...))
+	require.NoError(t, rows.Err())
+	snap := make(map[string]any, len(cols))
+	for i, c := range cols {
+		snap[c] = values[i]
+	}
+	return snap
+}
+
+// subagentToolResult is a PostToolUse a background subagent of session
+// sessionID fired.
+func subagentToolResult(sessionID string) string {
+	return `{"session_id":"` + sessionID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3","agent_type":"general-purpose"}`
+}
+
 // PROJ-11: a tool run that moves the state into `working` is a new turn and
 // clears finished_at: a main-thread PostToolUse out of approval or out of
 // waiting (after the Stop hook), through the hook. A subagent's PostToolUse
-// over waiting writes nothing and keeps finished_at.
+// over waiting never ends it and keeps finished_at: with no background
+// count it writes nothing at all; over the Stop's count (board #411) it
+// changes only agent_background_at (a heartbeat).
 func TestProj11_PostToolUseIntoWorkingClearsFinished(t *testing.T) {
-	for _, from := range []string{"approval", "waiting"} {
-		database, pid, row := briefSessionFixture(t)
+	for _, from := range []string{"approval", "waiting", "waiting with background agents"} {
+		var database *db.DB
+		var pid, row int64
+		if from == "waiting with background agents" {
+			database, pid, row = stopStateFixture(t, "open")
+		} else {
+			database, pid, row = briefSessionFixture(t)
+		}
 		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 		stepClock(t)
 		_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
 		require.NoError(t, err)
 		require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
-		if from == "approval" {
+		switch from {
+		case "approval":
 			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("Notification", briefLaunchID, "permission_prompt")))
 			require.NoError(t, err)
 			require.Equal(t, "approval", storedAgentState(t, database, row))
 			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("PostToolUse", briefLaunchID, "")))
 			require.NoError(t, err)
-		} else {
+		case "waiting":
 			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("Stop", briefLaunchID, "")))
 			require.NoError(t, err)
 			require.Equal(t, "waiting", storedAgentState(t, database, row))
-			subagent := `{"session_id":"` + briefLaunchID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3"}`
-			_, _, err = runSessionState(t, pid, strings.NewReader(subagent))
+			before := rowSnapshot(t, database, row)
+			_, _, err = runSessionState(t, pid, strings.NewReader(subagentToolResult(briefLaunchID)))
 			require.NoError(t, err)
-			require.Equal(t, "waiting", storedAgentState(t, database, row), "a subagent's tool result ended waiting")
+			require.Equal(t, before, rowSnapshot(t, database, row), "a subagent's tool result over waiting without a count wrote")
+			require.True(t, storedFinishedAt(t, database, row).Valid, "a subagent's tool result cleared finished_at")
+			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("PostToolUse", briefLaunchID, "")))
+			require.NoError(t, err)
+		default:
+			// `workbench session-state` records no count for a Stop: only the
+			// sync Stop hook does.
+			out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10),
+				stopWithBackground(`[{"id":"a","type":"subagent"},{"id":"b","type":"subagent"}]`))
+			require.Empty(t, out)
+			require.Empty(t, errOut)
+			before := rowSnapshot(t, database, row)
+			require.Equal(t, "waiting", before["agent_state"])
+			require.Equal(t, int64(2), before["agent_background"])
+			_, _, err = runSessionState(t, pid, strings.NewReader(subagentToolResult(briefLaunchID)))
+			require.NoError(t, err)
+			after := rowSnapshot(t, database, row)
+			require.NotEqual(t, before["agent_background_at"], after["agent_background_at"], "the heartbeat did not stamp the report")
+			delete(before, "agent_background_at")
+			delete(after, "agent_background_at")
+			require.Equal(t, before, after, "a subagent's heartbeat changed more than agent_background_at")
 			require.True(t, storedFinishedAt(t, database, row).Valid, "a subagent's tool result cleared finished_at")
 			_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("PostToolUse", briefLaunchID, "")))
 			require.NoError(t, err)
 		}
 		assert.Equal(t, "working", storedAgentState(t, database, row), from)
 		assert.False(t, storedFinishedAt(t, database, row).Valid, "a tool run out of %s kept finished_at", from)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.False(t, s.Background.Valid, "a main-thread tool run out of %s kept the count", from)
+		assert.True(t, s.BackgroundAt.IsZero(), "a main-thread tool run out of %s kept the report time", from)
 	}
 }
 
@@ -1205,4 +1295,168 @@ func TestProj11_StopWithTheSameCountRefreshesTheReportTime(t *testing.T) {
 	assert.Equal(t, sql.NullInt64{Int64: 2, Valid: true}, s.Background)
 	assert.Equal(t, base.Add(time.Second).UTC().Truncate(time.Millisecond), s.AgentStateAt.UTC(), "a repeat keeps the transition time")
 	assert.Equal(t, base.Add(2*time.Second).UTC().Truncate(time.Millisecond), s.BackgroundAt.UTC(), "the report time is the second Stop's")
+}
+
+// subagentStop is a SubagentStop of briefLaunchID's subagent agentID of type
+// agentType, field its raw background_tasks value ("" leaves the key out).
+func subagentStop(agentID, agentType, field string) string {
+	s := `{"session_id":"` + briefLaunchID + `","hook_event_name":"SubagentStop","stop_hook_active":false,` +
+		`"agent_id":"` + agentID + `","agent_type":"` + agentType + `"`
+	if field != "" {
+		s += `,"background_tasks":` + field
+	}
+	return s + `}`
+}
+
+// subagents is a background_tasks array of running subagents with ids.
+func subagents(ids ...string) string {
+	entries := make([]string, len(ids))
+	for i, id := range ids {
+		entries[i] = `{"id":"` + id + `","type":"subagent","status":"running"}`
+	}
+	return "[" + strings.Join(entries, ",") + "]"
+}
+
+// countedWaiting runs the sync Stop hook at second sec of the hook clock
+// with field as its background_tasks, and requires the `waiting` it stores.
+func countedWaiting(t *testing.T, database *db.DB, pid, row int64, at func(int), sec int, field string) {
+	t.Helper()
+	at(sec)
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), stopWithBackground(field))
+	require.Empty(t, out)
+	require.Empty(t, errOut)
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+}
+
+// PROJ-11, board #411 (hook half): only the Stop hook raises the count from
+// NULL. Over a `waiting` without one, a late subagent tool result, a
+// SubagentStop listing subagents, the idle notice and a Stop reaching
+// `workbench session-state` (not installed there) all leave it NULL.
+func TestProj11_OnlyTheStopStartsBackground(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+	require.NoError(t, err)
+
+	for _, p := range []string{
+		stopWithBackground(subagents("a", "b")),
+		subagentToolResult(briefLaunchID),
+		subagentStop("x", "general-purpose", subagents("x", "a", "b", "c")),
+		statePayload("Notification", briefLaunchID, "idle_prompt"),
+	} {
+		out, errOut, err := runSessionState(t, pid, strings.NewReader(p))
+		require.NoError(t, err)
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.Equal(t, "waiting", s.AgentState.String, "after %s", p)
+		assert.False(t, s.Background.Valid, "after %s", p)
+		assert.True(t, s.BackgroundAt.IsZero(), "after %s", p)
+	}
+}
+
+// PROJ-11, board #411: a SubagentStop only lowers the Stop's count, to the
+// subagents its own snapshot still lists besides itself — never raising it,
+// never over another state, never from an older report, ignoring an
+// internal agent (empty agent_type) and a missing or malformed list — and
+// never touches the state, its time or finished_at.
+func TestProj11_SubagentStopOnlyLowersTheCount(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base, at := hookClock(t)
+	stamp := func(sec int) time.Time {
+		return base.Add(time.Duration(sec) * time.Second).UTC().Truncate(time.Millisecond)
+	}
+	captured, err := os.ReadFile("testdata/subagentstop_background_tasks.json")
+	require.NoError(t, err)
+	capturedInput := strings.ReplaceAll(string(captured), "00000000-0000-4000-8000-000000000411", briefLaunchID)
+
+	countedWaiting(t, database, pid, row, at, 1, subagents("a", "b", "c"))
+	require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
+	finished := storedFinishedAt(t, database, row)
+	require.True(t, finished.Valid)
+
+	for _, step := range []struct {
+		name, input string
+		sec         int
+		want        int64
+		wantAt      int
+	}{
+		{"its own id and two others", subagentStop("a", "general-purpose", subagents("a", "b", "c")), 2, 2, 2},
+		{"a longer list never raises", subagentStop("x", "general-purpose", subagents("x", "b", "c", "d", "e")), 3, 2, 3},
+		{"an internal agent", subagentStop("b", "", "[]"), 4, 2, 3},
+		{"no list", subagentStop("b", "general-purpose", ""), 5, 2, 3},
+		{"a null list", subagentStop("b", "general-purpose", "null"), 6, 2, 3},
+		{"an object list", subagentStop("b", "general-purpose", `{"b":1}`), 7, 2, 3},
+		{"an older report", subagentStop("b", "general-purpose", "[]"), 2, 2, 3},
+		{"the captured input", capturedInput, 8, 1, 8},
+	} {
+		at(step.sec)
+		out, errOut, err := runSessionState(t, pid, strings.NewReader(step.input))
+		require.NoError(t, err)
+		assert.Empty(t, out, step.name)
+		assert.Empty(t, errOut, step.name)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.Equal(t, sql.NullInt64{Int64: step.want, Valid: true}, s.Background, step.name)
+		assert.Equal(t, stamp(step.wantAt), s.BackgroundAt.UTC(), step.name)
+		assert.Equal(t, "waiting", s.AgentState.String, step.name)
+		assert.Equal(t, stamp(1), s.AgentStateAt.UTC(), step.name)
+		assert.Equal(t, finished, storedFinishedAt(t, database, row), step.name)
+	}
+
+	// Over `working`: nothing.
+	at(9)
+	_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+	require.NoError(t, err)
+	before := rowSnapshot(t, database, row)
+	at(10)
+	_, errOut, err := runSessionState(t, pid, strings.NewReader(subagentStop("b", "general-purpose", "[]")))
+	require.NoError(t, err)
+	assert.Empty(t, errOut)
+	assert.Equal(t, before, rowSnapshot(t, database, row), "a SubagentStop over working wrote")
+}
+
+// PROJ-11, board #411 (hook half): from a counted `waiting`, a main turn
+// (UserPromptSubmit, a main-thread PostToolUse), a StopFailure and the idle
+// notice NULL the count and its report time; a permission prompt keeps them.
+func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		keeps       bool
+	}{
+		{"UserPromptSubmit", statePayload("UserPromptSubmit", briefLaunchID, ""), false},
+		{"main PostToolUse", statePayload("PostToolUse", briefLaunchID, ""), false},
+		{"StopFailure", stopFailureWith(t, `"rate_limit"`), false},
+		{"idle_prompt", statePayload("Notification", briefLaunchID, "idle_prompt"), false},
+		{"permission_prompt", statePayload("Notification", briefLaunchID, "permission_prompt"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopStateFixture(t, "open")
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			_, at := hookClock(t)
+			countedWaiting(t, database, pid, row, at, 1, subagents("a", "b"))
+			counted, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			require.True(t, counted.Background.Valid)
+
+			at(2)
+			out, errOut, err := runSessionState(t, pid, strings.NewReader(tc.input))
+			require.NoError(t, err)
+			assert.Empty(t, out)
+			assert.Empty(t, errOut)
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			if tc.keeps {
+				assert.Equal(t, "approval", s.AgentState.String)
+				assert.Equal(t, counted.Background, s.Background)
+				assert.Equal(t, counted.BackgroundAt, s.BackgroundAt)
+			} else {
+				assert.False(t, s.Background.Valid)
+				assert.True(t, s.BackgroundAt.IsZero())
+			}
+		})
+	}
 }
