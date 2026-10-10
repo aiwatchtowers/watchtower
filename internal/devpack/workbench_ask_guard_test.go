@@ -24,10 +24,13 @@ You check a coding agent's final message of a turn.
 Input (JSON): $ARGUMENTS
 Return {"ok": true} unless a failure case below clearly applies. When unsure, return {"ok": true}.
 Return {"ok": true} when stop_hook_active is true.
-These pass:
-- Unfinished work is never a failure: a progress report, a partial result, a next step, work still left.
-- A named ask is never a failure: a message that names "ask #<number>", or step-by-step help for the owner with an
-  ask already filed.
+These pass, except that failure case 1 takes priority over this list:
+- Unfinished work is never case 2: a progress report, a partial result, a next step the agent itself will take, work
+  still left. A question or request to the owner inside a progress report is still case 1.
+- A named ask is never a failure: a message that names "ask #<number>", including step-by-step help for the owner on
+  that ask.
+- A closing summary that says the session is finished and lists what is left on the owner is not a request (asks for
+  those items are filed separately).
 - Rhetorical questions, questions the agent answers itself, and offers such as "say if you want X".
 Failure cases (return the first that applies):
 1. Request left as text: last_assistant_message asks the owner for something (a question to answer, a decision to
@@ -66,15 +69,19 @@ func TestAskGuardPrompt_IsTheGoldenWithTheMarkerSubstituted(t *testing.T) {
 
 // PROJ-13: the Stop prompt hook passes a continued turn, a turn that filed
 // an ask and a finished session that says so, so it can never trap the agent.
-// Since v3 it passes by default and unfinished work never fails it.
+// Since v3 it passes by default, unfinished work never fails case 2 and a
+// request to the owner fails case 1 wherever it sits.
 func TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk(t *testing.T) {
 	p := askGuardPrompt(7)
 	for _, clause := range []string{
 		`Return {"ok": true} unless a failure case below clearly applies.`,
 		`Return {"ok": true} when stop_hook_active is true.`,
-		`- Unfinished work is never a failure:`,
-		`- A named ask is never a failure: a message that names "ask #<number>", or step-by-step help for the owner with an` +
-			"\n" + `  ask already filed.`,
+		`These pass, except that failure case 1 takes priority over this list:`,
+		`- Unfinished work is never case 2: a progress report, a partial result, a next step the agent itself will take, work` +
+			"\n" + `  still left. A question or request to the owner inside a progress report is still case 1.`,
+		`- A named ask is never a failure: a message that names "ask #<number>", including step-by-step help for the owner on` +
+			"\n" + `  that ask.`,
+		`- A closing summary that says the session is finished and lists what is left on the owner is not a request`,
 		`and names no "ask #<number>".`,
 		`does not say it called finish_session (for example "session finished")`,
 		`When unsure, return {"ok": true}.`,
