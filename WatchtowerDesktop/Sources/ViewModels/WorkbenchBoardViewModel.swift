@@ -567,11 +567,11 @@ final class WorkbenchBoardViewModel {
     /// moved since then writes nothing either — checked by the write itself
     /// (`updateIntent(_:id:intent:ifUnchangedFrom:)`), so an agent write the
     /// poll has not seen yet counts too. The editor keeps the draft and
-    /// `errorMessage` says so, naming the target. Nil skips both checks.
+    /// `errorMessage` says so, naming the target.
     /// - Returns: whether the description is saved, so the editor keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func saveIntent(_ text: String, original: String? = nil, for id: Int? = nil) -> Bool {
+    func saveIntent(_ text: String, original: String, for id: Int? = nil) -> Bool {
         let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Nothing open and no editor's target: nothing to save, nothing to say.
         guard let id = id ?? selectedTargetID else { return false }
@@ -580,7 +580,7 @@ final class WorkbenchBoardViewModel {
             errorMessage = "Could not save the description of \(label): it is no longer on this board."
             return false
         }
-        if let original, intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
+        if intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
         guard node.target.intent != intent else { return true }
         let conflict: (Error) -> String? = { error in
             guard error is TargetIntentConflictError else { return nil }
@@ -588,11 +588,7 @@ final class WorkbenchBoardViewModel {
                 + "Copy your text, press Esc and edit again."
         }
         let body: (Database) throws -> Void = { db in
-            if let original {
-                try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
-            } else {
-                try TargetQueries.updateIntent(db, id: id, intent: intent)
-            }
+            try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
         }
         return write("save the description of \(label)", target: id, failure: conflict, body)
     }

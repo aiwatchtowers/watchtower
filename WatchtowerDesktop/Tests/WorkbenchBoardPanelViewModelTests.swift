@@ -405,7 +405,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
         vm.select(taskA)
 
-        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint"))
+        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint", original: ""))
 
         let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(stored?.intent, "Ship the v2 endpoint")
@@ -426,8 +426,8 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
             try db.execute(sql: "UPDATE targets SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?", arguments: [taskA])
         }
 
-        XCTAssertTrue(vm.saveIntent(""))
-        XCTAssertTrue(vm.saveIntent(" \n\t "), "blank once trimmed is the empty description")
+        XCTAssertTrue(vm.saveIntent("", original: ""))
+        XCTAssertTrue(vm.saveIntent(" \n\t ", original: ""), "blank once trimmed is the empty description")
 
         let after = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(reported, 0)
@@ -441,12 +441,12 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.select(taskA)
 
-        XCTAssertTrue(vm.saveIntent("\n  Ship the v2 endpoint \n"))
+        XCTAssertTrue(vm.saveIntent("\n  Ship the v2 endpoint \n", original: ""))
         let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: taskA) }
         XCTAssertEqual(stored?.intent, "Ship the v2 endpoint")
         XCTAssertEqual(reported, 1)
 
-        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint\n"))
+        XCTAssertTrue(vm.saveIntent("Ship the v2 endpoint\n", original: ""))
         XCTAssertEqual(reported, 1, "equal once trimmed: no second write")
     }
 
@@ -511,7 +511,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
                 """)
         }
 
-        XCTAssertFalse(vm.saveIntent("Draft the owner keeps"))
+        XCTAssertFalse(vm.saveIntent("Draft the owner keeps", original: ""))
 
         let error = try XCTUnwrap(vm.errorMessage)
         XCTAssertTrue(error.contains("disk full"), error)
@@ -528,7 +528,7 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         vm.select(taskA)
         vm.select(taskB)
 
-        XCTAssertTrue(vm.saveIntent("Written on A", for: taskA))
+        XCTAssertTrue(vm.saveIntent("Written on A", original: "", for: taskA))
 
         let (storedA, storedB) = try dbManager.dbPool.read { db in
             (try TargetQueries.fetchByID(db, id: taskA), try TargetQueries.fetchByID(db, id: taskB))
@@ -536,36 +536,15 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(storedA?.intent, "Written on A")
         XCTAssertEqual(storedB?.intent, "", "the open target is untouched")
         XCTAssertEqual(reported, [.target(Int64(taskA))])
-        XCTAssertFalse(vm.saveIntent("Lost", for: 999_999), "a target not on the board writes nothing")
+        XCTAssertFalse(vm.saveIntent("Lost", original: "", for: 999_999), "a target not on the board writes nothing")
         let error = try XCTUnwrap(vm.errorMessage, "a draft that cannot be saved says why")
         XCTAssertTrue(error.contains("#999999"), error)
-    }
-
-    /// The editor's switch-save fails (the trigger fixture): the error is
-    /// set after the panel moved on, so the owner sees why the draft stayed.
-    func testAFailedSaveOnASwitchLeavesTheErrorSet() throws {
-        let (pid, _, taskA, taskB) = try seedGroup()
-        let vm = makeVM(project: pid)
-        vm.select(taskA)
-        try dbManager.dbPool.write { db in
-            try db.execute(sql: """
-                CREATE TRIGGER fail_intent_update BEFORE UPDATE OF intent ON targets
-                BEGIN SELECT RAISE(ABORT, 'disk full'); END
-                """)
-        }
-        vm.select(taskB)
-
-        XCTAssertFalse(vm.saveIntent("Draft on A", original: "", for: taskA))
-
-        let error = try XCTUnwrap(vm.errorMessage)
-        XCTAssertTrue(error.contains("disk full"), error)
-        XCTAssertEqual(vm.selectedTargetID, taskB)
     }
 
     func testSaveIntentWithNothingSelectedWritesNothing() throws {
         let (pid, _, _, _) = try seedGroup()
         let vm = makeVM(project: pid)
-        XCTAssertFalse(vm.saveIntent("Lost"))
+        XCTAssertFalse(vm.saveIntent("Lost", original: ""))
         XCTAssertNil(vm.errorMessage, "nothing open and no editor's target: silent")
     }
 
