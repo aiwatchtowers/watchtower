@@ -216,6 +216,7 @@ final class WorkbenchBoardViewModel {
             }
             roots = board
             panelPath = path
+            dropDescriptionDrafts(notOn: board)
             selectedComments = comments
             selectedImages = images
             selectedAsks = asks
@@ -232,6 +233,17 @@ final class WorkbenchBoardViewModel {
                 loadedTargetID = panelPath.last
             }
         }
+    }
+
+    /// A draft whose target left the board has nowhere to be saved: it is
+    /// dropped, said once, so neither a switch nor a later save raises the
+    /// error again.
+    private func dropDescriptionDrafts(notOn board: [WorkbenchBoardNode]) {
+        let gone = descriptionDrafts.keys.filter { WorkbenchBoardOutline.find($0, in: board) == nil }.sorted()
+        guard !gone.isEmpty else { return }
+        gone.forEach { descriptionDrafts[$0] = nil }
+        let labels = gone.map(WorkbenchTargetNumber.label).joined(separator: ", ")
+        errorMessage = "Dropped the unsaved description of \(labels): no longer on this board."
     }
 
     /// Reloads when anything on this project's board changed since the last
@@ -335,11 +347,15 @@ final class WorkbenchBoardViewModel {
         open(Array(panelPath.dropLast()))
     }
 
-    /// Every panel navigation: the new path, a fresh read, and the open
-    /// target's agent comments marked read.
+    /// Every panel navigation: the new path, the description editor of the
+    /// target left behind saved (a focus loss), a fresh read, and the open
+    /// target's agent comments marked read. The error row starts empty, so
+    /// only the target just left can put an error under the next one.
     private func open(_ path: [Int]) {
+        let leaving = selectedTargetID
         panelPath = path
         errorMessage = nil
+        if let leaving, leaving != path.last { saveDescription(for: leaving) }
         load()
         guard let node = selectedNode, node.unreadForOwner > 0 else { return }
         do {
@@ -358,6 +374,7 @@ final class WorkbenchBoardViewModel {
     /// a failed write from the panel (rename, status, comment) moves to the
     /// board's banner instead of vanishing with the panel.
     func closeDetail() {
+        if let id = selectedTargetID { saveDescription(for: id) }
         panelPath = []
         selectedComments = []
         selectedImages = []

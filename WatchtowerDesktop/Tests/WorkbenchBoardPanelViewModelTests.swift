@@ -727,4 +727,112 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(try storedIntent(taskA), "Agent's newer text")
         XCTAssertEqual(vm.descriptionDraft(for: taskA), .init(text: "Owner's draft", original: ""))
     }
+
+    // MARK: - Description: saving on the way out (board #417 N1)
+
+    func testStartEditNavigateAwayAndBackSavesTheDraftOnTheWayOut() throws {
+        let (pid, _, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.select(taskB)
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A", "leaving the target is a focus loss: it saves")
+        XCTAssertEqual(try storedIntent(taskB), "", "never to the target opened next")
+        XCTAssertEqual(reported, [.target(Int64(taskA))])
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        XCTAssertNil(vm.errorMessage)
+        vm.select(taskA)
+        XCTAssertNil(vm.descriptionDraft(for: taskA), "a saved draft does not reopen the editor")
+        XCTAssertEqual(vm.selectedNode?.target.intent, "Written on A")
+    }
+
+    func testClosingThePanelSavesTheOpenEditor() throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Written on A", for: taskA)
+
+        vm.closeDetail()
+
+        XCTAssertEqual(try storedIntent(taskA), "Written on A")
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+    }
+
+    /// A draft whose save fails on the way out says so once, naming its
+    /// target; the targets opened after it do not repeat the error.
+    func testAFailedSwitchSaveNamesItsTargetAndDoesNotFollowThePanel() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+
+        vm.select(taskB)
+
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        XCTAssertTrue(error.contains("disk full"), error)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A", "the draft stays on its own target")
+
+        vm.select(group)
+        XCTAssertNil(vm.errorMessage, "the error belongs to leaving A, not to every target opened after it")
+        vm.push(taskB)
+        XCTAssertNil(vm.errorMessage)
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.descriptionDraft(for: taskA)?.text, "Draft on A")
+    }
+
+    /// A draft left on a target deleted elsewhere is dropped with one
+    /// message naming it, so the error can be dismissed for good.
+    func testADraftOnADeletedTargetIsDroppedWithOneMessage() throws {
+        let (pid, group, taskA, taskB) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try failIntentWrites()
+        vm.select(taskB)
+        try delete(taskA)
+
+        vm.load()
+
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        vm.dismissError()
+        vm.select(group)
+        vm.select(taskB)
+        vm.load()
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage, "dismissed for good: nothing raises it again")
+    }
+
+    func testTheOpenTargetDeletedUnderItsEditorDropsTheDraftWithAMessage() throws {
+        let (pid, group, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(group)
+        vm.push(taskA)
+        vm.beginDescriptionEdit(taskA)
+        vm.setDescriptionDraft("Draft on A", for: taskA)
+        try delete(taskA)
+
+        vm.load()
+
+        XCTAssertEqual(vm.panelPath, [group])
+        XCTAssertNil(vm.descriptionDraft(for: taskA))
+        let error = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(error.contains(WorkbenchTargetNumber.label(taskA)), error)
+        vm.dismissError()
+        vm.back()
+        vm.closeDetail()
+        XCTAssertNil(vm.errorMessage)
+    }
 }

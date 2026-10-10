@@ -94,17 +94,13 @@ struct WorkbenchPanelDescription: View {
                 text
             }
         }
-        .onChange(of: targetID) { previous, _ in
-            // Moving to another target is a focus loss: the draft saves to
-            // its own target. A failure (shown in the error row) keeps the
-            // draft on that target, so returning to it reopens the editor.
-            vm.saveDescription(for: previous)
-            expanded = false
-        }
-        // The panel closing (✕, Esc, a reload that empties the path) saves
-        // explicitly rather than trusting the editor's teardown focus loss;
-        // a save that already ran dropped the draft, so this one is a no-op
-        // then.
+        // Moving to another target or closing the panel saves the editor in
+        // the view model (`open`, `closeDetail`): a failure keeps the draft
+        // on its own target, so returning to it reopens the editor.
+        .onChange(of: targetID) { expanded = false }
+        // The pane leaving the screen some other way saves explicitly rather
+        // than trusting the editor's teardown focus loss; a save that already
+        // ran dropped the draft, so this one is a no-op then.
         .onDisappear { save() }
     }
 
