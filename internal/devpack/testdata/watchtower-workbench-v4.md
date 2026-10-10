@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v5
+x-watchtower-pack: v4
 ---
 
 # Watchtower Workbench
@@ -54,9 +54,7 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 
 ## Working a target
 
-The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` right away with `update_target` — with its `branch` in the same call when the branch already exists, else in the call that sets the branch once you create it — and work it under the rules above (feature, spec, plan).
-
-Working on a target is all of it — the brainstorm, the spec, the decisions and the plan, not only the code — so a target is `in_progress` from the moment a session takes it up, not from the first line of code. When the owner pressed **Work on It** in Watchtower, the app has usually set it `in_progress` already; then only set its `branch` once it exists. Never move a target back to `todo` because no code exists yet.
+The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` with its `branch` in one `update_target`, and work it under the rules above (feature, spec, plan).
 
 ## Working a group
 
@@ -107,7 +105,7 @@ When a target comes from a message in which the owner shared an image — a scre
 
 The board must never lag the work. Watchtower checks it against git: at the end of every turn a Stop hook compares the targets' branches with the default branch, and when they disagree it hands you the list before you may finish; the session brief and the owner's board in the Watchtower app show the same drift (`watchtower workbench check --workbench <id>` prints it on demand). The check never fetches: after merging on GitHub, `git fetch` so it sees the merge.
 
-- **When you start work on a target** — the brainstorm and the spec count as work — set it `in_progress`, and set its `branch` with `update_target` (the plain local branch name, e.g. `feature/x` — no `origin/`) in that same call when the branch exists, else as soon as you create it (a branch named before it exists reads as `branch_missing`); once a pull request exists, set `pr` (its number or URL). A plan task done on the feature branch carries that branch too.
+- **When you start work on a target**, set its `branch` with `update_target` (the plain local branch name, e.g. `feature/x` — no `origin/`) in the same call that sets it `in_progress`; once a pull request exists, set `pr` (its number or URL). A plan task done on the feature branch carries that branch too.
 - **After a merge**, walk the pull request's targets: every target whose work landed goes to `done`. Do not leave merged work `in_progress` or `in_review`.
 - **A target only partly done** when its branch merges: split it — `create_targets` under it one sub-target for what landed and one for what remains, set the landed one `done` and the remaining one `todo` (or `in_progress`); the parent then follows its children by itself. Move the branch to the remaining sub-target if work continues there, and clear it (`branch: ""`) from the landed one only if it would otherwise read as unmerged.
 - **When the hook reports drift**, fix the board with `update_target` / `create_targets` as the finding says, then finish. For a parent target, fix its sub-targets — its status follows them. If a target is deliberately kept open although its branch merged (a follow-up on the same branch name, say), clear its `branch` — never leave the drift standing.
