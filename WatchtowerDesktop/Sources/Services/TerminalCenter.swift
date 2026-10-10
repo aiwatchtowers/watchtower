@@ -155,6 +155,9 @@ final class TerminalCenter {
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
     @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
+    /// The `claude` binary of a launch, resolved per start so a path set
+    /// after an exit-127 applies on Restart. A seam for tests.
+    @ObservationIgnored var claudeBinary: () -> String? = { Constants.claudeBinary() }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
     /// Every process exit, after `states` records it (the VM's resume-failure
@@ -696,7 +699,8 @@ final class TerminalCenter {
         pasteHints.remove(id)
         ownerBackslashPending.remove(id)
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id,
+                            claudeBinary: mode == .shell ? nil : claudeBinary()))
         return mode
     }
 

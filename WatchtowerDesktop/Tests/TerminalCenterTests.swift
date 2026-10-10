@@ -130,6 +130,7 @@ final class TerminalCenterTests: XCTestCase {
             )
         )
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { [weak self] in self?.transcripts.contains($0) ?? false }
         return center
     }
@@ -148,6 +149,21 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(launch.args.last,
                        "exec /bin/sh -c 'exec env -u WATCHTOWER_FIRST_PROMPT claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
         XCTAssertEqual(launch.environment.last, "WATCHTOWER_FIRST_PROMPT=\(TerminalLaunch.firstRunPrompt(.current))")
+    }
+
+    /// Review Focus 5: the binary is resolved per launch, so a path set
+    /// after an exit-127 reaches the next start without an app restart.
+    func testEachLaunchResolvesTheClaudeBinaryAgain() throws {
+        let center = makeCenter()
+        var resolved: String?
+        center.claudeBinary = { resolved }
+        let s = try row()
+        center.start(s, fresh: true, prompt: nil)
+        XCTAssertFalse(try XCTUnwrap(sessions.last?.launches.last).environment.contains { $0.hasPrefix("WATCHTOWER_CLAUDE_BIN=") })
+        sessions.last?.exit(127)
+        resolved = "/opt/acme/claude"
+        center.start(s, fresh: false, prompt: nil)
+        XCTAssertTrue(try XCTUnwrap(sessions.last?.launches.last).environment.contains("WATCHTOWER_CLAUDE_BIN=/opt/acme/claude"))
     }
 
     func testNonFreshStartResumesTheStoredSession() throws {

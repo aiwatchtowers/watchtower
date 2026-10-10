@@ -172,8 +172,80 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertEqual(TerminalLaunch.make(shell: "zsh", folder: "/tmp", mode: .shell).executable, "/bin/zsh")
     }
 
+    private let bin = "/opt/acme/claude"
+
+    /// The resolved binary travels in the environment; the command names
+    /// only the variable, prepends its directory to PATH and drops it
+    /// before `claude` runs.
+    func testAResolvedBinaryRunsThroughTheEnvironment() {
+        let pathFix = "export PATH=\"$(dirname \"$WATCHTOWER_CLAUDE_BIN\")\":\"$PATH\"; "
+        let new = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 7, claudeBinary: bin)
+        XCTAssertEqual(new.args, ["-l", "-c",
+            "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid)'"])
+        XCTAssertEqual(new.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=7", "WATCHTOWER_CLAUDE_BIN=\(bin)"])
+
+        let prompted = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "go"), claudeBinary: bin)
+        XCTAssertEqual(prompted.args.last,
+            "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN -u WATCHTOWER_FIRST_PROMPT \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
+        XCTAssertEqual(prompted.environment, ["WATCHTOWER_CLAUDE_BIN=\(bin)", "WATCHTOWER_FIRST_PROMPT=go"])
+
+        let resume = TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .resumeClaude(uuid: uuid), claudeBinary: bin)
+        XCTAssertEqual(resume.args.last,
+            "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --resume \(uuid)'")
+
+        for launch in [new, prompted, resume] {
+            XCTAssertFalse(launch.args.joined().contains(bin), "the path never reaches a shell parser")
+        }
+    }
+
+    func testAShellIgnoresTheResolvedBinary() {
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .shell, rowID: 7, claudeBinary: bin)
+        XCTAssertEqual(l.args, ["-l"])
+        XCTAssertEqual(l.environment, [])
+    }
+
+    /// Review Focus 2 and 3: a path with a space, a quote and `$`, in a
+    /// directory not on PATH, is exec'd intact under zsh and csh; its
+    /// directory leads PATH and the variable is dropped. Bounded, reaped.
+    func testAResolvedBinaryWithAnAwkwardPathRunsUnderZshAndCsh() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bin-\(UUID().uuidString)")
+        let dir = root.appendingPathComponent("my 'odd' $dir")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stub = dir.appendingPathComponent("claude")
+        try "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$1\" \"${PATH%%:*}\"\nenv | grep -c WATCHTOWER_CLAUDE_BIN\n"
+            .write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        for shell in ["/bin/zsh", "/bin/csh"] {
+            let l = TerminalLaunch.make(shell: shell, folder: root.path, mode: .resumeClaude(uuid: uuid), claudeBinary: stub.path)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: l.executable)
+            process.arguments = l.args.filter { $0 != "-l" }  // no owner profile in a test; csh takes -l only alone
+            process.currentDirectoryURL = root
+            var env = ["PATH": "/usr/bin:/bin"]
+            for entry in l.environment {
+                let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+                env[parts[0]] = parts[1]
+            }
+            process.environment = env
+            let out = Pipe()
+            process.standardOutput = out
+            let exited = DispatchSemaphore(value: 0)
+            process.terminationHandler = { _ in exited.signal() }
+            try process.run()
+            if exited.wait(timeout: .now() + 10) == .timedOut {
+                process.terminate()
+                process.waitUntilExit()
+                XCTFail("\(shell): the launch did not finish")
+            }
+            let printed = String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            XCTAssertEqual(printed, "2\n--resume\n\(dir.path)\n0\n", shell)
+        }
+    }
+
     func testExitMessageNamesAMissingClaudeForCommandNotFound() {
-        XCTAssertTrue(TerminalLaunch.exitMessage(code: 127).contains("not found on your login-shell PATH"))
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: 127),
+                       "Claude Code was not found. Set its path, or add it to your login shell's PATH, then Restart.")
         XCTAssertEqual(TerminalLaunch.exitMessage(code: 1), "Claude Code exited (code 1).")
         XCTAssertEqual(TerminalLaunch.exitMessage(code: nil), "Claude Code exited.")
     }
