@@ -479,8 +479,23 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         XCTAssertEqual(vm.panelPath, [taskA], "the panel stays open")
 
         await vm.openAsk(42, show: { _, _ in false }, failure: { "Could not load the ask: disk I/O error" })
-        XCTAssertEqual(vm.errorMessage, "Could not open the ask: Could not load the ask: disk I/O error",
-                       "a read failure is named, not reported as gone")
+        XCTAssertEqual(vm.errorMessage, "Could not load the ask: disk I/O error",
+                       "a read failure is named once, not reported as gone and not prefixed twice")
+    }
+
+    /// The real reason source: `OwnerAsksViewModel.lookUp` names a gone ask
+    /// in `loadErrors`, and the panel shows that sentence as is.
+    func testOpenAskShowsTheAsksOwnReasonForAGoneAsk() async throws {
+        let (pid, _, taskA, _) = try seedGroup()
+        let vm = makeVM(project: pid)
+        vm.select(taskA)
+        let asks = OwnerAsksViewModel(dbPool: dbManager.dbPool, terminalCenter: nil, defaults: defaults)
+
+        await vm.openAsk(42, show: { askID, projectID in
+            await asks.lookUp(askID: askID, projectID: projectID) != nil
+        }, failure: { asks.loadErrors[pid] })
+
+        XCTAssertEqual(vm.errorMessage, "That ask no longer exists.")
     }
 
     func testSaveIntentFailureKeepsTheErrorAndReturnsFalse() throws {

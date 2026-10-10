@@ -207,6 +207,20 @@ final class WorkbenchBoardScopeViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedTargetID, board.leaf, "a panel on another target stays")
     }
 
+    /// The lane header's VoiceOver Open Group goes through `enterScope`: no
+    /// first click opened the panel, so a panel open on the group stays.
+    func testOpenGroupOnALaneKeepsThePanelOnTheGroup() throws {
+        let board = try seedBoard()
+        let vm = makeVM(project: board.project)
+        vm.mode = .kanban
+        vm.select(board.plan)
+
+        XCTAssertTrue(vm.enterScope(board.plan))
+
+        XCTAssertEqual(vm.scopeNode?.target.id, board.plan)
+        XCTAssertEqual(vm.selectedTargetID, board.plan)
+    }
+
     // MARK: - Archived groups
 
     /// Old › { Old task }, both done 30 days ago: archived (default 14 days).

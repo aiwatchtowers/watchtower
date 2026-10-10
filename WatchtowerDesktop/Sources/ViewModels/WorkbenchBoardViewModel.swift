@@ -638,15 +638,16 @@ final class WorkbenchBoardViewModel {
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
     /// the "Waiting for you" stack row's path, so a click never starts an
     /// agent. When it opens nothing, `failure` names why (the asks'
-    /// `loadErrors`, a read error included); without a reason the ask is
-    /// gone. Either says so in the panel's error row.
+    /// `loadErrors`: "That ask no longer exists." or "Could not load the
+    /// ask: …", already a full sentence, shown as is); without a reason the
+    /// ask is gone. Either says so in the panel's error row.
     func openAsk(
         _ askID: Int64,
         show: (Int64, Int64) async -> Bool,
         failure: () -> String? = { nil }
     ) async {
         guard await !show(askID, projectID) else { return }
-        errorMessage = failure().map { "Could not open the ask: \($0)" } ?? "This ask is gone."
+        errorMessage = failure() ?? "This ask is gone."
     }
 
     /// The composer's send: the open target's own draft, cleared once the
