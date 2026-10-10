@@ -299,34 +299,33 @@ subagents (redacted, under `cmd/testdata/`, like `stopfailure_rate_limit.json`) 
 ## 10. Staleness probe (asks #138, #140)
 
 After 30 min with `agent_background > 0` and no report (`agent_background_at` older than 30 min), Watchtower
-probes the session rather than falling back to Stopped blindly.
+reads Claude Code's own session registry rather than falling back to Stopped blindly (owner decision, ask #142:
+"the registry decides").
 
-**Stage 1 — passive, no model turn.**
+**The probe — registry only, no model turn.**
 - Claude Code keeps a local session registry: one JSON file per running process under
-  `<claude config dir>/sessions/<pid>.json` with `pid`, `sessionId`, `status` (`busy`/`idle`),
-  `statusUpdatedAt`, `peerProtocol`, `peerFeatures` and `messagingSocketPath`. Find the entry whose `sessionId`
-  is the row's Claude session id. No entry, or its `pid` is not alive → the process is gone → Stopped (one notice).
-- `status == busy` → the main agent is in a turn; the hooks will report it — leave the row alone.
-- Subagent transcripts of the session live at `<claude projects dir>/<project slug>/<session_id>/subagents/agent-<id>.jsonl`.
-  Any of them written within the last 30 min → still working: refresh `agent_background_at`, stay Agents working.
+  `<claude config dir>/sessions/<pid>.json` with `pid`, `sessionId`, `status`, `statusUpdatedAt`,
+  `peerProtocol`, `peerFeatures` and `messagingSocketPath`. Find the entry whose `sessionId` is the row's Claude
+  session id.
+- `status == busy` → keep Agents working. An interactive session reads `busy` for the whole life of a background
+  subagent after its main turn ended (Appendix B).
+- `status == waiting` (a permission prompt or a held message) → leave the row alone; it already reads Needs
+  approval.
+- `status` is `idle` or `shell`, missing or unknown, no entry, or its `pid` is not alive → end the count: Stopped
+  (one notice). `shell` means only background shells are running, which the agent count does not track.
+- Subagent transcript freshness is not read: while a background subagent runs, the entry already reads `busy`.
 
-**Stage 2 — active ping, only if stage 1 is inconclusive** (process alive, idle, no fresh transcript — e.g. a
-subagent inside a 20-minute test command writes nothing).
-- Send one cross-session message to the session over Claude Code's peer messaging channel (the same one
-  `SendMessage` between local sessions uses; registry `messagingSocketPath`, gated on `peerProtocol` and the
-  feature list) asking the main agent to check on its background agents. The answer text is not parsed: the
-  main agent's reply ends a turn, and that turn's Stop hook carries a fresh `background_tasks` snapshot — the
-  authoritative count, through the existing write path.
-- The row shows Agents working with a "checking…" caption while the ping is in flight. No Stop within 5 min of
-  the ping, or the channel unavailable (no socket, unknown protocol version, write error) → Stopped (one notice).
-- At most one ping per run per 30-min silence window; never while `status == busy`, never while the row is
-  Needs approval, never when the owner typed into the session in the last 2 min (the Desktop knows its own
-  terminal input) — so a ping cannot collide with the owner's input.
+**Stage 2 — active ping: not built.** The peer-messaging ping is recorded in Appendix B as observed protocol
+for a future owner decision (board #481). Under ask #142 it could fire only on an entry without `status`, and
+on 2.1.295 that happens only before the first `busy`. That is earlier than any Stop that could set
+`agent_background > 0`, so the ping is unreachable. Task 13 builds no ping.
 
-**Risk.** The peer channel and the registry are Claude Code internals, not a documented API. The probe is
-version-gated and every failure falls through to the old outcome (Stopped), so a Claude Code change can only
-lose the probe, never stick the state. Task 0 captures a registry entry and a ping round-trip as redacted
-fixtures.
+**Risk.** The registry is a Claude Code internal, not a documented API. The probe is version-gated and every
+unknown reading ends the count (Stopped), so a Claude Code change can lose the probe but cannot invent work.
+The row follows Claude Code's own registry: a hung subagent keeps the entry `busy`, and the row stays Agents
+working for as long as Claude Code itself reports work in flight. v1 limits (not measured on 2.1.295): a
+never-ending background shell, workflows, a hung or killed subagent. Task 0 and Task 12 captured registry
+entries and the peer round trip as redacted fixtures.
 
 ## Appendix A — sources and quotes
 
@@ -444,8 +443,8 @@ One line (a Claude Code sender prepends an optional `auth` line — see below; W
   line at all, is still accepted on macOS — confirmed: `authed`, `wrongkey` and `nokey` pings all
   started a turn and fired Stop. The `auth` line is only load-bearing on Windows (not exercised).
 - Therefore Watchtower — running as the session owner's own uid — reproduces the frame from **public
-  inputs it already owns** (the registry entry) and never needs to read key material. **GO uses the
-  keyless path: Task 13 sends no `auth` line and adds no key handling to its interfaces.**
+  inputs it already owns** (the registry entry) and never needs to read key material. **The GO path
+  is keyless: a Watchtower sender sends no `auth` line and handles no key.**
 - The key, for the record (not used by the GO path): `<config dir>/sessions/<pid>.<hex>.key`, `<hex>` being
   the SHA-256 of the receiver's normalised `messagingSocketPath`. A sending Claude Code session reads it
   and sends its token as an `auth` first line; the inbox requires that only on Windows. On macOS a wrong
@@ -484,7 +483,8 @@ shows a Deny/Deliver prompt they did not ask for; (2) the registry goes `waiting
 hook fires, which Watchtower's own PROJ-11 state hooks turn into a "needs you" state and macOS notice;
 (4) with no Stop, Watchtower shows Stopped after the 5-min window — and if the owner then presses
 Deliver, a turn starts and its Stop arrives after Watchtower already showed Stopped. The mode is visible
-before sending (hook inputs carry `permission_mode`), so the ping can be skipped for that mode.
+before sending (hook inputs carry `permission_mode`), but only as of the last hook — a Shift-Tab after it
+is not seen, so a skip would be best-effort. Moot while the ping is not built.
 
 ### Carry-forward: interactive registry `status` while background work runs (observed)
 Interactive sessions in `manual` mode; registry sampled every 2 s from the main turn's Stop (t+0).
@@ -507,10 +507,10 @@ when the Stop and `idle_prompt` hooks have already reported the count — so a p
 little. Background shells read `shell`, neither `busy` nor `idle`; permission prompts and held messages
 read `waiting`.
 
-**Owner decision (ask #142, 2026-10-10): "the registry decides, the ping is a fallback."** After 30 min
-of silence: registry `busy` → stay Agents working; `idle` or no live process → Stopped (one notice); the
-ping only when the registry entry has no `status` and the receiver's mode does not hold messages (i.e.
-not `bypassPermissions`). Open for the controller: the decision does not name `shell` or `waiting`.
+**Owner decision (ask #142, 2026-10-10): "the registry decides, the ping is a fallback."** Controller
+rulings applying it (2026-10-10): `busy` → keep Agents working; `waiting` → leave the row alone (it already
+reads Needs approval); `idle`, `shell`, missing or unknown `status`, or no live process → end the count
+(Stopped, one notice). See §10.
 
 ### Failure modes — all detectable
 - Dead/closed socket → `connect()` → `ECONNREFUSED` (observed). A registry entry whose pid is not
@@ -520,8 +520,8 @@ not `bypassPermissions`). Open for the controller: the decision does not name `s
 
 ### Verdict
 
-**GO for the prompting modes (`manual`, `acceptEdits`, `plan`, `auto`, `dontAsk`); NO ping in
-`bypassPermissions`.**
+**Protocol: GO for the prompting modes (`manual`, `acceptEdits`, `plan`, `auto`, `dontAsk`); no ping in
+`bypassPermissions`. Product: not built (last bullet).**
 - The frame is reproducible from the registry entry alone; Watchtower reads no key file (macOS auth is
   optional; the same-uid peer-credential check is the gate).
 - In every prompting mode an idle session starts a turn on the ping, its Stop hook fires with a fresh
@@ -529,7 +529,9 @@ not `bypassPermissions`). Open for the controller: the decision does not name `s
   cross-session message.
 - In `bypassPermissions` the ping is held: owner Deny/Deliver prompt, `waiting`, a Notification, and a
   possible late Deliver after Watchtower shows Stopped. The hold was observed and not circumvented;
-  Task 13 must not send the ping in that mode.
+  a future sender must not ping a session in that mode.
 - Failures are detectable and fall through to Stopped.
-- Under the owner's ask #142 decision the ping is a narrow fallback (entry without `status`); the
-  registry `busy`/`idle` reading carries the main path.
+- **Not built (ruling):** under ask #142 the ping fires only on an entry without `status`, and on 2.1.295
+  `status` is missing only before the first `busy`, before any Stop can set `agent_background > 0`. The
+  ping is unreachable, so Task 13 builds none. This appendix stays as the recorded protocol for a future
+  owner decision (board #481).

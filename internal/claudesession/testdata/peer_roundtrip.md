@@ -4,6 +4,8 @@ Redacted capture from throwaway `claude --model haiku` sessions on macOS (darwin
 pty in a scratch folder on 2026-10-10. Nothing here is copied from the CLI binary; the byte layout is
 reproduced from what our own sessions sent and received. All ids, pids, uids and paths are placeholders.
 Full findings: Appendix B of `docs/superpowers/specs/2026-10-10-session-background-agents-design.md`.
+The ping is **not built** (ruling under ask #142, see spec §10); these fixtures record the protocol for a
+future owner decision (board #481).
 
 ## Files
 
