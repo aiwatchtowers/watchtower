@@ -1,9 +1,10 @@
 import SwiftUI
 import WatchtowerCore
 
-/// A manual check's steps (spec 2026-10-03 Part 8): each marked Ok, Broken
-/// (with a note) or Skipped; an item left unmarked is sent as skipped. The
-/// summary line counts the marks. Read-only for a closed ask.
+/// A manual check's steps (spec 2026-10-03 Part 8, board #502): each marked
+/// Works, Doesn't work (with "What happened?") or Didn't check; an item left
+/// unmarked is sent as Didn't check. The summary line counts the marks.
+/// Read-only for a closed ask.
 struct OwnerAskChecklistBody: View {
     let items: [OwnerAskCheckItem]
     let marks: [String: OwnerAskAnswer.CheckState]
@@ -14,13 +15,14 @@ struct OwnerAskChecklistBody: View {
     /// ⌘↩ (false) / ⌘⇧↩ (true) in a note: the ask's answer buttons.
     var onKey: (Bool) -> Void = { _ in }
 
-    private static let states: [(OwnerAskAnswer.CheckState, String)] = [(.ok, "Ok"), (.broken, "Broken"), (.skipped, "Skipped")]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(OwnerAskPresentation.checkSummary(items, marks: marks))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            let summary = OwnerAskPresentation.checkSummary(items, marks: marks)
+            if !summary.isEmpty {
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 itemView(item, number: index + 1)
             }
@@ -41,11 +43,12 @@ struct OwnerAskChecklistBody: View {
                 }
             }
             HStack(spacing: 4) {
-                ForEach(Self.states, id: \.0) { value, label in
+                ForEach(OwnerAskPresentation.checkStates, id: \.state) { option in
+                    let value = option.state
                     Button {
                         mark(item.id, state == value ? nil : value)
                     } label: {
-                        Text(label).font(.caption)
+                        Label(option.label, systemImage: option.icon).font(.caption)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 2)
                             .background(state == value ? color(value).opacity(0.2) : Color.secondary.opacity(0.08), in: Capsule())
@@ -57,7 +60,9 @@ struct OwnerAskChecklistBody: View {
                 }
             }
             .padding(.leading, 18)
-            if state == .broken || !(notes[item.id] ?? "").isEmpty {
+            // Editing, only Doesn't work asks what happened (only its note is
+            // sent); a closed ask shows any note it was answered with.
+            if editable ? state == .broken : !(notes[item.id] ?? "").isEmpty {
                 noteView(item)
                     .padding(.leading, 18)
             }
@@ -66,11 +71,10 @@ struct OwnerAskChecklistBody: View {
 
     @ViewBuilder
     private func noteView(_ item: OwnerAskCheckItem) -> some View {
-        let state = marks[item.id]
         if editable {
             CommentTextEditor(
                 text: Binding(get: { notes[item.id] ?? "" }, set: { setNote(item.id, $0) }),
-                placeholder: state == .broken ? "What broke? (required)" : "Note",
+                placeholder: "What happened?",
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
                 onSubmit: { onKey(false) },

@@ -7,7 +7,9 @@ import (
 
 // Render is get_ask's answer_text: the answer as the agent reads it, in the
 // ask's own order — the verdict, each question `→ labels / Other: text`,
-// each check item ✓/✗/– with its note, each comment as `> quote`, its
+// each check item `→ Works / Doesn't work / Didn't check` with its note
+// after a colon (the Desktop's labels, so the agent reads what the owner
+// pressed), each comment as `> quote`, its
 // heading and its body, then the note. Sections are separated by a blank
 // line; an empty section is left out.
 func Render(kind string, p Payload, a Answer) string {
@@ -68,22 +70,36 @@ func renderChecklist(items []ChecklistItem, marks []CheckAnswer) string {
 	for _, m := range marks {
 		byID[m.ID] = m
 	}
-	lines := []string{"Checklist: " + checkCounts(marks)}
+	counts := map[string]int{}
+	steps := make([]string, 0, len(items))
 	for _, c := range items {
 		m := byID[c.ID]
-		mark := "–"
-		switch m.State {
-		case StateOK:
-			mark = "✓"
-		case StateBroken:
-			mark = "✗"
-		}
-		lines = append(lines, mark+" "+c.Text)
+		label := checkLabel(m.State)
+		counts[label]++
+		value := label
 		if note := strings.TrimSpace(m.Note); note != "" {
-			lines = append(lines, indent(note, "  "))
+			value += ": " + strings.ReplaceAll(note, "\n", "\n  ")
 		}
+		steps = append(steps, fmt.Sprintf("- %s → %s", c.Text, value))
 	}
-	return strings.Join(lines, "\n")
+	header := make([]string, 0, 3)
+	for _, state := range []string{StateOK, StateBroken, StateSkipped} {
+		header = append(header, fmt.Sprintf("%s %d", checkLabel(state), counts[checkLabel(state)]))
+	}
+	return strings.Join(append([]string{"Checklist: " + strings.Join(header, ", ")}, steps...), "\n")
+}
+
+// checkLabel is the Desktop's label of a check item state; an item with no
+// state (a payload item the answer left out) reads as not checked, as the
+// Desktop sends it.
+func checkLabel(state string) string {
+	switch state {
+	case StateOK:
+		return "Works"
+	case StateBroken:
+		return "Doesn't work"
+	}
+	return "Didn't check"
 }
 
 // checkCounts is the check's short form: `N ok, M broken, K skipped`.

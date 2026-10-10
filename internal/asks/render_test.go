@@ -37,3 +37,21 @@ func TestRenderGolden(t *testing.T) {
 		})
 	}
 }
+
+// Board #502: each step reads as the Desktop's button the owner pressed —
+// a note goes after its label on any state, and a step the answer left out
+// reads as not checked.
+func TestRenderChecklistReadsAsTheOwnersButtons(t *testing.T) {
+	p := Payload{Checklist: []ChecklistItem{{ID: "1", Text: "Launch"}, {ID: "2", Text: "Quit"}, {ID: "3", Text: "Undo"}}}
+	a := Answer{Checklist: []CheckAnswer{
+		{ID: "1", State: StateOK, Note: "fast"},
+		{ID: "2", State: StateSkipped, Note: "no time"},
+	}}
+	want := "Checklist: Works 1, Doesn't work 0, Didn't check 2\n" +
+		"- Launch → Works: fast\n" +
+		"- Quit → Didn't check: no time\n" +
+		"- Undo → Didn't check"
+	if got := Render(KindCheck, p, a); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

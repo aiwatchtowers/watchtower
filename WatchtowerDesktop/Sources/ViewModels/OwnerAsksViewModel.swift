@@ -462,7 +462,7 @@ final class OwnerAsksViewModel {
     /// would; nil when it names none or that button is off.
     @discardableResult
     func pressKey(on ask: OwnerAsk, shift: Bool) -> Task<Void, Never>? {
-        guard let action = OwnerAskPresentation.keyAction(for: ask, draft: drafts.askDraft(for: ask.id), shift: shift)
+        guard let action = OwnerAskPresentation.keyAction(for: ask, shift: shift)
         else { return nil }
         return press(action, on: ask)
     }

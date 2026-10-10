@@ -1,6 +1,5 @@
-Checklist: 1 ok, 1 broken, 1 skipped
-✓ Launch the app
-✗ Sign in with a second account
-  The sheet closes on its own.
+Checklist: Works 1, Doesn't work 1, Didn't check 1
+- Launch the app → Works
+- Sign in with a second account → Doesn't work: The sheet closes on its own.
   Tried twice.
-– Export a report
+- Export a report → Didn't check
