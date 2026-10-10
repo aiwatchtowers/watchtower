@@ -262,6 +262,8 @@ extension WorkbenchesViewModel {
             }
             boardReloads[projectID, default: 0] += 1
         } catch {
+            NSLog("WorkbenchesViewModel: Work on It could not set target %lld in progress: %@",
+                  targetID, error.localizedDescription)
             setSessionError(
                 "Could not set target #\(targetID) in progress: \(error.localizedDescription)", projectID: projectID
             )

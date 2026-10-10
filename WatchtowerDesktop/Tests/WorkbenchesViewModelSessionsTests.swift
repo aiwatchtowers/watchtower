@@ -562,6 +562,35 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertNil(vm.boardReloads[p])
     }
 
+    /// A status write that fails after the session started leaves the
+    /// session running, the target todo, and says so on the page; nothing is
+    /// reported as the owner's write and the Board is not told to reload.
+    func testWorkOnStatusWriteFailureKeepsTheSessionAndSaysSo() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+
+        try await pool.write { try $0.execute(sql: """
+            CREATE TEMP TRIGGER refuse_target_update BEFORE UPDATE ON targets
+            BEGIN SELECT RAISE(ABORT, 'update refused'); END
+            """) }
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER temp.refuse_target_update") }
+
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.contains("Could not set target #\(target)"), error)
+        let after = try await status(target)
+        XCTAssertEqual(after, "todo")
+        let stored = try await rows(p)
+        let row = try XCTUnwrap(stored.first { $0.targetID == target })
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(ownerWrites, [])
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
     /// A process that exits at once (`claude` missing, a refused resume) did
     /// not start the work: the target stays todo.
     func testWorkOnWritesNoStatusWhenTheProcessExitsAtOnce() async throws {
