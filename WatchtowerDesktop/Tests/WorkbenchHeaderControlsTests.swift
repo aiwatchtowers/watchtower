@@ -25,6 +25,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         center = TerminalCenter { FakeTerminalSession(pid: 0) }
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { _ in true }
     }
 

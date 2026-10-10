@@ -59,6 +59,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
             )
         )
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.copyToClipboard = { [weak self] in self?.copied.append($0) }
     }
 

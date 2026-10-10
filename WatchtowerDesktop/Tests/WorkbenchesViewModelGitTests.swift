@@ -92,6 +92,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
             return session
         }
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { _ in false }
         return center
     }

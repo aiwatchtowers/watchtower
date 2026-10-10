@@ -69,6 +69,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
             return process
         }
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { [weak self] _ in self?.transcripts ?? false }
     }
 

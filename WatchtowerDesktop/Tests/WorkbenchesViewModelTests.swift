@@ -466,6 +466,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let process = FakeTerminalSession(pid: 0)
         appState.terminalCenter.makeProcess = { process }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.claudeBinary = { nil }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()

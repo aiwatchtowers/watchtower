@@ -29,6 +29,7 @@ final class BackgroundStartTests: XCTestCase {
             return process
         }
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { _ in true }
     }
 
