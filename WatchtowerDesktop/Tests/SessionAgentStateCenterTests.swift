@@ -772,7 +772,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
                                                title: "Release work stopped", body: "acme")])
         clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
         await center.poll()
-        await eventually("the probe is tried again") { runner.invocations.count == 3 }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(runner.invocations.count, 2, "shown over: no 60 s retry")
+        clock.now = clock.now.addingTimeInterval(SessionBackgroundPolicy.staleAfter - SessionBackgroundProber.retryAfter)
+        await center.poll()
+        await eventually("the probe is tried again at the 30-minute cadence") { runner.invocations.count == 3 }
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
         XCTAssertEqual(notifier.posted.count, 1, "announced once")

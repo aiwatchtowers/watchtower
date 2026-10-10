@@ -218,8 +218,9 @@ final class SessionBackgroundProberTests: XCTestCase {
     }
 
     /// §10 (F24): two failed probes in a row for the same count show it
-    /// over — Stopped, nothing written; a probe that runs, a new report or
-    /// a new run clears it.
+    /// over — Stopped, nothing written; shown over, it is probed again only
+    /// every 30 minutes; a probe that runs, a new report or a new run
+    /// clears it.
     func testTwoFailedProbesShowTheCountOverWithoutAWrite() async {
         let runner = ScriptedProbeRunner(json: ProbeAnswer.failed)
         let prober = makeProber(runner)
@@ -233,31 +234,40 @@ final class SessionBackgroundProberTests: XCTestCase {
         XCTAssertEqual(settles, 1, "the over is shown at once")
         XCTAssertEqual(pass(prober, [row()], at: minutes(31.5)), .live(.stopped))
 
-        // Still probed while shown over, so a probe that runs clears it.
+        // Shown over, the count backs off to the 30-minute cadence: no
+        // probe a minute later, nor just before the 30 minutes are up.
         runner.answer(json: ProbeAnswer.ran("busy"))
         pass(prober, [row()], at: minutes(32))
+        XCTAssertFalse(prober.isProbing(1), "no 60 s retry once shown over")
+        pass(prober, [row()], at: minutes(60.9))
+        XCTAssertFalse(prober.isProbing(1))
+        XCTAssertEqual(runner.invocations.count, 2)
+
+        // Still probed at that cadence, so a probe that runs clears it.
+        pass(prober, [row()], at: minutes(61))
         await settled(prober)
+        XCTAssertEqual(runner.invocations.count, 3)
         XCTAssertEqual(settles, 2)
-        XCTAssertEqual(pass(prober, [row()], at: minutes(32.5)), .live(.background, backgroundAgents: 2))
+        XCTAssertEqual(pass(prober, [row()], at: minutes(61.5)), .live(.background, backgroundAgents: 2))
 
         // Over again at the count's next silence; a new report clears it.
         runner.answer(json: ProbeAnswer.failed)
-        pass(prober, [row()], at: minutes(62))
+        pass(prober, [row()], at: minutes(91))
         await settled(prober)
-        pass(prober, [row()], at: minutes(63))
+        pass(prober, [row()], at: minutes(92))
         await settled(prober)
-        XCTAssertEqual(pass(prober, [row()], at: minutes(63.5)), .live(.stopped))
-        XCTAssertEqual(pass(prober, [row(reportedAt: 63 * 60)], at: minutes(63.5)),
+        XCTAssertEqual(pass(prober, [row()], at: minutes(92.5)), .live(.stopped))
+        XCTAssertEqual(pass(prober, [row(reportedAt: 92 * 60)], at: minutes(92.5)),
                        .live(.background, backgroundAgents: 2), "a new report is a new count")
-        XCTAssertEqual(pass(prober, [row()], at: minutes(63.5)), .live(.background, backgroundAgents: 2),
+        XCTAssertEqual(pass(prober, [row()], at: minutes(92.5)), .live(.background, backgroundAgents: 2),
                        "the old count's failures are forgotten: it is probed afresh")
         await settled(prober)
 
         // Over once more; a new run clears it.
-        pass(prober, [row()], at: minutes(64.5))
+        pass(prober, [row()], at: minutes(93.5))
         await settled(prober)
-        XCTAssertEqual(pass(prober, [row()], at: minutes(65)), .live(.stopped))
-        XCTAssertEqual(pass(prober, [row()], at: minutes(65), run: started.addingTimeInterval(10)), .live(.running))
+        XCTAssertEqual(pass(prober, [row()], at: minutes(94)), .live(.stopped))
+        XCTAssertEqual(pass(prober, [row()], at: minutes(94), run: started.addingTimeInterval(10)), .live(.running))
         XCTAssertEqual(prober.displayOver([row()], liveIDs: [1], startedAt: [1: started]), [],
                        "the earlier run's failures are forgotten")
         XCTAssertTrue(runner.invocations.allSatisfy { $0.starts(with: ["workbench", "session-probe"]) },

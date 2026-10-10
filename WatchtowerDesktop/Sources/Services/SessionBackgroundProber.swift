@@ -16,7 +16,11 @@ import WatchtowerCore
 /// of silence; a probe that could not run is tried again after
 /// `retryAfter`. Two failed probes in a row for the same count show it over
 /// (`displayOver`), with no write; a new report, a new run or a probe that
-/// runs clears that. Every bookkeeping entry is in memory only.
+/// runs clears that. Once shown over, the count is tried again only every
+/// `staleAfter`, so a failure that persists (a registry format change) costs
+/// one CLI child per 30 minutes, not one a minute; the log names the first
+/// failure of a streak and the flip to over, not every retry. Every
+/// bookkeeping entry is in memory only.
 @MainActor
 final class SessionBackgroundProber {
     /// How soon a probe that could not run is tried again.
@@ -88,7 +92,8 @@ final class SessionBackgroundProber {
                   policy.needsProbe(count: agents, lastReport: reported, now: now) else { continue }
             var entry = entries[row.id].flatMap { $0.count == count ? $0 : nil }
                 ?? Entry(count: count, lastProbe: .distantPast, failures: 0)
-            let wait = entry.failures > 0 ? Self.retryAfter : SessionBackgroundPolicy.staleAfter
+            let retrying = entry.failures > 0 && entry.failures < Self.failuresShownOver
+            let wait = retrying ? Self.retryAfter : SessionBackgroundPolicy.staleAfter
             guard now.timeIntervalSince(entry.lastProbe) >= wait else { continue }
             entry.lastProbe = now
             entries[row.id] = entry
@@ -146,8 +151,12 @@ final class SessionBackgroundProber {
         let wasOver = entry.failures >= Self.failuresShownOver
         if let failure {
             entry.failures += 1
-            let shownOver = entry.failures == Self.failuresShownOver ? ", count shown over" : ""
-            print("[SessionProbe] session \(session): probe failed (\(entry.failures) in a row\(shownOver)): \(failure)")
+            // Logged once per streak, and once more when the count flips to over.
+            if entry.failures == 1 {
+                print("[SessionProbe] session \(session): probe failed: \(failure)")
+            } else if entry.failures == Self.failuresShownOver {
+                print("[SessionProbe] session \(session): probe failed again, count shown over: \(failure)")
+            }
         } else {
             entry.failures = 0
             if ended { print("[SessionProbe] session \(session): \(outcome?.rawValue ?? "?") ended the count") }
