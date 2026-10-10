@@ -96,8 +96,6 @@ final class SessionDetailViewModel {
     let sessionID: Int64
     private(set) var report: SessionReport?
     private(set) var timeline: SessionTimeline?
-    /// true once the first read landed.
-    private(set) var loaded = false
 
     @ObservationIgnored private let store: ReplicaStore
     @ObservationIgnored private let requester: SessionReportRequester
@@ -127,7 +125,6 @@ final class SessionDetailViewModel {
                 MainActor.assumeIsolated {
                     self?.report = value.report
                     self?.timeline = value.timeline
-                    self?.loaded = true
                 }
             }
         )

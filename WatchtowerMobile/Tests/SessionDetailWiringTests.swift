@@ -158,7 +158,10 @@ final class SessionDetailWiringTests: XCTestCase {
     func testAFailedSendIsRetriedOnTheNextOpen() async throws {
         var calls = 0
         var fail = true
-        let requester = SessionReportRequester(now: { Date() }, send: { _ in
+        // A hand-moved clock: every open is at the same instant unless the
+        // test moves it, so the throttle never depends on the runner's speed.
+        let clock = FakeClock(now)
+        let requester = SessionReportRequester(now: { clock.now }, send: { _ in
             calls += 1
             if fail { throw ActionOutboxError.notLinked }
         })
@@ -166,10 +169,14 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertFalse(first)
         fail = false
         let second = await requester.requestReport(sessionID: 11)
-        XCTAssertTrue(second)
+        XCTAssertTrue(second, "a failed send does not hold the throttle")
+        clock.advance(SessionReportRequester.interval - 1)
         let third = await requester.requestReport(sessionID: 11)
-        XCTAssertFalse(third)
-        XCTAssertEqual(calls, 2)
+        XCTAssertFalse(third, "within the interval of a sent request")
+        clock.advance(1)
+        let fourth = await requester.requestReport(sessionID: 11)
+        XCTAssertTrue(fourth, "the interval is over")
+        XCTAssertEqual(calls, 3)
     }
 
     /// The view model reads the session's report and timeline from the
@@ -185,9 +192,10 @@ final class SessionDetailWiringTests: XCTestCase {
         try await poll({ model.report != nil && model.timeline != nil }, "the session's records never arrived")
         XCTAssertEqual(model.report?.progress.total, 5)
 
-        let other = SessionDetailViewModel(sessionID: 17, store: store, requester: requester)
-        other.start()
-        try await poll({ other.loaded }, "the first read never landed")
+        // A session the Mac published no report or timeline for reads empty.
+        let other = try await store.reader.read { db in
+            try SessionDetailRecords.read(sessionID: 17, from: db, store: store)
+        }
         XCTAssertNil(other.report)
         XCTAssertNil(other.timeline)
     }
@@ -224,7 +232,7 @@ final class SessionDetailWiringTests: XCTestCase {
     func testTheDetailModelsHaveNoTranscriptField() throws {
         let store = try ReplicaStore.inMemory()
         let viewModel = SessionDetailViewModel(sessionID: 11, store: store, requester: SessionReportRequester(now: { Date() }, send: { _ in }))
-        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "loaded", "store", "requester", "cancellable"])
+        XCTAssertEqual(fieldNames(viewModel), ["sessionID", "report", "timeline", "store", "requester", "cancellable"])
         XCTAssertEqual(fieldNames(try model(11)), [
             "id", "title", "state", "target", "branch", "agentLine", "approvalNotice", "asks", "asksSince", "report",
             "timeline", "timelineEmptyText", "timelineMoreText"
