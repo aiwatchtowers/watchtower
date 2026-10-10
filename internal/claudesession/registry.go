@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +40,7 @@ type entryJSON struct {
 	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
 }
 
-// FindSession returns the registry entry of sessionID. Only *.json files are
+// FindSession returns the registry entry of sessionID. Only regular *.json files are
 // read (the <pid>.<hash>.key beside each entry never is); an unreadable or
 // undecodable file is skipped. No match, or no sessions dir, is (_, false, nil).
 // Several entries can carry one session id (a stale file left by a crash, then
@@ -54,13 +55,22 @@ func FindSessionWith(configDir, sessionID string, p ProcInfo) (Entry, bool, erro
 	if sessionID == "" {
 		return Entry{}, false, nil
 	}
-	paths, err := filepath.Glob(filepath.Join(configDir, "sessions", "*.json"))
+	// ReadDir, not Glob: the config dir is a path, not a pattern, and a `[`
+	// in it must not change what is read.
+	dir := filepath.Join(configDir, "sessions")
+	files, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return Entry{}, false, nil
+	}
 	if err != nil {
 		return Entry{}, false, err
 	}
 	var matches []Entry
-	for _, path := range paths {
-		if e, ok := readEntry(path); ok && e.SessionID == sessionID {
+	for _, f := range files {
+		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+			continue
+		}
+		if e, ok := readEntry(filepath.Join(dir, f.Name())); ok && e.SessionID == sessionID {
 			matches = append(matches, e)
 		}
 	}

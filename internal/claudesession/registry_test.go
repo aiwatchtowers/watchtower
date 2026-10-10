@@ -125,6 +125,33 @@ func TestFindSessionFirstWriteEntryHasNoStatus(t *testing.T) {
 	}
 }
 
+// The config dir is a path, not a pattern: glob metacharacters in it neither
+// fail the read nor match other dirs, and a dir named *.json is not an entry.
+func TestFindSessionTakesTheConfigDirLiterally(t *testing.T) {
+	parent := t.TempDir()
+	configDir := filepath.Join(parent, "claude[1]")
+	sessions := filepath.Join(configDir, "sessions")
+	if err := os.MkdirAll(filepath.Join(sessions, "9999.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "4242.json"), []byte(entryJSONText(4242, "busy", 1767225600000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// "claude[1]" as a pattern matches "claude1": an entry there must not be read.
+	decoy := filepath.Join(parent, "claude1", "sessions")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(decoy, "5555.json"), []byte(entryJSONText(5555, "idle", 1767225699000)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := FindSession(configDir, busyID)
+	if err != nil || !ok || got.PID != 4242 || got.Status != "busy" {
+		t.Errorf("FindSession(%q) = %+v, %v, %v; want the busy 4242", configDir, got, ok, err)
+	}
+}
+
 func TestFindSessionWithoutRegistryIsNotFound(t *testing.T) {
 	_, ok, err := FindSession(t.TempDir(), busyID)
 	if ok || err != nil {
