@@ -42,12 +42,15 @@ var workbenchSessionProbeCmd = &cobra.Command{
 		"dead process end the count, unless a report or Stop landed since the probe read the row.\n" +
 		"It never starts a count and never changes the row's state. Prints one JSON object\n" +
 		"{\"ok\": true, \"outcome\", \"ended\", \"agent_background_at\"} or {\"ok\": false, \"error\"}\n" +
-		"and exits 0 either way.",
+		"and exits 0 either way; only a flag cobra cannot parse exits non-zero, with no JSON.",
 	// No root schema/config pre-run: a broken config answers ok: false like
 	// any other failure; the DB is opened by the command.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	Args:              cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		if err := checkWorkbenchIDFlags(cmd); err != nil {
+			return writeJSON(cmd.OutOrStdout(), sessionProbeFailure{OK: false, Error: err.Error()})
+		}
 		res, err := probeSession(workbenchSessionProbeFlagWorkbench, workbenchSessionProbeFlagSession, time.Now())
 		if err != nil {
 			return writeJSON(cmd.OutOrStdout(), sessionProbeFailure{OK: false, Error: err.Error()})
@@ -63,9 +66,8 @@ var (
 
 func init() {
 	c := workbenchSessionProbeCmd
-	fs := c.Flags()
-	fs.Int64Var(&workbenchSessionProbeFlagWorkbench, workbenchFlag, 0, "workbench id")
-	fs.Int64Var(&workbenchSessionProbeFlagSession, "session", 0, "terminal session id")
+	addWorkbenchIDFlag(c, &workbenchSessionProbeFlagWorkbench, "workbench id")
+	c.Flags().Int64Var(&workbenchSessionProbeFlagSession, "session", 0, "terminal session id")
 	workbenchCmd.AddCommand(c)
 }
 

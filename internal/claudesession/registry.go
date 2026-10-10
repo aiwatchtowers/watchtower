@@ -35,27 +35,21 @@ func ConfigDir(env func(string) string) string {
 // anything else; "" means the entry predates its first status update, which is
 // neither busy nor idle. StatusUpdatedAt is zero in that case.
 type Entry struct {
-	PID                 int
-	SessionID           string
-	Status              string
-	Version             string
-	MessagingSocketPath string
-	ProcStart           string
-	PeerProtocol        int
-	PeerFeatures        []string
-	StatusUpdatedAt     time.Time
+	PID             int
+	SessionID       string
+	Status          string
+	Version         string
+	ProcStart       string
+	StatusUpdatedAt time.Time
 }
 
 type entryJSON struct {
-	PID                 int      `json:"pid"`
-	SessionID           string   `json:"sessionId"`
-	Status              string   `json:"status"`
-	Version             string   `json:"version"`
-	MessagingSocketPath string   `json:"messagingSocketPath"`
-	ProcStart           string   `json:"procStart"`
-	PeerProtocol        int      `json:"peerProtocol"`
-	PeerFeatures        []string `json:"peerFeatures"`
-	StatusUpdatedAt     int64    `json:"statusUpdatedAt"` // epoch ms
+	PID             int    `json:"pid"`
+	SessionID       string `json:"sessionId"`
+	Status          string `json:"status"`
+	Version         string `json:"version"`
+	ProcStart       string `json:"procStart"`
+	StatusUpdatedAt int64  `json:"statusUpdatedAt"` // epoch ms
 }
 
 // FindSession returns the registry entry of sessionID. Only *.json files are
@@ -109,14 +103,11 @@ func readEntry(path string) (Entry, bool) {
 		return Entry{}, false
 	}
 	e := Entry{
-		PID:                 raw.PID,
-		SessionID:           raw.SessionID,
-		Status:              raw.Status,
-		Version:             raw.Version,
-		MessagingSocketPath: raw.MessagingSocketPath,
-		ProcStart:           raw.ProcStart,
-		PeerProtocol:        raw.PeerProtocol,
-		PeerFeatures:        raw.PeerFeatures,
+		PID:       raw.PID,
+		SessionID: raw.SessionID,
+		Status:    raw.Status,
+		Version:   raw.Version,
+		ProcStart: raw.ProcStart,
 	}
 	if raw.StatusUpdatedAt > 0 {
 		e.StatusUpdatedAt = time.UnixMilli(raw.StatusUpdatedAt)

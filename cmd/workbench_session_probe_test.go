@@ -3,6 +3,7 @@ package cmd
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -201,6 +202,51 @@ func TestProj11_ProbeNeverStartsBackground(t *testing.T) {
 			assert.Equal(t, before, rowSnapshot(t, database, row), "the row changed")
 		})
 	}
+}
+
+// A `waiting` whose count reads NULL or 0 next to a stale, valid report stamp
+// (no write path leaves one) is not a count: not_stale, nothing written,
+// whatever the registry reads.
+func TestSessionProbeStaleStampWithoutACountIsNotStale(t *testing.T) {
+	stale := time.Now().Add(-time.Hour)
+	for _, count := range []any{nil, 0} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			countedRow(t, database, pid, row, 2, stale)
+			_, err := database.Exec(`UPDATE terminal_sessions SET agent_background = ? WHERE id = ?`, count, row)
+			require.NoError(t, err)
+			probeRegistries[0].apply(t) // no entry: would end a stale count
+			before := rowSnapshot(t, database, row)
+			require.Equal(t, db.AgentStateStamp(stale), before["agent_background_at"])
+
+			got := runSessionProbe(t, pid, row)
+
+			assert.Equal(t, map[string]any{
+				"ok": true, "outcome": "not_stale", "ended": false, "agent_background_at": db.AgentStateStamp(stale),
+			}, got)
+			assert.Equal(t, before, rowSnapshot(t, database, row))
+		})
+	}
+}
+
+// The workbench id flag is registered like its siblings': the legacy
+// --project spelling works, and both together answer ok: false.
+func TestSessionProbeWorkbenchFlags(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	countedRow(t, database, pid, row, 2, time.Now().Add(-time.Hour))
+	probeRegistries[3].apply(t) // busy: no write
+	id, session := strconv.FormatInt(pid, 10), strconv.FormatInt(row, 10)
+
+	out, errOut, err := runWorkbench(t, "session-probe", "--project", id, "--session", session)
+	require.NoError(t, err, "stderr: %s", errOut)
+	assert.Contains(t, out, `"outcome": "busy"`)
+
+	out, errOut, err = runWorkbench(t, "session-probe", "--workbench", id, "--project", id, "--session", session)
+	require.NoError(t, err, "stderr: %s", errOut)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout: %s", out)
+	assert.Equal(t, false, got["ok"])
+	assert.Contains(t, got["error"], "--project is the old name of --workbench")
 }
 
 // Board #411: whatever the outcome, the probe never changes the row's state,

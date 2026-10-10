@@ -81,15 +81,12 @@ func TestFindSessionMatchesBySessionID(t *testing.T) {
 		t.Fatalf("FindSession(busy) = %v, %v, %v; want found", got, ok, err)
 	}
 	want := Entry{
-		PID:                 4242,
-		SessionID:           busyID,
-		Status:              "busy",
-		Version:             "2.1.295",
-		MessagingSocketPath: "/tmp/example/cc-socks/4242.sock",
-		ProcStart:           "Thu Jan  1 00:00:00 2026",
-		PeerProtocol:        1,
-		PeerFeatures:        []string{"notify_idle", "reply_across_default_dirs", "artifact_yield"},
-		StatusUpdatedAt:     time.UnixMilli(1767225602687),
+		PID:             4242,
+		SessionID:       busyID,
+		Status:          "busy",
+		Version:         "2.1.295",
+		ProcStart:       "Thu Jan  1 00:00:00 2026",
+		StatusUpdatedAt: time.UnixMilli(1767225602687),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("busy entry =\n%+v\nwant\n%+v", got, want)
@@ -123,7 +120,7 @@ func TestFindSessionFirstWriteEntryHasNoStatus(t *testing.T) {
 	if got.Status != "" || !got.StatusUpdatedAt.IsZero() {
 		t.Errorf("first-write entry status = %q at %v; want empty, zero", got.Status, got.StatusUpdatedAt)
 	}
-	if got.PID != 4343 || got.MessagingSocketPath != "/tmp/example/cc-socks/4343.sock" {
+	if got.PID != 4343 || got.ProcStart != "Thu Jan  1 00:00:00 2026" {
 		t.Errorf("first-write entry = %+v", got)
 	}
 }

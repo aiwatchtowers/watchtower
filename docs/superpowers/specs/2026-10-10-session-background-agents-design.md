@@ -312,9 +312,9 @@ reads Claude Code's own session registry rather than falling back to Stopped bli
 
 **Stage 1 — the probe: registry only, no model turn.**
 - Claude Code keeps a local session registry: one JSON file per running process under
-  `<claude config dir>/sessions/<pid>.json` with `pid`, `sessionId`, `status`, `statusUpdatedAt`,
-  `peerProtocol`, `peerFeatures` and `messagingSocketPath`. Find the entry whose `sessionId` is the row's Claude
-  session id.
+  `<claude config dir>/sessions/<pid>.json`. The probe reads `pid`, `procStart`, `sessionId`, `status` and
+  `statusUpdatedAt` (the peer fields serve only the unbuilt ping, Appendix B). Find the entry whose `sessionId` is the
+  row's Claude session id.
 - `status == busy` → keep Agents working. An interactive session reads `busy` for the whole life of a background
   subagent after its main turn ended (Appendix B).
 - `status == waiting` (a permission prompt or a held message) → leave the row alone; it already reads Needs
@@ -332,7 +332,7 @@ for a future owner decision (board #481). Under ask #142 it could fire only on a
 on 2.1.295 that happens only before the first `busy`. That is earlier than any Stop that could set
 `agent_background > 0`, so the ping is unreachable. Task 13 builds no ping.
 
-**Risk.** The registry is a Claude Code internal, not a documented API. The probe is version-gated and every
+**Risk.** The registry is a Claude Code internal, not a documented API. The probe is not version-gated: every
 unknown reading ends the count (Stopped), so a Claude Code change can lose the probe but cannot invent work.
 The row follows Claude Code's own registry: a hung subagent keeps the entry `busy`, and the row stays Agents
 working for as long as Claude Code itself reports work in flight. v1 limits (not measured on 2.1.295): a
