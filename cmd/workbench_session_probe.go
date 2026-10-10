@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -41,7 +42,9 @@ var workbenchSessionProbeCmd = &cobra.Command{
 		"dead process end the count, unless a report or Stop landed since the probe read the row.\n" +
 		"It never starts a count and never changes the row's state. Prints one JSON object\n" +
 		"{\"ok\": true, \"outcome\", \"ended\", \"agent_background_at\"} or {\"ok\": false, \"error\"}\n" +
-		"and exits 0 either way; only a flag cobra cannot parse exits non-zero, with no JSON.",
+		"and exits 0 either way; an ending outcome also logs one stderr line with the registry's\n" +
+		"raw status. Only arguments cobra cannot parse (an unknown flag, a positional argument)\n" +
+		"exit non-zero, with no JSON.",
 	// No root schema/config pre-run: a broken config answers ok: false like
 	// any other failure; the DB is opened by the command.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
@@ -50,7 +53,8 @@ var workbenchSessionProbeCmd = &cobra.Command{
 		if err := checkWorkbenchIDFlags(cmd); err != nil {
 			return writeJSON(cmd.OutOrStdout(), sessionProbeFailure{OK: false, Error: err.Error()})
 		}
-		res, err := probeSession(workbenchSessionProbeFlagWorkbench, workbenchSessionProbeFlagSession, time.Now())
+		res, err := probeSession(workbenchSessionProbeFlagWorkbench, workbenchSessionProbeFlagSession, time.Now(),
+			cmd.ErrOrStderr())
 		if err != nil {
 			return writeJSON(cmd.OutOrStdout(), sessionProbeFailure{OK: false, Error: err.Error()})
 		}
@@ -88,8 +92,10 @@ type sessionProbeFailure struct {
 
 // probeSession reads terminal row sessionID of workbench workbenchID and,
 // when its background count is stale at now, ends it on the registry's
-// verdict. Only EndTerminalBackground writes.
-func probeSession(workbenchID, sessionID int64, now time.Time) (sessionProbeResult, error) {
+// verdict. Only EndTerminalBackground writes. An ending outcome logs one line
+// to logOut naming the registry's raw status, so a format change that reads
+// as unknown or gone leaves a trace.
+func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer) (sessionProbeResult, error) {
 	if workbenchID <= 0 || sessionID <= 0 {
 		return sessionProbeResult{}, errors.New("--workbench and --session take positive ids")
 	}
@@ -116,7 +122,8 @@ func probeSession(workbenchID, sessionID int64, now time.Time) (sessionProbeResu
 		now.Sub(row.BackgroundAt) < probeStaleAfter {
 		return res, nil
 	}
-	res.Outcome, err = registryOutcome(row.ClaudeSessionID.String)
+	var rawStatus string
+	res.Outcome, rawStatus, err = registryOutcome(row.ClaudeSessionID.String)
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
@@ -127,36 +134,39 @@ func probeSession(workbenchID, sessionID int64, now time.Time) (sessionProbeResu
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
+	_, _ = fmt.Fprintf(logOut, "session-probe: session %d: outcome %s (registry status %q), ended %v\n",
+		sessionID, res.Outcome, rawStatus, res.Ended)
 	return res, nil
 }
 
-// registryOutcome is the registry's verdict on conversation sessionID.
-func registryOutcome(sessionID string) (string, error) {
+// registryOutcome is the registry's verdict on conversation sessionID, with
+// the entry's raw status ("" when there is no live entry).
+func registryOutcome(sessionID string) (outcome, rawStatus string, err error) {
 	// ~/.claude only, never $CLAUDE_CONFIG_DIR: the transcript readers' dual
 	// path rule (terminalClaudeDir, ClaudeTranscript.defaultConfigDir).
 	configDir := terminalClaudeDir()
 	if configDir == "" {
-		return "", errors.New("claude config dir unknown: no home dir")
+		return "", "", errors.New("claude config dir unknown: no home dir")
 	}
 	entry, found, err := claudesession.FindSessionWith(configDir, sessionID, probeProcs)
 	if err != nil {
-		return "", fmt.Errorf("reading the claude session registry: %w", err)
+		return "", "", fmt.Errorf("reading the claude session registry: %w", err)
 	}
 	if !found {
-		return probeGone, nil
+		return probeGone, "", nil
 	}
 	// A process table that cannot answer (a ps timeout or failed fork) is
 	// ok: false, never gone: ending a live count cannot be undone.
 	alive, err := claudesession.AliveWith(entry, probeProcs)
 	if err != nil {
-		return "", fmt.Errorf("checking claude process %d: %w", entry.PID, err)
+		return "", "", fmt.Errorf("checking claude process %d: %w", entry.PID, err)
 	}
 	if !alive {
-		return probeGone, nil
+		return probeGone, "", nil
 	}
 	switch entry.Status {
 	case probeBusy, probeWaiting, probeIdle, probeShell:
-		return entry.Status, nil
+		return entry.Status, entry.Status, nil
 	}
-	return probeUnknown, nil
+	return probeUnknown, entry.Status, nil
 }

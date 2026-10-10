@@ -130,23 +130,27 @@ final class SessionBackgroundProber {
         let args = ["workbench", "session-probe", "--workbench", String(workbench), "--session", String(session)]
         let failure: String?
         var ended = false
+        var outcome: SessionProbeResult.Outcome?
         do {
             let data = try await runner.run(args: args)
             let result = try JSONDecoder().decode(SessionProbeResult.self, from: data)
             failure = result.ran ? nil : (result.error ?? "no outcome")
             ended = result.ended
+            outcome = result.outcome
         } catch {
-            failure = error.localizedDescription
+            // A DecodingError's localizedDescription drops the key path.
+            failure = error is DecodingError ? String(describing: error) : error.localizedDescription
         }
         // A probe `stop()` cancelled applies nothing.
         guard !Task.isCancelled, var entry = entries[session], entry.count == count else { return }
         let wasOver = entry.failures >= Self.failuresShownOver
         if let failure {
             entry.failures += 1
-            // Logged once per streak of failures.
-            if entry.failures == 1 { print("[SessionProbe] session \(session): probe failed: \(failure)") }
+            let shownOver = entry.failures == Self.failuresShownOver ? ", count shown over" : ""
+            print("[SessionProbe] session \(session): probe failed (\(entry.failures) in a row\(shownOver)): \(failure)")
         } else {
             entry.failures = 0
+            if ended { print("[SessionProbe] session \(session): \(outcome?.rawValue ?? "?") ended the count") }
         }
         entries[session] = entry
         if ended || wasOver != (entry.failures >= Self.failuresShownOver) { onSettled?() }

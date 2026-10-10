@@ -115,6 +115,13 @@ func countedRow(t *testing.T, database *db.DB, pid, row int64, n int64, at time.
 // object; the command always exits 0.
 func runSessionProbe(t *testing.T, pid, row int64) map[string]any {
 	t.Helper()
+	got, _ := runSessionProbeLogged(t, pid, row)
+	return got
+}
+
+// runSessionProbeLogged is runSessionProbe that also returns stderr.
+func runSessionProbeLogged(t *testing.T, pid, row int64) (map[string]any, string) {
+	t.Helper()
 	out, errOut, err := runWorkbench(t, "session-probe",
 		"--workbench", strconv.FormatInt(pid, 10), "--session", strconv.FormatInt(row, 10))
 	require.NoError(t, err, "stderr: %s", errOut)
@@ -123,7 +130,7 @@ func runSessionProbe(t *testing.T, pid, row int64) map[string]any {
 	for k, v := range got {
 		require.NotNil(t, v, "key %q is null in %s", k, out)
 	}
-	return got
+	return got, errOut
 }
 
 func TestSessionProbeStageOneTable(t *testing.T) {
@@ -133,6 +140,7 @@ func TestSessionProbeStageOneTable(t *testing.T) {
 		"busy": "busy", "waiting": "waiting", "idle": "idle", "shell": "shell",
 		"no status": "unknown", "unknown status": "unknown",
 	}
+	wantRawStatus := map[string]string{"idle": "idle", "shell": "shell", "unknown status": "thinking"}
 	for _, reg := range probeRegistries {
 		t.Run(reg.name, func(t *testing.T) {
 			database, pid, row := briefSessionFixture(t)
@@ -142,12 +150,19 @@ func TestSessionProbeStageOneTable(t *testing.T) {
 			stamp := db.AgentStateStamp(stale)
 			require.Equal(t, stamp, before["agent_background_at"])
 
-			got := runSessionProbe(t, pid, row)
+			got, logged := runSessionProbeLogged(t, pid, row)
 			outcome := wantOutcome[reg.name]
 			ends := outcome != "busy" && outcome != "waiting"
 			assert.Equal(t, map[string]any{
 				"ok": true, "outcome": outcome, "ended": ends, "agent_background_at": stamp,
 			}, got)
+			// An ending outcome leaves one stderr line naming the raw status.
+			if ends {
+				assert.Equal(t, fmt.Sprintf("session-probe: session %d: outcome %s (registry status %q), ended true\n",
+					row, outcome, wantRawStatus[reg.name]), logged)
+			} else {
+				assert.Empty(t, logged)
+			}
 
 			after := rowSnapshot(t, database, row)
 			if ends {
