@@ -55,16 +55,23 @@ var (
 	// under this timeout and always exits 0.
 	stopSpec = hookSpec{event: "Stop", subcommand: "workbench check --workbench",
 		legacySubcommand: "project check --project", flags: " --stop-hook", timeoutSec: 15}
-	// stateHookSpecs: the session state the Desktop shows for an embedded
-	// terminal (`workbench session-state` reads the event from its input, so
-	// one command line serves all four). Async, so a prompt or a tool call
-	// never waits for it; the Stop half lives in stopSpec's command.
-	stateHookSpecs = []hookSpec{
+	// coreStateHookSpecs: the session state the Desktop shows for an
+	// embedded terminal (`workbench session-state` reads the event from its
+	// input, so one command line serves every state hook). Async, so a
+	// prompt or a tool call never waits for it; the Stop half lives in
+	// stopSpec's command. These four gate the Stop's state write and the run
+	// mark (HasCoreStateHooks), so a folder installed before SubagentStop
+	// keeps its "waiting" until it is repaired.
+	coreStateHookSpecs = []hookSpec{
 		stateHookSpec("UserPromptSubmit"),
 		stateHookSpec("Notification"),
 		stateHookSpec("PostToolUse"),
 		stateHookSpec("StopFailure"),
 	}
+	// stateHookSpecs: every state hook an install writes and a removal takes
+	// out — the core four plus SubagentStop, which lowers the background
+	// count (board #411). The status needs all of them (HasStateHooks).
+	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"))
 	// askGuardSpec: the Stop prompt hook that sends a request the agent left
 	// as plain text back to ask_owner (spec 2026-10-03 §6.2, PROJ-13). Claude
 	// Code's model judges it; the prompt passes a continued turn.
@@ -296,7 +303,31 @@ func HasStopHook(dir string, projectID int64) (bool, error) {
 // HasStateHooks reports whether every session state hook of workbenchID is
 // installed; one missing is false.
 func HasStateHooks(dir string, workbenchID int64) (bool, error) {
-	for _, spec := range stateHookSpecs {
+	return hasHooks(dir, stateHookSpecs, workbenchID)
+}
+
+// HasCoreStateHooks reports whether every core state hook of workbenchID
+// (coreStateHookSpecs) is installed; one missing is false. It reads only the
+// core events: a malformed entry in another event we own (an owner's
+// hooks.SubagentStop) is refused by install and status but never costs the
+// Stop its "waiting" (board #411).
+func HasCoreStateHooks(dir string, workbenchID int64) (bool, error) {
+	file := settingsLocalPath(dir)
+	settings, _, existed, err := readSettings(file)
+	if err != nil || !existed {
+		return false, err
+	}
+	for _, spec := range coreStateHookSpecs {
+		_, groups, err := rawEventGroups(settings, file, spec.event)
+		if err != nil || !hasOurHook(groups, spec, workbenchID) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func hasHooks(dir string, specs []hookSpec, workbenchID int64) (bool, error) {
+	for _, spec := range specs {
 		ok, err := hasHook(dir, spec, workbenchID)
 		if err != nil || !ok {
 			return false, err

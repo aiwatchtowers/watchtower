@@ -1,0 +1,24 @@
+{
+  "pid": 4242,
+  "sessionId": "00000000-0000-4000-8000-000000000411",
+  "cwd": "/tmp/example/work",
+  "startedAt": 1767225600000,
+  "procStart": "Thu Jan  1 00:00:00 2026",
+  "version": "2.1.295",
+  "peerProtocol": 1,
+  "peerFeatures": [
+    "notify_idle",
+    "reply_across_default_dirs",
+    "artifact_yield"
+  ],
+  "kind": "interactive",
+  "entrypoint": "sdk-cli",
+  "pidDomain": "darwin",
+  "messagingSocketPath": "/tmp/example/cc-socks/4242.sock",
+  "name": "example",
+  "nameSource": "derived",
+  "nameSince": 1767225600000,
+  "status": "idle",
+  "updatedAt": 1767225645660,
+  "statusUpdatedAt": 1767225645660
+}

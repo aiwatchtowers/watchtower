@@ -62,6 +62,12 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         XCTAssertTrue(result.allSatisfy(\.state.live))
     }
 
+    func testABackgroundRowCarriesItsCaption() {
+        let result = rows([session(1)], live: [1], statuses: [1: .live(.background, openAsks: 1, backgroundAgents: 2)])
+        XCTAssertEqual(result[0].caption, "2 agents working · 1 ask open")
+        XCTAssertTrue(result[0].showsStateLabel)
+    }
+
     func testAStatusOfASessionNoLongerLiveIsIgnored() {
         let result = rows([session(1, secondsAgo: 5 * 60 + 3)], statuses: [1: .live(.stopped)])
         XCTAssertEqual(result[0].state, .notStarted)

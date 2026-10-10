@@ -214,8 +214,9 @@ owner fix a line by hand.
 owner has, adding a fixed set of entries of ours: one under `SessionStart`
 (the brief); under `Stop` the drift check (PROJ-07) and, since 2026-10-03,
 the ask guard prompt hook (PROJ-13) — two entries of ours on that event; one
-each under `UserPromptSubmit`, `Notification`, `PostToolUse` and
-`StopFailure` (the session state hooks, PROJ-11); and, since 2026-10-03, one
+each under `UserPromptSubmit`, `Notification`, `PostToolUse`,
+`StopFailure` and, since 2026-10-10, `SubagentStop` (the five session state
+hooks, PROJ-11); and, since 2026-10-03, one
 `PreToolUse` command entry in its own group with matcher `AskUserQuestion`
 (the ask tool block, PROJ-13). A command entry is recognised per event by its
 command suffix after a `watchtower` binary, the prompt entry by its first
@@ -226,8 +227,12 @@ text was edited is set back in place, the owner's other keys on it kept; our
 `PreToolUse` entry found in another matcher group is taken out of that group
 (the owner's hooks there kept) and re-added in its own `AskUserQuestion`
 group. A malformed settings file — `hooks`, or the entry list of any event
-we own (`PreToolUse` included since 2026-10-03), of the wrong type — is left
-byte-identical and reported once; `integrate remove --workbench N` deletes
+we own (`PreToolUse` included since 2026-10-03, `SubagentStop` since
+2026-10-10), of the wrong type — is left byte-identical and reported once by
+the install, the removal and the status (a malformed owner
+`hooks.SubagentStop` is refused there like any other state event, while the
+Stop hook's state write, gated on the four core state events only, still
+records); `integrate remove --workbench N` deletes
 only those entries. The `watchtower-workbench` skill follows DEV-04: a copy the owner
 edited (differs from both what we ship and its `.watchtower-shipped` digest)
 is never overwritten or deleted. The same holds for the pre-rename
@@ -666,11 +671,15 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer Claude Code and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
-`"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse` and
-`StopFailure`) and the Stop hook's state write (PROJ-07 note) never print to
+`"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
+`StopFailure` and, since 2026-10-10, `SubagentStop` — five state hooks; the
+first four are the core ones, and only they gate the Stop hook's state write
+and the run mark, so a folder installed before `SubagentStop` keeps
+recording until Repair, while `integrate status` reports `state_hooks` only
+with all five) and the Stop hook's state write (PROJ-07 note) never print to
 stdout, never exit non-zero, never block or delay a prompt (async entries),
 and do nothing without `WATCHTOWER_TERMINAL_SESSION_ID` (stdin unread). They
 write only workbench N's `claude` row whose stored `claude_session_id` equals
@@ -713,8 +722,9 @@ a PostToolUse (that is `finish_session`'s own turn); an
 error, while a plain `waiting` (the `idle_prompt` notice, the Stop hook)
 over a failed one writes nothing, so the error stays until the owner acts;
 a StopFailure with another error replaces the stored one and its time.
-The order is: approval > error > working > finished > open ask > stopped >
-running > not started, the first match winning. The hook states (approval,
+The order is: approval > error > working > agents working (since
+2026-10-10, below) > finished > open ask > stopped > running > not started,
+the first match winning. The hook states (approval,
 error, working, stopped) stay run-scoped; finished and the open asks are
 not, so a session that is not live shows them as a ring in their colour.
 `SessionAgentNoticePolicy` announces each transition of a live session into
@@ -722,28 +732,71 @@ needs approval, error, stopped or finished at most once, only while the app
 is inactive; waiting on an ask, or working with asks, gets no state notice
 (the ask's own notice announced it).
 
+Since 2026-10-10 (board #411, owner approved, ask #139): the Stop hook also
+stores the count of in-flight background subagents its input reports
+(`background_tasks` entries of type `subagent` or `workflow`;
+`agent_background`, `agent_background_at`; NULL when none or the field is
+absent). Only the Stop's write sets a count; a UserPromptSubmit, a
+main-thread PostToolUse, a subagent's tool result over Needs approval
+(Working, ask #20), a StopFailure, the `idle_prompt` notice, a new run and a
+conversation switch clear it; a Stop repeating the same count only refreshes
+`agent_background_at`; a subagent's PostToolUse over `waiting` only
+refreshes `agent_background_at`, and a `SubagentStop` (async state hook)
+only lowers the count, never below its own snapshot, ignoring an empty
+`agent_type`. Neither touches `agent_state`, `agent_state_at`, `finished_at`
+or the turn order. The Desktop shows a trusted `waiting` with a count > 0
+(ended only by the probe below), or lowered to 0 in the last 120 s, as
+**Agents working** (green, the count in the caption, `?` and the ask count
+with open asks). The order becomes approval > error > working > agents
+working > finished > open ask > stopped > running > not started. Agents
+working is never announced; it counts as at the prompt (`isAtPrompt`) and
+gets an ask answer's Return like Stopped.
+
+A count with no report for 30 minutes is probed, never ended on the clock
+alone. The probe (Go, no model turn) reads Claude Code's session registry
+entry for the session (`~/.claude/sessions/<pid>.json`, matched by
+`sessionId`): `busy` keeps Agents working; `waiting` leaves the row alone;
+`idle`, `shell`, a missing or unknown status, no entry or a dead process
+ends the count — a compare-and-clear on `agent_background_at` written by Go
+only — and the row then reads Stopped (or its ask / finished state) with one
+notice. A reading the probe could not take (a `ps` that cannot answer, a
+registry with no readable entry file) is a failed probe, never "gone". Two
+consecutive failed probes for the same count show it as over without a
+write.
+
 **Why locked:** Owner decisions of board #312 (2026-10-03), and the states
 brainstorm of the session report (1a, 2a, 3a, 4: all). A status hook that
 injected text into the agent, blocked a prompt, or showed a state for a dead
 session would be worse than none; and "waiting for you" on every turn end
 cried wolf — the owner must be able to trust that orange means their move.
+Board #411 (asks #138, #139, #142): a turn end that left background agents
+working read Stopped while they worked, so Stopped no longer meant the
+session was done. The count enters only at the Stop's own snapshot and
+every later event only lowers or clears it, so a late event never starts
+it again once it was cleared; only Go writes it.
 
 **Test guards:**
-- `cmd/workbench_session_state_test.go::TestProj11_HookNeverWritesStdoutAndExitsZero`
+- `cmd/workbench_session_state_test.go::TestProj11_HookNeverWritesStdoutAndExitsZero` (since 2026-10-10 also with a `SubagentStop` input)
 - `cmd/workbench_session_state_test.go::TestProj11_NestedSessionNeverMovesTheRow`
 - `internal/db/terminal_sessions_test.go::TestProj11_OlderEventNeverOverwritesANewerState`
-- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateFromAnEarlierRunIsIgnored`
-- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped")
-- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the eight kinds in the order above, live and not live)
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateFromAnEarlierRunIsIgnored` (since 2026-10-10 also an earlier run's background count)
+- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped"; since 2026-10-10: working → agents working posts nothing, agents working → stopped posts once, agents working withdraws a stopped banner)
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the nine kinds in the order above, live and not live)
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_TurnEndWithoutAskIsStoppedNotWaiting`
 - `internal/db/session_report_test.go::TestProj11_WorkingClearsFinishedAndError`
 - `internal/db/session_report_test.go::TestProj11_WorkingOverWorkingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_WorkingOverWorkingClearsFinished` (finish, an Esc interrupt and a new prompt: the UserPromptSubmit's `working` over `working` clears `finished_at`; a plain `working` repeat stays a no-op)
 - `internal/db/session_report_test.go::TestProj11_ToolRunWorkingOverWorkingKeepsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseOverWorkingKeepsFinished` (finish, then a PostToolUse `working` over `working`: still finished)
-- `internal/db/session_report_test.go::TestProj11_ToolRunOutOfWaitingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseIntoWorkingClearsFinished` (finish, then Stop (`waiting`) or a permission prompt (`approval`), then a main-thread PostToolUse `working`: cleared; the hook half also pins that a subagent's PostToolUse over `waiting` writes nothing and keeps `finished_at`)
+- `internal/db/session_report_test.go::TestProj11_ToolRunOutOfWaitingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseIntoWorkingClearsFinished` (finish, then Stop (`waiting`) or a permission prompt (`approval`), then a main-thread PostToolUse `working`: cleared; the hook half also pins that a subagent's PostToolUse over a `waiting` without a background count writes nothing and keeps `finished_at`, and — rewritten 2026-10-10, board #411, same strictness — over a counted `waiting` changes only `agent_background_at`, every other column of the row unchanged, while a main-thread one out of it clears the count)
 - `internal/db/session_report_test.go::TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (db half: a later plain `waiting` keeps the error, a StopFailure with another error replaces it at its own time, `working`/`approval` clear it)
 - `cmd/workbench_session_state_test.go::TestProj11_StopFailureRecordsErrorOtherWritesClearIt` (hook half: the payload's `error` field, a repeated StopFailure keeps its time and another error replaces it, a missing or non-string one stored as `''`, clipped to 60 runes on one line)
 - `cmd/workbench_session_state_test.go::TestProj11_EndedTurnsToolResultNeverOverwritesTheStop` (board #368: the ended turn's tool result whose hook starts after the Stop's leaves `waiting`; a later self-started turn's first tool result still records `working`)
 - `cmd/workbench_session_state_test.go::TestProj11_StopReplacesItsTurnsLateToolResult` (board #368: the ended turn's tool result landing first with a later stamp is replaced by the Stop's `waiting`, the stored time never goes back; a subagent's `working` keeps the time order)
+- Board #411, background count (2026-10-10) — the hook half in `cmd/workbench_session_state_test.go`: `TestProj11_StopRecordsBackgroundSubagents` (subagents and workflows count, shells and teammates do not; none, absent or malformed → NULL), `TestProj11_MalformedBackgroundTasksStillRecordWaiting`, `TestProj11_StopOverWaitingWithAnotherCountWrites` (another count is a transition: it writes and advances `agent_state_at`), `TestProj11_StopWithTheSameCountRefreshesTheReportTime` (only `agent_background_at` moves), `TestProj11_OnlyTheStopStartsBackground` (a late subagent tool result, a `SubagentStop`, the idle notice and a Stop reaching `session-state` leave a NULL count NULL), `TestProj11_SubagentStopOnlyLowersTheCount` (the min rule, its own id left out, an empty `agent_type`, a missing or non-array list and an older stamp ignored, state, stamp and `finished_at` untouched), `TestProj11_MainTurnAndIdleNoticeClearTheCount` (a permission prompt keeps it), `TestProj11_StopStateWriteNeedsOnlyTheCoreHooks` (a folder without the `SubagentStop` entry keeps its `waiting` and run mark; the status reports `state_hooks` false), `TestProj11_MalformedSubagentStopKeepsTheStopWaiting` (an owner's malformed `hooks.SubagentStop`: the Stop still records `waiting`, the status refuses the file and reads `state_hooks` false — PROJ-04)
+- Board #411, the db half in `internal/db/terminal_sessions_test.go`: `TestProj11_StopWriteStoresTheSnapshot`, `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_LowerTerminalBackgroundOnlyLowers` (never raises, never touches another column), `TestProj11_StopOverWaitingWithAnotherCountWrites` (a failed `waiting` keeps its error through a counted Stop and an idle notice, and `agent_failed_at` moves with `agent_state_at` so the row still reads Error; Desktop twin `SessionAgentStatusTests.testProj11_ErrorOutranksACountedStopOnGosRowShape`), `TestProj11_MainTurnAndIdleNoticeClearTheCount`, `TestProj11_NewRunAndConversationSwitchClearTheCount` (`MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`)
+- Board #411, the Desktop in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_BackgroundAgentsAreNotStopped`, `testProj11_BackgroundWithAsksIsNotWaitingOnAsk`, `testProj11_BackgroundEndsOnGrace` (a count lowered to 0 ends after 120 s; a count > 0 never ends on the Desktop's clock), `testProj11_UnreadableOrFutureBackgroundStampIsNotBackground`, `testProj11_BackgroundIsAtPrompt`; `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_BackgroundIsNeverAnnouncedTheStopAfterOnce`
+- Board #411, the staleness probe (2026-10-10, registry only, ask #142) — in `cmd/workbench_session_probe_test.go`: `TestProj11_ProbeNeverStartsBackground` (a `waiting` with no count: nothing written whatever the registry reads), `TestProj11_ProbeNeverEndsOnAFailedReading` (a `ps` that cannot answer for an existing pid, or a registry whose every entry file is unreadable → `ok: false`, the row byte-identical), `TestSessionProbeStageOneTable` (a count stale for 30 min: `busy` and `waiting` write nothing; `idle`, `shell`, a missing or unknown status, no entry, a dead or reused pid end the count and only it; not stale, an unparsable stamp or a row back to `working` → `not_stale`, nothing written), `TestSessionProbeStaleStampWithoutACountIsNotStale` (a NULL or 0 count next to a stale stamp → `not_stale`, nothing written), `TestSessionProbeNeverTouchesStateOrFinished` (whatever the outcome: `agent_state`, its time, `finished_at`, the turn order and the error stay), `TestSessionProbeEnvelopeShape` (one JSON object, exit 0; `ok: false` with an error on a missing row, another workbench, no ids, a broken config), `TestSessionProbeWorkbenchFlags` (the legacy `--project` spelling works; both flags → `ok: false`), `TestSessionProbeHasNoPingFlag` (no ping is built: `--ping` is an unknown flag); in `internal/db/terminal_sessions_test.go`: `TestEndTerminalBackgroundIsCompareAndClear` (clears only the two columns, only on the stamp the probe read; a newer heartbeat or Stop, a row back to `working`, another conversation or workbench → nothing written; a second end is a no-op); supporting in `internal/claudesession/registry_test.go`: `TestFindSessionPrefersTheLiveEntryOfASession`, `TestAliveRejectsAReusedPID` (a `ps` error is unknown, never dead), `TestFindSessionFirstWriteEntryHasNoStatus`, `TestFindSessionUnreadableRegistryIsAnError`, `TestFindSessionPropagatesAnUnreadableProcessTable`, `TestFindSessionTakesTheConfigDirLiterally`
+- Board #411, the Desktop half of the staleness probe (2026-10-10, ask #142; the Desktop only decides when to run `workbench session-probe` and never writes) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testNeedsProbeTable` (a count above zero whose report is at least 30 min old, never one from the future), `testProj11_DisplayOverEndsTheCountWithoutAWrite` (a count shown over reads as finished / ask / stopped); in `WatchtowerDesktop/Tests/Core/SessionProbeResultTests.swift`: `testDecodesEveryOutcomeAndTheFailureEnvelope`; in `WatchtowerDesktop/Tests/SessionBackgroundProberTests.swift`: `testNoProbeBeforeThirtyMinutes`, `testABusyCountIsProbedAgainOnlyAfterAnotherThirtyMinutes`, `testNoProbeOutsideAgentsWorking` (Needs approval, working, not live, standalone, an earlier run, a count of 0 or none), `testOneProbeInFlightPerSession`, `testOneFailedProbeNeverEndsTheCount`, `testTwoFailedProbesShowTheCountOverWithoutAWrite` (cleared by a probe that runs, a new report and a new run), `testAnEndedCountAsksForARead`, `testStopCancelsTheProbe`; in `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift`: `testAProbeThatEndsTheCountPostsOneStoppedNotice`, `testTwoFailedProbesShowStoppedOnceWithoutAWrite`
+- supporting (board #411): `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStop`, `TestHasStateHooksNeedsAllFiveCoreNeedsFour`); `WatchtowerDesktop/Tests/Core/SessionStatePresentationTests.swift::testBackgroundIsGreenWithAgentCount`; `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift::testBackgroundEndsOnTheClockWithoutAWrite` (the 120 s grace, one notice, no write); `cmd/workbench_check_test.go::TestBackgroundSubagentsCountsSubagentsAndWorkflows`, `TestStopHookInputParsesTheCapturedFixtures`
 
 **Locked since:** 2026-10-03
 
@@ -845,7 +898,7 @@ would send the agent to read an answer that is not there — the
 `WorkbenchCommentPrompt` rule carried over to asks.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after), `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted` (at once and after a hold; a dialog key is no draft), `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted`, `testAPermissionPromptDuringThePauseLeavesTheLineTyped` (a line left typed keeps the next answer from submitting it, through a dialog key), `testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt`, `testAFailedStateReadAfterThePauseLeavesTheLineTyped`, `testAFailedStateReadBeforeThePasteHoldsTheLine`, `testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer`
+- `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_TheAnswerIsStoredBeforeTheLineIsTypedThenSubmitted` (a probed process reads the DB at input time; one bracketed paste with no control byte inside, then Return alone), `testProj12_ASessionAtAPermissionPromptGetsTheLineOnlyAfterTheAnswer` (nothing typed or copied while held, delivered once after), `testProj12_OverTheOwnersHalfTypedTextTheLineIsOnlyPasted` (at once and after a hold; a dialog key is no draft), `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted`, `testAPermissionPromptDuringThePauseLeavesTheLineTyped` (a line left typed keeps the next answer from submitting it, through a dialog key), `testAHandOffLeftWithoutItsReturnKeepsTheAnswerFromSubmittingIt`, `testAFailedStateReadAfterThePauseLeavesTheLineTyped`, `testAFailedStateReadBeforeThePasteHoldsTheLine`, `testALongHeldAnswerSaysItStillWaitsAndIsNeverSentOnATimer`, `testProj12_AnAnswerIntoABackgroundSessionGetsTheReturn` (board #411: Agents working is a turn end, so the answer gets its Return as into a stopped session), `testProj12_ABackgroundSessionAtASubagentPermissionPromptHoldsTheLine` (board #411: a background agent's permission prompt stores `approval`, which outranks Agents working, and the line is held)
 - `internal/asks/line_test.go::TestDeliveryLineFixtures`, `internal/asks/line_test.go::TestDeliveryLineIsOneLine`
 - `WatchtowerDesktop/Tests/Core/OwnerAskPromptTests.swift` (`testTheLineMatchesEveryGoFixture`, `testTheLineIsOneLineWithNoControlCharacters`)
 - `WatchtowerDesktop/Tests/TerminalCenterTests.swift` (`testAnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn` — the Return strictly after the pause, `testOverTheOwnersDraftSubmitPromptOnlyPastes`, `testTheOwnerTypingDuringThePauseStopsTheReturn`, `testALineLeftWithoutItsReturnKeepsTheNextFromSubmittingIt`, `testClaudeCodeLineBreakKeysLeaveTheDraft`, `testAFailedRefreshAfterThePauseStopsTheReturn`, `testWithoutBracketedPasteTheLineIsCopiedNotTyped`, `testAHandOffWithoutBracketedPasteIsCopiedAndNotSubmitted`)
@@ -853,7 +906,7 @@ would send the agent to read an answer that is not there — the
 - `cmd/workbench_brief_session_test.go::TestProj12_ANewRunWithTheStateHooksIsMarked` (startup and resume with the state hooks mark the run; without them, or for a nested `claude -p`, nothing is stamped), `cmd/workbench_brief_session_test.go::TestProj12_CompactWhileIdleKeepsTheRunsState` (a `compact` SessionStart onto the same or a new id keeps a turn's `waiting` or the run's mark and its stamp)
 - `WatchtowerDesktop/Tests/Core/OwnerAskQueriesTests.swift` (`testAnsweringAnAskWithdrawnMeanwhileThrowsNotOpenAndWritesNothing`)
 - `cmd/workbench_brief_test.go::TestProj12_AnsweredAskSurvivesAFullBoard`
-- supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`, `testTwoHeldAnswersToOneSessionGoOneAfterTheOther`, `testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext`, `testDismissingAHeldAnswerCancelsItsDelivery`, `testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted`, `testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting`); `TerminalCenterTests::testATypedAnswerHintStaysThroughKeysIntoAPermissionDialog`; `CodeHandoffCenterTests::testAnAnswerIntoASessionWaitingThisRunIsSubmitted`; `TerminalOwnerInputTests::testOnlyTheOwnersInputIsReported` (the owner's bytes, never the app's paste); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `SessionAgentStatusTests::testTheRunsMarkSaysTheHooksReportThisRun`; `TerminalCenterTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted`, `testTheOwnersReturnDuringThePauseSkipsOurs` — also `\` then Return is no submit, `testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped`, `testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition`, `testARestartDropsTheLastRunsPasteBar`); `cmd/workbench_brief_session_test.go::TestApplySessionStart_HooksReadErrorStillMovesTheID`; `OwnerAsksViewModelTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testARelaunchDuringTheReadBeforeThePasteTypesNothing`, `testTheOwnersReturnDuringThePauseSendsTheAnswer`); `internal/db/terminal_sessions_test.go` (`TestMarkTerminalAgentRun_NewRunStartsEmpty`, `TestClearTerminalAgentState_LeavesNoStamp`); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
+- supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`, `testTwoHeldAnswersToOneSessionGoOneAfterTheOther`, `testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext`, `testDismissingAHeldAnswerCancelsItsDelivery`, `testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted`, `testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting`); `TerminalCenterTests::testATypedAnswerHintStaysThroughKeysIntoAPermissionDialog`; `CodeHandoffCenterTests::testAnAnswerIntoASessionWaitingThisRunIsSubmitted`, `testAHandOffIntoABackgroundSessionIsAtThePrompt` (board #411, ruling R52); `TerminalOwnerInputTests::testOnlyTheOwnersInputIsReported` (the owner's bytes, never the app's paste); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `SessionAgentStatusTests::testTheRunsMarkSaysTheHooksReportThisRun`; `TerminalCenterTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted`, `testTheOwnersReturnDuringThePauseSkipsOurs` — also `\` then Return is no submit, `testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped`, `testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition`, `testARestartDropsTheLastRunsPasteBar`); `cmd/workbench_brief_session_test.go::TestApplySessionStart_HooksReadErrorStillMovesTheID`; `OwnerAsksViewModelTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testARelaunchDuringTheReadBeforeThePasteTypesNothing`, `testTheOwnersReturnDuringThePauseSendsTheAnswer`); `internal/db/terminal_sessions_test.go` (`TestMarkTerminalAgentRun_NewRunStartsEmpty`, `TestClearTerminalAgentState_LeavesNoStamp`); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
 
 **Locked since:** 2026-10-03
 
@@ -1137,6 +1190,32 @@ other direction.
   Stopped until a later tool succeeds: `PostToolUseFailure` is
   not hooked. (d) Subagent detection relies solely on the `agent_id` field
   of the hook input; an input without it is treated as the main thread's.
+  The background count (board #411, 2026-10-10): whether `SubagentStop`
+  fires for a killed or crashed subagent is unverified (the count then waits
+  for the next main turn, Stop or run, or the staleness probe); once two
+  failed probes showed a count as over (display only, nothing written), a
+  subagent that reports again revives Agents working, so a later Stop
+  announces "stopped" a second time (the known double notice); teammates
+  and background shells are not counted, so a session running only those
+  reads Stopped; a Claude Code without `background_tasks` in its Stop input stores no count and
+  shows Stopped as before; and a folder needs Re-run Setup (or Repair) once
+  for the `SubagentStop` entry — until then nothing lowers the count before
+  the main agent's next turn. The probe reads Claude Code's session registry, an
+  undocumented Claude Code internal: a change in it loses the probe and the
+  count ends at the first stale probe, as Stopped, never stuck (when no
+  entry file decodes at all, or `ps` cannot answer for a live pid, the probe
+  fails instead and only the display ends, after two failed probes). The probe
+  reads `~/.claude` only, never `CLAUDE_CONFIG_DIR` (the transcript readers'
+  rule): a `claude` started with a custom `CLAUDE_CONFIG_DIR` is not found,
+  so its count ends at the first stale probe. The row
+  follows the registry, so a hung subagent keeps it Agents working for as
+  long as Claude Code reports work in flight. Not measured on Claude Code
+  2.1.295: a never-ending background shell, workflows, a hung or killed
+  subagent. A probe that keeps failing ends only the display (two failed
+  probes); the stored count stays until the next main turn, Stop or run.
+  The peer-messaging ping is recorded (spec
+  `docs/superpowers/specs/2026-10-10-session-background-agents-design.md`,
+  Appendix B; board #481) but not built.
 
 - **Board archive (PROJ-15).** SQLite cannot push a `project_id` filter
   into the recursive, grouped view, so every board read, `get_target` and
@@ -1160,6 +1239,7 @@ other direction.
 
 ## Changelog
 
+- 2026-10-10 (board #411, spec `docs/superpowers/specs/2026-10-10-session-background-agents-design.md`): **PROJ-11 amended 2026-10-10, approved by the owner in ask #139** (what counts, the 120 s grace and the `SubagentStop` hook in ask #138; the staleness probe in asks #138, #140 and #142: the registry decides, the ping is not built) — a session whose main turn ended while background subagents still run shows **Agents working** instead of Stopped. Migration `00106` adds `terminal_sessions.agent_background` and `agent_background_at` (Go writes, the Desktop reads); the Stop hook stores the count of `subagent`/`workflow` entries of its input's `background_tasks`; a subagent's tool result over a counted `waiting` only refreshes the report time; the new async state hook `SubagentStop` only lowers the count; every main turn, a StopFailure, the idle notice, a new run and a conversation switch clear it. No new `agent_state` value: Agents working is a presentation of the stored `waiting`, so the turn order, repeats, failures, `finished_at`, `isAtPrompt` (ruling R52) and PROJ-12's Return are untouched — PROJ-12 gains two guards pinning that an answer into an Agents working session gets its Return and one into its background agent's permission prompt is held. The state hooks split into the core four (gating the Stop's state write and the run mark) and all five (the status's `state_hooks`), so a folder set up earlier keeps recording until Re-run Setup or Repair adds the `SubagentStop` entry; **PROJ-04** names the fifth event, the malformed-file rule covering it. Guards rewritten to the new rule, none relaxed: `TestProj11_PostToolUseIntoWorkingClearsFinished`'s subagent half (a counted `waiting` changes only `agent_background_at`), `testProj11_StateOrder` (nine kinds), `testProj11_OneNoticePerTransition` (agents working posts nothing, the stop after it once); extended: `TestProj11_HookNeverWritesStdoutAndExitsZero`, `testProj11_StateFromAnEarlierRunIsIgnored`, `TestProj04_MalformedStateEventLeavesTheFileByteIdentical` and `TestProj04_StateHooksKeepOwnerHooksAndKeys` (now over `SubagentStop` too). New guards listed under PROJ-11 and PROJ-12. v1 note "Session agent state ordering and subagents" (d) extended.
 - 2026-10-07 (board #415, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md`): **PROJ-15 amended 2026-10-07, approved by the owner in ask #106** (the spec §3 wording and all four §1 decisions as recommended) — "Archive Closed Targets Now". Migration `00105` adds `projects.archived_through` (a UTC moment, NULL = never pressed, `CHECK` it parses) and recreates `workbench_target_archive` with a second branch: a closed subtree whose newest close time is not after the moment is archived whatever `archive_after_days` says, including Never (decision 1); both `done` and `dismissed` count (decision 4). The Observable's first sentence is replaced and one sentence added after "Reopening restores it"; "hidden, never lost", groups-go-whole, restore-by-reopening and the drift guarantee are unchanged, and "Why locked" is unchanged — Undo is an extra, not the only way back. Writers: the Desktop's `WorkbenchQueries.archiveClosedTargetsNow`/`clearArchivedThrough` (the header's "Archive Closed Targets Now" / "Undo Archive Now") and the Go twins `db.ArchiveWorkbenchClosedNow`/`db.ClearWorkbenchArchivedThrough`; no CLI writer, no MCP tool. Every existing PROJ-15 guard runs unchanged (`TestProj15_PerWorkbenchSettingAndNever` still asserts that 0 archives nothing with no stamp); new guards in `internal/db/proj15_archive_now_test.go`, a stamp-only case in `TestProj15_DriftStillSeesArchivedUnmergedWork`. PROJ-05/06/07/09 untouched: the button writes only `projects`. v1 note "Board archive" extended.
 - 2026-10-07 (board #396, with #387/#388/#389; owner directive 2026-10-05 «send it right away», approved as an amendment of PROJ-12): **PROJ-12 amended** — an answer is also submitted into a session whose hooks have not written a state yet this run, when its SessionStart hook marked the run. Root cause: a relaunch or resume (`startup`/`resume`) cleared the row's state, so `SessionAgentStatus.at` was nil until the agent's next turn and the line was only pasted ("press Return to send") into an idle session; a compaction while idle continues the run and changed nothing. Now the SessionStart hook writes the run's mark (`MarkTerminalAgentRun`: no state, a stamp of this run) when the workbench's folder has the session state hooks (`workbenchHasStateHooks`), even with nothing to clear; without them `ClearTerminalAgentState` clears with no stamp (it used to stamp the clear), so a mark always means the state hooks run. The Desktop reads it as `SessionAgentStatus.runMarked`/`hooksReported`; the dot, `isAtPrompt` (hand-offs, ruling R52) and PROJ-11's states and notices are unchanged. The permission-dialog guard (`needsApproval` before the paste and after the pause, failed reads) and the owner-draft guard are unchanged. Also: the Return goes only into the process run the line was pasted into (`TerminalCenter.runs`; a relaunch reuses the process object, #387 — also for held answers and the read before the paste), the owner's submitting Return during the pause skips ours and leaves no bar (#388), a restart drops the last run's paste bar (#389), and the condition that withheld a Return is logged. Guards rewritten to the new rule, none relaxed: `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted` → `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted` (same assertions), `CodeHandoffCenterTests::testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted` → `testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted` (the earlier run's state kept, plus no row, an earlier run's mark and an unknown value; the bar asserted). New guards `testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn`, `testProj12_ACompactWhileIdleKeepsTheReturn`, `TestProj12_ANewRunWithTheStateHooksIsMarked`, `TestProj12_CompactWhileIdleKeepsTheRunsState`. Limit (h) rewritten. No hook setting changed (the SessionStart entry already ran for every source), so no Re-run Setup. PROJ-11's guards are unchanged; its "the SessionStart clear of a new run" is now the mark or the stampless clear.
 

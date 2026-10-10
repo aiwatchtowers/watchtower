@@ -14,7 +14,7 @@ package enum SessionStatePresentation {
 
     package static func color(for state: State) -> Tone {
         switch state.kind {
-        case .working, .running: .green
+        case .working, .running, .background: .green
         case .waitingOnAsk, .needsApproval: .orange
         case .finished: state.openAsks > 0 ? .orange : .blue
         case .failed: .red
@@ -22,11 +22,12 @@ package enum SessionStatePresentation {
         }
     }
 
-    /// The SF Symbol beside the dot; nil for none. A working session's
-    /// `questionmark` comes with the open-ask count.
+    /// The SF Symbol beside the dot; nil for none. A working or background
+    /// session's `questionmark` comes with the open-ask count.
     package static func glyph(for state: State) -> String? {
         switch state.kind {
         case .working: state.openAsks > 0 ? "questionmark" : nil
+        case .background: state.openAsks > 0 ? "questionmark" : "person.2.fill"
         case .waitingOnAsk: "questionmark"
         case .needsApproval: "hand.raised.fill"
         case .finished: "checkmark"
@@ -38,6 +39,9 @@ package enum SessionStatePresentation {
 
     /// A session that is not live draws a ring in its kind's colour.
     package static func isRing(_ state: State) -> Bool { !state.live }
+
+    /// A live session whose background agents run pulses its dot.
+    package static func pulses(_ state: State) -> Bool { state.live && state.kind == .background }
 
     /// The caption naming the state's own oldest open ask.
     package static func caption(for state: State) -> String {
@@ -60,6 +64,8 @@ package enum SessionStatePresentation {
             state.openAsks > 0 ? "Finished · \(asksOpen(state.openAsks))" : "Finished"
         case .stopped:
             "Stopped"
+        case .background:
+            backgroundCaption(state)
         case .failed:
             errorCaption(state.error)
         case .running:
@@ -74,6 +80,17 @@ package enum SessionStatePresentation {
     private static func errorCaption(_ error: String) -> String {
         let words = error.replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespaces)
         return words.isEmpty ? "Stopped on an error" : "Error: \(words)"
+    }
+
+    /// "Agents working" (no count shown), "1 agent working", "N agents
+    /// working", with the open asks.
+    private static func backgroundCaption(_ state: State) -> String {
+        let agents = switch state.backgroundAgents {
+        case ...0: "Agents working"
+        case 1: "1 agent working"
+        default: "\(state.backgroundAgents) agents working"
+        }
+        return state.openAsks > 0 ? "\(agents) · \(asksOpen(state.openAsks))" : agents
     }
 
     private static func asksOpen(_ count: Int) -> String {

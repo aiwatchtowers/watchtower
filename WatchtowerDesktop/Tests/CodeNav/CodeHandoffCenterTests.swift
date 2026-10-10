@@ -13,6 +13,7 @@ private final class AgentStates: @unchecked Sendable {
 
     private let lock = NSLock()
     private var states: [Int64: String?] = [:]
+    private var backgrounds: [Int64: (count: Int, at: String)] = [:]
     private var stamp = "2999-01-01T00:00:00.000Z"
     private var failing = false
 
@@ -32,6 +33,12 @@ private final class AgentStates: @unchecked Sendable {
         }
     }
 
+    /// The SubagentStop/Stop hooks' count of background agents (#411),
+    /// reported at `at`.
+    func storeBackground(_ id: Int64, count: Int, at: String) {
+        lock.withLock { backgrounds[id] = (count, at) }
+    }
+
     func failReads() { lock.withLock { failing = true } }
 
     func agentStateRows(_ asked: [Int64]) throws -> [SessionAgentStateRow] {
@@ -40,7 +47,8 @@ private final class AgentStates: @unchecked Sendable {
             return asked.compactMap { id in
                 states[id].map {
                     SessionAgentStateRow(id: id, projectID: nil, title: "s", agentState: $0,
-                                         agentStateAt: stamp, workbenchName: nil)
+                                         agentStateAt: stamp, workbenchName: nil,
+                                         agentBackground: backgrounds[id]?.count, agentBackgroundAt: backgrounds[id]?.at)
                 }
             }
         }
@@ -181,6 +189,34 @@ final class CodeHandoffCenterTests: XCTestCase {
         expected.openBeside(.session(session.id), keeping: .files)
         XCTAssertEqual(vm.layout(projectID: project.id), expected)
         XCTAssertEqual(vm.layout(projectID: project.id).visiblePanes, [.files, .session(session.id)], "beside the editor")
+    }
+
+    /// #411 (spec §5.4): Agents working is a turn end — the agent sits at
+    /// its prompt while its background agents run — so a hand-off into it
+    /// is pasted and submitted exactly as into a stopped session.
+    func testAHandOffIntoABackgroundSessionIsAtThePrompt() async throws {
+        let (handoff, vm, project) = try await makeHandoffFixture()
+        let session = try await runningSession(vm, project)
+        stored.storeAgentState(session.id, "waiting")
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        stored.storeBackground(session.id, count: 2, at: formatter.string(from: Date().addingTimeInterval(-1)))
+        await agentStates.poll()
+        XCTAssertEqual(vm.sessionState(session).kind, .background)
+        vm.setLayout(filesAlone, projectID: project.id)
+        await handoff.handConversation(try storedQuestion(project))
+        let text = try XCTUnwrap(handoff.requests[project.id]?.text)
+        XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .session(session.id))
+
+        let sent = await handoff.send(to: .session(session.id), workbenchID: project.id)
+
+        XCTAssertTrue(sent)
+        XCTAssertNil(handoff.requests[project.id], "the sheet closes")
+        XCTAssertEqual(processes[0].inputs, [bracketedPasteBytes(text), [0x0D]], "one paste, then one Return")
+        XCTAssertFalse(terminals.pasteHints.contains(session.id), "no press Return hint")
+        var expected = filesAlone
+        expected.openBeside(.session(session.id), keeping: .files)
+        XCTAssertEqual(vm.layout(projectID: project.id), expected)
     }
 
     /// Ruling R52: a working session (or one with no reported state) gets

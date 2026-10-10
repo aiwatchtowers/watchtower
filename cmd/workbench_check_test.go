@@ -251,3 +251,65 @@ func TestStopHookReason_CapsAndClips(t *testing.T) {
 		assert.LessOrEqual(t, len([]rune(l)), 402, "each finding is clipped")
 	}
 }
+
+func TestBackgroundSubagentsCountsSubagentsAndWorkflows(t *testing.T) {
+	mixed := `[{"id":"a1","type":"subagent"},{"id":"a2","type":"subagent"},{"id":"w1","type":"workflow"},
+		{"id":"s1","type":"shell"},{"id":"m1","type":"monitor"},{"id":"t1","type":"teammate"},
+		{"id":"c1","type":"cloud session"},{"id":"p1","type":"MCP task"},{"id":"u1","type":"something new"}]`
+	for _, tc := range []struct {
+		name, field, except string
+		want                int64
+		wantOK              bool
+	}{
+		{"subagents and workflows only", mixed, "", 3, true},
+		{"except drops its id", mixed, "a1", 2, true},
+		{"except drops a workflow too", mixed, "w1", 2, true},
+		{"except naming no entry", mixed, "zz", 3, true},
+		{"empty list", `[]`, "", 0, true},
+		{"absent", "", "", 0, false},
+		{"null", `null`, "", 0, false},
+		{"object instead of array", `{"x":1}`, "", 0, false},
+		{"string instead of array", `"subagent"`, "", 0, false},
+		{"non-string type", `[{"id":"a1","type":7},{"id":"a2","type":["subagent"]}]`, "", 0, true},
+		{"non-object entries", `[1,"a",null,true,[{"type":"subagent"}]]`, "", 0, true},
+		{"non-string id keeps a valid type", `[{"id":5,"type":"subagent"}]`, "", 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"session_id":"s"}`
+			if tc.field != "" {
+				raw = `{"session_id":"s","background_tasks":` + tc.field + `}`
+			}
+			var in stopHookInput
+			require.NoError(t, json.Unmarshal([]byte(raw), &in), "a malformed field never fails the input")
+			assert.Equal(t, "s", in.SessionID)
+
+			n, ok := backgroundSubagents(in.BackgroundTasks, tc.except)
+
+			assert.Equal(t, tc.want, n)
+			assert.Equal(t, tc.wantOK, ok)
+		})
+	}
+}
+
+// The inputs captured from Claude Code (spec A.7): a Stop with two
+// background subagents and a background shell, and one with none.
+func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
+	for _, tc := range []struct {
+		file string
+		want int64
+	}{
+		{"testdata/stop_background_tasks.json", 2},
+		{"testdata/stop_no_background_tasks.json", 0},
+	} {
+		raw, err := os.ReadFile(tc.file)
+		require.NoError(t, err)
+		var in stopHookInput
+		require.NoError(t, json.Unmarshal(raw, &in), tc.file)
+		assert.NotEmpty(t, in.SessionID, tc.file)
+
+		n, ok := backgroundSubagents(in.BackgroundTasks, "")
+
+		assert.True(t, ok, tc.file)
+		assert.Equal(t, tc.want, n, tc.file)
+	}
+}

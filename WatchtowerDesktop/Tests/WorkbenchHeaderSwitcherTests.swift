@@ -383,6 +383,20 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         let working = SessionSwitcherButton(title: "one", state: .live(.working, openAsks: 2, oldestAskID: 4)) {}
         XCTAssertNoThrow(try working.inspect().find(SessionStateLabel.self).find(text: "2"), "the ask count by the glyph")
         XCTAssertNoThrow(try working.inspect().find(SessionStateLabel.self).find(text: "Working · 2 asks open"))
+
+        let background = SessionSwitcherButton(title: "one", state: .live(.background, backgroundAgents: 3)) {}
+        let backgroundLabel = try background.inspect().find(SessionStateLabel.self)
+        XCTAssertNoThrow(try backgroundLabel.find(text: "3 agents working"))
+        XCTAssertEqual(try backgroundLabel.find(ViewType.Image.self).actualImage().name(), "person.2.fill")
+        XCTAssertThrowsError(try backgroundLabel.find(text: "0"), "no ask count beside person.2.fill")
+        XCTAssertNoThrow(try background.inspect().find(viewWithAccessibilityLabel: "Session one, 3 agents working"))
+        let backgroundAsks = SessionSwitcherButton(
+            title: "one", state: .live(.background, openAsks: 2, oldestAskID: 4, backgroundAgents: 1)
+        ) {}
+        let asksLabel = try backgroundAsks.inspect().find(SessionStateLabel.self)
+        XCTAssertEqual(try asksLabel.find(ViewType.Image.self).actualImage().name(), "questionmark")
+        XCTAssertNoThrow(try asksLabel.find(text: "2"), "the ask count by the glyph")
+        XCTAssertNoThrow(try asksLabel.find(text: "1 agent working · 2 asks open"))
     }
 
     func testASessionRowShowsItsBadgeCaptionAndShortcut() async throws {

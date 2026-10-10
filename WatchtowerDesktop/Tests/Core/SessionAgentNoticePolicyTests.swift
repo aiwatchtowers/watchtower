@@ -41,6 +41,44 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         XCTAssertEqual(postedNotices(approval).map(\.title), ["Release work needs approval"],
                        "waiting → approval is a new transition")
         XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.needsApproval), at: "t3")), canPost: true), [])
+
+        // Background agents (spec 2026-10-10-session-background-agents §5.3):
+        // never announced; the stop after them is, once.
+        var background = SessionAgentNoticePolicy()
+        _ = background.update(statusMap(agentStatus(2, .live(.working), at: "t0")), canPost: true)
+        XCTAssertEqual(background.update(statusMap(agentStatus(2, .live(.background), at: "t1")), canPost: true), [],
+                       "working → background posts nothing")
+        XCTAssertEqual(postedNotices(background.update(statusMap(agentStatus(2, .live(.stopped), at: "t1")),
+                                                       canPost: true)).map(\.title),
+                       ["Release work stopped"], "background → stopped: one notice")
+
+        var alone = SessionAgentNoticePolicy()
+        XCTAssertEqual(alone.update(statusMap(agentStatus(3, .live(.background, backgroundAgents: 2), at: "t1")),
+                                    canPost: true), [], "background alone posts nothing")
+
+        var withdrawn = SessionAgentNoticePolicy()
+        XCTAssertEqual(postedNotices(withdrawn.update(statusMap(agentStatus(4, .live(.stopped), at: "t1")),
+                                                      canPost: true)).count, 1)
+        XCTAssertEqual(withdrawn.update(statusMap(agentStatus(4, .live(.background), at: "t2")), canPost: true),
+                       [.withdraw(identifier: "workbench-session-4")], "background withdraws the stopped banner")
+    }
+
+    /// The background Stop's stamp is never announced while agents run; when
+    /// the grace expires the same stamp reads stopped and is announced once.
+    func testProj11_BackgroundIsNeverAnnouncedTheStopAfterOnce() {
+        var policy = SessionAgentNoticePolicy()
+        for agents in [2, 1, 1, 0] {
+            XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.background, backgroundAgents: agents), at: "t1")),
+                                         canPost: true), [], "background with \(agents) agents")
+        }
+        XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")),
+                                                   canPost: true)).map(\.title),
+                       ["Release work stopped"], "the grace expired: stopped@t1 once")
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")), canPost: true), [])
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.working), at: "t2")), canPost: true),
+                       [.withdraw(identifier: "workbench-session-1")], "main wakes")
+        XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t2")),
+                                                   canPost: true)).count, 1, "the next stop: one more")
     }
 
     func testBackToWorkingWithdrawsAndANextWaitNotifiesAgain() {
