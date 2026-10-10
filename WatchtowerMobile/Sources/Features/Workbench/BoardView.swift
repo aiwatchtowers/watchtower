@@ -62,11 +62,20 @@ struct BoardView: View {
             HStack(spacing: 8) {
                 ForEach(BoardFilter.allCases) { chip in
                     let title = board.count(chip).map { "\(chip.title) \($0)" } ?? chip.title
-                    Button(title) { filter = chip }
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .controlSize(.small)
-                        .tint(chip == filter ? .accentColor : .secondary)
+                    let tint: Color = chip == filter ? .accentColor : .secondary
+                    // The capsule stays chip-sized; the hit target around
+                    // it is 44 pt tall.
+                    Button { filter = chip } label: {
+                        Text(title)
+                            .font(.subheadline)
+                            .foregroundStyle(tint)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: 44)
+                            .background(tint.opacity(0.15), in: Capsule().inset(by: 7))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(chip == filter ? .isSelected : [])
                 }
             }
             .padding(.vertical, 6)

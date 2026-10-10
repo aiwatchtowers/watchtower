@@ -13,13 +13,13 @@ struct ConflictPrompt: View {
             HStack(spacing: 12) {
                 Button("Yes", action: onYes)
                     .buttonStyle(.borderedProminent)
-                    .frame(minHeight: 44)
                     .accessibilityLabel("Yes, apply anyway")
                 Button("No", role: .cancel, action: onNo)
                     .buttonStyle(.bordered)
-                    .frame(minHeight: 44)
                     .accessibilityLabel("No, keep the Mac's value")
             }
+            // Large size: each button itself is at least 44 pt tall.
+            .controlSize(.large)
         }
         .padding(.vertical, 4)
     }
@@ -47,10 +47,13 @@ struct BoardWriteRowView: View {
                         .font(.caption)
                         .foregroundStyle(PhoneTone.red.color)
                     Spacer(minLength: 8)
-                    Button("Dismiss") { onDismiss(row) }
-                        .font(.caption)
-                        .frame(minHeight: 44)
-                        .accessibilityLabel("Dismiss the failed change")
+                    Button { onDismiss(row) } label: {
+                        Text("Dismiss")
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .font(.caption)
+                    .accessibilityLabel("Dismiss the failed change")
                 }
             case let .conflict(prompt):
                 ConflictPrompt(prompt: prompt, onYes: { onApplyAnyway(row) }, onNo: { onDismiss(row) })

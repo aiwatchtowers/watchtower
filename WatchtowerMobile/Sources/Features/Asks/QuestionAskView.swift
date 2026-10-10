@@ -15,9 +15,10 @@ struct QuestionAskView: View {
                     model.pick(option.label, in: page)
                 } label: {
                     OptionLabel(option: option, multi: page.multi)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .frame(minHeight: 44)
                 .disabled(!isEditable)
                 .accessibilityLabel(option.recommended ? "\(option.label), recommended" : option.label)
                 .accessibilityHint(option.description)

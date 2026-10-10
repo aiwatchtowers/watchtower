@@ -198,9 +198,8 @@ private struct AgendaEventRow: View {
                         }
                         Button("Prep", action: open).buttonStyle(.bordered)
                     }
-                    // Regular size: a hit target of at least 44 pt.
-                    .controlSize(.regular)
-                    .frame(minHeight: 44)
+                    // Large size: the button itself is at least 44 pt tall.
+                    .controlSize(.large)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

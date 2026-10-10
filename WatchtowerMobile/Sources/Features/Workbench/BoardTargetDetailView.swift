@@ -244,13 +244,16 @@ struct BoardTargetDetailView: View {
                 }
                 Spacer(minLength: 4)
                 if comment.canReply {
-                    Button("Reply") {
+                    Button {
                         replyTo = comment
                         composerFocused = true
+                    } label: {
+                        Text("Reply")
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .font(.caption)
                     .buttonStyle(.borderless)
-                    .frame(minHeight: 44)
                     .accessibilityLabel("Reply to \(comment.author)")
                 }
             }
