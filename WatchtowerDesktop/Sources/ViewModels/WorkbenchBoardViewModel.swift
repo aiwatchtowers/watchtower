@@ -474,10 +474,7 @@ final class WorkbenchBoardViewModel {
         // write; they are the owner's doing too, so they never notify.
         var rolledUp: [Int64] = []
         let body: (Database) throws -> Void = { db in
-            let before = try WorkbenchQueries.ancestorStatuses(db, of: Int64(id))
-            try TargetQueries.updateStatus(db, id: id, status: status)
-            let after = try WorkbenchQueries.ancestorStatuses(db, of: Int64(id))
-            rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+            rolledUp = try WorkbenchQueries.updateTargetStatus(db, targetID: Int64(id), status: status)
         }
         return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }

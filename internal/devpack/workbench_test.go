@@ -121,13 +121,14 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v4 (spec 2026-10-08,
-// Working a target / Working a group).
+// finishing a session (pack v3); the marker is now v5 (v4: spec 2026-10-08,
+// Working a target / Working a group; v5: board #499, in_progress from the
+// first prompt).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v4\n") {
-		t.Fatalf("the skill must carry %s: v4", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v5\n") {
+		t.Fatalf("the skill must carry %s: v5", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -144,11 +145,30 @@ func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1 → v4, v2 → v4, v3 → v4): a copy we wrote
+// Board #499: working a target starts with the brainstorm, so the agent sets
+// it in_progress from the first prompt, and knows the app may have done so
+// already when the owner pressed Work on It.
+func TestWorkbenchSkill_InProgressFromTheFirstPrompt(t *testing.T) {
+	_, body := WorkbenchSkill()
+	content := string(body)
+	start := strings.Index(content, "## Working a target")
+	end := strings.Index(content, "## Working a group")
+	if start < 0 || end < start {
+		t.Fatal("the skill has no Working a target section before Working a group")
+	}
+	section := content[start:end]
+	for _, want := range []string{"`in_progress` right away", "the brainstorm, the spec, the decisions", "**Work on It**", "only set its `branch`"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the Working a target section never says %q", want)
+		}
+	}
+}
+
+// DEV-04 across every previous version (v1..v4 → v5): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)

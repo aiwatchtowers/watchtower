@@ -76,6 +76,8 @@ struct WorkbenchBoardView: View {
         // (boards #301, #415); load() reports a failed read.
         .onChange(of: archiveAfterDays) { _, _ in viewModel?.load() }
         .onChange(of: archivedThrough) { _, _ in viewModel?.load() }
+        // Work on It's in-progress write (board #499) shows at once too.
+        .onChange(of: appState.workbenchesViewModel?.boardReloads[projectID]) { _, _ in viewModel?.load() }
         .task(id: projectID) {
             await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }
