@@ -1143,3 +1143,46 @@ func TestAskGuardMessageTail(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, got, gen.message)
 }
+
+// A continued turn outside a Desktop terminal row (no or an unreadable
+// variable, or no conversation id) has nothing to record or clear: the guard
+// calls no model and prints nothing.
+func TestStopGuardContinuedTurnWithoutASessionCallsNoModel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     func(t *testing.T)
+		payload string
+	}{
+		{"no env", unsetTerminalEnv, guardPayload(e1Message, true)},
+		{"an unreadable env", func(t *testing.T) { t.Setenv(terminalSessionEnv, "row-seven") }, guardPayload(e1Message, true)},
+		{"no conversation id", func(*testing.T) {}, strings.Replace(guardPayload(e1Message, true), briefLaunchID, "", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, pid, _ := stopGuardFixture(t)
+			tc.env(t)
+			gen := &stubAskGuardGen{reply: e1Verdict}
+			useAskGuardGen(t, gen)
+
+			out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(tc.payload))
+
+			require.NoError(t, err)
+			assert.Empty(t, out)
+			assert.Zero(t, gen.calls, "no model call")
+		})
+	}
+}
+
+// An unreadable terminal session variable is named on stderr, and a short
+// question reads as the owner being away.
+func TestStopGuardUnreadableSessionVariableReadsAsAway(t *testing.T) {
+	_, pid, _ := stopGuardFixture(t)
+	t.Setenv(terminalSessionEnv, "row-seven")
+	useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+
+	out, errOut, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+
+	require.NoError(t, err)
+	assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
+	assert.Contains(t, errOut, "ask guard reads the owner as away")
+	assert.Contains(t, errOut, terminalSessionEnv)
+}

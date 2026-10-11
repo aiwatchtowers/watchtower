@@ -340,20 +340,13 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	at := hookNow().Truncate(time.Millisecond)
-	inCtx, cancelIn := context.WithTimeout(ctx, askGuardInputWait)
-	in, err := readHookInputLimit[askGuardStopInput](inCtx, stdin, sessionStateStdinLimit)
-	cancelIn()
-	if err != nil {
+	in, workbenchID, cfg, ok := askGuardStopSetup(ctx, stdin, stderr, rawID)
+	if !ok {
 		return
 	}
-	workbenchID, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
-	if err != nil || workbenchID <= 0 {
-		return
-	}
-	cfg, err := askGuardConfig()
-	if err != nil {
-		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
-		return
+	rowID, inSession := askGuardSessionRow(stderr, in.SessionID)
+	if in.StopHookActive && !inSession {
+		return // a continued turn with nothing to record or clear: no model call
 	}
 	empty := strings.TrimSpace(in.LastAssistantMessage) == ""
 	verdict, ok := askGuardVerdictFor(ctx, stderr, cfg, in, empty)
@@ -361,7 +354,7 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 		return
 	}
 
-	g := openAskGuardSession(stderr, cfg.DBPath(), workbenchID, in.SessionID)
+	g := openAskGuardSession(stderr, cfg.DBPath(), workbenchID, in.SessionID, rowID, inSession)
 	defer g.close()
 	r, gone := g.resolution(stderr, hookNow())
 	if gone {
@@ -403,6 +396,28 @@ func askGuardCancelled(ctx context.Context, stderr io.Writer) bool {
 	return true
 }
 
+// askGuardStopSetup reads the hook input (at most askGuardInputWait), the
+// workbench id and the config; false when any of them fails, which ends the
+// turn (a config failure is one stderr line; a bad input or id is silent).
+func askGuardStopSetup(ctx context.Context, stdin io.Reader, stderr io.Writer, rawID string) (askGuardStopInput, int64, *config.Config, bool) {
+	inCtx, cancel := context.WithTimeout(ctx, askGuardInputWait)
+	in, err := readHookInputLimit[askGuardStopInput](inCtx, stdin, sessionStateStdinLimit)
+	cancel()
+	if err != nil {
+		return in, 0, nil, false
+	}
+	workbenchID, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
+	if err != nil || workbenchID <= 0 {
+		return in, 0, nil, false
+	}
+	cfg, err := askGuardConfig()
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
+		return in, 0, nil, false
+	}
+	return in, workbenchID, cfg, true
+}
+
 // askGuardConfig loads the config for the active workspace (or --workspace).
 func askGuardConfig() (*config.Config, error) {
 	cfg, err := config.Load(flagConfig)
@@ -432,17 +447,27 @@ type askGuardSession struct {
 	matched            bool
 }
 
-// openAskGuardSession opens the database (never creating or migrating it,
-// reads under askGuardBusyTimeout) when the hook runs in a Desktop terminal
-// row with a conversation id, and checks the columns the guard needs by
-// schema lookup. A failure is one stderr line and reads as absent.
-func openAskGuardSession(stderr io.Writer, dbPath string, workbenchID int64, claudeID string) *askGuardSession {
-	g := &askGuardSession{workbenchID: workbenchID, claudeID: claudeID}
+// askGuardSessionRow is the Desktop terminal row the hook runs in; false
+// outside one, without the payload's conversation id, or with an unreadable
+// variable (one stderr line: the owner reads as away).
+func askGuardSessionRow(stderr io.Writer, claudeID string) (int64, bool) {
 	rowID, ok, err := terminalSessionRowID()
-	if !ok || err != nil || claudeID == "" {
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: ask guard reads the owner as away: %v\n", err)
+		return 0, false
+	}
+	return rowID, ok && claudeID != ""
+}
+
+// openAskGuardSession opens the database (never creating or migrating it,
+// reads under askGuardBusyTimeout) when the hook runs in Desktop terminal
+// row rowID (inSession), and checks the columns the guard needs by schema
+// lookup. A failure is one stderr line and reads as absent.
+func openAskGuardSession(stderr io.Writer, dbPath string, workbenchID int64, claudeID string, rowID int64, inSession bool) *askGuardSession {
+	g := &askGuardSession{workbenchID: workbenchID, claudeID: claudeID, rowID: rowID}
+	if !inSession {
 		return g
 	}
-	g.rowID = rowID
 	database, err := db.OpenExistingRW(dbPath, askGuardBusyTimeout)
 	if err == nil {
 		err = askGuardSchemaReady(database)
