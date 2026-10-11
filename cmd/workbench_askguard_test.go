@@ -317,11 +317,17 @@ func lockDatabase(t *testing.T, database *db.DB) {
 	require.NoError(t, err)
 }
 
-func TestAskGuard_WithoutThePreToolUseFlagIsAnError(t *testing.T) {
+// ask-guard runs as exactly one hook: neither flag, or both, is an error.
+func TestAskGuard_NeedsExactlyOneHookFlag(t *testing.T) {
 	writeActionsConfig(t)
-	out, _, err := runWorkbenchAs(t, "workbench", "ask-guard", "--workbench", "1")
-	require.Error(t, err)
-	assert.NotContains(t, out, "hookSpecificOutput")
+	for _, flags := range [][]string{nil, {"--pre-tool-use", "--stop"}} {
+		rootCmd.SetIn(strings.NewReader(askToolPayload("AskUserQuestion")))
+		out, _, err := runWorkbenchAs(t, "workbench", append([]string{"ask-guard", "--workbench", "1"}, flags...)...)
+		rootCmd.SetIn(nil)
+		require.Error(t, err, "flags %v", flags)
+		assert.NotContains(t, out, "hookSpecificOutput")
+		assert.NotContains(t, out, `"decision"`)
+	}
 }
 
 // --- The Stop ask guard (spec 2026-10-10-owner-asks-v2 Part 4) ---
