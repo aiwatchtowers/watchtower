@@ -1575,3 +1575,118 @@ func TestProj11_MalformedSubagentStopKeepsTheStopWaiting(t *testing.T) {
 		assert.NotContains(t, out.String(), `"state_hooks": true`)
 	})
 }
+
+// --- The chat question's clears (spec 2026-10-10-owner-asks-v2 Part 4.7) ---
+
+// chatQuestionAt reads row's chat question stamp; "" when there is none.
+func chatQuestionAt(t *testing.T, database *db.DB, row int64) string {
+	t.Helper()
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	return s.ChatQuestionAt
+}
+
+// askChatQuestion records a chat question on row, stamped with the given
+// time — with stepClock, hookNow(): after the last event, before the next.
+func askChatQuestion(t *testing.T, database *db.DB, pid, row int64, at time.Time) {
+	t.Helper()
+	require.NoError(t, database.SetChatQuestion(row, pid, briefLaunchID,
+		db.ChatQuestion{Question: "Which DB?", Options: []db.ChatQuestionOption{{Label: "A"}, {Label: "B"}}}, at))
+	require.NotEmpty(t, chatQuestionAt(t, database, row))
+}
+
+// sessionStateStep runs one hook event through `workbench session-state`.
+func sessionStateStep(t *testing.T, pid int64, payload string) {
+	t.Helper()
+	out, errOut, err := runSessionState(t, pid, strings.NewReader(payload))
+	require.NoError(t, err)
+	require.Empty(t, out)
+	require.Empty(t, errOut)
+}
+
+// E11: the owner answers in the terminal — their prompt clears the question
+// asked before it, whether its `working` is a transition or a repeat.
+func TestChatQuestionClearedByTheOwnersPrompt(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	sessionStateStep(t, pid, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+	askChatQuestion(t, database, pid, row, hookNow())
+
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+	assert.Empty(t, chatQuestionAt(t, database, row), "the owner's prompt cleared the question")
+
+	// A prompt over `working` (the state write repeats) still clears.
+	askChatQuestion(t, database, pid, row, hookNow())
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	assert.Empty(t, chatQuestionAt(t, database, row), "a prompt over working cleared it too")
+
+	// A nested `claude -p`'s prompt never moves the row, nor the question.
+	askChatQuestion(t, database, pid, row, hookNow())
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", nestedSessionID, ""))
+	assert.NotEmpty(t, chatQuestionAt(t, database, row), "a nested session's prompt kept the question")
+}
+
+// A prompt stamped before the question (a late async hook) keeps it: the
+// question is newer than the owner's move.
+func TestChatQuestionKeptByAnOlderPrompt(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now()
+	orig := hookNow
+	hookNow = func() time.Time { return base }
+	t.Cleanup(func() { hookNow = orig })
+	askChatQuestion(t, database, pid, row, base.Add(5*time.Second))
+	asked := chatQuestionAt(t, database, row)
+
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+
+	assert.Equal(t, asked, chatQuestionAt(t, database, row), "an older prompt kept the newer question")
+}
+
+// A turn the agent starts itself (its first main-thread tool result out of
+// `waiting`) clears the question; a tool result over `working` does not.
+func TestChatQuestionClearedByASelfStartedTurn(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	askChatQuestion(t, database, pid, row, hookNow())
+	sessionStateStep(t, pid, statePayload("PostToolUse", briefLaunchID, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row))
+	assert.NotEmpty(t, chatQuestionAt(t, database, row), "a tool result over working kept the question")
+
+	sessionStateStep(t, pid, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+	sessionStateStep(t, pid, statePayload("PostToolUse", briefLaunchID, ""))
+
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+	assert.Empty(t, chatQuestionAt(t, database, row), "the self-started turn cleared the question")
+}
+
+// Only the owner's prompt and a self-started turn clear the question: a
+// subagent's tool result, a SubagentStop, a notification, a StopFailure and
+// the hook's Stop keep it, and no clear touches the state columns.
+func TestChatQuestionKeptByOtherHookEvents(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	sessionStateStep(t, pid, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	askChatQuestion(t, database, pid, row, hookNow())
+	asked := chatQuestionAt(t, database, row)
+
+	for _, payload := range []string{
+		subagentToolResult(briefLaunchID),
+		`{"session_id":"` + briefLaunchID + `","hook_event_name":"SubagentStop","agent_id":"a1","agent_type":"general-purpose","background_tasks":[]}`,
+		statePayload("Notification", briefLaunchID, "permission_prompt"),
+		statePayload("Notification", briefLaunchID, "idle_prompt"),
+		statePayload("StopFailure", briefLaunchID, ""),
+		statePayload("Stop", briefLaunchID, ""),
+	} {
+		sessionStateStep(t, pid, payload)
+		assert.Equal(t, asked, chatQuestionAt(t, database, row), "after %s", payload)
+	}
+}
