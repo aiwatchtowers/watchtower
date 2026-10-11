@@ -1,5 +1,11 @@
 import SwiftUI
 
+/// A screen pushed on Now's stack: Settings, from the gear (design pass
+/// spec §5).
+enum NowRoute: Hashable, CaseIterable {
+    case settings
+}
+
 /// The Now tab (design pass spec §4 N1–N5): a line with the date and the
 /// Mac's status, the next meeting with Record, Waiting for you across every
 /// workbench as one card of flat rows, and the session summary on one
@@ -16,6 +22,15 @@ struct NowView: View {
                 content(NowModel(snapshot: replica.snapshot, now: context.date), date: context.date)
             }
             .navigationTitle("Now")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(value: NowRoute.settings) {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
+            .navigationDestination(for: NowRoute.self) { _ in SettingsView() }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
             .navigationDestination(for: AskRoute.self) { route in
                 AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)

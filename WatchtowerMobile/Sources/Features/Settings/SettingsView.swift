@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerSync
 
-/// Settings (reached from More): Your Mac, read-only accounts, the Workbench
+/// Settings (pushed from Now's gear): Your Mac, read-only accounts, the Workbench
 /// requests to the Mac, notifications, the parked offline chat, and Unlink
 /// this Mac.
 struct SettingsView: View {
