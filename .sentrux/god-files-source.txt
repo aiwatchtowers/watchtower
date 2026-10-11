@@ -18,4 +18,6 @@ WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
 WatchtowerMobile/Sources/Features/Asks/AskFormModel.swift
 WatchtowerMobile/Sources/Features/Calendar/AgendaModel.swift
+WatchtowerMobile/Sources/Features/Now/NowView.swift
 WatchtowerMobile/Sources/Features/Workbench/BoardTargetDetailModel.swift
+WatchtowerMobile/Sources/Features/Workbench/SessionDetailView.swift
