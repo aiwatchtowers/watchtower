@@ -16,6 +16,9 @@ struct WorkbenchBoardKanbanView: View {
     let onSelect: (Int) -> Void
     /// A lane header double-click: enter that group (spec 2026-10-06 Part 4).
     let onEnter: (Int) -> Void
+    /// The lane header's VoiceOver Open Group: enter that group, the panel
+    /// left as it is — no first click opened it.
+    let onOpenGroup: (Int) -> Void
     /// Returns whether the status was written.
     let onMove: (_ targetID: Int, _ status: String) -> Bool
 
@@ -70,7 +73,8 @@ struct WorkbenchBoardKanbanView: View {
                             vm: vm,
                             selectedTargetID: selectedTargetID,
                             onSelect: onSelect,
-                            onEnter: onEnter
+                            onEnter: onEnter,
+                            onOpenGroup: onOpenGroup
                         ) { id, status in
                             // A card moves only within its own lane; one of
                             // another lane is refused with a reason.
@@ -140,6 +144,7 @@ private struct WorkbenchBoardKanbanLaneView: View {
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
     let onEnter: (Int) -> Void
+    let onOpenGroup: (Int) -> Void
     let onMove: (_ targetID: Int, _ status: String) -> Bool
 
     var body: some View {
@@ -265,7 +270,7 @@ private struct WorkbenchBoardKanbanLaneView: View {
                 .accessibilityAction { vm.select(id) }
                 .accessibilityActions {
                     if entersGroup {
-                        Button("Open Group") { onEnter(id) }
+                        Button("Open Group") { onOpenGroup(id) }
                     }
                 }
                 .help(entersGroup

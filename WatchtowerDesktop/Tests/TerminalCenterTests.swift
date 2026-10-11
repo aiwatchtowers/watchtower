@@ -11,6 +11,7 @@ final class FakeTerminalSession: TerminalSessionProcess {
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
     var onOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerFocus: (() -> Void)?
     private(set) var launches: [TerminalLaunch] = []
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []

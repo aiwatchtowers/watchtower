@@ -25,6 +25,9 @@ protocol TerminalSessionProcess: AnyObject {
     /// with its bytes — never `sendInput` or the terminal's replies (focus
     /// and mouse reports). Main thread.
     var onOwnerInput: (([UInt8]) -> Void)? { get set }
+    /// The owner clicked into the terminal (the click that gives it the
+    /// keyboard, or any later one). Main thread.
+    var onOwnerFocus: (() -> Void)? { get set }
     /// ⌘-click on `path:line(:col)` resolving inside `folder` calls `open`
     /// instead of SwiftTerm's default handler (spec 2026-10-02 §9.5).
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void)
@@ -35,6 +38,11 @@ protocol TerminalSessionProcess: AnyObject {
 }
 
 extension TerminalSessionProcess {
+    var onOwnerFocus: (() -> Void)? {
+        get { nil }
+        set {} // swiftlint:disable:this unused_setter_value
+    }
+
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {}
     func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {}
 }
@@ -234,6 +242,9 @@ final class TerminalCenter {
     }
 
     func focus(_ sessionID: Int64) {
+        // Every click reports here: an unchanged order is not reassigned,
+        // so it notifies no observer.
+        guard focusOrder.last != sessionID else { return }
         focusOrder.removeAll { $0 == sessionID }
         focusOrder.append(sessionID)
     }
@@ -662,6 +673,8 @@ final class TerminalCenter {
             self?.onSessionExit?(id, code)
         }
         process.onOwnerInput = { [weak self] bytes in self?.ownerInput(id, bytes) }
+        // A click into one terminal of a split makes it the active session.
+        process.onOwnerFocus = { [weak self] in self?.focus(id) }
         processes[id] = process
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files.
@@ -704,6 +717,7 @@ final class TerminalCenter {
         }
         process.onExit = nil
         process.onOwnerInput = nil
+        process.onOwnerFocus = nil
         process.detach()
         forget(sessionID)
     }
@@ -827,6 +841,8 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     /// `TerminalSessionProcess.onOwnerInput`.
     var onOwnerInput: (([UInt8]) -> Void)?
+    /// `TerminalSessionProcess.onOwnerFocus`.
+    var onOwnerFocus: (() -> Void)?
     /// Set while bytes that are not the owner's pass through `send(source:data:)`.
     private var forwardingAppInput = false
 
@@ -977,9 +993,12 @@ final class PalettedTerminalView: LocalProcessTerminalView {
 
     /// A second click of a double or triple click cancels the first one's
     /// open; any new click does.
+    /// A click also makes this the active session (`onOwnerFocus`):
+    /// SwiftTerm's `becomeFirstResponder` is not open to override.
     override func mouseDown(with event: NSEvent) {
         pendingAskOpen?.cancel()
         pendingAskOpen = nil
+        onOwnerFocus?()
         super.mouseDown(with: event)
     }
 
@@ -1136,6 +1155,10 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     var onOwnerInput: (([UInt8]) -> Void)? {
         get { terminal.onOwnerInput }
         set { terminal.onOwnerInput = newValue }
+    }
+    var onOwnerFocus: (() -> Void)? {
+        get { terminal.onOwnerFocus }
+        set { terminal.onOwnerFocus = newValue }
     }
 
     override init() {

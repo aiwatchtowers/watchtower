@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v4
+x-watchtower-pack: v6
 ---
 
 # Watchtower Workbench
@@ -24,7 +24,7 @@ At session start a hook prints the workbench brief: counts, the open part of the
 - `list_comments` — by `target_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
-- `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`, each with two to four options), with a `title`, an optional `summary`, `focus` points and `target_id`. A follow-up round passes `previous_ask_id` and `changes`. It returns at once with the ask id; never wait for the answer (see "Asking the owner").
+- `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`, each with two to four options), with a `title`, an optional `summary`, `focus` points, `target_id` and `level` (`quick` or `full`; by default from its shape). A follow-up round passes `previous_ask_id` and `changes`. It returns at once with the ask id; never wait for the answer (see "Asking the owner").
 - `get_ask` — one ask by `ask_id`; once answered, the answer as JSON and as text. Reading it marks the answer delivered.
 - `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
 - `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
@@ -54,7 +54,9 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 
 ## Working a target
 
-The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` with its `branch` in one `update_target`, and work it under the rules above (feature, spec, plan).
+The first prompt `Work on target #<id>` hands you one target. Call `get_target` and `list_comments` with its id, and find it on `workbench_board`. If it has sub-targets, work it as a group (below). Otherwise set it `in_progress` right away with `update_target` (add its `branch` in the same call if the branch already exists; otherwise set `branch` in a later `update_target` once you create it), and work it under the rules above (feature, spec, plan).
+
+Working on a target is all of it — the brainstorm, the spec, the decisions and the plan, not only the code — so a target is `in_progress` from the moment a session takes it up, not from the first line of code. When the owner pressed **Work on It** in Watchtower, the app has usually set it `in_progress` already; then only set its `branch` once it exists. Never move a target back to `todo` because no code exists yet.
 
 ## Working a group
 
@@ -69,14 +71,23 @@ The first prompt `Work on group #<id>` hands you a target with sub-targets.
 
 ## Asking the owner
 
-Anything that waits for the owner — an answer, a decision, a manual check, a document review — is an `ask_owner` call. Never leave it as text in the terminal, and never as a target comment: the owner answers asks from one stack in Watchtower, and a question in the terminal is easily missed. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): a check at the end of every turn sends a request left as plain text back to you, and the named ask is how it knows you filed it.
+The owner answers asks from one stack in Watchtower. A question has one of three levels — choose it by what you need:
+
+- **Chat** — a short question the owner can answer from the conversation (a clarification, a yes/no, a choice of two). Ask it in plain text, as one short question, and end the turn. The check at the end of every turn lets it stand when the owner is in this session, and otherwise sends you back to file it. If it waits unanswered, Watchtower raises it to an ask for you (see "Raised from chat").
+- **Quick** — one decision with 2–3 short options (labels up to 40 characters, descriptions up to 100): `ask_owner` with `kind: question` and one question; the owner answers with one tap. The level follows the shape; `level: quick` on a shape that is not Quick is stored `full`, and the result's `level_note` says why.
+- **Full** — a review, a manual check, or several related decisions: always an `ask_owner` call, never text. `level: full` opens even a Quick-shaped question in the drawer (when its summary must be read).
+
+Anything beyond a Chat question is an `ask_owner` call — never text in the terminal, and never as a target comment. The `AskUserQuestion` tool is blocked here. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): the end-of-turn check sends a review, a check or several decisions left as plain text back to you, and the named ask is how it knows you filed it.
 
 - **When to ask:** a spec, plan or design before you build on it (`kind: review`, `doc_path` = the file, relative to this folder); a decision with no sensible default (`kind: question`); a manual check you cannot run yourself (`kind: check`, one `checklist` step per thing to try).
-- **What not to ask:** progress, reports, or anything with a sensible default — state the default you took and go on.
+- **What not to ask:** process questions with a sensible default (which branch name, whether to run the tests, whether to commit, the order of independent tasks) — state the default you took and go on; anything you can find out yourself — run the command, read the file, take the screenshot, check the log; clarifications the conversation already answers; progress reports and "shall I continue?".
+- **Collect decisions:** when several decisions are pending, file one ask with up to 4 questions instead of a series. While an ask of yours is open, add a related decision not as a second ask but as a revision of it: `previous_ask_id` = the open ask, `questions` = its questions plus the new one (up to 4), `changes` = what you added — the open ask is withdrawn as superseded; a `hint` in the result says when you are starting a series.
 - **A review re-round:** after revising the document, file a new review ask with `previous_ask_id` = the earlier ask and `changes` = what you changed (the earlier ask, if still open, is withdrawn as superseded). The owner sees the document as it was when you asked, so ask again after every revision they should read.
 - **After filing**, keep working on whatever does not depend on the answer. If nothing can proceed, end the turn — do not wait at the prompt or poll.
 - **The answer** arrives as a line `Ask #N answered (…)` typed into this session, or as an entry in the next session's brief. Either way, call `get_ask N` first and act on what it says: an approved review lets you build on the document; changes requested come as comments on passages, each with its quote and heading — revise, then ask again as above.
 - **No longer needed:** `withdraw_ask` an open ask you found the answer to, or whose work was dropped.
+- **Withdrawn means withdrawn:** file a withdrawn ask again only with new data, as a revision: `previous_ask_id` = the withdrawn ask, `changes` = what is new. `ask_owner` refuses that revision without `changes`, and refuses a new ask with the title of an ask of the same kind you withdrew in the last 7 days.
+- **Raised from chat:** an ask with `origin: chat` (`get_ask`, `list_asks`) is your own terminal question that waited; its answer is the answer to that question — act on it as on any ask. If the owner answered in the terminal meanwhile, `withdraw_ask` it.
 - **Board status:** waiting for the owner is never `in_review` (see Rules). The target the ask is about goes `blocked` only when nothing on it can proceed until the answer comes.
 
 ## Running a plan (subagent-driven development)
@@ -105,7 +116,7 @@ When a target comes from a message in which the owner shared an image — a scre
 
 The board must never lag the work. Watchtower checks it against git: at the end of every turn a Stop hook compares the targets' branches with the default branch, and when they disagree it hands you the list before you may finish; the session brief and the owner's board in the Watchtower app show the same drift (`watchtower workbench check --workbench <id>` prints it on demand). The check never fetches: after merging on GitHub, `git fetch` so it sees the merge.
 
-- **When you start work on a target**, set its `branch` with `update_target` (the plain local branch name, e.g. `feature/x` — no `origin/`) in the same call that sets it `in_progress`; once a pull request exists, set `pr` (its number or URL). A plan task done on the feature branch carries that branch too.
+- **When you start work on a target** — the brainstorm and the spec count as work — set it `in_progress`, and set its `branch` with `update_target` (the plain local branch name, e.g. `feature/x` — no `origin/`) in that same call when the branch exists, else as soon as you create it (a branch named before it exists reads as `branch_missing`); once a pull request exists, set `pr` (its number or URL). A plan task done on the feature branch carries that branch too.
 - **After a merge**, walk the pull request's targets: every target whose work landed goes to `done`. Do not leave merged work `in_progress` or `in_review`.
 - **A target only partly done** when its branch merges: split it — `create_targets` under it one sub-target for what landed and one for what remains, set the landed one `done` and the remaining one `todo` (or `in_progress`); the parent then follows its children by itself. Move the branch to the remaining sub-target if work continues there, and clear it (`branch: ""`) from the landed one only if it would otherwise read as unmerged.
 - **When the hook reports drift**, fix the board with `update_target` / `create_targets` as the finding says, then finish. For a parent target, fix its sub-targets — its status follows them. If a target is deliberately kept open although its branch merged (a follow-up on the same branch name, say), clear its `branch` — never leave the drift standing.

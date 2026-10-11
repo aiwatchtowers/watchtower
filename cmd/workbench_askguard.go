@@ -11,13 +11,15 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
-// askGuardBusyTimeout bounds the ask guard's one read: Claude Code waits
-// for a PreToolUse hook, so a locked database lets the tool through rather
-// than stall the agent (the whole run stays well under 2 s).
+// askGuardBusyTimeout bounds each of the ask guard's reads: Claude Code
+// waits for a PreToolUse hook, so a locked database lets the tool through
+// rather than stall the agent. The PreToolUse hook runs up to ~5 short reads
+// (the workbench, then the session row, its workbench, the presence), each
+// bounded by it; WAL readers rarely wait, so a run stays well under 2 s in
+// practice, though the strict worst case is the sum of the bounds.
 const askGuardBusyTimeout = 500 * time.Millisecond
 
 // askGuardInputWait bounds the wait for the hook input: Claude Code writes
@@ -31,12 +33,20 @@ const askGuardTool = "AskUserQuestion"
 // askGuardInput is the part of Claude Code's PreToolUse input the guard
 // reads.
 type askGuardInput struct {
-	ToolName string `json:"tool_name"`
+	SessionID string `json:"session_id"`
+	ToolName  string `json:"tool_name"`
 }
 
-// askToolDenialReason is what the agent is told instead of its
-// AskUserQuestion (spec 2026-10-03 §6.3).
-const askToolDenialReason = "In a Watchtower workbench, questions to the owner go through ask_owner so they land in the owner's stack — file it there and keep working."
+// What the agent is told instead of its AskUserQuestion, by the owner's
+// presence (spec 2026-10-10-owner-asks-v2 Part 6): present, the question
+// goes in the reply as text (the Stop guard records it); away, or whenever
+// the presence cannot be read, it goes to ask_owner.
+const (
+	askToolDenialReasonPresent = "The owner is here: ask this in plain text in your reply (one short question), or " +
+		"with ask_owner for a review, a check or several decisions."
+	askToolDenialReasonAway = "In a Watchtower workbench, questions to the owner go through ask_owner so they land in " +
+		"the owner's stack — file it there and keep working. One decision with 2-3 short options shows as a one-tap Quick ask."
+)
 
 // preToolUseDenial is Claude Code's PreToolUse output that denies the tool
 // call and hands the reason to the agent.
@@ -50,23 +60,37 @@ type preToolUseDenial struct {
 
 var workbenchAskGuardCmd = &cobra.Command{
 	Use:   "ask-guard",
-	Short: "Deny AskUserQuestion in a workbench session (a Claude Code PreToolUse hook)",
-	Long: "The PreToolUse hook installed by `integrate claude-code --workbench N` with matcher\n" +
-		"AskUserQuestion: when the hook input on stdin names AskUserQuestion and workbench N exists,\n" +
-		"it denies the tool and tells the agent to file the question with ask_owner. Another tool,\n" +
-		"a deleted workbench, a bad id or any failure prints nothing, so the tool runs. With\n" +
-		"--pre-tool-use it always exits 0.",
+	Short: "The workbench ask guard: Claude Code's Stop and PreToolUse(AskUserQuestion) hooks",
+	Long: "Two hooks installed by `integrate claude-code --workbench N`, each always exiting 0.\n" +
+		"--pre-tool-use (matcher AskUserQuestion): when the hook input on stdin names\n" +
+		"AskUserQuestion and workbench N exists, it denies the tool and tells the agent to ask in\n" +
+		"plain text when the owner is here in this session, or to file the question with ask_owner\n" +
+		"otherwise. Another tool, a deleted workbench, a bad id or any failure before the denial\n" +
+		"prints nothing, so the tool runs.\n" +
+		"--stop: classifies the turn's final message with the light-tier model and sends back a\n" +
+		"request left as text, unless it is one short question the owner is here to see in this\n" +
+		"session (then it is recorded for raising later), or a message that says the work is done\n" +
+		"without finish_session. It never blocks a continued turn; an input or model failure prints\n" +
+		"nothing, and a database failure reads as the owner being away.",
 	// No root schema/config pre-run: a broken config must not fail the hook
 	// (the `workbench check` precedent); the DB is opened by the command.
 	PersistentPreRunE:  func(*cobra.Command, []string) error { return nil },
 	Args:               cobra.ArbitraryArgs,
 	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if !workbenchAskGuardFlagPreToolUse {
-			return errors.New("ask-guard only runs as the Claude Code PreToolUse hook (--pre-tool-use)")
+		if workbenchAskGuardFlagPreToolUse == workbenchAskGuardFlagStop {
+			return errors.New("ask-guard runs as one Claude Code hook: --pre-tool-use or --stop")
 		}
 		if checkWorkbenchIDFlags(cmd) != nil {
-			return nil // never refuse the tool over our own flags
+			return nil // never refuse the tool or block the turn over our own flags
+		}
+		if workbenchAskGuardFlagStop {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			runAskGuardStop(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workbenchAskGuardFlagWorkbench)
+			return nil
 		}
 		runAskGuardHook(cmd.InOrStdin(), cmd.OutOrStdout(), workbenchAskGuardFlagWorkbench)
 		return nil
@@ -76,12 +100,15 @@ var workbenchAskGuardCmd = &cobra.Command{
 var (
 	workbenchAskGuardFlagWorkbench  string
 	workbenchAskGuardFlagPreToolUse bool
+	workbenchAskGuardFlagStop       bool
 )
 
 func init() {
 	addWorkbenchIDFlag(workbenchAskGuardCmd, &workbenchAskGuardFlagWorkbench, "workbench id")
 	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagPreToolUse, "pre-tool-use", false,
 		"run as the Claude Code PreToolUse hook (always exit 0)")
+	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagStop, "stop", false,
+		"run as the Claude Code Stop hook (always exit 0)")
 	workbenchCmd.AddCommand(workbenchAskGuardCmd)
 }
 
@@ -91,6 +118,8 @@ func init() {
 // under a wider matcher), an unreadable input, a bad id, no config, a locked
 // or missing database, a deleted workbench (a leftover hook), even a panic —
 // prints nothing and the tool runs: the guard never traps a turn (PROJ-13).
+// Once the workbench is found it always denies; only the reason depends on
+// the owner's presence.
 func runAskGuardHook(stdin io.Reader, stdout io.Writer, rawID string) {
 	defer func() { _ = recover() }()
 	ctx, cancel := context.WithTimeout(context.Background(), askGuardInputWait)
@@ -99,39 +128,64 @@ func runAskGuardHook(stdin io.Reader, stdout io.Writer, rawID string) {
 	if err != nil || in.ToolName != askGuardTool {
 		return
 	}
-	if !askGuardWorkbenchLive(rawID) {
+	reason := askGuardToolReason(rawID, in.SessionID)
+	if reason == "" {
 		return
 	}
 	var out preToolUseDenial
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
 	out.HookSpecificOutput.PermissionDecision = "deny"
-	out.HookSpecificOutput.PermissionDecisionReason = askToolDenialReason
+	out.HookSpecificOutput.PermissionDecisionReason = reason
 	_ = json.NewEncoder(stdout).Encode(out)
 }
 
-// askGuardWorkbenchLive reports whether workbench rawID exists, reading the
-// database without migrating it and under askGuardBusyTimeout. A var for
-// tests.
-var askGuardWorkbenchLive = func(rawID string) bool {
+// askGuardToolReason is the denial reason for an AskUserQuestion of
+// conversation claudeID in workbench rawID, "" when the workbench does not
+// exist or cannot be read (the tool runs). It only reads: db.OpenExisting
+// (query_only, never creating or migrating) under askGuardBusyTimeout. A var
+// for tests.
+var askGuardToolReason = func(rawID, claudeID string) string {
 	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
 	if err != nil || id <= 0 {
-		return false
+		return ""
 	}
-	cfg, err := config.Load(flagConfig)
+	cfg, err := askGuardConfig()
 	if err != nil {
-		return false
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if cfg.ValidateWorkspace() != nil {
-		return false
+		return ""
 	}
 	database, err := db.OpenExisting(cfg.DBPath(), askGuardBusyTimeout)
 	if err != nil {
-		return false
+		return ""
 	}
 	defer database.Close()
-	_, err = database.GetWorkbench(id)
-	return err == nil
+	if _, err := database.GetWorkbench(id); err != nil {
+		return ""
+	}
+	if askGuardOwnerHere(database, id, claudeID) {
+		return askToolDenialReasonPresent
+	}
+	return askToolDenialReasonAway
+}
+
+// askGuardOwnerHere reports whether the owner is in the Desktop terminal
+// session this hook runs in, resolved as the Stop guard does (Part 4.6): a
+// claude row of the workbench running conversation claudeID, a folder with
+// the core state hooks (without them the Stop guard could not record a
+// plain-text question and would send it back), and a fresh presence write
+// naming the row. Outside such a row, or on any read failure, the owner is
+// away; nothing is printed, on stderr either. A panic here, after the
+// workbench was found, also reads as away: the tool stays denied.
+func askGuardOwnerHere(database *db.DB, workbenchID int64, claudeID string) (here bool) {
+	defer func() {
+		if recover() != nil {
+			here = false
+		}
+	}()
+	rowID, ok, err := terminalSessionRowID()
+	if err != nil || !ok || claudeID == "" {
+		return false
+	}
+	g := &askGuardSession{database: database, workbenchID: workbenchID, claudeID: claudeID, rowID: rowID}
+	r, err := g.resolve(hookNow())
+	return err == nil && r.Present && r.Recordable
 }
