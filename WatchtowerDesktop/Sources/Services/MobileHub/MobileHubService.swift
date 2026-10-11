@@ -72,10 +72,11 @@ struct MobileHubStorage {
     static func live() throws -> Self {
         let dir = directory()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
+        let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
         return Self(
-            transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
+            transport: CloudKitTransport(store: store, scope: .private, hubID: try sidecar.ensureHubID(), role: .hub),
+            sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
             shares: CloudKitShareService(),
             registerForPushes: registerForCloudKitPushes

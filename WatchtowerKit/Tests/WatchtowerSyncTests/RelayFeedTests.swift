@@ -294,7 +294,7 @@ final class RelayFeedTests: XCTestCase {
     /// just persisted are dead weight in cloudkit-transport.sqlite.
     func testPollCompactsConsumedRelayEventsOfATransportStore() async throws {
         let transportStore = try TransportStore.inMemory()
-        let transport = CloudKitTransport(store: transportStore)
+        let transport = CloudKitTransport(store: transportStore, scope: .private, hubID: HubZones.testHubID, role: .phone)
         let store = try ReplicaStore.inMemory()
         let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         let feed = RelayFeed(transport: transport, store: store, outbox: outbox)

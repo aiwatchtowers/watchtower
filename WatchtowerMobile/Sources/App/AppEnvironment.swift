@@ -50,6 +50,9 @@ final class AppEnvironment {
     /// The phone's app group (spec §2.1). The replica lives in its container
     /// so the notification extensions can read it.
     nonisolated static let appGroupID = "group.com.aiwatchtowers.watchtower.mobile"
+    /// Placeholder hub id until the link carries one (multi-hub F1, Task 8
+    /// replaces it with the linked hub's id).
+    nonisolated static let unlinkedHubID = "unlinked"
 
     let store: ReplicaStore
     let transportKind: TransportKind
@@ -136,7 +139,9 @@ final class AppEnvironment {
             let directory = try Self.appGroupDirectory()
             let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
             try self.init(
-                transport: CloudKitTransport(store: transportStore, scope: scope),
+                transport: CloudKitTransport(
+                    store: transportStore, scope: scope, hubID: Self.unlinkedHubID, role: .phone
+                ),
                 replicaPath: Self.liveReplicaPath(in: directory),
                 transportKind: .cloudKit,
                 linkedDevice: linkedDevice,

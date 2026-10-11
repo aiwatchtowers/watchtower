@@ -24,7 +24,7 @@ final class CloudKitTransportStopTests: XCTestCase {
         let log = EngineFactoryLog()
         let store = try TransportStore.inMemory()
         let transport = CloudKitTransport(
-            store: store, scope: .private, entitlementPresent: { true },
+            store: store, scope: .private, hubID: HubZones.testHubID, role: .hub, entitlementPresent: { true },
             engineFactory: { _, _ in log.make() }, now: { Date() }, sleep: { _ in }
         )
         await transport.start()
@@ -47,7 +47,7 @@ final class CloudKitTransportStopTests: XCTestCase {
     func testAQueuedResetRelaunchNeverRevivesAStoppedTransport() async throws {
         let log = EngineFactoryLog()
         let transport = CloudKitTransport(
-            store: try .inMemory(), scope: .private, entitlementPresent: { true },
+            store: try .inMemory(), scope: .private, hubID: HubZones.testHubID, role: .hub, entitlementPresent: { true },
             engineFactory: { _, _ in log.make() }, now: { Date() }, sleep: { _ in }
         )
         await transport.start()

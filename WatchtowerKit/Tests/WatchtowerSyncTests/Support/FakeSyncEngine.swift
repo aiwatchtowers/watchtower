@@ -5,7 +5,7 @@ import Foundation
 /// Records what the transport asks of its CKSyncEngine, so scope and error
 /// handling are testable without the iCloud entitlement or a network.
 ///
-/// It does not drive the real event plumbing: `sendChanges()` never calls
+/// It does not drive the real event plumbing: `sendChanges(scope:)` never calls
 /// `nextEngineBatch()` and nothing delivers `CKSyncEngine.Event`s, so
 /// `handleEngineEvent`'s mapping is untested here. Tests call the
 /// transport's internal entry points (`handleSentChanges`,
@@ -23,6 +23,8 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     private var zoneQueryErrors: [Error]
     private var _zoneQueryCount = 0
     private var _onFetch: (@Sendable () async -> Void)?
+    private var _fetchScopes: [[CKRecordZone.ID]] = []
+    private var _sendScopes: [[CKRecordZone.ID]] = []
 
     init(
         existingZones: Set<String> = Set(CloudZoneID.allCases.map(\.rawValue)),
@@ -36,7 +38,7 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
 
     var zoneQueryCount: Int { lock.withLock { _zoneQueryCount } }
 
-    /// Runs once, inside the next `fetchChanges()`, before it returns or throws.
+    /// Runs once, inside the next `fetchChanges(scope:)`, before it returns or throws.
     func onNextFetch(_ hook: @escaping @Sendable () async -> Void) {
         lock.withLock { _onFetch = hook }
     }
@@ -47,6 +49,9 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
     var fetchCount: Int { lock.withLock { _fetchCount } }
     var sendCount: Int { lock.withLock { _sendCount } }
     var cancelCount: Int { lock.withLock { _cancelCount } }
+    /// The zone scope of each `fetchChanges(scope:)` / `sendChanges(scope:)` call.
+    var fetchScopes: [[CKRecordZone.ID]] { lock.withLock { _fetchScopes } }
+    var sendScopes: [[CKRecordZone.ID]] { lock.withLock { _sendScopes } }
 
     func add(pendingDatabaseChanges changes: [CKSyncEngine.PendingDatabaseChange]) {
         lock.withLock { _databaseChanges += changes }
@@ -56,9 +61,10 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
         lock.withLock { _recordZoneChanges += changes }
     }
 
-    func fetchChanges() async throws {
+    func fetchChanges(scope zoneIDs: [CKRecordZone.ID]) async throws {
         let (error, hook): (Error?, (@Sendable () async -> Void)?) = lock.withLock {
             _fetchCount += 1
+            _fetchScopes.append(zoneIDs)
             let hook = _onFetch
             _onFetch = nil
             return (fetchErrors.isEmpty ? nil : fetchErrors.removeFirst(), hook)
@@ -102,8 +108,11 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
         return try next.get()
     }
 
-    func sendChanges() async throws {
-        lock.withLock { _sendCount += 1 }
+    func sendChanges(scope zoneIDs: [CKRecordZone.ID]) async throws {
+        lock.withLock {
+            _sendCount += 1
+            _sendScopes.append(zoneIDs)
+        }
     }
 
     func cancelOperations() async {
@@ -154,12 +163,22 @@ final class TestClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { _now += seconds } }
 }
 
+extension HubZones {
+    static let testHubID = "hub-test"
+    static func test(_ scope: CloudDatabaseScope = .private) -> HubZones { HubZones(scope: scope, hubID: testHubID) }
+    static let testDataZoneName = zoneName(.data, hubID: testHubID)
+    static let testRelayZoneName = zoneName(.relay, hubID: testHubID)
+}
+
 extension CloudKitTransport {
     /// A transport wired to a fake engine, an instant sleeper that records
     /// the requested waits, and a test clock. Started, so the fake is live.
+    /// `role` defaults to the scope's usual side: private → hub, shared → phone.
     static func testing(
         store: TransportStore,
         scope: CloudDatabaseScope = .private,
+        hubID: String = HubZones.testHubID,
+        role: TransportRole? = nil,
         engine: FakeSyncEngine = FakeSyncEngine(),
         clock: TestClock = TestClock(),
         sleeps: Collector<TimeInterval> = Collector(),
@@ -168,6 +187,8 @@ extension CloudKitTransport {
         let transport = CloudKitTransport(
             store: store,
             scope: scope,
+            hubID: hubID,
+            role: role ?? (scope == .private ? .hub : .phone),
             entitlementPresent: { true },
             engineFactory: { _, _ in engine },
             now: { clock.now },
