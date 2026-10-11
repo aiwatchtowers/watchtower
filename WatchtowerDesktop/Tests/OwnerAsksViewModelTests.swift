@@ -951,10 +951,10 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let quickStored = try await status(quickIDs[0])
         XCTAssertEqual(quickStored.answer, drawerStored.answer, "the drawer's answer, byte for byte")
         XCTAssertEqual(typed.count, 4, "one paste and its Return each")
-        let swapped = String(decoding: drawerBytes[0], as: UTF8.self)
+        let swapped = try XCTUnwrap(String(bytes: drawerBytes[0], encoding: .utf8))
             .replacingOccurrences(of: "#\(drawerID)", with: "#\(quickIDs[0])")
             .replacingOccurrences(of: "get_ask \(drawerID)", with: "get_ask \(quickIDs[0])")
-        XCTAssertEqual(String(decoding: typed[2], as: UTF8.self), swapped)
+        XCTAssertEqual(String(bytes: typed[2], encoding: .utf8), swapped)
         XCTAssertEqual(typed[3], [0x0D], "Return comes alone, after the paste")
         XCTAssertEqual(vm.asks.answerNotices[quickIDs[0]]?.text, OwnerAsksViewModel.answerSentNote)
 
@@ -1046,7 +1046,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         center.start(s, fresh: true)
         let vm = makeVM()
         let (ask, row) = try await quickRow(vm, project: p, id: askID)
-        var answeringDuringThePause: Bool?
+        var answeringDuringThePause = false
         var secondTap: OwnerAsksViewModel.Delivery??
         onPause = {
             answeringDuringThePause = vm.asks.isAnswering(askID)
@@ -1056,7 +1056,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let delivery = await vm.answerQuick(ask, with: row.answer(picking: "Yes"))
 
         XCTAssertEqual(delivery, .submitted)
-        XCTAssertEqual(answeringDuringThePause, true)
+        XCTAssertTrue(answeringDuringThePause)
         XCTAssertEqual(secondTap, .some(nil), "the second tap is refused")
         XCTAssertFalse(vm.asks.isAnswering(askID))
         let stored = try OwnerAskAnswer.decode(try await status(askID).answer)

@@ -20,7 +20,7 @@ struct WorkbenchSessionView: View {
             OwnerAskDrawerHost(vm: vm, ask: drawerAsk) {
                 VStack(spacing: 0) {
                     if drawerAsk == nil, !waiting.isEmpty {
-                        OwnerAskBanner(asks: waiting) { ask in vm.asks.openDrawer(ask) }
+                        OwnerAskBanner(asks: waiting, vm: vm)
                         Divider()
                     }
                     pane
