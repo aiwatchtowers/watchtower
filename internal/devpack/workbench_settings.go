@@ -96,6 +96,15 @@ var askGuardPromptText string
 
 const askGuardMarkerTemplate = "[watchtower-workbench ask-guard <N>]"
 
+// AskGuardClassifier is the Stop ask guard's v4 classifier text (spec
+// 2026-10-10-owner-asks-v2 Part 4.4), the system prompt of the command
+// hook's light-tier model call; testdata/askguard_classifier_v4.golden pins
+// it. PROJ-13 pins the text, so it is deliberately not an owner-editable
+// prompt in the prompt store.
+//
+//go:embed askguard_classifier.md
+var AskGuardClassifier string
+
 // askGuardMarker is the first line of workbenchID's ask guard prompt: what
 // recognises the prompt hook as ours, whatever else its text says.
 func askGuardMarker(workbenchID int64) string {

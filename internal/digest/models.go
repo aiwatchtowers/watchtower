@@ -21,6 +21,9 @@ func TierForSource(source string) Tier {
 		"chat.title",
 		// terminal.title: a 3-6 word session name — same bounded shape
 		"terminal.title",
+		// workbench.ask_guard: the Stop ask guard's classifier — one turn's
+		// final message to a fixed JSON verdict, inside a hook's budget
+		"workbench.ask_guard",
 		// The feedback-comment interpreter: a short comment + a fixed rating
 		// turned into a bounded {rule_type, scope_key, weight, reason} list —
 		// same shape/size class as ideas.digest_email/ideas.digest_jira above,
