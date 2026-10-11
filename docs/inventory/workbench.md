@@ -57,7 +57,7 @@ under `mcp --project N`) until the owner resyncs it; see
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionReport,Services/SessionStatePresentation,Services/SessionSwitcherPresentation,Services/SessionReportPresentation}.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/OwnerAsk,Database/Queries/OwnerAskQueries,Services/OwnerAsk*}.swift` +
 `WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift` +
-`WatchtowerDesktop/Sources/WatchtowerCore/{Services/OwnerPresencePolicy,Services/ChatQuestionEscalationPolicy,Database/Queries/OwnerPresenceQueries}.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Services/OwnerPresencePolicy,Services/ChatQuestionEscalationPolicy,Models/ChatQuestionEscalationResult,Database/Queries/OwnerPresenceQueries}.swift` +
 `WatchtowerDesktop/Sources/Services/{OwnerPresenceCenter,ChatQuestionEscalator}.swift`
 **Last full audit:** 2026-09-29
 
