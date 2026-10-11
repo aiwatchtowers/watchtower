@@ -445,6 +445,7 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         projectID = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folderPath) }
         appState = AppState.isolated()
         // pid 0: nothing here ever signals a real process group.
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { [weak self] in
             let process = FakeTerminalSession(pid: 0)
             self?.processes.append(process)

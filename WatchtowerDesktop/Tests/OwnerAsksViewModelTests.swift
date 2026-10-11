@@ -117,6 +117,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
     func testDraftsSurviveNavigatingAwayAndBack() async throws {
         let (p, _, askID) = try await seed()
         let appState = AppState()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),

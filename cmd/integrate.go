@@ -221,17 +221,19 @@ func unregisterMCPFromClaudeCode(claudeBin string) error {
 // claude_path, then claude.FindBinary's PATH, login-shell and well-known-dir
 // lookups — the binary the Desktop terminal launches (Swift
 // Constants.claudeBinary). "" when none is found. A config that fails to load
-// only drops the override.
+// only drops the override; an override that is not executable falls back to
+// the claude on PATH.
 func integrateClaudeBinary() string {
 	override := ""
 	if cfg, err := config.Load(flagConfig); err == nil {
 		override = cfg.ClaudePath
 	}
-	p, err := exec.LookPath(claude.FindBinary(override))
-	if err != nil {
-		return ""
+	for _, name := range []string{claude.FindBinary(override), "claude"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
 	}
-	return p
+	return ""
 }
 
 // shouldTouchMCP decides whether "integrate claude-code" should also

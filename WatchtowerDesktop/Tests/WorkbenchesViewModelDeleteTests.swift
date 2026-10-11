@@ -208,6 +208,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         let appState = AppState.isolated()
         // pid 0: close() never signals a real process group.
         var processes: [FakeTerminalSession] = []
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = {
             let process = FakeTerminalSession(pid: 0)
             processes.append(process)

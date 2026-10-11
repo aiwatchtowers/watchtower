@@ -132,6 +132,7 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
 
     func testAppStateWiresTheCenterIntoTheViewModel() throws {
         let appState = AppState()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),

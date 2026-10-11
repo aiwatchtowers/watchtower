@@ -223,3 +223,24 @@ func TestIntegrateClaudeBinaryUsesTheConfiguredPath(t *testing.T) {
 		t.Fatalf("integrateClaudeBinary() = %q, want %q", got, bin)
 	}
 }
+
+// A claude_path that exists but is not executable falls back to the claude
+// on PATH, as integrate did before claude_path was honoured.
+func TestIntegrateClaudeBinaryFallsBackToPathOnAnUnrunnableOverride(t *testing.T) {
+	bin, _ := claudeStub(t)
+	plain := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("claude_path: '"+plain+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := flagConfig
+	flagConfig = cfgPath
+	t.Cleanup(func() { flagConfig = old })
+	t.Setenv("PATH", filepath.Dir(bin))
+	if got := integrateClaudeBinary(); got != bin {
+		t.Fatalf("integrateClaudeBinary() = %q, want %q", got, bin)
+	}
+}

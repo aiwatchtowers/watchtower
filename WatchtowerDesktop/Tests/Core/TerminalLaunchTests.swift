@@ -256,13 +256,15 @@ final class TerminalLaunchTests: XCTestCase {
         }
     }
 
-    /// Runs `launch` without `-l`, with `path` as PATH; its stdout. Bounded, reaped.
+    /// Runs `launch` without `-l`, with `path` as PATH; its stdout. HOME and
+    /// ZDOTDIR point at the launch folder, so the developer's `~/.zshenv` or
+    /// `~/.cshrc` cannot put a real `claude` on PATH. Bounded, reaped.
     private func run(_ launch: TerminalLaunch, path: String) throws -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launch.executable)
         process.arguments = launch.args.filter { $0 != "-l" }
         process.currentDirectoryURL = URL(fileURLWithPath: launch.currentDirectory)
-        var env = ["PATH": path]
+        var env = ["PATH": path, "HOME": launch.currentDirectory, "ZDOTDIR": launch.currentDirectory]
         for entry in launch.environment {
             let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
             env[parts[0]] = parts[1]

@@ -281,7 +281,6 @@ package enum Constants {
                 }
                 env.removeValue(forKey: "CLAUDECODE")
                 // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
-                // Inline search: can't call Constants methods from nested Cache struct.
                 let nvmDirs = [
                     NSHomeDirectory() + "/.nvm/versions/node",
                     NSHomeDirectory() + "/.local/share/fnm/node-versions",

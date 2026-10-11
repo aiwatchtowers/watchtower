@@ -1,20 +1,10 @@
 import Foundation
 
-/// How an embedded terminal starts (spec §6.2): the owner's own login shell,
-/// so `PATH` and `claude`'s auth are exactly theirs. A Claude session `exec`s
-/// `claude` — the resolved binary when there is one (`claudeBinaryEnv`) — in
-/// the folder with a session id the app chose, so it can be resumed later. A
-/// first prompt (a fixed constant below, or a code question handed over —
-/// spec 2026-10-02 §9.5) travels in `firstPromptEnv` and the command names
-/// only the variable, read by `/bin/sh` whatever the login shell, so no
-/// prompt text is ever parsed by a shell, and `env -u` drops the variable
-/// before `claude` runs, so its children never see it; `positionalPrompt`
-/// keeps a leading "-" from being read as a flag.
 /// The `claude` a terminal session runs (`Constants.claudeBinary()`).
 package enum ClaudeBinary: Equatable, Sendable {
     /// The owner's `claude_path`: exec'd whatever the login PATH holds.
     case pinned(String)
-    /// Found in a well-known install dir: used only when the login PATH has
+    /// Found by `Constants.findInPath`: used only when the login PATH has
     /// no `claude`, so the owner's own PATH choice still wins.
     case fallback(String)
 
@@ -25,6 +15,16 @@ package enum ClaudeBinary: Equatable, Sendable {
     }
 }
 
+/// How an embedded terminal starts (spec §6.2): the owner's own login shell,
+/// so `PATH` and `claude`'s auth are exactly theirs. A Claude session `exec`s
+/// `claude` — the resolved binary when there is one (`claudeBinaryEnv`) — in
+/// the folder with a session id the app chose, so it can be resumed later. A
+/// first prompt (a fixed constant below, or a code question handed over —
+/// spec 2026-10-02 §9.5) travels in `firstPromptEnv` and the command names
+/// only the variable, read by `/bin/sh` whatever the login shell, so no
+/// prompt text is ever parsed by a shell, and `env -u` drops the variable
+/// before `claude` runs, so its children never see it; `positionalPrompt`
+/// keeps a leading "-" from being read as a flag.
 package struct TerminalLaunch: Equatable, Sendable {
     package enum Mode: Equatable, Sendable {
         case newClaude(uuid: String, prompt: String?)
