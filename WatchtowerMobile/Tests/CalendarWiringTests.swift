@@ -327,18 +327,45 @@ final class CalendarWiringTests: XCTestCase {
 
     // MARK: - Week strip
 
-    func testTheWeekStripRunsMondayToSundayWithToday() throws {
+    func testTheWeekStripStartsOnTodayWithEachDaysLetter() throws {
         let strip = WeekStripModel(selected: now, today: now, eventDays: [], calendar: calendar)
         XCTAssertEqual(strip.days.count, 7)
-        XCTAssertEqual(strip.days.map(\.letter), ["M", "T", "W", "T", "F", "S", "S"])
+        XCTAssertTrue(try XCTUnwrap(strip.days.first).isToday, "today first, whatever the weekday")
         XCTAssertEqual(strip.days.filter(\.isToday).count, 1)
-        XCTAssertEqual(calendar.component(.weekday, from: try XCTUnwrap(strip.days.first).date), 2, "Monday first")
+        let letters = ["S", "M", "T", "W", "T", "F", "S"]
+        for (offset, day) in strip.days.enumerated() {
+            XCTAssertEqual(day.date, calendar.date(byAdding: .day, value: offset, to: calendar.startOfDay(for: now)))
+            XCTAssertEqual(day.letter, letters[calendar.component(.weekday, from: day.date) - 1])
+        }
 
         let today = try XCTUnwrap(strip.days.first(where: \.isToday))
         XCTAssertEqual(today.spokenLabel, CalendarFormat(calendar: calendar).spokenDay(now) + ", today")
         let marked = WeekStripModel(selected: now, today: now, eventDays: [calendar.startOfDay(for: now)], calendar: calendar)
         XCTAssertTrue(try XCTUnwrap(marked.days.first(where: \.isToday)).spokenLabel.hasSuffix(", today, has events"))
         XCTAssertFalse(CalendarFormat(calendar: calendar).spokenDay(now).isEmpty)
+    }
+
+    /// Pages are today + 7k: a day inside the page keeps it, a day past
+    /// either end moves a whole page (the arrows shift the selection by 7).
+    func testTheWeekStripPagesBySevenDaysFromToday() throws {
+        let today = calendar.startOfDay(for: now)
+        func first(_ days: Int) throws -> Date {
+            let selected = try XCTUnwrap(calendar.date(byAdding: .day, value: days, to: now))
+            return try XCTUnwrap(WeekStripModel(selected: selected, today: now, eventDays: [], calendar: calendar).days.first).date
+        }
+        func page(_ weeks: Int) throws -> Date {
+            try XCTUnwrap(calendar.date(byAdding: .day, value: 7 * weeks, to: today))
+        }
+        XCTAssertEqual(try first(6), try page(0))
+        XCTAssertEqual(try first(7), try page(1))
+        XCTAssertEqual(try first(13), try page(1))
+        XCTAssertEqual(try first(-1), try page(-1))
+        XCTAssertEqual(try first(-7), try page(-1))
+        XCTAssertEqual(try first(-8), try page(-2))
+        let selected = try XCTUnwrap(calendar.date(byAdding: .day, value: 9, to: now))
+        let strip = WeekStripModel(selected: selected, today: now, eventDays: [], calendar: calendar)
+        XCTAssertEqual(strip.days.filter(\.isSelected).map(\.date), [calendar.startOfDay(for: selected)])
+        XCTAssertTrue(strip.days.allSatisfy { !$0.isToday }, "today is on page 0 only")
     }
 
     // MARK: - Replica read

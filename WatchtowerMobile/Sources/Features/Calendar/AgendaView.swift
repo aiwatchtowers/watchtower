@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerKit
 
-/// The Calendar tab: the week strip (Monday to Sunday, today filled in the
+/// The Calendar tab: the week strip (seven days from today, today filled in the
 /// accent colour), the selected day's agenda as "time | card" rows with the
 /// red now line on today, the current or next meeting highlighted with
 /// Record and Prep, a red mic button for a voice note, and the
@@ -108,7 +108,7 @@ struct AgendaView: View {
     }
 }
 
-/// Monday to Sunday with chevrons to the previous and next week.
+/// Seven days from the page start, with chevrons to the previous and next seven.
 private struct WeekStripView: View {
     let strip: WeekStripModel
     let select: (Date) -> Void

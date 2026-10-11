@@ -110,7 +110,7 @@ final class WorkbenchReplicaModel {
     /// The open asks across all workbenches: the Workbench tab's badge.
     /// Its own property, so the tab bar re-renders only when it changes.
     private(set) var openAskCount = 0
-    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
+    @ObservationIgnored private var cancellable: ResilientObservation?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "WorkbenchReplicaModel")
 
     /// The slices re-read on every replica write; a write that leaves them
@@ -126,13 +126,11 @@ final class WorkbenchReplicaModel {
 
     func start(store: ReplicaStore) {
         guard cancellable == nil else { return }
-        cancellable = Self.observation(store: store).start(
-            in: store.reader,
-            scheduling: .async(onQueue: .main),
-            onError: { Self.logger.error("workbench observation failed: \($0.localizedDescription, privacy: .public)") },
-            onChange: { [weak self] value in
-                MainActor.assumeIsolated { self?.receive(value) }
-            }
+        cancellable = ResilientObservation(
+            name: "workbench",
+            reader: store.reader,
+            observation: { Self.observation(store: store) },
+            onChange: { [weak self] value in self?.receive(value) }
         )
     }
 

@@ -43,6 +43,11 @@ ROSTER=".sentrux/god-files-source.txt"
 # value here would silently gate on a list that was already truncated.
 FAN_OUT_MAX=30
 
+# `sort` and `comm` must agree on one byte order everywhere: a Mac's UTF-8
+# locale and CI's C locale order "WorkbenchTargetPanel" and "WorkbenchesView"
+# differently, and comm then refuses a roster saved on the other.
+export LC_ALL=C
+
 if ! command -v sentrux >/dev/null 2>&1; then
     echo "god-files: sentrux not found on PATH" >&2
     exit 127
