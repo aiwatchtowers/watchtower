@@ -16,6 +16,9 @@ final class TargetQueriesMissingRowTests: XCTestCase {
         ("updatePriority", { try TargetQueries.updatePriority($0, id: $1, priority: "high") }),
         ("updateText", { try TargetQueries.updateText($0, id: $1, text: "renamed") }),
         ("updateIntent", { try TargetQueries.updateIntent($0, id: $1, intent: "why") }),
+        ("updateIntent+ifUnchangedFrom", {
+            try TargetQueries.updateIntent($0, id: $1, intent: "why", ifUnchangedFrom: "")
+        }),
         ("updateDueDate", { try TargetQueries.updateDueDate($0, id: $1, dueDate: "2026-10-01") }),
         ("updateOwnership", { try TargetQueries.updateOwnership($0, id: $1, ownership: "delegated") }),
         ("updateBlocking", { try TargetQueries.updateBlocking($0, id: $1, blocking: "release") }),

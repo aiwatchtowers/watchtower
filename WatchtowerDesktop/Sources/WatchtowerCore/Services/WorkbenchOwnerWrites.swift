@@ -24,10 +24,7 @@ package enum WorkbenchOwnerWrites {
     /// A status claimed by the owner (`TargetQueries.updateStatus`, PROJ-06),
     /// with the parents the rollup moved (PROJ-05).
     package static func setStatus(_ db: Database, targetID: Int64, status: String) throws -> WorkbenchOwnerWrite {
-        let before = try WorkbenchQueries.ancestorStatuses(db, of: targetID)
-        try TargetQueries.updateStatus(db, id: Int(targetID), status: status)
-        let after = try WorkbenchQueries.ancestorStatuses(db, of: targetID)
-        let rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+        let rolledUp = try WorkbenchQueries.updateTargetStatus(db, targetID: targetID, status: status)
         return WorkbenchOwnerWrite(target: targetID, rolledUp: rolledUp)
     }
 
