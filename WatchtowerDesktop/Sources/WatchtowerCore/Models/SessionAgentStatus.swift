@@ -280,4 +280,27 @@ package struct SessionAgentStatus: Equatable, Sendable {
     package static func parseStamp(_ stamp: String) -> Date? {
         stampFormatter.date(from: stamp)
     }
+
+    /// `at` in the `agent_state_at` layout Go writes (`db.AgentStateStamp`,
+    /// pinned by `internal/db/testdata/stamps`): UTC, the milliseconds
+    /// truncated as Go's formatter does, a literal `Z` — for the columns the
+    /// Desktop writes in that layout (`owner_presence.seen_at`).
+    package static func formatStamp(_ at: Date) -> String {
+        // Rounded to the microsecond first: a `Date` holds a binary double,
+        // so an exact millisecond may sit just under its own value.
+        let millis = Int64((at.timeIntervalSince1970 * 1_000_000).rounded()) / 1000
+        let whole = secondsFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(millis / 1000)))
+        return whole + "." + String(format: "%03lld", millis % 1000) + "Z"
+    }
+
+    /// The stamp up to its whole seconds, UTC and the Gregorian calendar
+    /// whatever the process locale.
+    private static let secondsFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return formatter
+    }()
 }
