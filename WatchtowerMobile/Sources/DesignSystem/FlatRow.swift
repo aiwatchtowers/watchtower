@@ -10,17 +10,29 @@ struct MetaItem: Equatable {
 
 /// Meta items spaced 6 and joined by "·" in secondary, on one line. Whole
 /// items only: the longest prefix that fits, so the trailing items drop
-/// first and a squeezed line never shows a one-letter stub; the first item
-/// alone truncates when even it does not fit.
+/// first and a squeezed line never shows a one-letter stub; a shortened line
+/// ends in "…", and VoiceOver hears every item. The first item alone
+/// truncates when even it does not fit.
 struct MetaLine: View {
     let items: [MetaItem]
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
             ForEach(Self.prefixLengths(items.count), id: \.self) { count in
-                line(items.prefix(count))
+                line(items.prefix(count), shortened: Self.isShortened(shown: count, of: items.count))
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Self.spokenLabel(items))
+    }
+
+    /// Every item, for VoiceOver, whatever fits on screen.
+    static func spokenLabel(_ items: [MetaItem]) -> String {
+        items.map(\.text).joined(separator: ", ")
+    }
+
+    static func isShortened(shown: Int, of count: Int) -> Bool {
+        shown < count
     }
 
     /// The prefix lengths to try, longest first.
@@ -28,13 +40,16 @@ struct MetaLine: View {
         Array(stride(from: count, to: 0, by: -1))
     }
 
-    private func line(_ shown: ArraySlice<MetaItem>) -> some View {
+    private func line(_ shown: ArraySlice<MetaItem>, shortened: Bool) -> some View {
         HStack(spacing: Spacing.compact) {
             ForEach(Array(shown.enumerated()), id: \.offset) { index, item in
                 if index > 0 {
                     Text("·").foregroundStyle(.secondary)
                 }
                 Text(item.text).foregroundStyle(item.tone.color)
+            }
+            if shortened {
+                Text("…").foregroundStyle(.secondary)
             }
         }
         .lineLimit(1)

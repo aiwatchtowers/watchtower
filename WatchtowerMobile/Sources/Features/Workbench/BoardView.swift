@@ -130,5 +130,6 @@ struct BoardRowView: View {
             }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityValue(row.statusText)
     }
 }

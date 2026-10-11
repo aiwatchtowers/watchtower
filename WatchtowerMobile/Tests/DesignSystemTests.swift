@@ -106,4 +106,17 @@ final class DesignSystemTests: XCTestCase {
         XCTAssertEqual(MetaLine.prefixLengths(1), [1])
         XCTAssertEqual(MetaLine.prefixLengths(0), [])
     }
+
+    /// Final review I1: a shortened line says so with "…", and VoiceOver
+    /// always hears every item.
+    func testAShortenedMetaLineSaysSoAndSpeaksEveryItem() {
+        let items = [
+            MetaItem(text: "Working", tone: .green, role: .info),
+            MetaItem(text: "#415 · 1/2", tone: .secondary, role: .info),
+            MetaItem(text: "PR #175 open", tone: .secondary, role: .info)
+        ]
+        XCTAssertEqual(MetaLine.spokenLabel(items), "Working, #415 · 1/2, PR #175 open")
+        XCTAssertFalse(MetaLine.isShortened(shown: 3, of: 3))
+        XCTAssertTrue(MetaLine.isShortened(shown: 2, of: 3))
+    }
 }

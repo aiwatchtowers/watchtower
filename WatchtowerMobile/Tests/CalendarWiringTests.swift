@@ -287,16 +287,21 @@ final class CalendarWiringTests: XCTestCase {
     /// Task 9 review: the scroll runs once per day and highlighted row, so
     /// coming back from an event does not snap the list over the user's
     /// scroll; a later snapshot that highlights a row still scrolls.
-    func testTheAgendaScrollsOncePerDayAndRow() {
-        let key = AgendaScrollKey(day: day(0), rowID: "event-next")
-        XCTAssertEqual(AgendaScroll.target(for: key, after: nil), "event-next")
-        XCTAssertNil(AgendaScroll.target(for: key, after: key), "a return to the screen keeps the user's scroll")
-        XCTAssertNil(AgendaScroll.target(for: AgendaScrollKey(day: day(0), rowID: nil), after: nil), "nothing highlighted")
-        XCTAssertEqual(
-            AgendaScroll.target(for: key, after: AgendaScrollKey(day: day(0), rowID: nil)), "event-next",
-            "the snapshot arrived after the first appear"
+    /// Task 9 review and final review M3 (spec §9.2): the agenda scrolls
+    /// once per day, the first time the day has a highlighted row: not on a
+    /// return from a pushed screen, and not when the next meeting takes over
+    /// while the user reads; a snapshot that arrives later still scrolls.
+    func testTheAgendaScrollsOncePerDay() {
+        let today = day(0)
+        let key = AgendaScrollKey(day: today, rowID: "event-next")
+        XCTAssertEqual(AgendaScroll.target(for: key, scrolledDay: nil), "event-next")
+        XCTAssertNil(AgendaScroll.target(for: key, scrolledDay: today), "a return to the screen keeps the user's scroll")
+        XCTAssertNil(
+            AgendaScroll.target(for: AgendaScrollKey(day: today, rowID: "event-after"), scrolledDay: today),
+            "the next meeting taking over does not jump the list"
         )
-        XCTAssertEqual(AgendaScroll.target(for: AgendaScrollKey(day: day(1), rowID: "event-x"), after: key), "event-x")
+        XCTAssertNil(AgendaScroll.target(for: AgendaScrollKey(day: today, rowID: nil), scrolledDay: nil), "nothing highlighted")
+        XCTAssertEqual(AgendaScroll.target(for: AgendaScrollKey(day: day(1), rowID: "event-x"), scrolledDay: today), "event-x")
     }
 
     func testOnlyTodaysCurrentOrNextMeetingIsScrolledTo() throws {

@@ -266,13 +266,13 @@ struct AgendaScrollKey: Hashable {
     let rowID: String?
 }
 
-/// The scroll runs once per key: coming back from a pushed screen re-runs
-/// the view's task with the same key and must not snap the list over the
-/// user's scroll, while a snapshot that highlights a row later still
-/// scrolls to it.
+/// The scroll runs once per day (spec §9.2), the first time the day has a
+/// highlighted row: a return from a pushed screen, or the next meeting
+/// taking over while the user reads, must not snap the list; a snapshot
+/// that highlights a row later still scrolls to it.
 enum AgendaScroll {
-    static func target(for key: AgendaScrollKey, after scrolled: AgendaScrollKey?) -> String? {
-        key == scrolled ? nil : key.rowID
+    static func target(for key: AgendaScrollKey, scrolledDay: Date?) -> String? {
+        key.day == scrolledDay ? nil : key.rowID
     }
 }
 

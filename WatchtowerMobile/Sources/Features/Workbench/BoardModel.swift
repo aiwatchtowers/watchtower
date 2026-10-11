@@ -41,6 +41,8 @@ struct BoardRowModel: Equatable, Identifiable {
     let title: String
     let statusGlyph: String
     let statusTone: PhoneTone
+    /// "In progress", "Done", …: what VoiceOver says for the glyph.
+    let statusText: String
     let details: [BoardDetail]
     let priority: WorkbenchTargetPriority
     /// Red for high, blue for low; nil (no dot) for medium and unknown.
@@ -61,6 +63,7 @@ struct BoardRowModel: Equatable, Identifiable {
         let status = Self.status(target.status)
         statusGlyph = status.glyph
         statusTone = status.tone
+        statusText = Self.statusLabel(target.status)
         priority = target.priority
         priorityTone = PriorityMark.tone(target.priority)
         isDimmed = target.status == .done

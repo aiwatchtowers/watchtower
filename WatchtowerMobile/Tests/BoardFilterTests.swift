@@ -103,6 +103,16 @@ final class BoardFilterTests: XCTestCase {
 
     /// Design pass B2: a row draws a meta line only when it has a dot,
     /// details or a progress bar.
+    /// Final review M5: the row says its status to VoiceOver; the glyph
+    /// alone is only a symbol name.
+    func testARowSpeaksItsStatus() throws {
+        let open = try board(.open)
+        let archiveRow = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row
+        XCTAssertEqual(archiveRow.statusText, "In progress")
+        let done = try XCTUnwrap(open.roots.first { $0.id == 420 }?.children.first { $0.id == 422 }).row
+        XCTAssertEqual(done.statusText, "Done")
+    }
+
     func testARowWithNothingToSayHasNoMetaLine() throws {
         let open = try board(.open)
         let archiveRow = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row

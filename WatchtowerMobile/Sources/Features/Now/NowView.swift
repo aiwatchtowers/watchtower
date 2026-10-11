@@ -130,7 +130,7 @@ private struct NextMeetingCardView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            RecordButton(size: .regular) {
+            RecordButton {
                 Task { await env.recorder.recordMeeting(card.meetingEvent) }
             }
         }
