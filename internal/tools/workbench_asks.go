@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/asks"
@@ -26,6 +27,14 @@ const TerminalSessionEnv = "WATCHTOWER_TERMINAL_SESSION_ID"
 
 // maxListedAsks caps one list_asks call.
 const maxListedAsks = 50
+
+// withdrawnTitleWindow is how far back ask_owner refuses a title the agent
+// withdrew; seriesHintWindow how far back an open question ask of the same
+// session earns the series hint (spec 2026-10-10, Part 8).
+const (
+	withdrawnTitleWindow = 7 * 24 * time.Hour
+	seriesHintWindow     = 10 * time.Minute
+)
 
 // processTerminalSession is the terminal session env of this process — the
 // getter WorkbenchTools gives the ask tools; tests inject their own.
@@ -151,6 +160,7 @@ type askOwnerArgs struct {
 	DocPath       string               `json:"doc_path,omitempty" jsonschema:"review only, required: the .md/.markdown/.txt file of this folder to review (relative or absolute); its text at this moment is what the owner sees"`
 	PreviousAskID int64                `json:"previous_ask_id,omitempty" jsonschema:"an earlier ask of this workbench of the same kind this one follows up; if still open it is withdrawn as superseded"`
 	TargetID      int64                `json:"target_id,omitempty" jsonschema:"the workbench target the ask is about"`
+	Level         string               `json:"level,omitempty" jsonschema:"quick (one question, 2-3 short options, answered with one tap) or full (the owner opens the ask); default: from its shape. quick on a shape that is not one is stored full with level_note saying why"`
 	Reason        string               `json:"reason" jsonschema:"one sentence: why you need the owner now"`
 }
 
@@ -184,6 +194,9 @@ func NewAskOwner(sessionEnv func() string) *Tool {
 			}
 			if a.TargetID < 0 {
 				return &ValidationError{Msg: "target_id: must be a target id"}
+			}
+			if a.Level != "" && a.Level != asks.LevelQuick && a.Level != asks.LevelFull {
+				return &ValidationError{Msg: "level: must be quick or full"}
 			}
 			if _, err := asks.Validate(a.input(), asks.OriginAgent); err != nil {
 				return &ValidationError{Msg: err.Error()}
@@ -232,6 +245,18 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 		if prev.Status == "open" {
 			open-- // superseded in the same transaction
 		}
+		if prev.Status == "withdrawn" && strings.TrimSpace(a.Changes) == "" {
+			return &ValidationError{Msg: "changes: required when previous_ask_id names a withdrawn ask — say what is new"}
+		}
+	} else {
+		w, err := d.LastWithdrawnByTitle(p.ID, a.Kind, asks.NormalizeTitle(a.Title), time.Now().Add(-withdrawnTitleWindow))
+		if err != nil {
+			return err
+		}
+		if w != nil {
+			return &ValidationError{Msg: fmt.Sprintf(
+				"title: ask #%d with this title was withdrawn; file it as a revision with previous_ask_id %d and changes", w.ID, w.ID)}
+		}
 	}
 	// Refused here, nothing is recorded; InsertOwnerAsk re-checks in its
 	// transaction for a race with another session.
@@ -244,10 +269,28 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 	return err
 }
 
+// askLevel is the level ask_owner stores: full when the agent asks for it,
+// else the shape's level; note names why a requested quick was not one.
+func askLevel(requested, kind string, p asks.Payload) (level, note string) {
+	if requested == asks.LevelFull {
+		return asks.LevelFull, ""
+	}
+	note = asks.LevelNote(kind, p, asks.OriginAgent)
+	if note == "" {
+		return asks.LevelQuick, ""
+	}
+	if requested != asks.LevelQuick {
+		note = ""
+	}
+	return asks.LevelFull, note
+}
+
 // fileAsk inserts the ask (superseding an open previous ask in the same
 // transaction) and then indexes a review's document and links its target to
 // the ask's session, both best-effort: a failed index is the result's
 // index_warning, a failed link its session_link_warning, never a failed ask.
+// A question ask of a session that has another open one filed within
+// seriesHintWindow carries the series hint.
 func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEnv func() string) (any, error) {
 	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
@@ -261,10 +304,12 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if err != nil {
 		return nil, fmt.Errorf("encoding ask payload: %w", err)
 	}
+	level, levelNote := askLevel(a.Level, a.Kind, payload)
 	ask := db.OwnerAsk{
 		WorkbenchID: p.ID, TargetID: nullID(a.TargetID), PreviousAskID: nullID(a.PreviousAskID),
 		Kind: a.Kind, Title: strings.TrimSpace(a.Title), Summary: strings.TrimSpace(a.Summary),
 		Changes: strings.TrimSpace(a.Changes), Payload: string(payloadJSON),
+		Level: level, Origin: asks.OriginAgent,
 	}
 	if a.Kind == asks.KindReview {
 		// Read before the write transaction opens.
@@ -274,6 +319,15 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	}
 	if ask.SessionID, err = terminalSessionOf(d, p.ID, sessionEnv); err != nil {
 		return nil, err
+	}
+	var series *db.OwnerAsk
+	if a.Kind == asks.KindQuestion && ask.SessionID.Valid {
+		// Read before the insert, which would otherwise find itself.
+		// The ask the new one supersedes is excluded: it will not stay open.
+		since := time.Now().Add(-seriesHintWindow)
+		if series, err = d.RecentOpenQuestionAsk(ask.SessionID.Int64, since, a.PreviousAskID); err != nil {
+			return nil, err
+		}
 	}
 	var id, superseded int64
 	err = d.WithTx(func(tx *sql.Tx) error {
@@ -288,9 +342,15 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	case err != nil:
 		return nil, err
 	}
-	out := map[string]any{"ask_id": id, "status": "open", "session_bound": ask.SessionID.Valid}
+	out := map[string]any{"ask_id": id, "status": "open", "session_bound": ask.SessionID.Valid, "level": level}
+	if levelNote != "" {
+		out["level_note"] = levelNote
+	}
 	if superseded != 0 {
 		out["superseded"] = superseded
+	}
+	if series != nil {
+		out["hint"] = fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)", series.ID)
 	}
 	if ask.DocPath != "" {
 		set := kb.FileSet{Source: kb.WorkbenchDocSource, Container: p.ID, Root: p.FolderPath, Files: []string{ask.DocPath}}
@@ -323,6 +383,9 @@ type askView struct {
 	Answer          *asks.Answer `json:"answer,omitempty"`
 	AnswerText      string       `json:"answer_text,omitempty"`
 	PreviousAskID   int64        `json:"previous_ask_id,omitempty"`
+	Level           string       `json:"level"`
+	Origin          string       `json:"origin"`
+	ChatAskedAt     string       `json:"chat_asked_at,omitempty"`
 }
 
 // NewGetAsk reads one ask of this workbench. Reading an answered ask marks
@@ -362,6 +425,7 @@ func readAsk(d *db.DB, projectID, id int64) (*askView, error) {
 		AskID: a.ID, Kind: a.Kind, Title: a.Title, Status: a.Status, WithdrawnReason: a.WithdrawnReason,
 		TargetID: a.TargetID.Int64, SessionID: a.SessionID.Int64, PreviousAskID: a.PreviousAskID.Int64,
 		CreatedAt: a.CreatedAt, AnsweredAt: a.AnsweredAt,
+		Level: a.Level, Origin: a.Origin, ChatAskedAt: a.ChatAskedAt,
 	}
 	if a.Status != "answered" && a.Status != "delivered" {
 		return view, nil
@@ -397,13 +461,16 @@ type listAsksArgs struct {
 }
 
 type askRow struct {
-	AskID      int64  `json:"ask_id"`
-	Kind       string `json:"kind"`
-	Title      string `json:"title"`
-	Status     string `json:"status"`
-	SessionID  *int64 `json:"session_id"` // null: an external terminal or a gone session
-	CreatedAt  string `json:"created_at"`
-	AnsweredAt string `json:"answered_at"` // "" until answered
+	AskID       int64  `json:"ask_id"`
+	Kind        string `json:"kind"`
+	Title       string `json:"title"`
+	Status      string `json:"status"`
+	SessionID   *int64 `json:"session_id"` // null: an external terminal or a gone session
+	CreatedAt   string `json:"created_at"`
+	AnsweredAt  string `json:"answered_at"` // "" until answered
+	Level       string `json:"level"`
+	Origin      string `json:"origin"`
+	ChatAskedAt string `json:"chat_asked_at"` // "" unless origin chat
 }
 
 // askStatuses maps list_asks' status argument to the statuses it lists.
@@ -457,7 +524,8 @@ func NewListAsks(sessionEnv func() string) *Tool {
 			rows := make([]askRow, 0, len(list))
 			for _, x := range list {
 				row := askRow{AskID: x.ID, Kind: x.Kind, Title: x.Title, Status: x.Status,
-					CreatedAt: x.CreatedAt, AnsweredAt: x.AnsweredAt}
+					CreatedAt: x.CreatedAt, AnsweredAt: x.AnsweredAt,
+					Level: x.Level, Origin: x.Origin, ChatAskedAt: x.ChatAskedAt}
 				if x.SessionID.Valid {
 					row.SessionID = &x.SessionID.Int64
 				}

@@ -435,7 +435,7 @@ func TestLastWithdrawnByTitle(t *testing.T) {
 		require.NoError(t, err)
 		return id
 	}
-	got, err := d.LastWithdrawnByTitle(pid, norm, since)
+	got, err := d.LastWithdrawnByTitle(pid, "question", norm, since)
 	require.NoError(t, err)
 	assert.Nil(t, got, "nothing withdrawn")
 
@@ -446,23 +446,41 @@ func TestLastWithdrawnByTitle(t *testing.T) {
 	withdrawn(other, "Pick the DB", WithdrawnByAgent, now.Add(-2*time.Hour), hourAgo)
 	withdrawn(pid, "Pick the cache", WithdrawnByAgent, now.Add(-2*time.Hour), hourAgo)
 	open := mustInsertAsk(t, d, questionAsk(pid, "Pick the DB"))
-	got, err = d.LastWithdrawnByTitle(pid, norm, since)
+	got, err = d.LastWithdrawnByTitle(pid, "question", norm, since)
 	require.NoError(t, err)
 	assert.Nil(t, got, "withdrawn 8 days ago, before 00107, superseded, another workbench's, another title or open: none matches")
 
 	// The window runs from the withdrawal, not the filing.
 	first := withdrawn(pid, "pick  the db?", WithdrawnByAgent, now.Add(-10*24*time.Hour), stamp(now.Add(-2*time.Hour)))
-	got, err = d.LastWithdrawnByTitle(pid, norm, since)
+	got, err = d.LastWithdrawnByTitle(pid, "question", norm, since)
 	require.NoError(t, err)
 	require.NotNil(t, got, "filed 10 days ago, withdrawn 2 h ago")
 	assert.Equal(t, first, got.ID, "matched in normalised form")
 	// An older filing withdrawn later is the newer withdrawal.
 	newest := withdrawn(pid, "Pick the DB.", WithdrawnByAgent, now.Add(-12*24*time.Hour), hourAgo)
-	got, err = d.LastWithdrawnByTitle(pid, norm, since)
+	got, err = d.LastWithdrawnByTitle(pid, "question", norm, since)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, newest, got.ID, "the most recent withdrawal")
 	assert.NotEqual(t, open, got.ID)
+
+	// Kind is part of the match, both ways.
+	check := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, Kind: "check", Title: "Run the suite",
+		Payload: `{"checklist":["a"]}`})
+	_, err = d.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = ? WHERE id = ?`,
+		WithdrawnByAgent, hourAgo, check)
+	require.NoError(t, err)
+	runNorm := asks.NormalizeTitle("Run the suite")
+	got, err = d.LastWithdrawnByTitle(pid, "question", runNorm, since)
+	require.NoError(t, err)
+	assert.Nil(t, got, "a withdrawn check never matches a question")
+	got, err = d.LastWithdrawnByTitle(pid, "check", runNorm, since)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, check, got.ID)
+	got, err = d.LastWithdrawnByTitle(pid, "check", norm, since)
+	require.NoError(t, err)
+	assert.Nil(t, got, "a withdrawn question never matches a check")
 }
 
 // Both withdraw paths stamp withdrawn_at; an open ask keeps ”.
@@ -498,7 +516,7 @@ func TestRecentOpenQuestionAsk(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	since := now.Add(-10 * time.Minute)
 
-	got, err := d.RecentOpenQuestionAsk(sid, since)
+	got, err := d.RecentOpenQuestionAsk(sid, since, 0)
 	require.NoError(t, err)
 	assert.Nil(t, got, "no ask")
 
@@ -509,13 +527,24 @@ func TestRecentOpenQuestionAsk(t *testing.T) {
 		Payload: `{"checklist":["a"]}`})
 	answered := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Done"})
 	markAskAnswered(t, d, answered)
-	got, err = d.RecentOpenQuestionAsk(sid, since)
+	got, err = d.RecentOpenQuestionAsk(sid, since, 0)
 	require.NoError(t, err)
 	assert.Nil(t, got, "too old, another session's, a check and an answered ask: none")
 
 	recent := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Recent"})
-	got, err = d.RecentOpenQuestionAsk(sid, since)
+	got, err = d.RecentOpenQuestionAsk(sid, since, 0)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, recent, got.ID)
+
+	// Excluding the newest (the ask being superseded) finds the one before.
+	newest := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Newest"})
+	got, err = d.RecentOpenQuestionAsk(sid, since, newest)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, recent, got.ID)
+	got, err = d.RecentOpenQuestionAsk(sid, since, recent)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, newest, got.ID, "excluding an older ask keeps the newest")
 }

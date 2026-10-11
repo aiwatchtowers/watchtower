@@ -192,15 +192,16 @@ const askCreatedAtLayout = "2006-01-02T15:04:05Z"
 // askNowSQL is the current time in askCreatedAtLayout, as created_at's default.
 const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
 
-// LastWithdrawnByTitle returns workbench projectID's ask the agent withdrew
-// (withdrawn_reason agent) most recently, at or after since, whose
-// asks.NormalizeTitle equals normTitle; nil when there is none. An ask
+// LastWithdrawnByTitle returns workbench projectID's ask of kind the agent
+// withdrew (withdrawn_reason agent) most recently, at or after since, whose
+// asks.NormalizeTitle equals normTitle; nil when there is none. Another kind
+// never matches: a revision must keep the kind. An ask
 // withdrawn before migration 00107 has no withdrawn_at and never matches.
 // DocSnapshot is left empty.
-func (db *DB) LastWithdrawnByTitle(projectID int64, normTitle string, since time.Time) (*OwnerAsk, error) {
+func (db *DB) LastWithdrawnByTitle(projectID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
-		WHERE a.project_id = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
-		ORDER BY a.withdrawn_at DESC, a.id DESC`, projectID, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
+		WHERE a.project_id = ? AND a.kind = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
+		ORDER BY a.withdrawn_at DESC, a.id DESC`, projectID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
 	if err != nil {
 		return nil, err
 	}
@@ -213,13 +214,14 @@ func (db *DB) LastWithdrawnByTitle(projectID int64, normTitle string, since time
 }
 
 // RecentOpenQuestionAsk returns session sessionID's newest open question ask
-// filed at or after since, for ask_owner's series hint; nil when there is
-// none. Call it before filing the new ask, which would otherwise find
-// itself. DocSnapshot is left empty.
-func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time) (*OwnerAsk, error) {
+// filed at or after since, other than excludeID (0 = none: the ask the new
+// one supersedes), for ask_owner's series hint; nil when there is none. Call
+// it before filing the new ask, which would otherwise find itself.
+// DocSnapshot is left empty.
+func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID int64) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
-		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ?
-		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout))
+		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ? AND a.id != ?
+		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout), excludeID)
 	if err != nil || len(list) == 0 {
 		return nil, err
 	}

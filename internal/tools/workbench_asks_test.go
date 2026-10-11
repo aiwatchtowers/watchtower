@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -46,6 +47,12 @@ func seedTerminalSession(t *testing.T, d *db.DB, projectID int64) int64 {
 
 const questionAsk = `{"kind":"question","title":"Which store?","questions":[{"question":"Where?",` +
 	`"options":[{"label":"SQLite"},{"label":"Files"}]}],"reason":"blocked on a decision"}`
+
+// questionAskTitled is questionAsk under another title: a title the agent
+// withdrew cannot be filed again without previous_ask_id.
+func questionAskTitled(title string) string {
+	return strings.Replace(questionAsk, `"title":"Which store?"`, `"title":`+strconv.Quote(title), 1)
+}
 
 // answerAsk writes the owner's answer the way the Desktop does (open -> answered).
 func answerAsk(t *testing.T, d *db.DB, id int64, answer string) {
@@ -404,7 +411,7 @@ func TestWithdrawAsk(t *testing.T) {
 	require.NoError(t, fx.d.QueryRow(`SELECT reason FROM agent_actions WHERE tool = 'withdraw_ask'`).Scan(&reason))
 	assert.Equal(t, "found it myself", reason, "the free-text reason lands in the audit row")
 
-	answered := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
+	answered := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which store, then?")))
 	answerAsk(t, fx.d, answered, `{"answers":[{"id":"1","labels":["Files"]}]}`)
 	for ask, want := range map[int64]string{
 		answered: fmt.Sprintf("ask %d is answered", answered),
@@ -474,4 +481,245 @@ func TestReadInsideFolder_RefusesAFIFOWithoutBlocking(t *testing.T) {
 	_, _, err := readReviewDoc(folder, "spec.md")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "doc_path: ")
+}
+
+// ---- owner asks v2: level, withdrawn re-filing, series hint -------------
+
+// askStamp is t in owner_asks.created_at/withdrawn_at's format.
+func askStamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05Z") }
+
+func setAskColumn(t *testing.T, d *db.DB, id int64, col, value string) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE owner_asks SET `+col+` = ? WHERE id = ?`, value, id)
+	require.NoError(t, err)
+}
+
+func askRowCount(t *testing.T, d *db.DB) int {
+	t.Helper()
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM owner_asks`).Scan(&n))
+	return n
+}
+
+const reviewAsk = `{"kind":"review","title":"Review","doc_path":"docs/spec.md","reason":"r"}`
+
+const fourOptionAsk = `{"kind":"question","title":"Which store?","questions":[{"question":"Where?",` +
+	`"options":[{"label":"SQLite"},{"label":"Files"},{"label":"Postgres"},{"label":"Redis"}]}]%s,"reason":"r"}`
+
+// Spec 2026-10-10, Part 3.1: ask_owner computes the level once and stores it.
+func TestAskOwnerStoresTheComputedLevel(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	reg := askRegistry(t, fx.d, "")
+	for args, want := range map[string]string{
+		questionAsk:                    "quick",
+		fmt.Sprintf(fourOptionAsk, ""): "full",
+		reviewAsk:                      "full",
+	} {
+		out := mustApply(t, reg, fx.a, "ask_owner", args)
+		assert.Equal(t, want, out["level"], args)
+		assert.NotContains(t, out, "level_note", "no level asked, no note: %s", args)
+		a := storedAsk(t, fx.d, fx.a, askID(t, out))
+		assert.Equal(t, []string{want, "agent", ""}, []string{a.Level, a.Origin, a.ChatAskedAt}, args)
+	}
+}
+
+// E23: a quick hint on a Full shape is not refused; it is stored full and
+// the result says which rule failed.
+func TestAskOwnerLevelHintDowngradesWithANote(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	reg := askRegistry(t, fx.d, "")
+	out := mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(fourOptionAsk, `,"level":"quick"`))
+	assert.Equal(t, "full", out["level"])
+	assert.Equal(t, "4 options: a Quick ask has 2-3", out["level_note"])
+	assert.Equal(t, "full", storedAsk(t, fx.d, fx.a, askID(t, out)).Level)
+
+	out = mustApply(t, reg, fx.a, "ask_owner", strings.Replace(reviewAsk, `"reason"`, `"level":"quick","reason"`, 1))
+	assert.Equal(t, "full", out["level"])
+	assert.Equal(t, "a review is always a Full ask", out["level_note"])
+
+	out = mustApply(t, reg, fx.a, "ask_owner", strings.Replace(questionAskTitled("Quick indeed"), `"reason"`, `"level":"quick","reason"`, 1))
+	assert.Equal(t, "quick", out["level"])
+	assert.NotContains(t, out, "level_note", "a quick shape asked for quick has nothing to note")
+
+	_, err := proposeIn(t, reg, fx.a, "ask_owner", strings.Replace(questionAsk, `"reason"`, `"level":"medium","reason"`, 1))
+	assert.Equal(t, "level: must be quick or full", refusal(t, err))
+}
+
+// Part 3.3: full always wins, with no note.
+func TestAskOwnerFullOverrideWins(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	out := mustApply(t, reg, fx.a, "ask_owner", strings.Replace(questionAsk, `"reason"`, `"level":"full","reason"`, 1))
+	assert.Equal(t, "full", out["level"])
+	assert.NotContains(t, out, "level_note")
+	assert.Equal(t, "full", storedAsk(t, fx.d, fx.a, askID(t, out)).Level)
+}
+
+// E24/E25: a title the agent withdrew in the last 7 days is refused without
+// previous_ask_id, compared normalised; an older or superseded withdrawal and
+// another workbench's never refuse.
+func TestAskOwnerRefusesARefiledWithdrawnTitle(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	withdrawn := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
+	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, withdrawn))
+	setAskColumn(t, fx.d, withdrawn, "withdrawn_at", askStamp(time.Now().Add(-24*time.Hour)))
+
+	want := fmt.Sprintf("title: ask #%d with this title was withdrawn; file it as a revision with previous_ask_id %d and changes", withdrawn, withdrawn)
+	before := askRowCount(t, fx.d)
+	for _, title := range []string{"Which store?", "which STORE?", "  Which   store  ", "Which store", "Which store?!"} {
+		_, err := proposeIn(t, reg, fx.a, "ask_owner", questionAskTitled(title))
+		assert.Equal(t, want, refusal(t, err), title)
+	}
+	assert.Equal(t, before, askRowCount(t, fx.d), "a refused re-filing writes no ask")
+
+	// Another workbench, another title, another kind, a revision: all filed.
+	mustApply(t, reg, fx.b, "ask_owner", questionAsk)
+	mustApply(t, reg, fx.a, "ask_owner", `{"kind":"check","title":"Which store?","checklist":[{"text":"a"}],"reason":"r"}`)
+	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which store for logs?"))
+	mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which store?",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],`+
+		`"previous_ask_id":%d,"changes":"Files now means S3","reason":"r"}`, withdrawn))
+
+	// E25: withdrawn 8 days ago — allowed.
+	old := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which cache?")))
+	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, old))
+	setAskColumn(t, fx.d, old, "withdrawn_at", askStamp(time.Now().Add(-8*24*time.Hour)))
+	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which cache?"))
+
+	// A superseded ask was withdrawn by Watchtower, not the agent.
+	first := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which queue?")))
+	mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which queue, round two?",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d,"reason":"r"}`, first))
+	require.Equal(t, "superseded", storedAsk(t, fx.d, fx.a, first).WithdrawnReason)
+	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which queue?"))
+
+	// A withdrawn review blocks a review of that title, not a question.
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	review := askID(t, mustApply(t, reg, fx.a, "ask_owner", reviewAsk))
+	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, review))
+	_, err := proposeIn(t, reg, fx.a, "ask_owner", reviewAsk)
+	assert.Equal(t, fmt.Sprintf("title: ask #%d with this title was withdrawn; file it as a revision with previous_ask_id %d and changes",
+		review, review), refusal(t, err))
+	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Review"))
+}
+
+// E26: a revision of a withdrawn ask must say what is new.
+func TestAskOwnerRevisionOfAWithdrawnAskNeedsChanges(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	withdrawn := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
+	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, withdrawn))
+	superseded := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which cache?")))
+	mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which cache, again?",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],`+
+		`"previous_ask_id":%d,"reason":"r"}`, superseded))
+	revision := `{"kind":"question","title":"Which store, revised?","questions":[{"question":"Where?",` +
+		`"options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d%s,"reason":"r"}`
+
+	before := askRowCount(t, fx.d)
+	for _, prev := range []int64{withdrawn, superseded} {
+		for _, changes := range []string{"", `,"changes":"   "`} {
+			_, err := proposeIn(t, reg, fx.a, "ask_owner", fmt.Sprintf(revision, prev, changes))
+			assert.Equal(t, "changes: required when previous_ask_id names a withdrawn ask — say what is new",
+				refusal(t, err), "previous %d, changes %q", prev, changes)
+		}
+	}
+	assert.Equal(t, before, askRowCount(t, fx.d))
+
+	out := mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(revision, withdrawn, `,"changes":"Files now means S3"`))
+	a := storedAsk(t, fx.d, fx.a, askID(t, out))
+	assert.Equal(t, withdrawn, a.PreviousAskID.Int64)
+	assert.NotContains(t, out, "superseded", "a withdrawn previous ask has nothing to supersede")
+}
+
+// E27: a second open question ask of a session within 10 minutes is filed
+// with a hint; never a refusal.
+func TestAskOwnerSeriesHint(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	mine := seedTerminalSession(t, fx.d, fx.a)
+	other := seedTerminalSession(t, fx.d, fx.a)
+	reg := askRegistry(t, fx.d, strconv.FormatInt(mine, 10))
+
+	first := mustApply(t, reg, fx.a, "ask_owner", questionAsk)
+	assert.NotContains(t, first, "hint", "the first ask of a session has no series")
+	second := mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which cache?"))
+	assert.Equal(t, fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)",
+		askID(t, first)), second["hint"])
+
+	// A check or a review is no series; another session's or an unbound ask
+	// has none of this session's.
+	assert.NotContains(t, mustApply(t, reg, fx.a, "ask_owner", reviewAsk), "hint")
+	assert.NotContains(t, mustApply(t, askRegistry(t, fx.d, strconv.FormatInt(other, 10)), fx.a, "ask_owner",
+		questionAskTitled("Which queue?")), "hint")
+	assert.NotContains(t, mustApply(t, askRegistry(t, fx.d, ""), fx.a, "ask_owner", questionAskTitled("Which log?")), "hint")
+
+	// The ask the new one supersedes is no longer open.
+	solo := seedTerminalSession(t, fx.d, fx.a)
+	soloReg := askRegistry(t, fx.d, strconv.FormatInt(solo, 10))
+	prev := askID(t, mustApply(t, soloReg, fx.a, "ask_owner", questionAskTitled("Which disk?")))
+	out := mustApply(t, soloReg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which disk, again?",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d,"reason":"r"}`, prev))
+	assert.EqualValues(t, prev, out["superseded"])
+	assert.NotContains(t, out, "hint")
+
+	// Two open asks, a revision of the newest: the hint names the older one.
+	pair := seedTerminalSession(t, fx.d, fx.a)
+	pairReg := askRegistry(t, fx.d, strconv.FormatInt(pair, 10))
+	older1 := askID(t, mustApply(t, pairReg, fx.a, "ask_owner", questionAskTitled("Which region?")))
+	newer1 := askID(t, mustApply(t, pairReg, fx.a, "ask_owner", questionAskTitled("Which zone?")))
+	out = mustApply(t, pairReg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which zone, again?",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d,"reason":"r"}`, newer1))
+	assert.EqualValues(t, newer1, out["superseded"])
+	assert.Equal(t, fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)",
+		older1), out["hint"])
+
+	// 11 minutes ago is outside the series.
+	late := seedTerminalSession(t, fx.d, fx.a)
+	lateReg := askRegistry(t, fx.d, strconv.FormatInt(late, 10))
+	older := askID(t, mustApply(t, lateReg, fx.a, "ask_owner", questionAskTitled("Which host?")))
+	setAskColumn(t, fx.d, older, "created_at", askStamp(time.Now().Add(-11*time.Minute)))
+	assert.NotContains(t, mustApply(t, lateReg, fx.a, "ask_owner", questionAskTitled("Which port?")), "hint")
+}
+
+// Part 8: get_ask and list_asks carry level, origin and chat_asked_at.
+func TestGetAsk_ReturnsLevelAndOrigin(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	agent := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
+	const askedAt = "2026-10-10T09:00:00.000Z"
+	var chat int64
+	require.NoError(t, fx.d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		chat, _, err = fx.d.InsertOwnerAsk(tx, db.OwnerAsk{
+			WorkbenchID: fx.a, Kind: "question", Title: "Go on?",
+			Payload: `{"questions":[{"id":"1","question":"Go on?","options":[]}]}`,
+			Level:   "quick", Origin: "chat", ChatAskedAt: askedAt,
+		})
+		return err
+	}))
+
+	view := func(id int64) map[string]any {
+		var v map[string]any
+		require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, fx.a, "get_ask", fmt.Sprintf(`{"ask_id":%d}`, id))), &v))
+		return v
+	}
+	a := view(agent)
+	assert.Equal(t, []any{"quick", "agent"}, []any{a["level"], a["origin"]})
+	assert.NotContains(t, a, "chat_asked_at")
+	c := view(chat)
+	assert.Equal(t, []any{"quick", "chat", askedAt}, []any{c["level"], c["origin"], c["chat_asked_at"]})
+
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, fx.a, "list_asks", `{"status":"open"}`)), &rows))
+	byID := map[float64]map[string]any{}
+	for _, r := range rows {
+		byID[r["ask_id"].(float64)] = r
+	}
+	require.Len(t, byID, 2)
+	assert.Equal(t, []any{"quick", "agent", ""}, []any{byID[float64(agent)]["level"], byID[float64(agent)]["origin"], byID[float64(agent)]["chat_asked_at"]})
+	assert.Equal(t, []any{"quick", "chat", askedAt}, []any{byID[float64(chat)]["level"], byID[float64(chat)]["origin"], byID[float64(chat)]["chat_asked_at"]})
 }
