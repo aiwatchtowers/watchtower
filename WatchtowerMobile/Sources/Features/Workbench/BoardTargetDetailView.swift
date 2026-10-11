@@ -176,6 +176,7 @@ struct BoardTargetDetailView: View {
             } label: {
                 Label("Work on it in a session", systemImage: "play")
                     .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
             if let progress = StartProgressModel.of(
