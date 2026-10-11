@@ -55,7 +55,7 @@ final class ChatQuestionEscalator {
     /// An ask was filed in the workbench. One subscriber.
     var onFiled: ((_ projectID: Int64) -> Void)?
     /// Where the log lines go; seamed so a test counts them.
-    var log: (String) -> Void = { print($0) }
+    var log: (String) -> Void = { NSLog("ChatQuestionEscalator: %@", $0) }
 
     /// The runs of one question of one session.
     private struct Entry {
@@ -175,7 +175,7 @@ final class ChatQuestionEscalator {
         // have dropped the entry already: a filed ask is announced whatever
         // the bookkeeping says.
         if case let .filed(askID) = result.verdict {
-            log("[ChatEscalation] session \(session): question raised as ask #\(askID.map(String.init) ?? "?")")
+            log("session \(session): question raised as ask #\(askID.map(String.init) ?? "?")")
             onFiled?(projectID)
         }
         guard var entry = entries[session], entry.at == at else { return }
@@ -203,13 +203,13 @@ final class ChatQuestionEscalator {
     private func logFailure(_ entry: inout Entry, session: Int64, _ message: String) {
         guard !entry.logged else { return }
         entry.logged = true
-        log("[ChatEscalation] session \(session): \(message)")
+        log("session \(session): \(message)")
     }
 
     private func logUnreadable(_ row: SessionAgentStateRow) {
         guard let at = row.chatQuestionAt, unreadableLogged[row.id] != at else { return }
         unreadableLogged[row.id] = at
-        log("[ChatEscalation] session \(row.id): unreadable chat_question_at \(at.debugDescription); not raised")
+        log("session \(row.id): unreadable chat_question_at \(at.debugDescription); not raised")
     }
 
     private func armTick(_ needed: Bool) {

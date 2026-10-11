@@ -217,12 +217,12 @@ final class OwnerPresenceCenter {
                 try writer(nil, now)
             } catch {
                 // A failed clear, like a crash, is covered by Go's 90 s staleness.
-                print("[OwnerPresence] clearing presence on quit failed: \(error.localizedDescription)")
+                NSLog("OwnerPresence: clearing presence on quit failed: %@", error.localizedDescription)
             }
             done.signal()
         }
         if done.wait(timeout: .now() + Self.quitWait) == .timedOut {
-            print("[OwnerPresence] clearing presence on quit timed out; Go reads the row as stale after 90 s")
+            NSLog("OwnerPresence: clearing presence on quit timed out; Go reads the row as stale after 90 s")
         }
     }
 
@@ -395,7 +395,8 @@ final class OwnerPresenceCenter {
             return
         }
         if !writeFailing {
-            print("[OwnerPresence] presence write failed, retrying at the next heartbeat: \(failure.localizedDescription)")
+            NSLog("OwnerPresence: presence write failed, retrying at the next heartbeat: %@",
+                  failure.localizedDescription)
         }
         writeFailing = true
         scheduleHeartbeat()
