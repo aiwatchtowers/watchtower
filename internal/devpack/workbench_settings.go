@@ -598,11 +598,10 @@ func LegacyPermissionRules(dir string) (int, error) {
 }
 
 // upsertOurHook returns groups with our hook for projectID set to command.
-// The first entry
-// recognised by isOurHook is kept and, if it differs, updated in place with
-// its other keys kept; any further one (there should never be more than
-// one, but a hand-edited file could hold a leftover) is dropped as a
-// duplicate. An entry of ours in a group with another matcher than spec's
+// The first entry recognised by isOurHook is kept and, if it differs,
+// updated in place with its other keys kept; any further one (there should
+// never be more than one, but a hand-edited file could hold a leftover) is
+// dropped as a duplicate. An entry of ours in a group with another matcher than spec's
 // is dropped too, so it is re-added in a group of its own. Absent any
 // match, a new group is appended, carrying spec's matcher. changed is false
 // only when exactly one matching entry already held command.
