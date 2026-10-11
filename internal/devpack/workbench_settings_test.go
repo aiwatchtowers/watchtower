@@ -236,10 +236,15 @@ func TestProj04_RemoveDeletesOnlyOurHook(t *testing.T) {
 	if err != nil || again {
 		t.Fatalf("a second remove must be a no-op: changed=%v err=%v", again, err)
 	}
+	assertAskGuardRemovalKeepsOwnerStopHooks(t)
+}
 
-	// The Stop ask guard: the command entry and a leftover marker prompt of
-	// workbench 7 go; the owner's hook beside the prompt, another workbench's
-	// prompt and the marker off the first line stay.
+// assertAskGuardRemovalKeepsOwnerStopHooks covers the Stop ask guard half of
+// PROJ-04's remove: the command entry and a leftover marker prompt of
+// workbench 7 go; the owner's hook beside the prompt, another workbench's
+// prompt and the marker off the first line stay.
+func assertAskGuardRemovalKeepsOwnerStopHooks(t *testing.T) {
+	t.Helper()
 	stopDir := t.TempDir()
 	ours := WorkbenchAskGuardStopHookCommand("/tmp/acme bin/watchtower", 7)
 	writeTestFile(t, settingsFile(stopDir), `{
@@ -260,7 +265,7 @@ func TestProj04_RemoveDeletesOnlyOurHook(t *testing.T) {
 	if changed, err := RemoveAskGuardHooks(stopDir, 7); err != nil || !changed {
 		t.Fatalf("remove the ask guard: changed=%v err=%v", changed, err)
 	}
-	got = decodeSettings(t, stopDir)
+	got := decodeSettings(t, stopDir)
 	stop := eventGroups(t, got, "Stop")
 	if got["model"] != "sonnet" || countCommand(stop, ours) != 0 || len(promptHooks(stop)) != 2 {
 		t.Fatalf("PROJ-04: only our command entry and marker prompt may go, got %#v", got)

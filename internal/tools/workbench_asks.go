@@ -320,14 +320,10 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if ask.SessionID, err = terminalSessionOf(d, p.ID, sessionEnv); err != nil {
 		return nil, err
 	}
-	var series *db.OwnerAsk
-	if a.Kind == asks.KindQuestion && ask.SessionID.Valid {
-		// Read before the insert, which would otherwise find itself.
-		// The ask the new one supersedes is excluded: it will not stay open.
-		since := time.Now().Add(-seriesHintWindow)
-		if series, err = d.RecentOpenQuestionAsk(ask.SessionID.Int64, since, a.PreviousAskID); err != nil {
-			return nil, err
-		}
+	// Read before the insert, which would otherwise find itself.
+	series, err := openQuestionSeriesAsk(d, ask, a.PreviousAskID)
+	if err != nil {
+		return nil, err
 	}
 	var id, superseded int64
 	err = d.WithTx(func(tx *sql.Tx) error {
@@ -352,16 +348,35 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if series != nil {
 		out["hint"] = fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)", series.ID)
 	}
+	indexAndLinkFiledAsk(ctx, d, p, ask, out)
+	return out, nil
+}
+
+// openQuestionSeriesAsk returns another open question ask of the new ask's
+// session filed within seriesHintWindow, or nil (also for a non-question ask
+// or one without a session). The ask the new one supersedes is excluded: it
+// will not stay open.
+func openQuestionSeriesAsk(d *db.DB, ask db.OwnerAsk, previousAskID int64) (*db.OwnerAsk, error) {
+	if ask.Kind != asks.KindQuestion || !ask.SessionID.Valid {
+		return nil, nil
+	}
+	since := time.Now().Add(-seriesHintWindow)
+	return d.RecentOpenQuestionAsk(ask.SessionID.Int64, since, previousAskID)
+}
+
+// indexAndLinkFiledAsk indexes a filed review's document and links the ask's
+// target to its session, both best-effort: a failure lands in out as
+// index_warning or session_link_warning.
+func indexAndLinkFiledAsk(ctx context.Context, d *db.DB, p *db.Workbench, ask db.OwnerAsk, out map[string]any) {
 	if ask.DocPath != "" {
 		set := kb.FileSet{Source: kb.WorkbenchDocSource, Container: p.ID, Root: p.FolderPath, Files: []string{ask.DocPath}}
 		if _, _, err := kb.IndexFileSet(ctx, d, set); err != nil {
 			out["index_warning"] = fmt.Sprintf("the ask is filed, but %s is not in search yet: %v", ask.DocPath, err)
 		}
 	}
-	if ask.SessionID.Valid && a.TargetID != 0 {
-		reportLinkFailure(out, linkTargets(d, ask.SessionID.Int64, []int64{a.TargetID}))
+	if ask.SessionID.Valid && ask.TargetID.Valid {
+		reportLinkFailure(out, linkTargets(d, ask.SessionID.Int64, []int64{ask.TargetID.Int64}))
 	}
-	return out, nil
 }
 
 // ---- get_ask -----------------------------------------------------------

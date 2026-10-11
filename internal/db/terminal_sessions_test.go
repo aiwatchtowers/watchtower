@@ -1246,36 +1246,45 @@ func TestClearChatQuestionBeforeKeepsANewerQuestion(t *testing.T) {
 	requireNoChatQuestion(t, d, id, "an unreadable stamp")
 }
 
+// chatQuestionRowAt stores a question asked at asked on a new claude row of
+// pid over state, stamped asked+offset.
+func chatQuestionRowAt(t *testing.T, d *DB, pid int64, asked time.Time, state string, offset time.Duration) int64 {
+	t.Helper()
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ? WHERE id = ?`,
+		state, AgentStateStamp(asked.Add(offset)), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), asked); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// takeChatQuestionInTx runs TakeChatQuestion in its own transaction and
+// fails the test on an error.
+func takeChatQuestionInTx(t *testing.T, d *DB, id, pid int64, at string) *ChatQuestion {
+	t.Helper()
+	var q *ChatQuestion
+	if err := d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		q, err = d.TakeChatQuestion(tx, id, pid, at)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
 func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	asked := time.Now().UTC().Truncate(time.Millisecond)
 	at := AgentStateStamp(asked)
-	// row stores a question asked at asked over state, stamped asked+offset.
 	row := func(state string, offset time.Duration) int64 {
-		t.Helper()
-		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ? WHERE id = ?`,
-			state, AgentStateStamp(asked.Add(offset)), id); err != nil {
-			t.Fatal(err)
-		}
-		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), asked); err != nil {
-			t.Fatal(err)
-		}
-		return id
+		return chatQuestionRowAt(t, d, pid, asked, state, offset)
 	}
-	take := func(id int64, at string) *ChatQuestion {
-		t.Helper()
-		var q *ChatQuestion
-		if err := d.WithTx(func(tx *sql.Tx) error {
-			var err error
-			q, err = d.TakeChatQuestion(tx, id, pid, at)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return q
-	}
+	take := func(id int64, at string) *ChatQuestion { return takeChatQuestionInTx(t, d, id, pid, at) }
 
 	id := row("waiting", 0)
 	q := take(id, at)
@@ -1316,10 +1325,17 @@ func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
 			t.Fatalf("waiting stamped %v from the question: not taken", offset)
 		}
 	}
+}
+
+func TestTakeChatQuestionRefusesForeignAndMissingRows(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	asked := time.Now().UTC().Truncate(time.Millisecond)
+	at := AgentStateStamp(asked)
 
 	// Another workbench's take, or one of a shell row whatever it holds, is
 	// ErrNotInWorkbench and leaves the row.
-	mine := row("waiting", 0)
+	mine := chatQuestionRowAt(t, d, pid, asked, "waiting", 0)
 	otherWorkbench := newTestWorkbench(t, d)
 	shell := newAgentStateRow(t, d, pid, "shell", nil)
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,

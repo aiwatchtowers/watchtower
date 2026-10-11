@@ -245,17 +245,32 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
 	}
 	// Ours is updated in place to this binary; the owner's keys on it stay,
 	// and the owner's key on our replaced prompt is carried onto it.
-	ours := stop[3].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-	if ours["command"] != WorkbenchAskGuardStopHookCommand(o.Bin, 7) || ours["type"] != "command" || ours["timeout"] != float64(12) ||
-		ours["x-ours"] != float64(3.5) || ours["x-owner"] != float64(1.5) || len(ours) != 5 {
-		t.Fatalf("our command entry must be updated in place with its keys kept and the prompt's carried, got %#v", ours)
-	}
+	assertOurAskGuardEntryUpdatedInPlace(t, stop[3], o.Bin)
 	pre := eventGroups(t, after, "PreToolUse")
 	if len(pre) != 2 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) {
 		t.Fatalf("PROJ-04: the owner's PreToolUse group must stay first and as it was, got %#v", pre)
 	}
+	assertOwnerNumberLiteralsKept(t, folder, `"x-owner": 1.50`, `"x-owner-stop": 4.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`)
+}
+
+// assertOurAskGuardEntryUpdatedInPlace requires the Stop group holding our
+// command entry to run bin's command with the owner's keys on it (timeout 12,
+// x-ours) kept and the key on our replaced prompt (x-owner) carried.
+func assertOurAskGuardEntryUpdatedInPlace(t *testing.T, group any, bin string) {
+	t.Helper()
+	ours := group.(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if ours["command"] != WorkbenchAskGuardStopHookCommand(bin, 7) || ours["type"] != "command" || ours["timeout"] != float64(12) ||
+		ours["x-ours"] != float64(3.5) || ours["x-owner"] != float64(1.5) || len(ours) != 5 {
+		t.Fatalf("our command entry must be updated in place with its keys kept and the prompt's carried, got %#v", ours)
+	}
+}
+
+// assertOwnerNumberLiteralsKept requires each owner number literal to be in
+// folder's settings file byte-exact.
+func assertOwnerNumberLiteralsKept(t *testing.T, folder string, literals ...string) {
+	t.Helper()
 	raw := readTestFile(t, settingsFile(folder))
-	for _, lit := range []string{`"x-owner": 1.50`, `"x-owner-stop": 4.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`} {
+	for _, lit := range literals {
 		if !strings.Contains(raw, lit) {
 			t.Fatalf("PROJ-04: an owner number literal changed (%s):\n%s", lit, raw)
 		}
@@ -318,12 +333,18 @@ func TestProj04_AskGuardNeverCarriesACommandKeyOfOurPrompt(t *testing.T) {
 		t.Fatalf("the prompt's command key must not be carried, got %#v", stop)
 	}
 	assertOneAskGuardCommand(t, stop, o.Bin)
-	once := readTestFile(t, settingsFile(folder))
+	assertSecondResyncChangesNothing(t, o, readTestFile(t, settingsFile(folder)))
+}
+
+// assertSecondResyncChangesNothing runs one more install over o's folder and
+// requires it to change no hook and leave the settings file as once.
+func assertSecondResyncChangesNothing(t *testing.T, o WorkbenchInstallOptions, once string) {
+	t.Helper()
 	rep, err := InstallWorkbench(context.Background(), o)
 	if err != nil || rep.HookChanged {
 		t.Fatalf("a second resync must change no hook: %+v err=%v", rep, err)
 	}
-	if twice := readTestFile(t, settingsFile(folder)); twice != once {
+	if twice := readTestFile(t, settingsFile(o.Folder)); twice != once {
 		t.Fatalf("a second resync rewrote the settings:\n%s\nwas\n%s", twice, once)
 	}
 }
@@ -409,36 +430,42 @@ func TestStatusWorkbench_AskGuardFlagsEachMissingHook(t *testing.T) {
 			}
 		})
 	}
-	// Only the old marker prompt in place of the command entry: not
-	// installed (the Desktop offers Repair), and the repair replaces it.
-	t.Run("marker prompt only", func(t *testing.T) {
-		if changed, err := removeHook(folder, askGuardSpec, 7); err != nil || !changed {
-			t.Fatalf("remove: changed=%v err=%v", changed, err)
-		}
-		m := decodeSettings(t, folder)
-		hooks := m["hooks"].(map[string]any)
-		hooks["Stop"] = append(eventGroups(t, m, "Stop"), map[string]any{"hooks": []any{
-			map[string]any{"type": "prompt", "prompt": goldenAskGuardPrompt7, "timeout": 30}}})
-		raw, err := json.Marshal(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		writeTestFile(t, settingsFile(folder), string(raw))
-		st, err := StatusWorkbench(context.Background(), o)
-		if err != nil || st.AskGuard || !st.AskToolBlock || !st.StopHook {
-			t.Fatalf("status with only the marker prompt: %+v err=%v", st, err)
-		}
-		rep, err := InstallWorkbench(context.Background(), o)
-		if err != nil || !rep.HookChanged {
-			t.Fatalf("the repair replaces it: changed=%v err=%v", rep.HookChanged, err)
-		}
-		if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.AskGuard {
-			t.Fatalf("status after the repair: %+v err=%v", st, err)
-		}
-		if got := stopPromptHook(t, folder, askGuardMarker(7)); got != "" {
-			t.Fatalf("the repair must drop the marker prompt, got %q", got)
-		}
-	})
+}
+
+// Only the old marker prompt in place of the command entry: not installed
+// (the Desktop offers Repair), and the repair replaces it.
+func TestStatusWorkbench_AskGuardFlagsAMarkerPromptOnly(t *testing.T) {
+	folder := fakeRepo(t)
+	o := workbenchOpts(folder, newFakeClaude())
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if changed, err := removeHook(folder, askGuardSpec, 7); err != nil || !changed {
+		t.Fatalf("remove: changed=%v err=%v", changed, err)
+	}
+	m := decodeSettings(t, folder)
+	hooks := m["hooks"].(map[string]any)
+	hooks["Stop"] = append(eventGroups(t, m, "Stop"), map[string]any{"hooks": []any{
+		map[string]any{"type": "prompt", "prompt": goldenAskGuardPrompt7, "timeout": 30}}})
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, settingsFile(folder), string(raw))
+	st, err := StatusWorkbench(context.Background(), o)
+	if err != nil || st.AskGuard || !st.AskToolBlock || !st.StopHook {
+		t.Fatalf("status with only the marker prompt: %+v err=%v", st, err)
+	}
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err != nil || !rep.HookChanged {
+		t.Fatalf("the repair replaces it: changed=%v err=%v", rep.HookChanged, err)
+	}
+	if st, err := StatusWorkbench(context.Background(), o); err != nil || !st.AskGuard {
+		t.Fatalf("status after the repair: %+v err=%v", st, err)
+	}
+	if got := stopPromptHook(t, folder, askGuardMarker(7)); got != "" {
+		t.Fatalf("the repair must drop the marker prompt, got %q", got)
+	}
 }
 
 // The old prompt hook is ours only when its first line is exactly the marker
@@ -595,13 +622,7 @@ func TestProj13_OlderPromptsAreUpgradedToTheCurrent(t *testing.T) {
 			if ok, err := HasAskGuardHook(folder, 7); err != nil || !ok {
 				t.Fatalf("the command entry counts as installed: ok=%v err=%v", ok, err)
 			}
-			rep, err := InstallWorkbench(context.Background(), o)
-			if err != nil || rep.HookChanged {
-				t.Fatalf("a second resync must change no hook: %+v err=%v", rep, err)
-			}
-			if twice := readTestFile(t, settingsFile(folder)); twice != once {
-				t.Fatalf("a second resync rewrote the settings:\n%s\nwas\n%s", twice, once)
-			}
+			assertSecondResyncChangesNothing(t, o, once)
 		})
 	}
 }
