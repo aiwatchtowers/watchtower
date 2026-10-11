@@ -67,28 +67,54 @@ func TestAskGuardPrompt_IsTheGoldenWithTheMarkerSubstituted(t *testing.T) {
 	}
 }
 
-// PROJ-13: the Stop prompt hook passes a continued turn, a turn that filed
-// an ask and a finished session that says so, so it can never trap the agent.
-// Since v3 it passes by default, unfinished work never fails case 2 and a
-// request to the owner fails case 1 wherever it sits.
+// The v4 classifier text (spec 2026-10-10-owner-asks-v2 Part 4.4) is the
+// golden, byte for byte.
+func TestAskGuardClassifier_IsTheV4Golden(t *testing.T) {
+	golden, err := os.ReadFile(filepath.Join("testdata", "askguard_classifier_v4.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if AskGuardClassifier != string(golden) {
+		t.Fatalf("the ask guard classifier drifted from the v4 golden:\n got %q\nwant %q", AskGuardClassifier, golden)
+	}
+}
+
+// PROJ-13: the classifier passes a continued turn, a turn that filed an ask
+// and a finished session that says so, so it can never trap the agent. Since
+// v4 (spec 2026-10-10-owner-asks-v2 Part 11.1) each v3 clause this test
+// checked maps to a clause of the v4 golden below or to a named Go guard:
+// the stop_hook_active pass is Go's (cmd TestProj13_ContinuedTurnNeverBlocks),
+// and "names no ask #<number>" is the decision table's covered row (cmd
+// TestProj13_StopGuardDecisionTable rows E7, E7a, E7b).
 func TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk(t *testing.T) {
-	p := askGuardPrompt(7)
+	golden, err := os.ReadFile(filepath.Join("testdata", "askguard_classifier_v4.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := string(golden)
 	for _, clause := range []string{
-		`Return {"ok": true} unless a failure case below clearly applies.`,
-		`Return {"ok": true} when stop_hook_active is true.`,
-		`These pass, except that failure case 1 takes priority over this list:`,
-		`- Unfinished work is never case 2: a progress report, a partial result, a next step the agent itself will take, work` +
-			"\n" + `  still left. A question or request to the owner inside a progress report is still case 1.`,
-		`- A named ask is never a failure: a message that names "ask #<number>", including step-by-step help for the owner on` +
-			"\n" + `  that ask.`,
-		`- A closing summary that says it called finish_session (for example "session finished") and lists what is left on the` +
-			"\n" + `  owner is not case 1 (those items are filed as asks separately). This item never affects case 2.`,
-		`and names no "ask #<number>".`,
-		`does not say it called finish_session (for example "session finished")`,
-		`When unsure, return {"ok": true}.`,
+		// v3 "Return {"ok": true} unless a failure case below clearly applies." and
+		// "When unsure, return {"ok": true}." — outline 2.
+		`Return the default unless a case below clearly` + "\n" + `   applies, and when unsure.`,
+		// v3 "These pass, except that failure case 1 takes priority over this list:" — outline 7.
+		`The request check takes priority over the not-complete list in 7`,
+		// v3 "- Unfinished work is never case 2 …" — outline 8 and outline 7.
+		`Unfinished work is never` + "\n" + `   complete: a progress report, a partial result, a next step the agent itself will take, work still left`,
+		`a question or request to the owner inside a` + "\n" + `   progress report is still "chat" or "full".`,
+		// v3 "- A named ask is never a failure: … including step-by-step help …" — outline 3.
+		`names_ask is true when the message names an ask ("ask #<number>"), including step-by-step help for the owner on` +
+			"\n" + `   that ask.`,
+		`request_outside_ask is true when the message's request (chat or full) is something other than what a` + "\n" +
+			`   named ask carries`,
+		// v3 "- A closing summary that says it called finish_session … never affects case 2." — outline 4.
+		`closing_summary is true when the message says it called finish_session (for example "session finished") and lists` +
+			"\n" + `   what is left on the owner. Those items are filed as asks separately, so such a list is never a request.` +
+			"\n" + `   closing_summary never affects complete_unreported.`,
+		// v3 "does not say it called finish_session (for example "session finished")" — outline 8.
+		`and does not say it called finish_session (for example "session finished")`,
 	} {
 		if !strings.Contains(p, clause) {
-			t.Fatalf("PROJ-13: the prompt lost the pass clause %q", clause)
+			t.Fatalf("PROJ-13: the classifier lost the pass clause %q", clause)
 		}
 	}
 }
