@@ -656,6 +656,17 @@ func TestAskOwnerSeriesHint(t *testing.T) {
 	assert.EqualValues(t, prev, out["superseded"])
 	assert.NotContains(t, out, "hint")
 
+	// Two open asks, a revision of the newest: the hint names the older one.
+	pair := seedTerminalSession(t, fx.d, fx.a)
+	pairReg := askRegistry(t, fx.d, strconv.FormatInt(pair, 10))
+	older1 := askID(t, mustApply(t, pairReg, fx.a, "ask_owner", questionAskTitled("Which region?")))
+	newer1 := askID(t, mustApply(t, pairReg, fx.a, "ask_owner", questionAskTitled("Which zone?")))
+	out = mustApply(t, pairReg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which zone, again?",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d,"reason":"r"}`, newer1))
+	assert.EqualValues(t, newer1, out["superseded"])
+	assert.Equal(t, fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)",
+		older1), out["hint"])
+
 	// 11 minutes ago is outside the series.
 	late := seedTerminalSession(t, fx.d, fx.a)
 	lateReg := askRegistry(t, fx.d, strconv.FormatInt(late, 10))

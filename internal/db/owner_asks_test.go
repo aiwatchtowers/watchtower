@@ -498,7 +498,7 @@ func TestRecentOpenQuestionAsk(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	since := now.Add(-10 * time.Minute)
 
-	got, err := d.RecentOpenQuestionAsk(sid, since)
+	got, err := d.RecentOpenQuestionAsk(sid, since, 0)
 	require.NoError(t, err)
 	assert.Nil(t, got, "no ask")
 
@@ -509,13 +509,24 @@ func TestRecentOpenQuestionAsk(t *testing.T) {
 		Payload: `{"checklist":["a"]}`})
 	answered := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Done"})
 	markAskAnswered(t, d, answered)
-	got, err = d.RecentOpenQuestionAsk(sid, since)
+	got, err = d.RecentOpenQuestionAsk(sid, since, 0)
 	require.NoError(t, err)
 	assert.Nil(t, got, "too old, another session's, a check and an answered ask: none")
 
 	recent := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Recent"})
-	got, err = d.RecentOpenQuestionAsk(sid, since)
+	got, err = d.RecentOpenQuestionAsk(sid, since, 0)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, recent, got.ID)
+
+	// Excluding the newest (the ask being superseded) finds the one before.
+	newest := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Newest"})
+	got, err = d.RecentOpenQuestionAsk(sid, since, newest)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, recent, got.ID)
+	got, err = d.RecentOpenQuestionAsk(sid, since, recent)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, newest, got.ID, "excluding an older ask keeps the newest")
 }

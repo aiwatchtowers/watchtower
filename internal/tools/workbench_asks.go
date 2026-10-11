@@ -323,7 +323,9 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	var series *db.OwnerAsk
 	if a.Kind == asks.KindQuestion && ask.SessionID.Valid {
 		// Read before the insert, which would otherwise find itself.
-		if series, err = d.RecentOpenQuestionAsk(ask.SessionID.Int64, time.Now().Add(-seriesHintWindow)); err != nil {
+		// The ask the new one supersedes is excluded: it will not stay open.
+		since := time.Now().Add(-seriesHintWindow)
+		if series, err = d.RecentOpenQuestionAsk(ask.SessionID.Int64, since, a.PreviousAskID); err != nil {
 			return nil, err
 		}
 	}
@@ -347,7 +349,7 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if superseded != 0 {
 		out["superseded"] = superseded
 	}
-	if series != nil && series.ID != superseded {
+	if series != nil {
 		out["hint"] = fmt.Sprintf("ask #%d of this session is still open — put related decisions in one ask (up to 4 questions)", series.ID)
 	}
 	if ask.DocPath != "" {

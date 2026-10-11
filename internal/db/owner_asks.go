@@ -213,13 +213,14 @@ func (db *DB) LastWithdrawnByTitle(projectID int64, normTitle string, since time
 }
 
 // RecentOpenQuestionAsk returns session sessionID's newest open question ask
-// filed at or after since, for ask_owner's series hint; nil when there is
-// none. Call it before filing the new ask, which would otherwise find
-// itself. DocSnapshot is left empty.
-func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time) (*OwnerAsk, error) {
+// filed at or after since, other than excludeID (0 = none: the ask the new
+// one supersedes), for ask_owner's series hint; nil when there is none. Call
+// it before filing the new ask, which would otherwise find itself.
+// DocSnapshot is left empty.
+func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID int64) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
-		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ?
-		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout))
+		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ? AND a.id != ?
+		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout), excludeID)
 	if err != nil || len(list) == 0 {
 		return nil, err
 	}
