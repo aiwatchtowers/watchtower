@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,4 +84,55 @@ func lockExclusively(t *testing.T, d *DB) {
 	_, err = tx.Exec(`UPDATE projects SET name = name`)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = tx.Rollback() })
+}
+
+// The guard's opener: no file is created, no migration runs over an old
+// schema (HasColumns finds the gap), and a write goes through.
+func TestOpenExistingRWNeverCreatesNeverMigrates(t *testing.T) {
+	dir := t.TempDir()
+	_, err := OpenExistingRW(filepath.Join(dir, "watchtower.db"), 100*time.Millisecond)
+	require.Error(t, err)
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "no database file may be created")
+
+	path := filepath.Join(t.TempDir(), "a ?dir", "watchtower.db")
+	full, err := Open(path)
+	require.NoError(t, err)
+	has, err := full.HasColumns("terminal_sessions", "chat_question", "chat_question_at")
+	require.NoError(t, err)
+	assert.True(t, has, "the current schema has the chat question columns")
+	require.NoError(t, goose.DownTo(full.DB, "migrations", 106))
+	require.NoError(t, full.Close())
+
+	rw, err := OpenExistingRW(path, 100*time.Millisecond)
+	require.NoError(t, err)
+	defer rw.Close()
+	for _, tc := range []struct {
+		table string
+		cols  []string
+	}{
+		{"terminal_sessions", []string{"chat_question"}},
+		{"owner_presence", nil},
+		{"owner_presence", []string{"session_id"}},
+	} {
+		has, err := rw.HasColumns(tc.table, tc.cols...)
+		require.NoError(t, err)
+		assert.False(t, has, "%s %v on a 00106 schema", tc.table, tc.cols)
+	}
+	has, err = rw.HasColumns("terminal_sessions", "agent_state", "agent_background")
+	require.NoError(t, err)
+	assert.True(t, has, "columns the old schema does have")
+	version, err := goose.GetDBVersion(rw.DB)
+	require.NoError(t, err)
+	assert.EqualValues(t, 106, version, "no migration ran")
+
+	id, err := rw.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err, "a write must succeed")
+	var fk int
+	require.NoError(t, rw.QueryRow(`PRAGMA foreign_keys`).Scan(&fk))
+	assert.Equal(t, 1, fk, "foreign keys are enforced")
+	p, err := rw.GetWorkbench(id)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", p.Name)
 }

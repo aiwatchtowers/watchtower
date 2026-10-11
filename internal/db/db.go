@@ -150,6 +150,59 @@ func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
 	return &DB{DB: sqlDB}, nil
 }
 
+// OpenExistingRW opens the database at dbPath for a hook on a hard time
+// budget that reads and then writes a little — the Stop ask guard. Like
+// OpenExisting it never creates the directory or the file (mode=rw), runs no
+// migration and writes no schema, and a statement waits at most busy for
+// another process's lock; unlike it, writes are allowed (no query_only),
+// foreign keys are enforced and a write transaction begins IMMEDIATE, as on
+// Open. A schema older than the caller needs is found with HasColumns, never
+// by the goose version (a crossed migration line is possible).
+func OpenExistingRW(dbPath string, busy time.Duration) (*DB, error) {
+	dsn := "file:" + (&url.URL{Path: dbPath}).EscapedPath() +
+		fmt.Sprintf("?mode=rw&_txlock=immediate&_pragma=busy_timeout(%d)&_pragma=foreign_keys(1)", busy.Milliseconds())
+	sqlDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
+	}
+	return &DB{DB: sqlDB}, nil
+}
+
+// HasColumns reports whether table exists with every one of cols, by schema
+// lookup; a missing table reads false, a failed lookup is an error.
+func (db *DB) HasColumns(table string, cols ...string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("reading %s's columns: %w", table, err)
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("reading %s's columns: %w", table, err)
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("reading %s's columns: %w", table, err)
+	}
+	if len(have) == 0 {
+		return false, nil
+	}
+	for _, c := range cols {
+		if !have[c] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 // tightenDBFilePerms restricts the database file and its WAL/SHM sidecars to
 // 0600. SQLite creates all three itself, per the process umask (0644 in
 // practice), so the mode is fixed after the fact rather than at creation —
