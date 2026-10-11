@@ -1445,6 +1445,10 @@ func TestProj11_SubagentStopOnlyLowersTheCount(t *testing.T) {
 		assert.Equal(t, finished, storedFinishedAt(t, database, row), step.name)
 	}
 
+	// Board #543: the stops without a usable list still recorded their turn's
+	// end (the next Stop must not count b), an internal agent's did not.
+	assert.True(t, storedTurns(t, database, row).Closed("b"), "a SubagentStop without a list records its turn's end")
+
 	// Over `working`: nothing but the turn's end (board #543: a teammate
 	// works across the main agent's turns, so its turn is recorded whatever
 	// the state).
@@ -1523,14 +1527,20 @@ func TestProj11_TeammateCountsOnlyInItsTurn(t *testing.T) {
 	idle := fixtureInput(t, "stop_teammates_idle.json")
 	internal := subagentStop("afc0000000000001", "", withTeammates(2, "[]"))
 
+	s := hookStep(t, database, pid, row, at, 0, inTurn)
+	assert.False(t, s.Background.Valid, "teammates listed but never started are not counted")
+
 	hookStep(t, database, pid, row, at, 1, alphaStart)
 	hookStep(t, database, pid, row, at, 2, betaStart)
-	s := hookStep(t, database, pid, row, at, 3, inTurn)
+	s = hookStep(t, database, pid, row, at, 3, inTurn)
 	assert.Equal(t, "waiting", s.AgentState.String)
 	assert.Equal(t, bgCount(2), s.Background, "both teammates are in their turn")
 
 	s = hookStep(t, database, pid, row, at, 4, internal)
 	assert.Equal(t, bgCount(2), s.Background, "an internal agent's stop says nothing")
+	hookStep(t, database, pid, row, at, 4, `{"session_id":"`+briefLaunchID+`","hook_event_name":"SubagentStart","agent_id":"aint-1","agent_type":""}`)
+	hookStep(t, database, pid, row, at, 4, `{"session_id":"`+briefLaunchID+`","hook_event_name":"SubagentStart","agent_type":"gamma"}`)
+	assert.Len(t, storedTurns(t, database, row), 2, "an internal agent and an input without agent_id leave no turn")
 
 	s = hookStep(t, database, pid, row, at, 5, betaStop)
 	assert.Equal(t, bgCount(1), s.Background, "beta's turn ended")
