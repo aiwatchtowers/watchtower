@@ -40,6 +40,12 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     package var agentBackground: Int?
     /// When that count was reported (same format as `agentStateAt`).
     package var agentBackgroundAt: String?
+    /// The Chat question the Stop ask guard recorded (migration 00107, Go
+    /// writes only): JSON `{"question", "options"}`; nil = none.
+    package var chatQuestion: String?
+    /// When it was recorded (same format as `agentStateAt`), kept raw: the
+    /// escalation passes it back to Go verbatim as `--at`.
+    package var chatQuestionAt: String?
 
     package init(
         id: Int64,
@@ -55,7 +61,9 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         openAsks: Int = 0,
         oldestOpenAskID: Int64? = nil,
         agentBackground: Int? = nil,
-        agentBackgroundAt: String? = nil
+        agentBackgroundAt: String? = nil,
+        chatQuestion: String? = nil,
+        chatQuestionAt: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -71,6 +79,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.oldestOpenAskID = oldestOpenAskID
         self.agentBackground = agentBackground
         self.agentBackgroundAt = agentBackgroundAt
+        self.chatQuestion = chatQuestion
+        self.chatQuestionAt = chatQuestionAt
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -89,6 +99,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case oldestOpenAskID = "oldest_open_ask_id"
         case agentBackground = "agent_background"
         case agentBackgroundAt = "agent_background_at"
+        case chatQuestion = "chat_question"
+        case chatQuestionAt = "chat_question_at"
     }
 }
 
@@ -193,7 +205,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
 
     /// The row's hook state when it was written during the run started at
     /// `startedAt`; nil otherwise.
-    private static func trustedHook(_ row: SessionAgentStateRow, startedAt: Date?) -> SessionAgentState? {
+    package static func trustedHook(_ row: SessionAgentStateRow, startedAt: Date?) -> SessionAgentState? {
         guard let stored = row.stored, writtenThisRun(row, startedAt: startedAt) else { return nil }
         return stored
     }
@@ -276,8 +288,41 @@ package struct SessionAgentStatus: Equatable, Sendable {
         return formatter
     }()
 
-    /// Parses an `agent_state_at` stamp; nil for anything else.
+    /// Parses an `agent_state_at` stamp; nil for anything else. Only a
+    /// stamp that formats back to itself counts: that refuses the near
+    /// misses the formatter alone would take and Go's parser refuses — two
+    /// fraction digits, an offset instead of `Z`, a day or hour past the end
+    /// (`2026-02-30`, `24:00`) — and keeps a stamp read and written back
+    /// byte-identical (the shared fixture `internal/db/testdata/stamps`).
     package static func parseStamp(_ stamp: String) -> Date? {
-        stampFormatter.date(from: stamp)
+        guard let date = stampFormatter.date(from: stamp), formatStamp(date) == stamp else { return nil }
+        return date
     }
+
+    /// `at` in the `agent_state_at` layout Go writes (`db.AgentStateStamp`,
+    /// pinned by `internal/db/testdata/stamps`): UTC, the milliseconds
+    /// truncated as Go's formatter does, a literal `Z` — for the columns the
+    /// Desktop writes in that layout (`owner_presence.seen_at`).
+    package static func formatStamp(_ at: Date) -> String {
+        // Rounded to the microsecond first: a `Date` holds a binary double,
+        // so an exact millisecond may sit just under its own value.
+        // Floor division, as Go's: a pre-epoch instant keeps a positive
+        // fraction of the second before it.
+        let micros = Int64((at.timeIntervalSince1970 * 1_000_000).rounded())
+        let millis = micros >= 0 ? micros / 1000 : (micros - 999) / 1000
+        let seconds = millis >= 0 ? millis / 1000 : (millis - 999) / 1000
+        let whole = secondsFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)))
+        return whole + "." + String(format: "%03lld", millis - seconds * 1000) + "Z"
+    }
+
+    /// The stamp up to its whole seconds, UTC and the Gregorian calendar
+    /// whatever the process locale.
+    private static let secondsFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return formatter
+    }()
 }
