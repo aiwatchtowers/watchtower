@@ -157,6 +157,10 @@ struct EventCardModel: Identifiable, Equatable {
     var showsRecord: Bool { isHighlighted && meetingEvent != nil }
     var showsPrep: Bool { isHighlighted }
 
+    /// The current or next meeting is the accent card; every other card is
+    /// plain (design pass C3).
+    var cardStyle: CardStyle { isHighlighted ? .highlighted : .plain }
+
     /// The buttons on the card, in order.
     var actionTitles: [String] {
         (showsRecord ? ["Record"] : []) + (showsPrep ? ["Prep"] : [])

@@ -280,6 +280,8 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(highlighted.first?.actionTitles, ["Record", "Prep"])
         XCTAssertNotNil(highlighted.first?.meetingEvent)
         XCTAssertFalse(agenda.cards.first { $0.id == "ended" }?.showsRecord ?? true)
+        // Design pass C3: the highlighted card is the accent card, the others plain.
+        XCTAssertEqual(agenda.cards.map(\.cardStyle), agenda.cards.map { $0.id == "next" ? CardStyle.highlighted : .plain })
     }
 
     /// Bug 2 and review focus 5 (design pass spec §9.2): the agenda scrolls

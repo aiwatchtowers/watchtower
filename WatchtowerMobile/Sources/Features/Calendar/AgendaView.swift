@@ -5,7 +5,7 @@ import WatchtowerKit
 /// accent colour), the selected day's agenda as "time | card" rows with the
 /// red now line on today, the current or next meeting highlighted with
 /// Record and Prep, a red mic button for a voice note, and the
-/// "Recordings · 1 new" pill to the Recordings list.
+/// waveform button (with a new-recap badge) to the Recordings list.
 struct AgendaView: View {
     @Environment(AppEnvironment.self) private var env
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
@@ -28,13 +28,15 @@ struct AgendaView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { recordingsPill }
+                ToolbarItem(placement: .topBarTrailing) { recordingsButton }
             }
             .refreshable { await env.refresh() }
         }
     }
 
-    private var recordingsPill: some View {
+    /// C1: the waveform icon, with an accent badge counting new recaps. It
+    /// speaks "Recordings · 1 new".
+    private var recordingsButton: some View {
         let newCount = RecordingsListModel.newCount(
             transcripts: env.calendarReplica.snapshot.transcripts,
             seen: env.recordingsSeen.value
@@ -42,14 +44,16 @@ struct AgendaView: View {
         return Button {
             env.navigation.calendarPath.append(.recordings)
         } label: {
-            Text(RecordingsListModel.pillText(newCount: newCount))
-                .font(.footnote.weight(.medium))
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
-                .background(Color.secondary.opacity(0.14), in: Capsule().inset(by: 5))
+            Image(systemName: "waveform")
+                .frame(minWidth: 44, minHeight: 44)
+                .overlay(alignment: .topTrailing) {
+                    if newCount > 0 {
+                        CountBadge(count: newCount, tone: .accent).offset(x: 2, y: 4)
+                    }
+                }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .accessibilityLabel(RecordingsListModel.pillText(newCount: newCount))
     }
 
     private func content(now: Date) -> some View {
@@ -78,6 +82,7 @@ struct AgendaView: View {
                         switch row {
                         case let .event(card):
                             AgendaEventRow(card: card) { env.navigation.calendarPath.append(.event(card.id)) }
+                                .listRowInsets(RowInsets.card)
                         case let .nowLine(time):
                             NowLineView(time: time)
                         }
@@ -189,59 +194,33 @@ private struct AgendaEventRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .leading)
                 .padding(.top, 10)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
                 Text(card.title).font(.subheadline.weight(.semibold))
-                Text(card.detailLine).font(.caption).foregroundStyle(.secondary)
+                Text(card.detailLine).font(TypeScale.meta).foregroundStyle(.secondary)
                 if !card.pills.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(card.pills) { EventPillView(pill: $0) }
+                    FlowRow {
+                        ForEach(card.pills) { Pill(text: $0.text, tone: $0.tone) }
                     }
                 }
                 if card.isHighlighted {
-                    HStack(spacing: 8) {
+                    // Leading-aligned; the 44 pt Record of Now (Global Constraints).
+                    HStack(spacing: Spacing.regular) {
                         if let meeting = card.meetingEvent {
-                            Button {
+                            RecordButton {
                                 Task { await env.recorder.recordMeeting(meeting) }
-                            } label: {
-                                Label("Record", systemImage: "record.circle")
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(PhoneTone.red.color)
                         }
-                        Button("Prep", action: open).buttonStyle(.bordered)
+                        Button("Prep", action: open)
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
                     }
-                    // Large size: the button itself is at least 44 pt tall.
-                    .controlSize(.large)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(
-                card.isHighlighted ? PhoneTone.accent.color.opacity(0.1) : Color.secondary.opacity(0.08),
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .overlay {
-                if card.isHighlighted {
-                    RoundedRectangle(cornerRadius: 10).stroke(PhoneTone.accent.color, lineWidth: 1.5)
-                }
-            }
+            .card(card.cardStyle)
             .opacity(card.isPast ? 0.75 : 1)
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
         }
-    }
-}
-
-struct EventPillView: View {
-    let pill: EventPill
-
-    var body: some View {
-        Text(pill.text)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(pill.tone.color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(pill.tone.color.opacity(0.14), in: Capsule())
     }
 }
 

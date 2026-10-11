@@ -87,8 +87,8 @@ struct EventDetailView: View {
                 if model.recordingPills.isEmpty {
                     Text(model.recordingText).foregroundStyle(.secondary)
                 } else {
-                    HStack(spacing: 6) {
-                        ForEach(model.recordingPills) { EventPillView(pill: $0) }
+                    FlowRow {
+                        ForEach(model.recordingPills) { Pill(text: $0.text, tone: $0.tone) }
                     }
                     if model.recordingText != model.recordingPills.first?.text {
                         Text(model.recordingText).font(.callout)
