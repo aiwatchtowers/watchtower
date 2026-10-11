@@ -94,7 +94,8 @@ package struct ChatQuestionEscalationResult: Decodable, Equatable, Sendable {
     }
 
     /// The Desktop's own envelope for a run that printed no readable result
-    /// — a non-zero exit, a launch failure, unparsable stdout: not retried.
+    /// — a non-zero exit or unparsable stdout: not retried (a launch failure
+    /// is `launchFailure`, which is).
     package static func failure(_ message: String) -> Self {
         Self(ok: false, errorCode: .internal, error: message)
     }

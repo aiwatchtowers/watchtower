@@ -13,7 +13,8 @@ import WatchtowerCore
 /// - Evaluates on every agent-state resolve, every presence change and a
 ///   30 s tick while any live session holds a question; at most one run in
 ///   flight per session.
-/// - A transient failure (`busy`, `open_cap`) is tried again at the next
+/// - A transient failure (`busy`, `open_cap`, or the Desktop's own
+///   `launchFailed`) is tried again at the next
 ///   evaluation at most once a minute per session; any other failure, and
 ///   `gone`, stop the runs for that question (`chat_question_at`) — a new
 ///   question starts fresh. A `filed` ask asks the asks poll for a read.
