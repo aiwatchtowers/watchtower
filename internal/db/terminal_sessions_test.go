@@ -1156,7 +1156,8 @@ func TestChatQuestionSetReplaceClear(t *testing.T) {
 }
 
 // A guard's record stamped before the row's newer run or turn is stale: it
-// writes nothing. A waiting or approval stamped after it never refuses it.
+// writes nothing. A waiting, an approval or a tool run's working stamped after
+// it never refuses it.
 func TestSetChatQuestionRefusesAStopOlderThanTheRun(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
@@ -1188,13 +1189,22 @@ func TestSetChatQuestionRefusesAStopOlderThanTheRun(t *testing.T) {
 		}
 	}
 
-	for _, state := range []string{"waiting", "approval"} {
+	for _, tc := range []struct {
+		name  string
+		state string
+		order AgentOrder
+	}{
+		{"a waiting", "waiting", AgentOrder{}},
+		{"an approval", "approval", AgentOrder{}},
+		// The ended turn's async PostToolUse may land after the Stop.
+		{"a tool run's working", "working", AgentOrder{ToolRun: true}},
+	} {
 		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, state, t0.Add(time.Second), "", nil, false, AgentOrder{})) {
-			t.Fatalf("%s: did not write", state)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, tc.state, t0.Add(time.Second), "", nil, false, tc.order)) {
+			t.Fatalf("%s: did not write", tc.name)
 		}
 		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
-			t.Fatalf("a %s stamped after the Stop refused the record: %v", state, err)
+			t.Fatalf("%s stamped after the Stop refused the record: %v", tc.name, err)
 		}
 	}
 	// A run or turn not newer than the Stop never refuses it.
