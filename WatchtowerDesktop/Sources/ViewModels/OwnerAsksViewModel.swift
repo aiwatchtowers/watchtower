@@ -166,9 +166,15 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private(set) var roomySessions: Set<Int64> = []
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
-    /// A on the workbench page (board #412): the stack's oldest card takes
-    /// the keyboard once `OwnerAskStackSection` shows it, which clears this.
-    var stackKeyboardRequested = false
+    /// A (or ⌃⌘A) on the workbench page (board #412): that workbench's
+    /// stack gives its oldest card the keyboard once its
+    /// `OwnerAskStackSection` shows it (`takeStackKeyboardRequest`).
+    private(set) var stackKeyboardRequest: StackKeyboardRequest?
+    /// Workbenches whose drawer takes the bare keys (board #412): a click
+    /// in it, or an ask opened or switched from the keyboard, made it
+    /// active; a click elsewhere or the drawer going ends it. Read at key
+    /// time only.
+    @ObservationIgnored private(set) var drawerKeysActive: Set<Int64> = []
     /// The drawer's width, kept across launches under `drawerWidthKey`.
     private(set) var drawerWidth: Double
 
@@ -409,6 +415,34 @@ final class OwnerAsksViewModel {
         return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")"
     }
 
+    // MARK: - Keyboard (board #412)
+
+    struct StackKeyboardRequest: Equatable {
+        let projectID: Int64
+        let at: Date
+    }
+
+    /// How long a stack request waits for its section: one never shown
+    /// must not move the keyboard on a later visit.
+    static let stackKeyboardWindow: TimeInterval = 2
+
+    func requestStackKeyboard(projectID: Int64, now: Date = Date()) {
+        stackKeyboardRequest = StackKeyboardRequest(projectID: projectID, at: now)
+    }
+
+    /// Whether `projectID`'s section gives its oldest card the keyboard
+    /// now: once per request, only its own workbench's, and only while
+    /// fresh. Another workbench's request stays for its own section.
+    func takeStackKeyboardRequest(projectID: Int64, now: Date = Date()) -> Bool {
+        guard let request = stackKeyboardRequest, request.projectID == projectID else { return false }
+        stackKeyboardRequest = nil
+        return now.timeIntervalSince(request.at) < Self.stackKeyboardWindow
+    }
+
+    func setDrawerKeysActive(_ active: Bool, projectID: Int64) {
+        if active { drawerKeysActive.insert(projectID) } else { drawerKeysActive.remove(projectID) }
+    }
+
     // MARK: - Drawer
 
     func openDrawer(askID: Int64, projectID: Int64) {
@@ -438,6 +472,7 @@ final class OwnerAsksViewModel {
     func hideDrawer(projectID: Int64) {
         if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
         drawerAskIDs[projectID] = nil
+        drawerKeysActive.remove(projectID)
         drawerExpanded = false
     }
 
