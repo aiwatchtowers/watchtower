@@ -179,9 +179,9 @@ package enum Constants {
 
     /// Search for a binary in well-known directories first, then resolved PATH.
     /// Well-known dirs are checked first to avoid TCC prompts from iterating
-    /// the full PATH (which may include ~/Documents, ~/Music, etc.).
-    package nonisolated static func findInPath(_ binary: String) -> String? {
-        let home = NSHomeDirectory()
+    /// the full PATH (which may include ~/Documents, ~/Music, etc.). Only an
+    /// executable regular file counts (`isRunnableFile`), never a directory.
+    package nonisolated static func findInPath(_ binary: String, home: String = NSHomeDirectory()) -> String? {
 
         // 1. Well-known directories — fast, no TCC risk
         let knownDirs = [
@@ -193,7 +193,7 @@ package enum Constants {
         ]
         for dir in knownDirs {
             let fullPath = "\(dir)/\(binary)"
-            if FileManager.default.isExecutableFile(atPath: fullPath) {
+            if isRunnableFile(fullPath) {
                 return fullPath
             }
         }
@@ -221,7 +221,7 @@ package enum Constants {
             let dirStr = String(dir)
             if tccProtected.contains(where: { dirStr.hasPrefix($0) }) { continue }
             let fullPath = "\(dirStr)/\(binary)"
-            if FileManager.default.isExecutableFile(atPath: fullPath) {
+            if isRunnableFile(fullPath) {
                 return fullPath
             }
         }
@@ -235,7 +235,7 @@ package enum Constants {
         for ver in versions.sorted().reversed() {
             for sub in ["bin", "installation/bin"] {
                 let path = "\(dir)/\(ver)/\(sub)/\(binary)"
-                if FileManager.default.isExecutableFile(atPath: path) {
+                if isRunnableFile(path) {
                     return path
                 }
             }

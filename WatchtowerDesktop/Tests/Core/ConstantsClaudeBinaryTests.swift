@@ -64,4 +64,17 @@ final class ConstantsClaudeBinaryTests: XCTestCase {
         let merged = Constants.appendingWellKnownDirs(to: "", home: "/h", claudePath: nil) { $0 == "/h/.local/bin" }
         XCTAssertEqual(merged, "/h/.local/bin")
     }
+
+    /// A directory named like the binary in an earlier well-known dir is
+    /// skipped (it would exit 126), so the next real executable is found.
+    func testFindInPathSkipsADirectoryNamedLikeTheBinary() throws {
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent(".local/bin/claude"), withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent(".claude/bin"), withIntermediateDirectories: true
+        )
+        let real = try executable(".claude/bin/claude")
+        XCTAssertEqual(Constants.findInPath("claude", home: dir.path), real)
+    }
 }
