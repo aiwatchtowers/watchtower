@@ -22,7 +22,10 @@ var workbenchAsksCmd = &cobra.Command{
 		"session names, and its questions with their options (kind question), or checklist_count\n" +
 		"(kind check) and doc_path (kind review). An ask whose payload does not parse is listed\n" +
 		"with payload_error and no questions; the others are unaffected. Any other failure prints\n" +
-		"{\"ok\": false, \"error\"}; both exit 0. Read-only: answering is done in the Desktop.",
+		"{\"ok\": false, \"error\"} — a missing database or one older than migration 00107 too;\n" +
+		"both exit 0. Only arguments cobra cannot parse (a missing --json, an unknown flag, a\n" +
+		"positional argument) exit non-zero, with no JSON. Read-only: it never creates or\n" +
+		"migrates the database; answering is done in the Desktop.",
 	// No root schema/config pre-run: a broken config answers ok: false like
 	// any other failure; the DB is opened by the command.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
