@@ -125,4 +125,18 @@ final class RelayPayloadTests: XCTestCase {
         XCTAssertEqual(json, #"{"created_at":1700000000,"entity_id":"7","error_message":"row not found","id":"A1","kind":"target_done","params":{},"status":"failed"}"#)
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8)), action)
     }
+
+    func testHubIDEncodesAsHubIdAndNilIsAbsent() throws {
+        let created = Date(timeIntervalSince1970: 1_700_000_000)
+        let addressed = ActionRequestPayload(
+            id: "a1", kind: .probe, entityID: nil, createdAt: created, deviceID: "device-a", hubID: "hub-acme"
+        )
+        let json = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(addressed), encoding: .utf8))
+        XCTAssertTrue(json.contains("\"hub_id\":\"hub-acme\""), json)
+        let plain = ActionRequestPayload(id: "a2", kind: .probe, entityID: nil, createdAt: created)
+        let plainJSON = try XCTUnwrap(String(bytes: try RelayCoder.makeEncoder().encode(plain), encoding: .utf8))
+        XCTAssertFalse(plainJSON.contains("hub_id"))
+        let decoded = try RelayCoder.makeDecoder().decode(ActionRequestPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.hubID, "hub-acme")
+    }
 }

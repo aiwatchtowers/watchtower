@@ -24,5 +24,7 @@ public enum ActionReason: String, Codable, CaseIterable, Sendable {
     /// The hub restarted between `begun` and `done` (spec §5.2 rule 1).
     case outcomeUnknown = "outcome_unknown"
     case unsupportedInPOC = "unsupported_in_poc"
+    /// The record names another hub (multi-hub spec §3.5).
+    case wrongHub = "wrong_hub"
     case writeFailed = "write_failed"
 }

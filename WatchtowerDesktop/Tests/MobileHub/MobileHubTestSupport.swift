@@ -314,11 +314,12 @@ func pendingActionRecord(
     entityID: String? = nil,
     params: [String: JSONValue] = [:],
     age: TimeInterval = 0,
-    now: Date = Date()
+    now: Date = Date(),
+    hubID: String? = nil
 ) throws -> CloudRecord {
     let created = now.addingTimeInterval(-age)
     let action = ActionRequestPayload(
-        id: id, kind: kind, entityID: entityID, params: params, createdAt: created, deviceID: "device-a"
+        id: id, kind: kind, entityID: entityID, params: params, createdAt: created, deviceID: "device-a", hubID: hubID
     )
     return try CloudRecordFactory.record(for: action, modifiedAt: created)
 }

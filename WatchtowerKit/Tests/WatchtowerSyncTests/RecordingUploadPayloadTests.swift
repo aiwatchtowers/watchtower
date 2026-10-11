@@ -155,4 +155,19 @@ final class RecordingUploadPayloadTests: XCTestCase {
         let batch = try await transport.changes(in: .relay, since: nil)
         XCTAssertEqual(batch.changed.first?.assetFileURL, asset)
     }
+
+    func testHubIDRoundTripsAndNilIsAbsent() throws {
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let upload = RecordingUploadPayload(
+            id: "R1", startedAt: start, endedAt: start + 60, durationSec: 60,
+            sampleFormat: "aac-64k-mono", deviceID: "device-a", hubID: "hub-acme"
+        )
+        let data = try RelayCoder.makeEncoder().encode(upload)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"hub_id\":\"hub-acme\""))
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: data).hubID, "hub-acme")
+        let plain = RecordingUploadPayload(
+            id: "R2", startedAt: start, endedAt: start + 60, durationSec: 60, sampleFormat: "aac-64k-mono"
+        )
+        XCTAssertFalse(String(decoding: try RelayCoder.makeEncoder().encode(plain), as: UTF8.self).contains("hub_id"))
+    }
 }

@@ -592,4 +592,37 @@ final class RelayProcessorTests: XCTestCase {
         XCTAssertEqual(try sidecar.relayPhase(record.recordName), .done)
         XCTAssertEqual(try echoes(of: record.recordName).map(\.status), [.applied, .applied], "at most a re-echo")
     }
+
+    // MARK: - Hub addressing (multi-hub spec §3.5)
+
+    func testAnActionForAnotherHubFailsWrongHubIsLedgeredAndReEchoedNeverDispatched() async throws {
+        let latch = HandlerLatch()
+        dispatcher.register(.boardCommentAdd) { action in
+            await latch.enter(action)
+            return .applied()
+        }
+        let record = try pendingActionRecord(kind: .boardCommentAdd, entityID: "7", hubID: "hub-other")
+        try await transport.save([record])
+        let processor = makeProcessor()
+
+        _ = try await processor.processOnce()
+        try await transport.save([record])          // the phone's pending save wins over the echo
+        _ = try await processor.processOnce()
+
+        let echoes = try echoes(of: record.recordName)
+        XCTAssertEqual(echoes.map(\.status), [.failed, .failed])
+        XCTAssertEqual(echoes.map(\.reason), [.wrongHub, .wrongHub])
+        XCTAssertEqual(echoes.first?.errorMessage, RelayProcessor.wrongHubMessage)
+        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:wrong_hub")
+        XCTAssertTrue(latch.calls.isEmpty, "another hub's action is never applied")
+    }
+
+    func testAnActionForThisHubOrWithoutAHubIDIsApplied() async throws {
+        for (index, hubID) in ["hub-acme", nil].enumerated() {
+            let record = try pendingActionRecord(kind: .probe, params: ["nonce": .string("n-\(index)")], hubID: hubID)
+            try await transport.save([record])
+            _ = try await makeProcessor().processOnce()
+            XCTAssertEqual(try echoes(of: record.recordName).first?.status, .applied)
+        }
+    }
 }

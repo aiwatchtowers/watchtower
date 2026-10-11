@@ -55,7 +55,7 @@ final class KitFixtureTests: XCTestCase {
                 "device_not_allowed", "device_not_linked", "session_not_running", "agent_busy",
                 "needs_approval", "prompt_has_text",
                 "state_unknown", "cannot_type", "claude_not_found", "expired", "cancelled", "outcome_unknown",
-                "unsupported_in_poc", "write_failed"
+                "unsupported_in_poc", "wrong_hub", "write_failed"
             ]
         )
     }
