@@ -68,7 +68,10 @@ final class WorkbenchWiringTests: XCTestCase {
     func testTheMenuSublineAndWaitingStack() throws {
         let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), now: now))
         XCTAssertEqual(menu.title, "Acme")
-        XCTAssertEqual(menu.subline, "main · 3 in progress · 3 todo · 1 blocked")
+        XCTAssertEqual(menu.branch, "main")
+        XCTAssertEqual(menu.boardCounts.map(\.text), ["3 in progress", "3 todo", "1 blocked"])
+        XCTAssertEqual(menu.boardCounts.map(\.tone), [.blue, .secondary, .red])
+        XCTAssertTrue(menu.boardCounts.allSatisfy { $0.role == .status })
         XCTAssertNil(menu.sessionsEmptyText)
         XCTAssertEqual(menu.waitingHeader, "Waiting for you · 3")
         // Newest first.

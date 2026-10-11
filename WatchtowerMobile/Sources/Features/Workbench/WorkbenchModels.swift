@@ -1,8 +1,8 @@
 import Foundation
 import WatchtowerKit
 
-/// One SESSIONS row (spec §4.5): dot, glyph and label are the Mac's resolved
-/// presentation, drawn as given (PROJ-11 stays on the Mac).
+/// One SESSIONS row (spec §4.5, design pass S3): the Mac's resolved dot and
+/// caption drawn as given (PROJ-11 stays on the Mac), then one meta line.
 struct SessionRowModel: Equatable, Identifiable {
     let id: Int64
     let title: String
@@ -10,54 +10,49 @@ struct SessionRowModel: Equatable, Identifiable {
     /// ("Stopped · 3h").
     let caption: String
     let tone: PhoneTone
-    /// An SF Symbol name; nil when the Mac sent none.
+    /// An SF Symbol name; nil when the Mac sent none. Kept in the model; the
+    /// phone draws the dot only (design pass §9.1).
     let glyph: String?
     let isRing: Bool
-    /// `#<target> · <done>/<total> · <pr line>`; nil until the hub's first
-    /// report run names a target.
-    let reportLine: String?
-    /// done/total; nil without a total.
-    let reportProgress: Double?
+    /// The caption in the session's tone, then `#<target> · <done>/<total>`,
+    /// the PR line and "N closed" in secondary; the last truncates first.
+    let metaItems: [MetaItem]
     let openAsks: Int
-    /// "▸ N closed"; nil without closed asks.
-    let closedLabel: String?
     let openAsksTone = PhoneTone.waitingForYou
-    let progressTone = PhoneTone.green
     /// The Mac's orange states plus a session with open asks (finished with
     /// open asks): the only sessions whose orange is a waiting element.
     private let isWaiting: Bool
 
     init(_ session: TerminalSessionState, now: Date) {
-        id = session.id
-        title = session.title
-        caption = session.live
+        let caption = session.live
             ? session.stateCaption
             : "\(session.stateCaption) · \(CompactAge.string(from: session.lastActiveAt, now: now))"
-        tone = PhoneTone(session.stateTone)
+        let tone = PhoneTone(session.stateTone)
+        let isWaiting = [.waitingOnAsk, .needsApproval].contains(session.stateKind) || session.openAsks > 0
+        id = session.id
+        title = session.title
+        self.caption = caption
+        self.tone = tone
+        self.isWaiting = isWaiting
         glyph = session.stateGlyph.isEmpty ? nil : session.stateGlyph
         isRing = session.isRing
         openAsks = session.openAsks
-        closedLabel = session.closedAsks > 0 ? "▸ \(session.closedAsks) closed" : nil
-        isWaiting = [.waitingOnAsk, .needsApproval].contains(session.stateKind) || session.openAsks > 0
 
+        var items = [MetaItem(text: caption, tone: tone, role: .session(isWaiting: isWaiting))]
         if let target = session.reportTargetID {
-            var parts = ["#\(target)"]
+            var report = "#\(target)"
             if let done = session.reportDone, let total = session.reportTotal {
-                parts.append("\(done)/\(total)")
+                report += " · \(done)/\(total)"
             }
+            items.append(MetaItem(text: report, tone: .secondary, role: .info))
             if let pr = session.reportPRLine, !pr.isEmpty {
-                parts.append(pr)
+                items.append(MetaItem(text: pr, tone: .secondary, role: .info))
             }
-            reportLine = parts.joined(separator: " · ")
-            if let done = session.reportDone, let total = session.reportTotal, total > 0 {
-                reportProgress = min(1, Double(done) / Double(total))
-            } else {
-                reportProgress = nil
-            }
-        } else {
-            reportLine = nil
-            reportProgress = nil
         }
+        if session.closedAsks > 0 {
+            items.append(MetaItem(text: "\(session.closedAsks) closed", tone: .secondary, role: .info))
+        }
+        metaItems = items
     }
 
     var toneUses: [ToneUse] {
@@ -65,9 +60,6 @@ struct SessionRowModel: Equatable, Identifiable {
             ToneUse(element: "session \(id) dot", tone: tone, role: .session(isWaiting: isWaiting)),
             ToneUse(element: "session \(id) label", tone: tone, role: .session(isWaiting: isWaiting))
         ]
-        if reportProgress != nil {
-            uses.append(ToneUse(element: "session \(id) report progress", tone: progressTone, role: .progress))
-        }
         if openAsks > 0 {
             uses.append(ToneUse(element: "session \(id) open asks", tone: openAsksTone, role: .ask))
         }
@@ -119,17 +111,24 @@ struct WaitingCardModel: Equatable, Identifiable {
     }
 }
 
-/// The board's counts as one line: "3 in progress · 3 todo · 1 blocked".
-/// "todo" is the open targets that are neither in progress nor
+/// One coloured count of the Workbench header line, role `.status`.
+typealias BoardCountItem = MetaItem
+
+/// The board's counts for the Workbench header (design pass S1): "3 in
+/// progress" blue, "3 todo" secondary, "1 blocked" red (only when there is
+/// one). "todo" is the open targets that are neither in progress nor
 /// blocked (in review counts there too).
 enum BoardCounts {
-    static func parts(_ workbench: Workbench) -> [String] {
+    static func items(_ workbench: Workbench) -> [BoardCountItem] {
         let todo = max(0, workbench.openTargets - workbench.inProgressTargets - workbench.blockedTargets)
-        var parts = ["\(workbench.inProgressTargets) in progress", "\(todo) todo"]
+        var items = [
+            BoardCountItem(text: "\(workbench.inProgressTargets) in progress", tone: .blue, role: .status),
+            BoardCountItem(text: "\(todo) todo", tone: .secondary, role: .status)
+        ]
         if workbench.blockedTargets > 0 {
-            parts.append("\(workbench.blockedTargets) blocked")
+            items.append(BoardCountItem(text: "\(workbench.blockedTargets) blocked", tone: .red, role: .status))
         }
-        return parts
+        return items
     }
 }
 
@@ -193,12 +192,14 @@ struct WorkbenchCardModel: Equatable, Identifiable {
     }
 }
 
-/// Level 2 of the Workbench tab: the header subline, the Waiting-for-you
-/// stack with its closed asks, and the SESSIONS list.
+/// Level 2 of the Workbench tab: the branch and board counts, the
+/// Waiting-for-you stack with its closed asks, and the SESSIONS list.
 struct WorkbenchMenuModel {
     let id: Int64
     let title: String
-    let subline: String
+    /// The branch, "detached", or nil when the Mac has none yet.
+    let branch: String?
+    let boardCounts: [BoardCountItem]
     let waiting: [WaitingCardModel]
     /// Answered, delivered and withdrawn asks, newest first.
     let closedAsks: [OwnerAsk]
@@ -215,8 +216,9 @@ struct WorkbenchMenuModel {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         id = workbench.id
         title = workbench.name
-        let branch = workbench.detached ? "detached" : workbench.branch
-        subline = ([branch].filter { !$0.isEmpty } + BoardCounts.parts(workbench)).joined(separator: " · ")
+        let branchName = workbench.detached ? "detached" : workbench.branch
+        branch = branchName.isEmpty ? nil : branchName
+        boardCounts = BoardCounts.items(workbench)
         waiting = snapshot.openAsks(in: workbenchID).map { WaitingCardModel($0, snapshot: snapshot, now: now) }
         closedAsks = snapshot.asks
             .filter { $0.workbenchID == workbenchID && $0.status != .open }
@@ -235,6 +237,7 @@ struct WorkbenchMenuModel {
 
     var toneUses: [ToneUse] {
         [ToneUse(element: "workbench \(id) waiting header", tone: waitingHeaderTone, role: .waiting)]
+            + boardCounts.map { ToneUse(element: "workbench \(id) \($0.text)", tone: $0.tone, role: $0.role) }
             + waiting.map(\.toneUse) + sessions.flatMap(\.toneUses)
     }
 }

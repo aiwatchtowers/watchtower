@@ -96,7 +96,7 @@ struct BoardTargetDetailView: View {
             if !detail.sessions.isEmpty {
                 Section("Sessions on it") {
                     ForEach(detail.sessions) { row in
-                        NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row) }
+                        NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row, insets: EdgeInsets()) }
                     }
                 }
             }

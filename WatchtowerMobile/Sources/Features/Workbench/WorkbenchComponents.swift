@@ -1,20 +1,5 @@
 import SwiftUI
 
-/// A small count pill in the model's tone.
-struct CountPill: View {
-    let text: String
-    let tone: PhoneTone
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .foregroundStyle(tone.color)
-            .background(tone.color.opacity(0.15), in: Capsule())
-    }
-}
-
 /// A session-state count with its dot: "● 2 working".
 struct SessionCountLabel: View {
     let count: SessionStateCount
@@ -54,53 +39,22 @@ struct WaitingCardView: View {
     }
 }
 
-/// One SESSIONS row: dot, title, coloured state label, report line with a
-/// mini progress bar, open-ask pill and "▸ N closed".
+/// One SESSIONS row (design pass S3): the session dot, the title on one
+/// line, one meta line, and the open-ask count as a badge. In a `List`, pass
+/// `insets: EdgeInsets()`.
 struct SessionRowView: View {
     let row: SessionRowModel
+    var insets = RowInsets.flat
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            SessionDot(tone: row.tone, isRing: row.isRing)
-                .padding(.top, 5)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(row.title)
-                    .font(.body)
-                    .lineLimit(1)
-                HStack(spacing: 4) {
-                    if let glyph = row.glyph {
-                        Image(systemName: glyph)
-                    }
-                    Text(row.caption)
-                }
-                .font(.subheadline)
-                .foregroundStyle(row.tone.color)
-                .lineLimit(1)
-                if let report = row.reportLine {
-                    HStack(spacing: 6) {
-                        Text(report)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                        if let progress = row.reportProgress {
-                            ThinProgressBar(value: progress, tone: row.progressTone, height: 3)
-                                .frame(width: 40)
-                        }
-                    }
-                }
-                if let closed = row.closedLabel {
-                    Text(closed)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Spacer(minLength: 0)
+        FlatRow(icon: .session(tone: row.tone, isRing: row.isRing), title: row.title, titleLineLimit: 1, insets: insets) {
+            MetaLine(items: row.metaItems)
+        } trailing: {
             if row.openAsks > 0 {
-                CountPill(text: "\(row.openAsks)", tone: row.openAsksTone)
+                CountBadge(count: row.openAsks, tone: row.openAsksTone)
                     .accessibilityLabel(row.openAsks == 1 ? "1 open ask" : "\(row.openAsks) open asks")
             }
         }
-        .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
     }
 }
