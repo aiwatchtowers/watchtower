@@ -1429,6 +1429,23 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.answerNotices[askID], .delivered(.submitted))
     }
 
+    /// Board #501: a Quick ask on screen stays in the banner as one-tap
+    /// buttons; the drawer does not open by itself.
+    func testAQuickAskOnScreenLeavesTheDrawerClosed() async throws {
+        let (p, s, askID) = try await seed()
+        try await makeQuick(askID)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        showPane(vm, s.id, project: p)
+
+        await vm.asks.load(projectID: p)
+        vm.openNewAsk(projectID: p)
+
+        XCTAssertNil(vm.asks.drawerAsk(projectID: p))
+        XCTAssertEqual(vm.asks.stack(projectID: p).asks.map(\.id), [askID], "it waits in the banner and the stack")
+    }
+
     func testAnAskFiledOutsideTheAppNeverOpensByItself() async throws {
         let (p, s, _) = try await seed(session: false)
         let vm = makeVM()

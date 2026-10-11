@@ -3,10 +3,12 @@ import GRDB
 @testable import WatchtowerCore
 
 final class OwnerAskStackTests: XCTestCase {
-    private func ask(_ id: Int64, session: Int64?, minutesAgo: Double, status: String = "open") throws -> OwnerAsk {
+    private func ask(
+        _ id: Int64, session: Int64?, minutesAgo: Double, status: String = "open", level: String = "full"
+    ) throws -> OwnerAsk {
         let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-minutesAgo * 60))
         return try OwnerAsk(row: Row([
-            "id": id, "project_id": 1, "level": "full", "origin": "agent", "session_id": session, "kind": "question", "title": "Ask \(id)",
+            "id": id, "project_id": 1, "level": level, "origin": "agent", "session_id": session, "kind": "question", "title": "Ask \(id)",
             "status": status, "created_at": created
         ]))
     }
@@ -69,6 +71,29 @@ final class OwnerAskStackTests: XCTestCase {
         XCTAssertNil(OwnerAskStack([try ask(4, session: nil, minutesAgo: 1)]).askToOpen(sessionsOnScreen: [7], dismissed: []),
                      "an ask filed outside the app never opens by itself")
         XCTAssertNil(OwnerAskStack([]).askToOpen(sessionsOnScreen: [7], dismissed: []))
+    }
+
+    /// Board #501: a Quick ask never opens the drawer by itself — it is
+    /// answered with one tap in the banner over its terminal.
+    func testAQuickAskNeverOpensTheDrawerByItself() throws {
+        let onlyQuick = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 9, level: "quick"),
+            try ask(2, session: 7, minutesAgo: 5, level: "quick")
+        ])
+        XCTAssertNil(onlyQuick.askToOpen(sessionsOnScreen: [7], dismissed: []), "a session holding only Quick asks opens nothing")
+    }
+
+    func testAFullAskAfterAQuickOneInTheSameSessionOpensTheFullOne() throws {
+        let stack = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 9, level: "quick"),
+            try ask(2, session: 7, minutesAgo: 5),
+            try ask(3, session: 8, minutesAgo: 8, level: "quick"),
+            try ask(4, session: 8, minutesAgo: 2)
+        ])
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7, 8], dismissed: [])?.id, 2)
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7, 8], dismissed: [2])?.id, 4,
+                       "session 7's Full ask was closed; its Quick one does not count")
+        XCTAssertNil(stack.askToOpen(sessionsOnScreen: [7], dismissed: [2]))
     }
 
     func testNoAsksIsAnEmptyStack() {
