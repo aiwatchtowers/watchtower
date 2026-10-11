@@ -38,6 +38,35 @@ Merge rules (owner, 2026-10-09): every lane goes into `feature/mobile-poc` throu
 
 A Developer ID–signed Mac runs in CloudKit **Production**; a Debug phone build runs in **Development**. They see different databases. Dev pairing: sign the Mac with Apple Development (`WATCHTOWER_CLOUDKIT_ENV=Development`), or use a Production phone build (TestFlight/archive) with the Developer ID Mac — and deploy the schema (CloudKit Console → Deploy Schema Changes) before the first Production run.
 
+## First live pairing (2026-10-11)
+
+A real iPhone (Xcode build from another Mac, Development) and a Development-signed Mac on the same Apple ID (`private` scope).
+
+### Fixed: the hub never read the phone's records (`fix/mobile-hub-fetch`)
+
+- **Symptom.** The phone scanned the QR and stayed on "waiting to confirm"; nothing happened on the Mac.
+- **Cause (confirmed from the Mac's unified log and `MobileHub/*.db`).** The phone's `device-<id>` record (with the code's nonce) was in the Mac's private RelayZone, but the hub never fetched it. Every 3 s relay pull went to `CKSyncEngine.fetchChanges()`, which logged `no zone IDs needing to be fetched, not fetching changes` / `no need to fetch changes for scope` and sent no request: the engine fetches only the zones its push-fed `zoneIDsWithUnfetchedServerChanges` names (read-only; a `FetchChangesOptions` zone scope only narrows it), and the Mac app never registered for remote notifications. Only an engine restart (Sync with iPhone off/on) fetched — by then the 10-minute code had expired and the hub answered `expired_code`.
+- **Fix.** The Kit transport's `pull()` now also polls each zone of its scope with `CKDatabase.recordZoneChanges(inZoneWith:since:)` (own per-zone token in `TransportStore.poll_tokens`), and the Mac registers for remote notifications and wakes the relay loop on a CloudKit push. See `docs/features/mobile-companion.md` (relay cadence, Kit transport "Zone poll").
+- **Verified live:** with the fixed Mac build, the phone linked on a plain scan, no off/on.
+- **Not covered by tests:** the change-tag dedup of polled records (a test cannot make a `CKRecord` with a change tag).
+
+### Open: the calendar does not reach the phone
+
+- The Mac published 42 `calendar_event` records into the Development private DataZone at hub start; the hub's send queue (`transport.db` `pending`) is empty.
+- The phone (a build from before the fix) shows no events in Calendar, also after a force-quit and relaunch.
+- The phone runs the same Kit transport, so it had the same engine-only fetch. **First step: rebuild the phone from `feature/mobile-poc` with the fix** and look again.
+- If it is still empty:
+  - check whether any DataZone data arrives at all (Workbench, asks);
+  - check the phone's log (Console.app) for `skippedRecords` / decode failures in `AppEnvironment.workbenchReplica` and the calendar mirror;
+  - check the record count of `calendar_event` in CloudKit Console → Development → Private Database → DataZone;
+  - check the Calendar tab's window (today − 1 day … + 14 days, the Mac's local days).
+
+### Building a Development Mac for pairing
+
+- `build-app.sh` sources the build profile **after** the environment, so a `CODESIGN_IDENTITY` (and `NOTARIZE_PROFILE`) set in `.env` overrides the command line. The 2026-10-11 build came out Developer ID–signed with a development profile and Development entitlements — a bundle amfid refuses. Check with `codesign -dvv <app> | grep Authority=`.
+- Working recipe: a profile file outside the repo that sources the real profile and then sets `CODESIGN_IDENTITY="Apple Development: …"`, `NOTARIZE_PROFILE=`, `WATCHTOWER_PROVISION_PROFILE=<the macOS development profile>` and `WATCHTOWER_CLOUDKIT_ENV=Development`. Pass it as `ENV_FILE=<file> ./scripts/build-app.sh <version>`, not through `make app`: the Makefile `-include`s `ENV_FILE` as make syntax and fails on `. file`.
+- A corp-flavor build is the same with the corp profile sourced. All flavors share the bundle id and Application Support, so the hub id and the linked phone carry over between them.
+
 ## Setting up another Mac
 
 1. Clone the repo; `make hooks` (pre-push leak check).
