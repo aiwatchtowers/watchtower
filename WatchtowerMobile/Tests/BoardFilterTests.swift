@@ -101,6 +101,17 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(open.roots.first { $0.id == 431 }).hasDisclosure)
     }
 
+    /// Design pass B2: a row draws a meta line only when it has a dot,
+    /// details or a progress bar.
+    func testARowWithNothingToSayHasNoMetaLine() throws {
+        let open = try board(.open)
+        let archiveRow = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row
+        XCTAssertTrue(archiveRow.hasMeta)
+        let archive = try board(.archive)
+        let dismissed = try XCTUnwrap(archive.roots.first { $0.id == 391 }).row
+        XCTAssertFalse(dismissed.hasMeta, "medium, no details, no progress")
+    }
+
     func testARowShowsAsksSessionPRPriorityAndProgress() throws {
         let open = try board(.open)
         let row = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row

@@ -68,6 +68,7 @@ struct BoardTargetDetailModel {
     let childrenHeader: String
     let sessions: [SessionRowModel]
     let asks: [WaitingCardModel]
+    let asksHeaderTone = PhoneTone.waitingForYou
     let comments: [CommentRow]
     let thread: [ThreadItem]
     /// `BoardWriter.inFlight` when the model was built.
@@ -232,5 +233,6 @@ struct BoardTargetDetailModel {
 
     var toneUses: [ToneUse] {
         row.toneUses + children.flatMap(\.toneUses) + sessions.flatMap(\.toneUses) + asks.map(\.toneUse)
+            + (asks.isEmpty ? [] : [ToneUse(element: "target \(id) waiting header", tone: asksHeaderTone, role: .waiting)])
     }
 }

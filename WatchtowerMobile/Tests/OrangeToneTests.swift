@@ -24,6 +24,8 @@ final class OrangeToneTests: XCTestCase {
         for target in snapshot.targets {
             uses += try XCTUnwrap(BoardTargetDetailModel(targetID: target.id, snapshot: snapshot, now: now)).toneUses
         }
+        let target415 = try XCTUnwrap(BoardTargetDetailModel(targetID: 415, snapshot: snapshot, now: now))
+        XCTAssertTrue(target415.toneUses.contains { $0.element == "target 415 waiting header" && $0.role == .waiting })
         for ask in snapshot.asks {
             uses += try XCTUnwrap(AskFormModel(
                 askID: ask.id, snapshot: snapshot, draft: AskDraft(), page: 0, now: now, applied: nil, isSending: false

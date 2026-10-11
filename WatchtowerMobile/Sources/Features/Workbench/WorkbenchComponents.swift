@@ -14,31 +14,6 @@ struct SessionCountLabel: View {
     }
 }
 
-/// One Waiting-for-you card, tinted and bordered in the card's tone.
-struct WaitingCardView: View {
-    let card: WaitingCardModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(card.kindLabel)
-                .font(.caption2.monospaced().weight(.semibold))
-                .foregroundStyle(card.tone.color)
-            Text(card.title)
-                .font(.subheadline.weight(.medium))
-                .lineLimit(2)
-            Text(card.subline)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(card.tone.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(card.tone.color.opacity(0.5), lineWidth: 1))
-        .accessibilityElement(children: .combine)
-    }
-}
-
 /// One SESSIONS row (design pass S3): the session dot, the title on one
 /// line, one meta line, and the open-ask count as a badge. In a `List`, pass
 /// `insets: EdgeInsets()`.

@@ -112,6 +112,9 @@ struct BoardRowModel: Equatable, Identifiable {
         }
     }
 
+    /// A meta line is drawn only with something on it.
+    var hasMeta: Bool { priorityTone != nil || !details.isEmpty || progressValue != nil }
+
     var toneUses: [ToneUse] {
         var uses = [ToneUse(element: "target \(id) status", tone: statusTone, role: .status)]
         uses += details.map { ToneUse(element: "target \(id) \($0.text)", tone: $0.tone, role: $0.role) }

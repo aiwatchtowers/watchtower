@@ -37,6 +37,16 @@ struct BoardTargetDetailView: View {
         }
         .navigationTitle("#\(targetID)")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: Spacing.small) {
+                    if let title = replica.snapshot.targets.first(where: { $0.id == targetID })?.text {
+                        Text(title).font(.headline).lineLimit(1)
+                    }
+                    Text("#\(targetID)").font(TypeScale.time).foregroundStyle(.secondary)
+                }
+            }
+        }
         .alert("Couldn't send", isPresented: Binding(get: { sendError != nil }, set: { if !$0 { sendError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -71,11 +81,15 @@ struct BoardTargetDetailView: View {
                 }
             }
             if !detail.asks.isEmpty {
-                Section("Waiting for you") {
+                Section {
                     ForEach(detail.asks) { card in
-                        NavigationLink(value: AskRoute(id: card.id)) { WaitingCardView(card: card) }
-                            .listRowSeparator(.hidden)
+                        NavigationLink(value: AskRoute(id: card.id)) { AskRow(ask: card, insets: EdgeInsets()) }
                     }
+                } header: {
+                    Text("Waiting for you")
+                        .font(TypeScale.sectionHeader)
+                        .textCase(nil)
+                        .foregroundStyle(detail.asksHeaderTone.color)
                 }
             }
             if !detail.children.isEmpty || !detail.isReadOnly {
@@ -160,16 +174,15 @@ struct BoardTargetDetailView: View {
             Button {
                 startingSession = true
             } label: {
-                Label("Work on it in a session", systemImage: "play.fill")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                Label("Work on it in a session", systemImage: "play")
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }
-            .buttonStyle(.borderedProminent)
-            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+            .buttonStyle(.borderless)
             if let progress = StartProgressModel.of(
                 targetID: detail.id, attempt: env.sessionStarts.attempts[detail.id], snapshot: replica.snapshot, now: .now
             ) {
                 Text(progress.caption)
-                    .font(.caption)
+                    .font(TypeScale.meta)
                     .foregroundStyle(progress.failure == nil ? Color.secondary : PhoneTone.red.color)
                     .accessibilityLabel("Session start: \(progress.caption)")
             }
@@ -177,15 +190,15 @@ struct BoardTargetDetailView: View {
     }
 
     private func readOnlyLine(_ detail: BoardTargetDetailModel) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.compact) {
             Image(systemName: detail.row.statusGlyph).foregroundStyle(detail.row.statusTone.color)
             Text(detail.statusLabel)
             PriorityDot(priority: detail.row.priority)
             if let progress = detail.row.progressText {
-                Text(progress).foregroundStyle(.secondary)
+                Text(progress).font(TypeScale.time).foregroundStyle(.secondary)
             }
         }
-        .font(.subheadline)
+        .font(TypeScale.meta)
     }
 
     /// Status, priority and progress, one row each; a group's "status follows
