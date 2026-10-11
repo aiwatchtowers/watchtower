@@ -296,6 +296,11 @@ final class AppState {
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
+    /// Whether a main window is the key window (Settings, a sheet's window
+    /// and the Open Quickly panel are not); seamed for tests.
+    @ObservationIgnored var mainWindowIsKey: @MainActor () -> Bool = {
+        NSApp?.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isKeyWindow } ?? false
+    }
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
@@ -1796,18 +1801,14 @@ final class AppState {
     private func makeOwnerPresenceCenter(dbPool: DatabasePool, workbenches vm: WorkbenchesViewModel) -> OwnerPresenceCenter {
         let center = OwnerPresenceCenter(writer: OwnerPresenceCenter.databaseWriter(dbPool))
         center.screen = { [weak self, weak vm] in
-            // Observable reads first, so a tab switch is tracked even while
-            // the window is not key.
-            guard let self, let vm, selectedDestination == .workbench, Self.mainWindowIsKey() else { return .other }
-            return vm.ownerPresenceScreen()
+            guard let self, let vm else { return .other }
+            // Every observable input is read whatever the window, so the
+            // center's tracker sees the same state when the window turns key.
+            let onTab = selectedDestination == .workbench
+            let shown = vm.ownerPresenceScreen()
+            return onTab && mainWindowIsKey() ? shown : .other
         }
         return center
-    }
-
-    /// A main window is the key window (Settings, a sheet's window and the
-    /// Open Quickly panel are not).
-    private static func mainWindowIsKey() -> Bool {
-        NSApp?.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isKeyWindow } ?? false
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

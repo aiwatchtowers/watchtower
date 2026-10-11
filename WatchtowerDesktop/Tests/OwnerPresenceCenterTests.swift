@@ -95,7 +95,7 @@ final class OwnerPresenceCenterTests: XCTestCase {
         center = nil
     }
 
-    private func makeCenter(appActive: Bool = true) -> OwnerPresenceCenter {
+    private func makeCenter(appActive: Bool = true, screenLocked: Bool = false) -> OwnerPresenceCenter {
         let writes: PresenceWrites = writes
         let time: ManualTime = time
         let center = OwnerPresenceCenter(
@@ -107,6 +107,7 @@ final class OwnerPresenceCenterTests: XCTestCase {
         let screen: FakeScreen = screen
         center.screen = { screen.shown }
         center.isAppActive = { appActive }
+        center.isScreenLocked = { screenLocked }
         center.onChange = { [weak self] in self?.changes += 1 }
         self.center = center
         return center
@@ -145,6 +146,35 @@ final class OwnerPresenceCenterTests: XCTestCase {
         XCTAssertEqual(writes.sessions, [nil], "the first result is written, clearing a row a crashed run left")
     }
 
+    func testALockedScreenAtLaunchIsAbsent() async {
+        show(7)
+        let center = makeCenter(screenLocked: true)
+        center.start()
+        await center.flushWrites()
+
+        XCTAssertNil(center.presentSessionID)
+        XCTAssertEqual(writes.sessions, [nil])
+
+        post(OwnerPresenceCenter.screenUnlockedNotification)
+        await center.flushWrites()
+        XCTAssertEqual(center.presentSessionID, 7)
+    }
+
+    func testStartAfterStopWritesAgainAndHeartbeats() async {
+        let center = await startInSession7()
+        center.stop()
+        time.advance(by: 10)
+
+        center.start()
+        await center.flushWrites()
+        XCTAssertEqual(writes.sessions, [7, 7], "a start writes again")
+
+        time.advance(by: 30)
+        await center.flushWrites()
+        XCTAssertEqual(writes.sessions, [7, 7, 7])
+        XCTAssertEqual(writes.all.last?.at, start.addingTimeInterval(40), "30 s after the restart")
+    }
+
     func testANeverEnteredSessionIsAwaySinceBeforeAnyQuestion() async {
         let center = await startInSession7()
 
@@ -169,15 +199,19 @@ final class OwnerPresenceCenterTests: XCTestCase {
         XCTAssertEqual(writes.all.last?.at, start, "no debounce on gaining presence")
     }
 
-    func testAScreenChangeIsTracked() async throws {
+    func testAScreenChangeIsTracked() async {
         let center = makeCenter()
         center.start()
 
         show(9)
-        try await waitUntil { center.presentSessionID == 9 }
+        await yieldUntil { center.presentSessionID == 9 }
+        XCTAssertEqual(center.presentSessionID, 9)
+        // A notification-driven evaluation in between keeps the tracker.
+        post(NSWindow.didBecomeKeyNotification)
         screen.shown = .other
         // A loss waits for the debounce; the tracking re-armed and saw it.
-        try await waitUntil { self.time.pendingTimers == 2 }
+        await yieldUntil { self.time.pendingTimers == 2 }
+        XCTAssertEqual(time.pendingTimers, 2, "the heartbeat and the debounce")
         XCTAssertEqual(center.presentSessionID, 9)
     }
 
@@ -262,7 +296,7 @@ final class OwnerPresenceCenterTests: XCTestCase {
         XCTAssertNil(center.presentSessionID)
         XCTAssertEqual(writes.sessions, [7, nil])
         XCTAssertEqual(writes.all.last?.at, start.addingTimeInterval(2))
-        XCTAssertEqual(center.awaySince(sessionID: 7), start, "away since the loss began")
+        XCTAssertEqual(center.awaySince(sessionID: 7), start.addingTimeInterval(2), "away since the loss was written")
     }
 
     func testAnotherSessionOnScreenIsEnteredAtOnce() async {
@@ -295,6 +329,36 @@ final class OwnerPresenceCenterTests: XCTestCase {
         XCTAssertEqual(writes.sessions, [7, nil, 7])
     }
 
+    func testALockInsideTheDebounceIsAwayFromTheLock() async {
+        let center = await startInSession7()
+
+        post(NSApplication.didResignActiveNotification)
+        time.advance(by: 1)
+        post(OwnerPresenceCenter.screenLockedNotification)
+        await center.flushWrites()
+
+        XCTAssertEqual(writes.sessions, [7, nil])
+        XCTAssertEqual(center.awaySince(sessionID: 7), start.addingTimeInterval(1), "away from the written clear")
+        time.advance(by: 5)
+        await center.flushWrites()
+        XCTAssertEqual(writes.sessions, [7, nil], "the cancelled debounce writes nothing more")
+    }
+
+    func testASwitchInsideTheDebounceIsAwayFromTheSwitch() async {
+        let center = await startInSession7()
+
+        screen.shown = .other
+        center.refresh()
+        time.advance(by: 1.5)
+        show(8)
+        center.refresh()
+        await center.flushWrites()
+
+        XCTAssertEqual(center.presentSessionID, 8)
+        XCTAssertEqual(writes.sessions, [7, 8])
+        XCTAssertEqual(center.awaySince(sessionID: 7), start.addingTimeInterval(1.5))
+    }
+
     func testDisplaySleepClears() async {
         let center = await startInSession7()
 
@@ -322,6 +386,16 @@ final class OwnerPresenceCenterTests: XCTestCase {
         XCTAssertEqual(writes.sessions, [7, nil], "nothing written after quit")
     }
 
+    func testQuitClearsAfterAnEnterNotYetWritten() {
+        show(7)
+        let center = makeCenter()
+        center.start()
+
+        center.clearForQuit()
+
+        XCTAssertEqual(writes.sessions, [7, nil], "the queued enter, then the clear")
+    }
+
     func testStopLeavesNoTimerAndNoObserver() async {
         let center = await startInSession7()
 
@@ -336,11 +410,11 @@ final class OwnerPresenceCenterTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func waitUntil(_ condition: @MainActor () -> Bool, timeout: Duration = .seconds(2)) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            if ContinuousClock.now > deadline { return XCTFail("timed out") }
-            try await Task.sleep(for: .milliseconds(5))
+    /// Lets the main actor run the observation hop's task; bounded, with
+    /// no wall clock.
+    private func yieldUntil(_ condition: @MainActor () -> Bool) async {
+        for _ in 0..<1_000 where !condition() {
+            await Task.yield()
         }
     }
 }
@@ -354,8 +428,11 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
     private var folder: URL!
     private var appState: AppState!
     private var projectID: Int64 = 0
+    /// Each started session's fake process, by the order started.
+    private var processes: [FakeTerminalSession] = []
 
     override func setUp() async throws {
+        processes = []
         (pool, path) = try TestDatabase.createPool()
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-presence-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -363,7 +440,11 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         projectID = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folderPath) }
         appState = AppState.isolated()
         // pid 0: nothing here ever signals a real process group.
-        appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
+        appState.terminalCenter.makeProcess = { [weak self] in
+            let process = FakeTerminalSession(pid: 0)
+            self?.processes.append(process)
+            return process
+        }
         appState.terminalCenter.transcriptExists = { _ in true }
         UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         appState.initWorkbenches(
@@ -376,6 +457,8 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         appState.workbenchNotificationCenter?.stop()
         appState.sessionAgentStateCenter?.stop()
         appState.ownerPresenceCenter?.stop()
+        // The settle write lands before the database file goes.
+        await appState.ownerPresenceCenter?.flushWrites()
         UserDefaults.standard.removeObject(forKey: WorkspaceLayout.key(workbenchID: projectID))
         try? FileManager.default.removeItem(at: folder)
         TestDatabase.cleanup(path: path)
@@ -416,18 +499,105 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         XCTAssertEqual(vm.ownerPresenceScreen(), .init(keyWindowShows: .workbenchSession, selectedSession: session.id))
     }
 
-    func testTheActiveSessionOfTwoOnScreenIsReported() async throws {
-        let first = try await insertSession("a")
-        let second = try await insertSession("b")
+    /// A | B split, A shown last.
+    private func split() async throws -> (vm: WorkbenchesViewModel, a: TerminalSession, b: TerminalSession) {
+        let a = try await insertSession("a")
+        let b = try await insertSession("b")
         let vm = try await page()
-        await vm.showSession(id: second.id)
-        await vm.showSession(id: first.id)
+        await vm.showSession(id: b.id)
+        await vm.showSession(id: a.id)
         var layout = vm.layout(projectID: projectID)
-        layout.split(with: .session(second.id))
+        layout.split(with: .session(b.id))
         vm.setLayout(layout, projectID: projectID)
-        XCTAssertEqual(appState.terminalCenter.focusOrder.last, first.id)
+        return (vm, a, b)
+    }
 
-        XCTAssertEqual(vm.ownerPresenceScreen().selectedSession, first.id)
+    func testTheSessionFocusedLastOfTwoOnScreenIsReported() async throws {
+        let (vm, a, _) = try await split()
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, a.id)
+
+        XCTAssertEqual(vm.ownerPresenceScreen().selectedSession, a.id)
+    }
+
+    func testAClickIntoTheOtherTerminalOfASplitSelectsIt() async throws {
+        let (vm, _, b) = try await split()
+        // The processes start in click order: b, then a.
+        let processB = try XCTUnwrap(processes.first)
+
+        processB.onOwnerFocus?()
+
+        XCTAssertEqual(appState.terminalCenter.focusOrder.last, b.id)
+        XCTAssertEqual(vm.ownerPresenceScreen().selectedSession, b.id)
+    }
+
+    func testASessionBesideTheBoardIsReported() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showSession(id: session.id)
+        var layout = WorkspaceLayout.default
+        layout.split(with: .session(session.id))
+        vm.setLayout(layout, projectID: projectID)
+
+        XCTAssertEqual(vm.ownerPresenceScreen().selectedSession, session.id)
+    }
+
+    func testAnExpandedBoardHidingTheSessionIsOther() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showSession(id: session.id)
+        var layout = WorkspaceLayout.default
+        layout.split(with: .session(session.id))
+        layout.toggleExpand(.board)
+        vm.setLayout(layout, projectID: projectID)
+
+        XCTAssertEqual(vm.ownerPresenceScreen(), .other)
+    }
+
+    func testAStandaloneTerminalIsOther() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showSession(id: session.id)
+
+        vm.selectedStandaloneID = session.id
+
+        XCTAssertEqual(vm.ownerPresenceScreen(), .other)
+    }
+
+    func testTheDrawerOfThatSessionIsReported() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showSession(id: session.id)
+        let projectID = projectID
+        let askID = try await pool.write {
+            try TestDatabase.insertOwnerAsk(
+                $0, projectID: projectID, sessionID: session.id,
+                payload: #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+            )
+        }
+        await vm.asks.load(projectID: projectID)
+
+        vm.asks.openDrawer(askID: askID, projectID: projectID)
+
+        XCTAssertEqual(vm.ownerPresenceScreen(), .init(keyWindowShows: .workbenchSessionWithAskDrawer, selectedSession: session.id))
+    }
+
+    func testOnlyTheWorkbenchTabInTheKeyMainWindowCounts() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showSession(id: session.id)
+        let center = try XCTUnwrap(appState.ownerPresenceCenter)
+        var key = true
+        appState.mainWindowIsKey = { key }
+
+        appState.selectedDestination = .workbench
+        XCTAssertEqual(center.screen().selectedSession, session.id)
+
+        key = false
+        XCTAssertEqual(center.screen(), .other, "the main window is not key")
+
+        key = true
+        appState.selectedDestination = .inbox
+        XCTAssertEqual(center.screen(), .other, "another tab")
     }
 
     func testNoSessionPaneIsOther() async throws {
