@@ -96,7 +96,7 @@ final class OwnerAskKeysTests: XCTestCase {
         vm.asks.editDraft(ask.id) { $0.checks["1"] = .broken }
         XCTAssertTrue(try button(vm, ask, "Send").isDisabled(), "a broken item needs its note")
         let itemNote = try XCTUnwrap(try editors(vm, ask).first)
-        XCTAssertEqual(itemNote.placeholder, "What broke? (required)")
+        XCTAssertEqual(itemNote.placeholder, "What happened?")
         itemNote.onSubmit?()
         try await assertNothingSent(vm, ask)
 
