@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerKit
 
-/// A board target: breadcrumb, title, status and priority pickers, intent,
+/// A board target: breadcrumb, title, status, priority and progress rows, intent,
 /// branch and PR, sub-targets (with Add sub-target), sessions on it, open
 /// asks, the comment threads with Reply, and the composer. The phone's
 /// writes show in place until the Mac applies them. An archived target is
@@ -103,7 +103,7 @@ struct BoardTargetDetailView: View {
             comments(detail)
         }
         .listStyle(.insetGrouped)
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if !detail.isReadOnly { composer(detail) }
         }
         .sheet(isPresented: $addingSubTarget) {
@@ -117,31 +117,39 @@ struct BoardTargetDetailView: View {
         }
     }
 
+    /// The title alone in its row; the breadcrumb is the section's header,
+    /// so the row is not a link (bug 3's stray chevron).
     @ViewBuilder
     private func header(_ detail: BoardTargetDetailModel) -> some View {
         Section {
-            VStack(alignment: .leading, spacing: 8) {
-                if !detail.breadcrumb.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(detail.breadcrumb) { crumb in
-                            NavigationLink(value: BoardTargetRoute(id: crumb.id)) {
-                                Text("\(crumb.title) ›").lineLimit(1)
-                                    .frame(minHeight: 44)
-                                    .contentShape(Rectangle())
-                            }
-                        }
+            Text(detail.title).font(TypeScale.screenTitle)
+            if detail.isReadOnly {
+                readOnlyLine(detail)
+            }
+        } header: {
+            breadcrumb(detail)
+        }
+        if !detail.isReadOnly {
+            fields(detail)
+        }
+    }
+
+    @ViewBuilder
+    private func breadcrumb(_ detail: BoardTargetDetailModel) -> some View {
+        if !detail.breadcrumb.isEmpty {
+            HStack(spacing: Spacing.small) {
+                ForEach(detail.breadcrumb) { crumb in
+                    NavigationLink(value: BoardTargetRoute(id: crumb.id)) {
+                        Text("\(crumb.title) ›").lineLimit(1)
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.borderless)
-                }
-                Text(detail.title).font(.headline)
-                if detail.isReadOnly {
-                    readOnlyLine(detail)
-                } else {
-                    pickers(detail)
                 }
             }
+            .font(TypeScale.meta)
+            .foregroundStyle(.secondary)
+            .textCase(nil)
+            .buttonStyle(.borderless)
         }
     }
 
@@ -180,35 +188,49 @@ struct BoardTargetDetailView: View {
         .font(.subheadline)
     }
 
-    private func pickers(_ detail: BoardTargetDetailModel) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Picker(selection: Binding(get: { detail.status.selection }, set: { setStatus($0, detail) })) {
-                    ForEach(detail.status.options, id: \.self) { Text(BoardRowModel.statusLabel($0)).tag($0) }
-                } label: {
+    /// Status, priority and progress, one row each; a group's "status follows
+    /// its sub-tasks" is the section's footer. The bindings are unchanged.
+    private func fields(_ detail: BoardTargetDetailModel) -> some View {
+        Section {
+            Picker(selection: Binding(get: { detail.status.selection }, set: { setStatus($0, detail) })) {
+                ForEach(detail.status.options, id: \.self) { Text(BoardRowModel.statusLabel($0)).tag($0) }
+            } label: {
+                let style = TargetStatusStyle.of(detail.status.selection)
+                Label {
                     Text("Status")
-                }
-                .pickerStyle(.menu)
-                .disabled(!detail.status.isEnabled)
-                .frame(minHeight: 44)
-                .accessibilityLabel("Status")
-                .accessibilityValue(BoardRowModel.statusLabel(detail.status.selection))
-                Picker(selection: Binding(get: { detail.priority.selection }, set: { setPriority($0, detail) })) {
-                    ForEach(detail.priority.options, id: \.self) { Text(BoardRowModel.priorityName($0)).tag($0) }
-                } label: {
-                    Text("Priority")
-                }
-                .pickerStyle(.menu)
-                .disabled(!detail.priority.isEnabled)
-                .frame(minHeight: 44)
-                .accessibilityLabel("Priority")
-                .accessibilityValue(BoardRowModel.priorityName(detail.priority.selection))
-                if let progress = detail.row.progressText {
-                    Text(progress).font(.subheadline).foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: style.glyph).foregroundStyle(style.tone.color)
                 }
             }
+            .pickerStyle(.menu)
+            .disabled(!detail.status.isEnabled)
+            .frame(minHeight: 44)
+            .accessibilityLabel("Status")
+            .accessibilityValue(BoardRowModel.statusLabel(detail.status.selection))
+            Picker(selection: Binding(get: { detail.priority.selection }, set: { setPriority($0, detail) })) {
+                ForEach(detail.priority.options, id: \.self) { Text(BoardRowModel.priorityName($0)).tag($0) }
+            } label: {
+                HStack(spacing: Spacing.compact) {
+                    Text("Priority")
+                    PriorityDot(priority: detail.priority.selection)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(!detail.priority.isEnabled)
+            .frame(minHeight: 44)
+            .accessibilityLabel("Priority")
+            .accessibilityValue(BoardRowModel.priorityName(detail.priority.selection))
+            if let value = detail.row.progressValue, let text = detail.row.progressText {
+                LabeledContent("Progress") {
+                    HStack(spacing: Spacing.regular) {
+                        ThinProgressBar(value: value, tone: detail.row.progressTone).frame(width: 80)
+                        Text(text).font(TypeScale.time)
+                    }
+                }
+            }
+        } footer: {
             if let caption = detail.status.caption {
-                Text(caption).font(.caption).foregroundStyle(.secondary)
+                Text(caption)
             }
         }
     }
@@ -257,37 +279,37 @@ struct BoardTargetDetailView: View {
         }
     }
 
+    /// The comment composer on an opaque bar (bug 4): nothing shows through.
     private func composer(_ detail: BoardTargetDetailModel) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let replyTo {
-                HStack {
-                    Text("Replying to \(replyTo.author)").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Cancel") { self.replyTo = nil }
-                        .font(.caption)
-                        .frame(minHeight: 44)
-                        .accessibilityLabel("Cancel the reply")
+        BottomActionBar {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                if let replyTo {
+                    HStack {
+                        Text("Replying to \(replyTo.author)").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Cancel") { self.replyTo = nil }
+                            .font(.caption)
+                            .frame(minHeight: 44)
+                            .accessibilityLabel("Cancel the reply")
+                    }
                 }
-            }
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(replyTo == nil ? "Add a comment" : "Reply", text: $draft.text, axis: .vertical)
-                    .lineLimit(1...5)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($composerFocused)
-                    .accessibilityLabel(replyTo == nil ? "Comment" : "Reply")
-                Button {
-                    send(detail)
-                } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                HStack(alignment: .bottom, spacing: Spacing.regular) {
+                    TextField(replyTo == nil ? "Add a comment" : "Reply", text: $draft.text, axis: .vertical)
+                        .lineLimit(1...5)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($composerFocused)
+                        .accessibilityLabel(replyTo == nil ? "Comment" : "Reply")
+                    Button {
+                        send(detail)
+                    } label: {
+                        Image(systemName: "arrow.up.circle.fill").font(.title2)
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .disabled(!draft.canSend || detail.composerSending(replyRoot: replyTo?.rootID))
+                    .accessibilityLabel(replyTo == nil ? "Send comment" : "Send reply")
                 }
-                .frame(minWidth: 44, minHeight: 44)
-                .disabled(!draft.canSend || detail.composerSending(replyRoot: replyTo?.rootID))
-                .accessibilityLabel(replyTo == nil ? "Send comment" : "Send reply")
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(.bar)
     }
 
     // MARK: - Actions
