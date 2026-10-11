@@ -87,10 +87,10 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         var onMouseDown: ((Bool) -> Void)? {
             didSet { watchClicks() }
         }
-        /// Whether its window takes keys as the key window. One never put
-        /// on screen (a unit test's) counts: AppKit sends keys to a
-        /// visible window only as the key window, or as the main window
-        /// behind a key panel — the case this rules out.
+        /// Whether its window takes keys as the key window — not as the main
+        /// window behind a key panel (Open Quickly), which AppKit also
+        /// offers key equivalents. `!isVisible` is for never-shown test
+        /// windows only: in the app only a visible key window gets keys.
         var isKey: @MainActor (NSWindow) -> Bool = { $0.isKeyWindow || !$0.isVisible }
         private var clickMonitor: Any?
 
