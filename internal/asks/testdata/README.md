@@ -16,6 +16,9 @@ Both sides must agree on every file.
   re-encoded with sorted keys and no whitespace equals `canonical` byte for byte (Go:
   `json.Marshal` of `asks.Answer`; Swift: `.sortedKeys` and `.withoutEscapingSlashes`).
   For `invalid_*`, `asks.ParseAnswer` then `asks.ValidateAnswer` fail with exactly `error`.
+  `valid_question_quick.json` and `valid_question_reply.json` are also what the Swift
+  `OwnerAskAnswer.quick(label:questionID:)` and `.reply(_:questionID:)` builders write — a
+  Quick ask's one-tap answer, and a free reply to a question raised from chat with no options.
   The fixtures avoid `<`, `>`, `&`, `/`, U+2028 and U+2029, which the two encoders escape
   differently.
 - `render/<answers fixture>.txt` — `asks.Render` of each valid answers fixture

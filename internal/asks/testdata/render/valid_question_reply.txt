@@ -1,0 +1,2 @@
+Answers:
+- What is the staging host name? → Other: staging.example.com
