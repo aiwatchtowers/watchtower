@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,8 @@ func TestInsertOwnerAsk_FilesAnOpenAsk(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, OwnerAsk{ID: id, WorkbenchID: pid, SessionID: nullID(sid), TargetID: nullID(tid),
 		Kind: "review", Title: "Spec", Summary: "Read it", Payload: `{"focus":[]}`,
-		DocPath: "docs/spec.md", DocSnapshot: "# Spec\n", Status: "open", CreatedAt: a.CreatedAt}, *a,
+		DocPath: "docs/spec.md", DocSnapshot: "# Spec\n", Status: "open", CreatedAt: a.CreatedAt,
+		Level: asks.LevelFull, Origin: asks.OriginAgent}, *a,
 		"an insert is always open and unanswered, whatever the caller passed")
 	assert.NotEmpty(t, a.CreatedAt)
 
@@ -354,4 +356,133 @@ func TestAnsweredAsksForBrief_OwnSessionUnboundAndGone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, list, 2, "no session: the unbound and gone-session asks")
 	assert.Equal(t, 2, others)
+}
+
+// Spec 2026-10-10-owner-asks-v2 Part 3.4: origin chat iff chat_asked_at is
+// set; an empty level or origin stores the column default.
+func TestInsertOwnerAskOriginInvariant(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	const askedAt = "2026-10-10T12:00:00.000Z"
+
+	for _, tc := range []struct {
+		name        string
+		origin      string
+		chatAskedAt string
+	}{
+		{"origin chat without chat_asked_at", asks.OriginChat, ""},
+		{"origin agent with chat_asked_at", asks.OriginAgent, askedAt},
+		{"no origin with chat_asked_at", "", askedAt},
+	} {
+		a := questionAsk(pid, "Q")
+		a.Origin, a.ChatAskedAt = tc.origin, tc.chatAskedAt
+		_, _, err := insertTestAsk(t, d, a)
+		require.Error(t, err, tc.name)
+		assert.Contains(t, err.Error(), "chat_asked_at", tc.name)
+	}
+	n, err := d.CountOpenOwnerAsks(pid)
+	require.NoError(t, err)
+	assert.Zero(t, n, "a refused ask writes nothing")
+
+	plain, err := d.GetOwnerAsk(pid, mustInsertAsk(t, d, questionAsk(pid, "Plain")))
+	require.NoError(t, err)
+	assert.Equal(t, asks.LevelFull, plain.Level)
+	assert.Equal(t, asks.OriginAgent, plain.Origin)
+	assert.Equal(t, "", plain.ChatAskedAt)
+
+	chat := questionAsk(pid, "From chat")
+	chat.Level, chat.Origin, chat.ChatAskedAt = asks.LevelQuick, asks.OriginChat, askedAt
+	got, err := d.GetOwnerAsk(pid, mustInsertAsk(t, d, chat))
+	require.NoError(t, err)
+	assert.Equal(t, asks.LevelQuick, got.Level)
+	assert.Equal(t, asks.OriginChat, got.Origin)
+	assert.Equal(t, askedAt, got.ChatAskedAt)
+	list, err := d.ListOwnerAsks(pid, OwnerAskFilter{})
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	assert.Equal(t, asks.OriginChat, list[0].Origin, "the list readers carry the new columns")
+
+	bad := questionAsk(pid, "Bad level")
+	bad.Level = "x"
+	_, _, err = insertTestAsk(t, d, bad)
+	assert.Error(t, err, "the CHECK refuses an unknown level")
+}
+
+// setAskCreatedAt backdates ask id's filing time.
+func setAskCreatedAt(t *testing.T, d *DB, id int64, at time.Time) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE owner_asks SET created_at = ? WHERE id = ?`, at.UTC().Format(askCreatedAtLayout), id)
+	require.NoError(t, err)
+}
+
+func TestLastWithdrawnByTitle(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	now := time.Now().UTC().Truncate(time.Second)
+	since := now.Add(-7 * 24 * time.Hour)
+	norm := asks.NormalizeTitle("Pick the DB")
+
+	withdrawn := func(project int64, title, reason string, filed time.Time) int64 {
+		t.Helper()
+		id := mustInsertAsk(t, d, questionAsk(project, title))
+		setAskCreatedAt(t, d, id, filed)
+		_, err := d.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ? WHERE id = ?`, reason, id)
+		require.NoError(t, err)
+		return id
+	}
+	got, err := d.LastWithdrawnByTitle(pid, norm, since)
+	require.NoError(t, err)
+	assert.Nil(t, got, "nothing withdrawn")
+
+	withdrawn(pid, "Pick the DB", WithdrawnByAgent, now.Add(-8*24*time.Hour))
+	withdrawn(pid, "Pick the DB", WithdrawnSuperseded, now.Add(-time.Hour))
+	withdrawn(other, "Pick the DB", WithdrawnByAgent, now.Add(-time.Hour))
+	withdrawn(pid, "Pick the cache", WithdrawnByAgent, now.Add(-time.Hour))
+	open := mustInsertAsk(t, d, questionAsk(pid, "Pick the DB"))
+	got, err = d.LastWithdrawnByTitle(pid, norm, since)
+	require.NoError(t, err)
+	assert.Nil(t, got, "8 days old, superseded, another workbench's, another title or open: none matches")
+
+	first := withdrawn(pid, "pick  the db?", WithdrawnByAgent, now.Add(-2*24*time.Hour))
+	got, err = d.LastWithdrawnByTitle(pid, norm, since)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, first, got.ID, "matched in normalised form")
+	newest := withdrawn(pid, "Pick the DB.", WithdrawnByAgent, now.Add(-time.Hour))
+	got, err = d.LastWithdrawnByTitle(pid, norm, since)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, newest, got.ID, "the newest match")
+	assert.NotEqual(t, open, got.ID)
+}
+
+func TestRecentOpenQuestionAsk(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	sid := newTestSession(t, d, pid)
+	other := newTestSession(t, d, pid)
+	now := time.Now().UTC().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+
+	got, err := d.RecentOpenQuestionAsk(sid, since)
+	require.NoError(t, err)
+	assert.Nil(t, got, "no ask")
+
+	old := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Old"})
+	setAskCreatedAt(t, d, old, now.Add(-11*time.Minute))
+	mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(other), Kind: "question", Title: "Theirs"})
+	mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "check", Title: "Check",
+		Payload: `{"checklist":["a"]}`})
+	answered := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Done"})
+	markAskAnswered(t, d, answered)
+	got, err = d.RecentOpenQuestionAsk(sid, since)
+	require.NoError(t, err)
+	assert.Nil(t, got, "too old, another session's, a check and an answered ask: none")
+
+	recent := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), Kind: "question", Title: "Recent"})
+	got, err = d.RecentOpenQuestionAsk(sid, since)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, recent, got.ID)
 }
