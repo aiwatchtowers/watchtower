@@ -1531,7 +1531,7 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     answered_at      TEXT NOT NULL DEFAULT '',
-    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '',
+    delivered_at     TEXT NOT NULL DEFAULT '', level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')), origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')), chat_asked_at TEXT NOT NULL DEFAULT '', withdrawn_at TEXT NOT NULL DEFAULT '',
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );

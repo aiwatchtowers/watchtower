@@ -2299,6 +2299,7 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     level            TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')),    -- Go's classification (00107): quick = banner, full = drawer
     origin           TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')),  -- chat = a terminal question Watchtower raised after it waited
     chat_asked_at    TEXT NOT NULL DEFAULT '',   -- origin chat only: when it was asked in the terminal; '' otherwise
+    withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );

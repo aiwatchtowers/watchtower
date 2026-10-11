@@ -11,9 +11,9 @@ import (
 
 // TestMigration00107_UpDownUpKeepsAsksAndSessions: the migration applies over
 // a 00106 database holding an open and an answered ask and a terminal
-// session; old asks read level full, origin agent and an empty chat_asked_at;
-// Down drops exactly what Up added and leaves the rows; a second Up restores
-// the defaults.
+// session; old asks read level full, origin agent and empty chat_asked_at and
+// withdrawn_at; Down drops exactly what Up added and leaves the rows; a
+// second Up restores the defaults.
 func TestMigration00107_UpDownUpKeepsAsksAndSessions(t *testing.T) {
 	t.Parallel()
 	raw := rawDBAt(t, 106)
@@ -32,12 +32,13 @@ func TestMigration00107_UpDownUpKeepsAsksAndSessions(t *testing.T) {
 	assertV2Defaults := func(stage string) {
 		t.Helper()
 		for _, id := range []int64{10, 11} {
-			var level, origin, chatAskedAt string
-			require.NoError(t, raw.QueryRow(`SELECT level, origin, chat_asked_at FROM owner_asks WHERE id = ?`, id).
-				Scan(&level, &origin, &chatAskedAt), stage)
+			var level, origin, chatAskedAt, withdrawnAt string
+			require.NoError(t, raw.QueryRow(`SELECT level, origin, chat_asked_at, withdrawn_at FROM owner_asks WHERE id = ?`, id).
+				Scan(&level, &origin, &chatAskedAt, &withdrawnAt), stage)
 			assert.Equal(t, "full", level, "%s: ask %d level", stage, id)
 			assert.Equal(t, "agent", origin, "%s: ask %d origin", stage, id)
 			assert.Equal(t, "", chatAskedAt, "%s: ask %d chat_asked_at", stage, id)
+			assert.Equal(t, "", withdrawnAt, "%s: ask %d withdrawn_at", stage, id)
 		}
 		var q, qAt sql.NullString
 		require.NoError(t, raw.QueryRow(`SELECT chat_question, chat_question_at FROM terminal_sessions WHERE id = 5`).
@@ -57,7 +58,7 @@ func TestMigration00107_UpDownUpKeepsAsksAndSessions(t *testing.T) {
 	// DownTo(106), not a bare Down: a later migration can move the tip past 00107.
 	require.NoError(t, goose.DownTo(raw, "migrations", 106))
 	askCols := columnNames(t, raw, "owner_asks")
-	for _, c := range []string{"level", "origin", "chat_asked_at"} {
+	for _, c := range []string{"level", "origin", "chat_asked_at", "withdrawn_at"} {
 		assert.False(t, askCols[c], "Down kept owner_asks.%s", c)
 	}
 	sessCols := columnNames(t, raw, "terminal_sessions")

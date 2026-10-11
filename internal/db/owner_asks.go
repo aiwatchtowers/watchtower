@@ -36,6 +36,7 @@ type OwnerAsk struct {
 	Level           string // quick | full (asks.Level, stored); '' on insert = full
 	Origin          string // agent | chat; '' on insert = agent
 	ChatAskedAt     string // origin chat only: when it was asked in the terminal (agent_state_at format)
+	WithdrawnAt     string // when it was withdrawn (created_at's format); '' while not, or withdrawn before 00107
 }
 
 // OwnerAskFilter selects the asks of one workbench.
@@ -66,7 +67,7 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at`
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at`
 	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
 	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
@@ -80,7 +81,7 @@ func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 	var a OwnerAsk
 	if err := row.Scan(&a.ID, &a.WorkbenchID, &a.SessionID, &a.TargetID, &a.Kind, &a.Title, &a.Summary, &a.Changes,
 		&a.Payload, &a.DocPath, &a.DocSnapshot, &a.PreviousAskID, &a.Status, &a.WithdrawnReason, &a.Answer,
-		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt); err != nil {
+		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -177,25 +178,29 @@ func supersedeOwnerAsk(tx *sql.Tx, a OwnerAsk) (int64, error) {
 	if prev.Status != "open" {
 		return 0, nil
 	}
-	if _, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?
+	if _, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
 		WHERE id = ? AND status = 'open'`, WithdrawnSuperseded, prev.ID); err != nil {
 		return 0, fmt.Errorf("superseding ask %d: %w", prev.ID, err)
 	}
 	return prev.ID, nil
 }
 
-// askCreatedAtLayout is owner_asks.created_at's form (strftime in SQL).
+// askCreatedAtLayout is the form of owner_asks.created_at and withdrawn_at
+// (askNowSQL in SQL).
 const askCreatedAtLayout = "2006-01-02T15:04:05Z"
 
-// LastWithdrawnByTitle returns workbench projectID's newest ask the agent
-// withdrew (withdrawn_reason agent) that was filed at or after since and whose
-// asks.NormalizeTitle equals normTitle; nil when there is none. The table
-// keeps no withdrawal time, so since bounds the filing time. DocSnapshot is
-// left empty.
+// askNowSQL is the current time in askCreatedAtLayout, as created_at's default.
+const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+
+// LastWithdrawnByTitle returns workbench projectID's ask the agent withdrew
+// (withdrawn_reason agent) most recently, at or after since, whose
+// asks.NormalizeTitle equals normTitle; nil when there is none. An ask
+// withdrawn before migration 00107 has no withdrawn_at and never matches.
+// DocSnapshot is left empty.
 func (db *DB) LastWithdrawnByTitle(projectID int64, normTitle string, since time.Time) (*OwnerAsk, error) {
 	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
-		WHERE a.project_id = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.created_at >= ?
-		ORDER BY a.id DESC`, projectID, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
+		WHERE a.project_id = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
+		ORDER BY a.withdrawn_at DESC, a.id DESC`, projectID, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +294,7 @@ func (db *DB) WithdrawOwnerAsk(projectID, id int64, reason string) error {
 		return fmt.Errorf("invalid withdrawn reason %q", reason)
 	}
 	return db.WithTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?
+		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
 			WHERE id = ? AND project_id = ? AND status = 'open'`, reason, id, projectID)
 		if err != nil {
 			return fmt.Errorf("withdrawing ask %d: %w", id, err)

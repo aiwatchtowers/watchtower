@@ -422,12 +422,16 @@ func TestLastWithdrawnByTitle(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	since := now.Add(-7 * 24 * time.Hour)
 	norm := asks.NormalizeTitle("Pick the DB")
+	stamp := func(at time.Time) string { return at.UTC().Format(askCreatedAtLayout) }
 
-	withdrawn := func(project int64, title, reason string, filed time.Time) int64 {
+	// withdrawn files an ask at filed and withdraws it with reason at
+	// withdrawnAt ('' = withdrawn before 00107).
+	withdrawn := func(project int64, title, reason string, filed time.Time, withdrawnAt string) int64 {
 		t.Helper()
 		id := mustInsertAsk(t, d, questionAsk(project, title))
 		setAskCreatedAt(t, d, id, filed)
-		_, err := d.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ? WHERE id = ?`, reason, id)
+		_, err := d.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = ? WHERE id = ?`,
+			reason, withdrawnAt, id)
 		require.NoError(t, err)
 		return id
 	}
@@ -435,26 +439,55 @@ func TestLastWithdrawnByTitle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got, "nothing withdrawn")
 
-	withdrawn(pid, "Pick the DB", WithdrawnByAgent, now.Add(-8*24*time.Hour))
-	withdrawn(pid, "Pick the DB", WithdrawnSuperseded, now.Add(-time.Hour))
-	withdrawn(other, "Pick the DB", WithdrawnByAgent, now.Add(-time.Hour))
-	withdrawn(pid, "Pick the cache", WithdrawnByAgent, now.Add(-time.Hour))
+	hourAgo := stamp(now.Add(-time.Hour))
+	withdrawn(pid, "Pick the DB", WithdrawnByAgent, now.Add(-9*24*time.Hour), stamp(now.Add(-8*24*time.Hour)))
+	withdrawn(pid, "Pick the DB", WithdrawnByAgent, now.Add(-2*time.Hour), "")
+	withdrawn(pid, "Pick the DB", WithdrawnSuperseded, now.Add(-2*time.Hour), hourAgo)
+	withdrawn(other, "Pick the DB", WithdrawnByAgent, now.Add(-2*time.Hour), hourAgo)
+	withdrawn(pid, "Pick the cache", WithdrawnByAgent, now.Add(-2*time.Hour), hourAgo)
 	open := mustInsertAsk(t, d, questionAsk(pid, "Pick the DB"))
 	got, err = d.LastWithdrawnByTitle(pid, norm, since)
 	require.NoError(t, err)
-	assert.Nil(t, got, "8 days old, superseded, another workbench's, another title or open: none matches")
+	assert.Nil(t, got, "withdrawn 8 days ago, before 00107, superseded, another workbench's, another title or open: none matches")
 
-	first := withdrawn(pid, "pick  the db?", WithdrawnByAgent, now.Add(-2*24*time.Hour))
+	// The window runs from the withdrawal, not the filing.
+	first := withdrawn(pid, "pick  the db?", WithdrawnByAgent, now.Add(-10*24*time.Hour), stamp(now.Add(-2*time.Hour)))
 	got, err = d.LastWithdrawnByTitle(pid, norm, since)
 	require.NoError(t, err)
-	require.NotNil(t, got)
+	require.NotNil(t, got, "filed 10 days ago, withdrawn 2 h ago")
 	assert.Equal(t, first, got.ID, "matched in normalised form")
-	newest := withdrawn(pid, "Pick the DB.", WithdrawnByAgent, now.Add(-time.Hour))
+	// An older filing withdrawn later is the newer withdrawal.
+	newest := withdrawn(pid, "Pick the DB.", WithdrawnByAgent, now.Add(-12*24*time.Hour), hourAgo)
 	got, err = d.LastWithdrawnByTitle(pid, norm, since)
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	assert.Equal(t, newest, got.ID, "the newest match")
+	assert.Equal(t, newest, got.ID, "the most recent withdrawal")
 	assert.NotEqual(t, open, got.ID)
+}
+
+// Both withdraw paths stamp withdrawn_at; an open ask keeps ”.
+func TestOwnerAskWithdrawalsStampWithdrawnAt(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	before := time.Now().UTC().Add(-time.Second).Format(askCreatedAtLayout)
+
+	byAgent := mustInsertAsk(t, d, questionAsk(pid, "Mine"))
+	require.NoError(t, d.WithdrawOwnerAsk(pid, byAgent, WithdrawnByAgent))
+	prev := mustInsertAsk(t, d, questionAsk(pid, "Round 1"))
+	next := questionAsk(pid, "Round 2")
+	next.PreviousAskID = nullID(prev)
+	open := mustInsertAsk(t, d, next)
+
+	after := time.Now().UTC().Add(time.Second).Format(askCreatedAtLayout)
+	for _, id := range []int64{byAgent, prev} {
+		a, err := d.GetOwnerAsk(pid, id)
+		require.NoError(t, err)
+		assert.Equal(t, "withdrawn", a.Status)
+		assert.True(t, a.WithdrawnAt >= before && a.WithdrawnAt <= after, "ask %d withdrawn_at %q", id, a.WithdrawnAt)
+	}
+	a, err := d.GetOwnerAsk(pid, open)
+	require.NoError(t, err)
+	assert.Equal(t, "", a.WithdrawnAt)
 }
 
 func TestRecentOpenQuestionAsk(t *testing.T) {
