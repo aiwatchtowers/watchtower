@@ -24,6 +24,8 @@ const (
 	MaxOpenPerWorkbench = 30
 	// MaxSnapshotBytes caps a review's document, read into doc_snapshot.
 	MaxSnapshotBytes = 2 << 20
+	// MaxTitleRunes caps an ask's title.
+	MaxTitleRunes = 120
 )
 
 // Focus points the owner at what to look at; heading and quote anchor it in
@@ -98,7 +100,7 @@ func Validate(in Input, origin string) (Payload, error) {
 		return p, fmt.Errorf("kind: must be review, check or question")
 	}
 	if err := firstErr(
-		checkText("title", in.Title, true, 120),
+		checkText("title", in.Title, true, MaxTitleRunes),
 		checkText("summary", in.Summary, false, 2000),
 		checkText("changes", in.Changes, false, 1000),
 	); err != nil {

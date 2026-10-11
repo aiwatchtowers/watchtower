@@ -120,7 +120,7 @@ func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, asks.KindQuestion, a.Kind)
 			assert.Equal(t, "open", a.Status)
-			assert.Equal(t, strings.TrimSpace(string([]rune(strings.TrimSpace(long))[:escalateTitleRunes])), a.Title)
+			assert.Equal(t, strings.TrimSpace(string([]rune(strings.TrimSpace(long))[:asks.MaxTitleRunes])), a.Title)
 			assert.Equal(t, long+"\n"+tc.line, a.Summary)
 			assert.Equal(t, asks.OriginChat, a.Origin)
 			assert.Equal(t, asks.LevelQuick, a.Level)
