@@ -1297,6 +1297,8 @@ func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
 			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
 		}
 	}
+	// -1 min: a waiting older than the question (a repeated state keeps its
+	// first stamp) is still the turn end the question waits on.
 	for _, offset := range []time.Duration{29 * time.Second, -time.Minute} {
 		if q := take(row("waiting", offset), at); q == nil {
 			t.Fatalf("waiting stamped %v from the question: not taken", offset)

@@ -482,9 +482,14 @@ func (db *DB) ClearChatQuestionBefore(id, workbenchID int64, claudeSessionID str
 // write transaction (spec Part 5.3, F9): it returns workbench workbenchID's
 // claude row id's chat question and clears it only while chat_question_at is
 // still at (not cleared, not replaced), agent_state is `waiting` and
-// agent_state_at is at most 30 s after the question (the same turn end).
-// Otherwise nil and nothing written, also for another workbench's row or a
-// shell row. ErrTerminalSessionNotFound for a missing row.
+// agent_state_at is at most 30 s after the question — the Stop's own
+// `waiting`, written by the parallel drift-check hook, may be stamped just
+// after the guard's record. There is no lower bound: a `waiting` older than
+// the question, with no later `working` or run mark, means the agent has not
+// acted since (a repeated state keeps its first stamp, PROJ-11), so the
+// question is still the live one. Otherwise nil and nothing written, also
+// for another workbench's row or a shell row. ErrTerminalSessionNotFound for
+// a missing row.
 func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*ChatQuestion, error) {
 	var body, questionAt, state, stateAt sql.NullString
 	var mine bool
