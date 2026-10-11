@@ -42,8 +42,8 @@ func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerato
 func (g *CodexGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // SetIsolatedChild makes every subsequent Generate run codex through
-// digest.IsolateChild: its own process group, killed whole on cancel and
-// reaped after the call, and none of the variables in dropEnv.
+// digest.IsolateChild: its own process group, killed whole on cancel, and
+// none of the variables in dropEnv.
 func (g *CodexGenerator) SetIsolatedChild(dropEnv ...string) {
 	g.isolated, g.dropEnv = true, dropEnv
 }
@@ -87,9 +87,6 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	output, err := cmd.Output()
-	if g.isolated {
-		digest.ReapChild(cmd)
-	}
 	if err != nil {
 		return "", nil, "", classifyError(err, stderrBuf.String(), codexBin)
 	}

@@ -70,8 +70,8 @@ func NewClaudeGenerator(modelLight, modelStrong, claudePath string) *ClaudeGener
 func (g *ClaudeGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // SetIsolatedChild makes every subsequent Generate run claude through
-// IsolateChild: its own process group, killed whole on cancel and reaped
-// after the call, and none of the variables in dropEnv.
+// IsolateChild: its own process group, killed whole on cancel, and none of
+// the variables in dropEnv.
 func (g *ClaudeGenerator) SetIsolatedChild(dropEnv ...string) {
 	g.isolated, g.dropEnv = true, dropEnv
 }
@@ -314,9 +314,6 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	output, err := cmd.Output()
-	if g.isolated {
-		ReapChild(cmd)
-	}
 	if err != nil {
 		if execErr, ok := err.(*exec.Error); ok {
 			if execErr.Err == exec.ErrNotFound {

@@ -273,7 +273,7 @@ func stopFinishPhase(v askGuardVerdict, candidate bool) stopDecision {
 
 // askGuardGeneratorFactory builds the classifier's model client; the seam
 // tests replace (no test calls a real model). The child gets its own process
-// group (killed and reaped on the budget or a signal) and never the Desktop
+// group (killed whole on the budget or a signal) and never the Desktop
 // terminal's session variable, and the message travels on stdin.
 var askGuardGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	gen := cliGenerator(cfg)

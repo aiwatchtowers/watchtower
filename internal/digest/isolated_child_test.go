@@ -50,7 +50,6 @@ func TestIsolateChildKillsTheGroupAndDropsEnv(t *testing.T) {
 
 	cancel()
 	_ = cmd.Wait()
-	ReapChild(cmd)
 
 	for syscall.Kill(grandchild, 0) == nil {
 		if time.Now().After(deadline) {
