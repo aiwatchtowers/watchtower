@@ -353,6 +353,82 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         } else {
             clearThrottle()
         }
+        try await pollZones(engine: engine)
+    }
+
+    /// The poll half of `pull()`: each zone's changes straight from the
+    /// server since the transport's own per-zone token, buffered like the
+    /// engine's fetched changes. The engine fetches only the zones a
+    /// delivered push told it about, so without this a manual pull sends no
+    /// request (seen on a hub whose pushes never arrived: the phone's
+    /// records sat unread until an engine restart). Skipped once unlinked,
+    /// stopped or throttled, and when the engine was replaced meanwhile (an
+    /// account reset wiped the store this page would land in).
+    private func pollZones(engine: any SyncEngineDriving) async throws {
+        for zone in CloudZoneID.allCases {
+            var moreComing = true
+            while moreComing {
+                guard self.engine === engine, !isUnlinked, !isStopped else { return }
+                if let throttledUntil, now() < throttledUntil { return }
+                let zoneID = scope.zoneID(for: zone)
+                let page: PolledZoneChanges
+                do {
+                    page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
+                } catch let error as CKError {
+                    try await handlePollError(error, zone: zone, zoneID: zoneID, engine: engine)
+                    break
+                }
+                guard self.engine === engine, !isStopped else { return }
+                bufferPolledChanges(page)
+                try store.setPollToken(page.changeToken, zone: zone)
+                moreComing = page.moreComing
+            }
+        }
+    }
+
+    /// A poll error. An expired token restarts that zone's poll from the
+    /// beginning on the next pull (known records are skipped by change tag).
+    /// A missing zone in `private` scope is one the engine has not created
+    /// yet; in `shared` scope it unlinks, through the usual fetch-error
+    /// rules, which also wait out throttling and rethrow anything else.
+    private func handlePollError(
+        _ error: CKError,
+        zone: CloudZoneID,
+        zoneID: CKRecordZone.ID,
+        engine: any SyncEngineDriving
+    ) async throws {
+        if error.code == .changeTokenExpired {
+            try store.setPollToken(nil, zone: zone)
+            return
+        }
+        if scope.writesZones, Self.zoneGoneCodes.contains(error.code) { return }
+        try await handleFetchError(error, zoneID: zoneID, engine: engine)
+    }
+
+    /// Buffers a poll page minus what the store already holds: a record
+    /// whose change tag matches its archived system fields (fetched by the
+    /// engine, or sent from here), and a deletion of a record it has no
+    /// system fields for (never seen, or its deletion already buffered).
+    private func bufferPolledChanges(_ page: PolledZoneChanges) {
+        let modifications = page.modifications.filter { record in
+            guard let zone = scope.cloudZone(for: record.recordID.zoneID),
+                  let tag = record.recordChangeTag else { return true }
+            return Self.knownChangeTag(recordName: record.recordID.recordName, zone: zone, store: store) != tag
+        }
+        let deletions = page.deletions.filter { id in
+            guard let zone = scope.cloudZone(for: id.zoneID) else { return false }
+            return (try? store.systemFields(recordName: id.recordName, zone: zone)) != nil
+        }
+        bufferFetched(modifications: modifications, deletions: deletions)
+    }
+
+    /// The change tag in a record's archived system fields, if any.
+    private static func knownChangeTag(recordName: String, zone: CloudZoneID, store: TransportStore) -> String? {
+        guard let data = try? store.systemFields(recordName: recordName, zone: zone),
+              let unarchiver = try? NSKeyedUnarchiver(forReadingFrom: data),
+              let known = CKRecord(coder: unarchiver) else { return nil }
+        unarchiver.finishDecoding()
+        return known.recordChangeTag
     }
 
     /// Lifts the quota pause (the owner freed iCloud space) and sends again.
@@ -673,9 +749,16 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     private func bufferFetchedChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
-        let modifications = event.modifications.filter { scope.cloudZone(for: $0.record.recordID.zoneID) != nil }
+        bufferFetched(modifications: event.modifications.map(\.record), deletions: event.deletions.map(\.recordID))
+    }
+
+    /// Buffers fetched records and deletions of this scope's zones (the
+    /// engine's fetched-changes events and the transport's own zone poll).
+    /// Internal so tests feed it without fabricating an engine event.
+    func bufferFetched(modifications fetched: [CKRecord], deletions: [CKRecord.ID]) {
+        let modifications = fetched.filter { scope.cloudZone(for: $0.recordID.zoneID) != nil }
         let changed = modifications.compactMap { modification -> CloudRecord? in
-            guard let record = Self.cloudRecord(from: modification.record) else { return nil }
+            guard let record = Self.cloudRecord(from: modification) else { return nil }
             // CKAsset downloads land in a temporary staging area that may be
             // purged after this callback; the buffered event outlives it, so
             // stash a durable copy and point the event at that. A failed
@@ -697,9 +780,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             )
         }
         var deletedByZone: [CloudZoneID: [String]] = [:]
-        for deletion in event.deletions {
-            guard let zone = scope.cloudZone(for: deletion.recordID.zoneID) else { continue }
-            deletedByZone[zone, default: []].append(deletion.recordID.recordName)
+        for deletion in deletions {
+            guard let zone = scope.cloudZone(for: deletion.zoneID) else { continue }
+            deletedByZone[zone, default: []].append(deletion.recordName)
         }
         do {
             try store.bufferChanged(changed)
@@ -707,10 +790,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // of the same recordName goes out with the server's change tag
             // (e.g. desktop status write-backs onto mobile-created records).
             for modification in modifications {
-                guard let zone = scope.cloudZone(for: modification.record.recordID.zoneID) else { continue }
+                guard let zone = scope.cloudZone(for: modification.recordID.zoneID) else { continue }
                 try store.saveSystemFields(
-                    Self.archivedSystemFields(of: modification.record),
-                    recordName: modification.record.recordID.recordName,
+                    Self.archivedSystemFields(of: modification),
+                    recordName: modification.recordID.recordName,
                     zone: zone
                 )
             }

@@ -1830,6 +1830,11 @@ final class AppState {
         let storage: MobileHubStorage
         do {
             storage = try mobileHubStorage ?? makeMobileHubStorage()
+            if mobileHubStorage == nil {
+                // Once per run, with the storage: CKSyncEngine learns of
+                // remote changes from pushes (the relay poll is the backstop).
+                storage.registerForPushes?()
+            }
             mobileHubStorage = storage
             mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
             mobileHubInitError = nil

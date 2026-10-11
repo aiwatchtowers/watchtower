@@ -350,14 +350,20 @@ final class MobileHubServiceTests: XCTestCase {
     // MARK: - AppState wiring
 
     /// An AppState whose hub storage is a stub; counts how often it is built.
-    private func makeAppState(transport: StubHubTransport, storageBuilds: @escaping () -> Void) throws -> AppState {
+    private func makeAppState(
+        transport: StubHubTransport,
+        pushRegistrations: (@MainActor () -> Void)? = nil,
+        storageBuilds: @escaping () -> Void
+    ) throws -> AppState {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.mobileSyncDefaults = defaults
         let sidecar = try XCTUnwrap(self.sidecar)
         appState.makeMobileHubStorage = {
             storageBuilds()
-            return MobileHubStorage(transport: transport, sidecar: sidecar)
+            var storage = MobileHubStorage(transport: transport, sidecar: sidecar)
+            storage.registerForPushes = pushRegistrations
+            return storage
         }
         return appState
     }
@@ -434,6 +440,50 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertFalse(first.isPublishing, "no second publisher")
         await awaitHubCondition("the new hub runs") { second.status == .running }
         XCTAssertEqual(builds, 1, "the transport and sidecar outlive the rebuild")
+    }
+
+    func testTheHubRegistersForPushesOncePerRun() async throws {
+        let transport = StubHubTransport()
+        var registrations = 0
+        let appState = try makeAppState(
+            transport: transport, pushRegistrations: { registrations += 1 }, storageBuilds: {}
+        )
+        defer { stopAll(appState) }
+
+        runInitWorkbenches(appState)
+        XCTAssertEqual(registrations, 0, "the toggle is off: no CloudKit, no push registration")
+
+        appState.setMobileSyncEnabled(true)
+        let hub = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the hub runs") { hub.status == .running }
+        runInitWorkbenches(appState)
+
+        XCTAssertEqual(registrations, 1, "registered with the storage, not with every hub rebuild")
+    }
+
+    func testWakeRelayPullsBeforeTheWaitEnds() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, relayInterval: .seconds(3600))
+        await service.start()
+        defer { service.stop() }
+        // The single-hub check pulls once, then the first relay cycle.
+        await awaitHubCondition("the first relay cycle pulled") { transport.pulls == 2 }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(transport.pulls, 2, "the next cycle waits the interval")
+
+        service.wakeRelay()
+
+        await awaitHubCondition("a push wakes the relay loop") { transport.pulls == 3 }
+    }
+
+    func testWakeRelayWhileStoppedDoesNothing() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, relayInterval: .seconds(3600))
+
+        service.wakeRelay()
+        try await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertEqual(transport.pulls, 0)
     }
 
     func testInitWorkbenchesRerunWithTheToggleOffDropsTheHub() async throws {

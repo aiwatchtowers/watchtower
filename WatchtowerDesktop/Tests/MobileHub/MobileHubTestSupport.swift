@@ -49,6 +49,8 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
 
     var starts: Int { lock.withLock { startCount } }
     var stops: Int { lock.withLock { stopCount } }
+    private var pullCount = 0
+    var pulls: Int { lock.withLock { pullCount } }
     /// "start" / "stop", in call order.
     var lifecycle: [String] { lock.withLock { lifecycleLog } }
     /// Ids of every `applied` action echo saved, in order — counted here, on
@@ -135,7 +137,10 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func pull() async throws {
-        let (hangs, fails) = lock.withLock { (pullHangs, pullFails) }
+        let (hangs, fails) = lock.withLock { () -> (Bool, Bool) in
+            pullCount += 1
+            return (pullHangs, pullFails)
+        }
         if fails { throw URLError(.notConnectedToInternet) }
         guard hangs else { return }
         try await Task.sleep(for: .seconds(3600))

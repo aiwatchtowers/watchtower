@@ -67,6 +67,41 @@ final class FakeSyncEngine: SyncEngineDriving, @unchecked Sendable {
         if let error { throw error }
     }
 
+    /// One `fetchZoneChanges` call: the zone and the token it passed.
+    struct ZoneFetch: Equatable {
+        let zoneID: CKRecordZone.ID
+        let token: Data?
+    }
+
+    private var _zoneFetches: [ZoneFetch] = []
+    private var zonePages: [String: [Result<PolledZoneChanges, Error>]] = [:]
+
+    var zoneFetches: [ZoneFetch] { lock.withLock { _zoneFetches } }
+
+    /// Queues the next page (or error) `fetchZoneChanges` returns for the
+    /// zone named `zoneName`; with none queued it returns an empty page
+    /// whose token is `"<zoneName>-<call number>"`.
+    func enqueueZonePage(_ page: Result<PolledZoneChanges, Error>, zoneName: String) {
+        lock.withLock { zonePages[zoneName, default: []].append(page) }
+    }
+
+    func fetchZoneChanges(_ zoneID: CKRecordZone.ID, since token: Data?) async throws -> PolledZoneChanges {
+        let next: Result<PolledZoneChanges, Error> = lock.withLock {
+            _zoneFetches.append(ZoneFetch(zoneID: zoneID, token: token))
+            if var queued = zonePages[zoneID.zoneName], !queued.isEmpty {
+                let page = queued.removeFirst()
+                zonePages[zoneID.zoneName] = queued
+                return page
+            }
+            let call = _zoneFetches.filter { $0.zoneID == zoneID }.count
+            return .success(PolledZoneChanges(
+                modifications: [], deletions: [],
+                changeToken: Data("\(zoneID.zoneName)-\(call)".utf8), moreComing: false
+            ))
+        }
+        return try next.get()
+    }
+
     func sendChanges() async throws {
         lock.withLock { _sendCount += 1 }
     }

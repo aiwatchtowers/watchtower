@@ -81,6 +81,10 @@ public final class TransportStore: Sendable {
                     data BLOB NOT NULL,
                     PRIMARY KEY (record_name, zone)
                 );
+                CREATE TABLE IF NOT EXISTS poll_tokens (
+                    zone TEXT PRIMARY KEY,
+                    token BLOB NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS scope (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     kind TEXT NOT NULL CHECK (kind IN ('private', 'shared')),
@@ -433,6 +437,33 @@ public final class TransportStore: Sendable {
         }
     }
 
+    // MARK: - Poll change tokens
+
+    /// The archived server change token of the transport's own zone poll
+    /// (`CloudKitTransport.pull()`), per zone; separate from the engine's.
+    func pollToken(zone: CloudZoneID) throws -> Data? {
+        try queue.read { db in
+            try Data.fetchOne(db, sql: "SELECT token FROM poll_tokens WHERE zone = ?", arguments: [zone.rawValue])
+        }
+    }
+
+    /// nil forgets the zone's token: the next poll starts from the beginning.
+    func setPollToken(_ token: Data?, zone: CloudZoneID) throws {
+        try queue.write { db in
+            if let token {
+                try db.execute(
+                    sql: """
+                        INSERT INTO poll_tokens (zone, token) VALUES (?, ?)
+                        ON CONFLICT(zone) DO UPDATE SET token = excluded.token
+                        """,
+                    arguments: [zone.rawValue, token]
+                )
+            } else {
+                try db.execute(sql: "DELETE FROM poll_tokens WHERE zone = ?", arguments: [zone.rawValue])
+            }
+        }
+    }
+
     // MARK: - Database scope
 
     /// The scope this store's state belongs to; nil for a store that never
@@ -505,6 +536,7 @@ public final class TransportStore: Sendable {
         try db.execute(sql: "DELETE FROM pending")
         try db.execute(sql: "DELETE FROM system_fields")
         try db.execute(sql: "DELETE FROM engine_state")
+        try db.execute(sql: "DELETE FROM poll_tokens")
     }
 
     /// Drops buffered events at or below a consumer's floor token for one zone.
@@ -622,6 +654,7 @@ public final class TransportStore: Sendable {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM events WHERE zone = ?", arguments: [zone.rawValue])
             try db.execute(sql: "DELETE FROM system_fields WHERE zone = ?", arguments: [zone.rawValue])
+            try db.execute(sql: "DELETE FROM poll_tokens WHERE zone = ?", arguments: [zone.rawValue])
         }
         // The evicted events took their stash references with them.
         sweepUnreferencedStash()

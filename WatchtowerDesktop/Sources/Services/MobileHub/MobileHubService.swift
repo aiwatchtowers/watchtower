@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os
 import WatchtowerCore
@@ -53,6 +54,11 @@ struct MobileHubStorage {
     /// The hub's zone shares (linking, spec §2.3); nil in a stub storage,
     /// which then links no phone.
     var shares: (any ShareService)?
+    /// Registers the app for CloudKit's silent pushes (the CKSyncEngine's
+    /// database subscription); nil in a stub storage, which reaches no
+    /// CloudKit. No user prompt: silent pushes need no notification
+    /// permission.
+    var registerForPushes: (@MainActor () -> Void)?
 
     /// `~/Library/Application Support/Watchtower/MobileHub/` (spec §3).
     static func directory() -> URL {
@@ -71,8 +77,16 @@ struct MobileHubStorage {
         return Self(
             transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
-            shares: CloudKitShareService()
+            shares: CloudKitShareService(),
+            registerForPushes: registerForCloudKitPushes
         )
+    }
+
+    /// Unsigned dev builds lack the iCloud and push entitlements: no-op.
+    @MainActor
+    private static func registerForCloudKitPushes() {
+        guard CloudKitTransport.entitlementPresent() else { return }
+        NSApplication.shared.registerForRemoteNotifications()
     }
 }
 
@@ -146,6 +160,10 @@ final class MobileHubService {
     @ObservationIgnored private let isEnabled: () -> Bool
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private var relayTask: Task<Void, Never>?
+    /// The relay loop's current wait between cycles; `wakeRelay()` ends it.
+    @ObservationIgnored private var relayWait: Task<Void, Never>?
+    /// A wake that arrived during a cycle: the next wait is skipped.
+    @ObservationIgnored private var relayWakePending = false
     /// Runs only while `.unavailable`: re-probes iCloud and starts the hub
     /// when it comes back.
     @ObservationIgnored private var reprobeTask: Task<Void, Never>?
@@ -323,6 +341,7 @@ final class MobileHubService {
         let relay = relayTask
         relayTask = nil
         relay?.cancel()
+        relayWakePending = false
         let previous = teardown
         let transport = self.transport
         // The transport stops first, so a hung CloudKit fetch in the
@@ -364,8 +383,33 @@ final class MobileHubService {
             while !Task.isCancelled {
                 guard let self else { break }
                 await self.runRelayCycle()
-                try? await Task.sleep(for: self.relayInterval())
+                await self.waitForNextRelayCycle()
             }
+        }
+    }
+
+    /// The wait between two relay cycles, cut short by `wakeRelay()`.
+    private func waitForNextRelayCycle() async {
+        if relayWakePending {
+            relayWakePending = false
+            return
+        }
+        let interval = relayInterval()
+        let wait = Task<Void, Never> { try? await Task.sleep(for: interval) }
+        relayWait = wait
+        await withTaskCancellationHandler { await wait.value } onCancel: { wait.cancel() }
+        relayWait = nil
+    }
+
+    /// A CloudKit push arrived (`TrayAppDelegate`): the relay loop pulls now
+    /// instead of after its 3 s / 30 s wait. A wake during a cycle runs the
+    /// next one right after it. No-op while the relay loop is not running.
+    func wakeRelay() {
+        guard relayTask != nil else { return }
+        if let relayWait {
+            relayWait.cancel()
+        } else {
+            relayWakePending = true
         }
     }
 
