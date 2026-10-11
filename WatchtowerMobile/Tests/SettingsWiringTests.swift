@@ -101,6 +101,31 @@ final class SettingsWiringTests: XCTestCase {
         try await poll({ model.snapshot.queuedCount == 2 }, "the observation did not re-fire on a new pending row")
     }
 
+    // MARK: - Diagnostics
+
+    func testNoFailedObservationShowsNoDiagnosticRows() {
+        let model = SettingsViewModel(health: ObservationHealth())
+        XCTAssertEqual(model.diagnostics(now: Date()), [])
+    }
+
+    func testDiagnosticsListEachFailedObservationAndMarkRecovery() {
+        struct ReadError: LocalizedError {
+            var errorDescription: String? { "database is locked" }
+        }
+        let now = Date()
+        let health = ObservationHealth()
+        health.recordFailure("calendar", error: ReadError(), at: now.addingTimeInterval(-120))
+        health.recordFailure("calendar", error: ReadError(), at: now.addingTimeInterval(-60))
+        health.recordFailure("recordings", error: ReadError(), at: now.addingTimeInterval(-300))
+        health.recordValue("recordings")
+
+        let rows = SettingsViewModel(health: health).diagnostics(now: now)
+
+        XCTAssertEqual(rows.map(\.name), ["calendar", "recordings"])
+        XCTAssertEqual(rows[0].text, "calendar updates: failed 2×, last 1 min. ago: database is locked")
+        XCTAssertEqual(rows[1].text, "recordings updates: failed 1×, last 5 min. ago: database is locked (recovered)")
+    }
+
     // MARK: - Workbench toggles
 
     func testTogglesDefaultToTypingOffStartSessionsOnNewAsksOn() throws {

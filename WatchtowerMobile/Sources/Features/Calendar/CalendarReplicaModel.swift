@@ -67,22 +67,21 @@ struct CalendarReplicaSnapshot: Equatable {
 @Observable
 final class CalendarReplicaModel {
     private(set) var snapshot = CalendarReplicaSnapshot()
-    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
+    @ObservationIgnored private var cancellable: ResilientObservation?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "CalendarReplicaModel")
 
     func start(store: ReplicaStore) {
         guard cancellable == nil else { return }
-        let observation = ValueObservation.tracking { db in
-            try CalendarReplicaSnapshot.read(from: db, store: store)
-        }
-        .removeDuplicates()
-        cancellable = observation.start(
-            in: store.reader,
-            scheduling: .async(onQueue: .main),
-            onError: { Self.logger.error("calendar observation failed: \($0.localizedDescription, privacy: .public)") },
-            onChange: { [weak self] value in
-                MainActor.assumeIsolated { self?.receive(value) }
-            }
+        cancellable = ResilientObservation(
+            name: "calendar",
+            reader: store.reader,
+            observation: {
+                ValueObservation.tracking { db in
+                    try CalendarReplicaSnapshot.read(from: db, store: store)
+                }
+                .removeDuplicates()
+            },
+            onChange: { [weak self] value in self?.receive(value) }
         )
     }
 

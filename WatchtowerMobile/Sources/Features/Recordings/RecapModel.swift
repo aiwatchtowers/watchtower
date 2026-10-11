@@ -71,29 +71,26 @@ enum RecapLoader {
 @Observable
 final class RecapBodyModel {
     private(set) var loaded: RecapLoader.Loaded?
-    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
-    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "RecapBodyModel")
+    @ObservationIgnored private var cancellable: ResilientObservation?
 
     func observe(transcript: MeetingTranscript, phoneRecordingID: String?, store: ReplicaStore) {
         cancellable?.cancel()
         loaded = nil
         let recordName = transcript.recordName
-        let observation = ValueObservation.tracking { db in
-            try RecapLoader.read(recordName: recordName, phoneRecordingID: phoneRecordingID, store: store, from: db)
-        }
-        .removeDuplicates()
-        cancellable = observation.start(
-            in: store.reader,
-            scheduling: .async(onQueue: .main),
-            onError: { [weak self] error in
-                Self.logger.error("recap observation failed: \(error.localizedDescription, privacy: .public)")
-                MainActor.assumeIsolated {
-                    self?.loaded = RecapLoader.Loaded(body: .unreadable(error.localizedDescription), marks: [])
+        cancellable = ResilientObservation(
+            name: "recap",
+            reader: store.reader,
+            observation: {
+                ValueObservation.tracking { db in
+                    try RecapLoader.read(recordName: recordName, phoneRecordingID: phoneRecordingID, store: store, from: db)
                 }
+                .removeDuplicates()
             },
-            onChange: { [weak self] value in
-                MainActor.assumeIsolated { self?.loaded = value }
-            }
+            onError: { [weak self] error in
+                // The screen shows the failure until the restarted observation delivers.
+                self?.loaded = RecapLoader.Loaded(body: .unreadable(error.localizedDescription), marks: [])
+            },
+            onChange: { [weak self] value in self?.loaded = value }
         )
     }
 }

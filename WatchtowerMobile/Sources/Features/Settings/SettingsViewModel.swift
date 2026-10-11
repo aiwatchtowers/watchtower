@@ -89,31 +89,59 @@ struct SettingsSnapshot: Equatable {
     }
 }
 
+/// One failed observation as Settings → Your Mac lists it.
+struct ObservationDiagnostic: Identifiable, Equatable {
+    let name: String
+    let text: String
+    var id: String { name }
+}
+
 /// Live Settings state: one observation over the heartbeat, this phone's
 /// grant and the outbox overlay, re-read on every replica write.
 @MainActor
 @Observable
 final class SettingsViewModel {
     private(set) var snapshot = SettingsSnapshot()
-    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
+    @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var observedDeviceID: String?
-    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SettingsViewModel")
+    @ObservationIgnored private let health: ObservationHealth
+
+    init(health: ObservationHealth = .shared) {
+        self.health = health
+    }
+
+    /// One row per replica observation that failed since launch, in name
+    /// order; empty while none did. Reads `health`, so a view updates on a
+    /// new failure.
+    func diagnostics(now: Date) -> [ObservationDiagnostic] {
+        health.failures.sorted { $0.key < $1.key }.map { name, failure in
+            ObservationDiagnostic(name: name, text: Self.text(name: name, failure: failure, now: now))
+        }
+    }
+
+    private static func text(name: String, failure: ObservationHealth.Failure, now: Date) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        let when = formatter.localizedString(for: failure.lastAt, relativeTo: now)
+        let text = "\(name) updates: failed \(failure.count)×, last \(when): \(failure.lastMessage)"
+        return failure.recovered ? text + " (recovered)" : text
+    }
 
     /// Starts (or, for another device id, restarts) the observation.
     func start(store: ReplicaStore, deviceID: String?) {
         if cancellable != nil, observedDeviceID == deviceID { return }
         observedDeviceID = deviceID
-        let observation = ValueObservation.tracking { db in
-            try SettingsSnapshot.read(from: db, store: store, deviceID: deviceID)
-        }
-        .removeDuplicates()
-        cancellable = observation.start(
-            in: store.reader,
-            scheduling: .async(onQueue: .main),
-            onError: { Self.logger.error("settings observation failed: \($0.localizedDescription, privacy: .public)") },
-            onChange: { [weak self] value in
-                MainActor.assumeIsolated { self?.snapshot = value }
-            }
+        cancellable?.cancel()
+        cancellable = ResilientObservation(
+            name: "settings",
+            reader: store.reader,
+            observation: {
+                ValueObservation.tracking { db in
+                    try SettingsSnapshot.read(from: db, store: store, deviceID: deviceID)
+                }
+                .removeDuplicates()
+            },
+            onChange: { [weak self] value in self?.snapshot = value }
         )
     }
 }
