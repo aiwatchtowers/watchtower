@@ -472,6 +472,32 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
     }
 
+    /// Raises session `sessionID`'s recorded Chat question into an owner ask
+    /// (owner asks v2, Part 5.3). `at` is the `chat_question_at` the Desktop
+    /// read, passed back verbatim: Go files only while it is still the stored
+    /// question. Go always exits 0 with one envelope; a run that does not
+    /// comes back as the Desktop's own envelope, never thrown: a binary that
+    /// could not be started as `launchFailure` (retried), a non-zero exit,
+    /// unparsable stdout or a cancel as `failure` (not retried).
+    func escalateQuestion(
+        projectID: Int64,
+        sessionID: Int64,
+        at: String,
+        reason: ChatQuestionEscalationPolicy.Reason
+    ) async -> ChatQuestionEscalationResult {
+        let args = ["workbench", "escalate-question", "--workbench", String(projectID),
+                    "--session", String(sessionID), "--at", at, "--reason", reason.rawValue]
+        do {
+            let data = try await runner.run(args: args)
+            return try JSONDecoder().decode(ChatQuestionEscalationResult.self, from: data)
+        } catch CLIRunnerError.launchFailed(let underlying) {
+            return .launchFailure(underlying.localizedDescription)
+        } catch {
+            // A DecodingError's localizedDescription drops the key path.
+            return .failure(error is DecodingError ? String(describing: error) : error.localizedDescription)
+        }
+    }
+
     /// Removes what was installed in the folder, then the workbench and every
     /// row it owns (Task 4 runs the removal first). Used by Task 20.
     func delete(projectID: Int64) async throws -> WorkbenchDeleted {
