@@ -401,9 +401,11 @@ count(tasks, turns) =
   count, never starts one and never touches the state, its time, `finished_at` or the turn order.
 
 **Invariant kept:** only the Stop sets a count. A teammate that starts a turn after the lead's Stop does not
-raise it: when a working teammate messages another, the second one's turn opens before the first one's closes,
-so the lowered count stays at 1 and the row stays Agents working; a teammate woken while nothing else counts shows
-from the lead's next Stop on. Listed as a v1 limit.
+raise it: when a working teammate messages another, the second one's turn usually opens before the first one's
+closes, so the lowered count stays at 1 and the row stays Agents working — usually, because the two async hooks
+commit in any order (11.5); a teammate woken while nothing else counts shows from the lead's next Stop on. Listed
+as a v1 limit. A `SubagentStop`'s own `agent_id` never counts in its own lowering, whatever the stamps of its
+async hooks say (review finding: a `SubagentStart` process stamped after it would leave its turn open).
 
 ### 11.4 Hook pack
 
@@ -424,6 +426,11 @@ already dropped through their `SubagentStop`. No skill-pack or ask-guard change.
   other teammates are listed it can stand in for one of them (bounded by the listed teammates).
 - The async `SubagentStart` must land before the lead's Stop reads the turns; the lead needs at least one more
   model response after spawning, so this was never close in the captures, but it is not guaranteed.
+- Async hooks commit in any order (review findings, 2026-10-11). A hand-off whose `SubagentStop` lands before the
+  next teammate's `SubagentStart` lowers the count to 0; two `SubagentStop`s landing out of their stamp order
+  leave it at 1 until the lead wakes (the older report is refused by the existing time guard of
+  `TestProj11_SubagentStopOnlyLowersTheCount`; relaxing that guard is an owner decision). A lost `SubagentStop`
+  keeps its teammate's turn open while any teammate is listed.
 
 ### 11.6 Guard tests (new or extended)
 
