@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -217,22 +216,41 @@ func (b *backgroundTasks) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// backgroundSubagents counts the in-flight background subagents and
-// workflows of tasks, leaving out the entry whose id is except ("" leaves
-// out none). Shells, monitors, teammates and every other type never count.
-// No status filter: Claude Code drops a finished task from the list rather
-// than changing its status (only "running" was observed, spec A.7). ok is
-// false when the field was absent, null or not an array.
-func backgroundSubagents(tasks backgroundTasks, except string) (n int64, ok bool) {
+// backgroundAgents counts the background agents tasks reports as working
+// (spec 2026-10-10-session-background-agents-design §11.3): every subagent
+// and workflow entry but a subagent whose turn turns says ended (the list
+// keeps a finished subagent until the main agent takes its result, board
+// #543), plus the open turns no entry lists — teammates in their turn, whose
+// entry carries another id — at most one per teammate entry, so a turn whose
+// SubagentStop never came stops counting once its teammate is gone. Shells,
+// monitors, idle teammates and every other type never count. No status
+// filter: Claude Code drops a finished task from the list rather than
+// changing its status (only "running" was observed, spec A.7). ok is false
+// when the field was absent, null or not an array.
+func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns) (n int64, ok bool) {
 	if !tasks.present {
 		return 0, false
 	}
+	listed := make(map[string]bool, len(tasks.list))
+	var teammates int64
 	for _, task := range tasks.list {
-		if (task.Type == "subagent" || task.Type == "workflow") && (except == "" || task.ID != except) {
-			n++
+		listed[task.ID] = true
+		switch task.Type {
+		case "subagent", "workflow":
+			if !turns.Closed(task.ID) {
+				n++
+			}
+		case "teammate":
+			teammates++
 		}
 	}
-	return n, true
+	var open int64
+	for id := range turns {
+		if !listed[id] && turns.Open(id) {
+			open++
+		}
+	}
+	return n + min(open, teammates), true
 }
 
 // stopHookOutput blocks the stop and hands reason back to the agent.
@@ -455,10 +473,7 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	turn := hookTurn{stop: true}
-	if n, ok := backgroundSubagents(in.BackgroundTasks, ""); ok && n > 0 {
-		turn.background = sql.NullInt64{Int64: n, Valid: true}
-	}
+	turn := hookTurn{stop: true, tasks: in.BackgroundTasks}
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 

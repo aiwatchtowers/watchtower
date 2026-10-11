@@ -43,10 +43,11 @@ var hookNow = time.Now
 var workbenchSessionStateCmd = &cobra.Command{
 	Use:   "session-state",
 	Short: "Record what an embedded terminal's Claude Code session is doing (a Claude Code hook)",
-	Long: "The UserPromptSubmit, Notification, PostToolUse, StopFailure and SubagentStop hook\n" +
-		"installed by `integrate claude-code --workbench N`: it reads the hook input on stdin and\n" +
-		"stores working / waiting / approval, and lowers the Stop's count of background subagents,\n" +
-		"on the Desktop terminal's row named by WATCHTOWER_TERMINAL_SESSION_ID, so the Workbench\n" +
+	Long: "The UserPromptSubmit, Notification, PostToolUse, StopFailure, SubagentStop and\n" +
+		"SubagentStart hook installed by `integrate claude-code --workbench N`: it reads the hook\n" +
+		"input on stdin and stores working / waiting / approval, records subagent and teammate\n" +
+		"turns, and lowers the Stop's count of background agents, on the Desktop terminal's row\n" +
+		"named by WATCHTOWER_TERMINAL_SESSION_ID, so the Workbench\n" +
 		"shows it. Without that variable it does nothing. It never prints to stdout and always\n" +
 		"exits 0.",
 	// No root schema/config pre-run: a broken config must not fail the hook
@@ -80,8 +81,9 @@ type sessionStateInput struct {
 	HookEventName    string `json:"hook_event_name"`
 	SessionID        string `json:"session_id"`
 	NotificationType string `json:"notification_type"`
-	// AgentID is set when the hook fired inside a subagent; AgentType is
-	// its type, empty for Claude Code's internal agents (board #411).
+	// AgentID is set when the hook fired inside a subagent or teammate;
+	// AgentType is its type (a teammate's name), empty for Claude Code's
+	// internal agents (boards #411, #543).
 	AgentID   string `json:"agent_id"`
 	AgentType string `json:"agent_type"`
 	// BackgroundTasks is a SubagentStop's snapshot of in-flight background
@@ -120,8 +122,9 @@ func (in sessionStateInput) agentFailure() *db.AgentFailure {
 // without a prompt (a teammate or background-task message, a wakeup fires
 // no UserPromptSubmit); one stamped before the stop's "waiting", or whose
 // tool call the transcript places before the stop, writes nothing. A
-// SubagentStop records no state (ok true, state ""): recordHookAgentState
-// routes it to the background count (board #411). ok is false for an event
+// SubagentStart or SubagentStop records no state (ok true, state ""):
+// recordHookAgentState routes it to the agent turns and the background count
+// (boards #411, #543). ok is false for an event
 // that records nothing — an unknown event or notification type, or a
 // missing one.
 func agentStateFor(event, notificationType string) (state, onlyFrom string, ok bool) {
@@ -132,7 +135,7 @@ func agentStateFor(event, notificationType string) (state, onlyFrom string, ok b
 		return agentStateWaiting, "", true
 	case "PostToolUse":
 		return agentStateWorking, "", true
-	case "SubagentStop":
+	case "SubagentStart", "SubagentStop":
 		return "", "", true
 	case "Notification":
 		switch notificationType {
@@ -187,14 +190,8 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
 	state, onlyFrom, ok := agentStateFor(in.HookEventName, in.NotificationType)
-	if !ok || in.SessionID == "" {
+	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) {
 		return nil
-	}
-	var remaining int64
-	if in.HookEventName == "SubagentStop" {
-		if remaining, ok = in.subagentStopRemaining(); !ok {
-			return nil
-		}
 	}
 	turn, subagentToolRun := in.toolRunTurn()
 	if subagentToolRun {
@@ -212,8 +209,8 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	}
 	defer database.Close()
 	switch {
-	case in.HookEventName == "SubagentStop":
-		return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, &remaining)
+	case in.agentTurnEvent():
+		return recordAgentTurn(database, rowID, workbenchID, in, at)
 	case subagentToolRun:
 		// At most one of the two writes: one needs approval, the other waiting.
 		if err := recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn); err != nil {
@@ -225,13 +222,42 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		in.HookEventName == "UserPromptSubmit", at, turn)
 }
 
-// subagentStopRemaining is the count a SubagentStop lowers the Stop's to:
-// the subagents its snapshot lists besides the stopping one. ok is false for
-// an internal agent's (no agent_type) or one without a list: it says
-// nothing about them.
-func (in sessionStateInput) subagentStopRemaining() (remaining int64, ok bool) {
-	remaining, ok = backgroundSubagents(in.BackgroundTasks, in.AgentID)
-	return remaining, ok && in.AgentType != ""
+// agentTurnEvent says the event starts or ends a subagent's or teammate's
+// turn (board #543).
+func (in sessionStateInput) agentTurnEvent() bool {
+	return in.HookEventName == "SubagentStart" || in.HookEventName == "SubagentStop"
+}
+
+// recordsAgentTurn says a SubagentStart or SubagentStop names an agent the
+// turns track: one with an agent_id and a type. Claude Code's internal agents
+// (prompt suggestions, /btw) have no type and say nothing about the work.
+func (in sessionStateInput) recordsAgentTurn() bool {
+	return in.AgentID != "" && in.AgentType != ""
+}
+
+// recordAgentTurn records a SubagentStart's or SubagentStop's turn on the
+// row (board #543), whatever its state: a teammate works across the main
+// agent's turns. A SubagentStop with a list then lowers the Stop's count to
+// what that list and the recorded turns still count (board #411); it never
+// raises or starts one.
+func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in sessionStateInput, at time.Time) error {
+	if !terminal.IsSessionID(in.SessionID) {
+		return fmt.Errorf("the hook input carries no session id (%q)", briefClip(in.SessionID, 40))
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	start := in.HookEventName == "SubagentStart"
+	turns, err := database.RecordTerminalAgentTurn(rowID, workbenchID, in.SessionID, in.AgentID, start,
+		at.Truncate(time.Millisecond))
+	if err != nil || turns == nil || start {
+		return err
+	}
+	remaining, ok := backgroundAgents(in.BackgroundTasks, turns)
+	if !ok {
+		return nil
+	}
+	return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, &remaining)
 }
 
 // toolRunTurn classifies a PostToolUse: subagent is true for one fired
@@ -256,8 +282,11 @@ type hookTurn struct {
 	toolRun                   bool // a main-thread PostToolUse
 	stop                      bool // the sync Stop hook
 	transcriptPath, toolUseID string
-	// background is the Stop's count of in-flight background subagents
-	// (board #411); invalid for none or unknown, never zero.
+	// tasks is the Stop's background_tasks: recordAgentState counts it into
+	// background against the row's agent turns (boards #411, #543).
+	tasks backgroundTasks
+	// background is the Stop's count of background agents at work; invalid
+	// for none or unknown, never zero.
 	background sql.NullInt64
 }
 
@@ -303,6 +332,11 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
+	if turn.stop {
+		if n, ok := backgroundAgents(turn.tasks, row.AgentTurns); ok && n > 0 {
+			turn.background = sql.NullInt64{Int64: n, Valid: true}
+		}
+	}
 	var clearErr error
 	if prompt {
 		clearErr = clearChatQuestion(database, row, workbenchID, sessionID, at)
