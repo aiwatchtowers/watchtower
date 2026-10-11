@@ -138,9 +138,11 @@ struct OwnerAskDrawer: View {
         let keys = keys
         ScrollViewReader { proxy in
             content
-                .background(OwnerAskKeyCatcher(onKey: pressAnswerKey) { keys.press($0) } onMouseDown: { [asks, projectID = ask.projectID] inside in
-                    asks.setDrawerKeysActive(inside, projectID: projectID)
-                })
+                .background(OwnerAskKeyCatcher(
+                    onPress: { keys.press($0) },
+                    onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
+                    onKey: pressAnswerKey
+                ))
                 .onChange(of: cursor) { _, _ in
                     if let stop = keys.shownStop { withAnimation { proxy.scrollTo(stop) } }
                 }

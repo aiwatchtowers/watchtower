@@ -202,7 +202,10 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(card))
         XCTAssertFalse(window.performKeyEquivalent(with: try commandReturn(window)), "the card has the keyboard")
         XCTAssertTrue(keys.press(OwnerAskKeyMap.Press(key: .returnKey)))
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        let deadline = Date().addingTimeInterval(2)
+        while window.firstResponder !== window, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertTrue(window.firstResponder === window, "nothing has the keyboard")
         XCTAssertTrue(window.performKeyEquivalent(with: try commandReturn(window)))
         XCTAssertEqual(answerKeys, [false])
@@ -504,14 +507,15 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
     func testCommandReturnStillAnswers() throws {
         var answerKeys: [Bool] = []
         var presses: [OwnerAskKeyMap.Press] = []
+        let onKey: (Bool) -> Void = { answerKeys.append($0) }
         let root = VStack {
             CommentTextEditor(text: .constant(""))
         }
         .frame(width: 200, height: 100)
-        .background(OwnerAskKeyCatcher { answerKeys.append($0) } onPress: { press in
+        .background(OwnerAskKeyCatcher(onPress: { press in
             presses.append(press)
             return press.key == .character("j")
-        })
+        }, onKey: onKey))
         let host = NSHostingView(rootView: root)
         host.frame = NSRect(x: 0, y: 0, width: 200, height: 100)
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
@@ -609,17 +613,14 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         }
         let window = makeWindow(views: [catcher])
         defer { window.close() }
-        let panel = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: [.titled], backing: .buffered, defer: false)
-        panel.isReleasedWhenClosed = false
-        defer { panel.close() }
         window.makeFirstResponder(nil)
 
-        catcher.keyWindow = { panel }
+        catcher.isKey = { _ in false }
         XCTAssertFalse(window.performKeyEquivalent(with: try event(window, "j")))
         XCTAssertFalse(window.performKeyEquivalent(with: try commandReturn(window)))
         XCTAssertEqual(answerKeys + presses, 0)
 
-        catcher.keyWindow = { window }
+        catcher.isKey = { $0 === window }
         XCTAssertTrue(window.performKeyEquivalent(with: try event(window, "j")))
         XCTAssertEqual(presses, 1, "its own window key: taken")
     }

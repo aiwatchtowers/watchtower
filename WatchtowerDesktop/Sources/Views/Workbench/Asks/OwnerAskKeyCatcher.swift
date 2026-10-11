@@ -21,12 +21,13 @@ import WatchtowerCore
 /// `onMouseDown` it reports each click in its window and whether it fell
 /// inside its own frame (the drawer's active state, board #412).
 struct OwnerAskKeyCatcher: NSViewRepresentable {
-    /// The key pressed; true for ⌘⇧↩. nil leaves both keys alone.
-    var onKey: ((Bool) -> Void)?
     /// A bare key while no field has the keyboard; true when it acted.
     var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
     /// A click in the window; true when inside this view.
     var onMouseDown: ((Bool) -> Void)?
+    /// The key pressed; true for ⌘⇧↩. nil leaves both keys alone. Last:
+    /// a lone trailing closure (`OwnerAskKeyCatcher { … }`) is this one.
+    var onKey: ((Bool) -> Void)?
 
     func makeNSView(context: Context) -> CatcherView {
         let view = CatcherView()
@@ -86,9 +87,11 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         var onMouseDown: ((Bool) -> Void)? {
             didSet { watchClicks() }
         }
-        /// The app's key window. No key window at all is a window shown by
-        /// nobody (a unit test's): it counts as key.
-        var keyWindow: @MainActor () -> NSWindow? = { NSApplication.shared.keyWindow }
+        /// Whether its window takes keys as the key window. One never put
+        /// on screen (a unit test's) counts: AppKit sends keys to a
+        /// visible window only as the key window, or as the main window
+        /// behind a key panel — the case this rules out.
+        var isKey: @MainActor (NSWindow) -> Bool = { $0.isKeyWindow || !$0.isVisible }
         private var clickMonitor: Any?
 
         override func viewDidMoveToWindow() {
@@ -141,7 +144,7 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         /// bounds: outside a scroll view a text view's `visibleRect` can
         /// reach past them, over the drawer.
         func takesKeys(in window: NSWindow) -> Bool {
-            guard window.attachedSheet == nil, keyWindow().map({ $0 === window }) ?? true else { return false }
+            guard window.attachedSheet == nil, isKey(window) else { return false }
             guard let responder = window.firstResponder, responder !== window else { return true }
             guard let text = responder as? NSTextView, !text.isEditable else { return false }
             let visible = text.convert(text.visibleRect.intersection(text.bounds), to: nil)
