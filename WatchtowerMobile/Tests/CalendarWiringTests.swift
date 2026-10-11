@@ -282,6 +282,24 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertFalse(agenda.cards.first { $0.id == "ended" }?.showsRecord ?? true)
     }
 
+    /// Bug 2 and review focus 5 (design pass spec §9.2): the agenda scrolls
+    /// to today's current or next meeting; with none it stays at the top.
+    func testOnlyTodaysCurrentOrNextMeetingIsScrolledTo() throws {
+        let ended = event("ended", start: now.addingTimeInterval(-7_200), minutes: 30)
+        let next = event("next", start: now.addingTimeInterval(1_500))
+        let today = AgendaDayModel(
+            day: now, snapshot: snapshot([next, ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )
+        XCTAssertEqual(today.highlightedRowID, "event-next")
+        let over = AgendaDayModel(day: now, snapshot: snapshot([ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar)
+        XCTAssertNil(over.highlightedRowID, "every meeting is over")
+        let later = event("later", start: day(1).addingTimeInterval(12 * 3_600))
+        let tomorrow = AgendaDayModel(
+            day: day(1), snapshot: snapshot([later]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )
+        XCTAssertNil(tomorrow.highlightedRowID, "only today highlights a meeting")
+    }
+
     // MARK: - Join
 
     func testJoinOpensTheConferenceURLAndNoURLMeansNoJoin() throws {

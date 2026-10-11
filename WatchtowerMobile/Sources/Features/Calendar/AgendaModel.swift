@@ -192,6 +192,15 @@ struct AgendaDayModel {
     /// The now line's time; nil on any day but today.
     let nowLineText: String?
 
+    /// The highlighted card's row, scrolled to the middle on appear and on
+    /// every day change (design pass spec §3 bug 2); nil when no card is
+    /// highlighted, so the day stays at the top.
+    var highlightedRowID: String? {
+        rows.first { row in
+            if case let .event(card) = row { card.isHighlighted } else { false }
+        }?.id
+    }
+
     init(
         day: Date,
         snapshot: CalendarReplicaSnapshot,

@@ -29,7 +29,6 @@ struct AgendaView: View {
                 ToolbarItem(placement: .topBarTrailing) { recordingsPill }
             }
             .refreshable { await env.refresh() }
-            .overlay(alignment: .bottomTrailing) { voiceNoteButton }
         }
     }
 
@@ -63,29 +62,42 @@ struct AgendaView: View {
         let agenda = AgendaDayModel(
             day: selectedDay, snapshot: snapshot, recordings: env.phoneRecordings.snapshot, now: now, calendar: calendar
         )
-        return List {
-            Section {
-                WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-            }
-            Section {
-                if let empty = agenda.emptyText {
-                    Text(empty).foregroundStyle(.secondary)
+        return ScrollViewReader { proxy in
+            List {
+                Section {
+                    WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
                 }
-                ForEach(agenda.rows) { row in
-                    switch row {
-                    case let .event(card):
-                        AgendaEventRow(card: card) { env.navigation.calendarPath.append(.event(card.id)) }
-                    case let .nowLine(time):
-                        NowLineView(time: time)
+                Section {
+                    if let empty = agenda.emptyText {
+                        Text(empty).foregroundStyle(.secondary)
                     }
+                    ForEach(agenda.rows) { row in
+                        switch row {
+                        case let .event(card):
+                            AgendaEventRow(card: card) { env.navigation.calendarPath.append(.event(card.id)) }
+                        case let .nowLine(time):
+                            NowLineView(time: time)
+                        }
+                    }
+                    .listRowSeparator(.hidden)
                 }
-                .listRowSeparator(.hidden)
             }
-            // Room above the mic button.
-            Color.clear.frame(height: 64).listRowBackground(Color.clear)
+            .listStyle(.plain)
+            // The mic button takes room at the bottom: the list's last row
+            // ends above it.
+            .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
+                voiceNoteButton
+                    .padding(.trailing, Spacing.large)
+                    .padding(.bottom, Spacing.medium)
+            }
+            .task(id: selectedDay) {
+                // The current or next meeting sits mid-screen, never under
+                // the button at rest; without one the day stays at the top.
+                guard let row = agenda.highlightedRowID else { return }
+                proxy.scrollTo(row, anchor: .center)
+            }
         }
-        .listStyle(.plain)
     }
 
     private func shiftWeek(_ weeks: Int) {
@@ -104,7 +116,6 @@ struct AgendaView: View {
                 .shadow(radius: 3, y: 1)
         }
         .accessibilityLabel("Record a voice note")
-        .padding(20)
     }
 }
 
