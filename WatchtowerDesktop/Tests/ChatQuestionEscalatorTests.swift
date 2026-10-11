@@ -83,7 +83,10 @@ final class ChatQuestionEscalatorTests: XCTestCase {
     private var timers: ManualTimers!
     private var escalators: [ChatQuestionEscalator] = []
     private var presenceCenters: [OwnerPresenceCenter] = []
-    /// A stub process a reaping test started: killed if still there.
+    /// A stub process a reaping test started and has not seen gone: killed
+    /// in tearDown. Cleared once its pid is gone, so a reused pid is never
+    /// signalled. (The stub shares the test runner's process group —
+    /// `Process` cannot give it its own — so a group kill is not an option.)
     private var stubPID: pid_t?
 
     override func setUp() async throws {
@@ -104,7 +107,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         // No run outlives its test.
         escalators.forEach { $0.stop() }
         presenceCenters.forEach { $0.stop() }
-        if let stubPID, kill(stubPID, 0) == 0 { kill(stubPID, SIGKILL) }
+        if let stubPID { kill(stubPID, SIGKILL) }
     }
 
     private func stamp(_ date: Date) -> String { SessionAgentStatus.formatStamp(date) }
@@ -412,8 +415,8 @@ final class ChatQuestionEscalatorTests: XCTestCase {
 
     // MARK: - Stop
 
-    /// A real child: `stop()` terminates it and the runner waits for it, so
-    /// its pid is gone (reaped, not a zombie); nothing is applied.
+    /// A real child: after `stop()` its pid is gone — terminated and
+    /// reaped, not left a zombie — and the cancelled run applies nothing.
     func testStopCancelsAndReapsTheRun() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("escalator-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -436,6 +439,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         escalator.stop()
         XCTAssertFalse(escalator.isEscalating(1))
         await eventually("the child is reaped") { kill(pid, 0) == -1 && errno == ESRCH }
+        if kill(pid, 0) == -1 && errno == ESRCH { stubPID = nil }
         XCTAssertEqual(filed, [])
         XCTAssertEqual(logs, [], "a cancelled run applies nothing")
     }
