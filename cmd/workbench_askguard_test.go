@@ -27,8 +27,9 @@ import (
 	"watchtower/internal/digest"
 )
 
-// askToolDenialJSON is the spec's §6.3 output, verbatim.
-const askToolDenialJSON = `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "In a Watchtower workbench, questions to the owner go through ask_owner so they land in the owner's stack — file it there and keep working."}}`
+// askToolDenialJSON is the spec's §6.3 output with the away reason
+// (2026-10-10-owner-asks-v2 Part 6), verbatim.
+const askToolDenialJSON = `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "In a Watchtower workbench, questions to the owner go through ask_owner so they land in the owner's stack — file it there and keep working. One decision with 2-3 short options shows as a one-tap Quick ask."}}`
 
 // askToolPayload is Claude Code's PreToolUse input for tool.
 func askToolPayload(tool string) string {
@@ -52,16 +53,138 @@ func compactDenial(t *testing.T) string {
 	return want.String() + "\n"
 }
 
+// denialWith is the hook's stdout for a denial with reason.
+func denialWith(t *testing.T, reason string) string {
+	t.Helper()
+	var out preToolUseDenial
+	out.HookSpecificOutput.HookEventName = "PreToolUse"
+	out.HookSpecificOutput.PermissionDecision = "deny"
+	out.HookSpecificOutput.PermissionDecisionReason = reason
+	b, err := json.Marshal(out)
+	require.NoError(t, err)
+	return string(b) + "\n"
+}
+
+// The hook always denies AskUserQuestion in a live workbench; the reason is
+// the present one only when the presence read succeeds and names this
+// session (Part 6, PROJ-13), the away one otherwise — a failed presence read
+// never lets the tool run, and the hook says nothing on stderr.
 func TestAskGuard_DeniesAskUserQuestionInALiveWorkbench(t *testing.T) {
-	database := writeActionsConfig(t)
-	id, err := database.CreateWorkbench("acme", t.TempDir())
-	require.NoError(t, err)
+	t.Run("outside a Desktop terminal", func(t *testing.T) {
+		unsetTerminalEnv(t)
+		database := writeActionsConfig(t)
+		id, err := database.CreateWorkbench("acme", t.TempDir())
+		require.NoError(t, err)
 
-	out, errOut, err := runAskGuard(t, strconv.FormatInt(id, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
+		out, errOut, err := runAskGuard(t, strconv.FormatInt(id, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
 
-	require.NoError(t, err)
-	assert.Empty(t, errOut)
-	assert.Equal(t, compactDenial(t), out)
+		require.NoError(t, err)
+		assert.Empty(t, errOut)
+		assert.Equal(t, compactDenial(t), out)
+	})
+	for _, tc := range []struct {
+		name    string
+		setup   func(t *testing.T, database *db.DB, pid, row int64) (payload string)
+		present bool
+	}{
+		{"present", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			return askToolPayload("AskUserQuestion")
+		}, true},
+		{"no presence row", func(*testing.T, *db.DB, int64, int64) string { return askToolPayload("AskUserQuestion") }, false},
+		{"in no session", func(t *testing.T, database *db.DB, _, _ int64) string {
+			setOwnerPresence(t, database, nil, time.Now())
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"another session present", func(t *testing.T, database *db.DB, pid, _ int64) string {
+			other, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+				VALUES (?, 'claude', 'other', '/tmp/example', 'other-uuid')`, pid)
+			require.NoError(t, err)
+			id, err := other.LastInsertId()
+			require.NoError(t, err)
+			setOwnerPresence(t, database, id, time.Now())
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"a presence write 91 s old", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now().Add(-91*time.Second))
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"no env", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			unsetTerminalEnv(t)
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"an unreadable env", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			t.Setenv(terminalSessionEnv, "seven")
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"a nested session", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			return strings.Replace(askToolPayload("AskUserQuestion"), briefLaunchID, nestedSessionID, 1)
+		}, false},
+		{"no session id", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			return strings.Replace(askToolPayload("AskUserQuestion"), briefLaunchID, "", 1)
+		}, false},
+		{"another workbench's row", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			other, err := database.CreateWorkbench("other", t.TempDir())
+			require.NoError(t, err)
+			_, err = database.Exec(`UPDATE terminal_sessions SET project_id = ? WHERE id = ?`, other, row)
+			require.NoError(t, err)
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"no core state hooks", func(t *testing.T, database *db.DB, pid, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			require.NoError(t, os.Remove(filepath.Join(mustFolder(t, database, pid), ".claude", "settings.local.json")))
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"a read error", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			// A view over a dropped table: every read of it fails.
+			for _, q := range []string{
+				`DROP TABLE owner_presence`,
+				`CREATE TABLE presence_src (id INTEGER, session_id INTEGER, seen_at TEXT)`,
+				`CREATE VIEW owner_presence AS SELECT id, session_id, seen_at FROM presence_src`,
+				`DROP TABLE presence_src`,
+			} {
+				_, err := database.Exec(q)
+				require.NoError(t, err, q)
+			}
+			return askToolPayload("AskUserQuestion")
+		}, false},
+		{"no presence table (an older schema)", func(t *testing.T, database *db.DB, _, _ int64) string {
+			_, err := database.Exec(`DROP TABLE owner_presence`)
+			require.NoError(t, err)
+			return askToolPayload("AskUserQuestion")
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopGuardFixture(t)
+			payload := tc.setup(t, database, pid, row)
+
+			out, errOut, err := runAskGuard(t, strconv.FormatInt(pid, 10), strings.NewReader(payload))
+
+			require.NoError(t, err)
+			assert.Empty(t, errOut, "the PreToolUse hook never writes stderr")
+			if tc.present {
+				assert.Equal(t, denialWith(t, askToolDenialReasonPresent), out)
+				return
+			}
+			assert.Equal(t, compactDenial(t), out, "the away reason")
+		})
+	}
+}
+
+// Both PreToolUse reasons are fixed constants: the spec's text (Part 6).
+func TestAskToolDenialReasonsAreTheSpecsText(t *testing.T) {
+	assert.Equal(t, "The owner is here: ask this in plain text in your reply (one short question), or with ask_owner "+
+		"for a review, a check or several decisions.", askToolDenialReasonPresent)
+	assert.Equal(t, "In a Watchtower workbench, questions to the owner go through ask_owner so they land in the "+
+		"owner's stack — file it there and keep working. One decision with 2-3 short options shows as a one-tap "+
+		"Quick ask.", askToolDenialReasonAway)
+	assert.Equal(t, denialWith(t, askToolDenialReasonAway), compactDenial(t))
 }
 
 // PROJ-13: the PreToolUse hook never traps a turn — another tool, a bad
@@ -106,9 +229,9 @@ func TestProj13_AskGuardFailurePrintsNothingAndExitsZero(t *testing.T) {
 		{"empty id", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); return "", ask() }},
 		{"broken config", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); brokenConfig(t); return "1", ask() }},
 		{"panic", func(t *testing.T) (string, io.Reader) {
-			orig := askGuardWorkbenchLive
-			askGuardWorkbenchLive = func(string) bool { panic("boom") }
-			t.Cleanup(func() { askGuardWorkbenchLive = orig })
+			orig := askGuardToolReason
+			askGuardToolReason = func(string, string) string { panic("boom") }
+			t.Cleanup(func() { askGuardToolReason = orig })
 			return "1", ask()
 		}},
 	} {
