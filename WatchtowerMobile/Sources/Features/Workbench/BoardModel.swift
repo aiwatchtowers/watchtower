@@ -30,13 +30,9 @@ enum BoardFilter: CaseIterable, Identifiable {
     }
 }
 
-/// One coloured piece of a board row's sub-line.
-struct BoardDetail: Equatable {
-    let text: String
-    let tone: PhoneTone
-    /// `.ask` for the open-ask count, the only detail that may be orange.
-    let role: ToneRole
-}
+/// One coloured piece of a board row's sub-line; `.ask` for the open-ask
+/// count, the only detail that may be orange.
+typealias BoardDetail = MetaItem
 
 /// One board row: status glyph, title, sub-line (asks, sessions, PR), the
 /// priority dot and progress.

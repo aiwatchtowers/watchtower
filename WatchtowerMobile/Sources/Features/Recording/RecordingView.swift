@@ -203,7 +203,7 @@ private struct RecordingSavedView: View {
                     uploadStep(upload)
                     transcriptStep(PhoneTranscriptStage(job: snapshot.jobs[saved.id]))
                 } else {
-                    StepRow(state: .working, text: "Sending to your Mac")
+                    StepRow(state: .current, text: "Sending to your Mac")
                     StepRow(state: .todo, text: "Transcript and recap")
                 }
 
@@ -227,7 +227,7 @@ private struct RecordingSavedView: View {
     @ViewBuilder
     private func uploadStep(_ stage: PhoneUploadStage) -> some View {
         switch stage {
-        case .recording, .sending: StepRow(state: .working, text: stage.label)
+        case .recording, .sending: StepRow(state: .current, text: stage.label)
         case .waitingForMac: StepRow(state: .waiting, text: stage.label)
         case .delivered: StepRow(state: .done, text: stage.label)
         case .failed:
@@ -247,37 +247,9 @@ private struct RecordingSavedView: View {
     private func transcriptStep(_ stage: PhoneTranscriptStage) -> some View {
         switch stage {
         case .notStarted: StepRow(state: .todo, text: "Transcript and recap")
-        case let .inProgress(text): StepRow(state: .working, text: text)
+        case let .inProgress(text): StepRow(state: .current, text: text)
         case .ready: StepRow(state: .done, text: "Transcript and recap ready")
         case let .failed(message): StepRow(state: .failed, text: message)
-        }
-    }
-}
-
-/// One step of the Saved screen.
-private struct StepRow: View {
-    enum State {
-        case done, working, waiting, todo, failed
-    }
-
-    let state: State
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            icon.frame(width: 22)
-            Text(text)
-                .foregroundStyle(state == .todo ? .secondary : .primary)
-        }
-    }
-
-    @ViewBuilder private var icon: some View {
-        switch state {
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .working: ProgressView()
-        case .waiting: Image(systemName: "moon.zzz").foregroundStyle(.secondary)
-        case .todo: Image(systemName: "circle").foregroundStyle(.secondary)
-        case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
         }
     }
 }

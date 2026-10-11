@@ -1,45 +1,5 @@
 import SwiftUI
 
-/// A session's state dot: filled while the process runs, a ring otherwise,
-/// in the Mac's tone.
-struct SessionDot: View {
-    let tone: PhoneTone
-    let isRing: Bool
-    var size: CGFloat = 9
-
-    var body: some View {
-        Group {
-            if isRing {
-                Circle().strokeBorder(tone.color, lineWidth: 1.5)
-            } else {
-                Circle().fill(tone.color)
-            }
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
-    }
-}
-
-/// A thin progress bar in the model's tone.
-struct ThinProgressBar: View {
-    let value: Double
-    let tone: PhoneTone
-    var height: CGFloat = 4
-
-    var body: some View {
-        GeometryReader { proxy in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.2))
-                Capsule()
-                    .fill(tone.color)
-                    .frame(width: proxy.size.width * min(1, max(0, value)))
-            }
-        }
-        .frame(height: height)
-        .accessibilityLabel("\(Int((value * 100).rounded())) percent")
-    }
-}
-
 /// A small count pill in the model's tone.
 struct CountPill: View {
     let text: String
