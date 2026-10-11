@@ -293,6 +293,9 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// Which workbench session the owner is in (owner asks v2, Part 2),
+    /// written for Go's Stop guard and read by the chat question escalation.
+    private(set) var ownerPresenceCenter: OwnerPresenceCenter?
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
@@ -641,6 +644,8 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    // The owner is in no session once the app is gone.
+                    self?.ownerPresenceCenter?.clearForQuit()
                 }
             }
         }
@@ -1775,12 +1780,34 @@ final class AppState {
         sessionAgentStateCenter = agentStates
         sessionReportCenter?.stop()
         sessionReportCenter = reports
+        ownerPresenceCenter?.stop()
+        ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
         vm.asks.start()
         agentStates.start()
         reports.start()
+        ownerPresenceCenter?.start()
+    }
+
+    /// The presence center reading the workbench page through `vm`, only
+    /// while the Workbench tab is shown in the key main window.
+    private func makeOwnerPresenceCenter(dbPool: DatabasePool, workbenches vm: WorkbenchesViewModel) -> OwnerPresenceCenter {
+        let center = OwnerPresenceCenter(writer: OwnerPresenceCenter.databaseWriter(dbPool))
+        center.screen = { [weak self, weak vm] in
+            // Observable reads first, so a tab switch is tracked even while
+            // the window is not key.
+            guard let self, let vm, selectedDestination == .workbench, Self.mainWindowIsKey() else { return .other }
+            return vm.ownerPresenceScreen()
+        }
+        return center
+    }
+
+    /// A main window is the key window (Settings, a sheet's window and the
+    /// Open Quickly panel are not).
+    private static func mainWindowIsKey() -> Bool {
+        NSApp?.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isKeyWindow } ?? false
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
