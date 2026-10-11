@@ -82,6 +82,10 @@ final class WorkbenchesViewModel {
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
+    /// Bumped per workbench after a board write made here outside the Board's
+    /// own view model (Work on It's status, board #499): the Board reloads at
+    /// once instead of at its next poll.
+    var boardReloads: [Int64: Int] = [:]
     /// Each workbench's GitHub repository from its `origin` remote, for the
     /// Session view's PR links; `.some(nil)` = read, not on GitHub.
     var gitHubRepositories: [Int64: URL?] = [:]
