@@ -8,24 +8,33 @@ struct MetaItem: Equatable {
     let role: ToneRole
 }
 
-/// Meta items spaced 6 and joined by "·" in secondary, on one line. Earlier
-/// items keep their room, so the last item truncates first.
+/// Meta items spaced 6 and joined by "·" in secondary, on one line. Whole
+/// items only: the longest prefix that fits, so the trailing items drop
+/// first and a squeezed line never shows a one-letter stub; the first item
+/// alone truncates when even it does not fit.
 struct MetaLine: View {
     let items: [MetaItem]
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(Self.prefixLengths(items.count), id: \.self) { count in
+                line(items.prefix(count))
+            }
+        }
+    }
+
+    /// The prefix lengths to try, longest first.
+    static func prefixLengths(_ count: Int) -> [Int] {
+        Array(stride(from: count, to: 0, by: -1))
+    }
+
+    private func line(_ shown: ArraySlice<MetaItem>) -> some View {
         HStack(spacing: Spacing.compact) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+            ForEach(Array(shown.enumerated()), id: \.offset) { index, item in
                 if index > 0 {
-                    // The item before's priority: a separator never collapses
-                    // before the item it follows.
-                    Text("·")
-                        .foregroundStyle(.secondary)
-                        .layoutPriority(Double(items.count - index + 1))
+                    Text("·").foregroundStyle(.secondary)
                 }
-                Text(item.text)
-                    .foregroundStyle(item.tone.color)
-                    .layoutPriority(Double(items.count - index))
+                Text(item.text).foregroundStyle(item.tone.color)
             }
         }
         .lineLimit(1)

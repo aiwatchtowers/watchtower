@@ -97,4 +97,13 @@ final class DesignSystemTests: XCTestCase {
         let detail: BoardDetail = MetaItem(text: "1 ask", tone: .waitingForYou, role: .ask)
         XCTAssertEqual(detail.text, "1 ask")
     }
+
+    /// Phase 2 gate (shot 05): a meta line shows whole items, the longest
+    /// prefix that fits, so a squeezed line never reads "· I ·"; the
+    /// one-item line is the last resort and truncates.
+    func testAMetaLineTriesItsPrefixesLongestFirst() {
+        XCTAssertEqual(MetaLine.prefixLengths(3), [3, 2, 1])
+        XCTAssertEqual(MetaLine.prefixLengths(1), [1])
+        XCTAssertEqual(MetaLine.prefixLengths(0), [])
+    }
 }
