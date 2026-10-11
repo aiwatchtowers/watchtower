@@ -541,6 +541,7 @@ final class SessionReportCenterTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let runner = ScriptedReportRunner(Self.byFlags())
         let appState = AppState()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
@@ -573,6 +574,7 @@ final class SessionReportCenterTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let runner = ScriptedReportRunner(Self.byFlags())
         let appState = AppState()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),

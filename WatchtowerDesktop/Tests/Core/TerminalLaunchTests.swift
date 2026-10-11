@@ -172,8 +172,129 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertEqual(TerminalLaunch.make(shell: "zsh", folder: "/tmp", mode: .shell).executable, "/bin/zsh")
     }
 
+    private let bin = "/opt/acme/claude"
+
+    /// A pinned `claude_path` wins over the login PATH: the command execs
+    /// the variable, its directory leads PATH, and `env -u` drops it before
+    /// `claude` runs. The path itself never reaches a shell parser.
+    func testAPinnedBinaryIsExecdThroughTheEnvironment() {
+        let pathFix = "export PATH=\"${WATCHTOWER_CLAUDE_BIN%/*}:$PATH\"; "
+        let new = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 7,
+                                      claudeBinary: .pinned(bin))
+        let newCommand = "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid)'"
+        XCTAssertEqual(new.args, ["-l", "-c", newCommand])
+        XCTAssertEqual(new.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=7", "WATCHTOWER_CLAUDE_BIN=\(bin)"])
+
+        let prompted = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "go"),
+                                           claudeBinary: .pinned(bin))
+        let unset = "-u WATCHTOWER_CLAUDE_BIN -u WATCHTOWER_FIRST_PROMPT"
+        let promptedCommand =
+            "exec /bin/sh -c '\(pathFix)exec env \(unset) \"$WATCHTOWER_CLAUDE_BIN\" --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'"
+        XCTAssertEqual(prompted.args.last, promptedCommand)
+        XCTAssertEqual(prompted.environment, ["WATCHTOWER_CLAUDE_BIN=\(bin)", "WATCHTOWER_FIRST_PROMPT=go"])
+
+        let resume = TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .resumeClaude(uuid: uuid), claudeBinary: .pinned(bin))
+        let resumeCommand = "exec /bin/sh -c '\(pathFix)exec env -u WATCHTOWER_CLAUDE_BIN \"$WATCHTOWER_CLAUDE_BIN\" --resume \(uuid)'"
+        XCTAssertEqual(resume.args.last, resumeCommand)
+
+        for launch in [new, prompted, resume] {
+            XCTAssertFalse(launch.args.joined().contains(bin), "the path never reaches a shell parser")
+        }
+    }
+
+    /// A binary only found in a well-known dir is a fallback: the owner's
+    /// login PATH picks `claude` first, and the found directory is appended
+    /// only when that PATH has none.
+    func testAFoundBinaryIsOnlyAFallbackForTheLoginPath() {
+        let fallback = "command -v claude >/dev/null 2>&1 || export PATH=\"$PATH:${WATCHTOWER_CLAUDE_BIN%/*}\"; "
+        let resume = TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .resumeClaude(uuid: uuid), claudeBinary: .fallback(bin))
+        XCTAssertEqual(resume.args.last, "exec /bin/sh -c '\(fallback)exec env -u WATCHTOWER_CLAUDE_BIN claude --resume \(uuid)'")
+        XCTAssertEqual(resume.environment, ["WATCHTOWER_CLAUDE_BIN=\(bin)"])
+        let prompted = TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: "go"), claudeBinary: .fallback(bin))
+        let unset = "-u WATCHTOWER_CLAUDE_BIN -u WATCHTOWER_FIRST_PROMPT"
+        XCTAssertEqual(prompted.args.last,
+                       "exec /bin/sh -c '\(fallback)exec env \(unset) claude --session-id \(uuid) \"$WATCHTOWER_FIRST_PROMPT\"'")
+    }
+
+    func testAShellIgnoresTheResolvedBinary() {
+        let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .shell, rowID: 7, claudeBinary: .pinned(bin))
+        XCTAssertEqual(l.args, ["-l"])
+        XCTAssertEqual(l.environment, [])
+    }
+
+    /// Review Focus 2 and 3, and the owner's PATH first: under zsh and csh,
+    /// a found binary in a directory with a space, a quote and `$` runs when
+    /// the login PATH has no `claude`, the owner's own `claude` runs when it
+    /// has one, and a pinned binary runs either way; the variable never
+    /// reaches `claude`. The test drops `-l` (no owner profile in a test);
+    /// csh/tcsh refuse `-l` together with `-c`, a limit that predates this
+    /// change (v1 limits in docs/features/workbench.md). Bounded, reaped.
+    func testTheResolvedBinaryRunsUnderZshAndCshWithoutOverridingTheOwnersPath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("wt-bin-\(UUID().uuidString)")
+        let found = root.appendingPathComponent("my 'odd' $dir")
+        let owners = root.appendingPathComponent("owner")
+        for (dir, tag) in [(found, "found"), (owners, "owner")] {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let stub = dir.appendingPathComponent("claude")
+            try "#!/bin/sh\nprintf '%s\\n' \(tag) \"$#\" \"$1\"\nenv | grep -c WATCHTOWER_CLAUDE_BIN\n"
+                .write(to: stub, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let stub = found.appendingPathComponent("claude").path
+        let cases: [(ClaudeBinary, String, String)] = [
+            (.fallback(stub), "/usr/bin:/bin", "found"),
+            (.fallback(stub), "\(owners.path):/usr/bin:/bin", "owner"),
+            (.pinned(stub), "\(owners.path):/usr/bin:/bin", "found")
+        ]
+        for shell in ["/bin/zsh", "/bin/csh"] {
+            for (binary, path, expected) in cases {
+                let l = TerminalLaunch.make(shell: shell, folder: root.path, mode: .resumeClaude(uuid: uuid), claudeBinary: binary)
+                let printed = try run(l, path: path)
+                XCTAssertEqual(printed, "\(expected)\n2\n--resume\n0\n", "\(shell) \(binary) PATH=\(path)")
+            }
+        }
+    }
+
+    /// Runs `launch` without `-l`, with `path` as PATH; its stdout. HOME and
+    /// ZDOTDIR point at the launch folder, so the developer's `~/.zshenv` or
+    /// `~/.cshrc` cannot put a real `claude` on PATH. Bounded, reaped.
+    private func run(_ launch: TerminalLaunch, path: String) throws -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: launch.executable)
+        process.arguments = launch.args.filter { $0 != "-l" }
+        process.currentDirectoryURL = URL(fileURLWithPath: launch.currentDirectory)
+        var env = ["PATH": path, "HOME": launch.currentDirectory, "ZDOTDIR": launch.currentDirectory]
+        for entry in launch.environment {
+            let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+            env[parts[0]] = parts[1]
+        }
+        process.environment = env
+        let out = Pipe()
+        process.standardOutput = out
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
+        try process.run()
+        if exited.wait(timeout: .now() + 10) == .timedOut {
+            process.terminate()
+            process.waitUntilExit()
+            XCTFail("the launch did not finish")
+        }
+        return String(bytes: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+    }
+
+    /// Review Focus 4: a shell's 127 is the owner's last command, not a
+    /// missing `claude`.
+    func testOnlyAClaudeSessionsExit127OffersThePathFix() {
+        XCTAssertTrue(TerminalLaunch.offersClaudePathFix(code: 127, isClaude: true))
+        XCTAssertFalse(TerminalLaunch.offersClaudePathFix(code: 127, isClaude: false))
+        XCTAssertFalse(TerminalLaunch.offersClaudePathFix(code: 1, isClaude: true))
+        XCTAssertFalse(TerminalLaunch.offersClaudePathFix(code: nil, isClaude: true))
+    }
+
     func testExitMessageNamesAMissingClaudeForCommandNotFound() {
-        XCTAssertTrue(TerminalLaunch.exitMessage(code: 127).contains("not found on your login-shell PATH"))
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: 127),
+                       "Claude Code was not found. Set its path, or add it to your login shell's PATH, then Restart.")
         XCTAssertEqual(TerminalLaunch.exitMessage(code: 1), "Claude Code exited (code 1).")
         XCTAssertEqual(TerminalLaunch.exitMessage(code: nil), "Claude Code exited.")
     }

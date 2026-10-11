@@ -23,6 +23,7 @@ var (
 // (bypasses cache — M1 fix).
 // Otherwise tries exec.LookPath, then falls back to a login shell lookup
 // (needed when launched from a macOS .app bundle where PATH is minimal).
+// Swift twin: Constants.claudeBinary() (WatchtowerCore).
 // The result (without override) is cached after the first call.
 func FindBinary(override string) string {
 	// M1 fix: always check override first, even after cache is populated

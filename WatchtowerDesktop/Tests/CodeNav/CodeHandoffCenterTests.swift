@@ -94,6 +94,7 @@ final class CodeHandoffCenterTests: XCTestCase {
             )
         )
         terminals.shell = { "/bin/zsh" }
+        terminals.claudeBinary = { nil }
         terminals.transcriptExists = { _ in false }
         let stored = stored
         agentStates = SessionAgentStateCenter(

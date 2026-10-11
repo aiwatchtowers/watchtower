@@ -131,6 +131,8 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     @Environment(\.askDrawerCovers) private var drawerCovers
     @ViewBuilder let notStarted: () -> NotStarted
     @Environment(AppState.self) private var appState
+    /// Set Claude Path's error line (exit 127), cleared on the next state.
+    @State private var claudePathError: String?
 
     var body: some View {
         let center = appState.terminalCenter
@@ -182,17 +184,32 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                     if let session, vm?.resumeFailed.contains(session.id) == true {
                         Button("Start fresh") { Task { await vm?.startFresh(session, placement: .inPlace) } }
                     }
+                    if let session, TerminalLaunch.offersClaudePathFix(code: code, isClaude: session.kind == .claude) {
+                        Button("Set Claude Path…") {
+                            guard let path = ClaudeExecutablePanel.pick() else { return }
+                            claudePathError = OnboardingClaudePathConfig.saveIfExecutable(path, configPath: Constants.configPath)
+                            if claudePathError == nil { Task { await vm?.open(session, placement: .inPlace) } }
+                        }
+                    }
                     Button("Restart") {
                         if let session { Task { await vm?.open(session, placement: .inPlace) } }
                     }
                 }
                 .padding(8)
+                if let claudePathError {
+                    Text(claudePathError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding([.horizontal, .bottom], 8)
+                }
             case let .unavailable(message)?:
                 Text(message).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             case nil:
                 notStarted().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .onChange(of: state) { claudePathError = nil }
     }
 
     private func pasteNote(copied: Bool, shared: Bool) -> String {

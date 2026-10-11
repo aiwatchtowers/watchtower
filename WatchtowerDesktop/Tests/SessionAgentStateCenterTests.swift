@@ -81,6 +81,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
             return process
         }
         terminals.shell = { "/bin/zsh" }
+        terminals.claudeBinary = { nil }
         terminals.transcriptExists = { _ in true }
         terminals.now = { [started] in started }
     }
@@ -544,6 +545,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.transcriptExists = { _ in true }
         appState.terminalCenter.now = { [started] in started }
         let sessionNotifier = RecordingSessionNotifier()
@@ -581,6 +583,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.transcriptExists = { _ in true }
         appState.terminalCenter.now = { [started] in started }
         let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("busy"))
@@ -623,6 +626,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.transcriptExists = { _ in true }
         appState.terminalCenter.now = { [started] in started }
         appState.mainWindowIsKey = { false }

@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/claude"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 )
@@ -134,7 +136,7 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 		printMCPSkipReason(integrateSkillsOnly, scope.dir, scope.defaultDir, "registration")
 		return nil
 	}
-	return registerMCPWithClaudeCode()
+	return registerMCPWithClaudeCode(integrateClaudeBinary())
 }
 
 func runIntegrateStatus(cmd *cobra.Command, args []string) error {
@@ -192,15 +194,19 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if _, err := exec.LookPath("claude"); err != nil {
-		// The skill pack removal above already happened; the absence of the
-		// claude CLI just means we cannot also unregister the MCP server
-		// ourselves. Report and continue rather than failing the command.
+	return unregisterMCPFromClaudeCode(integrateClaudeBinary())
+}
+
+// unregisterMCPFromClaudeCode removes the watchtower MCP server from Claude
+// Code. The skill pack removal already happened, so a missing CLI or a failed
+// call prints the command to run by hand and does not fail integrate remove.
+func unregisterMCPFromClaudeCode(claudeBin string) error {
+	if claudeBin == "" {
 		fmt.Println("\nclaude CLI not found — remove the MCP server yourself with:")
 		fmt.Println("  claude mcp remove watchtower")
-		return nil //nolint:nilerr
+		return nil
 	}
-	out, err := exec.Command("claude", "mcp", "remove", "watchtower").CombinedOutput()
+	out, err := exec.Command(claudeBin, "mcp", "remove", "watchtower").CombinedOutput()
 	if err != nil {
 		fmt.Printf("\nCould not unregister the MCP server (%v). Remove it with:\n", err)
 		fmt.Println("  claude mcp remove watchtower")
@@ -209,6 +215,25 @@ func runIntegrateRemove(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("\nMCP server unregistered.")
 	return nil
+}
+
+// integrateClaudeBinary is the claude CLI integrate runs: config's
+// claude_path, then claude.FindBinary's PATH, login-shell and well-known-dir
+// lookups — the binary the Desktop terminal launches (Swift
+// Constants.claudeBinary). "" when none is found. A config that fails to load
+// only drops the override; an override that is not executable falls back to
+// the claude on PATH.
+func integrateClaudeBinary() string {
+	override := ""
+	if cfg, err := config.Load(flagConfig); err == nil {
+		override = cfg.ClaudePath
+	}
+	for _, name := range []string{claude.FindBinary(override), "claude"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // shouldTouchMCP decides whether "integrate claude-code" should also
@@ -295,23 +320,20 @@ func skillStateNote(state devpack.State) string {
 }
 
 // registerMCPWithClaudeCode registers this binary as the watchtower MCP
-// server. When the claude CLI is absent we print the exact command instead of
-// failing: the skills are already installed and useful, and the user may be
-// configuring a different client.
-func registerMCPWithClaudeCode() error {
+// server with claudeBin. When no claude CLI was found (claudeBin empty) we
+// print the exact command instead of failing: the skills are already
+// installed and useful, and the user may be configuring a different client.
+func registerMCPWithClaudeCode(claudeBin string) error {
 	bin, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("determining the watchtower binary path: %w", err)
 	}
-	if _, err := exec.LookPath("claude"); err != nil {
-		// The skills are already installed and useful on their own, and the
-		// user may be configuring a different client — report the command
-		// they'd need instead of failing the whole integrate step.
+	if claudeBin == "" {
 		fmt.Println("\nclaude CLI not found. Register the MCP server yourself with:")
 		fmt.Printf("  claude mcp add watchtower -- %s mcp\n", bin)
-		return nil //nolint:nilerr
+		return nil
 	}
-	out, err := exec.Command("claude", "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
+	out, err := exec.Command(claudeBin, "mcp", "add", "watchtower", "--", bin, "mcp").CombinedOutput()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

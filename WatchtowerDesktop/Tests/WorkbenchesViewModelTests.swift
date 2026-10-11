@@ -339,6 +339,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let held = HeldCLIRunner(stdout: createdJSON(id))
         let appState = AppState.isolated()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: held, notifier: RecordingWorkbenchNotifier(),
@@ -374,6 +375,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
         ])
         let appState = AppState.isolated()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
@@ -466,6 +468,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let process = FakeTerminalSession(pid: 0)
         appState.terminalCenter.makeProcess = { process }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.claudeBinary = { nil }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()

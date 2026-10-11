@@ -94,4 +94,37 @@ final class OnboardingSetupTests: XCTestCase {
         var isDirectory: ObjCBool = false
         XCTAssertTrue(FileManager.default.fileExists(atPath: configPath, isDirectory: &isDirectory) && isDirectory.boolValue)
     }
+
+    func testSaveIfExecutableRefusesAFileThatCannotRun() throws {
+        let dir = try tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        let missing = dir.appendingPathComponent("claude").path
+        XCTAssertEqual(OnboardingClaudePathConfig.saveIfExecutable(missing, configPath: configPath),
+                       "File not found or not executable: \(missing)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configPath), "nothing written")
+    }
+
+    func testSaveIfExecutablePinsTheClaudePath() throws {
+        let dir = try tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        let bin = dir.appendingPathComponent("claude").path
+        try "#!/bin/sh\n".write(toFile: bin, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin)
+        XCTAssertNil(OnboardingClaudePathConfig.saveIfExecutable(bin, configPath: configPath))
+        XCTAssertEqual(Constants.claudePathOverride(configPath: configPath), bin)
+    }
+
+    /// An app bundle (say `Claude.app`) is an executable directory: the
+    /// resolver would ignore it, so it is never saved.
+    func testSaveIfExecutableRefusesADirectory() throws {
+        let dir = try tempDir()
+        let bundle = dir.appendingPathComponent("Claude.app")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        XCTAssertEqual(OnboardingClaudePathConfig.saveIfExecutable(bundle.path, configPath: configPath),
+                       "File not found or not executable: \(bundle.path)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: configPath), "nothing written")
+    }
 }

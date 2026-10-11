@@ -133,11 +133,55 @@ package enum Constants {
         static let dailySummary = "DAILY_SUMMARY"
     }
 
+    /// `claude_path` from config.yaml when it names an executable file (not a
+    /// directory) — the override step of `claudeBinary()`.
+    package nonisolated static func claudePathOverride(configPath: String = Self.configPath) -> String? {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any],
+              let path = yaml["claude_path"] as? String, isRunnableFile(path) else { return nil }
+        return path
+    }
+
+    /// An executable regular file — not a directory, which
+    /// `isExecutableFile` also accepts (an app bundle such as `Claude.app`).
+    package nonisolated static func isRunnableFile(_ path: String) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
+            && FileManager.default.isExecutableFile(atPath: path)
+    }
+
+    /// The `claude` a terminal session runs: the configured `claude_path`
+    /// (pinned), else what `findInPath` finds — a fallback the session uses
+    /// only when the login PATH has no `claude`; nil when none. Together the
+    /// order is Go `claude.FindBinary`'s (override → PATH → well-known
+    /// dirs), a dual path. Not cached: the owner may set the path or install
+    /// Claude Code while the app runs.
+    package nonisolated static func claudeBinary(configPath: String = Self.configPath) -> ClaudeBinary? {
+        if let pinned = claudePathOverride(configPath: configPath) { return .pinned(pinned) }
+        return findInPath("claude").map(ClaudeBinary.fallback)
+    }
+
+    /// `path` with the well-known install dirs (and `claudePath`'s directory)
+    /// appended when they exist and are missing — Go `fallbackPATH` mirrored.
+    /// A login shell's `PATH` misses an export that lives only in `.zshrc`.
+    package nonisolated static func appendingWellKnownDirs(
+        to path: String, home: String, claudePath: String?, isDirectory: (String) -> Bool
+    ) -> String {
+        var parts = path.split(separator: ":").map(String.init)
+        var candidates = ["\(home)/.local/bin", "\(home)/.claude/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.volta/bin"]
+        if let claudePath { candidates.append((claudePath as NSString).deletingLastPathComponent) }
+        for dir in candidates where !parts.contains(dir) && isDirectory(dir) {
+            parts.append(dir)
+        }
+        return parts.joined(separator: ":")
+    }
+
     /// Search for a binary in well-known directories first, then resolved PATH.
     /// Well-known dirs are checked first to avoid TCC prompts from iterating
-    /// the full PATH (which may include ~/Documents, ~/Music, etc.).
-    package nonisolated static func findInPath(_ binary: String) -> String? {
-        let home = NSHomeDirectory()
+    /// the full PATH (which may include ~/Documents, ~/Music, etc.). Only an
+    /// executable regular file counts (`isRunnableFile`), never a directory.
+    package nonisolated static func findInPath(_ binary: String, home: String = NSHomeDirectory()) -> String? {
 
         // 1. Well-known directories — fast, no TCC risk
         let knownDirs = [
@@ -149,7 +193,7 @@ package enum Constants {
         ]
         for dir in knownDirs {
             let fullPath = "\(dir)/\(binary)"
-            if FileManager.default.isExecutableFile(atPath: fullPath) {
+            if isRunnableFile(fullPath) {
                 return fullPath
             }
         }
@@ -177,7 +221,7 @@ package enum Constants {
             let dirStr = String(dir)
             if tccProtected.contains(where: { dirStr.hasPrefix($0) }) { continue }
             let fullPath = "\(dirStr)/\(binary)"
-            if FileManager.default.isExecutableFile(atPath: fullPath) {
+            if isRunnableFile(fullPath) {
                 return fullPath
             }
         }
@@ -191,7 +235,7 @@ package enum Constants {
         for ver in versions.sorted().reversed() {
             for sub in ["bin", "installation/bin"] {
                 let path = "\(dir)/\(ver)/\(sub)/\(binary)"
-                if FileManager.default.isExecutableFile(atPath: path) {
+                if isRunnableFile(path) {
                     return path
                 }
             }
@@ -237,7 +281,6 @@ package enum Constants {
                 }
                 env.removeValue(forKey: "CLAUDECODE")
                 // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
-                // Inline search: can't call Constants methods from nested Cache struct.
                 let nvmDirs = [
                     NSHomeDirectory() + "/.nvm/versions/node",
                     NSHomeDirectory() + "/.local/share/fnm/node-versions",
@@ -257,6 +300,12 @@ package enum Constants {
                             }
                         }
                     }
+                }
+                env["PATH"] = Constants.appendingWellKnownDirs(
+                    to: env["PATH"] ?? "", home: NSHomeDirectory(), claudePath: Constants.claudePathOverride()
+                ) { dir in
+                    var isDirectory: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: dir, isDirectory: &isDirectory) && isDirectory.boolValue
                 }
                 return env
             }()

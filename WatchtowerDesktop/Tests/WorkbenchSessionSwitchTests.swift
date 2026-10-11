@@ -26,6 +26,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         projectID = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folderPath) }
         appState = AppState()
         // pid 0: nothing here ever signals a real process group.
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession(pid: 0) }
         appState.terminalCenter.transcriptExists = { _ in true }
         // The VM keeps layouts in `UserDefaults.standard`: none left from

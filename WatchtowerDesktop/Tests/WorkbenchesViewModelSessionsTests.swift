@@ -69,6 +69,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
             return process
         }
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { [weak self] _ in self?.transcripts ?? false }
     }
 
@@ -627,6 +628,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     func testWorkOnWritesNoStatusWhenTheProcessExitsAtOnce() async throws {
         center = TerminalCenter { ExitingTerminalSession() }
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         let p = try await workbenchWithFolder()
         let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
         let vm = makeVM()

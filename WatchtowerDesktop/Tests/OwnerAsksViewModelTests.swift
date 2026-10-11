@@ -59,6 +59,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
             )
         )
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.copyToClipboard = { [weak self] in self?.copied.append($0) }
     }
 
@@ -116,6 +117,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
     func testDraftsSurviveNavigatingAwayAndBack() async throws {
         let (p, _, askID) = try await seed()
         let appState = AppState()
+        appState.terminalCenter.claudeBinary = { nil }
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(
             dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),
