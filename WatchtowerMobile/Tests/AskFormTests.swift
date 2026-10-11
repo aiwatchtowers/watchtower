@@ -92,7 +92,11 @@ final class AskFormTests: XCTestCase {
         let model = AskViewModel(askID: 120, drafts: fixture.drafts, answerer: fixture.answerer)
 
         var page = try XCTUnwrap(try formOf(model, snapshot).question)
-        XCTAssertEqual(try formOf(model, snapshot).header, "ASK #120 · QUESTION · 1 OF 2")
+        let first = try formOf(model, snapshot)
+        XCTAssertEqual(first.kindIcon, "questionmark.bubble")
+        XCTAssertEqual(first.kindName, "Question")
+        XCTAssertEqual(first.idText, "#120")
+        XCTAssertEqual(first.pageText, "1 of 2", "words, not codes (design pass A1)")
         XCTAssertEqual(page.options.map(\.recommended), [true, false])
         model.pick("Yes", in: page)
         model.next(of: page.count)
@@ -115,6 +119,32 @@ final class AskFormTests: XCTestCase {
         let reopened = AskViewModel(askID: 120, drafts: fixture.drafts, answerer: fixture.answerer)
         XCTAssertEqual(try XCTUnwrap(try formOf(reopened, snapshot).question).options.filter(\.isPicked).map(\.label), ["Yes"])
         XCTAssertTrue(try formOf(reopened, snapshot).canSend)
+    }
+
+    /// Design pass A1: the header is the kind's icon and word, "#id" and the
+    /// page; orange while open, secondary once closed. A single question has
+    /// no page text.
+    func testTheHeaderNamesTheKindTheIDAndThePage() async throws {
+        let fixture = try await makeFixture()
+        let demo = try demoSnapshot(now: now)
+        func form(_ id: Int64) throws -> AskFormModel {
+            try XCTUnwrap(AskViewModel(askID: id, drafts: fixture.drafts, answerer: fixture.answerer).form(snapshot: demo, now: now))
+        }
+        let review = try form(110)
+        XCTAssertEqual([review.kindIcon, review.kindName, review.idText], ["doc.text.magnifyingglass", "Review", "#110"])
+        XCTAssertNil(review.pageText)
+        XCTAssertEqual(review.headerTone, .waitingForYou)
+        let check = try form(111)
+        XCTAssertEqual([check.kindIcon, check.kindName], ["checklist", "Check"])
+        let closed = try form(105)
+        XCTAssertEqual(closed.headerTone, .secondary, "a closed ask's header is not waiting for you")
+        XCTAssertNil(closed.pageText, "a closed ask shows no question pages")
+
+        let single = try makeAsk(121, [
+            "kind": "question", "payload": ["questions": [["id": "q", "question": "Keep it?", "options": [["label": "Yes"], ["label": "No"]]]]]
+        ])
+        let model = AskViewModel(askID: 121, drafts: fixture.drafts, answerer: fixture.answerer)
+        XCTAssertNil(try formOf(model, try replica([single])).pageText, "one question has no page text")
     }
 
     func testAPickOnASingleSelectQuestionReplacesTheOtherAndTogglesOff() async throws {

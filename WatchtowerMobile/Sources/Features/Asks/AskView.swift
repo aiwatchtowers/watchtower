@@ -104,26 +104,34 @@ struct AskView: View {
     }
 }
 
-/// "ASK #109 · QUESTION · 1 OF 2", the title, where it came from, the
-/// summary, what changed since the last round and what to look at.
+/// The kind's icon and word, "#109" and "1 of 2"; the title, where it came
+/// from, the summary, what changed since the last round and what to look
+/// at (design pass A1).
 private struct AskHeaderView: View {
     let form: AskFormModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(form.header)
-                .font(.caption2.monospaced().weight(.semibold))
-                .foregroundStyle(form.headerTone.color)
-            Text(form.title).font(.title3.weight(.semibold))
-            Text(form.subline).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Label(form.kindName, systemImage: form.kindIcon)
+                    .font(TypeScale.kind)
+                    .foregroundStyle(form.headerTone.color)
+                Text(form.idText).font(TypeScale.time).foregroundStyle(.secondary)
+                Spacer(minLength: Spacing.regular)
+                if let page = form.pageText {
+                    Text(page).font(TypeScale.meta).foregroundStyle(.secondary)
+                }
+            }
+            Text(form.title).font(TypeScale.screenTitle)
+            Text(form.subline).font(TypeScale.meta).foregroundStyle(.secondary)
             if !form.summary.isEmpty {
                 Text(form.summary).font(.callout)
             }
             if !form.changes.isEmpty {
                 Text("Changed since the last round: \(form.changes)").font(.callout).foregroundStyle(.secondary)
             }
-            ForEach(Array(form.focus.enumerated()), id: \.offset) { index, focus in
-                Text("\(index + 1) · \(focus)").font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(form.focus.enumerated()), id: \.offset) { _, focus in
+                Label(focus, systemImage: "scope").font(TypeScale.meta).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)

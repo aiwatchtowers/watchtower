@@ -80,17 +80,8 @@ struct WaitingCardModel: Equatable, Identifiable {
 
     init(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date, showWorkbench: Bool = false) {
         id = ask.id
-        kindLabel = switch ask.kind {
-        case .review: "Review"
-        case .check: "Check"
-        case .question: "Question"
-        default: ask.kind.rawValue.capitalized
-        }
-        kindIcon = switch ask.kind {
-        case .review: "doc.text.magnifyingglass"
-        case .check: "checklist"
-        default: "questionmark.bubble"
-        }
+        kindLabel = AskKindStyle.name(ask.kind)
+        kindIcon = AskKindStyle.icon(ask.kind)
         title = ask.title
         var parts: [String] = []
         if showWorkbench {

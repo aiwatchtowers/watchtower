@@ -39,15 +39,6 @@ enum AskText {
         ask.status == .open ? "This ask is no longer open on the Mac" : "This ask is no longer open: \(status(ask))"
     }
 
-    static func kind(_ kind: OwnerAsk.Kind) -> String {
-        switch kind {
-        case .review: "REVIEW"
-        case .check: "CHECK"
-        case .question: "QUESTION"
-        default: kind.rawValue.uppercased()
-        }
-    }
-
     static func check(_ state: OwnerAskAnswer.CheckState) -> String {
         switch state {
         case .ok: "OK"
@@ -124,8 +115,13 @@ struct AskFormModel {
     }
 
     let askID: Int64
-    /// "ASK #109 · QUESTION · 1 OF 2".
-    let header: String
+    /// The kind's icon and word ("Question"), drawn in `headerTone`.
+    let kindIcon: String
+    let kindName: String
+    /// "#109".
+    let idText: String
+    /// "1 of 2" on a question ask with more than one question; nil otherwise.
+    let pageText: String?
     let headerTone: PhoneTone
     let title: String
     /// "From <session> · #415".
@@ -164,6 +160,9 @@ struct AskFormModel {
     ) {
         guard let ask = snapshot.asks.first(where: { $0.id == askID }) else { return nil }
         self.askID = askID
+        kindIcon = AskKindStyle.icon(ask.kind)
+        kindName = AskKindStyle.name(ask.kind)
+        idText = "#\(ask.id)"
         title = ask.title
         summary = ask.summary
         changes = ask.changes
@@ -184,9 +183,7 @@ struct AskFormModel {
         let questions = open && !clipped ? payload?.questions ?? [] : []
         let shown = questions.isEmpty ? 0 : min(max(page, 0), questions.count - 1)
         question = questions.isEmpty ? nil : Self.page(questions[shown], index: shown, count: questions.count, draft: draft)
-        var header = "ASK #\(ask.id) · \(AskText.kind(ask.kind))"
-        if questions.count > 1 { header += " · \(shown + 1) OF \(questions.count)" }
-        self.header = header
+        pageText = questions.count > 1 ? "\(shown + 1) of \(questions.count)" : nil
         review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft, render: render) : nil
         checks = open && !clipped ? (payload?.checklist ?? []).map { Self.checkRow($0, draft: draft) } : []
         note = draft.note
