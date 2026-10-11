@@ -76,33 +76,47 @@ final class OwnerPresenceCenter {
     @ObservationIgnored var onChange: (() -> Void)?
     /// What the key window shows now. Read under observation tracking, so a
     /// change of the observable state it reads is evaluated again; key
-    /// window changes come through the notifications.
+    /// window changes come through the notifications. Contract: the
+    /// observable state it reads must not depend on those non-observable
+    /// inputs (read it all, then gate on the key window), because one
+    /// tracker is armed at a time and only an observable change re-arms it.
     @ObservationIgnored var screen: () -> Screen = { .other }
     /// The app's activation when `start()` runs; notifications follow it.
     @ObservationIgnored var isAppActive: () -> Bool = { NSApp?.isActive ?? false }
+    /// Whether the screen is locked when `start()` runs (an app launched
+    /// under a locked screen gets no lock notification); notifications
+    /// follow it.
+    @ObservationIgnored var isScreenLocked: () -> Bool = OwnerPresenceCenter.sessionScreenIsLocked
 
     @ObservationIgnored private let writer: Writer
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private let schedule: Schedule
     @ObservationIgnored private let sources: NotificationSources
-    /// FIFO: an enter and the leave after it land in that order, and the
-    /// quit's clear waits for every write queued before it.
-    @ObservationIgnored private let writes = DispatchQueue(label: "watchtower.owner-presence.writes")
+    /// One queue for every center of the process (a re-initialisation
+    /// replaces the center): FIFO, so an enter and the leave after it land
+    /// in that order, and the quit's clear lands after every write queued
+    /// before it.
+    nonisolated private static let writes = DispatchQueue(label: "watchtower.owner-presence.writes")
+    /// How long quitting waits for the clear. A missed clear is covered by
+    /// Go's 90 s staleness, so a hung database never holds the quit.
+    nonisolated static let quitWait: TimeInterval = 1
 
     @ObservationIgnored private var appActive = false
     @ObservationIgnored private var screenLocked = false
     @ObservationIgnored private var displaysAsleep = false
     /// When the owner left each session they were in since launch.
     @ObservationIgnored private var awayStarts: [Int64: Date] = [:]
-    /// A loss not yet 2 s old: when it began, and its timer's cancel.
-    @ObservationIgnored private var pendingLoss: (since: Date, cancel: () -> Void)?
+    /// The timer's cancel of a loss not yet 2 s old.
+    @ObservationIgnored private var cancelPendingLoss: (() -> Void)?
     @ObservationIgnored private var cancelHeartbeat: (() -> Void)?
     /// The last completed write failed: the heartbeat retries it.
     @ObservationIgnored private var writeFailing = false
     @ObservationIgnored private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     @ObservationIgnored private var following = false
-    /// Only the latest observation tracking evaluates again, so trackers
-    /// armed by notification-driven evaluations never pile up.
+    /// One observation tracker is armed at a time; its change disarms it
+    /// and the evaluation it triggers arms the next.
+    @ObservationIgnored private var trackingArmed = false
+    /// A tracker armed before `stop()` evaluates nothing when it fires.
     @ObservationIgnored private var trackingGeneration = 0
 
     init(
@@ -134,54 +148,75 @@ final class OwnerPresenceCenter {
         return { timer.invalidate() }
     }
 
+    /// The production lock reading: the login session's dictionary
+    /// (CoreGraphics, no permission involved). Absent means unlocked.
+    nonisolated static func sessionScreenIsLocked() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return (session["CGSSessionScreenIsLocked"] as? Bool) ?? false
+    }
+
     /// Since when the owner is away from `sessionID`; nil while they are in
-    /// it. A session the owner has not been in since launch reads as away
+    /// it. Away starts when the loss is written — after the 2 s debounce,
+    /// or at once on a lock, display sleep or another session's pane (spec
+    /// Part 5.2): a question Go recorded inside the debounce saw the owner
+    /// present, so it waits out the leave grace rather than escalating at
+    /// once. A session the owner has not been in since launch reads as away
     /// since `.distantPast` — before any question it records, so such a
-    /// question escalates at once (`away`, spec Part 5.2, E10b), and never
-    /// inside the 90 s leave grace.
+    /// question escalates at once (`away`, E10b), and never inside the 90 s
+    /// leave grace.
     func awaySince(sessionID: Int64) -> Date? {
         guard presentSessionID != sessionID else { return nil }
         return awayStarts[sessionID] ?? .distantPast
     }
 
     /// Follows the inputs from now on and computes presence once; that first
-    /// result is written whatever it is, so a row a crashed run left behind
-    /// is overwritten.
+    /// result is written whatever it is (so a row a crashed run, or a
+    /// `stop()`, left behind is overwritten) and starts the heartbeat when
+    /// in a session.
     func start() {
         guard !following else { return }
         following = true
+        hasSettled = false
         appActive = isAppActive()
+        screenLocked = isScreenLocked()
+        displaysAsleep = false
         observeNotifications()
         evaluate()
     }
 
-    /// Stops following: no timer and no write is left. The row keeps its
-    /// last write, which Go stops trusting after 90 s.
+    /// Stops following: no timer is left and nothing new is written; a
+    /// write already queued still lands. The row keeps its last write,
+    /// which Go stops trusting after 90 s.
     func stop() {
         following = false
         for (center, token) in observers { center.removeObserver(token) }
         observers = []
-        pendingLoss?.cancel()
-        pendingLoss = nil
+        dropPendingLoss()
         cancelHeartbeat?()
         cancelHeartbeat = nil
+        trackingArmed = false
         trackingGeneration += 1
     }
 
     /// The app quits (`applicationWillTerminate`): stops, and clears the row
-    /// before returning, after every write queued earlier.
+    /// after every write queued earlier, waiting at most `quitWait` for it.
     func clearForQuit() {
         stop()
         presentSessionID = nil
         let writer = writer
         let now = clock()
-        writes.sync {
+        let done = DispatchSemaphore(value: 0)
+        Self.writes.async {
             do {
                 try writer(nil, now)
             } catch {
-                // A crash or a failed clear is covered by Go's 90 s staleness.
+                // A failed clear, like a crash, is covered by Go's 90 s staleness.
                 print("[OwnerPresence] clearing presence on quit failed: \(error.localizedDescription)")
             }
+            done.signal()
+        }
+        if done.wait(timeout: .now() + Self.quitWait) == .timedOut {
+            print("[OwnerPresence] clearing presence on quit timed out; Go reads the row as stale after 90 s")
         }
     }
 
@@ -222,23 +257,29 @@ final class OwnerPresenceCenter {
 
     // MARK: - Presence
 
-    /// The policy's session now; re-armed so the next change of what the
-    /// screen provider reads evaluates again.
+    /// The policy's session now. Arms the observation tracker when none is
+    /// outstanding, so the next change of what the screen provider reads
+    /// evaluates again.
     private func currentSession() -> Int64? {
-        trackingGeneration += 1
-        let generation = trackingGeneration
-        let shown = withObservationTracking {
-            screen()
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.trackingGeneration == generation else { return }
-                self.evaluate()
-            }
-        }
+        let shown = trackingArmed ? screen() : trackedScreen()
         return OwnerPresencePolicy.presentSession(
             appActive: appActive, keyWindowShows: shown.keyWindowShows, selectedSession: shown.selectedSession,
             screenLocked: screenLocked, displaysAsleep: displaysAsleep
         )
+    }
+
+    private func trackedScreen() -> Screen {
+        trackingArmed = true
+        let generation = trackingGeneration
+        return withObservationTracking {
+            screen()
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.trackingGeneration == generation else { return }
+                self.trackingArmed = false
+                self.evaluate()
+            }
+        }
     }
 
     private func evaluate(clearsAtOnce: Bool = false) {
@@ -246,13 +287,13 @@ final class OwnerPresenceCenter {
         let session = currentSession()
         guard hasSettled else { return settle(session) }
         if session == presentSessionID {
-            cancelPendingLoss()
+            dropPendingLoss()
         } else if let session {
             enter(session)
         } else if clearsAtOnce {
-            leave(since: pendingLoss?.since ?? clock())
-        } else if pendingLoss == nil {
-            pendingLoss = (clock(), schedule(Self.flickerDebounce) { [weak self] in self?.lossLasted() })
+            leave()
+        } else if cancelPendingLoss == nil {
+            cancelPendingLoss = schedule(Self.flickerDebounce) { [weak self] in self?.lossLasted() }
         }
     }
 
@@ -267,18 +308,18 @@ final class OwnerPresenceCenter {
 
     /// The loss lasted the debounce: written, unless the owner is back.
     private func lossLasted() {
-        guard following, let since = pendingLoss?.since else { return }
-        pendingLoss = nil
+        guard following, cancelPendingLoss != nil else { return }
+        cancelPendingLoss = nil
         let session = currentSession()
         guard session != presentSessionID else { return }
-        if let session { enter(session) } else { leave(since: since) }
+        if let session { enter(session) } else { leave() }
     }
 
     /// Gaining a session is written at once; the session left behind, if
-    /// any, is away since its loss began.
+    /// any, is away from now, when the switch is written.
     private func enter(_ session: Int64) {
-        if let previous = presentSessionID { awayStarts[previous] = pendingLoss?.since ?? clock() }
-        cancelPendingLoss()
+        if let previous = presentSessionID { awayStarts[previous] = clock() }
+        dropPendingLoss()
         awayStarts[session] = nil
         presentSessionID = session
         write(session)
@@ -286,10 +327,11 @@ final class OwnerPresenceCenter {
         onChange?()
     }
 
-    private func leave(since: Date) {
-        cancelPendingLoss()
+    /// The loss is written now, so the owner is away from now.
+    private func leave() {
+        dropPendingLoss()
         guard let previous = presentSessionID else { return }
-        awayStarts[previous] = since
+        awayStarts[previous] = clock()
         presentSessionID = nil
         cancelHeartbeat?()
         cancelHeartbeat = nil
@@ -297,9 +339,9 @@ final class OwnerPresenceCenter {
         onChange?()
     }
 
-    private func cancelPendingLoss() {
-        pendingLoss?.cancel()
-        pendingLoss = nil
+    private func dropPendingLoss() {
+        cancelPendingLoss?()
+        cancelPendingLoss = nil
     }
 
     // MARK: - Writes
@@ -327,7 +369,7 @@ final class OwnerPresenceCenter {
     private func write(_ session: Int64?) {
         let writer = writer
         let now = clock()
-        writes.async { [weak self] in
+        Self.writes.async { [weak self] in
             let failure: Error?
             do {
                 try writer(session, now)
@@ -357,7 +399,7 @@ final class OwnerPresenceCenter {
     /// test seam).
     func flushWrites() async {
         await withCheckedContinuation { continuation in
-            writes.async {
+            Self.writes.async {
                 DispatchQueue.main.async { continuation.resume() }
             }
         }
