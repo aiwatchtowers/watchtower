@@ -1,6 +1,8 @@
 # Session state: background agents (board #411) — design
 
 **Status:** Approved by the owner on 2026-10-10 — the PROJ-11 amendment in ask #139 (what counts, the grace and `SubagentStop` in ask #138; the staleness probe in asks #138, #140 and #142).
+**Amended 2026-10-11** (board #543, owner decision in ask #167): teammates count while in their own turn — §11,
+Appendix C.
 **Business spec:** `2026-10-10-session-background-agents-business.md`.
 **Touches:** `cmd/workbench_session_state.go`, `cmd/workbench_check.go` (Stop hook), `internal/db/terminal_sessions.go`,
 migration `00106`, `internal/devpack/workbench_settings.go`, WatchtowerCore `SessionAgentStatus`,
@@ -339,6 +341,109 @@ working for as long as Claude Code itself reports work in flight. v1 limits (not
 never-ending background shell, workflows, a hung or killed subagent. Task 0 and Task 12 captured registry
 entries and the peer round trip as redacted fixtures.
 
+## 11. Teammates in their turn (board #543, amendment 2026-10-11)
+
+**Owner decision (ask #167, "only while they work"):** a named agent-team teammate counts toward Agents working
+only while it is inside its own turn. An idle teammate (waiting for messages) does not count. With every teammate
+idle and no subagent or workflow in flight, the row goes Stopped as before. §9 decision 1 stays for every other
+task type (shells, monitors and the rest never count).
+
+### 11.1 The signal (Appendix C)
+
+`background_tasks` cannot tell a working teammate from an idle one: a teammate entry reads `type: "teammate"`,
+`status: "running"` from spawn to shutdown, and its `id` is not the hook `agent_id`. The hooks can:
+
+- `SubagentStart` fires when a teammate starts a turn (its spawn and every message it handles), with `agent_id`
+  `a<name>-<hex>` and `agent_type` = the teammate's name.
+- `SubagentStop` fires when that turn ends, with the same `agent_id`/`agent_type`; `TeammateIdle` follows it a few
+  ms later. `TeammateIdle` is not used: the CLI can end a teammate turn without one (it logs "no task holds
+  teammate …: its turn ends with no TeammateIdle"), and `SubagentStop` already marks the end.
+- For an ordinary subagent the same pair fires once (the Agent call and its end, plus one per resume).
+
+So a teammate is *in its turn* while its last `SubagentStart` is newer than its last `SubagentStop`.
+
+### 11.2 Agent turns (Go only)
+
+New column `terminal_sessions.agent_turns` (migration `00108`, TEXT, JSON object, NULL = none; Go only, the
+Desktop never reads it): per `agent_id` the stamps of its last `SubagentStart` (`start`) and `SubagentStop`
+(`stop`), `agent_state_at` layout. *Open* = `start` set and later than `stop`; *closed* = `stop` set and not
+earlier than `start`. Each stamp only moves forward, so two async hooks landing out of order never reopen a turn.
+Capped at 256 entries (the oldest closed ones go first). Cleared with the rest of the run's state by a new run
+(`MarkTerminalAgentRun`, `ClearTerminalAgentState`) and a conversation switch (`SetTerminalClaudeSessionID`) —
+not by a main turn: teammates work across the lead's turns.
+
+| Event | Writes |
+|---|---|
+| `SubagentStart` (new async state hook) with `agent_id` and a non-empty `agent_type` | `agent_turns[agent_id].start = at`. Nothing else: no state, no count. |
+| `SubagentStop` with `agent_id` and a non-empty `agent_type` | `agent_turns[agent_id].stop = at`; then, as before, lowers the count (with the rule below) when its input has a list. |
+
+### 11.3 The count (replaces the §4.2 rule for the Stop and `SubagentStop`)
+
+```
+count(tasks, turns) =
+    #(entries of type subagent or workflow whose id is not a closed turn)
+  + min(#(open turns whose agent_id is no entry's id), #(entries of type teammate))
+```
+
+- A background subagent's `id` equals its `agent_id` (A.7), so it is counted once, through its list entry, and a
+  subagent whose `SubagentStop` already fired is not counted even while the list still carries it. That is the
+  #543 tail (3): the list keeps a finished subagent until the main agent takes its completion notification, so
+  the last `SubagentStop` used to see the previous one still listed and left the count at 1 (Appendix C.3).
+- A teammate's turn is open between its `SubagentStart` and `SubagentStop`; its list entry has another id, so the
+  open turn counts as one teammate. The `min` with the listed teammates drops a turn whose stop never came (a
+  teammate killed mid-turn, a lost hook): once the list has no teammates, no open turn counts.
+- A workflow has no agent id in the hooks; it counts while listed, as before.
+- The Stop computes the count from its own list and the stored turns and stores it as before (NULL for 0). A
+  `SubagentStop` records its turn end first, then lowers to `min(stored, count)`; it still never raises the
+  count, never starts one and never touches the state, its time, `finished_at` or the turn order.
+
+**Invariant kept:** only the Stop sets a count. A teammate that starts a turn after the lead's Stop does not
+raise it: when a working teammate messages another, the second one's turn opens before the first one's closes,
+so the lowered count stays at 1 and the row stays Agents working; a teammate woken while nothing else counts shows
+from the lead's next Stop on. Listed as a v1 limit.
+
+### 11.4 Hook pack
+
+`stateHookSpecs` gains `stateHookSpec("SubagentStart")` (async, timeout 5, no matcher): six state hooks. The core
+four still gate the Stop's state write and the run mark; `integrate status` reports `state_hooks` only with all
+six, so an existing folder reads "state hooks missing" until Re-run Setup / Repair. Without the new entry the
+count rule still runs: no turn ever opens, so teammates do not count (as before), while finished subagents are
+already dropped through their `SubagentStop`. No skill-pack or ask-guard change.
+
+### 11.5 Limits (v1)
+
+- A teammate that starts a turn while the row shows Stopped is counted from the lead's next Stop (11.3).
+- A teammate or subagent that ended its turn and waits for its own background shell does not count; the shell
+  shows as a `shell` entry (never counted, §9 decision 1).
+- Only in-process teammates fire these hooks in the lead's session; a teammate in its own terminal pane is a
+  separate Claude Code session and does not count.
+- A teammate killed mid-turn keeps its open turn until the list stops listing teammates or the run ends; while
+  other teammates are listed it can stand in for one of them (bounded by the listed teammates).
+- The async `SubagentStart` must land before the lead's Stop reads the turns; the lead needs at least one more
+  model response after spawning, so this was never close in the captures, but it is not guaranteed.
+
+### 11.6 Guard tests (new or extended)
+
+Go, `cmd/workbench_session_state_test.go` / `cmd/workbench_check_test.go`:
+- `TestProj11_TeammateCountsOnlyInItsTurn` — fixture replay: Stop with two teammates in their turn → 2; one
+  `SubagentStop` → 1; the other → 0; the next Stop with both idle → NULL; teammates listed but never started → NULL.
+- `TestProj11_FinishedSubagentStillListedIsNotCounted` — the C.3 replay: the last `SubagentStop` lowers to 0.
+- `TestProj11_SubagentStartNeverStartsOrRaisesTheCount` — over a NULL count and over a count of 1: nothing but
+  `agent_turns` changes.
+- `TestProj11_LostTeammateStopIsCappedByTheList` — an open turn with no teammate in the list counts 0.
+- `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_HookNeverWritesStdoutAndExitsZero`,
+  `TestProj11_NestedSessionNeverMovesTheRow` — extended with `SubagentStart`.
+- `TestBackgroundAgentsCountTable` (replaces `TestBackgroundSubagentsCountsSubagentsAndWorkflows`: the same cases
+  plus the turn cases).
+
+Go, `internal/db/terminal_sessions_test.go`: `TestProj11_AgentTurnStampsOnlyMoveForward`,
+`TestProj11_AgentTurnsCapDropsOldestClosed`, `TestProj11_AgentTurnWriteNeverTouchesTheState` (every other column
+byte-identical), `TestProj11_NewRunAndConversationSwitchClearTheCount` extended with `agent_turns`.
+
+Go, `internal/devpack`: `TestInstallStateHooksAddsSubagentStopAndStart` (was `…AddsSubagentStop`), `TestHasStateHooksNeedsAllSixCoreNeedsFour`
+(the `…AllFive…` guard with the sixth entry, same strictness); the PROJ-04 malformed-event guard extended to
+`SubagentStart`.
+
 ## Appendix A — sources and quotes
 
 Hooks reference: https://code.claude.com/docs/en/hooks · Subagents: https://code.claude.com/docs/en/sub-agents
@@ -553,3 +658,43 @@ reads Needs approval); `idle`, `shell`, missing or unknown `status`, or no live 
   `status` is missing only before the first `busy`, before any Stop can set `agent_background > 0`. The
   ping is unreachable, so Task 13 builds none. This appendix stays as the recorded protocol for a future
   owner decision (board #481).
+
+## Appendix C — Teammate hook inputs (observed, Claude Code 2.1.296, 2026-10-11)
+
+Captured with a throwaway command hook logging every input of `Stop`, `SubagentStart`, `SubagentStop`,
+`TeammateIdle`, `TaskCreated`, `TaskCompleted`, `Notification` and `UserPromptSubmit` (`--settings` on a scratch
+file, `--setting-sources project,local`, a scratch folder; no owner settings touched). Ids, names and paths below
+are placeholders; redacted fixtures: `cmd/testdata/stop_teammates_in_turn.json`, `subagentstart_teammate.json`,
+`subagentstop_teammate.json`, `stop_teammates_idle.json`, `subagentstop_finished_still_listed.json`.
+
+C.1 Event names in the installed CLI (strings of the binary): `SubagentStart`, `SubagentStop`, `TeammateIdle`
+(input: the common fields plus `teammate_name`, `team_name`), `TaskCreated`/`TaskCompleted` (`task_id`,
+`task_subject`, `task_description`, `teammate_name`, `team_name`). No "teammate starts a turn" event other than
+`SubagentStart`.
+
+C.2 Interactive session (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`, driven over a pty, `haiku`): the lead spawns
+teammates `alpha` (`sleep 20`, then message the lead) and `beta` (`sleep 45`) and ends its turn; later it sends
+alpha one more message; then it stops both. Times from the lead's prompt:
+
+| t (s) | Event | Shape |
+|---|---|---|
+| 3.2 / 3.7 | `SubagentStart` ×2 | `agent_id: "a<name>-<16 hex>"`, `agent_type: "<name>"` |
+| 5.1 | `Stop` | `background_tasks`: two `{"id": "t<8 base36>", "type": "teammate", "status": "running", "description": "Teammate <name>: …"}` (no `agent_type`) |
+| 6.2 | `SubagentStop` | `agent_type: ""`, plain hex id: an internal agent after the lead's Stop (prompt suggestion) |
+| 8.3 | `SubagentStop`, then `TeammateIdle` | beta moved its `sleep 45` to a background shell and ended its turn; the list gains a `shell` entry. `TeammateIdle`: `teammate_name: "beta"`, `team_name: "session-<8 hex>"`, the same `agent_id` |
+| 10.9 | `Stop` | the lead woke on beta's idle notice; both teammates still listed `running` |
+| 27.9 | `SubagentStop`, `TeammateIdle` | alpha's turn ends |
+| 89.7 | `Notification` `idle_prompt` | teammates idle, still listed |
+| 99.9 | `SubagentStart` | alpha handles the lead's new message: the same `agent_id` as at its spawn |
+| 118.0 | `SubagentStop`, `TeammateIdle` | alpha's second turn ends |
+| 162.4 | `Stop` | after `TaskStop` on both: `background_tasks: []`; no `SubagentStop` for the stopped teammates |
+
+Beta's background shell finished at about t = 53 s with no hook in beta's name (no `SubagentStart`): a teammate
+waiting on its own shell is idle to the hooks. Under `claude -p` the `team_name` parameter is ignored and named
+agents run as plain subagents (`type: "subagent"`, hex ids): teammates need an interactive session.
+
+C.3 `claude -p`, two background subagents (`sleep 5`) finishing within the same second: both `SubagentStop`
+inputs list **both** subagents, the second one's included although the first had already stopped. The list drops
+a finished subagent only when the main agent takes its completion notification (the following `Stop` listed
+none). Under the 2026-10-10 rule the second `SubagentStop` counted 1 and left the count there until the main
+agent woke: the #543 tail (3).
