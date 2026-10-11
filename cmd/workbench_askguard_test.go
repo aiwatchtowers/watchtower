@@ -417,6 +417,30 @@ func TestProj13_AskGuardFinishesFastOnALockedDatabase(t *testing.T) {
 		assert.Empty(t, out)
 		assert.Empty(t, errOut)
 	})
+	// Presence reads that stall after the workbench was found: the read
+	// budget cuts them off and the hook denies with the away reason (never
+	// the present one the stalled read would have returned), well inside 2 s.
+	t.Run("pre-tool-use presence reads stall", func(t *testing.T) {
+		database := writeActionsConfig(t)
+		id, err := database.CreateWorkbench("acme", t.TempDir())
+		require.NoError(t, err)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		orig := askGuardOwnerPresence
+		askGuardOwnerPresence = func(*db.DB, int64, string) bool { <-release; return true }
+		t.Cleanup(func() { askGuardOwnerPresence = orig })
+
+		start := time.Now()
+		out, errOut, err := runAskGuard(t, strconv.FormatInt(id, 10), strings.NewReader(askToolPayload("AskUserQuestion")))
+		elapsed := time.Since(start)
+
+		t.Logf("answered in %v", elapsed)
+		assert.Less(t, elapsed, askGuardReadBudget+300*time.Millisecond)
+		assert.Less(t, elapsed, 2*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, denialWith(t, askToolDenialReasonAway), out)
+		assert.Empty(t, errOut)
+	})
 	// --stop with a stub model: the locked database reads as the owner being
 	// away, decided within the stub's time plus 2 s.
 	t.Run("stop", func(t *testing.T) {
