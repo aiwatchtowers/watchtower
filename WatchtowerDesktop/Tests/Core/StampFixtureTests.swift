@@ -9,11 +9,11 @@ final class StampFixtureTests: XCTestCase {
     func testTheFixturePinsGosLayoutAndTheColumns() throws {
         let fixture = try StampFixture.load()
         XCTAssertEqual(fixture.layout, "2006-01-02T15:04:05.000Z")
-        for column in ["terminal_sessions.agent_state_at", "terminal_sessions.agent_background_at",
-                       "terminal_sessions.chat_question_at", "owner_presence.seen_at",
-                       "owner_asks.chat_asked_at"] {
-            XCTAssertTrue(fixture.columns.contains(column), column)
-        }
+        XCTAssertEqual(Set(fixture.columns), [
+            "terminal_sessions.agent_state_at", "terminal_sessions.agent_background_at",
+            "terminal_sessions.chat_question_at", "owner_presence.seen_at",
+            "owner_asks.chat_asked_at"
+        ])
         XCTAssertFalse(fixture.valid.isEmpty)
         XCTAssertFalse(fixture.invalid.isEmpty)
     }
