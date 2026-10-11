@@ -50,23 +50,36 @@ type preToolUseDenial struct {
 
 var workbenchAskGuardCmd = &cobra.Command{
 	Use:   "ask-guard",
-	Short: "Deny AskUserQuestion in a workbench session (a Claude Code PreToolUse hook)",
-	Long: "The PreToolUse hook installed by `integrate claude-code --workbench N` with matcher\n" +
-		"AskUserQuestion: when the hook input on stdin names AskUserQuestion and workbench N exists,\n" +
-		"it denies the tool and tells the agent to file the question with ask_owner. Another tool,\n" +
-		"a deleted workbench, a bad id or any failure prints nothing, so the tool runs. With\n" +
-		"--pre-tool-use it always exits 0.",
+	Short: "The workbench ask guard: Claude Code's Stop and PreToolUse(AskUserQuestion) hooks",
+	Long: "Two hooks installed by `integrate claude-code --workbench N`, each always exiting 0.\n" +
+		"--pre-tool-use (matcher AskUserQuestion): when the hook input on stdin names\n" +
+		"AskUserQuestion and workbench N exists, it denies the tool and tells the agent to file the\n" +
+		"question with ask_owner. Another tool, a deleted workbench, a bad id or any failure prints\n" +
+		"nothing, so the tool runs.\n" +
+		"--stop: classifies the turn's final message with the light-tier model and sends back a\n" +
+		"request left as text, unless it is one short question the owner is here to see in this\n" +
+		"session (then it is recorded for raising later), or a message that says the work is done\n" +
+		"without finish_session. It never blocks a continued turn; an input or model failure prints\n" +
+		"nothing, and a database failure reads as the owner being away.",
 	// No root schema/config pre-run: a broken config must not fail the hook
 	// (the `workbench check` precedent); the DB is opened by the command.
 	PersistentPreRunE:  func(*cobra.Command, []string) error { return nil },
 	Args:               cobra.ArbitraryArgs,
 	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if !workbenchAskGuardFlagPreToolUse {
-			return errors.New("ask-guard only runs as the Claude Code PreToolUse hook (--pre-tool-use)")
+		if workbenchAskGuardFlagPreToolUse == workbenchAskGuardFlagStop {
+			return errors.New("ask-guard runs as one Claude Code hook: --pre-tool-use or --stop")
 		}
 		if checkWorkbenchIDFlags(cmd) != nil {
-			return nil // never refuse the tool over our own flags
+			return nil // never refuse the tool or block the turn over our own flags
+		}
+		if workbenchAskGuardFlagStop {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			runAskGuardStop(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workbenchAskGuardFlagWorkbench)
+			return nil
 		}
 		runAskGuardHook(cmd.InOrStdin(), cmd.OutOrStdout(), workbenchAskGuardFlagWorkbench)
 		return nil
@@ -76,12 +89,15 @@ var workbenchAskGuardCmd = &cobra.Command{
 var (
 	workbenchAskGuardFlagWorkbench  string
 	workbenchAskGuardFlagPreToolUse bool
+	workbenchAskGuardFlagStop       bool
 )
 
 func init() {
 	addWorkbenchIDFlag(workbenchAskGuardCmd, &workbenchAskGuardFlagWorkbench, "workbench id")
 	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagPreToolUse, "pre-tool-use", false,
 		"run as the Claude Code PreToolUse hook (always exit 0)")
+	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagStop, "stop", false,
+		"run as the Claude Code Stop hook (always exit 0)")
 	workbenchCmd.AddCommand(workbenchAskGuardCmd)
 }
 
