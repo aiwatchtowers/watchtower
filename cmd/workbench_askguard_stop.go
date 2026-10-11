@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -90,6 +91,10 @@ type askGuardVerdict struct {
 	CompleteUnreported bool
 	Question           string
 	Options            []db.ChatQuestionOption
+	// UnknownRequest is the model's request value when it was none of
+	// none/chat/full and so read as none ("" otherwise, or for an empty one,
+	// which also reads as none).
+	UnknownRequest string
 }
 
 // covered: the request is the named ask itself.
@@ -120,10 +125,11 @@ func decodeAskGuardVerdict(reply string) (askGuardVerdict, error) {
 	}
 	var out askGuardModelOutput
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
-		return askGuardVerdict{}, fmt.Errorf("the classifier reply is not the verdict object: %w", err)
+		return askGuardVerdict{}, fmt.Errorf("the classifier reply (%s) is not the verdict object: %w",
+			claude.DescribeOutput([]byte(reply)), err)
 	}
 	if out.Request == nil {
-		return askGuardVerdict{}, errors.New("the classifier reply has no request")
+		return askGuardVerdict{}, fmt.Errorf("the classifier reply (%s) has no request", claude.DescribeOutput([]byte(reply)))
 	}
 	v := askGuardVerdict{
 		Request:            *out.Request,
@@ -169,14 +175,16 @@ func normaliseAskGuardVerdict(v askGuardVerdict) askGuardVerdict {
 		opts = nil
 	}
 	v.Options = opts
-	switch v.Request {
+	switch request := strings.ToLower(strings.TrimSpace(v.Request)); request {
 	case askRequestChat:
+		v.Request = askRequestChat
 		if v.Question == "" {
 			v.Request = askRequestFull
 		}
-	case askRequestFull:
+	case askRequestFull, askRequestNone:
+		v.Request = request
 	default:
-		v.Request = askRequestNone
+		v.UnknownRequest, v.Request = v.Request, askRequestNone
 	}
 	return v
 }
@@ -312,10 +320,13 @@ var askGuardGeneratorFactory = func(cfg *config.Config) digest.Generator {
 // within askGuardModelBudget. The system prompt is the embedded v4 text, not
 // a prompt-store entry: PROJ-13 pins it (a documented exception to the
 // DB-backed prompts rule, docs/features/workbench.md).
-func classifyAskGuard(ctx context.Context, gen digest.Generator, message string) (askGuardVerdict, error) {
-	ctx, cancel := context.WithTimeout(ctx, askGuardModelBudget)
+func classifyAskGuard(parent context.Context, gen digest.Generator, message string) (askGuardVerdict, error) {
+	ctx, cancel := context.WithTimeout(parent, askGuardModelBudget)
 	defer cancel()
 	reply, _, _, err := gen.Generate(digest.WithSource(ctx, askGuardSource), devpack.AskGuardClassifier, message, "")
+	if err != nil && parent.Err() == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return askGuardVerdict{}, fmt.Errorf("the classifier call ran past its %s budget: %w", askGuardModelBudget, err)
+	}
 	if err != nil {
 		return askGuardVerdict{}, fmt.Errorf("the classifier call failed: %w", err)
 	}
@@ -382,6 +393,9 @@ func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Confi
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
 		return nil, false
+	}
+	if v.UnknownRequest != "" {
+		fmt.Fprintf(stderr, "watchtower: ask guard read the classifier's request %q as none\n", briefClip(v.UnknownRequest, 40))
 	}
 	return &v, true
 }

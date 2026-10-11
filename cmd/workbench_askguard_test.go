@@ -1186,3 +1186,46 @@ func TestStopGuardUnreadableSessionVariableReadsAsAway(t *testing.T) {
 	assert.Contains(t, errOut, "ask guard reads the owner as away")
 	assert.Contains(t, errOut, terminalSessionEnv)
 }
+
+// Diagnostics: a request in another case or with spaces is still read; an
+// unknown one reads as none and is named on stderr; a timeout names the
+// budget; a reply that is no verdict is described, never echoed.
+func TestAskGuardDiagnostics(t *testing.T) {
+	v, err := decodeAskGuardVerdict(`{"request":" CHAT ","question":"Ship it?"}`)
+	require.NoError(t, err)
+	assert.Equal(t, askRequestChat, v.Request)
+	assert.Empty(t, v.UnknownRequest)
+	v, err = decodeAskGuardVerdict(`{"request":"Full"}`)
+	require.NoError(t, err)
+	assert.Equal(t, askRequestFull, v.Request)
+	v, err = decodeAskGuardVerdict(`{"request":"maybe"}`)
+	require.NoError(t, err)
+	assert.Equal(t, askRequestNone, v.Request)
+	assert.Equal(t, "maybe", v.UnknownRequest)
+
+	const prose = "SECRET-PROSE the message asks the owner a question"
+	_, err = decodeAskGuardVerdict(prose)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "SECRET-PROSE", "the reply is described, never echoed")
+	assert.Contains(t, err.Error(), "bytes")
+
+	orig := askGuardModelBudget
+	askGuardModelBudget = 20 * time.Millisecond
+	t.Cleanup(func() { askGuardModelBudget = orig })
+	_, err = classifyAskGuard(context.Background(), &stubAskGuardGen{block: true}, "msg")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ran past its 20ms budget")
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = classifyAskGuard(parent, &stubAskGuardGen{block: true}, "msg")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "budget", "a signal is not the budget")
+
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	useAskGuardGen(t, &stubAskGuardGen{reply: `{"request":"maybe"}`})
+	out, errOut, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, errOut, `read the classifier's request "maybe" as none`)
+}
