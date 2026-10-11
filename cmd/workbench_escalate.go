@@ -145,6 +145,9 @@ func parseEscalateArgs(cmd *cobra.Command, positional []string) (escalateArgs, e
 	return a, nil
 }
 
+// errEscalateOpenCap is open_cap's fixed text (spec Part 5.3).
+var errEscalateOpenCap = errors.New("too many open asks")
+
 // errEscalateNotFound wraps a missing workbench or session, or a session
 // that is not a claude row of the workbench.
 var errEscalateNotFound = errors.New("not found")
@@ -175,7 +178,7 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 	case db.IsBusy(err):
 		return escalateFailure(escalateErrBusy, err)
 	case errors.Is(err, db.ErrTooManyOpenAsks):
-		return escalateFailure(escalateErrOpenCap, err)
+		return escalateFailure(escalateErrOpenCap, errEscalateOpenCap)
 	case errors.Is(err, errEscalateNotFound), errors.Is(err, db.ErrWorkbenchNotFound),
 		errors.Is(err, db.ErrTerminalSessionNotFound):
 		return escalateFailure(escalateErrNotFound, err)

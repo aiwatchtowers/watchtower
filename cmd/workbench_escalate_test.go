@@ -239,8 +239,7 @@ func TestEscalateAtTheOpenCapKeepsTheQuestion(t *testing.T) {
 	res := f.escalate(t, escalateReasonTimeout)
 
 	assert.False(t, res.OK)
-	assert.Equal(t, escalateErrOpenCap, res.ErrorCode)
-	assert.NotEmpty(t, res.Error)
+	assert.Equal(t, escalateResult{OK: false, ErrorCode: escalateErrOpenCap, Error: "too many open asks"}, res)
 	assert.Equal(t, asks.MaxOpenPerWorkbench, countAsks(t, f.database, f.pid))
 	assert.Equal(t, before, rowSnapshot(t, f.database, f.row), "the question is kept")
 }
