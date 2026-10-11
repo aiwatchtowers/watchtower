@@ -43,6 +43,13 @@ final class ChatQuestionEscalationResultTests: XCTestCase {
         XCTAssertEqual(result.verdict, .failed("internal: watchtower exited with error: exit 2"))
     }
 
+    func testTheDesktopsLaunchFailureIsRetried() {
+        let result = ChatQuestionEscalationResult.launchFailure("no exec bit")
+        XCTAssertEqual(result.errorCode, .launchFailed)
+        XCTAssertTrue(ChatQuestionEscalationResult.ErrorCode.launchFailed.isTransient)
+        XCTAssertEqual(result.verdict, .transient("launch failed: no exec bit"))
+    }
+
     func testAnUnknownOutcomeOrNoCodeIsNotRetried() throws {
         XCTAssertEqual(try decode(#"{"ok":true,"outcome":"queued"}"#).verdict, .failed("unknown outcome queued"))
         XCTAssertEqual(try decode(#"{"ok":true}"#).verdict, .failed("no outcome"))

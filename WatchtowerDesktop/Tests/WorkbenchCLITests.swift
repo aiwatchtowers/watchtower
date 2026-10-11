@@ -127,6 +127,15 @@ final class WorkbenchCLITests: XCTestCase {
         guard case .failed = unreadable.verdict else { return XCTFail("unparsable stdout is not retried") }
     }
 
+    /// A binary that could not be started ran nothing: retried.
+    func testEscalateQuestionLaunchFailureIsRetried() async {
+        struct NoExecBit: LocalizedError { var errorDescription: String? { "no exec bit" } }
+        let runner = FakeCLIRunner(error: CLIRunnerError.launchFailed(underlying: NoExecBit()))
+        let result = await WorkbenchCLI(runner: runner).escalateQuestion(projectID: 1, sessionID: 2, at: "x", reason: .left)
+        XCTAssertEqual(result.errorCode, .launchFailed)
+        XCTAssertEqual(result.verdict, .transient("launch failed: no exec bit"))
+    }
+
     func testDeletePassesJSONAndDecodesBothEnvelopeShapes() async throws {
         let clean = FakeCLIRunner(stdout: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8))
         let ok = try await WorkbenchCLI(runner: clean).delete(projectID: 3)

@@ -476,8 +476,9 @@ struct WorkbenchCLI {
     /// (owner asks v2, Part 5.3). `at` is the `chat_question_at` the Desktop
     /// read, passed back verbatim: Go files only while it is still the stored
     /// question. Go always exits 0 with one envelope; a run that does not
-    /// (a launch failure, a non-zero exit, unparsable stdout, a cancel)
-    /// comes back as the Desktop's own `failure` envelope, never thrown.
+    /// comes back as the Desktop's own envelope, never thrown: a binary that
+    /// could not be started as `launchFailure` (retried), a non-zero exit,
+    /// unparsable stdout or a cancel as `failure` (not retried).
     func escalateQuestion(
         projectID: Int64,
         sessionID: Int64,
@@ -489,6 +490,8 @@ struct WorkbenchCLI {
         do {
             let data = try await runner.run(args: args)
             return try JSONDecoder().decode(ChatQuestionEscalationResult.self, from: data)
+        } catch CLIRunnerError.launchFailed(let underlying) {
+            return .launchFailure(underlying.localizedDescription)
         } catch {
             // A DecodingError's localizedDescription drops the key path.
             return .failure(error is DecodingError ? String(describing: error) : error.localizedDescription)

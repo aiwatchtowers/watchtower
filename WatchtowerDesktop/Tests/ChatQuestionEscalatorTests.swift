@@ -38,6 +38,19 @@ private final class ScriptedEscalationRunner: CLIRunnerProtocol, @unchecked Send
     }
 }
 
+/// A binary that cannot be started: every call fails to launch.
+private final class UnlaunchableRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var calls: Int { lock.withLock { count } }
+
+    func run(args: [String]) async throws -> Data {
+        lock.withLock { count += 1 }
+        throw CLIRunnerError.launchFailed(underlying: CocoaError(.fileReadNoPermission))
+    }
+}
+
 private enum Answer {
     static let filed = #"{"ok":true,"outcome":"filed","ask_id":31,"level":"quick"}"#
     static let gone = #"{"ok":true,"outcome":"gone"}"#
@@ -303,6 +316,19 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 3)
         XCTAssertEqual(filed, [7])
         XCTAssertEqual(logs.filter { $0.contains("retrying") }.count, 1, "logged once per question")
+    }
+
+    /// A binary that could not be started ran nothing: retried at the same
+    /// once-a-minute cadence.
+    func testALaunchFailureIsRetriedAtMostOncePerMinute() async {
+        let runner = UnlaunchableRunner()
+        let escalator = makeEscalator(runner)
+        await evaluate(escalator, after: 600)
+        await evaluate(escalator, after: 659)
+        XCTAssertEqual(runner.calls, 1)
+        await evaluate(escalator, after: 660)
+        XCTAssertEqual(runner.calls, 2)
+        XCTAssertEqual(logs.filter { $0.contains("retrying") }.count, 1)
     }
 
     /// E20a: any other code stops the runs for that question; a new

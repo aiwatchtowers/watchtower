@@ -26,8 +26,10 @@ package struct ChatQuestionEscalationResult: Decodable, Equatable, Sendable {
 
     /// Why Go wrote nothing. `busy` and `openCap` leave the question in
     /// place and are worth another try; every other code is not.
+    /// `launchFailed` is the Desktop's own: the binary could not be started
+    /// (the CLI store mid-replace), so nothing ran — worth another try too.
     package enum ErrorCode: Equatable, Sendable {
-        case busy, openCap, notFound, badArgs, schema, `internal`
+        case busy, openCap, notFound, badArgs, schema, `internal`, launchFailed
         /// A code this build does not know: not retried.
         case other(String)
 
@@ -43,7 +45,7 @@ package struct ChatQuestionEscalationResult: Decodable, Equatable, Sendable {
             }
         }
 
-        package var isTransient: Bool { self == .busy || self == .openCap }
+        package var isTransient: Bool { self == .busy || self == .openCap || self == .launchFailed }
     }
 
     /// What the runner does with a result.
@@ -97,6 +99,12 @@ package struct ChatQuestionEscalationResult: Decodable, Equatable, Sendable {
         Self(ok: false, errorCode: .internal, error: message)
     }
 
+    /// The Desktop's own envelope for a run whose binary could not be
+    /// started: retried.
+    package static func launchFailure(_ message: String) -> Self {
+        Self(ok: false, errorCode: .launchFailed, error: message)
+    }
+
     package var verdict: Verdict {
         guard ok else {
             let code = errorCode ?? .other("")
@@ -128,6 +136,7 @@ private extension ChatQuestionEscalationResult.ErrorCode {
         case .badArgs: "bad_args"
         case .schema: "schema"
         case .internal: "internal"
+        case .launchFailed: "launch failed"
         case let .other(raw): raw.isEmpty ? "no error_code" : raw
         }
     }
