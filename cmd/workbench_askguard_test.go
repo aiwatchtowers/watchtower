@@ -954,11 +954,18 @@ func TestAskGuardModelChildIsIsolated(t *testing.T) {
 	assert.Contains(t, read("argv"), "--model", "a model call")
 }
 
-// E10a (PROJ-13): Claude Code's SIGTERM (its hook timeout) during the model
-// call ends the hook with exit 0 and nothing on stdout, and the model's whole
-// process group is gone before it exits. The hook is the real CLI in a
-// subprocess; the model a fake claude that starts a grandchild and waits.
+// E10a (PROJ-13): Claude Code's SIGTERM (its hook timeout), or a SIGHUP,
+// during the model call ends the hook with exit 0 and nothing on stdout, and
+// the model's whole process group is gone before it exits. The hook is the
+// real CLI in a subprocess; the model a fake claude that starts a grandchild
+// and waits.
 func TestProj13_ACancelledModelCallLeavesNoProcess(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) { cancelledModelCallLeavesNoProcess(t, sig) })
+	}
+}
+
+func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-claude")
 	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+
@@ -994,14 +1001,14 @@ func TestProj13_ACancelledModelCallLeavesNoProcess(t *testing.T) {
 	child := readPID("child")
 	require.NoError(t, syscall.Kill(-group, 0), "fixture: the model's group runs")
 
-	require.NoError(t, p.cmd.Process.Signal(syscall.SIGTERM))
+	require.NoError(t, p.cmd.Process.Signal(sig))
 	done := make(chan error, 1)
 	go func() { done <- p.wait() }()
 	select {
 	case err := <-done:
 		assert.Equal(t, 0, exitCode(err), "PROJ-13: the hook exits 0")
 	case <-time.After(15 * time.Second):
-		t.Fatal("the hook did not exit after SIGTERM")
+		t.Fatalf("the hook did not exit after %v", sig)
 	}
 	_, open := <-p.lines
 	assert.False(t, open, "PROJ-13: nothing on stdout")
@@ -1080,4 +1087,34 @@ func TestStopGuardDeletedWorkbenchPassesSilently(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, out, verdict)
 	}
+}
+
+// A signal after the model call — here while the guard reads the session —
+// writes nothing and prints nothing on stdout: no record, no clear, one
+// stderr line.
+func TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	seedOlderQuestion(t, database, pid, row)
+	useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	orig, calls := hookNow, 0
+	hookNow = func() time.Time {
+		calls++
+		if calls == 2 { // the presence read's clock, after the model call
+			cancel()
+		}
+		return time.Now()
+	}
+	t.Cleanup(func() { hookNow = orig })
+	var out, errOut bytes.Buffer
+
+	runAskGuardStop(ctx, strings.NewReader(guardPayload(e1Message, false)), &out, &errOut, strconv.FormatInt(pid, 10))
+
+	assert.Empty(t, out.String())
+	assert.Contains(t, errOut.String(), "watchtower: ask guard skipped: cancelled")
+	q := storedChatQuestion(t, database, row)
+	require.NotNil(t, q, "nothing cleared")
+	assert.Equal(t, "An older question?", q.Question, "nothing recorded")
 }

@@ -305,16 +305,17 @@ func classifyAskGuard(ctx context.Context, gen digest.Generator, message string)
 // it always exits 0. An input or model failure, a bad id, a broken config or
 // a panic prints nothing on stdout (a real failure is one stderr line, which
 // Claude Code keeps in its hook log); a database failure reads as the owner
-// being away. SIGINT and SIGTERM (Claude Code's hook timeout) cancel the
-// model call, whose process group is killed and reaped before the hook
-// returns.
+// being away. SIGINT, SIGTERM (Claude Code's hook timeout) and SIGHUP (its
+// terminal gone) cancel the model call, whose process group is killed and
+// reaped before the hook returns; a signal at any point before the output
+// writes nothing more and prints nothing on stdout.
 func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.Writer, rawID string) {
 	defer func() {
 		if r := recover(); r != nil {
 			fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", r)
 		}
 	}()
-	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	at := hookNow().Truncate(time.Millisecond)
 	inCtx, cancelIn := context.WithTimeout(ctx, askGuardInputWait)
@@ -333,17 +334,9 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 		return
 	}
 	empty := strings.TrimSpace(in.LastAssistantMessage) == ""
-	var verdict *askGuardVerdict
-	if !empty {
-		v, err := classifyAskGuard(ctx, askGuardGeneratorFactory(cfg), in.LastAssistantMessage)
-		if err != nil {
-			fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
-			return
-		}
-		verdict = &v
-	}
-	if ctx.Err() != nil {
-		return // a signal after the call: end the turn, write nothing
+	verdict, ok := askGuardVerdictFor(ctx, stderr, cfg, in, empty)
+	if !ok || askGuardCancelled(ctx, stderr) {
+		return
 	}
 
 	g := openAskGuardSession(stderr, cfg.DBPath(), workbenchID, in.SessionID)
@@ -353,9 +346,39 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 		return // a deleted workbench's leftover hook: nothing to say
 	}
 	d := decideStop(in.StopHookActive, empty, verdict, r)
-	if reason := g.apply(stderr, d, verdict, at, in.StopHookActive); reason != "" {
-		_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: reason})
+	if askGuardCancelled(ctx, stderr) {
+		return
 	}
+	reason := g.apply(stderr, d, verdict, at, in.StopHookActive)
+	if askGuardCancelled(ctx, stderr) || reason == "" {
+		return
+	}
+	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: reason})
+}
+
+// askGuardVerdictFor classifies the Stop's message (nil verdict for an
+// empty one, which calls no model); false after a model failure, reported in
+// one stderr line.
+func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Config, in askGuardStopInput, empty bool) (*askGuardVerdict, bool) {
+	if empty {
+		return nil, true
+	}
+	v, err := classifyAskGuard(ctx, askGuardGeneratorFactory(cfg), in.LastAssistantMessage)
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
+		return nil, false
+	}
+	return &v, true
+}
+
+// askGuardCancelled reports a signal that cancelled the hook, in one stderr
+// line: the turn ends, and nothing more is written or printed.
+func askGuardCancelled(ctx context.Context, stderr io.Writer) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	fmt.Fprintln(stderr, "watchtower: ask guard skipped: cancelled")
+	return true
 }
 
 // askGuardConfig loads the config for the active workspace (or --workspace).
