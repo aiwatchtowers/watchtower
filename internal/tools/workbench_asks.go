@@ -185,7 +185,7 @@ func NewAskOwner(sessionEnv func() string) *Tool {
 			if a.TargetID < 0 {
 				return &ValidationError{Msg: "target_id: must be a target id"}
 			}
-			if _, err := asks.Validate(a.input()); err != nil {
+			if _, err := asks.Validate(a.input(), asks.OriginAgent); err != nil {
 				return &ValidationError{Msg: err.Error()}
 			}
 			return nil
@@ -253,7 +253,7 @@ func fileAsk(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, sessionEn
 	if err != nil {
 		return nil, err
 	}
-	payload, err := asks.Validate(a.input())
+	payload, err := asks.Validate(a.input(), asks.OriginAgent)
 	if err != nil {
 		return nil, &ValidationError{Msg: err.Error()}
 	}

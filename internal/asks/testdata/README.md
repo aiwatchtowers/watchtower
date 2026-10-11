@@ -8,6 +8,10 @@ Both sides must agree on every file.
   questions of a `question` ask) and by the Swift `ChatQuestionCard` decoder alike. Only
   rules both sides enforce belong here; Go-only bounds (label ≤ 80, description ≤ 300 runes)
   are unit-tested in Go.
+- `cards/owner_ask_*.json` — an owner ask's question payload, not a chat card: both
+  fixture loops (Go `TestCardFixtures`, Swift `OwnerAskCardFixtureTests`) skip them. Go
+  `asks.Validate` accepts the file with origin `chat` and refuses it with origin `agent`;
+  the Swift owner-ask decode accepts it and the chat-card decode refuses it.
 - `answers/*.json` — `{kind, payload, answer, canonical | error}`. For `valid_*`, `answer`
   re-encoded with sorted keys and no whitespace equals `canonical` byte for byte (Go:
   `json.Marshal` of `asks.Answer`; Swift: `.sortedKeys` and `.withoutEscapingSlashes`).

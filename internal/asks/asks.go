@@ -82,9 +82,16 @@ type Payload struct {
 
 // Validate checks an ask_owner input against the Part 3 rules and returns
 // its payload. The first violation is the error, as `field: reason`. The
-// title is checked trimmed; storing it trimmed is the caller's.
-func Validate(in Input) (Payload, error) {
+// title is checked trimmed; storing it trimmed is the caller's. Origin is who
+// files the ask: only OriginChat, Watchtower raising a terminal question, may
+// store a question with no options (a free reply).
+func Validate(in Input, origin string) (Payload, error) {
 	var p Payload
+	switch origin {
+	case OriginAgent, OriginChat:
+	default:
+		return p, fmt.Errorf("origin: must be agent or chat")
+	}
 	switch in.Kind {
 	case KindReview, KindCheck, KindQuestion:
 	default:
@@ -104,7 +111,7 @@ func Validate(in Input) (Payload, error) {
 	if p.Focus, err = validateFocus(in.Kind, in.Focus); err != nil {
 		return p, err
 	}
-	if p.Questions, err = validateQuestions(in.Kind, in.Questions); err != nil {
+	if p.Questions, err = validateQuestions(in.Kind, in.Questions, origin); err != nil {
 		return p, err
 	}
 	if p.Checklist, err = validateChecklist(in.Kind, in.Checklist); err != nil {
@@ -149,8 +156,9 @@ func validateFocus(kind string, focus []Focus) ([]Focus, error) {
 
 // validateQuestions mirrors the Swift ChatQuestionParser: question and label
 // trimmed and non-empty, an empty id is the 1-based position, ids unique and
-// labels unique within a question.
-func validateQuestions(kind string, questions []Question) ([]Question, error) {
+// labels unique within a question. A question raised from chat may also have
+// no options.
+func validateQuestions(kind string, questions []Question, origin string) ([]Question, error) {
 	if len(questions) > 4 {
 		return nil, fmt.Errorf("questions: at most 4")
 	}
@@ -170,7 +178,9 @@ func validateQuestions(kind string, questions []Question) ([]Question, error) {
 		if q.Question == "" {
 			return nil, fmt.Errorf("%s.question: required", field)
 		}
-		if len(q.Options) < 2 || len(q.Options) > 4 {
+		switch n := len(q.Options); {
+		case n == 0 && origin == OriginChat:
+		case n < 2 || n > 4:
 			return nil, fmt.Errorf("%s.options: 2 to 4 required", field)
 		}
 		options := make([]Option, 0, len(q.Options))
