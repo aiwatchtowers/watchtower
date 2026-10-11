@@ -264,7 +264,7 @@ func TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall(t *testing.T) {
 	}
 	var ids []int64
 	require.NoError(t, fx.d.WithTx(func(tx *sql.Tx) error {
-		ids, err = fx.d.CreateWorkbenchTargetsTx(tx, fx.a, items)
+		ids, err = fx.d.CreateWorkbenchTargetsTx(tx, fx.a, db.ActorAgent, items)
 		return err
 	}))
 	// Features 0–9 close whole (the rollup closes each feature); 10–19 keep
@@ -303,7 +303,7 @@ func TestWorkbenchBoard_ArchiveNowLeavesTheBoardSmall(t *testing.T) {
 	}
 	var ids []int64
 	require.NoError(t, fx.d.WithTx(func(tx *sql.Tx) error {
-		ids, err = fx.d.CreateWorkbenchTargetsTx(tx, fx.a, items)
+		ids, err = fx.d.CreateWorkbenchTargetsTx(tx, fx.a, db.ActorAgent, items)
 		return err
 	}))
 	// Features 0–1 close whole; 2–3 keep their last task open.

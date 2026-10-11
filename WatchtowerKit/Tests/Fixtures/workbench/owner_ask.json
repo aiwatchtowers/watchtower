@@ -1,0 +1,22 @@
+{
+  "changes": "",
+  "created_at": 1700000000,
+  "doc_path": "",
+  "id": 12,
+  "kind": "question",
+  "payload": {
+    "checklist": [],
+    "focus": [{"text": "Both are cheap to build."}],
+    "questions": [
+      {"id": "scope", "options": [{"description": "The release being cut now", "label": "v0.11", "recommended": true}, {"description": "The last shipped release", "label": "v0.10"}], "question": "Which release should the summary cover?"}
+    ]
+  },
+  "quick": {"options": [{"label": "v0.11", "recommended": true}, {"label": "v0.10", "recommended": false}], "question_id": "scope"},
+  "session_id": 31,
+  "status": "open",
+  "summary": "The summary needs a release to cover.",
+  "target_id": 415,
+  "title": "Which release?",
+  "workbench_id": 7,
+  "workbench_name": "Acme"
+}

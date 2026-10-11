@@ -202,7 +202,7 @@ func insertTargetItems(d *db.DB, store workbenchfiles.Store, projectID int64, it
 	var ids []int64
 	err = d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		if ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, inputs); err != nil {
+		if ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, db.ActorAgent, inputs); err != nil {
 			return err
 		}
 		for i, it := range items {

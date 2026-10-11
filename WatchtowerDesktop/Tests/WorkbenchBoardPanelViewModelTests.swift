@@ -489,7 +489,10 @@ final class WorkbenchBoardPanelViewModelTests: XCTestCase {
         let (pid, _, taskA, _) = try seedGroup()
         let vm = makeVM(project: pid)
         vm.select(taskA)
-        let asks = OwnerAsksViewModel(dbPool: dbManager.dbPool, terminalCenter: nil, defaults: defaults)
+        let asks = OwnerAsksViewModel(
+            dbPool: dbManager.dbPool, terminalCenter: nil,
+            lineDelivery: SessionLineDelivery(terminalCenter: nil), defaults: defaults
+        )
 
         await vm.openAsk(42, show: { askID, projectID in
             await asks.lookUp(askID: askID, projectID: projectID) != nil

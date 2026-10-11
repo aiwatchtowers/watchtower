@@ -43,7 +43,7 @@ func SeedTestWorkbenchTarget(t *testing.T, d *DB, projectID int64, parent sql.Nu
 	var ids []int64
 	err := d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, []WorkbenchTargetInput{{Title: title, ParentID: parent}})
+		ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, ActorAgent, []WorkbenchTargetInput{{Title: title, ParentID: parent}})
 		return err
 	})
 	if err != nil {

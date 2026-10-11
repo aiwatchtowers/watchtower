@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the generated Info.plist (GENERATE_INFOPLIST_FILE=YES + INFOPLIST_FILE):
+	     keys here win, everything else stays generated. Kept as a file because array keys
+	     have no INFOPLIST_KEY_ build-setting equivalent. -->
+	<!-- The link QR code is a watchtower://link URL, so the system Camera app can open the app (spec §2.3). -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.aiwatchtowers.watchtower.mobile.link</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>watchtower</string>
+			</array>
+		</dict>
+	</array>
+	<!-- The link flow scans the QR code shown on the Mac. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Watchtower uses the camera to scan the code shown on your Mac.</string>
+	<!-- The recorder captures meetings and voice notes for the Mac to transcribe. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Watchtower records meetings and voice notes so your Mac can transcribe them.</string>
+	<!-- remote-notification: silent CloudKit pushes wake the sync engine.
+	     audio: an active phone recording keeps capturing through lock and background.
+	     fetch: background refresh for the shared database scope. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+		<string>audio</string>
+		<string>fetch</string>
+	</array>
+</dict>
+</plist>

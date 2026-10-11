@@ -1,4 +1,6 @@
 import AppKit
+import CloudKit
+import os
 import ServiceManagement
 import WatchtowerCore
 
@@ -188,6 +190,29 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
+
+    // MARK: - CloudKit pushes (the mobile hub)
+
+    /// The hub registered for remote notifications
+    /// (`MobileHubStorage.registerForPushes`); the token is CloudKit's
+    /// business, only the outcome is logged.
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Self.pushLogger.notice("registered for CloudKit pushes")
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        Self.pushLogger.error("push registration failed: \(error.localizedDescription, privacy: .public)")
+    }
+
+    /// A silent CloudKit push (the CKSyncEngine's database subscription):
+    /// the hub's relay loop pulls now instead of after its wait, so a
+    /// linking phone's `device` record or a phone action is read at once.
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        guard managesLifecycle, CKNotification(fromRemoteNotificationDictionary: userInfo) != nil else { return }
+        AppState.shared.mobileHub?.wakeRelay()
+    }
+
+    private static let pushLogger = Logger(subsystem: Constants.bundleID, category: "CloudKitPush")
 
     /// The one quit entry point for the surfaces we own (Cmd+Q via the
     /// replaced `.appTermination` command, tray "Quit Watchtower"). SwiftUI's

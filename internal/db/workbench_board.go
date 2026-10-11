@@ -26,7 +26,10 @@ type BoardNode struct {
 
 // boardSiblingOrder sorts siblings by priority (high, medium, low), then by
 // status (in_progress, in_review, blocked, todo, done, then dismissed/snoozed),
-// then id.
+// then id. Twins: the Desktop's WorkbenchBoardOrder (WatchtowerCore,
+// WorkbenchBoardCard.swift) and the phone's BoardModel.boardOrder
+// (WatchtowerMobile/Sources/Features/Workbench/BoardModel.swift); change all
+// three together.
 const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
 	CASE status WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 WHEN 'blocked' THEN 2
 	WHEN 'todo' THEN 3 WHEN 'done' THEN 4 ELSE 5 END, id`

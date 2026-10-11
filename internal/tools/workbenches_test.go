@@ -214,6 +214,12 @@ func TestCreateTargets_NestedPlanInOneCall(t *testing.T) {
 	followUp, err := fx.d.GetTargetByID(id(4))
 	require.NoError(t, err)
 	assert.Equal(t, fx.aTarget, followUp.ParentID.Int64)
+
+	var byAgent int
+	require.NoError(t, fx.d.QueryRow(`SELECT COUNT(*) FROM target_status_history
+		WHERE from_status IS NULL AND actor = 'agent' AND target_id IN (?, ?, ?, ?, ?)`,
+		id(0), id(1), id(2), id(3), id(4)).Scan(&byAgent))
+	assert.Equal(t, 5, byAgent, "create_targets records every creation as the agent's (PROJ-06)")
 }
 
 // Review Focus #3: one bad item and nothing is created — no target, no row.

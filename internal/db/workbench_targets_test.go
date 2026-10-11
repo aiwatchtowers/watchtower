@@ -16,7 +16,7 @@ func TestCreateProjectTargetsTx_UsesTheBoardDefaults(t *testing.T) {
 	var ids []int64
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{{Title: "  Ship the board  ", Intent: "why it matters"}})
+		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, []WorkbenchTargetInput{{Title: "  Ship the board  ", Intent: "why it matters"}})
 		return err
 	}))
 	id := ids[0]
@@ -42,7 +42,7 @@ func TestCreateProjectTargetsTx_NestedBatchParents(t *testing.T) {
 	var ids []int64
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{
+		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, []WorkbenchTargetInput{
 			{Title: "feature"},
 			{Title: "task 1", Intent: "docs/plan.md task 1", BatchParent: 1},
 			{Title: "step 1.1", BatchParent: 2},
@@ -65,7 +65,7 @@ func TestCreateProjectTargetsTx_BatchIsAllOrNothing(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	err := d.WithTx(func(tx *sql.Tx) error {
-		_, err := d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{
+		_, err := d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, []WorkbenchTargetInput{
 			{Title: "feature"},
 			{Title: "task 1", BatchParent: 1},
 			{Title: "   "},
@@ -88,7 +88,7 @@ func TestCreateProjectTargetsTx_RefusesParentsOutsideTheProject(t *testing.T) {
 
 	create := func(items ...WorkbenchTargetInput) error {
 		return d.WithTx(func(tx *sql.Tx) error {
-			_, err := d.CreateWorkbenchTargetsTx(tx, pid, items)
+			_, err := d.CreateWorkbenchTargetsTx(tx, pid, ActorAgent, items)
 			return err
 		})
 	}
@@ -99,7 +99,7 @@ func TestCreateProjectTargetsTx_RefusesParentsOutsideTheProject(t *testing.T) {
 		"mutually exclusive")
 
 	err = d.WithTx(func(tx *sql.Tx) error {
-		_, err := d.CreateWorkbenchTargetsTx(tx, pid+100, []WorkbenchTargetInput{{Title: "x"}})
+		_, err := d.CreateWorkbenchTargetsTx(tx, pid+100, ActorAgent, []WorkbenchTargetInput{{Title: "x"}})
 		return err
 	})
 	assert.ErrorIs(t, err, ErrWorkbenchNotFound)
@@ -155,4 +155,32 @@ func TestPromoteSubItemToChild_CopiesProjectID(t *testing.T) {
 	tg, err := d.GetTargetByID(int(child))
 	require.NoError(t, err)
 	assert.Equal(t, nullID(pid), tg.WorkbenchID, "a promoted sub-item stays on the parent's board")
+}
+
+// PROJ-06: the creation row carries the actor the caller claims — the agent's
+// create_targets or the owner's `workbench target add` — and nothing else.
+func TestCreateWorkbenchTargetsTx_RecordsTheClaimedActor(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	for _, actor := range []string{ActorAgent, ActorOwner} {
+		var ids []int64
+		require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
+			var err error
+			ids, err = d.CreateWorkbenchTargetsTx(tx, pid, actor, []WorkbenchTargetInput{{Title: "by " + actor}})
+			return err
+		}))
+		var got string
+		var claim sql.NullString
+		require.NoError(t, d.QueryRow(`SELECT actor FROM target_status_history WHERE target_id = ?`, ids[0]).Scan(&got))
+		require.NoError(t, d.QueryRow(`SELECT status_actor FROM targets WHERE id = ?`, ids[0]).Scan(&claim))
+		assert.Equal(t, actor, got)
+		assert.False(t, claim.Valid, "the history trigger cleared the claim")
+	}
+	for _, actor := range []string{"", ActorSystem, "bogus"} {
+		err := d.WithTx(func(tx *sql.Tx) error {
+			_, err := d.CreateWorkbenchTargetsTx(tx, pid, actor, []WorkbenchTargetInput{{Title: "x"}})
+			return err
+		})
+		assert.Error(t, err, "actor %q is refused", actor)
+	}
 }

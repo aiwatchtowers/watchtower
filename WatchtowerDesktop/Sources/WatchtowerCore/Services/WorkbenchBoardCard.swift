@@ -6,7 +6,9 @@ import Foundation
 /// which orders the board the agent sees through `watchtower mcp --workbench N`
 /// and `workbench board`: priority high, medium, then anything else; then status
 /// in_progress, in_review, blocked, todo, done, then anything else; then id.
-/// Change both sides together.
+/// A third twin is the phone's `BoardModel.boardOrder`
+/// (`WatchtowerMobile/Sources/Features/Workbench/BoardModel.swift`), which
+/// orders the mirrored board. Change all three together.
 package enum WorkbenchBoardOrder {
     package static func priorityRank(_ priority: String) -> Int {
         switch priority {

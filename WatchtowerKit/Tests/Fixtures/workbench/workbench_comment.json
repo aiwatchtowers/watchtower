@@ -1,0 +1,12 @@
+{
+  "agent_label": "claude",
+  "author": "agent",
+  "body": "The plan is on the board. One question on the menu wording.",
+  "created_at": 1700000000,
+  "id": 88,
+  "parent_id": 80,
+  "read": false,
+  "status": "open",
+  "target_id": 415,
+  "workbench_id": 7
+}

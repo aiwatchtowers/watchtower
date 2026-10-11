@@ -1132,7 +1132,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         let result = await vm.answerQuick(ask, with: .quick(label: "Maybe", questionID: "a"))
 
-        XCTAssertEqual(result, .failed)
+        XCTAssertEqual(result, .invalid(#"answers[0].labels: question "a" has no option "Maybe""#))
         let stored = try await status(askID)
         XCTAssertEqual(stored.status, "open")
         XCTAssertTrue(typed.isEmpty)

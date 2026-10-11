@@ -1,0 +1,95 @@
+{
+  "_comment": "Review comment anchors (mobile POC spec 6.2): a review ask's doc_snapshot (markdown), the plain text Core's DocumentRendering renders it to (headings with UTF-16 offsets into it), a selection on that text (UTF-16 location/length) and the anchor Core's CommentAnchor makes of it (context_length characters on either side, the nearest preceding heading). Core's CommentAnchorFixtureTests and the Kit's CommentAnchorBuilderTests both run every case. A doc_clipped case is the head of a snapshot the hub cut at the last newline before its cap (OwnerAskSlice.clipSnapshot).",
+  "context_length": 64,
+  "cases": [
+    {
+      "name": "selection_at_document_start",
+      "markdown": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\n## Risks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n",
+      "text": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\nRisks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n\n",
+      "headings": [
+        {
+          "offset": 98,
+          "title": "Risks"
+        }
+      ],
+      "selection": {
+        "location": 0,
+        "length": 12
+      },
+      "anchor": {
+        "quote": "Rollout plan",
+        "prefix": "",
+        "suffix": " for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every ro",
+        "heading": ""
+      }
+    },
+    {
+      "name": "selection_at_document_end",
+      "markdown": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\n## Risks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n",
+      "text": "Rollout plan for acme.\n\nStep 1: ship behind a flag. Step 2: migrate every row in batches of 500.\n\nRisks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com traffic.\n\n",
+      "headings": [
+        {
+          "offset": 98,
+          "title": "Risks"
+        }
+      ],
+      "selection": {
+        "location": 168,
+        "length": 7
+      },
+      "anchor": {
+        "quote": "traffic",
+        "prefix": "\n\nRisks\n\nThe batch job 👩‍👩‍👧 may lag behind the café on example.com ",
+        "suffix": ".\n\n",
+        "heading": "Risks"
+      }
+    },
+    {
+      "name": "selection_spanning_a_heading",
+      "markdown": "# Café 👍🏽 notes\n\nThe intro paragraph for acme carries enough words to push the window past sixty-four characters.\n\n## Rollout\n\nStep 2: migrate every row at once.\n",
+      "text": "Café 👍🏽 notes\n\nThe intro paragraph for acme carries enough words to push the window past sixty-four characters.\n\nRollout\n\nStep 2: migrate every row at once.\n\n",
+      "headings": [
+        {
+          "offset": 0,
+          "title": "Café 👍🏽 notes"
+        },
+        {
+          "offset": 115,
+          "title": "Rollout"
+        }
+      ],
+      "selection": {
+        "location": 102,
+        "length": 28
+      },
+      "anchor": {
+        "quote": "characters.\n\nRollout\n\nStep 2",
+        "prefix": "or acme carries enough words to push the window past sixty-four ",
+        "suffix": ": migrate every row at once.\n\n",
+        "heading": "Café 👍🏽 notes"
+      }
+    },
+    {
+      "name": "selection_in_a_clipped_snapshots_last_shown_line",
+      "markdown": "## Appendix\n\nEvery section above was already reviewed by colleague A before this round.\n\nThe last shown line of a long acme snapshot ends right here at the cut.\n",
+      "text": "Appendix\n\nEvery section above was already reviewed by colleague A before this round.\n\nThe last shown line of a long acme snapshot ends right here at the cut.\n\n",
+      "headings": [
+        {
+          "offset": 0,
+          "title": "Appendix"
+        }
+      ],
+      "selection": {
+        "location": 130,
+        "length": 26
+      },
+      "anchor": {
+        "quote": "ends right here at the cut",
+        "prefix": "before this round.\n\nThe last shown line of a long acme snapshot ",
+        "suffix": ".\n\n",
+        "heading": "Appendix"
+      },
+      "doc_clipped": true
+    }
+  ]
+}

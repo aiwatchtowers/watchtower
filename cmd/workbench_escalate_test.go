@@ -103,7 +103,7 @@ func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 			var targets []int64
 			require.NoError(t, f.database.WithTx(func(tx *sql.Tx) error {
 				var err error
-				targets, err = f.database.CreateWorkbenchTargetsTx(tx, f.pid,
+				targets, err = f.database.CreateWorkbenchTargetsTx(tx, f.pid, db.ActorAgent,
 					[]db.WorkbenchTargetInput{{Title: "one"}, {Title: "two"}})
 				return err
 			}))

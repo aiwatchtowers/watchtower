@@ -1,7 +1,9 @@
 import SwiftUI
 import GRDB
 import Observation
+import os
 import WatchtowerCore
+import WatchtowerSync
 
 @MainActor
 @Observable
@@ -138,6 +140,11 @@ final class AppState {
     /// with no SwiftUI environment — the update notification's click handler.
     /// Set by the scene once `@Environment(\.openSettings)` is available.
     var openSettingsWindow: (() -> Void)?
+
+    /// Opens a main window (the `openQuickCapture` shape) for callers with
+    /// no SwiftUI environment — a phone start bringing its workbench forward
+    /// while no main window is open.
+    var openMainWindow: (() -> Void)?
 
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
@@ -290,6 +297,10 @@ final class AppState {
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
+    /// Every line the app types into a workbench session's prompt — an
+    /// ask's answer, later the phone's input (mobile POC spec §6.6) — with
+    /// one queue per session (PROJ-12).
+    private(set) var sessionLineDelivery: SessionLineDelivery?
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
@@ -306,6 +317,20 @@ final class AppState {
     }
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
+
+    /// The opt-in mobile hub (mobile POC spec §6.1): nil while
+    /// `mobileSyncEnabled` is off. Rebuilt whenever `initWorkbenches` re-runs,
+    /// because it holds the centers that function replaces.
+    private(set) var mobileHub: MobileHubService?
+    /// Why the hub's storage could not be opened, for Settings → Mobile.
+    private(set) var mobileHubInitError: String?
+    /// Where the toggle lives; tests pass a throwaway suite.
+    @ObservationIgnored var mobileSyncDefaults: UserDefaults = .standard
+    /// Opens the hub's transport and sidecar; tests pass a stub.
+    @ObservationIgnored var makeMobileHubStorage: () throws -> MobileHubStorage = { try MobileHubStorage.live() }
+    /// Built once per run and kept across hub rebuilds and toggles.
+    @ObservationIgnored private var mobileHubStorage: MobileHubStorage?
+    @ObservationIgnored private var mobileHubPool: DatabasePool?
 
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
@@ -656,6 +681,7 @@ final class AppState {
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
+                    self?.mobileHub?.stop()
                 }
             }
         }
@@ -1726,9 +1752,10 @@ final class AppState {
         let agentStates = SessionAgentStateCenter(
             dbPool: dbPool, terminalCenter: terminalCenter, notifier: sessionNotifier, probeRunner: cliRunner
         )
+        let lineDelivery = SessionLineDelivery(terminalCenter: terminalCenter)
         let vm = WorkbenchesViewModel(
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
-            agentStates: agentStates
+            agentStates: agentStates, lineDelivery: lineDelivery
         )
         vm.codeFiles.codeIndex = codeIndexCenter
         openQuicklyCenter.workbenches = vm
@@ -1788,13 +1815,10 @@ final class AppState {
         workbenchNotificationCenter = notices
         sessionAgentStateCenter?.stop()
         sessionAgentStateCenter = agentStates
+        sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
-        ownerPresenceCenter?.stop()
-        ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
-        chatQuestionEscalator?.stop()
-        chatQuestionEscalator = cliRunner.map { makeChatQuestionEscalator(runner: $0, workbenches: vm, agentStates: agentStates) }
-        wireChatQuestionEscalation(agentStates: agentStates)
+        replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
@@ -1803,6 +1827,77 @@ final class AppState {
         reports.start()
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
+        initMobileHub(dbPool: dbPool)
+    }
+
+    private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
+
+    var isMobileSyncEnabled: Bool {
+        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey)
+    }
+
+    /// Tears down the previous hub and, while the toggle is on, builds and
+    /// starts a new one over the run's one transport and sidecar. Called at
+    /// the end of `initWorkbenches`. With the toggle off nothing is opened.
+    func initMobileHub(dbPool: DatabasePool) {
+        let previous = mobileHub
+        previous?.dispose()
+        mobileHub = nil
+        mobileHubPool = dbPool
+        guard isMobileSyncEnabled else { return }
+        let storage: MobileHubStorage
+        do {
+            storage = try mobileHubStorage ?? makeMobileHubStorage()
+            if mobileHubStorage == nil {
+                // Once per run, with the storage: CKSyncEngine learns of
+                // remote changes from pushes (the relay poll is the backstop).
+                storage.registerForPushes?()
+            }
+            mobileHubStorage = storage
+            mobileHub = try buildMobileHub(storage: storage, dbPool: dbPool)
+            mobileHubInitError = nil
+        } catch {
+            mobileHubInitError = error.localizedDescription
+            Self.mobileHubLogger.error("mobile hub unavailable: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        let hub = mobileHub
+        Task {
+            // The replaced hub's relay pass ends first: two never overlap.
+            await previous?.waitUntilStopped()
+            await hub?.start()
+        }
+    }
+
+    /// The Settings → Mobile toggle: on starts the hub (building it on first
+    /// use), off stops it. The hub object is kept, so toggling never opens a
+    /// second transport.
+    func setMobileSyncEnabled(_ enabled: Bool) {
+        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
+        guard enabled else {
+            mobileHub?.disable()
+            return
+        }
+        if let hub = mobileHub {
+            Task { await hub.start() }
+        } else if let pool = mobileHubPool {
+            initMobileHub(dbPool: pool)
+        }
+    }
+
+    /// The presence center and the question escalator for a rebuilt
+    /// workbench state, the previous ones stopped.
+    private func replaceOwnerPresence(
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)?,
+        workbenches vm: WorkbenchesViewModel,
+        agentStates: SessionAgentStateCenter
+    ) {
+        ownerPresenceCenter?.stop()
+        ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
+        chatQuestionEscalator?.stop()
+        chatQuestionEscalator = cliRunner.map { makeChatQuestionEscalator(runner: $0, workbenches: vm, agentStates: agentStates) }
+        wireChatQuestionEscalation(agentStates: agentStates)
     }
 
     /// The escalation is the one subscriber of both hooks: every resolve of

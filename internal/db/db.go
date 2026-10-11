@@ -13,12 +13,21 @@ import (
 	"time"
 
 	"github.com/pressly/goose/v3"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
 type DB struct {
 	*sql.DB
+}
+
+// IsForeignKeyViolation reports whether err (or an error it wraps) is SQLite's
+// FOREIGN KEY constraint failure (extended code SQLITE_CONSTRAINT_FOREIGNKEY),
+// so a caller can tell a vanished parent row from any other write failure.
+func IsForeignKeyViolation(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
 }
 
 // openMemoryHook, when non-nil, is called instead of the normal migration path
