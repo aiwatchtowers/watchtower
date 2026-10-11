@@ -348,7 +348,11 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 
 	g := openAskGuardSession(stderr, cfg.DBPath(), workbenchID, in.SessionID)
 	defer g.close()
-	d := decideStop(in.StopHookActive, empty, verdict, g.resolution(stderr, hookNow()))
+	r, gone := g.resolution(stderr, hookNow())
+	if gone {
+		return // a deleted workbench's leftover hook: nothing to say
+	}
+	d := decideStop(in.StopHookActive, empty, verdict, r)
 	if reason := g.apply(stderr, d, verdict, at, in.StopHookActive); reason != "" {
 		_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: reason})
 	}
@@ -438,22 +442,29 @@ func (g *askGuardSession) close() {
 
 // resolution resolves the session (a claude row of the workbench running
 // this conversation: the PROJ-11 nested-session rule), the core state hooks
-// and the presence at now. A read failure is one stderr line, and the owner
-// reads as away.
-func (g *askGuardSession) resolution(stderr io.Writer, now time.Time) askGuardResolution {
+// and the presence at now. gone: the workbench no longer exists (a leftover
+// hook), so the guard has nothing to say. A read failure is one stderr line,
+// and the owner reads as away.
+func (g *askGuardSession) resolution(stderr io.Writer, now time.Time) (r askGuardResolution, gone bool) {
 	if g.database == nil {
-		return askGuardResolution{}
+		return askGuardResolution{}, false
 	}
 	r, err := g.resolve(now)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		return askGuardResolution{}, true
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard reads the owner as away: %v\n", err)
 		g.readFailed = true
-		return askGuardResolution{Matched: g.matched}
+		return askGuardResolution{Matched: g.matched}, false
 	}
-	return r
+	return r, false
 }
 
 func (g *askGuardSession) resolve(now time.Time) (askGuardResolution, error) {
+	if _, err := g.database.GetWorkbench(g.workbenchID); err != nil {
+		return askGuardResolution{}, err
+	}
 	row, err := g.database.GetTerminalSession(g.rowID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return askGuardResolution{}, nil

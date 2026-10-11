@@ -1066,3 +1066,18 @@ func TestStopGuardReadFailureStillClearsTheOlderQuestion(t *testing.T) {
 	assert.Contains(t, errOut, "ask guard reads the owner as away")
 	assert.Nil(t, storedChatQuestion(t, database, row), "the older question is cleared, nothing recorded")
 }
+
+// A deleted workbench's leftover Stop hook says nothing (the drift hook and
+// --pre-tool-use precedent): a short question passes, nothing is written.
+func TestStopGuardDeletedWorkbenchPassesSilently(t *testing.T) {
+	database, pid, _ := stopGuardFixture(t)
+	require.NoError(t, database.DeleteWorkbench(pid))
+	gen := &stubAskGuardGen{reply: e1Verdict}
+	useAskGuardGen(t, gen)
+	for _, verdict := range []string{e1Verdict, verdictJSON("full"), verdictJSON("none", "complete_unreported")} {
+		gen.reply = verdict
+		out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+		require.NoError(t, err)
+		assert.Empty(t, out, verdict)
+	}
+}
