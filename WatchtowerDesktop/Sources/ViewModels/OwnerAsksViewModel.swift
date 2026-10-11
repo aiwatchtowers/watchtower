@@ -580,8 +580,9 @@ final class OwnerAsksViewModel {
     func answerQuick(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
         let result = await self.answer(ask, with: answer)
         switch result {
-        case .delivered:
-            quickAnswered[ask.id] = ask
+        case let .delivered(delivery):
+            // A sent line needs no notice where the owner tapped.
+            if delivery != .submitted { quickAnswered[ask.id] = ask }
             openAsks[ask.projectID]?.removeAll { $0.id == ask.id }
         case .notOpen:
             quickAnswered[ask.id] = ask
@@ -640,6 +641,8 @@ final class OwnerAsksViewModel {
                 continue
             }
             answerNotices[askID] = .delivered(delivery)
+            // Sent: its Quick notice, if any, has nothing left to say.
+            if delivery == .submitted { quickAnswered[askID] = nil }
             showHint(delivery, sessionID: held.sessionID)
         }
     }

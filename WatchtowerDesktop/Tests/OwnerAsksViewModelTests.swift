@@ -1093,6 +1093,34 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertTrue(vm.asks.quickNotices(projectID: p).isEmpty)
     }
 
+    /// A Quick answer that reached Claude keeps no notice entry — sent at
+    /// once, or later once its permission prompt is resolved.
+    func testASentQuickAnswerKeepsNoNoticeEntry() async throws {
+        let (p, s, askID) = try await seed()
+        let heldID = try await fileAnotherAsk(project: p, sessionID: s.id)
+        try await makeQuick(askID)
+        try await makeQuick(heldID)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let (ask, row) = try await quickRow(vm, project: p, id: askID)
+        let (heldAsk, heldRow) = try await quickRow(vm, project: p, id: heldID)
+
+        let sent = await vm.answerQuick(ask, with: row.answer(picking: "Yes"))
+        XCTAssertEqual(sent, .delivered(.submitted))
+        XCTAssertNil(vm.asks.quickAnswered[askID])
+
+        var approval = true
+        vm.asks.needsApproval = { _ in approval }
+        let held = await vm.answerQuick(heldAsk, with: heldRow.answer(picking: "No"))
+        XCTAssertEqual(held, .delivered(.held))
+        XCTAssertEqual(vm.asks.quickNotices(projectID: p).map(\.id), [heldID])
+        approval = false
+        await vm.asks.deliverHeldAnswers()
+        XCTAssertEqual(vm.asks.answerNotices[heldID], .delivered(.submitted))
+        XCTAssertNil(vm.asks.quickAnswered[heldID])
+        XCTAssertTrue(vm.asks.quickNotices(projectID: p).isEmpty)
+    }
+
     /// F4: an answer Go's reader would refuse — here a label that is no
     /// option of the question — is never written or typed.
     func testAQuickAnswerWithAnUnknownLabelWritesNothing() async throws {
