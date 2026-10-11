@@ -63,6 +63,23 @@ final class OwnerAskQuickActionsTests: XCTestCase {
         XCTAssertNil(OwnerAskQuickRow(ask: try ask(multi: true)), "one tap is one label")
     }
 
+    func testTheRowIsOffWhileAnsweringAndOnceAnswered() {
+        XCTAssertTrue(OwnerAskQuickRow.isEnabled(answering: false, answered: false))
+        XCTAssertFalse(OwnerAskQuickRow.isEnabled(answering: true, answered: false))
+        XCTAssertFalse(OwnerAskQuickRow.isEnabled(answering: false, answered: true))
+    }
+
+    /// The Reply text lives in the ask's draft, as the question's "Other":
+    /// the drawer (Details) shows it, and it replaces a picked label.
+    func testTheReplyTextIsTheQuestionsOtherInTheDraft() {
+        var draft = OwnerAskDraft()
+        draft.picks["1"] = .init(labels: ["Yes"])
+        draft.setReplyText("use staging", for: "1")
+        XCTAssertEqual(draft.replyText(for: "1"), "use staging")
+        XCTAssertEqual(draft.picks["1"], .init(labels: [], other: "use staging"))
+        XCTAssertEqual(OwnerAskDraft().replyText(for: "1"), "")
+    }
+
     /// The answers carry the ask's own question id — Go's default "1" here,
     /// never a hard-coded "q1".
     func testTheAnswersUseTheAsksOwnQuestionID() throws {

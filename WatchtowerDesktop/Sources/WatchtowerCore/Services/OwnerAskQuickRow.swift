@@ -35,6 +35,13 @@ package struct OwnerAskQuickRow: Equatable, Sendable {
     /// No option to tap: only Reply.
     package var isReplyOnly: Bool { choices.isEmpty }
 
+    /// Whether the row takes a tap or a Reply: not while an answer to the
+    /// ask is being written, and not once one was (the card may outlive
+    /// the answer until the list is read again).
+    package static func isEnabled(answering: Bool, answered: Bool) -> Bool {
+        !answering && !answered
+    }
+
     /// The answer of a tap on `label`.
     package func answer(picking label: String) -> OwnerAskAnswer {
         .quick(label: label, questionID: questionID)
