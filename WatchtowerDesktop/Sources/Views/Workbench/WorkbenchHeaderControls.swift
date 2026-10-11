@@ -152,7 +152,9 @@ struct WorkbenchHeaderControls: View {
             }
             .disabled(vm.deletingWorkbenchID != nil)
         } label: {
-            Image(systemName: "ellipsis.circle")
+            // Plain dots: the square is the button's outline, a circle
+            // inside it would be a second one.
+            Image(systemName: "ellipsis")
         }
         .menuStyle(.button)
         .buttonStyle(HeaderIconButtonStyle(isOn: false))
