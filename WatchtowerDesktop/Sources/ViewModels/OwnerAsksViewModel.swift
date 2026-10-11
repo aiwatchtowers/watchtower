@@ -38,6 +38,30 @@ final class OwnerAsksViewModel {
         case noSession
     }
 
+    /// What one `answer(_:with:)` call came to.
+    enum AnswerResult: Equatable {
+        /// Written; the line went as the delivery says.
+        case delivered(Delivery)
+        /// An answer to the ask was already being written: nothing done.
+        case busy
+        /// The ask was no longer open (withdrawn, superseded): nothing written.
+        case notOpen
+        /// Not written: an answer Go would refuse, or the write failed
+        /// (`answerErrors`).
+        case failed
+
+        var delivery: Delivery? {
+            if case let .delivered(delivery) = self { delivery } else { nil }
+        }
+    }
+
+    /// A Quick answer's notice where the owner tapped (`quickNotices`).
+    struct QuickNotice: Identifiable, Equatable {
+        let ask: OwnerAsk
+        let notice: AnswerNotice
+        var id: Int64 { ask.id }
+    }
+
     /// What the last answer to an ask came to, shown beside it.
     enum AnswerNotice: Equatable {
         /// Written; the line went as the delivery says. An ask without a
@@ -105,6 +129,9 @@ final class OwnerAsksViewModel {
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
     /// The last answer's outcome per ask id, until dismissed.
     private(set) var answerNotices: [Int64: AnswerNotice] = [:]
+    /// The asks answered (or found withdrawn) from a Quick ask's row, as
+    /// they were, until their notice is dismissed (`quickNotices`).
+    private(set) var quickAnswered: [Int64: OwnerAsk] = [:]
     /// Why the last read of a workbench's asks failed; the next read clears it.
     private(set) var loadErrors: [Int64: String] = [:]
     /// Why the last answer to an ask failed, apart from the reads: a good
@@ -434,6 +461,7 @@ final class OwnerAsksViewModel {
 
     func dismissNotice(askID: Int64) {
         answerNotices[askID] = nil
+        quickAnswered[askID] = nil
     }
 
     // MARK: - Answering
@@ -490,21 +518,26 @@ final class OwnerAsksViewModel {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
-        return await answer(ask, with: draft.answer(for: ask))
+        return await answer(ask, with: draft.answer(for: ask)).delivery
     }
 
     /// Writes `answer` to `ask` and delivers its line — the one path of the
     /// drawer's answer and a Quick ask's tap or Reply (spec 2026-10-10 Part
-    /// 9.1, PROJ-12): the guarded write, then `deliver`. Nil when nothing was
-    /// written: an answer already running, the ask no longer open (the
-    /// `withdrawn` notice, the list reloaded) or a failed write
-    /// (`answerErrors`). A success discards the ask's draft.
+    /// 9.1, PROJ-12): the guarded write, then `deliver`. Nothing is written
+    /// while an answer to it is running (`busy`), for an answer Go's reader
+    /// would refuse (`failed`, the reason in `answerErrors`), for an ask no
+    /// longer open (`notOpen`: the `withdrawn` notice, the list reloaded) or
+    /// when the write fails (`failed`). A success discards the ask's draft.
     @discardableResult
-    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> Delivery? {
-        guard !isAnswering(ask.id) else { return nil }
-        answering.insert(ask.id)
-        defer { answering.remove(ask.id) }
+    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
+        guard !isAnswering(ask.id) else { return .busy }
         let (askID, projectID) = (ask.id, ask.projectID)
+        if let problem = answer.problem(kind: ask.kind, payload: ask.payload) {
+            answerErrors[askID] = "This answer cannot be sent: \(problem.message)"
+            return .failed
+        }
+        answering.insert(askID)
+        defer { answering.remove(askID) }
         do {
             try await dbPool.write { db in
                 try OwnerAskQueries.answer(db, askID: askID, projectID: projectID, with: answer)
@@ -512,10 +545,10 @@ final class OwnerAsksViewModel {
         } catch AskAnswerError.notOpen {
             answerNotices[askID] = .withdrawn
             await load(projectID: projectID)
-            return nil
+            return .notOpen
         } catch {
             answerErrors[askID] = "Could not save the answer: \(error.localizedDescription)"
-            return nil
+            return .failed
         }
         answerErrors[askID] = nil
         drafts.discard(askID)
@@ -535,7 +568,48 @@ final class OwnerAsksViewModel {
         }
         await load(projectID: projectID)
         await onAnswered?()
-        return delivery
+        return .delivered(delivery)
+    }
+
+    /// A Quick ask's tap or Reply (spec 2026-10-10 Part 9.1): `answer(_:with:)`,
+    /// then the ask's notice is shown where the owner tapped
+    /// (`quickNotices`) — the card goes, the notice stays until dismissed.
+    /// A written answer also leaves the open list at once, so no live
+    /// buttons remain even when the reload after it failed.
+    @discardableResult
+    func answerQuick(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
+        let result = await self.answer(ask, with: answer)
+        switch result {
+        case .delivered:
+            quickAnswered[ask.id] = ask
+            openAsks[ask.projectID]?.removeAll { $0.id == ask.id }
+        case .notOpen:
+            quickAnswered[ask.id] = ask
+        case .busy, .failed:
+            break
+        }
+        return result
+    }
+
+    /// Whether an answer to `askID` was written (its notice says where the
+    /// line went): a Quick ask's row takes no more taps.
+    func isAnswered(_ askID: Int64) -> Bool {
+        if case .delivered = answerNotices[askID] { return true }
+        return false
+    }
+
+    /// What became of the workbench's Quick answers, oldest ask first, for
+    /// the banner and the stack (the drawer shows its own): every notice
+    /// but "sent" — a line held, queued, typed or copied, an answer left
+    /// for the brief, an ask withdrawn under the tap. Until dismissed.
+    func quickNotices(projectID: Int64) -> [QuickNotice] {
+        quickAnswered.values
+            .filter { $0.projectID == projectID }
+            .sorted { $0.id < $1.id }
+            .compactMap { ask in
+                guard let notice = answerNotices[ask.id], notice != .delivered(.submitted) else { return nil }
+                return QuickNotice(ask: ask, notice: notice)
+            }
     }
 
     /// The session states changed or were read again

@@ -945,7 +945,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let firstDelivery = await vm.answerQuick(first, with: firstRow.answer(picking: "Yes"))
         processes[0].onInput = nil
 
-        XCTAssertEqual(firstDelivery, .submitted)
+        XCTAssertEqual(firstDelivery, .delivered(.submitted))
         XCTAssertEqual(statusWhenTyped, "answered", "stored before the line is typed")
         let drawerStored = try await status(drawerID)
         let quickStored = try await status(quickIDs[0])
@@ -964,7 +964,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         center.inputAnswersDialog = { id in id == s.id && approval }
         let (second, secondRow) = try await quickRow(vm, project: p, id: quickIDs[1])
         let secondDelivery = await vm.answerQuick(second, with: secondRow.answer(picking: "No"))
-        XCTAssertEqual(secondDelivery, .held)
+        XCTAssertEqual(secondDelivery, .delivered(.held))
         let held = try await status(quickIDs[1])
         XCTAssertEqual(held.status, "answered", "stored at once")
         XCTAssertEqual(typed.count, 4, "nothing reaches a permission prompt")
@@ -977,7 +977,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         processes[0].onOwnerInput?(Array("fix the".utf8))
         let (third, thirdRow) = try await quickRow(vm, project: p, id: quickIDs[2])
         let thirdDelivery = await vm.answerQuick(third, with: thirdRow.answer(picking: "Yes"))
-        XCTAssertEqual(thirdDelivery, .typed)
+        XCTAssertEqual(thirdDelivery, .delivered(.typed))
         XCTAssertEqual(typed.count, 7, "the paste, no Return")
         XCTAssertNotEqual(typed.last, [0x0D])
         XCTAssertEqual(center.answerHints[s.id], .typed)
@@ -999,7 +999,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         let reply = try XCTUnwrap(row.reply("  use the\nstaging\u{7}host \r\n"))
         let delivery = await vm.answerQuick(ask, with: reply)
 
-        XCTAssertEqual(delivery, .submitted)
+        XCTAssertEqual(delivery, .delivered(.submitted))
         let stored = try OwnerAskAnswer.decode(try await status(askID).answer)
         XCTAssertEqual(stored.answers, [.init(id: "a", labels: [], other: "use the staging host")])
         let body = typed[0].dropFirst(6).dropLast(6)
@@ -1013,13 +1013,15 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
     /// E29: the agent withdrew the ask while the owner tapped — nothing is
     /// written or typed, the card leaves the banner and the stack, and the
-    /// drawer shows the "withdrawn" note.
+    /// drawer beside the session's terminal on screen shows the "withdrawn"
+    /// note.
     func testAQuickTapOnAWithdrawnAskTypesNothing() async throws {
         let (p, s, askID) = try await seed()
         try await makeQuick(askID)
         center.start(s, fresh: true)
         let vm = makeVM()
         vm.selectedWorkbenchID = p
+        vm.layout.show(.session(s.id))
         let (ask, row) = try await quickRow(vm, project: p, id: askID)
         try await pool.write { d in
             try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [askID])
@@ -1027,7 +1029,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
         let delivery = await vm.answerQuick(ask, with: row.answer(picking: "Yes"))
 
-        XCTAssertNil(delivery)
+        XCTAssertEqual(delivery, .notOpen)
         let stored = try await status(askID)
         XCTAssertEqual(stored.status, "withdrawn")
         XCTAssertEqual(stored.answer, "")
@@ -1038,6 +1040,100 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.drawerAsk(projectID: p)?.status, .withdrawn)
     }
 
+    /// A withdrawn ask tapped from the stack while its session is not on
+    /// screen, or while another workbench is selected, changes no page: the
+    /// notice alone says so, where the owner tapped.
+    func testAQuickTapOnAWithdrawnAskOffScreenOnlyLeavesTheNotice() async throws {
+        let (p, s, askID) = try await seed()
+        try await makeQuick(askID)
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        vm.layout.show(.board)
+        let (ask, row) = try await quickRow(vm, project: p, id: askID)
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [askID])
+        }
+
+        let result = await vm.answerQuick(ask, with: row.answer(picking: "Yes"))
+
+        XCTAssertEqual(result, .notOpen)
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "no drawer beside a terminal not on screen")
+        XCTAssertFalse(vm.layout(projectID: p).visiblePanes.contains(.session(s.id)), "the page stays as it was")
+        XCTAssertEqual(vm.asks.quickNotices(projectID: p).map(\.notice), [.withdrawn])
+
+        let otherID = try await fileAnotherAsk(project: p, sessionID: s.id)
+        try await makeQuick(otherID)
+        let (other, otherRow) = try await quickRow(vm, project: p, id: otherID)
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [otherID])
+        }
+        vm.selectedWorkbenchID = nil
+        _ = await vm.answerQuick(other, with: otherRow.answer(picking: "No"))
+        XCTAssertNil(vm.selectedWorkbenchID, "no drill into the ask's workbench")
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+    }
+
+    /// F1: a Quick answer to a session not running goes to the brief, and
+    /// says so where the owner tapped until dismissed; a sent one needs no
+    /// notice there.
+    func testAQuickAnswerToAStoppedSessionLeavesItsNoticeWhereTheOwnerTapped() async throws {
+        let (p, _, askID) = try await seed()
+        try await makeQuick(askID)
+        let vm = makeVM()
+        let (ask, row) = try await quickRow(vm, project: p, id: askID)
+
+        let result = await vm.answerQuick(ask, with: row.answer(picking: "No"))
+
+        XCTAssertEqual(result, .delivered(.noSession))
+        let notices = vm.asks.quickNotices(projectID: p)
+        XCTAssertEqual(notices.map(\.id), [askID])
+        XCTAssertEqual(notices.first?.notice.text, OwnerAsksViewModel.noSessionNote)
+        XCTAssertTrue(vm.asks.stack(projectID: p).asks.isEmpty, "the card is gone, the notice stays")
+        vm.asks.dismissNotice(askID: askID)
+        XCTAssertTrue(vm.asks.quickNotices(projectID: p).isEmpty)
+    }
+
+    /// F4: an answer Go's reader would refuse — here a label that is no
+    /// option of the question — is never written or typed.
+    func testAQuickAnswerWithAnUnknownLabelWritesNothing() async throws {
+        let (p, s, askID) = try await seed()
+        try await makeQuick(askID)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let ask = try await openAsk(vm, project: p, id: askID)
+
+        let result = await vm.answerQuick(ask, with: .quick(label: "Maybe", questionID: "a"))
+
+        XCTAssertEqual(result, .failed)
+        let stored = try await status(askID)
+        XCTAssertEqual(stored.status, "open")
+        XCTAssertTrue(typed.isEmpty)
+        XCTAssertNotNil(vm.asks.answerErrors[askID])
+        XCTAssertTrue(vm.asks.quickNotices(projectID: p).isEmpty)
+    }
+
+    /// F6: once a Quick answer is written its card has no live buttons, even
+    /// when the read after it failed and the last list still names it.
+    func testAWrittenQuickAnswerLeavesNoLiveButtonsWhenTheReloadFails() async throws {
+        let (p, s, askID) = try await seed()
+        try await makeQuick(askID)
+        center.start(s, fresh: true)
+        let vm = makeVM()
+        let (ask, row) = try await quickRow(vm, project: p, id: askID)
+        onPause = { [pool] in
+            // Every read after the paste fails.
+            try? await pool?.write { try $0.execute(sql: "ALTER TABLE owner_asks RENAME TO owner_asks_away") }
+        }
+
+        let result = await vm.answerQuick(ask, with: row.answer(picking: "Yes"))
+        try await pool.write { try $0.execute(sql: "ALTER TABLE owner_asks_away RENAME TO owner_asks") }
+
+        XCTAssertEqual(result, .delivered(.submitted))
+        XCTAssertNotNil(vm.asks.loadErrors[p], "the reload failed")
+        XCTAssertFalse(vm.asks.stack(projectID: p).asks.contains { $0.id == askID }, "the card is gone")
+        XCTAssertFalse(OwnerAskQuickRow.isEnabled(answering: vm.asks.isAnswering(askID), answered: vm.asks.isAnswered(askID)))
+    }
+
     /// While a tap's answer is being written the row's buttons are off, and
     /// a second tap writes nothing.
     func testButtonsDisabledWhileAnswering() async throws {
@@ -1046,18 +1142,20 @@ final class OwnerAsksViewModelTests: XCTestCase {
         center.start(s, fresh: true)
         let vm = makeVM()
         let (ask, row) = try await quickRow(vm, project: p, id: askID)
-        var answeringDuringThePause = false
-        var secondTap: OwnerAsksViewModel.Delivery??
+        var enabledDuringThePause = true
+        var secondTap: OwnerAsksViewModel.AnswerResult?
         onPause = {
-            answeringDuringThePause = vm.asks.isAnswering(askID)
-            secondTap = .some(await vm.answerQuick(ask, with: row.answer(picking: "No")))
+            enabledDuringThePause = OwnerAskQuickRow.isEnabled(answering: vm.asks.isAnswering(askID), answered: vm.asks.isAnswered(askID))
+            secondTap = await vm.answerQuick(ask, with: row.answer(picking: "No"))
         }
+        XCTAssertTrue(OwnerAskQuickRow.isEnabled(answering: vm.asks.isAnswering(askID), answered: vm.asks.isAnswered(askID)))
 
         let delivery = await vm.answerQuick(ask, with: row.answer(picking: "Yes"))
 
-        XCTAssertEqual(delivery, .submitted)
-        XCTAssertTrue(answeringDuringThePause)
-        XCTAssertEqual(secondTap, .some(nil), "the second tap is refused")
+        XCTAssertEqual(delivery, .delivered(.submitted))
+        XCTAssertFalse(enabledDuringThePause)
+        XCTAssertEqual(secondTap, .busy, "the second tap is refused")
+        XCTAssertNil(vm.asks.drawerAskIDs[p], "a refused tap opens nothing")
         XCTAssertFalse(vm.asks.isAnswering(askID))
         let stored = try OwnerAskAnswer.decode(try await status(askID).answer)
         XCTAssertEqual(stored.answers.first?.labels, ["Yes"])
