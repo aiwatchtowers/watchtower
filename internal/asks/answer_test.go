@@ -167,3 +167,24 @@ func TestValidateAnswerRejects(t *testing.T) {
 		}
 	})
 }
+
+// A question raised from chat with no options takes a free answer only:
+// other non-empty and no label passes; a blank other, or any label (there is
+// no option to name), is refused.
+func TestValidateAnswerZeroOptionsNeedsOther(t *testing.T) {
+	p := Payload{Questions: []Question{{ID: "q1", Question: "What is the staging host name?", Options: []Option{}}}}
+	ok := Answer{Answers: []QuestionAnswer{{ID: "q1", Labels: []string{}, Other: "staging.example.com"}}}
+	if err := ValidateAnswer(KindQuestion, p, ok); err != nil {
+		t.Fatalf("other-only answer: %v", err)
+	}
+	for name, ans := range map[string]QuestionAnswer{
+		"empty other":       {ID: "q1", Labels: []string{}, Other: ""},
+		"blank other":       {ID: "q1", Labels: []string{}, Other: "  "},
+		"a label":           {ID: "q1", Labels: []string{"Yes"}, Other: ""},
+		"a label and other": {ID: "q1", Labels: []string{"Yes"}, Other: "staging.example.com"},
+	} {
+		if err := ValidateAnswer(KindQuestion, p, Answer{Answers: []QuestionAnswer{ans}}); err == nil {
+			t.Errorf("%s: want refused, got accepted", name)
+		}
+	}
+}

@@ -36,7 +36,7 @@ func wantField(t *testing.T, err error, field string) {
 
 func TestValidateAcceptsEachKind(t *testing.T) {
 	for _, in := range []Input{validReview(), validCheck(), validQuestion()} {
-		if _, err := Validate(in); err != nil {
+		if _, err := Validate(in, OriginAgent); err != nil {
 			t.Errorf("%s: %v", in.Kind, err)
 		}
 	}
@@ -45,7 +45,7 @@ func TestValidateAcceptsEachKind(t *testing.T) {
 func TestValidateKind(t *testing.T) {
 	in := validQuestion()
 	in.Kind = "poll"
-	_, err := Validate(in)
+	_, err := Validate(in, OriginAgent)
 	wantField(t, err, "kind")
 }
 
@@ -124,7 +124,7 @@ func TestValidateBounds(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			in := validReview()
 			c.mutate(&in)
-			_, err := Validate(in)
+			_, err := Validate(in, OriginAgent)
 			if c.field == "" {
 				if err != nil {
 					t.Fatalf("want accepted, got %v", err)
@@ -138,26 +138,26 @@ func TestValidateBounds(t *testing.T) {
 	t.Run("checklist 30", func(t *testing.T) {
 		in := validCheck()
 		in.Checklist = items(30)
-		if _, err := Validate(in); err != nil {
+		if _, err := Validate(in, OriginAgent); err != nil {
 			t.Fatal(err)
 		}
 	})
 	t.Run("checklist 31", func(t *testing.T) {
 		in := validCheck()
 		in.Checklist = items(31)
-		_, err := Validate(in)
+		_, err := Validate(in, OriginAgent)
 		wantField(t, err, "checklist")
 	})
 	t.Run("checklist text 301", func(t *testing.T) {
 		in := validCheck()
 		in.Checklist = []ChecklistItem{{Text: n(301)}}
-		_, err := Validate(in)
+		_, err := Validate(in, OriginAgent)
 		wantField(t, err, "checklist[0].text")
 	})
 	t.Run("checklist hint 301", func(t *testing.T) {
 		in := validCheck()
 		in.Checklist = []ChecklistItem{{Text: "x", Hint: n(301)}}
-		_, err := Validate(in)
+		_, err := Validate(in, OriginAgent)
 		wantField(t, err, "checklist[0].hint")
 	})
 }
@@ -196,7 +196,7 @@ func TestValidateKindRules(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := Validate(c.in())
+			_, err := Validate(c.in(), OriginAgent)
 			wantField(t, err, c.field)
 		})
 	}
@@ -204,7 +204,7 @@ func TestValidateKindRules(t *testing.T) {
 
 func TestValidateFirstViolationOnly(t *testing.T) {
 	in := Input{Kind: KindReview, Title: "", Summary: strings.Repeat("x", 2001)}
-	_, err := Validate(in)
+	_, err := Validate(in, OriginAgent)
 	wantField(t, err, "title")
 	if strings.Contains(err.Error(), "summary") {
 		t.Fatalf("want only the first violation, got %q", err)
@@ -216,7 +216,7 @@ func TestValidateIDs(t *testing.T) {
 		in := validCheck()
 		in.Questions = []Question{twoOptionQuestion("1?"), {ID: "scope", Question: "2?", Options: []Option{{Label: "A"}, {Label: "B"}}}, twoOptionQuestion("3?")}
 		in.Checklist = []ChecklistItem{{Text: "a"}, {ID: "login", Text: "b"}, {Text: "c"}}
-		p, err := Validate(in)
+		p, err := Validate(in, OriginAgent)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -237,19 +237,19 @@ func TestValidateIDs(t *testing.T) {
 	t.Run("duplicate question ids", func(t *testing.T) {
 		in := validQuestion()
 		in.Questions = []Question{{ID: "2", Question: "a", Options: []Option{{Label: "A"}, {Label: "B"}}}, twoOptionQuestion("b")}
-		_, err := Validate(in)
+		_, err := Validate(in, OriginAgent)
 		wantField(t, err, "questions[1].id")
 	})
 	t.Run("duplicate checklist ids", func(t *testing.T) {
 		in := validCheck()
 		in.Checklist = []ChecklistItem{{ID: "x", Text: "a"}, {ID: "x", Text: "b"}}
-		_, err := Validate(in)
+		_, err := Validate(in, OriginAgent)
 		wantField(t, err, "checklist[1].id")
 	})
 	t.Run("duplicate option labels", func(t *testing.T) {
 		in := validQuestion()
 		in.Questions = []Question{{Question: "Q?", Options: []Option{{Label: "A"}, {Label: " A"}}}}
-		_, err := Validate(in)
+		_, err := Validate(in, OriginAgent)
 		wantField(t, err, "questions[0].options[1].label")
 	})
 }
@@ -258,7 +258,7 @@ func TestValidateNormalizesPayload(t *testing.T) {
 	in := validReview()
 	in.Focus = []Focus{{Text: "  look  ", Heading: " Intro ", Quote: " some words "}}
 	in.Questions = []Question{{Question: " Q? ", Options: []Option{{Label: " A ", Description: " first "}, {Label: "B"}}}}
-	p, err := Validate(in)
+	p, err := Validate(in, OriginAgent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +283,8 @@ func TestValidateNormalizesPayload(t *testing.T) {
 // Every testdata/cards file is a ```watchtower-question body. Go runs it as
 // the questions of a question ask; the Swift Core test runs the same file
 // through ChatQuestionCard's decoder, and both must agree with the file name.
+// An owner_ask_* file is an owner ask's questions, not a chat card: its own
+// tests read it.
 func TestCardFixtures(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join("testdata", "cards", "*.json"))
 	if err != nil || len(files) == 0 {
@@ -290,6 +292,9 @@ func TestCardFixtures(t *testing.T) {
 	}
 	for _, path := range files {
 		name := filepath.Base(path)
+		if strings.HasPrefix(name, "owner_ask_") {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
 			raw, err := os.ReadFile(path)
 			if err != nil {
@@ -315,6 +320,6 @@ func validateCard(raw []byte) error {
 	if err := json.Unmarshal(raw, &card); err != nil {
 		return err
 	}
-	_, err := Validate(Input{Kind: KindQuestion, Title: "Card", Questions: card.Questions})
+	_, err := Validate(Input{Kind: KindQuestion, Title: "Card", Questions: card.Questions}, OriginAgent)
 	return err
 }
