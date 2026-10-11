@@ -423,11 +423,11 @@ type ChatQuestionOption struct {
 }
 
 // SetChatQuestion records q, asked at the Stop of conversation
-// claudeSessionID at at, on claude row sessionID. A newer Stop's question
-// replaces an older one; an older one never replaces a newer one (an
-// unreadable stored stamp never blocks). Only the two chat question columns
-// change (PROJ-11). ErrChatQuestionNotRecorded when no row took it.
-func (db *DB) SetChatQuestion(sessionID int64, claudeSessionID string, q ChatQuestion, at time.Time) error {
+// claudeSessionID at at, on workbench workbenchID's claude row id. A newer
+// Stop's question replaces an older one; an older one never replaces a newer
+// one (an unreadable stored stamp never blocks). Only the two chat question
+// columns change (PROJ-11). ErrChatQuestionNotRecorded when no row took it.
+func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q ChatQuestion, at time.Time) error {
 	if q.Options == nil {
 		q.Options = []ChatQuestionOption{}
 	}
@@ -437,56 +437,59 @@ func (db *DB) SetChatQuestion(sessionID int64, claudeSessionID string, q ChatQue
 	}
 	stamp := AgentStateStamp(at)
 	res, err := db.Exec(`UPDATE terminal_sessions SET chat_question = ?, chat_question_at = ?
-		WHERE id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (chat_question_at IS NULL OR chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')`,
-		string(body), stamp, sessionID, claudeSessionID, stamp)
+		string(body), stamp, id, workbenchID, claudeSessionID, stamp)
 	if err != nil {
-		return fmt.Errorf("recording terminal session %d chat question: %w", sessionID, err)
+		return fmt.Errorf("recording terminal session %d chat question: %w", id, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("recording terminal session %d chat question: %w", sessionID, err)
+		return fmt.Errorf("recording terminal session %d chat question: %w", id, err)
 	}
 	if n == 0 {
-		return fmt.Errorf("terminal session %d: %w", sessionID, ErrChatQuestionNotRecorded)
+		return fmt.Errorf("terminal session %d: %w", id, ErrChatQuestionNotRecorded)
 	}
 	return nil
 }
 
-// ClearChatQuestionBefore clears claude row sessionID's chat question when
-// the row runs conversation claudeSessionID and the question was recorded
-// before eventAt (a later Stop that records none, the owner's next prompt, a
-// turn the agent started itself); a newer question stays. An unreadable
+// ClearChatQuestionBefore clears workbench workbenchID's claude row id's chat
+// question when the row runs conversation claudeSessionID and the question
+// was recorded before eventAt (a later Stop that records none, the owner's
+// next prompt, a turn the agent started itself); a newer question stays. An unreadable
 // stored stamp is cleared: it can never be raised. Only the two chat
 // question columns change (PROJ-11); nothing to clear is no error.
-func (db *DB) ClearChatQuestionBefore(sessionID int64, claudeSessionID string, eventAt time.Time) error {
+func (db *DB) ClearChatQuestionBefore(id, workbenchID int64, claudeSessionID string, eventAt time.Time) error {
 	stamp := AgentStateStamp(eventAt)
 	if _, err := db.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
-		WHERE id = ? AND kind = 'claude' AND claude_session_id = ? AND chat_question_at IS NOT NULL
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ? AND chat_question_at IS NOT NULL
 		  AND (chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')`,
-		sessionID, claudeSessionID, stamp); err != nil {
-		return fmt.Errorf("clearing terminal session %d chat question: %w", sessionID, err)
+		id, workbenchID, claudeSessionID, stamp); err != nil {
+		return fmt.Errorf("clearing terminal session %d chat question: %w", id, err)
 	}
 	return nil
 }
 
 // TakeChatQuestion is the escalation's compare-and-take inside the caller's
-// write transaction (spec Part 5.3, F9): it returns row sessionID's chat
-// question and clears it only while chat_question_at is still at (not
-// cleared, not replaced), agent_state is `waiting` and agent_state_at is at
-// most 30 s after the question (the same turn end). Otherwise nil and
-// nothing written. ErrTerminalSessionNotFound for a missing row.
-func (db *DB) TakeChatQuestion(tx *sql.Tx, sessionID int64, at string) (*ChatQuestion, error) {
+// write transaction (spec Part 5.3, F9): it returns workbench workbenchID's
+// claude row id's chat question and clears it only while chat_question_at is
+// still at (not cleared, not replaced), agent_state is `waiting` and
+// agent_state_at is at most 30 s after the question (the same turn end).
+// Otherwise nil and nothing written, also for another workbench's row or a
+// shell row. ErrTerminalSessionNotFound for a missing row.
+func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*ChatQuestion, error) {
 	var body, questionAt, state, stateAt sql.NullString
-	err := tx.QueryRow(`SELECT chat_question, chat_question_at, agent_state, agent_state_at
-		FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&body, &questionAt, &state, &stateAt)
+	var mine bool
+	err := tx.QueryRow(`SELECT chat_question, chat_question_at, agent_state, agent_state_at,
+		project_id IS ? AND kind = 'claude'
+		FROM terminal_sessions WHERE id = ?`, workbenchID, id).Scan(&body, &questionAt, &state, &stateAt, &mine)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading terminal session %d chat question: %w", sessionID, err)
+		return nil, fmt.Errorf("reading terminal session %d chat question: %w", id, err)
 	}
-	if !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
+	if !mine || !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
 		return nil, nil
 	}
 	asked, ok := parseAgentStamp(questionAt.String)
@@ -498,11 +501,11 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, sessionID int64, at string) (*ChatQue
 	}
 	var q ChatQuestion
 	if err := json.Unmarshal([]byte(body.String), &q); err != nil {
-		return nil, fmt.Errorf("decoding terminal session %d chat question: %w", sessionID, err)
+		return nil, fmt.Errorf("decoding terminal session %d chat question: %w", id, err)
 	}
 	if _, err := tx.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
-		WHERE id = ? AND chat_question_at = ?`, sessionID, at); err != nil {
-		return nil, fmt.Errorf("taking terminal session %d chat question: %w", sessionID, err)
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND chat_question_at = ?`, id, workbenchID, at); err != nil {
+		return nil, fmt.Errorf("taking terminal session %d chat question: %w", id, err)
 	}
 	return &q, nil
 }
