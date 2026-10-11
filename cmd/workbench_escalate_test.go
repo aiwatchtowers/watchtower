@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -299,6 +300,15 @@ func TestEscalateEnvelopeShape(t *testing.T) {
 		res := g.escalate(t, escalateReasonTimeout)
 		assert.False(t, res.OK)
 		assert.Equal(t, escalateErrBusy, res.ErrorCode)
+	})
+	t.Run("a migration that cannot apply is schema", func(t *testing.T) {
+		g := newEscalateFixture(t, twoOptions())
+		require.NoError(t, goose.DownTo(g.database.DB, "migrations", 106))
+		_, err := g.database.Exec(`ALTER TABLE owner_asks ADD COLUMN level TEXT`) // 00107's column, already there
+		require.NoError(t, err)
+		res := g.escalate(t, escalateReasonTimeout)
+		assert.False(t, res.OK)
+		assert.Equal(t, escalateErrSchema, res.ErrorCode)
 	})
 	t.Run("a broken config is internal", func(t *testing.T) {
 		brokenConfig(t)

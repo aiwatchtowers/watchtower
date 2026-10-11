@@ -33,7 +33,7 @@ const (
 	escalateErrOpenCap  = "open_cap"
 	escalateErrNotFound = "not_found"
 	escalateErrBadArgs  = "bad_args"
-	escalateErrSchema   = "schema"
+	escalateErrSchema   = "schema" // the database could not take its pragmas or migrations
 	escalateErrInternal = "internal"
 )
 
@@ -165,8 +165,10 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 	switch {
 	case db.IsBusy(err):
 		return escalateFailure(escalateErrBusy, fmt.Errorf("opening database: %w", err))
-	case err != nil:
+	case errors.Is(err, db.ErrSchemaSetup):
 		return escalateFailure(escalateErrSchema, fmt.Errorf("opening database: %w", err))
+	case err != nil:
+		return escalateFailure(escalateErrInternal, fmt.Errorf("opening database: %w", err))
 	}
 	defer database.Close()
 	res, err := escalateQuestion(database, a, hookNow())
