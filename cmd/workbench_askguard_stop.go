@@ -355,6 +355,9 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 	if !ok {
 		return
 	}
+	if askGuardWorkbenchGone(cfg.DBPath(), workbenchID) {
+		return // a deleted workbench's leftover hook: nothing to say, no model call
+	}
 	rowID, inSession := askGuardSessionRow(stderr, in.SessionID)
 	if in.StopHookActive && !inSession {
 		return // a continued turn with nothing to record or clear: no model call
@@ -459,6 +462,20 @@ type askGuardSession struct {
 	rowID, workbenchID int64
 	claudeID           string
 	matched            bool
+}
+
+// askGuardWorkbenchGone reports whether workbench id certainly no longer
+// exists, read without migrating and under askGuardBusyTimeout (query_only).
+// A database that cannot be opened or read is not "gone": the guard goes on
+// and reads the owner as away.
+func askGuardWorkbenchGone(dbPath string, id int64) bool {
+	database, err := db.OpenExisting(dbPath, askGuardBusyTimeout)
+	if err != nil {
+		return false
+	}
+	defer database.Close()
+	_, err = database.GetWorkbench(id)
+	return errors.Is(err, db.ErrWorkbenchNotFound)
 }
 
 // askGuardSessionRow is the Desktop terminal row the hook runs in; false

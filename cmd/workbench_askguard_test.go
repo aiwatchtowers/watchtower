@@ -1102,15 +1102,22 @@ func TestStopGuardReadFailureStillClearsTheOlderQuestion(t *testing.T) {
 // A deleted workbench's leftover Stop hook says nothing (the drift hook and
 // --pre-tool-use precedent): a short question passes, nothing is written.
 func TestStopGuardDeletedWorkbenchPassesSilently(t *testing.T) {
-	database, pid, _ := stopGuardFixture(t)
-	require.NoError(t, database.DeleteWorkbench(pid))
-	gen := &stubAskGuardGen{reply: e1Verdict}
-	useAskGuardGen(t, gen)
-	for _, verdict := range []string{e1Verdict, verdictJSON("full"), verdictJSON("none", "complete_unreported")} {
-		gen.reply = verdict
-		out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
-		require.NoError(t, err)
-		assert.Empty(t, out, verdict)
+	for _, inTerminal := range []bool{true, false} {
+		t.Run(fmt.Sprintf("in a terminal row=%v", inTerminal), func(t *testing.T) {
+			database, pid, _ := stopGuardFixture(t)
+			if !inTerminal {
+				unsetTerminalEnv(t)
+			}
+			require.NoError(t, database.DeleteWorkbench(pid))
+			gen := &stubAskGuardGen{reply: e1Verdict}
+			useAskGuardGen(t, gen)
+
+			out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+
+			require.NoError(t, err)
+			assert.Empty(t, out)
+			assert.Zero(t, gen.calls, "no model call for a deleted workbench")
+		})
 	}
 }
 
