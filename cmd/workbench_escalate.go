@@ -225,8 +225,8 @@ func escalateQuestion(database *db.DB, a escalateArgs, now time.Time) (escalateR
 // escalatedAsk builds the raised ask (Part 5.3 step 2): one question q1 with
 // the stored options, the question clipped to the title on one line, the
 // full question then the reason's line as the summary, the session's single
-// linked target (none for none or several), origin chat asked at a.at; validated with origin chat, its
-// level classified.
+// linked target (none for none or several), origin chat asked at a.at;
+// validated with origin chat, its level classified.
 func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion, now time.Time) (db.OwnerAsk, string, error) {
 	opts := make([]asks.Option, 0, len(q.Options))
 	for _, o := range q.Options {
