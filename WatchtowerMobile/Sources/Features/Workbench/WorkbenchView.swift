@@ -16,16 +16,18 @@ struct WorkbenchView: View {
     let replica: WorkbenchReplicaModel
     let writer: BoardWriter
     @State private var workbenchID: Int64
-    @State private var segment = Segment.sessions
+    @State private var segment: Segment
     @State private var showClosed = false
     @State private var addingTarget = false
     @State private var startingSession = false
     @State private var openSession: SessionRoute?
 
-    init(replica: WorkbenchReplicaModel, writer: BoardWriter, workbenchID: Int64) {
+    /// `segment` is for the screenshot tour; the app always opens Sessions.
+    init(replica: WorkbenchReplicaModel, writer: BoardWriter, workbenchID: Int64, segment: Segment = .sessions) {
         self.replica = replica
         self.writer = writer
         _workbenchID = State(initialValue: workbenchID)
+        _segment = State(initialValue: segment)
     }
 
     var body: some View {
