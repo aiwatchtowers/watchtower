@@ -24,12 +24,16 @@ ALTER TABLE terminal_sessions ADD COLUMN chat_question_at TEXT;
 -- origin: chat = a Chat question Watchtower raised itself after it waited.
 -- chat_asked_at: origin chat only, when the question was asked in the
 -- terminal; '' otherwise (the invariant is enforced by InsertOwnerAsk).
--- Existing asks stay full / agent / ''.
+-- withdrawn_at: when the ask was withdrawn (created_at's format); '' while
+-- not withdrawn, and for asks withdrawn before this migration.
+-- Existing asks stay full / agent / '' / ''.
 ALTER TABLE owner_asks ADD COLUMN level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full'));
 ALTER TABLE owner_asks ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat'));
 ALTER TABLE owner_asks ADD COLUMN chat_asked_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE owner_asks ADD COLUMN withdrawn_at TEXT NOT NULL DEFAULT '';
 
 -- +goose Down
+ALTER TABLE owner_asks DROP COLUMN withdrawn_at;
 ALTER TABLE owner_asks DROP COLUMN chat_asked_at;
 ALTER TABLE owner_asks DROP COLUMN origin;
 ALTER TABLE owner_asks DROP COLUMN level;

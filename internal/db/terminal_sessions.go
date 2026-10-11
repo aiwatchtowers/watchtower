@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -16,6 +17,12 @@ const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
 // AgentStateStamp is at the way agent_state_at and agent_background_at store
 // it: compare-and-clear callers rebuild a stored stamp from its parsed time.
 func AgentStateStamp(at time.Time) string { return at.UTC().Format(agentStateAtLayout) }
+
+// parseAgentStamp reads a stamp in agentStateAtLayout; false when s is not one.
+func parseAgentStamp(s string) (time.Time, bool) {
+	at, err := time.Parse(agentStateAtLayout, s)
+	return at, err == nil
+}
 
 // agentStateAtGlob matches a stamp in agentStateAtLayout. A stored stamp that
 // does not match never blocks a write: string order means nothing for it, and
@@ -110,11 +117,12 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 // `TerminalSessionQueries.replaceClaudeSessionID`; false when the row is not
 // that project's claude row or already holds sessionID. The new conversation
 // has its own transcript, so the turn order measured in the old one goes,
-// and so does the background agent count (agent_background and
-// agent_background_at) its Stop snapshotted.
+// and so do the background agent count (agent_background and
+// agent_background_at) its Stop snapshotted and its chat question
+// (chat_question, chat_question_at).
 func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_turn_end = NULL, agent_tool_run = 0,
-		agent_background = NULL, agent_background_at = NULL
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id IS NOT ?`,
 		sessionID, id, projectID, sessionID)
 	if err != nil {
@@ -130,8 +138,9 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 // MarkTerminalAgentRun starts a new process run of workbench workbenchID's
 // claude row id — the SessionStart hook of a launch or a resume of
 // conversation sessionID, stamped at — when the workbench's folder has the session
-// state hooks: the previous run's state, error, turn order and background
-// agent count (agent_background, agent_background_at) go, and
+// state hooks: the previous run's state, error, turn order, background
+// agent count (agent_background, agent_background_at) and chat question
+// (chat_question, chat_question_at) go, and
 // agent_state_at becomes at even when nothing was stored. That stamp with no
 // state is the run's mark: the hooks run, and the agent has not started a
 // turn, so no permission dialog can be on screen (the Desktop's PROJ-12
@@ -144,7 +153,7 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 	stamp := at.UTC().Format(agentStateAtLayout)
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
-		agent_background = NULL, agent_background_at = NULL
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, id, workbenchID, sessionID, stamp)
@@ -165,17 +174,19 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 // run's mark (MarkTerminalAgentRun) and vouch for a state nobody reports. A
 // late async hook of the previous run may still land, stamped before the
 // run, which the Desktop does not trust. A new run starts with no error, no
-// background agent count (agent_background, agent_background_at) and no
-// turn order either (the Desktop's Start fresh moves the id without
-// resetting it, so a row with no state but a turn order is cleared too).
+// background agent count (agent_background, agent_background_at), no chat
+// question (chat_question, chat_question_at) and no turn order either (the
+// Desktop's Start fresh moves the id without resetting it, so a row with no
+// state but a turn order, or with only a chat question, is cleared too).
 // Same row guards as SetTerminalAgentState; false when there was nothing to
 // clear or a guard held it back.
 func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = NULL,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
-		agent_background = NULL, agent_background_at = NULL
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
-		  AND (agent_state IS NOT NULL OR agent_state_at IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0)`,
+		  AND (agent_state IS NOT NULL OR agent_state_at IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0
+		       OR chat_question IS NOT NULL)`,
 		id, workbenchID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
@@ -385,4 +396,140 @@ func (db *DB) SetTerminalTurnEnd(id, workbenchID int64, sessionID string, end in
 		return false, fmt.Errorf("setting terminal session %d turn end: %w", id, err)
 	}
 	return n > 0, nil
+}
+
+// ErrChatQuestionNotRecorded is SetChatQuestion matching no row — the session is
+// gone, runs another conversation, or holds a newer question.
+var ErrChatQuestionNotRecorded = errors.New("chat question not recorded")
+
+// chatQuestionStateTolerance bounds how long after the question the Stop's
+// own `waiting` may be stamped and still be that turn end's (spec
+// 2026-10-10-owner-asks-v2 Part 5.3, F9): the drift-check hook writes it in
+// parallel with the ask guard's record.
+const chatQuestionStateTolerance = 30 * time.Second
+
+// ChatQuestion is a short question to the owner the Stop ask guard let
+// through as terminal text (terminal_sessions.chat_question, JSON). Options
+// holds 0 or 2-4 entries, already normalised by the guard.
+type ChatQuestion struct {
+	Question string               `json:"question"`
+	Options  []ChatQuestionOption `json:"options"`
+}
+
+// ChatQuestionOption is one option the agent's message itself named.
+type ChatQuestionOption struct {
+	Label       string `json:"label"`
+	Recommended bool   `json:"recommended"`
+}
+
+// SetChatQuestion records q, asked at the Stop of conversation
+// claudeSessionID at at, on workbench workbenchID's claude row id. A newer
+// Stop's question replaces an older one; an older one never replaces a newer
+// one (an unreadable stored stamp never blocks). A Stop older than the row's
+// run or turn is stale and records nothing: a run mark (no state) or a
+// `working` stamped after at means the owner or a new run moved on since —
+// the question would outlive the clear that run or prompt already did. A
+// `waiting` or `approval` stamped after at does not refuse it: the Stop's own
+// async state hook may land just after the guard's stamp. Nor does a
+// main-thread tool run's `working` (agent_tool_run): its async PostToolUse
+// may land after the Stop's moment, as SetTerminalAgentState's one
+// exception allows. Only the two chat
+// question columns change (PROJ-11). ErrChatQuestionNotRecorded when no row
+// took it.
+func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q ChatQuestion, at time.Time) error {
+	if q.Options == nil {
+		q.Options = []ChatQuestionOption{}
+	}
+	body, err := json.Marshal(q)
+	if err != nil {
+		return fmt.Errorf("encoding chat question: %w", err)
+	}
+	stamp := AgentStateStamp(at)
+	res, err := db.Exec(`UPDATE terminal_sessions SET chat_question = ?, chat_question_at = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND (chat_question_at IS NULL OR chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')
+		  AND (agent_state IN ('waiting', 'approval') OR (agent_state = 'working' AND agent_tool_run = 1)
+		       OR agent_state_at IS NULL OR agent_state_at <= ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
+		string(body), stamp, id, workbenchID, claudeSessionID, stamp, stamp)
+	if err != nil {
+		return fmt.Errorf("recording terminal session %d chat question: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("recording terminal session %d chat question: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("terminal session %d: %w", id, ErrChatQuestionNotRecorded)
+	}
+	return nil
+}
+
+// ClearChatQuestionBefore clears workbench workbenchID's claude row id's chat
+// question when the row runs conversation claudeSessionID and the question
+// was recorded before eventAt (a later Stop that records none, the owner's
+// next prompt, a turn the agent started itself); a newer question stays. An unreadable
+// stored stamp is cleared: it can never be raised. Only the two chat
+// question columns change (PROJ-11); nothing to clear is no error.
+func (db *DB) ClearChatQuestionBefore(id, workbenchID int64, claudeSessionID string, eventAt time.Time) error {
+	stamp := AgentStateStamp(eventAt)
+	if _, err := db.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ? AND chat_question_at IS NOT NULL
+		  AND (chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')`,
+		id, workbenchID, claudeSessionID, stamp); err != nil {
+		return fmt.Errorf("clearing terminal session %d chat question: %w", id, err)
+	}
+	return nil
+}
+
+// TakeChatQuestion is the escalation's compare-and-take inside the caller's
+// write transaction (spec Part 5.3, F9): it returns workbench workbenchID's
+// claude row id's chat question and clears it only while chat_question_at is
+// still at (not cleared, not replaced), agent_state is `waiting` and
+// agent_state_at is at most 30 s after the question — the Stop's own
+// `waiting`, written by the parallel drift-check hook, may be stamped just
+// after the guard's record. There is no lower bound: a `waiting` older than
+// the question, with no later `working` or run mark, means the agent has not
+// acted since (a repeated state keeps its first stamp, PROJ-11), so the
+// question is still the live one. Otherwise nil and nothing written, also
+// for another workbench's row or a shell row. ErrTerminalSessionNotFound for
+// a missing row.
+func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*ChatQuestion, error) {
+	var body, questionAt, state, stateAt sql.NullString
+	var mine bool
+	err := tx.QueryRow(`SELECT chat_question, chat_question_at, agent_state, agent_state_at,
+		project_id IS ? AND kind = 'claude'
+		FROM terminal_sessions WHERE id = ?`, workbenchID, id).Scan(&body, &questionAt, &state, &stateAt, &mine)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading terminal session %d chat question: %w", id, err)
+	}
+	if !mine || !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
+		return nil, nil
+	}
+	asked, ok := parseAgentStamp(questionAt.String)
+	if !ok {
+		return nil, nil
+	}
+	if stateTime, ok := parseAgentStamp(stateAt.String); !ok || stateTime.After(asked.Add(chatQuestionStateTolerance)) {
+		return nil, nil
+	}
+	var q ChatQuestion
+	if err := json.Unmarshal([]byte(body.String), &q); err != nil {
+		return nil, fmt.Errorf("decoding terminal session %d chat question: %w", id, err)
+	}
+	res, err := tx.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND chat_question_at = ?`, id, workbenchID, at)
+	if err != nil {
+		return nil, fmt.Errorf("taking terminal session %d chat question: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("taking terminal session %d chat question: %w", id, err)
+	}
+	if n != 1 {
+		return nil, nil
+	}
+	return &q, nil
 }
