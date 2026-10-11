@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -927,7 +928,7 @@ func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
 }
 
 // Board #411: a new run (the mark or the stampless clear) and a conversation
-// switch clear the count.
+// switch clear the count — and, since board #314, the chat question too.
 func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
 	d := openTestDB(t)
@@ -953,11 +954,25 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
 			t.Fatalf("%s: the Stop did not write", tc.name)
 		}
+		if err := d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
 		if !w(tc.write(id)) {
 			t.Fatalf("%s: did not write", tc.name)
 		}
 		requireNoBackground(t, d, id, tc.name)
+		requireNoChatQuestion(t, d, id, tc.name)
 	}
+
+	// A row holding nothing but a chat question is still cleared.
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if err := d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.ClearTerminalAgentState(id, pid, agentStateUUID)) {
+		t.Fatal("ClearTerminalAgentState left a row holding only a chat question")
+	}
+	requireNoChatQuestion(t, d, id, "a row holding only a question")
 }
 
 // Board #411: EndTerminalBackground NULLs the count only while the row still
@@ -1037,5 +1052,281 @@ func TestEndTerminalBackgroundIsCompareAndClear(t *testing.T) {
 		if after := terminalRowSnapshot(t, d, id); after != before {
 			t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
 		}
+	}
+}
+
+// chatQuestionColumns reads row id's chat question columns.
+func chatQuestionColumns(t *testing.T, d *DB, id int64) (sql.NullString, sql.NullString) {
+	t.Helper()
+	var q, at sql.NullString
+	if err := d.QueryRow(`SELECT chat_question, chat_question_at FROM terminal_sessions WHERE id = ?`, id).
+		Scan(&q, &at); err != nil {
+		t.Fatal(err)
+	}
+	return q, at
+}
+
+// requireNoChatQuestion fails unless row id stores neither chat question column.
+func requireNoChatQuestion(t *testing.T, d *DB, id int64, what string) {
+	t.Helper()
+	if q, at := chatQuestionColumns(t, d, id); q.Valid || at.Valid {
+		t.Fatalf("%s: chat_question %v at %v, want both NULL", what, q, at)
+	}
+}
+
+// requireChatQuestion fails unless row id stores question text asked at at.
+func requireChatQuestion(t *testing.T, d *DB, id int64, text string, at time.Time, what string) {
+	t.Helper()
+	q, gotAt := chatQuestionColumns(t, d, id)
+	var got ChatQuestion
+	if !q.Valid || json.Unmarshal([]byte(q.String), &got) != nil || got.Question != text ||
+		gotAt.String != AgentStateStamp(at) {
+		t.Fatalf("%s: chat_question %v at %v, want %q at %s", what, q, gotAt, text, AgentStateStamp(at))
+	}
+}
+
+func sampleChatQuestion(text string) ChatQuestion {
+	return ChatQuestion{Question: text, Options: []ChatQuestionOption{
+		{Label: "Postgres", Recommended: true}, {Label: "SQLite"},
+	}}
+}
+
+func TestChatQuestionSetReplaceClear(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	shell := newAgentStateRow(t, d, pid, "shell", nil)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := chatQuestionColumns(t, d, id)
+	if want := `{"question":"Which DB?","options":[{"label":"Postgres","recommended":true},{"label":"SQLite","recommended":false}]}`; q.String != want {
+		t.Fatalf("chat_question = %s, want %s", q.String, want)
+	}
+	requireChatQuestion(t, d, id, "Which DB?", t0, "set")
+
+	if err := d.SetChatQuestion(id, agentStateUUID, ChatQuestion{Question: "Ship it?"}, t0.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if q, _ := chatQuestionColumns(t, d, id); q.String != `{"question":"Ship it?","options":[]}` {
+		t.Fatalf("a question without options stored %s, want an empty options array", q.String)
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "a newer Stop replaces")
+
+	for _, tc := range []struct {
+		name   string
+		id     int64
+		claude string
+		at     time.Time
+	}{
+		{"an older Stop", id, agentStateUUID, t0},
+		{"the same Stop again", id, agentStateUUID, t0.Add(time.Second)},
+		{"another conversation", id, "other-uuid", t0.Add(time.Hour)},
+		{"a shell row", shell, agentStateUUID, t0.Add(time.Hour)},
+		{"no such row", 999, agentStateUUID, t0.Add(time.Hour)},
+	} {
+		err := d.SetChatQuestion(tc.id, tc.claude, sampleChatQuestion("Late?"), tc.at)
+		if !errors.Is(err, ErrChatQuestionNotRecorded) {
+			t.Fatalf("%s: err = %v, want ErrChatQuestionNotRecorded", tc.name, err)
+		}
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "after refused records")
+	requireNoChatQuestion(t, d, shell, "the shell row")
+
+	if err := d.ClearChatQuestionBefore(id, "other-uuid", t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "another conversation's clear")
+	if err := d.ClearChatQuestionBefore(id, agentStateUUID, t0.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	requireNoChatQuestion(t, d, id, "a later event clears")
+	if err := d.ClearChatQuestionBefore(id, agentStateUUID, t0.Add(3*time.Second)); err != nil {
+		t.Fatalf("nothing to clear must not fail: %v", err)
+	}
+}
+
+func TestClearChatQuestionBeforeKeepsANewerQuestion(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	asked := time.Now().UTC().Truncate(time.Millisecond)
+	if err := d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), asked); err != nil {
+		t.Fatal(err)
+	}
+	for _, before := range []time.Time{asked.Add(-time.Second), asked} {
+		if err := d.ClearChatQuestionBefore(id, agentStateUUID, before); err != nil {
+			t.Fatal(err)
+		}
+		requireChatQuestion(t, d, id, "Which DB?", asked, "an event not later than the question")
+	}
+	if err := d.ClearChatQuestionBefore(id, agentStateUUID, asked.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	requireNoChatQuestion(t, d, id, "an event a millisecond later")
+
+	// An unreadable stamp can never be raised, so any clear takes it.
+	if _, err := d.Exec(`UPDATE terminal_sessions SET chat_question = '{}', chat_question_at = 'yesterday' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ClearChatQuestionBefore(id, agentStateUUID, asked.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requireNoChatQuestion(t, d, id, "an unreadable stamp")
+}
+
+func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	asked := time.Now().UTC().Truncate(time.Millisecond)
+	at := AgentStateStamp(asked)
+	// row stores a question asked at asked over state, stamped asked+offset.
+	row := func(state string, offset time.Duration) int64 {
+		t.Helper()
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ? WHERE id = ?`,
+			state, AgentStateStamp(asked.Add(offset)), id); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), asked); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	take := func(id int64, at string) *ChatQuestion {
+		t.Helper()
+		var q *ChatQuestion
+		if err := d.WithTx(func(tx *sql.Tx) error {
+			var err error
+			q, err = d.TakeChatQuestion(tx, id, at)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return q
+	}
+
+	id := row("waiting", 0)
+	q := take(id, at)
+	if q == nil || q.Question != "Which DB?" || len(q.Options) != 2 || !q.Options[0].Recommended {
+		t.Fatalf("taken = %+v, want the stored question with its options", q)
+	}
+	requireNoChatQuestion(t, d, id, "after the take")
+	if q := take(id, at); q != nil {
+		t.Fatalf("a second take returned %+v", q)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		state  string
+		offset time.Duration
+		at     string
+	}{
+		{"a mismatched at", "waiting", 0, AgentStateStamp(asked.Add(-time.Second))},
+		{"a turn running", "working", 0, at},
+		{"a permission prompt", "approval", 0, at},
+		{"waiting stamped 31 s after", "waiting", 31 * time.Second, at},
+	} {
+		id := row(tc.state, tc.offset)
+		before := terminalRowSnapshot(t, d, id)
+		if q := take(id, tc.at); q != nil {
+			t.Fatalf("%s: taken %+v", tc.name, q)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+	for _, offset := range []time.Duration{29 * time.Second, -time.Minute} {
+		if q := take(row("waiting", offset), at); q == nil {
+			t.Fatalf("waiting stamped %v from the question: not taken", offset)
+		}
+	}
+
+	err := d.WithTx(func(tx *sql.Tx) error {
+		_, err := d.TakeChatQuestion(tx, 999, at)
+		return err
+	})
+	if !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a missing row: err = %v", err)
+	}
+}
+
+// PROJ-11 (spec 2026-10-10-owner-asks-v2 Part 11.3): the chat question
+// writes change only the two chat question columns.
+func TestProj11_ChatQuestionWritesNeverTouchTheState(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+		finished_at = ?, agent_turn_end = 4096, agent_tool_run = 1, agent_background = 2, agent_background_at = ?
+		WHERE id = ?`, AgentStateStamp(t0), AgentStateStamp(t0), AgentStateStamp(t0), id); err != nil {
+		t.Fatal(err)
+	}
+	state := func() string {
+		t.Helper()
+		n, at := backgroundColumns(t, d, id)
+		return otherAgentColumns(t, d, id) + fmt.Sprintf("|%v|%v", n, at)
+	}
+	want := state()
+
+	for _, tc := range []struct {
+		name  string
+		write func() error
+	}{
+		{"SetChatQuestion", func() error {
+			return d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), t0)
+		}},
+		{"SetChatQuestion replacing", func() error {
+			return d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Ship it?"), t0.Add(time.Second))
+		}},
+		{"ClearChatQuestionBefore", func() error {
+			return d.ClearChatQuestionBefore(id, agentStateUUID, t0.Add(2*time.Second))
+		}},
+		{"SetChatQuestion again", func() error {
+			return d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), t0.Add(3*time.Second))
+		}},
+		{"TakeChatQuestion", func() error {
+			return d.WithTx(func(tx *sql.Tx) error {
+				q, err := d.TakeChatQuestion(tx, id, AgentStateStamp(t0.Add(3*time.Second)))
+				if err == nil && q == nil {
+					err = errors.New("nothing taken")
+				}
+				return err
+			})
+		}},
+	} {
+		if err := tc.write(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := state(); got != want {
+			t.Fatalf("%s changed the state columns\nwant %s\ngot  %s", tc.name, want, got)
+		}
+	}
+	requireNoChatQuestion(t, d, id, "after the take")
+}
+
+// A mark stamped before the stored agent_state_at is a late hook of an
+// earlier run: it changes nothing, the question included.
+func TestOlderRunMarkOverANewerStateKeepsTheQuestion(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(-1))) {
+		t.Fatal("the Stop did not write")
+	}
+	if err := d.SetChatQuestion(id, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatal(err)
+	}
+	before := terminalRowSnapshot(t, d, id)
+	if w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(-time.Second))) {
+		t.Fatal("an older mark wrote")
+	}
+	if after := terminalRowSnapshot(t, d, id); after != before {
+		t.Fatalf("an older mark changed the row\nbefore %s\nafter  %s", before, after)
 	}
 }
