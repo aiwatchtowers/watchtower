@@ -100,6 +100,42 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertTrue(report.findings.isEmpty)
     }
 
+    /// Owner asks v2 Part 5.3: the stored stamp goes back verbatim as `--at`.
+    func testEscalateQuestionPassesTheStampVerbatimAndDecodesTheEnvelope() async {
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"outcome":"filed","ask_id":9,"level":"quick"}"#.utf8))
+        let result = await WorkbenchCLI(runner: runner).escalateQuestion(
+            projectID: 4, sessionID: 12, at: "2026-10-10T12:00:00.123Z", reason: .left
+        )
+        XCTAssertEqual(runner.invocations, [[
+            "workbench", "escalate-question", "--workbench", "4", "--session", "12",
+            "--at", "2026-10-10T12:00:00.123Z", "--reason", "left"
+        ]])
+        XCTAssertEqual(result.verdict, .filed(askID: 9))
+    }
+
+    /// A non-zero exit or unparsable stdout is the Desktop's own failure
+    /// envelope, not retried.
+    func testEscalateQuestionFailuresBecomeTheDesktopsEnvelope() async {
+        let failing = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 2, stderr: "boom"))
+        let failed = await WorkbenchCLI(runner: failing).escalateQuestion(projectID: 1, sessionID: 2, at: "x", reason: .timeout)
+        XCTAssertEqual(failed.errorCode, .internal)
+        guard case .failed = failed.verdict else { return XCTFail("a non-zero exit is not retried") }
+
+        let prose = FakeCLIRunner(stdout: Data("Error: unknown command".utf8))
+        let unreadable = await WorkbenchCLI(runner: prose).escalateQuestion(projectID: 1, sessionID: 2, at: "x", reason: .away)
+        XCTAssertEqual(unreadable.errorCode, .internal)
+        guard case .failed = unreadable.verdict else { return XCTFail("unparsable stdout is not retried") }
+    }
+
+    /// A binary that could not be started ran nothing: retried.
+    func testEscalateQuestionLaunchFailureIsRetried() async {
+        struct NoExecBit: LocalizedError { var errorDescription: String? { "no exec bit" } }
+        let runner = FakeCLIRunner(error: CLIRunnerError.launchFailed(underlying: NoExecBit()))
+        let result = await WorkbenchCLI(runner: runner).escalateQuestion(projectID: 1, sessionID: 2, at: "x", reason: .left)
+        XCTAssertEqual(result.errorCode, .launchFailed)
+        XCTAssertEqual(result.verdict, .transient("launch failed: no exec bit"))
+    }
+
     func testDeletePassesJSONAndDecodesBothEnvelopeShapes() async throws {
         let clean = FakeCLIRunner(stdout: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8))
         let ok = try await WorkbenchCLI(runner: clean).delete(projectID: 3)

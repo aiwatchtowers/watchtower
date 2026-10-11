@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error_code": "busy",
+  "error": "database is locked"
+}

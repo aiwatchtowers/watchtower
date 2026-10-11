@@ -22,6 +22,10 @@ type CodexGenerator struct {
 	// stdinOnly routes every user message through stdin regardless of its
 	// size (see SetStdinOnly).
 	stdinOnly bool
+	// isolated runs the child in its own process group without the
+	// variables in dropEnv (see SetIsolatedChild).
+	isolated bool
+	dropEnv  []string
 }
 
 // NewCodexGenerator creates a generator that uses the Codex CLI.
@@ -36,6 +40,13 @@ func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerato
 // size. Callers whose user message carries the owner's chat text set it
 // (CHAT-04: `chat title`); every other caller keeps the size-based routing.
 func (g *CodexGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
+
+// SetIsolatedChild makes every subsequent Generate run codex through
+// digest.IsolateChild: its own process group, killed whole on cancel, and
+// none of the variables in dropEnv.
+func (g *CodexGenerator) SetIsolatedChild(dropEnv ...string) {
+	g.isolated, g.dropEnv = true, dropEnv
+}
 
 // Generate calls Codex CLI with the given prompt and returns the response text,
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
@@ -68,6 +79,9 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 		env = append(env, e)
 	}
 	cmd.Env = append(env, "PATH="+RichPATH())
+	if g.isolated {
+		digest.IsolateChild(cmd, g.dropEnv)
+	}
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}

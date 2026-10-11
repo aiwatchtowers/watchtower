@@ -8,10 +8,17 @@ Both sides must agree on every file.
   questions of a `question` ask) and by the Swift `ChatQuestionCard` decoder alike. Only
   rules both sides enforce belong here; Go-only bounds (label ≤ 80, description ≤ 300 runes)
   are unit-tested in Go.
+- `cards/owner_ask_*.json` — an owner ask's question payload, not a chat card: both
+  fixture loops (Go `TestCardFixtures`, Swift `OwnerAskCardFixtureTests`) skip them. Go
+  `asks.Validate` accepts the file with origin `chat` and refuses it with origin `agent`;
+  the Swift owner-ask decode accepts it and the chat-card decode refuses it.
 - `answers/*.json` — `{kind, payload, answer, canonical | error}`. For `valid_*`, `answer`
   re-encoded with sorted keys and no whitespace equals `canonical` byte for byte (Go:
   `json.Marshal` of `asks.Answer`; Swift: `.sortedKeys` and `.withoutEscapingSlashes`).
   For `invalid_*`, `asks.ParseAnswer` then `asks.ValidateAnswer` fail with exactly `error`.
+  `valid_question_quick.json` and `valid_question_reply.json` are also what the Swift
+  `OwnerAskAnswer.quick(label:questionID:)` and `.reply(_:questionID:)` builders write — a
+  Quick ask's one-tap answer, and a free reply to a question raised from chat with no options.
   The fixtures avoid `<`, `>`, `&`, `/`, U+2028 and U+2029, which the two encoders escape
   differently.
 - `render/<answers fixture>.txt` — `asks.Render` of each valid answers fixture

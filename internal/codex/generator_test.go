@@ -280,3 +280,35 @@ func TestCodexArgs_LargeSystemPromptMovesTurnToStdin(t *testing.T) {
 		t.Errorf("an exactly-threshold system prompt must keep today's argv layout, got last arg %q, stdin %d bytes", args[len(args)-1], len(stdin))
 	}
 }
+
+// SetIsolatedChild runs codex in its own process group without the dropped
+// variables. A fake codex binary records both.
+func TestCodexGenerator_IsolatedChild(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-codex")
+	body := "#!/bin/sh\nenv > '" + dir + "/env'\nps -o pgid= -p $$ | tr -d ' ' > '" + dir + "/pgid'\necho $$ > '" + dir + "/pid'\n" +
+		"cat > /dev/null\necho '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"ok\"}}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WT_DROP_ME", "1")
+	gen := NewCodexGenerator("light", "strong", script)
+	gen.SetIsolatedChild("WT_DROP_ME")
+	reply, _, _, err := gen.Generate(context.Background(), "system", "user", "")
+	if err != nil || reply != "ok" {
+		t.Fatalf("reply %q, err %v", reply, err)
+	}
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	if strings.Contains(read("env"), "WT_DROP_ME=") {
+		t.Fatal("the dropped variable reached codex")
+	}
+	if read("pid") != read("pgid") {
+		t.Fatalf("codex runs in group %s, not its own (%s)", read("pgid"), read("pid"))
+	}
+}

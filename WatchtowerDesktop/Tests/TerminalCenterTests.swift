@@ -11,6 +11,7 @@ final class FakeTerminalSession: TerminalSessionProcess {
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
     var onOwnerInput: (([UInt8]) -> Void)?
+    var onOwnerFocus: (() -> Void)?
     private(set) var launches: [TerminalLaunch] = []
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []
@@ -30,6 +31,13 @@ final class FakeTerminalSession: TerminalSessionProcess {
     func setPathLinkHandler(folder: String, open: @escaping (TerminalPathLinks.Location) -> Void) {
         pathLinkFolder = folder
         openPathLink = open
+    }
+
+    private(set) var askLinkLookUp: ((Int64) async -> OwnerAsk?)?
+    private(set) var openAskLink: ((Int64) -> Void)?
+    func setAskLinkHandler(lookUp: @escaping (Int64) async -> OwnerAsk?, open: @escaping (Int64) -> Void) {
+        askLinkLookUp = lookUp
+        openAskLink = open
     }
 }
 
@@ -1079,6 +1087,31 @@ final class TerminalCenterTests: XCTestCase {
         sessions[0].openPathLink?(location)
         XCTAssertEqual(opened.map(\.0), [1])
         XCTAssertEqual(opened.map(\.1), [location])
+    }
+
+    /// Board #500: a workbench session's `ask #N` is looked up and opened
+    /// with its own workbench; a standalone terminal has no ask links.
+    func testAskLinksAreWiredForWorkbenchSessionsOnly() async throws {
+        let center = makeCenter()
+        var looked: [(Int64, Int64)] = []
+        var opened: [(Int64, Int64)] = []
+        center.askLinkLookUp = { workbench, ask in
+            looked.append((workbench, ask))
+            return nil
+        }
+        center.onAskLink = { opened.append(($0, $1)) }
+        let workbench = try row(project: 1)
+        let standalone = try row(project: nil, kind: .shell)
+        center.start(workbench, fresh: true)
+        center.start(standalone, fresh: true)
+        XCTAssertNil(sessions[1].askLinkLookUp)
+        let lookUp = try XCTUnwrap(sessions[0].askLinkLookUp)
+        _ = await lookUp(12)
+        sessions[0].openAskLink?(12)
+        XCTAssertEqual(looked.map(\.0), [1])
+        XCTAssertEqual(looked.map(\.1), [12])
+        XCTAssertEqual(opened.map(\.0), [1])
+        XCTAssertEqual(opened.map(\.1), [12])
     }
 
     /// F3: SwiftTerm's own handler gets only a URL the app-wide allowlist

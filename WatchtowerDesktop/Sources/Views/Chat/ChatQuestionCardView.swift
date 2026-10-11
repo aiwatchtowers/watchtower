@@ -25,6 +25,13 @@ struct ChatQuestionCardView: View {
     /// With `draftPicks`: ⌘↩ (false) / ⌘⇧↩ (true) in an Other field press
     /// the ask's answer buttons (`OwnerAsksViewModel.pressKey`).
     var onKey: ((Bool) -> Void)?
+    /// With `draftPicks`: the question under the drawer's keyboard cursor
+    /// (board #412), outlined; its options' help names their digit.
+    var keyboardStop: OwnerAskKeyStop?
+    /// With `draftPicks`: Return on a question puts the keyboard in its
+    /// Other… field; Esc there leaves it (`onLeaveField`).
+    var fieldFocus: OwnerAskFieldFocus?
+    var onLeaveField: (() -> Void)?
 
     @State private var picks: [String: ChatQuestionAnswer.Entry] = [:]
 
@@ -64,11 +71,20 @@ struct ChatQuestionCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             MarkdownView(text: question.question)
                 .font(.callout.weight(.semibold))
-            ForEach(question.options, id: \.label) { option in
+            ForEach(Array(question.options.enumerated()), id: \.element.label) { index, option in
                 optionRow(option, in: question, selected: entry.labels.contains(option.label))
+                    .help(digitHint(index))
             }
             otherField(question, entry: entry)
         }
+        .ownerAskKeyCursor(keyboardStop == .question(question.id))
+        .id(OwnerAskKeyStop.question(question.id))
+    }
+
+    /// An owner ask's option names its digit (board #412); the chat's none.
+    private func digitHint(_ index: Int) -> String {
+        guard draftPicks != nil, interactive, index < 9 else { return "" }
+        return "Press \(index + 1) to pick (Tab moves between questions)"
     }
 
     private func optionRow(_ option: ChatQuestionOption, in question: ChatQuestion, selected: Bool) -> some View {
@@ -118,7 +134,9 @@ struct ChatQuestionCardView: View {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…",
                                   minHeight: CommentTextEditor.formMinHeight, maxHeight: CommentTextEditor.formMaxHeight,
                                   onSubmit: onKey.map { onKey in { onKey(false) } },
-                                  onShiftSubmit: onKey.map { onKey in { onKey(true) } })
+                                  onShiftSubmit: onKey.map { onKey in { onKey(true) } },
+                                  onCancel: onLeaveField,
+                                  focusRequest: OwnerAskFieldFocus.request(fieldFocus, for: .question(question.id)))
             } else {
                 CommentTextEditor(text: otherBinding(question), placeholder: "Other…", onSubmit: complete ? send : nil)
             }
@@ -155,18 +173,7 @@ struct ChatQuestionCardView: View {
     }
 
     private func toggle(_ label: String, in question: ChatQuestion) {
-        var entry = currentPicks[question.id] ?? .init()
-        if question.multi {
-            if let index = entry.labels.firstIndex(of: label) {
-                entry.labels.remove(at: index)
-            } else {
-                entry.labels.append(label)
-            }
-        } else {
-            entry.labels = [label]
-            entry.other = nil  // one answer per single-choice question
-        }
-        setPick(entry, for: question)
+        setPick((currentPicks[question.id] ?? .init()).toggling(label, multi: question.multi), for: question)
     }
 
     private func setPick(_ entry: ChatQuestionAnswer.Entry, for question: ChatQuestion) {

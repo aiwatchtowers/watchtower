@@ -1,0 +1,19 @@
+{
+  "reasons": [
+    "timeout",
+    "left",
+    "away"
+  ],
+  "error_codes": [
+    "busy",
+    "open_cap",
+    "not_found",
+    "bad_args",
+    "schema",
+    "internal"
+  ],
+  "transient": [
+    "busy",
+    "open_cap"
+  ]
+}

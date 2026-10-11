@@ -69,6 +69,11 @@ func sqliteDSN(dbPath, params string) string {
 	return "file:" + (&url.URL{Path: dbPath}).EscapedPath() + params
 }
 
+// ErrSchemaSetup marks an Open that reached the database but could not set
+// its pragmas or apply the migrations (as opposed to a path or driver
+// failure before it).
+var ErrSchemaSetup = errors.New("database schema setup failed")
+
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
 //
@@ -112,12 +117,12 @@ func Open(dbPath string) (*DB, error) {
 
 	if err := db.setPragmas(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("setting pragmas: %w", err)
+		return nil, fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
 	}
 
 	if err := db.migrate(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("running migrations: %w", err)
+		return nil, fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
 	}
 
 	// Logged, not returned: a database missing one feature's table must still
@@ -143,10 +148,19 @@ func Open(dbPath string) (*DB, error) {
 // (when no other connection has them open) and checkpoint on close; neither
 // changes the database's content.
 func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
-	// A file: URI so mode=rw (open, never create) reaches SQLite; the
-	// driver still applies the _pragma params on every connection.
-	dsn := "file:" + (&url.URL{Path: dbPath}).EscapedPath() +
-		fmt.Sprintf("?mode=rw&_pragma=busy_timeout(%d)&_pragma=query_only(1)", busy.Milliseconds())
+	return openExistingDSN(dbPath, existingDSN(dbPath, busy, "_pragma=query_only(1)"))
+}
+
+// existingDSN is the DSN of the hook openers: a file: URI so mode=rw (open,
+// never create) reaches SQLite, a busy timeout of busy, and params (each
+// "key=value"); the driver applies the _pragma params on every connection.
+func existingDSN(dbPath string, busy time.Duration, params ...string) string {
+	q := append([]string{"mode=rw", fmt.Sprintf("_pragma=busy_timeout(%d)", busy.Milliseconds())}, params...)
+	return "file:" + (&url.URL{Path: dbPath}).EscapedPath() + "?" + strings.Join(q, "&")
+}
+
+// openExistingDSN opens dsn on one connection and checks the file is there.
+func openExistingDSN(dbPath, dsn string) (*DB, error) {
 	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
@@ -157,6 +171,56 @@ func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
 		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
 	}
 	return &DB{DB: sqlDB}, nil
+}
+
+// OpenExistingRW opens the database at dbPath for a hook on a hard time
+// budget that reads and then writes a little — the Stop ask guard. Like
+// OpenExisting it never creates the directory or the file (mode=rw), runs no
+// migration and writes no schema, and a statement waits at most busy for
+// another process's lock; unlike it, writes are allowed (no query_only),
+// foreign keys are enforced, synchronous is NORMAL and a write transaction
+// begins IMMEDIATE, as on Open, and the file modes are tightened as Open
+// does (a write may create the -wal/-shm sidecars). A schema older than the
+// caller needs is found with HasColumns, never by the goose version (a
+// crossed migration line is possible).
+func OpenExistingRW(dbPath string, busy time.Duration) (*DB, error) {
+	d, err := openExistingDSN(dbPath, existingDSN(dbPath, busy, strings.TrimPrefix(immediateTxDSN, "?"),
+		"_pragma=foreign_keys(1)", "_pragma=synchronous(NORMAL)"))
+	if err != nil {
+		return nil, err
+	}
+	tightenDBFilePerms(dbPath)
+	return d, nil
+}
+
+// HasColumns reports whether table exists with every one of cols, by schema
+// lookup; a missing table reads false, a failed lookup is an error.
+func (db *DB) HasColumns(table string, cols ...string) (bool, error) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("reading %s's columns: %w", table, err)
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, fmt.Errorf("reading %s's columns: %w", table, err)
+		}
+		have[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("reading %s's columns: %w", table, err)
+	}
+	if len(have) == 0 {
+		return false, nil
+	}
+	for _, c := range cols {
+		if !have[c] {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // tightenDBFilePerms restricts the database file and its WAL/SHM sidecars to
@@ -223,34 +287,4 @@ func (db *DB) SetReadOnly() error {
 		return fmt.Errorf("setting query_only: %w", err)
 	}
 	return nil
-}
-
-// hasColumn checks whether a table has a specific column via PRAGMA table_info.
-// table must be a valid identifier (alphanumeric + underscore only).
-func hasColumn(querier interface {
-	Query(string, ...any) (*sql.Rows, error)
-}, table, column string) bool {
-	// Validate table name to prevent SQL injection — PRAGMA doesn't support parameterized table names.
-	for _, r := range table {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-			return false
-		}
-	}
-	rows, err := querier.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil {
-			if name == column {
-				return true
-			}
-		}
-	}
-	return false
 }

@@ -14,7 +14,7 @@ final class OwnerAskPresentationTests: XCTestCase {
     ) throws -> OwnerAsk {
         let payload = #"{"questions":[\#(questions ? Self.question : "")],"checklist":\#(checklist)}"#
         return try OwnerAsk(row: Row([
-            "id": 4, "project_id": 1, "kind": kind.rawValue, "title": "t", "payload": payload,
+            "id": 4, "project_id": 1, "level": "full", "origin": "agent", "kind": kind.rawValue, "title": "t", "payload": payload,
             "status": status, "withdrawn_reason": reason
         ]))
     }
@@ -30,7 +30,7 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(step(try ask(.question)), "Answer questions")
         let second = Self.question.replacingOccurrences(of: #""id":"a""#, with: #""id":"b""#)
         let two = try OwnerAsk(row: Row([
-            "id": 5, "project_id": 1, "kind": "question", "title": "t", "status": "open",
+            "id": 5, "project_id": 1, "level": "full", "origin": "agent", "kind": "question", "title": "t", "status": "open",
             "payload": #"{"questions":[\#(Self.question),\#(second)]}"#
         ]))
         XCTAssertEqual(step(two), "Answer 2 questions")
@@ -49,13 +49,13 @@ final class OwnerAskPresentationTests: XCTestCase {
     /// Owner ask #90: ⌘↩ presses the primary button, ⌘⇧↩ a review's
     /// Request changes and nothing on the other kinds.
     func testKeyActionPerKind() throws {
-        let key = { (ask: OwnerAsk, shift: Bool) in OwnerAskPresentation.keyAction(for: ask, draft: OwnerAskDraft(), shift: shift) }
+        let key = { (ask: OwnerAsk, shift: Bool) in OwnerAskPresentation.keyAction(for: ask, shift: shift) }
         XCTAssertEqual(key(try ask(.review), false)?.verdict, .approved)
         XCTAssertEqual(key(try ask(.review), true)?.verdict, .changes)
         XCTAssertEqual(key(try ask(.question, questions: true), false)?.label, "Answer")
         XCTAssertNil(key(try ask(.question, questions: true), true))
         let check = try ask(.check, checklist: #"[{"text":"Launch"}]"#)
-        XCTAssertEqual(key(check, false)?.label, "Send (1 unmarked)", "the button as the bar shows it")
+        XCTAssertEqual(key(check, false)?.label, "Send", "the button as the bar shows it")
         XCTAssertNil(key(check, true))
         let review = OwnerAskPresentation.answerActions(for: .review)
         XCTAssertEqual(review.map(OwnerAskPresentation.keyLabel), ["⌘⇧↩", "⌘↩"])
@@ -99,16 +99,26 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertFalse(OwnerAskPresentation.canAnswer(ask, draft: OwnerAskDraft(), with: send, answering: false))
     }
 
+    /// The marks so far by their button labels; the unmarked items are
+    /// "N not checked" over Send, not here.
     func testCheckSummary() {
         let items = ["1", "2", "3", "4"].map { OwnerAskCheckItem(id: $0, text: "step \($0)") }
-        XCTAssertEqual(OwnerAskPresentation.checkSummary(items, marks: ["1": .ok, "2": .broken]), "1 ok · 1 broken · 2 unmarked")
-        XCTAssertEqual(OwnerAskPresentation.checkSummary(Array(items.prefix(3)), marks: ["1": .ok, "2": .broken]),
-                       "1 ok · 1 broken · 1 unmarked")
+        XCTAssertEqual(OwnerAskPresentation.checkSummary(items, marks: ["1": .ok, "2": .broken]), "Works 1 · Doesn't work 1")
         XCTAssertEqual(OwnerAskPresentation.checkSummary(items, marks: ["1": .ok, "2": .ok, "3": .skipped, "4": .ok]),
-                       "3 ok · 1 skipped", "an empty count is left out")
-        XCTAssertEqual(OwnerAskPresentation.checkSummary(items, marks: ["gone": .ok]), "4 unmarked",
+                       "Works 3 · Didn't check 1", "an empty count is left out")
+        XCTAssertEqual(OwnerAskPresentation.checkSummary(items, marks: ["gone": .ok]), "",
                        "a mark for an item the payload lacks counts for nothing")
         XCTAssertEqual(OwnerAskPresentation.checkSummary([], marks: [:]), "")
+    }
+
+    /// An `ask #N` link's hover card (board #500): under the title, the
+    /// number, kind and status.
+    func testLinkCardDetailNamesNumberKindAndStatus() throws {
+        let ask = try OwnerAsk(row: Row([
+            "id": 12, "project_id": 1, "level": "full", "origin": "agent", "kind": "check", "title": "Try the export", "payload": "{}",
+            "status": "open", "withdrawn_reason": ""
+        ]))
+        XCTAssertEqual(OwnerAskPresentation.linkCardDetail(ask), "#12 · Check · Waiting for you")
     }
 
     func testPositionLabel() {
@@ -136,17 +146,31 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(OwnerAskPresentation.answerNotes(from: answer), ["1": "crashes"])
     }
 
-    func testSendNamesTheUnmarkedItems() throws {
+    /// Board #502: Send stays "Send"; above it "N not checked" counts the
+    /// items left unmarked (they go as Didn't check), hidden at zero and on
+    /// any other kind.
+    func testNotCheckedCountsTheUnmarkedItems() throws {
         let ask = try ask(.check, checklist: #"[{"text":"Launch"},{"text":"Quit"},{"text":"Undo"}]"#)
         var draft = OwnerAskDraft()
-        XCTAssertEqual(OwnerAskPresentation.answerActions(for: ask, draft: draft).map(\.label), ["Send (3 unmarked)"])
+        XCTAssertEqual(OwnerAskPresentation.notChecked(ask, draft: draft), "3 not checked")
         draft.checks["1"] = .ok
-        XCTAssertEqual(OwnerAskPresentation.answerActions(for: ask, draft: draft).map(\.label), ["Send (2 unmarked)"])
+        XCTAssertEqual(OwnerAskPresentation.notChecked(ask, draft: draft), "2 not checked")
         draft.checks["2"] = .skipped
         draft.checks["3"] = .ok
-        XCTAssertEqual(OwnerAskPresentation.answerActions(for: ask, draft: draft).map(\.label), ["Send"])
-        let review = try self.ask(.review)
-        XCTAssertEqual(OwnerAskPresentation.answerActions(for: review, draft: draft).map(\.label), ["Request changes", "Approve"])
+        XCTAssertNil(OwnerAskPresentation.notChecked(ask, draft: draft), "hidden when every item is marked")
+        draft.checks = ["gone": .ok]
+        XCTAssertEqual(OwnerAskPresentation.notChecked(ask, draft: draft), "3 not checked",
+                       "a mark for an item the payload lacks counts for nothing")
+        XCTAssertNil(OwnerAskPresentation.notChecked(try self.ask(.review), draft: OwnerAskDraft()))
+    }
+
+    /// Board #502: the buttons name what the owner found — the JSON values
+    /// stay `ok`/`broken`/`skipped`.
+    func testCheckStatesAreLabelledByWhatTheOwnerFound() {
+        XCTAssertEqual(OwnerAskPresentation.checkStates.map(\.state), [.ok, .broken, .skipped])
+        XCTAssertEqual(OwnerAskPresentation.checkStates.map(\.label), ["Works", "Doesn't work", "Didn't check"])
+        XCTAssertEqual(OwnerAskPresentation.checkStates.map(\.icon), ["checkmark", "xmark", "minus"])
+        XCTAssertEqual(OwnerAskPresentation.checkStates.map(\.state.rawValue), ["ok", "broken", "skipped"])
     }
 
     func testABrokenItemWithoutANoteBlocksSendAndSaysWhy() throws {
@@ -155,13 +179,36 @@ final class OwnerAskPresentationTests: XCTestCase {
         var draft = OwnerAskDraft()
         draft.checks["1"] = .broken
         XCTAssertFalse(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
-        XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: draft, with: send), "Add a note to each broken item")
+        XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: draft, with: send), "Say what happened on each item that doesn't work")
         draft.checkNotes["1"] = "crashes on launch"
         XCTAssertTrue(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
         XCTAssertNil(OwnerAskPresentation.blocker(ask, draft: draft, with: send))
         draft.note = String(repeating: "x", count: 4001)
         XCTAssertFalse(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
         XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: draft, with: send), "Shorten the note to 4000 characters")
+    }
+
+    /// Spec 2026-10-10 Part 9.1: an ask raised from chat says so with its
+    /// age in whole minutes, "<1 min" under a minute.
+    func testChatMarkAge() throws {
+        let askedAt = "2026-10-10T09:15:00.000Z"
+        let asked = try XCTUnwrap(SessionAgentStatus.parseStamp(askedAt))
+        func mark(after seconds: TimeInterval) -> String? {
+            OwnerAskPresentation.chatMark(askedAt: askedAt, now: asked.addingTimeInterval(seconds))
+        }
+        XCTAssertEqual(mark(after: 0), "From chat · <1 min")
+        XCTAssertEqual(mark(after: 59), "From chat · <1 min")
+        XCTAssertEqual(mark(after: 60), "From chat · 1 min")
+        XCTAssertEqual(mark(after: 12 * 60), "From chat · 12 min")
+        XCTAssertEqual(mark(after: 12 * 60 + 59), "From chat · 12 min", "whole minutes, never rounded up")
+        XCTAssertEqual(mark(after: -120), "From chat · <1 min", "a stamp ahead of this clock is a fresh question")
+    }
+
+    func testChatMarkOfAnUnparsableStampIsNil() {
+        let now = Date()
+        XCTAssertNil(OwnerAskPresentation.chatMark(askedAt: "", now: now), "not raised from chat")
+        XCTAssertNil(OwnerAskPresentation.chatMark(askedAt: "yesterday", now: now))
+        XCTAssertNil(OwnerAskPresentation.chatMark(askedAt: "2026-10-10 09:15:00", now: now), "not the agent_state_at layout")
     }
 
     func testAnUnpickedQuestionSaysWhy() throws {

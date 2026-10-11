@@ -7,7 +7,8 @@ import WatchtowerCore
 /// beside it (`OwnerAskMarginComments`, no margin without any) and a bar on
 /// the left of every focus item's place. Comments anchor on the snapshot,
 /// never on the live file (Part 10). A closed ask shows its stored
-/// comments, read-only.
+/// comments, read-only. N / P (`commentStep`, board #412) make the next or
+/// previous comment in document order active and scroll to its passage.
 ///
 /// The snapshot is rendered off the main actor and its places located once
 /// per ask (`OwnerAskReviewDocuments`). Its attributed text depends on the
@@ -22,7 +23,10 @@ struct OwnerAskReviewBody: View {
     /// answer is being written.
     let editable: Bool
     var scrollTarget: DocumentScrollTarget?
+    var commentStep: OwnerAskCommentStep?
 
+    /// Where N / P scrolled; a later `scrollTarget` (a focus link) wins.
+    @State private var commentScroll: DocumentScrollTarget?
     @State private var selection = DocumentSelectionCarry.none
     @State private var composerText = ""
     @State private var rects: [NSRange: CGRect] = [:]
@@ -53,9 +57,24 @@ struct OwnerAskReviewBody: View {
         .onChange(of: ask.id) { _, _ in
             selection = DocumentSelectionCarry.none
             activeComment = nil
+            commentScroll = nil
             rects = [:]
             extent = nil
         }
+        .onChange(of: scrollTarget) { _, _ in commentScroll = nil }
+        .onChange(of: commentStep) { _, step in
+            if let step { moveActiveComment(forward: step.forward) }
+        }
+    }
+
+    private func moveActiveComment(forward: Bool) {
+        let items = comments
+        let locations = items.map { documents.range(of: $0.anchor, askID: ask.id)?.location }
+        let active = items.firstIndex { $0.id == activeComment }
+        guard let next = OwnerAskKeyStop.movedComment(from: active, forward: forward, locations: locations),
+              let location = locations[next] else { return }
+        activeComment = items[next].id
+        commentScroll = DocumentScrollTarget(offset: location)
     }
 
     /// A closed ask's stored comments; else the draft's.
@@ -90,7 +109,7 @@ struct OwnerAskReviewBody: View {
                     selection: $selection,
                     composerText: $composerText,
                     horizontalInset: inset,
-                    scrollTarget: scrollTarget,
+                    scrollTarget: commentScroll ?? scrollTarget,
                     trackedRanges: placed + focus,
                     trackedRects: $rects,
                     textExtent: $extent,

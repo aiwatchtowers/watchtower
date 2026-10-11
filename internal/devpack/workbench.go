@@ -114,7 +114,7 @@ type WorkbenchStatus struct {
 	Hook         bool // the SessionStart hook (the brief)
 	StopHook     bool // the Stop hook (the board drift check, PROJ-07)
 	StateHooks   bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
-	AskGuard     bool // the Stop prompt hook sending a plain-text request to ask_owner (PROJ-13)
+	AskGuard     bool // the Stop command hook sending a plain-text request to ask_owner (PROJ-13); an old marker prompt alone is false
 	AskToolBlock bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)
 	MCP          bool // CurrentMCP || LegacyMCP
 	ClaudeFound  bool
@@ -175,6 +175,12 @@ func WorkbenchSessionStateHookCommand(bin string, workbenchID int64) string {
 // block of AskUserQuestion).
 func WorkbenchAskGuardHookCommand(bin string, workbenchID int64) string {
 	return askToolBlockSpec.command(bin, workbenchID)
+}
+
+// WorkbenchAskGuardStopHookCommand is the Stop ask guard's command line
+// (PROJ-13).
+func WorkbenchAskGuardStopHookCommand(bin string, workbenchID int64) string {
+	return askGuardSpec.command(bin, workbenchID)
 }
 
 // WorkbenchMCPCommand is the registration the owner can run by hand when the

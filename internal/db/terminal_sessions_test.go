@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -927,7 +928,7 @@ func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
 }
 
 // Board #411: a new run (the mark or the stampless clear) and a conversation
-// switch clear the count.
+// switch clear the count — and, since board #314, the chat question too.
 func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
 	d := openTestDB(t)
@@ -953,10 +954,264 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
 			t.Fatalf("%s: the Stop did not write", tc.name)
 		}
+		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0); err != nil || turns == nil {
+			t.Fatalf("%s: the agent turn did not write: %v", tc.name, err)
+		}
 		if !w(tc.write(id)) {
 			t.Fatalf("%s: did not write", tc.name)
 		}
 		requireNoBackground(t, d, id, tc.name)
+		requireNoChatQuestion(t, d, id, tc.name)
+		requireNoAgentTurns(t, d, id, tc.name)
+	}
+
+	// A row holding nothing but a chat question is still cleared.
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.ClearTerminalAgentState(id, pid, agentStateUUID)) {
+		t.Fatal("ClearTerminalAgentState left a row holding only a chat question")
+	}
+	requireNoChatQuestion(t, d, id, "a row holding only a question")
+
+	// Board #543: so is a row holding nothing but agent turns.
+	id = newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.ClearTerminalAgentState(id, pid, agentStateUUID)) {
+		t.Fatal("ClearTerminalAgentState left a row holding only agent turns")
+	}
+	requireNoAgentTurns(t, d, id, "a row holding only agent turns")
+}
+
+// Board #543 review: GetTerminalSession never reads agent_turns, so the
+// readers that open a database without migrating it (`workbench asks`, the
+// ask guard, refusing only databases older than 00107) keep working on a
+// 00107 database.
+func TestGetTerminalSessionNeedsNoAgentTurnsColumn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN agent_turns`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession on a 00107 schema: %v", err)
+	}
+}
+
+// turnsOf is row id's stored agent turns.
+func turnsOf(t *testing.T, d *DB, id int64) AgentTurns {
+	t.Helper()
+	turns, err := d.TerminalAgentTurns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turns
+}
+
+// requireNoAgentTurns fails unless row id's agent_turns holds no turn (NULL,
+// or only a new run's mark).
+func requireNoAgentTurns(t *testing.T, d *DB, id int64, name string) {
+	t.Helper()
+	var raw sql.NullString
+	if err := d.QueryRow(`SELECT agent_turns FROM terminal_sessions WHERE id = ?`, id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if doc, _ := decodeAgentTurns(raw); len(doc.Turns) != 0 {
+		t.Fatalf("%s: agent_turns kept: %s", name, raw.String)
+	}
+}
+
+// Board #543 review: a turn stamped before the run's mark — a late async
+// hook of the previous run — writes nothing; one of the new run does.
+func TestProj11_LateHookOfThePreviousRunWritesNoTurn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	if _, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aold-1", true, t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(2*time.Second))) {
+		t.Fatal("the run mark did not write")
+	}
+	requireNoAgentTurns(t, d, id, "after the mark")
+
+	turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aold-2", true, t0.Add(time.Second))
+	if err != nil || turns != nil {
+		t.Fatalf("a hook stamped before the mark wrote: %v, %v", turns, err)
+	}
+	requireNoAgentTurns(t, d, id, "after the late hook")
+
+	turns, err = d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "anew-1", true, t0.Add(3*time.Second))
+	if err != nil || !turns.Open("anew-1") || len(turns) != 1 {
+		t.Fatalf("the new run's turn: %v, %v", turns, err)
+	}
+	var since string
+	if err := d.QueryRow(`SELECT json_extract(agent_turns, '$.since') FROM terminal_sessions WHERE id = ?`, id).Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	if since != AgentStateStamp(t0.Add(2*time.Second)) {
+		t.Fatalf("the run mark went with the write: %q", since)
+	}
+}
+
+// Board #543: each turn stamp only moves forward, so async hooks landing out
+// of order never reopen a turn; a start and a stop at the same moment is
+// closed.
+func TestProj11_AgentTurnStampsOnlyMoveForward(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	sec := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Second) }
+	record := func(start bool, at time.Time) AgentTurns {
+		t.Helper()
+		turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", start, at)
+		if err != nil || turns == nil {
+			t.Fatalf("record: %v, %v", turns, err)
+		}
+		return turns
+	}
+
+	if turns := record(true, sec(2)); !turns.Open("aalpha-1") {
+		t.Fatal("a start opens the turn")
+	}
+	if turns := record(false, sec(3)); !turns.Closed("aalpha-1") || turns.Open("aalpha-1") {
+		t.Fatal("a later stop closes it")
+	}
+	if turns := record(true, sec(1)); !turns.Closed("aalpha-1") {
+		t.Fatal("a late start stamped before the stop reopened the turn")
+	}
+	if turns := record(false, sec(1)); turns["aalpha-1"].Stop != AgentStateStamp(sec(3)) {
+		t.Fatalf("an older stop moved the stamp back: %+v", turns["aalpha-1"])
+	}
+	if turns := record(true, sec(3)); !turns.Closed("aalpha-1") {
+		t.Fatal("a start at the stop's own moment is closed")
+	}
+	want := AgentTurn{Start: AgentStateStamp(sec(3)), Stop: AgentStateStamp(sec(3))}
+	if turnsOf(t, d, id)["aalpha-1"] != want {
+		t.Fatalf("stored %+v, want %+v", turnsOf(t, d, id)["aalpha-1"], want)
+	}
+	if turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "", true, sec(9)); err != nil || turns != nil {
+		t.Fatalf("an empty agent id recorded: %v, %v", turns, err)
+	}
+}
+
+// Board #543: the turns are capped; the oldest closed turns go first, and the
+// turn just recorded always stays.
+func TestProj11_AgentTurnsCapDropsOldestClosed(t *testing.T) {
+	t0 := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+	stamp := func(n int) string { return AgentStateStamp(t0.Add(time.Duration(n) * time.Second)) }
+	turns := AgentTurns{}
+	for i := range maxAgentTurns {
+		id := fmt.Sprintf("a%03d", i)
+		if i%2 == 0 {
+			turns[id] = AgentTurn{Start: stamp(i), Stop: stamp(i + 1)} // closed
+		} else {
+			turns[id] = AgentTurn{Start: stamp(i)} // open
+		}
+	}
+	turns.record("new", false, stamp(1000)) // a closed turn, the newest
+	if len(turns) != maxAgentTurns {
+		t.Fatalf("len = %d, want %d", len(turns), maxAgentTurns)
+	}
+	if _, ok := turns["a000"]; ok {
+		t.Fatal("the oldest closed turn stayed")
+	}
+	if _, ok := turns["a001"]; !ok {
+		t.Fatal("an open turn went before a closed one")
+	}
+	if !turns.Closed("new") {
+		t.Fatal("the turn just recorded went")
+	}
+}
+
+// agentStateSnapshot is row id's agent state columns in one string.
+func agentStateSnapshot(t *testing.T, d *DB, id int64) string {
+	t.Helper()
+	var s string
+	if err := d.QueryRow(`SELECT agent_state || agent_state_at || agent_background || agent_background_at ||
+		COALESCE(finished_at, '-') || agent_turn_end || agent_tool_run FROM terminal_sessions WHERE id = ?`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// turnScopeCase is one agent turn write and whether it may land on the row.
+type turnScopeCase struct {
+	name      string
+	workbench int64
+	session   string
+	wantWrite bool
+}
+
+// recordTurnScoped opens agent "a-<name>"'s turn at `at` for each case and
+// fails when a write landed or was refused against the case's wantWrite.
+func recordTurnScoped(t *testing.T, d *DB, id int64, at time.Time, cases []turnScopeCase) {
+	t.Helper()
+	for _, tc := range cases {
+		turns, err := d.RecordTerminalAgentTurn(id, tc.workbench, tc.session, "a-"+tc.name, true, at)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if (turns != nil) != tc.wantWrite {
+			t.Fatalf("%s: wrote = %v, want %v", tc.name, turns != nil, tc.wantWrite)
+		}
+	}
+}
+
+// Board #543: an agent turn write changes agent_turns only, and only on
+// workbench pid's claude row of the conversation that reported it.
+func TestProj11_AgentTurnWriteNeverTouchesTheState(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100)) {
+		t.Fatal("the turn end did not write")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	others := otherAgentColumns(t, d, id)
+	before := agentStateSnapshot(t, d, id)
+
+	recordTurnScoped(t, d, id, t0.Add(time.Second), []turnScopeCase{
+		{"its own conversation", pid, agentStateUUID, true},
+		{"another conversation", pid, otherUUID, false},
+		{"another workbench", other, agentStateUUID, false},
+	})
+	if got := agentStateSnapshot(t, d, id); got != before {
+		t.Fatalf("the state columns moved: %q → %q", before, got)
+	}
+	if got := otherAgentColumns(t, d, id); got != others {
+		t.Fatalf("other columns moved: %v → %v", others, got)
+	}
+	if got := turnsOf(t, d, id); len(got) != 1 || !got.Open("a-its own conversation") {
+		t.Fatalf("turns = %+v", got)
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession: %v", err)
+	}
+	// An unreadable stored value reads as no turns and is replaced, and the
+	// write says so (ErrAgentTurnsUnreadable).
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = 'not json' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0.Add(2*time.Second))
+	if !errors.Is(err, ErrAgentTurnsUnreadable) || len(turns) != 1 || !turns.Open("aalpha-1") {
+		t.Fatalf("after an unreadable value: %+v, %v", turns, err)
 	}
 }
 
@@ -1037,5 +1292,417 @@ func TestEndTerminalBackgroundIsCompareAndClear(t *testing.T) {
 		if after := terminalRowSnapshot(t, d, id); after != before {
 			t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
 		}
+	}
+}
+
+// chatQuestionColumns reads row id's chat question columns.
+func chatQuestionColumns(t *testing.T, d *DB, id int64) (sql.NullString, sql.NullString) {
+	t.Helper()
+	var q, at sql.NullString
+	if err := d.QueryRow(`SELECT chat_question, chat_question_at FROM terminal_sessions WHERE id = ?`, id).
+		Scan(&q, &at); err != nil {
+		t.Fatal(err)
+	}
+	return q, at
+}
+
+// requireNoChatQuestion fails unless row id stores neither chat question column.
+func requireNoChatQuestion(t *testing.T, d *DB, id int64, what string) {
+	t.Helper()
+	if q, at := chatQuestionColumns(t, d, id); q.Valid || at.Valid {
+		t.Fatalf("%s: chat_question %v at %v, want both NULL", what, q, at)
+	}
+}
+
+// requireChatQuestion fails unless row id stores question text asked at at.
+func requireChatQuestion(t *testing.T, d *DB, id int64, text string, at time.Time, what string) {
+	t.Helper()
+	q, gotAt := chatQuestionColumns(t, d, id)
+	var got ChatQuestion
+	if !q.Valid || json.Unmarshal([]byte(q.String), &got) != nil || got.Question != text ||
+		gotAt.String != AgentStateStamp(at) {
+		t.Fatalf("%s: chat_question %v at %v, want %q at %s", what, q, gotAt, text, AgentStateStamp(at))
+	}
+}
+
+func sampleChatQuestion(text string) ChatQuestion {
+	return ChatQuestion{Question: text, Options: []ChatQuestionOption{
+		{Label: "Postgres", Recommended: true}, {Label: "SQLite"},
+	}}
+}
+
+func TestChatQuestionSetReplaceClear(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	shell := newAgentStateRow(t, d, pid, "shell", nil)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatal(err)
+	}
+	q, _ := chatQuestionColumns(t, d, id)
+	if want := `{"question":"Which DB?","options":[{"label":"Postgres","recommended":true},{"label":"SQLite","recommended":false}]}`; q.String != want {
+		t.Fatalf("chat_question = %s, want %s", q.String, want)
+	}
+	requireChatQuestion(t, d, id, "Which DB?", t0, "set")
+
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, ChatQuestion{Question: "Ship it?"}, t0.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if q, _ := chatQuestionColumns(t, d, id); q.String != `{"question":"Ship it?","options":[]}` {
+		t.Fatalf("a question without options stored %s, want an empty options array", q.String)
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "a newer Stop replaces")
+
+	otherWorkbench := newTestWorkbench(t, d)
+	for _, tc := range []struct {
+		name      string
+		id        int64
+		workbench int64
+		claude    string
+		at        time.Time
+	}{
+		{"an older Stop", id, pid, agentStateUUID, t0},
+		{"the same Stop again", id, pid, agentStateUUID, t0.Add(time.Second)},
+		{"another conversation", id, pid, "other-uuid", t0.Add(time.Hour)},
+		{"another workbench", id, otherWorkbench, agentStateUUID, t0.Add(time.Hour)},
+		{"a shell row", shell, pid, agentStateUUID, t0.Add(time.Hour)},
+		{"no such row", 999, pid, agentStateUUID, t0.Add(time.Hour)},
+	} {
+		err := d.SetChatQuestion(tc.id, tc.workbench, tc.claude, sampleChatQuestion("Late?"), tc.at)
+		if !errors.Is(err, ErrChatQuestionNotRecorded) {
+			t.Fatalf("%s: err = %v, want ErrChatQuestionNotRecorded", tc.name, err)
+		}
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "after refused records")
+	requireNoChatQuestion(t, d, shell, "the shell row")
+
+	if err := d.ClearChatQuestionBefore(id, pid, "other-uuid", t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "another conversation's clear")
+	if err := d.ClearChatQuestionBefore(id, otherWorkbench, agentStateUUID, t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requireChatQuestion(t, d, id, "Ship it?", t0.Add(time.Second), "another workbench's clear")
+	if err := d.ClearChatQuestionBefore(id, pid, agentStateUUID, t0.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	requireNoChatQuestion(t, d, id, "a later event clears")
+	if err := d.ClearChatQuestionBefore(id, pid, agentStateUUID, t0.Add(3*time.Second)); err != nil {
+		t.Fatalf("nothing to clear must not fail: %v", err)
+	}
+}
+
+// A guard's record stamped before the row's newer run or turn is stale: it
+// writes nothing. A waiting, an approval or a tool run's working stamped after
+// it never refuses it.
+func TestSetChatQuestionRefusesAStopOlderThanTheRun(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	for _, tc := range []struct {
+		name  string
+		write func(id int64) bool
+	}{
+		{"a new run marked after the Stop", func(id int64) bool {
+			return w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(time.Second)))
+		}},
+		{"a prompt after the Stop", func(id int64) bool {
+			return w(d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0.Add(time.Second), "", nil, true, AgentOrder{}))
+		}},
+	} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !tc.write(id) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0)
+		if !errors.Is(err, ErrChatQuestionNotRecorded) {
+			t.Fatalf("%s: err = %v, want ErrChatQuestionNotRecorded", tc.name, err)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		state string
+		order AgentOrder
+	}{
+		{"a waiting", "waiting", AgentOrder{}},
+		{"an approval", "approval", AgentOrder{}},
+		// The ended turn's async PostToolUse may land after the Stop.
+		{"a tool run's working", "working", AgentOrder{ToolRun: true}},
+	} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, tc.state, t0.Add(time.Second), "", nil, false, tc.order)) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+			t.Fatalf("%s stamped after the Stop refused the record: %v", tc.name, err)
+		}
+	}
+	// A run or turn not newer than the Stop never refuses it.
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0)) {
+		t.Fatal("the mark did not write")
+	}
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatalf("a mark at the Stop's own time refused the record: %v", err)
+	}
+}
+
+func TestClearChatQuestionBeforeKeepsANewerQuestion(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	asked := time.Now().UTC().Truncate(time.Millisecond)
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), asked); err != nil {
+		t.Fatal(err)
+	}
+	for _, before := range []time.Time{asked.Add(-time.Second), asked} {
+		if err := d.ClearChatQuestionBefore(id, pid, agentStateUUID, before); err != nil {
+			t.Fatal(err)
+		}
+		requireChatQuestion(t, d, id, "Which DB?", asked, "an event not later than the question")
+	}
+	if err := d.ClearChatQuestionBefore(id, pid, agentStateUUID, asked.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	requireNoChatQuestion(t, d, id, "an event a millisecond later")
+
+	// An unreadable stamp can never be raised, so any clear takes it.
+	if _, err := d.Exec(`UPDATE terminal_sessions SET chat_question = '{}', chat_question_at = 'yesterday' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.ClearChatQuestionBefore(id, pid, agentStateUUID, asked.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	requireNoChatQuestion(t, d, id, "an unreadable stamp")
+}
+
+// chatQuestionRowAt stores a question asked at asked on a new claude row of
+// pid over state, stamped asked+offset.
+func chatQuestionRowAt(t *testing.T, d *DB, pid int64, asked time.Time, state string, offset time.Duration) int64 {
+	t.Helper()
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ? WHERE id = ?`,
+		state, AgentStateStamp(asked.Add(offset)), id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), asked); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// takeChatQuestionInTx runs TakeChatQuestion in its own transaction and
+// fails the test on an error.
+func takeChatQuestionInTx(t *testing.T, d *DB, id, pid int64, at string) *ChatQuestion {
+	t.Helper()
+	var q *ChatQuestion
+	if err := d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		q, err = d.TakeChatQuestion(tx, id, pid, at)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return q
+}
+
+func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	asked := time.Now().UTC().Truncate(time.Millisecond)
+	at := AgentStateStamp(asked)
+	row := func(state string, offset time.Duration) int64 {
+		return chatQuestionRowAt(t, d, pid, asked, state, offset)
+	}
+	take := func(id int64, at string) *ChatQuestion { return takeChatQuestionInTx(t, d, id, pid, at) }
+
+	id := row("waiting", 0)
+	q := take(id, at)
+	if q == nil || q.Question != "Which DB?" || len(q.Options) != 2 || !q.Options[0].Recommended {
+		t.Fatalf("taken = %+v, want the stored question with its options", q)
+	}
+	requireNoChatQuestion(t, d, id, "after the take")
+	if q := take(id, at); q != nil {
+		t.Fatalf("a second take returned %+v", q)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		state  string
+		offset time.Duration
+		at     string
+	}{
+		{"a mismatched at", "waiting", 0, AgentStateStamp(asked.Add(-time.Second))},
+		{"a turn running", "working", 0, at},
+		{"a permission prompt", "approval", 0, at},
+		{"waiting stamped 31 s after", "waiting", 31 * time.Second, at},
+		{"waiting stamped 30.001 s after", "waiting", 30*time.Second + time.Millisecond, at},
+	} {
+		id := row(tc.state, tc.offset)
+		before := terminalRowSnapshot(t, d, id)
+		if q := take(id, tc.at); q != nil {
+			t.Fatalf("%s: taken %+v", tc.name, q)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+	// Exactly 30 s is still in; -1 min: a waiting older than the question (a
+	// repeated state keeps its first stamp) is still the turn end the
+	// question waits on.
+	for _, offset := range []time.Duration{29 * time.Second, 30 * time.Second, -time.Minute} {
+		if q := take(row("waiting", offset), at); q == nil {
+			t.Fatalf("waiting stamped %v from the question: not taken", offset)
+		}
+	}
+}
+
+func TestTakeChatQuestionRefusesForeignAndMissingRows(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	asked := time.Now().UTC().Truncate(time.Millisecond)
+	at := AgentStateStamp(asked)
+
+	// Another workbench's take, or one of a shell row whatever it holds, is
+	// ErrNotInWorkbench and leaves the row.
+	mine := chatQuestionRowAt(t, d, pid, asked, "waiting", 0)
+	otherWorkbench := newTestWorkbench(t, d)
+	shell := newAgentStateRow(t, d, pid, "shell", nil)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+		chat_question = '{"question":"Q","options":[]}', chat_question_at = ? WHERE id = ?`, at, at, shell); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		id, workbench int64
+	}{{"another workbench", mine, otherWorkbench}, {"a shell row", shell, pid}} {
+		before := terminalRowSnapshot(t, d, tc.id)
+		err := d.WithTx(func(tx *sql.Tx) error {
+			q, err := d.TakeChatQuestion(tx, tc.id, tc.workbench, at)
+			if q != nil {
+				t.Errorf("%s: taken %+v", tc.name, q)
+			}
+			return err
+		})
+		if !errors.Is(err, ErrNotInWorkbench) {
+			t.Fatalf("%s: err = %v, want ErrNotInWorkbench", tc.name, err)
+		}
+		if after := terminalRowSnapshot(t, d, tc.id); after != before {
+			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+
+	err := d.WithTx(func(tx *sql.Tx) error {
+		_, err := d.TakeChatQuestion(tx, 999, pid, at)
+		return err
+	})
+	if !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("a missing row: err = %v", err)
+	}
+}
+
+// PROJ-11 (spec 2026-10-10-owner-asks-v2 Part 11.3): the chat question
+// writes change only the two chat question columns.
+func TestProj11_ChatQuestionWritesNeverTouchTheState(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+		finished_at = ?, agent_turn_end = 4096, agent_tool_run = 1, agent_background = 2, agent_background_at = ?
+		WHERE id = ?`, AgentStateStamp(t0), AgentStateStamp(t0), AgentStateStamp(t0), id); err != nil {
+		t.Fatal(err)
+	}
+	state := func() string {
+		t.Helper()
+		n, at := backgroundColumns(t, d, id)
+		return otherAgentColumns(t, d, id) + fmt.Sprintf("|%v|%v", n, at)
+	}
+	want := state()
+
+	for _, tc := range []struct {
+		name  string
+		write func() error
+	}{
+		{"SetChatQuestion", func() error {
+			return d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0)
+		}},
+		{"SetChatQuestion replacing", func() error {
+			return d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Ship it?"), t0.Add(time.Second))
+		}},
+		{"ClearChatQuestionBefore", func() error {
+			return d.ClearChatQuestionBefore(id, pid, agentStateUUID, t0.Add(2*time.Second))
+		}},
+		{"SetChatQuestion again", func() error {
+			return d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0.Add(3*time.Second))
+		}},
+		{"TakeChatQuestion", func() error {
+			return d.WithTx(func(tx *sql.Tx) error {
+				q, err := d.TakeChatQuestion(tx, id, pid, AgentStateStamp(t0.Add(3*time.Second)))
+				if err == nil && q == nil {
+					err = errors.New("nothing taken")
+				}
+				return err
+			})
+		}},
+	} {
+		if err := tc.write(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := state(); got != want {
+			t.Fatalf("%s changed the state columns\nwant %s\ngot  %s", tc.name, want, got)
+		}
+	}
+	requireNoChatQuestion(t, d, id, "after the take")
+}
+
+// A mark stamped before the stored agent_state_at is a late hook of an
+// earlier run: it changes nothing, the question included.
+func TestOlderRunMarkOverANewerStateKeepsTheQuestion(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(-1))) {
+		t.Fatal("the Stop did not write")
+	}
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatal(err)
+	}
+	before := terminalRowSnapshot(t, d, id)
+	if w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(-time.Second))) {
+		t.Fatal("an older mark wrote")
+	}
+	if after := terminalRowSnapshot(t, d, id); after != before {
+		t.Fatalf("an older mark changed the row\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// GetTerminalSession carries the stored chat_question_at, so a hook can skip
+// the clear's write when there is nothing to clear.
+func TestGetTerminalSessionReadsTheChatQuestionStamp(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if s := storedSession(t, d, id); s.ChatQuestionAt != "" {
+		t.Fatalf("a fresh row reads chat_question_at %q", s.ChatQuestionAt)
+	}
+	at := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), at); err != nil {
+		t.Fatal(err)
+	}
+	if s := storedSession(t, d, id); s.ChatQuestionAt != AgentStateStamp(at) {
+		t.Fatalf("chat_question_at = %q, want %q", s.ChatQuestionAt, AgentStateStamp(at))
 	}
 }

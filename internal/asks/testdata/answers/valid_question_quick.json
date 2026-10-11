@@ -1,0 +1,17 @@
+{
+  "kind": "question",
+  "payload": {
+    "questions": [
+      {"id": "1", "question": "Which casing for the new keys?",
+       "options": [{"label": "snake_case", "recommended": true}, {"label": "camelCase"}]}
+    ]
+  },
+  "answer": {
+    "answers": [{"id": "1", "labels": ["snake_case"], "other": ""}],
+    "checklist": [],
+    "comments": [],
+    "note": "",
+    "verdict": ""
+  },
+  "canonical": "{\"answers\":[{\"id\":\"1\",\"labels\":[\"snake_case\"],\"other\":\"\"}],\"checklist\":[],\"comments\":[],\"note\":\"\",\"verdict\":\"\"}"
+}

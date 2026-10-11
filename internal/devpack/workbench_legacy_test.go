@@ -136,12 +136,13 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 	state := WorkbenchSessionStateHookCommand(legacyBin, 7)
 	want := map[string][]string{
 		"SessionStart":     {WorkbenchHookCommand(legacyBin, 7)},
-		"Stop":             {WorkbenchStopHookCommand(legacyBin, 7)},
+		"Stop":             {WorkbenchStopHookCommand(legacyBin, 7), WorkbenchAskGuardStopHookCommand(legacyBin, 7)},
 		"UserPromptSubmit": {state},
 		"Notification":     {state},
 		"PostToolUse":      {state},
 		"StopFailure":      {state},
 		"SubagentStop":     {state},
+		"SubagentStart":    {state},
 		"PreToolUse":       {WorkbenchAskGuardHookCommand(legacyBin, 7)},
 	}
 	if got := ourCommands(t, folder); !reflect.DeepEqual(got, want) {

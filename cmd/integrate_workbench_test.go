@@ -181,16 +181,14 @@ func TestIntegrateWorkbenchStatusJSON_AskGuardKeys(t *testing.T) {
 		drop       func(hooks map[string]any)
 		gone, kept string
 	}{
-		{"prompt hook", func(hooks map[string]any) {
-			// Keep the drift check's group, drop the prompt hook's.
-			var kept []any
-			for _, g := range hooks["Stop"].([]any) {
-				h := g.(map[string]any)["hooks"].([]any)[0].(map[string]any)
-				if h["type"] != "prompt" {
-					kept = append(kept, g)
-				}
-			}
-			hooks["Stop"] = kept
+		{"stop command", func(hooks map[string]any) {
+			hooks["Stop"] = withoutAskGuardStop(hooks["Stop"].([]any))
+		}, `"ask_guard": false`, `"ask_tool_block": true`},
+		// Only the old marker prompt (an install from before the command
+		// hook): not the ask guard, so the Desktop offers Repair.
+		{"marker prompt only", func(hooks map[string]any) {
+			hooks["Stop"] = append(withoutAskGuardStop(hooks["Stop"].([]any)), map[string]any{"hooks": []any{
+				map[string]any{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nv3", "timeout": 30}}})
 		}, `"ask_guard": false`, `"ask_tool_block": true`},
 		{"tool block", func(hooks map[string]any) { delete(hooks, "PreToolUse") },
 			`"ask_tool_block": false`, `"ask_guard": true`},
@@ -219,6 +217,19 @@ func TestIntegrateWorkbenchStatusJSON_AskGuardKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withoutAskGuardStop keeps the Stop groups that hold no ask guard
+// command entry (the drift check's).
+func withoutAskGuardStop(stop []any) []any {
+	var kept []any
+	for _, g := range stop {
+		h := g.(map[string]any)["hooks"].([]any)[0].(map[string]any)
+		if cmd, _ := h["command"].(string); !strings.HasSuffix(cmd, " --stop") {
+			kept = append(kept, g)
+		}
+	}
+	return kept
 }
 
 // editSettingsHooks rewrites the folder's settings.local.json with edit

@@ -149,10 +149,21 @@ package enum ChatQuestionParser {
     }
 
     /// A card body (`{"questions": [...]}`, unknown keys ignored), or nil
-    /// when it does not decode or breaks a bound. Also the decoder of an
-    /// owner ask's stored questions — the dual path with Go's
+    /// when it does not decode or breaks a bound — the dual path with Go's
     /// `asks.Validate`, pinned by `internal/asks/testdata/cards`.
     package static func decodeCard(_ json: Data) -> ChatQuestionCard? {
+        decode(json, allowsNoOptions: false)
+    }
+
+    /// An owner ask's stored questions: a card's bounds, except that a
+    /// question may have no options — one Watchtower raised from the agent's
+    /// terminal question, answered by a free reply only (spec 2026-10-10
+    /// Part 3.5; Go stores it only with origin `chat`). Never one option.
+    package static func decodeOwnerAskQuestions(_ json: Data) -> ChatQuestionCard? {
+        decode(json, allowsNoOptions: true)
+    }
+
+    private static func decode(_ json: Data, allowsNoOptions: Bool) -> ChatQuestionCard? {
         guard let raw = try? JSONDecoder().decode(RawCard.self, from: json),
               (1...4).contains(raw.questions.count) else { return nil }
         var questions: [ChatQuestion] = []
@@ -162,7 +173,8 @@ package enum ChatQuestionParser {
                 ChatQuestionOption(label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
                                    description: $0.description, recommended: $0.recommended)
             }
-            guard !question.isEmpty, (2...4).contains(options.count),
+            let optionCountOK = (2...4).contains(options.count) || (allowsNoOptions && options.isEmpty)
+            guard !question.isEmpty, optionCountOK,
                   options.allSatisfy({ !$0.label.isEmpty }) else { return nil }
             let id = rawQuestion.id.flatMap { $0.isEmpty ? nil : $0 } ?? String(index + 1)
             // Ids and labels key the card's state: duplicates make it no card.

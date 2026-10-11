@@ -1,0 +1,2 @@
+Answers:
+- Which casing for the new keys? → snake_case

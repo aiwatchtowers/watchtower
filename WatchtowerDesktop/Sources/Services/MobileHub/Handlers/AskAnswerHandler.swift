@@ -20,7 +20,7 @@ import WatchtowerSync
 /// the relay processor.
 @MainActor
 final class AskAnswerHandler {
-    typealias Answer = @MainActor (OwnerAsk, OwnerAskAnswer) async -> OwnerAsksViewModel.AnswerOutcome
+    typealias Answer = @MainActor (OwnerAsk, OwnerAskAnswer) async -> OwnerAsksViewModel.AnswerResult
 
     /// Ample for a delivery's state reads and its submit pause.
     nonisolated static let defaultTimeout: Duration = .seconds(30)
@@ -73,7 +73,7 @@ final class AskAnswerHandler {
         }
         guard ask.isOpen else { return try rerun(action, ask: ask, value: value) }
         let outcome = await answer(ask, value)
-        if case let .stored(delivery) = outcome { remember(delivery, of: action) }
+        if case let .delivered(delivery) = outcome { remember(delivery, of: action) }
         return Self.outcome(outcome)
     }
 
@@ -101,9 +101,9 @@ final class AskAnswerHandler {
         }
     }
 
-    static func outcome(_ outcome: OwnerAsksViewModel.AnswerOutcome) -> ActionOutcome {
+    static func outcome(_ outcome: OwnerAsksViewModel.AnswerResult) -> ActionOutcome {
         switch outcome {
-        case let .stored(delivery): .applied(["delivery": .string(wire(delivery))])
+        case let .delivered(delivery): .applied(["delivery": .string(wire(delivery))])
         case .notOpen: .failed(.askNotOpen)
         case let .invalid(message): .failed(.invalidAnswer, message: message)
         // Another answer to the ask is being written on the Mac right now.

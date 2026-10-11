@@ -1,0 +1,33 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000543",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000543.jsonl",
+  "cwd": "/tmp/example/work",
+  "prompt_id": "00000000-0000-4000-8000-000000000021",
+  "permission_mode": "acceptEdits",
+  "agent_id": "a0000000000000002",
+  "agent_type": "general-purpose",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000543/subagents/agent-a0000000000000002.jsonl",
+  "last_assistant_message": "ok",
+  "background_tasks": [
+    {
+      "id": "a0000000000000002",
+      "type": "subagent",
+      "status": "running",
+      "description": "Run sleep 5 and reply",
+      "agent_type": "general-purpose"
+    },
+    {
+      "id": "a0000000000000001",
+      "type": "subagent",
+      "status": "running",
+      "description": "Run sleep 5 and reply",
+      "agent_type": "general-purpose"
+    }
+  ],
+  "session_crons": []
+}
