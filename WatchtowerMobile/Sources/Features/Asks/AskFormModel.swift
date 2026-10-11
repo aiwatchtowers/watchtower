@@ -94,6 +94,20 @@ struct AskFormModel {
         let commentsLine: String
     }
 
+    /// One of a check step's three buttons (design pass A5): the `.fill`
+    /// symbol in its tone while marked, the outline in secondary otherwise.
+    /// Green for OK, red for Broken, secondary for Skipped; never orange.
+    struct CheckChoice: Equatable, Identifiable {
+        let state: OwnerAskAnswer.CheckState
+        /// "OK", "Broken", "Skipped": the button's VoiceOver label.
+        let label: String
+        let symbol: String
+        let tone: PhoneTone
+        let isSelected: Bool
+
+        var id: String { state.rawValue }
+    }
+
     struct CheckRow: Equatable, Identifiable {
         let id: String
         let text: String
@@ -102,6 +116,8 @@ struct AskFormModel {
         let note: String
         /// Broken without a note: the Mac would refuse it.
         let needsNote: Bool
+        /// OK, Broken, Skipped.
+        let choices: [CheckChoice]
     }
 
     /// One part of a closed ask's stored answer: what was asked, over what
@@ -203,6 +219,9 @@ struct AskFormModel {
 
     var toneUses: [ToneUse] {
         [ToneUse(element: "ask \(askID) form header", tone: headerTone, role: .ask)]
+            + checks.flatMap { row in
+                row.choices.map { ToneUse(element: "ask \(askID) step \(row.id) \($0.label)", tone: $0.tone, role: .status) }
+            }
     }
 
     // MARK: - Parts
@@ -251,12 +270,24 @@ struct AskFormModel {
         )
     }
 
+    private static let checkMarks: [(state: OwnerAskAnswer.CheckState, symbol: String, tone: PhoneTone)] = [
+        (.ok, "checkmark.circle", .green), (.broken, "xmark.circle", .red), (.skipped, "minus.circle", .secondary)
+    ]
+
     private static func checkRow(_ item: OwnerAskPayload.CheckItem, draft: AskDraft) -> CheckRow {
         let state = draft.checks[item.id]
         let note = draft.checkNotes[item.id] ?? ""
+        let choices = checkMarks.map { mark in
+            let selected = state == mark.state
+            return CheckChoice(
+                state: mark.state, label: AskText.check(mark.state),
+                symbol: selected ? mark.symbol + ".fill" : mark.symbol,
+                tone: selected ? mark.tone : .secondary, isSelected: selected
+            )
+        }
         return CheckRow(
             id: item.id, text: item.text, hint: item.hint, state: state, note: note,
-            needsNote: state == .broken && AskDraft.trimmed(note).isEmpty
+            needsNote: state == .broken && AskDraft.trimmed(note).isEmpty, choices: choices
         )
     }
 

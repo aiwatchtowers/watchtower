@@ -1,32 +1,29 @@
 import SwiftUI
 import WatchtowerKit
 
-/// The check steps: each one OK, Broken or Skipped, with a note (required
-/// when broken). A step left unmarked goes as skipped.
+/// The check steps (design pass A5): "1." and the step with its hint, then
+/// OK, Broken and Skipped as 44 pt icon buttons; tapping the marked one
+/// again clears it. A note goes with a broken step (required) or one that
+/// has a note. A step left unmarked goes as skipped.
 struct CheckAskView: View {
     let rows: [AskFormModel.CheckRow]
     let model: AskViewModel
     let isEditable: Bool
 
-    private static let states: [OwnerAskAnswer.CheckState] = [.ok, .broken, .skipped]
-
     var body: some View {
         Section {
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("\(index + 1). \(row.text)").font(.body)
-                    if !row.hint.isEmpty {
-                        Text(row.hint).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Picker("Step \(index + 1)", selection: stateBinding(row)) {
-                        Text("Not marked").tag(OwnerAskAnswer.CheckState?.none)
-                        ForEach(Self.states, id: \.self) { state in
-                            Text(AskText.check(state)).tag(Optional(state))
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                        Text("\(index + 1).").foregroundStyle(.secondary).monospacedDigit()
+                        VStack(alignment: .leading, spacing: Spacing.tight) {
+                            Text(row.text).font(.body)
+                            if !row.hint.isEmpty {
+                                Text(row.hint).font(TypeScale.meta).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    .pickerStyle(.menu)
-                    .frame(minHeight: 44)
-                    .disabled(!isEditable)
+                    choices(row, step: index + 1)
                     if row.state == .broken || !row.note.isEmpty {
                         TextField(row.needsNote ? "What is broken? (required)" : "Note", text: noteBinding(row), axis: .vertical)
                             .lineLimit(1...4)
@@ -35,7 +32,7 @@ struct CheckAskView: View {
                             .accessibilityLabel("Note on step \(index + 1)")
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, Spacing.small)
             }
         } header: {
             Text("Steps")
@@ -44,8 +41,26 @@ struct CheckAskView: View {
         }
     }
 
-    private func stateBinding(_ row: AskFormModel.CheckRow) -> Binding<OwnerAskAnswer.CheckState?> {
-        Binding(get: { row.state }, set: { model.setCheck($0, for: row.id) })
+    /// Borderless buttons: in a List row, buttons of the default style all
+    /// fire on a tap anywhere in the row.
+    private func choices(_ row: AskFormModel.CheckRow, step: Int) -> some View {
+        HStack(spacing: 0) {
+            ForEach(row.choices) { choice in
+                Button {
+                    model.toggleCheck(choice.state, for: row.id)
+                } label: {
+                    Image(systemName: choice.symbol)
+                        .font(.title2)
+                        .foregroundStyle(choice.tone.color)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("\(choice.label), step \(step)")
+                .accessibilityAddTraits(choice.isSelected ? .isSelected : [])
+            }
+        }
+        .disabled(!isEditable)
     }
 
     private func noteBinding(_ row: AskFormModel.CheckRow) -> Binding<String> {

@@ -288,6 +288,55 @@ final class AskFormTests: XCTestCase {
         XCTAssertNil(answer.verdict)
     }
 
+    /// Design pass A5: three icon buttons, one tap marks a step, the marked
+    /// state draws filled in its tone, and tapping it again clears it, as
+    /// on the Mac (`OwnerAskChecklistBody.swift:44-57`).
+    func testOneTapMarksAStepAndASecondTapClearsIt() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open the menu"]]]])
+        let snapshot = try replica([ask])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        func row() throws -> AskFormModel.CheckRow {
+            try XCTUnwrap(try formOf(model, snapshot).checks.first)
+        }
+
+        XCTAssertEqual(try row().choices.map(\.label), ["OK", "Broken", "Skipped"])
+        XCTAssertEqual(try row().choices.map(\.symbol), ["checkmark.circle", "xmark.circle", "minus.circle"])
+        XCTAssertTrue(try row().choices.allSatisfy { $0.tone == .secondary && !$0.isSelected }, "unmarked: outlines in secondary")
+
+        model.toggleCheck(.ok, for: "1")
+        XCTAssertEqual(try row().state, .ok)
+        XCTAssertEqual(try row().choices.map(\.symbol), ["checkmark.circle.fill", "xmark.circle", "minus.circle"])
+        XCTAssertEqual(try row().choices.map(\.tone), [.green, .secondary, .secondary])
+
+        model.toggleCheck(.broken, for: "1")
+        XCTAssertEqual(try row().state, .broken, "another state replaces the mark")
+        XCTAssertEqual(try row().choices.map(\.tone), [.secondary, .red, .secondary])
+        XCTAssertTrue(try row().needsNote)
+
+        model.toggleCheck(.broken, for: "1")
+        XCTAssertNil(try row().state, "tapping the marked state again clears it")
+
+        model.toggleCheck(.skipped, for: "1")
+        XCTAssertEqual(try row().choices.map(\.isSelected), [false, false, true])
+        XCTAssertEqual(try row().choices.map(\.tone), [.secondary, .secondary, .secondary], "skipped stays secondary")
+    }
+
+    /// The check states are status tones in the form's `toneUses`, so the
+    /// orange sweep sees them; none is orange.
+    func testTheCheckStatesAreStatusTonesAndNeverOrange() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"], ["id": "2", "text": "Archive"]]]])
+        let snapshot = try replica([ask])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        model.toggleCheck(.ok, for: "1")
+        model.toggleCheck(.broken, for: "2")
+        let steps = try formOf(model, snapshot).toneUses.filter { $0.element.contains(" step ") }
+        XCTAssertEqual(steps.count, 6, "three choices per step")
+        XCTAssertTrue(steps.allSatisfy { $0.role == .status })
+        XCTAssertEqual(Set(steps.map(\.tone)), [.green, .red, .secondary])
+    }
+
     func testANoteOverTheBoundSaysWhySendIsOff() async throws {
         let fixture = try await makeFixture()
         let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
