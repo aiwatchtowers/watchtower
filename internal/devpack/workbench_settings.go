@@ -92,8 +92,8 @@ var (
 )
 
 // askGuardMarkerTemplate opens the Stop prompt hook an install from before
-// the command hook wrote (v1–v3; askguard_prompt.md keeps the v3 text as the
-// upgrade's fixture): what recognises that prompt as ours.
+// the command hook wrote (v1–v3; testdata/askguard_prompt_v{1,2,3}.md keep
+// the texts as the upgrade's fixtures): what recognises that prompt as ours.
 const askGuardMarkerTemplate = "[watchtower-workbench ask-guard <N>]"
 
 // AskGuardClassifier is the Stop ask guard's v4 classifier text (spec

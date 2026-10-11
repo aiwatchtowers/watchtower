@@ -63,10 +63,10 @@ func promptHooks(groups []any) []map[string]any {
 // The v3 fixture is the text v3 installs wrote, so the upgrade test covers a
 // byte-exact v3 entry.
 func TestAskGuardPromptV3Fixture_IsTheGolden(t *testing.T) {
-	if got := askGuardPromptFixture(t, "askguard_prompt.md", 7); got != goldenAskGuardPrompt7 {
+	if got := askGuardPromptFixture(t, "askguard_prompt_v3.md", 7); got != goldenAskGuardPrompt7 {
 		t.Fatalf("the v3 fixture drifted from the text v3 installed:\n got %q\nwant %q", got, goldenAskGuardPrompt7)
 	}
-	if got := askGuardPromptFixture(t, "askguard_prompt.md", 12); !strings.HasPrefix(got, "[watchtower-workbench ask-guard 12]\n") {
+	if got := askGuardPromptFixture(t, "askguard_prompt_v3.md", 12); !strings.HasPrefix(got, "[watchtower-workbench ask-guard 12]\n") {
 		t.Fatalf("the marker names the workbench: %q", got[:40])
 	}
 }
@@ -494,16 +494,11 @@ func assertAskToolBlockMovedOut(t *testing.T, pre []any, cmd string) {
 }
 
 // askGuardPromptFixture is an older prompt for workbenchID: the upgrade
-// fixture file (under testdata/, or the package's askguard_prompt.md for v3)
-// with its marker substituted, as an install from before the command hook
-// wrote it.
+// fixture file under testdata/ with its marker substituted, as an install
+// from before the command hook wrote it.
 func askGuardPromptFixture(t *testing.T, file string, workbenchID int64) string {
 	t.Helper()
-	path := filepath.Join("testdata", file)
-	if file == "askguard_prompt.md" {
-		path = file
-	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(filepath.Join("testdata", file))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,8 +532,8 @@ func TestProj13_OlderPromptsAreUpgradedToTheCurrent(t *testing.T) {
 		{"edited v1", "askguard_prompt_v1.md", askGuardPromptFixture(t, "askguard_prompt_v1.md", 7) + edit},
 		{"v2", "askguard_prompt_v2.md", askGuardPromptFixture(t, "askguard_prompt_v2.md", 7)},
 		{"edited v2", "askguard_prompt_v2.md", askGuardPromptFixture(t, "askguard_prompt_v2.md", 7) + edit},
-		{"v3", "askguard_prompt.md", askGuardPromptFixture(t, "askguard_prompt.md", 7)},
-		{"edited v3", "askguard_prompt.md", askGuardPromptFixture(t, "askguard_prompt.md", 7) + edit},
+		{"v3", "askguard_prompt_v3.md", askGuardPromptFixture(t, "askguard_prompt_v3.md", 7)},
+		{"edited v3", "askguard_prompt_v3.md", askGuardPromptFixture(t, "askguard_prompt_v3.md", 7) + edit},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			folder := fakeRepo(t)
