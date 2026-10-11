@@ -121,14 +121,14 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v5 (v4: spec 2026-10-08,
+// finishing a session (pack v3); the marker is now v6 (v4: spec 2026-10-08,
 // Working a target / Working a group; v5: board #499, in_progress from the
-// first prompt).
+// first prompt; v6: spec 2026-10-10-owner-asks-v2 Part 7, Asking the owner).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v5\n") {
-		t.Fatalf("the skill must carry %s: v5", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v6\n") {
+		t.Fatalf("the skill must carry %s: v6", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -164,11 +164,44 @@ func TestWorkbenchSkill_InProgressFromTheFirstPrompt(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1..v4 → v5): a copy we wrote
+// Spec 2026-10-10-owner-asks-v2 Part 7: Asking the owner teaches the three
+// levels, what not to ask, collecting decisions, re-filing a withdrawn ask
+// and an ask raised from chat.
+func TestWorkbenchSkill_AskingTheOwnerTeachesLevelsAndDiscipline(t *testing.T) {
+	_, body := WorkbenchSkill()
+	content := string(body)
+	start := strings.Index(content, "## Asking the owner")
+	if start < 0 {
+		t.Fatal("the skill has no Asking the owner section")
+	}
+	section := content[start:]
+	if next := strings.Index(section[1:], "\n## "); next >= 0 {
+		section = section[:next+1]
+	}
+	for _, want := range []string{
+		"**Chat**", "**Quick**", "**Full**", // the three levels
+		"2–3 short options", "`level_note`", "`level: full`",
+		"**What not to ask:**", "whether to run the tests", "run the command, read the file", `"shall I continue?"`,
+		"up to 4 questions", "a `hint` in the result",
+		"`previous_ask_id` = the withdrawn ask, `changes` = what is new", "the last 7 days",
+		"`origin: chat`", "answered in the terminal meanwhile, `withdraw_ask` it",
+		"`AskUserQuestion` tool is blocked",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the Asking the owner section never says %q", want)
+		}
+	}
+	tools := content[strings.Index(content, "## Tools"):strings.Index(content, "## Setup")]
+	if !strings.Contains(tools, "`level` (`quick` or `full`") {
+		t.Error("the ask_owner tool line never names level")
+	}
+}
+
+// DEV-04 across every previous version (v1..v5 → v6): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)
