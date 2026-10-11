@@ -50,6 +50,9 @@ func TestMigration00107_UpDownUpKeepsAsksAndSessions(t *testing.T) {
 
 	require.NoError(t, goose.Up(raw, "migrations"))
 	assertV2Defaults("up")
+	// A presence row proves Down drops a non-empty table and re-Up recreates it empty.
+	_, err = raw.Exec(`INSERT INTO owner_presence (id, session_id, seen_at) VALUES (1, 5, '2026-10-10T12:00:00.000Z')`)
+	require.NoError(t, err)
 
 	// DownTo(106), not a bare Down: a later migration can move the tip past 00107.
 	require.NoError(t, goose.DownTo(raw, "migrations", 106))
