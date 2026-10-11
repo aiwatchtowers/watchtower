@@ -51,6 +51,33 @@ private final class UnlaunchableRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 }
 
+/// The `owner_presence` row behind a presence center's writer: `row` is the
+/// last write that landed (`.some(nil)` once a leave lands), `attempts`
+/// every write tried; while `failing`, writes throw and leave the row as is.
+private final class PresenceRowStore: @unchecked Sendable {
+    private struct WriteFailed: Error {}
+
+    private let lock = NSLock()
+    private var landed: Int64??
+    private var tried: [Int64?] = []
+    private var fails = false
+
+    var row: Int64?? { lock.withLock { landed } }
+    var attempts: [Int64?] { lock.withLock { tried } }
+    var failing: Bool {
+        get { lock.withLock { fails } }
+        set { lock.withLock { fails = newValue } }
+    }
+
+    func write(_ session: Int64?) throws {
+        try lock.withLock {
+            tried.append(session)
+            if fails { throw WriteFailed() }
+            landed = .some(session)
+        }
+    }
+}
+
 private enum Answer {
     static let filed = #"{"ok":true,"outcome":"filed","ask_id":31,"level":"quick"}"#
     static let gone = #"{"ok":true,"outcome":"gone"}"#
@@ -236,6 +263,57 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         XCTAssertEqual(runner.reasons, ["away"])
         await settled(escalator)
         await center.flushWrites()
+    }
+
+    /// A failed leave write leaves the `owner_presence` row saying present,
+    /// but the escalation reads the center's in-memory presence: a question
+    /// recorded after the leave still escalates as `away` at once. The
+    /// heartbeat retry then lands the leave in the row.
+    func testAFailedLeaveWriteStillEscalatesAwayAndTheHeartbeatLandsIt() async {
+        let runner = ScriptedEscalationRunner(Answer.gone)
+        rows = []
+        now = asked.addingTimeInterval(-30)
+        let store = PresenceRowStore()
+        let escalator = bareEscalator(runner)
+        let notifications = NotificationCenter()
+        let timers: ManualTimers = timers
+        let center = OwnerPresenceCenter(
+            writer: { session, _ in try store.write(session) }, clock: { [weak self] in self?.now ?? .distantPast },
+            schedule: { timers.schedule($0, $1) },
+            sources: .init(app: notifications, workspace: notifications, distributed: notifications)
+        )
+        presenceCenters.append(center)
+        center.screen = { .init(keyWindowShows: .workbenchSession, selectedSession: 1) }
+        center.isAppActive = { true }
+        center.isScreenLocked = { false }
+        escalator.follow(presence: center)
+        escalator.start()
+        center.start()
+        await center.flushWrites()
+        XCTAssertEqual(store.row, .some(1), "the owner is in session 1")
+
+        // The owner leaves the app before the question; every write fails.
+        store.failing = true
+        now = asked.addingTimeInterval(-10)
+        notifications.post(name: NSApplication.didResignActiveNotification, object: nil)
+        timers.fireAll() // the 2 s flicker debounce: the loss is written, and fails
+        await center.flushWrites()
+        XCTAssertNil(center.presentSessionID, "in memory the owner left")
+        XCTAssertEqual(store.row, .some(1), "the row still says present")
+        XCTAssertEqual(store.attempts.last, .some(nil), "the leave was attempted")
+
+        // A question recorded after the leave escalates as away at once.
+        rows = [row()]
+        await evaluate(escalator, after: 5)
+        XCTAssertEqual(runner.reasons, ["away"])
+
+        // The heartbeat retry lands the leave.
+        store.failing = false
+        timers.fireAll()
+        await center.flushWrites()
+        XCTAssertEqual(store.row, .some(nil), "the retry wrote the leave")
+        XCTAssertEqual(runner.reasons, ["away"], "no second run")
+        await settled(escalator)
     }
 
     func testTheTickRunsOnlyWhileALiveSessionHoldsAQuestion() async {
