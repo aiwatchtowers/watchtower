@@ -8,7 +8,8 @@ import GRDB
 final class OwnerAskAnswerValidationTests: XCTestCase {
     private func ask(_ kind: String, payload: String = "{}") throws -> OwnerAsk {
         try OwnerAsk(row: Row([
-            "id": 7, "project_id": 1, "kind": kind, "title": "Ask", "status": "open", "payload": payload, "doc_path": ""
+            "id": 7, "project_id": 1, "level": "full", "origin": "agent", "kind": kind, "title": "Ask", "status": "open",
+            "payload": payload, "doc_path": ""
         ]))
     }
 
