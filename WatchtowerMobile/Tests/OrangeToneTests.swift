@@ -77,6 +77,9 @@ final class OrangeToneTests: XCTestCase {
         }
         var snapshot = WorkbenchReplicaSnapshot()
         let now = Date()
+        for status in [MacStatus.notConnected, .online(macName: "Acme Mac"), .offline(macName: "Acme Mac", lastSeen: now)] {
+            XCTAssertNotEqual(MacStatusRow(status: status, now: now).tone, .orange, "\(status)")
+        }
         XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now).macChipTone, .orange)
         snapshot.heartbeat = HeartbeatPayload(
             updatedAt: now, appVersion: "1.0", hubID: "hub", macName: "Acme Mac", flavor: .default,

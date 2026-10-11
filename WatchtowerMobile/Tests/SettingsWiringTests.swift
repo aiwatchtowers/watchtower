@@ -55,6 +55,26 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(status.title, "Your Mac has not connected yet")
     }
 
+    /// Bug 10 (design pass spec §3): the Mac's name on the left, its state
+    /// on the right, in one row; green only while online.
+    func testTheMacRowIsOneRowForEveryStatus() {
+        let now = Date()
+        let english = Locale(identifier: "en_US")
+        let online = MacStatusRow(status: .online(macName: "Acme Mac"), now: now, locale: english)
+        XCTAssertEqual([online.label, online.value], ["Acme Mac", "Online"])
+        XCTAssertEqual(online.tone, .green)
+        let offline = MacStatusRow(
+            status: .offline(macName: "Acme Mac", lastSeen: now.addingTimeInterval(-180)), now: now, locale: english
+        )
+        XCTAssertEqual([offline.label, offline.value], ["Acme Mac", "Offline · seen 3 min. ago"])
+        XCTAssertEqual(offline.tone, .secondary)
+        let never = MacStatusRow(status: .notConnected, now: now, locale: english)
+        XCTAssertEqual([never.label, never.value], ["Mac", "Not connected"])
+        XCTAssertEqual(never.tone, .secondary)
+        XCTAssertEqual(MacStatusRow(status: .online(macName: ""), now: now).label, "Mac", "an empty name reads Mac")
+        XCTAssertEqual(online.toneUse.role, .mac)
+    }
+
     /// The snapshot reads the DataZone heartbeat the hydrator stored, with
     /// its name and read-only accounts.
     func testSnapshotReadsTheHydratedHeartbeat() async throws {
