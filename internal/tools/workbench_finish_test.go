@@ -247,8 +247,8 @@ func TestFinishSession_OpenAsksCountsOnlyThisSessionsOpenAsks(t *testing.T) {
 	answerAsk(t, fx.d, answered, `{"answers":[{"id":"1","labels":["SQLite"]}]}`)
 	withdrawn := askID(t, mustApply(t, reg, fx.a, "ask_owner", questionAsk))
 	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"r"}`, withdrawn))
-	mustApply(t, askRegistry(t, fx.d, strconv.FormatInt(other, 10)), fx.a, "ask_owner", questionAsk)
-	mustApply(t, askRegistry(t, fx.d, ""), fx.a, "ask_owner", questionAsk)
+	mustApply(t, askRegistry(t, fx.d, strconv.FormatInt(other, 10)), fx.a, "ask_owner", questionAskTitled("Other session"))
+	mustApply(t, askRegistry(t, fx.d, ""), fx.a, "ask_owner", questionAskTitled("No session"))
 
 	out := mustApply(t, reg, fx.a, "finish_session", `{"summary":"Done, one ask open.","reason":"r"}`)
 	assert.EqualValues(t, 1, out["open_asks"])
