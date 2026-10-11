@@ -45,7 +45,15 @@ struct SessionDetailView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .bottom) {
+        .toolbar {
+            // The bar is not an empty strip with a lone "⋯".
+            ToolbarItem(placement: .principal) {
+                if let title = replica.snapshot.session(viewModel.sessionID)?.title {
+                    Text(title).font(.headline).lineLimit(1)
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if Self.showsTellBar {
                 TellSessionBar()
             }
@@ -124,28 +132,22 @@ struct SessionDetailView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-        .background(Color(.systemGroupedBackground))
+        .background(Color(.systemBackground))
     }
 
     private func header(_ detail: SessionDetailModel) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(detail.title)
-                .font(.title2.weight(.semibold))
+                .font(TypeScale.pageTitle)
                 .accessibilityAddTraits(.isHeader)
             HStack(spacing: 6) {
                 SessionDot(tone: detail.state.tone, isRing: detail.state.isRing)
-                if let glyph = detail.state.glyph {
-                    Image(systemName: glyph).accessibilityHidden(true)
-                }
                 Text(detail.state.caption)
             }
             .font(.subheadline)
             .foregroundStyle(detail.state.tone.color)
             .accessibilityElement(children: .combine)
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 6) { chips(detail) }
-                VStack(alignment: .leading, spacing: 0) { chips(detail) }
-            }
+            FlowRow { chips(detail) }
         }
     }
 
@@ -153,23 +155,25 @@ struct SessionDetailView: View {
     private func chips(_ detail: SessionDetailModel) -> some View {
         if let target = detail.target {
             NavigationLink(value: BoardTargetRoute(id: target.id)) {
-                InfoPill(text: target.label, tint: .accentColor)
+                Pill(text: target.label, tone: .accent)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Target \(target.label)")
         }
         if let branch = detail.branch {
-            InfoPill(text: branch, monospaced: true)
+            Pill(text: branch, style: .neutral, monospaced: true)
+                .frame(minHeight: 44)
                 .accessibilityLabel("Branch \(branch)")
         }
-        InfoPill(text: detail.agentLine)
+        Pill(text: detail.agentLine, style: .neutral).frame(minHeight: 44)
     }
 
     private func timeline(_ detail: SessionDetailModel) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Timeline")
-                .font(.caption.weight(.semibold))
-                .textCase(.uppercase)
+                .font(TypeScale.sectionHeader)
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             if let empty = detail.timelineEmptyText {
@@ -229,41 +233,19 @@ private struct StopRowView: View {
     }
 }
 
-/// A small rounded label of the header.
-private struct InfoPill: View {
-    let text: String
-    var tint: Color = .secondary
-    var monospaced = false
-
-    var body: some View {
-        Text(text)
-            .font(monospaced ? .caption.monospaced() : .caption)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .foregroundStyle(tint == .secondary ? Color.primary : tint)
-            .background(Color(.tertiarySystemFill), in: Capsule())
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-    }
-}
-
 /// The phone never answers a permission prompt (PROJ-16).
 private struct ApprovalNoticeView: View {
     let text: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.regular) {
             Image(systemName: "hand.raised.fill").accessibilityHidden(true)
-            Text(text).font(.subheadline.weight(.semibold))
+            Text(text).font(TypeScale.rowEmphasis)
             Spacer(minLength: 0)
         }
         .foregroundStyle(PhoneTone.waitingForYou.color)
-        .padding(12)
         .frame(minHeight: 44)
-        .background(PhoneTone.waitingForYou.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(PhoneTone.waitingForYou.color.opacity(0.5), lineWidth: 1))
+        .card(.waiting)
         .accessibilityElement(children: .combine)
     }
 }
@@ -274,45 +256,21 @@ private struct SessionAsksBox: View {
     let since: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                SessionDot(tone: .waitingForYou, isRing: false, size: 8)
-                Text("Waiting for you").font(.subheadline.weight(.semibold))
-                    .foregroundStyle(PhoneTone.waitingForYou.color)
-                Spacer(minLength: 8)
-                if let since {
-                    Text(since).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.bottom, 4)
-            ForEach(asks) { ask in
-                Divider()
-                NavigationLink(value: AskRoute(id: ask.id)) {
-                    HStack(spacing: 12) {
-                        Text(ask.kindLabel)
-                            .font(.caption2.monospaced().weight(.semibold))
-                            .foregroundStyle(ask.tone.color)
-                            .frame(width: 56, alignment: .leading)
-                        Text(ask.title)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tertiary)
+        WaitingStack(asks: asks) {
+            VStack(spacing: 0) {
+                HStack(spacing: Spacing.regular) {
+                    SessionDot(tone: .waitingForYou, isRing: false, size: 8)
+                    Text("Waiting for you").font(TypeScale.rowEmphasis).foregroundStyle(PhoneTone.waitingForYou.color)
+                    Spacer(minLength: Spacing.regular)
+                    if let since {
+                        Text(since).font(TypeScale.meta).foregroundStyle(.secondary)
                     }
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .combine)
+                .padding(RowInsets.flat)
+                .accessibilityAddTraits(.isHeader)
+                Divider()
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(PhoneTone.waitingForYou.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(PhoneTone.waitingForYou.color.opacity(0.5), lineWidth: 1))
     }
 }
 
@@ -324,29 +282,27 @@ private struct SessionReportCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Report")
-                    .font(.caption.weight(.semibold))
-                    .textCase(.uppercase)
+                    .font(TypeScale.sectionHeader)
                     .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Text(report.progressLabel)
-                    .font(.caption.monospaced())
+                    .font(TypeScale.time)
                     .foregroundStyle(.secondary)
             }
             if !report.segments.isEmpty {
                 segments
             }
             ForEach(report.summary, id: \.self) { line in
-                Text(line).font(.subheadline)
+                Text(line).font(TypeScale.rowTitle)
             }
             ForEach(report.prLines, id: \.self) { line in
                 Text(line)
-                    .font(.caption.monospaced())
+                    .font(TypeScale.meta)
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14))
+        .card(.plain)
     }
 
     private var segments: some View {
@@ -377,12 +333,12 @@ private struct MilestoneRowView: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(row.time)
-                .font(.caption2.monospaced())
+                .font(TypeScale.time)
                 .foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .leading)
             SessionDot(tone: row.tone, isRing: false, size: 8)
             Text(row.text)
-                .font(.subheadline)
+                .font(TypeScale.rowTitle)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if opens {
                 Image(systemName: "chevron.right")
@@ -404,26 +360,25 @@ private struct TellSessionBar: View {
     @State private var text = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                TextField("Tell the session…", text: $text)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minHeight: 44)
-                    .accessibilityLabel("Message to the session")
-                Button {} label: {
-                    Image(systemName: "arrow.right")
-                        .frame(width: 44, height: 44)
+        BottomActionBar {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                HStack(spacing: Spacing.regular) {
+                    TextField("Tell the session…", text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minHeight: 44)
+                        .accessibilityLabel("Message to the session")
+                    Button {} label: {
+                        Image(systemName: "arrow.right")
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(true)
+                    .accessibilityLabel("Send")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(true)
-                .accessibilityLabel("Send")
+                Text("Delivered when the agent is idle · opt-in in Settings")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Text("Delivered when the agent is idle · opt-in in Settings")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
     }
 }
