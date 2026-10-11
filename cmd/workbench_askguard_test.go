@@ -1041,3 +1041,28 @@ func TestAskGuardReasonsAreTheSpecsText(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, reason, askGuardReasonFinish, "R-finish is the v3 finish reason, unchanged")
 }
+
+// A read failure after the session matched (here the presence read) sends
+// a short question back and blocks its record, and still clears the older
+// Stop's question (4.2 step 6).
+func TestStopGuardReadFailureStillClearsTheOlderQuestion(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	seedOlderQuestion(t, database, pid, row)
+	for _, q := range []string{
+		// The columns are there; the read fails on a value the scan cannot take.
+		`DROP TABLE owner_presence`,
+		`CREATE TABLE owner_presence (id INTEGER, session_id INTEGER, seen_at TEXT)`,
+		`INSERT INTO owner_presence VALUES (1, 'not a number', 'x')`,
+	} {
+		_, err := database.Exec(q)
+		require.NoError(t, err, q)
+	}
+	useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
+
+	out, errOut, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
+
+	require.NoError(t, err)
+	assert.Equal(t, guardBlock(t, askGuardReasonAway), out)
+	assert.Contains(t, errOut, "ask guard reads the owner as away")
+	assert.Nil(t, storedChatQuestion(t, database, row), "the older question is cleared, nothing recorded")
+}

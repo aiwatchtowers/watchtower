@@ -371,11 +371,13 @@ func askGuardConfig() (*config.Config, error) {
 
 // askGuardSession is the guard's handle on its session row: rowID, of
 // workbench workbenchID, running conversation claudeID. database is nil when
-// the hook runs outside a Desktop terminal or the database failed (failed
-// set): nothing is read or written then.
+// the hook runs outside a Desktop terminal, or opening the database or its
+// schema check failed: nothing is read or written then. readFailed is a read
+// failure after that (the owner reads as away): it blocks the record only,
+// so a matched session's older question is still cleared (4.2 step 6).
 type askGuardSession struct {
 	database           *db.DB
-	failed             bool
+	readFailed         bool
 	rowID, workbenchID int64
 	claudeID           string
 	matched            bool
@@ -401,7 +403,6 @@ func openAskGuardSession(stderr io.Writer, dbPath string, workbenchID int64, cla
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard reads the owner as away: %v\n", err)
-		g.failed = true
 		return g
 	}
 	g.database = database
@@ -446,7 +447,7 @@ func (g *askGuardSession) resolution(stderr io.Writer, now time.Time) askGuardRe
 	r, err := g.resolve(now)
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard reads the owner as away: %v\n", err)
-		g.failed = true
+		g.readFailed = true
 		return askGuardResolution{Matched: g.matched}
 	}
 	return r
@@ -500,7 +501,7 @@ func (g *askGuardSession) apply(stderr io.Writer, d stopDecision, v *askGuardVer
 
 // record stores the verdict's question, asked at the Stop's time at.
 func (g *askGuardSession) record(v *askGuardVerdict, at time.Time) error {
-	if g.database == nil || g.failed || !g.matched {
+	if g.database == nil || g.readFailed || !g.matched {
 		return errors.New("no session to record on")
 	}
 	if err := g.database.SetBusyTimeout(askGuardRecordBusyTimeout); err != nil {
@@ -511,9 +512,9 @@ func (g *askGuardSession) record(v *askGuardVerdict, at time.Time) error {
 }
 
 // clear drops the session's chat question recorded before at; outside a
-// matched session, or on a failed database, there is nothing to clear.
+// matched session, or without a database, there is nothing to clear.
 func (g *askGuardSession) clear(at time.Time) error {
-	if g.database == nil || g.failed || !g.matched {
+	if g.database == nil || !g.matched {
 		return nil
 	}
 	if err := g.database.SetBusyTimeout(askGuardRecordBusyTimeout); err != nil {
