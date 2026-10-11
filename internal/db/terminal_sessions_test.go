@@ -1427,3 +1427,21 @@ func TestOlderRunMarkOverANewerStateKeepsTheQuestion(t *testing.T) {
 		t.Fatalf("an older mark changed the row\nbefore %s\nafter  %s", before, after)
 	}
 }
+
+// GetTerminalSession carries the stored chat_question_at, so a hook can skip
+// the clear's write when there is nothing to clear.
+func TestGetTerminalSessionReadsTheChatQuestionStamp(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if s := storedSession(t, d, id); s.ChatQuestionAt != "" {
+		t.Fatalf("a fresh row reads chat_question_at %q", s.ChatQuestionAt)
+	}
+	at := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), at); err != nil {
+		t.Fatal(err)
+	}
+	if s := storedSession(t, d, id); s.ChatQuestionAt != AgentStateStamp(at) {
+		t.Fatalf("chat_question_at = %q, want %q", s.ChatQuestionAt, AgentStateStamp(at))
+	}
+}
