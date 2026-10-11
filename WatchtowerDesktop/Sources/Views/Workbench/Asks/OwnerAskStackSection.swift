@@ -19,7 +19,8 @@ struct OwnerAskStackSection: View {
         let asks = vm.asks
         let stack = asks.stack(projectID: project.id)
         let outsideClosed = asks.closedCounts[project.id]?[nil] ?? 0
-        if !stack.asks.isEmpty || outsideClosed > 0 || asks.loadErrors[project.id] != nil {
+        let notices = asks.quickNotices(projectID: project.id)
+        if !stack.asks.isEmpty || !notices.isEmpty || outsideClosed > 0 || asks.loadErrors[project.id] != nil {
             VStack(alignment: .leading, spacing: 2) {
                 if !stack.asks.isEmpty {
                     Text("Waiting for you (\(stack.count))")
@@ -42,6 +43,10 @@ struct OwnerAskStackSection: View {
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { rowsHeight = $0 })
                     }
                     .frame(height: min(rowsHeight, Self.maxRowsHeight))
+                }
+                // Quick answers' notices, where the owner tapped.
+                ForEach(notices) { notice in
+                    OwnerAskQuickNoticeRow(vm: vm, notice: notice).padding(.horizontal, 12)
                 }
                 if outsideClosed > 0 {
                     HStack(spacing: 4) {
