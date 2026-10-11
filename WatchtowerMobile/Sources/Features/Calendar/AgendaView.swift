@@ -9,6 +9,8 @@ import WatchtowerKit
 struct AgendaView: View {
     @Environment(AppEnvironment.self) private var env
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
+    /// The last key the agenda scrolled for (`AgendaScroll`).
+    @State private var scrolledKey: AgendaScrollKey?
 
     var body: some View {
         @Bindable var navigation = env.navigation
@@ -91,10 +93,12 @@ struct AgendaView: View {
                     .padding(.trailing, Spacing.large)
                     .padding(.bottom, Spacing.medium)
             }
-            .task(id: selectedDay) {
+            .task(id: AgendaScrollKey(day: selectedDay, rowID: agenda.highlightedRowID)) {
                 // The current or next meeting sits mid-screen, never under
                 // the button at rest; without one the day stays at the top.
-                guard let row = agenda.highlightedRowID else { return }
+                let key = AgendaScrollKey(day: selectedDay, rowID: agenda.highlightedRowID)
+                guard let row = AgendaScroll.target(for: key, after: scrolledKey) else { return }
+                scrolledKey = key
                 proxy.scrollTo(row, anchor: .center)
             }
         }

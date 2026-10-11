@@ -284,6 +284,21 @@ final class CalendarWiringTests: XCTestCase {
 
     /// Bug 2 and review focus 5 (design pass spec §9.2): the agenda scrolls
     /// to today's current or next meeting; with none it stays at the top.
+    /// Task 9 review: the scroll runs once per day and highlighted row, so
+    /// coming back from an event does not snap the list over the user's
+    /// scroll; a later snapshot that highlights a row still scrolls.
+    func testTheAgendaScrollsOncePerDayAndRow() {
+        let key = AgendaScrollKey(day: day(0), rowID: "event-next")
+        XCTAssertEqual(AgendaScroll.target(for: key, after: nil), "event-next")
+        XCTAssertNil(AgendaScroll.target(for: key, after: key), "a return to the screen keeps the user's scroll")
+        XCTAssertNil(AgendaScroll.target(for: AgendaScrollKey(day: day(0), rowID: nil), after: nil), "nothing highlighted")
+        XCTAssertEqual(
+            AgendaScroll.target(for: key, after: AgendaScrollKey(day: day(0), rowID: nil)), "event-next",
+            "the snapshot arrived after the first appear"
+        )
+        XCTAssertEqual(AgendaScroll.target(for: AgendaScrollKey(day: day(1), rowID: "event-x"), after: key), "event-x")
+    }
+
     func testOnlyTodaysCurrentOrNextMeetingIsScrolledTo() throws {
         let ended = event("ended", start: now.addingTimeInterval(-7_200), minutes: 30)
         let next = event("next", start: now.addingTimeInterval(1_500))

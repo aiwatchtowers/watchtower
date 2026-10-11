@@ -260,6 +260,22 @@ struct AgendaDayModel {
     }
 }
 
+/// The agenda's scroll to its highlighted row, keyed by day and row.
+struct AgendaScrollKey: Hashable {
+    let day: Date
+    let rowID: String?
+}
+
+/// The scroll runs once per key: coming back from a pushed screen re-runs
+/// the view's task with the same key and must not snap the list over the
+/// user's scroll, while a snapshot that highlights a row later still
+/// scrolls to it.
+enum AgendaScroll {
+    static func target(for key: AgendaScrollKey, after scrolled: AgendaScrollKey?) -> String? {
+        key == scrolled ? nil : key.rowID
+    }
+}
+
 // MARK: - Week strip
 
 /// Monday to Sunday around the selected day; today is filled in the
