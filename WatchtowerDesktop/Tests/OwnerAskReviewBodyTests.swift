@@ -17,7 +17,7 @@ final class OwnerAskReviewBodyTests: XCTestCase {
 
     private func ask(_ id: Int64, snapshot: String = snapshot, focus: String = "[]") throws -> OwnerAsk {
         try OwnerAsk(row: Row([
-            "id": id, "project_id": 1, "kind": "review", "title": "Review", "status": "open",
+            "id": id, "project_id": 1, "level": "full", "origin": "agent", "kind": "review", "title": "Review", "status": "open",
             "payload": #"{"focus":\#(focus)}"#, "doc_path": "docs/plan.md", "doc_snapshot": snapshot
         ]))
     }

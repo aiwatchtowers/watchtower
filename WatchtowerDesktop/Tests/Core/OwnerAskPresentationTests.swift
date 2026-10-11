@@ -14,7 +14,7 @@ final class OwnerAskPresentationTests: XCTestCase {
     ) throws -> OwnerAsk {
         let payload = #"{"questions":[\#(questions ? Self.question : "")],"checklist":\#(checklist)}"#
         return try OwnerAsk(row: Row([
-            "id": 4, "project_id": 1, "kind": kind.rawValue, "title": "t", "payload": payload,
+            "id": 4, "project_id": 1, "level": "full", "origin": "agent", "kind": kind.rawValue, "title": "t", "payload": payload,
             "status": status, "withdrawn_reason": reason
         ]))
     }
@@ -30,7 +30,7 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(step(try ask(.question)), "Answer questions")
         let second = Self.question.replacingOccurrences(of: #""id":"a""#, with: #""id":"b""#)
         let two = try OwnerAsk(row: Row([
-            "id": 5, "project_id": 1, "kind": "question", "title": "t", "status": "open",
+            "id": 5, "project_id": 1, "level": "full", "origin": "agent", "kind": "question", "title": "t", "status": "open",
             "payload": #"{"questions":[\#(Self.question),\#(second)]}"#
         ]))
         XCTAssertEqual(step(two), "Answer 2 questions")
@@ -115,7 +115,7 @@ final class OwnerAskPresentationTests: XCTestCase {
     /// number, kind and status.
     func testLinkCardDetailNamesNumberKindAndStatus() throws {
         let ask = try OwnerAsk(row: Row([
-            "id": 12, "project_id": 1, "kind": "check", "title": "Try the export", "payload": "{}",
+            "id": 12, "project_id": 1, "level": "full", "origin": "agent", "kind": "check", "title": "Try the export", "payload": "{}",
             "status": "open", "withdrawn_reason": ""
         ]))
         XCTAssertEqual(OwnerAskPresentation.linkCardDetail(ask), "#12 · Check · Waiting for you")
@@ -186,6 +186,29 @@ final class OwnerAskPresentationTests: XCTestCase {
         draft.note = String(repeating: "x", count: 4001)
         XCTAssertFalse(OwnerAskPresentation.canAnswer(ask, draft: draft, with: send, answering: false))
         XCTAssertEqual(OwnerAskPresentation.blocker(ask, draft: draft, with: send), "Shorten the note to 4000 characters")
+    }
+
+    /// Spec 2026-10-10 Part 9.1: an ask raised from chat says so with its
+    /// age in whole minutes, "<1 min" under a minute.
+    func testChatMarkAge() throws {
+        let askedAt = "2026-10-10T09:15:00.000Z"
+        let asked = try XCTUnwrap(SessionAgentStatus.parseStamp(askedAt))
+        func mark(after seconds: TimeInterval) -> String? {
+            OwnerAskPresentation.chatMark(askedAt: askedAt, now: asked.addingTimeInterval(seconds))
+        }
+        XCTAssertEqual(mark(after: 0), "From chat · <1 min")
+        XCTAssertEqual(mark(after: 59), "From chat · <1 min")
+        XCTAssertEqual(mark(after: 60), "From chat · 1 min")
+        XCTAssertEqual(mark(after: 12 * 60), "From chat · 12 min")
+        XCTAssertEqual(mark(after: 12 * 60 + 59), "From chat · 12 min", "whole minutes, never rounded up")
+        XCTAssertEqual(mark(after: -120), "From chat · <1 min", "a stamp ahead of this clock is a fresh question")
+    }
+
+    func testChatMarkOfAnUnparsableStampIsNil() {
+        let now = Date()
+        XCTAssertNil(OwnerAskPresentation.chatMark(askedAt: "", now: now), "not raised from chat")
+        XCTAssertNil(OwnerAskPresentation.chatMark(askedAt: "yesterday", now: now))
+        XCTAssertNil(OwnerAskPresentation.chatMark(askedAt: "2026-10-10 09:15:00", now: now), "not the agent_state_at layout")
     }
 
     func testAnUnpickedQuestionSaysWhy() throws {

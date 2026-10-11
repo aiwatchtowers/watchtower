@@ -1,0 +1,16 @@
+{
+  "kind": "question",
+  "payload": {
+    "questions": [
+      {"id": "q1", "question": "What is the staging host name?", "options": []}
+    ]
+  },
+  "answer": {
+    "answers": [{"id": "q1", "labels": [], "other": "staging.example.com"}],
+    "checklist": [],
+    "comments": [],
+    "note": "",
+    "verdict": ""
+  },
+  "canonical": "{\"answers\":[{\"id\":\"q1\",\"labels\":[],\"other\":\"staging.example.com\"}],\"checklist\":[],\"comments\":[],\"note\":\"\",\"verdict\":\"\"}"
+}
