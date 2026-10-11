@@ -175,11 +175,16 @@ final class OwnerPresenceCenterTests: XCTestCase {
         XCTAssertEqual(writes.all.last?.at, start.addingTimeInterval(40), "30 s after the restart")
     }
 
-    func testANeverEnteredSessionIsAwaySinceBeforeAnyQuestion() async {
+    /// A session not entered since the center started is away from that
+    /// start: a later question escalates at once (E10b), an earlier one —
+    /// a center re-initialised under a running session — waits the grace.
+    func testANeverEnteredSessionIsAwaySinceTheStart() async {
+        time.advance(by: 4)
         let center = await startInSession7()
+        time.advance(by: 10)
 
         XCTAssertNil(center.awaySince(sessionID: 7), "present")
-        XCTAssertEqual(center.awaySince(sessionID: 8), .distantPast)
+        XCTAssertEqual(center.awaySince(sessionID: 8), start.addingTimeInterval(4))
     }
 
     // MARK: - Entering and the heartbeat

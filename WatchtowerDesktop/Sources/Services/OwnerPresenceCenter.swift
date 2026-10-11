@@ -106,6 +106,8 @@ final class OwnerPresenceCenter {
     @ObservationIgnored private var displaysAsleep = false
     /// When the owner left each session they were in since launch.
     @ObservationIgnored private var awayStarts: [Int64: Date] = [:]
+    /// When `start()` last ran: a session not entered since is away from it.
+    @ObservationIgnored private var startedAt = Date.distantPast
     /// The timer's cancel of a loss not yet 2 s old.
     @ObservationIgnored private var cancelPendingLoss: (() -> Void)?
     @ObservationIgnored private var cancelHeartbeat: (() -> Void)?
@@ -160,13 +162,15 @@ final class OwnerPresenceCenter {
     /// or at once on a lock, display sleep or another session's pane (spec
     /// Part 5.2): a question Go recorded inside the debounce saw the owner
     /// present, so it waits out the leave grace rather than escalating at
-    /// once. A session the owner has not been in since launch reads as away
-    /// since `.distantPast` — before any question it records, so such a
-    /// question escalates at once (`away`, E10b), and never inside the 90 s
-    /// leave grace.
+    /// once. A session the owner has not been in since this center started
+    /// reads as away since that start: a question recorded after it
+    /// escalates at once (`away`, E10b — at launch every session is new),
+    /// while one recorded before it (a center re-initialised under a running
+    /// session) still waits out the 90 s leave grace from the start, since
+    /// the owner may have been in that session until then.
     func awaySince(sessionID: Int64) -> Date? {
         guard presentSessionID != sessionID else { return nil }
-        return awayStarts[sessionID] ?? .distantPast
+        return awayStarts[sessionID] ?? startedAt
     }
 
     /// Follows the inputs from now on and computes presence once; that first
@@ -177,6 +181,7 @@ final class OwnerPresenceCenter {
         guard !following else { return }
         following = true
         hasSettled = false
+        startedAt = clock()
         appActive = isAppActive()
         screenLocked = isScreenLocked()
         displaysAsleep = false

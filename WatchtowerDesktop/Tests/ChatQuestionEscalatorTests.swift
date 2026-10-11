@@ -185,12 +185,14 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         ]])
     }
 
-    /// The presence center's first computation (and every change after)
-    /// evaluates, with no call from the agent states: the owner was in
-    /// another session when the question was recorded → `away` at once.
+    /// The presence center's changes evaluate, with no call from the agent
+    /// states: once the owner leaves the app, a
+    /// question recorded in a session not entered since the center started
+    /// escalates as `away` at once.
     func testPresenceChangeTriggersAnEvaluation() async {
         let runner = ScriptedEscalationRunner(Answer.gone)
-        now = asked.addingTimeInterval(5)
+        rows = []
+        now = asked.addingTimeInterval(-30)
         let escalator = bareEscalator(runner)
         let notifications = NotificationCenter()
         let timers: ManualTimers = timers
@@ -204,11 +206,17 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         center.isScreenLocked = { false }
         escalator.follow(presence: center)
         escalator.start()
-        await settled(escalator)
-        XCTAssertEqual(runner.invocations, [], "presence not settled yet")
-
         center.start()
-        await eventually("the settle evaluates") { runner.invocations.count == 1 }
+        await center.flushWrites()
+
+        rows = [row()]
+        now = asked.addingTimeInterval(5)
+        await settled(escalator)
+        XCTAssertEqual(runner.invocations, [], "nothing evaluated since the question appeared")
+
+        notifications.post(name: NSApplication.didResignActiveNotification, object: nil)
+        timers.fireAll() // the 2 s flicker debounce: the loss is written
+        await eventually("the presence change evaluates") { runner.invocations.count == 1 }
         XCTAssertEqual(runner.reasons, ["away"])
         await settled(escalator)
         await center.flushWrites()
