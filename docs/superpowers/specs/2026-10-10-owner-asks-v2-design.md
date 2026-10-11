@@ -296,8 +296,8 @@ Pure Core `ChatQuestionEscalationPolicy.decide(row:live:startedAt:presence:hasOw
 
 - **Settles first (F17):** after launch it evaluates nothing until `OwnerPresenceCenter` has computed presence once (otherwise an unknown presence at launch would read as "away").
 - Evaluates on every `SessionAgentStateCenter` read, on every presence change, and on a 30 s tick while any session has a chat question; at most one CLI run in flight per session.
-- **Retries only transient failures (F17):** Go's envelope carries an `error_code`. `busy` (lock) and `open_cap` (30 open asks) are retried at the next evaluation, at most once per minute per session; any other code (`not_found`, `bad_args`, `schema`, `internal`) stops retrying for that `chat_question_at` (logged once) — a new question gets a fresh start.
-- Stop/quit cancels in-flight runs and reaps their process group.
+- **Retries only transient failures (F17):** Go's envelope carries an `error_code`. `busy` (lock) and `open_cap` (30 open asks) — and the Desktop's own `launchFailed`, when the CLI could not be started at all — are retried at the next evaluation, at most once per minute per session; any other code (`not_found`, `bad_args`, `schema`, `internal`) stops retrying for that `chat_question_at` (logged once) — a new question gets a fresh start.
+- Stop/quit cancels in-flight runs and reaps their process (the command starts no children of its own).
 
 ### 5.3 What Go files (compare-and-take)
 
