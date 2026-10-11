@@ -82,6 +82,9 @@ func TestAskGuard_DeniesAskUserQuestionInALiveWorkbench(t *testing.T) {
 		assert.Empty(t, errOut)
 		assert.Equal(t, compactDenial(t), out)
 	})
+	shared := writeActionsConfig(t)
+	// Rows that change the schema get a database of their own.
+	changesSchema := map[string]bool{"a read error": true, "no presence table (an older schema)": true}
 	for _, tc := range []struct {
 		name    string
 		setup   func(t *testing.T, database *db.DB, pid, row int64) (payload string)
@@ -168,7 +171,11 @@ func TestAskGuard_DeniesAskUserQuestionInALiveWorkbench(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			database, pid, row := stopGuardFixture(t)
+			database := shared
+			if changesSchema[tc.name] {
+				database = writeActionsConfig(t)
+			}
+			pid, row := stopGuardSession(t, database)
 			payload := tc.setup(t, database, pid, row)
 
 			out, errOut, err := runAskGuard(t, strconv.FormatInt(pid, 10), strings.NewReader(payload))
@@ -202,8 +209,9 @@ func TestProj13_AskGuardFailurePrintsNothingAndExitsZero(t *testing.T) {
 	askGuardInputWait = 50 * time.Millisecond
 	t.Cleanup(func() { askGuardInputWait = orig })
 	ask := func() io.Reader { return strings.NewReader(askToolPayload("AskUserQuestion")) }
+	// One database for every row: none changes the schema.
+	database := writeActionsConfig(t)
 	live := func(t *testing.T) string {
-		database := writeActionsConfig(t)
 		id, err := database.CreateWorkbench("acme", t.TempDir())
 		require.NoError(t, err)
 		return strconv.FormatInt(id, 10)
@@ -224,17 +232,16 @@ func TestProj13_AskGuardFailurePrintsNothingAndExitsZero(t *testing.T) {
 			return live(t), r
 		}},
 		{"deleted workbench", func(t *testing.T) (string, io.Reader) {
-			database := writeActionsConfig(t)
 			id, err := database.CreateWorkbench("acme", t.TempDir())
 			require.NoError(t, err)
 			require.NoError(t, database.DeleteWorkbench(id))
 			return strconv.FormatInt(id, 10), ask()
 		}},
-		{"unknown workbench", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); return "424242", ask() }},
-		{"bad id", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); return "seven", ask() }},
-		{"zero id", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); return "0", ask() }},
-		{"empty id", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); return "", ask() }},
-		{"broken config", func(t *testing.T) (string, io.Reader) { writeActionsConfig(t); brokenConfig(t); return "1", ask() }},
+		{"unknown workbench", func(*testing.T) (string, io.Reader) { return "424242", ask() }},
+		{"bad id", func(*testing.T) (string, io.Reader) { return "seven", ask() }},
+		{"zero id", func(*testing.T) (string, io.Reader) { return "0", ask() }},
+		{"empty id", func(*testing.T) (string, io.Reader) { return "", ask() }},
+		{"broken config", func(t *testing.T) (string, io.Reader) { brokenConfig(t); return "1", ask() }},
 		{"panic", func(t *testing.T) (string, io.Reader) {
 			orig := askGuardToolReason
 			askGuardToolReason = func(string, string) string { panic("boom") }
@@ -276,7 +283,7 @@ func TestProj13_AskGuardFailurePrintsNothingAndExitsZero(t *testing.T) {
 		{"stop: panic", &stubAskGuardGen{boom: true}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			database, pid, row := stopGuardFixture(t)
+			pid, row := stopGuardSession(t, database)
 			setOwnerPresence(t, database, row, time.Now())
 			seedOlderQuestion(t, database, pid, row)
 			useAskGuardGen(t, tc.gen)
@@ -297,12 +304,12 @@ func TestProj13_AskGuardFailurePrintsNothingAndExitsZero(t *testing.T) {
 	t.Run("stop: bad id and broken config", func(t *testing.T) {
 		useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
 		for _, raw := range []string{"seven", "0", ""} {
-			stopGuardFixture(t)
+			stopGuardSession(t, database)
 			out, _, err := runAskGuardStopHook(t, raw, strings.NewReader(guardPayload(e1Message, false)))
 			require.NoError(t, err)
 			assert.Empty(t, out, raw)
 		}
-		_, pid, _ := stopGuardFixture(t)
+		pid, _ := stopGuardSession(t, database)
 		brokenConfig(t)
 		out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
 		require.NoError(t, err)
@@ -574,8 +581,20 @@ func guardPayload(message string, active bool) string {
 func stopGuardFixture(t *testing.T) (database *db.DB, pid, row int64) {
 	t.Helper()
 	database = writeActionsConfig(t)
+	pid, row = stopGuardSession(t, database)
+	return database, pid, row
+}
+
+// stopGuardSession is stopGuardFixture's workbench and row in an existing
+// database, with no owner presence row: the subtests of a table share one
+// migrated database (a fresh one per row was most of the run time), each
+// with a workbench and row of its own. Only rows that leave the schema as
+// they found it may share one.
+func stopGuardSession(t *testing.T, database *db.DB) (pid, row int64) {
+	t.Helper()
+	_, err := database.Exec(`DELETE FROM owner_presence`)
+	require.NoError(t, err)
 	folder := t.TempDir()
-	var err error
 	pid, err = database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	_, err = devpack.InstallStateHooks(folder, "watchtower", pid)
@@ -586,7 +605,7 @@ func stopGuardFixture(t *testing.T) (database *db.DB, pid, row int64) {
 	row, err = res.LastInsertId()
 	require.NoError(t, err)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	return database, pid, row
+	return pid, row
 }
 
 // setOwnerPresence writes the Desktop's presence row: the owner in session
@@ -649,6 +668,7 @@ const (
 // question.
 func TestProj13_StopGuardDecisionTable(t *testing.T) {
 	branchQ := chatVerdictJSON("Which branch name do you prefer?", []string{"feat/x", "fix/x"}, "names_ask", "request_outside_ask")
+	database := writeActionsConfig(t)
 	for _, tc := range []struct {
 		name    string
 		verdict string
@@ -674,7 +694,7 @@ func TestProj13_StopGuardDecisionTable(t *testing.T) {
 		{"E9c a progress report", verdictJSON("none"), false, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			database, pid, row := stopGuardFixture(t)
+			pid, row := stopGuardSession(t, database)
 			if tc.present {
 				setOwnerPresence(t, database, row, time.Now())
 			}
@@ -699,7 +719,7 @@ func TestProj13_StopGuardDecisionTable(t *testing.T) {
 	}
 
 	t.Run("E1 records both options", func(t *testing.T) {
-		database, pid, row := stopGuardFixture(t)
+		pid, row := stopGuardSession(t, database)
 		setOwnerPresence(t, database, row, time.Now())
 		useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
 		out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(e1Message, false)))
@@ -711,7 +731,7 @@ func TestProj13_StopGuardDecisionTable(t *testing.T) {
 	})
 
 	t.Run("row 9 a record that fails is sent back", func(t *testing.T) {
-		database, pid, row := stopGuardFixture(t)
+		pid, row := stopGuardSession(t, database)
 		setOwnerPresence(t, database, row, time.Now())
 		// A prompt stamped after this Stop: the record is refused as stale.
 		_, err := database.Exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = ? WHERE id = ?`,
@@ -725,7 +745,7 @@ func TestProj13_StopGuardDecisionTable(t *testing.T) {
 	})
 
 	t.Run("the classifier gets the v4 text and the message", func(t *testing.T) {
-		database, pid, row := stopGuardFixture(t)
+		pid, row := stopGuardSession(t, database)
 		setOwnerPresence(t, database, row, time.Now())
 		gen := &stubAskGuardGen{reply: verdictJSON("none")}
 		useAskGuardGen(t, gen)
@@ -737,7 +757,7 @@ func TestProj13_StopGuardDecisionTable(t *testing.T) {
 	})
 
 	t.Run("an empty message calls no model and clears", func(t *testing.T) {
-		database, pid, row := stopGuardFixture(t)
+		pid, row := stopGuardSession(t, database)
 		seedOlderQuestion(t, database, pid, row)
 		gen := &stubAskGuardGen{reply: e1Verdict}
 		useAskGuardGen(t, gen)
@@ -780,6 +800,9 @@ func TestDecideStopTable(t *testing.T) {
 // env, a nested session, a read error, a write error, missing columns) sends
 // it back with R-away and records nothing.
 func TestProj13_ChatPassesOnlyWhenPresentAndRecorded(t *testing.T) {
+	shared := writeActionsConfig(t)
+	// Rows that change the schema get a database of their own.
+	changesSchema := map[string]bool{"a read error": true, "a write error": true, "missing columns": true}
 	for _, tc := range []struct {
 		name  string
 		setup func(t *testing.T, database *db.DB, pid, row int64) (payload string)
@@ -857,7 +880,11 @@ func TestProj13_ChatPassesOnlyWhenPresentAndRecorded(t *testing.T) {
 		}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			database, pid, row := stopGuardFixture(t)
+			database := shared
+			if changesSchema[tc.name] {
+				database = writeActionsConfig(t)
+			}
+			pid, row := stopGuardSession(t, database)
 			payload := tc.setup(t, database, pid, row)
 			useAskGuardGen(t, &stubAskGuardGen{reply: e1Verdict})
 
@@ -883,6 +910,7 @@ func TestProj13_ChatPassesOnlyWhenPresentAndRecorded(t *testing.T) {
 // whatever the verdict; a chat request is still recorded, the owner present
 // or away.
 func TestProj13_ContinuedTurnNeverBlocks(t *testing.T) {
+	database := writeActionsConfig(t)
 	for _, verdict := range []string{
 		e1Verdict,
 		verdictJSON("full"),
@@ -893,7 +921,7 @@ func TestProj13_ContinuedTurnNeverBlocks(t *testing.T) {
 	} {
 		for _, present := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s present=%v", verdict, present), func(t *testing.T) {
-				database, pid, row := stopGuardFixture(t)
+				pid, row := stopGuardSession(t, database)
 				if present {
 					setOwnerPresence(t, database, row, time.Now())
 				}
