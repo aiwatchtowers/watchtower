@@ -188,7 +188,7 @@ func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 
 // installHook sets spec's entry for projectID to command, replacing the
 // marker prompt it supersedes (hookSpec.replacesMarkerPrompt): the prompt
-// entry goes and its keys other than type and prompt (the owner's timeout
+// entry goes and its keys other than type, prompt and command (the owner's timeout
 // among them) are carried onto our command entry. A command entry already
 // there keeps the keys it holds — the in-place rule of upsertOurHook; a
 // fresh one takes the prompt's over its defaults (PROJ-04).
@@ -673,8 +673,9 @@ func withOurCommand(hm map[string]any, command string) map[string]any {
 	return cp
 }
 
-// carriedKeys collects the keys, other than type and prompt, of every hook
-// match picks (the first such hook wins a key), nil when none holds any.
+// carriedKeys collects the keys, other than the ones our entry owns (type,
+// prompt, command), of every hook match picks (the first such hook wins a
+// key), nil when none holds any.
 func carriedKeys(groups []any, match func(h any) bool) map[string]any {
 	var keys map[string]any
 	for _, g := range groups {
@@ -688,7 +689,7 @@ func carriedKeys(groups []any, match func(h any) bool) map[string]any {
 				continue
 			}
 			for k, v := range hm {
-				if _, seen := keys[k]; seen || k == "type" || k == "prompt" {
+				if _, seen := keys[k]; seen || k == "type" || k == "prompt" || k == "command" {
 					continue
 				}
 				if keys == nil {
