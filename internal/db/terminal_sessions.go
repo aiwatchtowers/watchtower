@@ -18,8 +18,9 @@ const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
 // it: compare-and-clear callers rebuild a stored stamp from its parsed time.
 func AgentStateStamp(at time.Time) string { return at.UTC().Format(agentStateAtLayout) }
 
-// parseAgentStamp reads a stamp in agentStateAtLayout; false when s is not one.
-func parseAgentStamp(s string) (time.Time, bool) {
+// ParseAgentStateStamp reads a stamp in agentStateAtLayout (agent_state_at,
+// chat_question_at, owner_presence.seen_at); false when s is not one.
+func ParseAgentStateStamp(s string) (time.Time, bool) {
 	at, err := time.Parse(agentStateAtLayout, s)
 	return at, err == nil
 }
@@ -512,11 +513,11 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 	if !mine || !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
 		return nil, nil
 	}
-	asked, ok := parseAgentStamp(questionAt.String)
+	asked, ok := ParseAgentStateStamp(questionAt.String)
 	if !ok {
 		return nil, nil
 	}
-	if stateTime, ok := parseAgentStamp(stateAt.String); !ok || stateTime.After(asked.Add(chatQuestionStateTolerance)) {
+	if stateTime, ok := ParseAgentStateStamp(stateAt.String); !ok || stateTime.After(asked.Add(chatQuestionStateTolerance)) {
 		return nil, nil
 	}
 	var q ChatQuestion

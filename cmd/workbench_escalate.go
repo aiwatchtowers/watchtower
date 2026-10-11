@@ -133,7 +133,8 @@ func parseEscalateArgs(cmd *cobra.Command, positional []string) (escalateArgs, e
 		return a, errors.New("--session takes a positive id")
 	}
 	a.at = workbenchEscalateFlagAt
-	if a.asked, err = time.Parse("2006-01-02T15:04:05.000Z", a.at); err != nil || db.AgentStateStamp(a.asked) != a.at {
+	var ok bool
+	if a.asked, ok = db.ParseAgentStateStamp(a.at); !ok {
 		return a, fmt.Errorf("--at %q is not a chat_question_at stamp", briefClip(a.at, 40))
 	}
 	switch a.reason = workbenchEscalateFlagReason; a.reason {
