@@ -335,7 +335,7 @@ CloudKit keeps two environments per container, Development and Production, and a
 ### Phone calendar (C7)
 
 - **One read.** `CalendarReplicaModel` decodes `calendar_event` and `meeting_transcript` in one snapshot for the Calendar and Now tabs; undecodable records are skipped and counted, logged only when the count changes.
-- **Agenda.** A Monday-to-Sunday strip around the selected day (today filled in the accent colour, days with events marked), then the day: all-day events first, then by start, the red now line on today, and the current or next meeting as an accent card with Record and Prep. Times are on the phone's clock; all-day events through `localStart(in:)`.
+- **Agenda.** A seven-day strip that starts on today and pages by seven (today filled in the accent colour, days with events marked), then the day: all-day events first, then by start, the red now line on today, and the current or next meeting as an accent card with Record and Prep. Times are on the phone's clock; all-day events through `localStart(in:)`.
 - **Event detail.** Time and place, attendees ("5 people · 4 accepted"), prep bullets ("N more on your Mac" when the hub dropped some), linked targets read-only, the Recording section (the recap, the Mac's progress on a phone recording, or the upload on its way), Join (only with a usable meeting link) and Record this meeting (not for an all-day event). Targets are never made from the phone here (hidden until D).
 - **Now.** The next-meeting card: the next non-all-day event that has not ended ("Next · in 25 min", "Now · until 14:45"), with Record.
 - Tests: `CalendarWiringTests`, `NowWiringTests`.
