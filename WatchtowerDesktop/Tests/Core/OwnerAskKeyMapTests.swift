@@ -73,16 +73,23 @@ final class OwnerAskKeyMapTests: XCTestCase {
         XCTAssertNil(action(char("4"), .card(quickChoices: 5)), "1–3 on a Quick ask")
     }
 
-    // MARK: - Never while typing
+    // MARK: - Physical keys
 
-    func testNothingWhileTheTerminalOrAnEditorHasTheKeyboard() {
-        let presses: [Press] = [
-            char("a"), char("j"), char("k"), char("n"), char("p"), char("1"), char("9"),
-            Press(key: .tab), Press(key: .tab, shift: true), Press(key: .returnKey), Press(key: .upArrow), Press(key: .downArrow)
-        ]
-        for press in presses {
-            XCTAssertNil(action(press, .typing), "\(press.key) belongs to whatever has the keyboard")
+    /// The owner types in Russian: J's key types "о", K's "л", A's "ф".
+    func testLettersAreReadByTheirKey() {
+        func press(_ characters: String, _ keyCode: UInt16) -> Press {
+            Press(characters: characters, keyCode: keyCode, shift: false, otherModifiers: false, isRepeat: false)
         }
+        XCTAssertEqual(press("о", 0x26).key, .character("j"))
+        XCTAssertEqual(press("л", 0x28).key, .character("k"))
+        XCTAssertEqual(press("ф", 0x00).key, .character("a"))
+        XCTAssertEqual(press("т", 0x2D).key, .character("n"))
+        XCTAssertEqual(press("з", 0x23).key, .character("p"))
+        XCTAssertEqual(action(press("о", 0x26), .drawer(choices: 0, isReview: false)), .nextAsk)
+        XCTAssertEqual(press("1", 0x12).key, .character("1"), "a digit by what it types")
+        XCTAssertEqual(press("\t", 0x30).key, .tab)
+        XCTAssertEqual(press("о", 0x1F).key, .character("о"), "another key keeps its character, which names nothing")
+        XCTAssertNil(action(press("о", 0x1F), .drawer(choices: 3, isReview: true)))
     }
 
     func testModifiedAndRepeatedKeysDoNothing() {

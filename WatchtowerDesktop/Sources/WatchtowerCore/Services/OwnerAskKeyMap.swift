@@ -2,9 +2,12 @@ import Foundation
 
 /// Owner asks without the mouse (board #412, spec 2026-10-10 Part 9.4):
 /// which action a key press means where the keyboard is. Every key here is
-/// a bare key (Shift only with Tab), never auto-repeated, and taken only
-/// where no field, terminal or editor has the keyboard (`Place.typing`
-/// takes nothing: the terminal and Monaco keep their keys). ⌘↩ / ⌘⇧↩ stay
+/// a bare key (Shift only with Tab), never auto-repeated. Where no field,
+/// terminal or editor has the keyboard is not decided here: a key reaches
+/// this map only through `OwnerAskKeyCatcher`'s gate (`takesKeys`) or a
+/// banner or card holding SwiftUI focus, so the terminal and Monaco keep
+/// their keys. Letters are read by their physical key (`keyCode`), so they
+/// work on any layout (a Russian one types "о" on J). ⌘↩ / ⌘⇧↩ stay
 /// `OwnerAskKeyCatcher.answerKey`'s. Pure.
 ///
 /// | Key | Where | Action |
@@ -45,12 +48,19 @@ package enum OwnerAskKeyMap {
             self.isRepeat = isRepeat
         }
 
-        /// A press read from the typed characters (ignoring modifiers):
-        /// "\t" is Tab (⇧Tab arrives as "\u{19}"), "\r" and the keypad's
-        /// Enter are Return; a letter counts whatever its case.
-        package init(characters: String, shift: Bool, otherModifiers: Bool, isRepeat: Bool) {
-            self.init(key: Self.key(characters), shift: shift, otherModifiers: otherModifiers, isRepeat: isRepeat)
+        /// A press read from its physical key and the typed characters
+        /// (ignoring modifiers): the A, J, K, N and P keys by `keyCode`
+        /// whatever the layout types there; otherwise "\t" is Tab (⇧Tab
+        /// arrives as "\u{19}"), "\r" and the keypad's Enter are Return,
+        /// and a letter counts whatever its case.
+        package init(characters: String, keyCode: UInt16? = nil, shift: Bool, otherModifiers: Bool, isRepeat: Bool) {
+            let key = keyCode.flatMap { Self.letterKeys[$0] }.map(Key.character) ?? Self.key(characters)
+            self.init(key: key, shift: shift, otherModifiers: otherModifiers, isRepeat: isRepeat)
         }
+
+        /// The ANSI key codes of the letters the map uses (kVK_ANSI_A, _J,
+        /// _K, _N, _P).
+        static let letterKeys: [UInt16: Character] = [0x00: "a", 0x26: "j", 0x28: "k", 0x2D: "n", 0x23: "p"]
 
         private static func key(_ characters: String) -> Key {
             guard characters.count == 1, let character = characters.first else { return .other }
@@ -66,8 +76,6 @@ package enum OwnerAskKeyMap {
 
     /// Where the key was pressed.
     package enum Place: Equatable, Sendable {
-        /// A field, the terminal, an editor or any other view has the keyboard.
-        case typing
         /// The workbench page with nothing focused.
         case page
         /// An open drawer, with nothing focused or its read-only text;
@@ -102,7 +110,6 @@ package enum OwnerAskKeyMap {
         guard !press.isRepeat, !press.otherModifiers else { return nil }
         if press.shift { return press.key == .tab && isDrawer(place) ? .previousStop : nil }
         switch place {
-        case .typing: return nil
         case .page: return press.key == .character("a") ? .openStack : nil
         case let .drawer(choices, isReview): return drawerAction(press.key, choices: choices, isReview: isReview)
         case let .card(quickChoices): return cardAction(press.key, quickChoices: quickChoices)
