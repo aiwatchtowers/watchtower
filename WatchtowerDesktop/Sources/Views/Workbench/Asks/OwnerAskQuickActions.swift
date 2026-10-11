@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WatchtowerCore
 
@@ -179,32 +180,44 @@ struct OwnerAskQuickNoticeRow: View {
 /// A banner's or stack card's keys while it holds the keyboard (board #412,
 /// `OwnerAskKeyMap.Place.card`): 1–3 tap that option of a Quick ask — the
 /// same `answerQuick` a click runs, off while the row is —, Return opens
-/// the ask in the drawer, J / K (↓ / ↑) move to the next or previous card.
-/// Nothing unless `focused`: a key typed in the terminal or a field never
-/// reaches a card.
+/// the ask in the drawer and lets go of the keyboard (`release`), so the
+/// drawer's keys and ⌘↩ work there and a digit pressed next answers
+/// nothing here; J / K (↓ / ↑) move to the next or previous card. Nothing
+/// unless the card holds the keyboard and no text does: a key typed in the
+/// terminal or the Reply field never reaches a card.
 @MainActor
 struct OwnerAskCardKeys {
     let vm: WorkbenchesViewModel
     let ask: OwnerAsk
-    let focused: Bool
+    /// Whether the banner or card holds the keyboard now.
+    let isFocused: () -> Bool
     let open: () -> Void
+    var release: () -> Void = {}
     /// To the next (true) or previous card; false when there is none.
     var move: (Bool) -> Bool = { _ in false }
+    var textHasKeyboard: @MainActor () -> Bool = { Self.textHasKeyboard(in: NSApplication.shared.keyWindow) }
 
     /// A choice's help with its key, for the first three.
     static func hint(_ tooltip: String, index: Int) -> String {
         index < OwnerAskKeyMap.maxQuickDigit ? "\(tooltip) (press \(index + 1))" : tooltip
     }
 
+    /// A text view — a field's editor — has `window`'s keyboard.
+    static func textHasKeyboard(in window: NSWindow?) -> Bool {
+        window?.firstResponder is NSText
+    }
+
     /// True when the key acted; false leaves it to the window.
     func press(_ press: OwnerAskKeyMap.Press) -> Bool {
-        guard focused, let action = OwnerAskKeyMap.action(for: press, at: .card(quickChoices: quickRow?.choices.count ?? 0)) else {
+        guard isFocused(), !textHasKeyboard(),
+              let action = OwnerAskKeyMap.action(for: press, at: .card(quickChoices: quickRow?.choices.count ?? 0)) else {
             return false
         }
         switch action {
         case let .choose(option): return answer(option)
         case .open:
             open()
+            release()
             return true
         case .nextAsk, .previousAsk: return move(action == .nextAsk)
         default: return false
@@ -225,12 +238,22 @@ struct OwnerAskCardKeys {
         Task { [vm, ask] in await vm.answerQuick(ask, with: answer) }
         return true
     }
+
+    /// After Return: nothing has the keyboard, on the next turn (SwiftUI
+    /// lets go of its focus first).
+    static func releaseKeyboard(in window: NSWindow? = NSApplication.shared.keyWindow) {
+        DispatchQueue.main.async { window?.makeFirstResponder(nil) }
+    }
 }
 
 extension OwnerAskKeyMap.Press {
-    /// A SwiftUI key press as the key map reads it.
+    /// A SwiftUI key press as the key map reads it; the key event being
+    /// handled gives the physical key, so letters work on any layout.
+    @MainActor
     init(_ press: KeyPress) {
+        let event = NSApplication.shared.currentEvent.flatMap { $0.type == .keyDown ? $0 : nil }
         self.init(characters: String(press.key.character),
+                  keyCode: event?.keyCode,
                   shift: press.modifiers.contains(.shift),
                   otherModifiers: !press.modifiers.isDisjoint(with: [.command, .option, .control]),
                   isRepeat: press.phase == .repeat)

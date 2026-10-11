@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WatchtowerCore
 
@@ -6,8 +7,10 @@ import WatchtowerCore
 /// next step, session and age. A click puts the ask's session on screen and opens the
 /// drawer on it (`WorkbenchesViewModel.showAsk`). The closed asks filed
 /// from outside the app have no session row: their "N closed" sits here.
-/// A on the page (board #412) gives the oldest card the keyboard; a card
-/// holding it takes `OwnerAskCardKeys`.
+/// A or ⌃⌘A on the page (board #412) gives the oldest card the keyboard; a
+/// card holding it — its title part, never its Reply field — takes
+/// `OwnerAskCardKeys`. A click never gives a card the keyboard (the
+/// terminal keeps it); Tab reaches one with keyboard navigation on.
 struct OwnerAskStackSection: View {
     /// Past this the rows scroll, so a long stack never pushes the
     /// session list off the panel.
@@ -38,14 +41,10 @@ struct OwnerAskStackSection: View {
                                     vm: vm,
                                     ask: ask,
                                     sessionTitle: sessionTitle(ask),
-                                    isSelected: asks.drawerAskIDs[project.id] == ask.id
+                                    isSelected: asks.drawerAskIDs[project.id] == ask.id,
+                                    cardFocus: OwnerAskCardFocus(focus: $focusedAsk, value: ask.id, keys: cardKeys(ask, stack: stack))
                                 ) {
                                     Task { await vm.showAsk(ask.id, projectID: project.id) }
-                                }
-                                .focusable()
-                                .focused($focusedAsk, equals: ask.id)
-                                .onKeyPress(phases: .down) { press in
-                                    cardKeys(ask, stack: stack).press(OwnerAskKeyMap.Press(press)) ? .handled : .ignored
                                 }
                             }
                         }
@@ -74,9 +73,8 @@ struct OwnerAskStackSection: View {
             }
             .padding(.top, 4)
             .padding(.bottom, 6)
-            .onChange(of: asks.stackKeyboardRequested, initial: true) { _, requested in
-                guard requested else { return }
-                asks.stackKeyboardRequested = false
+            .onChange(of: asks.stackKeyboardRequest, initial: true) { _, _ in
+                guard asks.takeStackKeyboardRequest(projectID: project.id) else { return }
                 // On the next turn: a section shown by the same key (the
                 // panel was hidden) takes no focus in its first update.
                 let first = stack.asks.first?.id
@@ -85,11 +83,17 @@ struct OwnerAskStackSection: View {
         }
     }
 
-    static let keysHint = "Press A (no field focused) to go here; then J / K or ↓ / ↑ move, 1–3 answer a Quick ask, Return opens"
+    static let keysHint = "⌃⌘A, or A with no field focused, comes here; then J / K or ↓ / ↑ move, 1–3 answer a Quick ask, Return opens"
 
     private func cardKeys(_ ask: OwnerAsk, stack: OwnerAskStack) -> OwnerAskCardKeys {
-        OwnerAskCardKeys(vm: vm, ask: ask, focused: focusedAsk == ask.id) {
-            Task { await vm.showAsk(ask.id, projectID: project.id) }
+        let projectID = project.id
+        return OwnerAskCardKeys(vm: vm, ask: ask) {
+            focusedAsk == ask.id
+        } open: { [vm] in
+            Task { await vm.showAskFromKeyboard(ask.id, projectID: projectID) }
+        } release: {
+            focusedAsk = nil
+            OwnerAskCardKeys.releaseKeyboard()
         } move: { forward in
             guard let other = forward ? stack.next(after: ask.id) : stack.previous(before: ask.id) else { return false }
             focusedAsk = other.id
@@ -113,11 +117,12 @@ private struct OwnerAskStackRow: View {
     let ask: OwnerAsk
     let sessionTitle: String
     let isSelected: Bool
+    let cardFocus: OwnerAskCardFocus<Int64?>
     let open: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            openButton
+            openButton.modifier(cardFocus)
             if let row = OwnerAskQuickRow(ask: ask) {
                 OwnerAskQuickActions(vm: vm, ask: ask, row: row)
                     .padding(.leading, 34)
@@ -159,5 +164,24 @@ private struct OwnerAskStackRow: View {
     private var caption: String {
         let age = TimeFormatting.shortAge(from: ask.createdAt, now: Date())
         return [sessionTitle, age].compactMap(\.self).joined(separator: " · ")
+    }
+}
+
+/// The part of a banner or stack card that takes the keyboard (board #412):
+/// its title, never its Reply field. Only from Tab with keyboard
+/// navigation on or from A / ⌃⌘A (`.activate`): a click leaves the
+/// keyboard where it was, the terminal included.
+struct OwnerAskCardFocus<Value: Hashable>: ViewModifier {
+    let focus: FocusState<Value>.Binding
+    let value: Value
+    let keys: OwnerAskCardKeys
+
+    func body(content: Content) -> some View {
+        content
+            .focusable(interactions: .activate)
+            .focused(focus, equals: value)
+            .onKeyPress(phases: .down) { press in
+                keys.press(OwnerAskKeyMap.Press(press)) ? .handled : .ignored
+            }
     }
 }
