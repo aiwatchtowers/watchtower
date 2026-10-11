@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -233,6 +234,42 @@ func TestProj04_RemoveDeletesOnlyOurHook(t *testing.T) {
 
 	again, err := RemoveSessionStartHook(dir, 7)
 	if err != nil || again {
+		t.Fatalf("a second remove must be a no-op: changed=%v err=%v", again, err)
+	}
+
+	// The Stop ask guard: the command entry and a leftover marker prompt of
+	// workbench 7 go; the owner's hook beside the prompt, another workbench's
+	// prompt and the marker off the first line stay.
+	stopDir := t.TempDir()
+	ours := WorkbenchAskGuardStopHookCommand("/tmp/acme bin/watchtower", 7)
+	writeTestFile(t, settingsFile(stopDir), `{
+  "model": "sonnet",
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "`+ours+`", "timeout": 30}]},
+      {"hooks": [
+        {"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nleft over", "timeout": 30},
+        {"type": "command", "command": "echo owner-stop"}
+      ]},
+      {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 8]\nanother workbench"}]},
+      {"hooks": [{"type": "prompt", "prompt": "Done? [watchtower-workbench ask-guard 7]"}]}
+    ]
+  }
+}`)
+	before := eventGroups(t, decodeSettings(t, stopDir), "Stop")
+	if changed, err := RemoveAskGuardHooks(stopDir, 7); err != nil || !changed {
+		t.Fatalf("remove the ask guard: changed=%v err=%v", changed, err)
+	}
+	got = decodeSettings(t, stopDir)
+	stop := eventGroups(t, got, "Stop")
+	if got["model"] != "sonnet" || countCommand(stop, ours) != 0 || len(promptHooks(stop)) != 2 {
+		t.Fatalf("PROJ-04: only our command entry and marker prompt may go, got %#v", got)
+	}
+	if len(stop) != 3 || countCommand(stop[:1], "echo owner-stop") != 1 || len(stop[0].(map[string]any)["hooks"].([]any)) != 1 ||
+		!reflect.DeepEqual(stop[1:], before[2:]) {
+		t.Fatalf("PROJ-04: the owner's Stop hooks must stay as they were, got %#v", stop)
+	}
+	if again, err := RemoveAskGuardHooks(stopDir, 7); err != nil || again {
 		t.Fatalf("a second remove must be a no-op: changed=%v err=%v", again, err)
 	}
 }
