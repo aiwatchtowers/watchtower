@@ -480,7 +480,7 @@ struct WatchtowerApp: App {
                 // the terminal — the owner's explicit chord, not a bare key.
                 Button("Show Waiting for You") { _ = appState.workbenchesViewModel?.openStackFromKeyboard() }
                     .keyboardShortcut("a", modifiers: [.control, .command])
-                    .disabled(shown == nil)
+                    .disabled(appState.workbenchesViewModel?.canShowWaitingStack(shownID: shown?.id) != true)
             }
         }
 

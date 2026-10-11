@@ -244,6 +244,24 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         XCTAssertEqual(vm.asks.stackKeyboardRequest?.projectID, project)
     }
 
+    /// Navigate › Show Waiting for You is on only for the key window's
+    /// workbench, drilled into, with an ask waiting.
+    func testShowWaitingForYouNeedsTheShownDrilledWorkbenchWithAnAsk() async throws {
+        let vm = try makeVM()
+        await vm.reload()
+        vm.drill(into: project)
+        await vm.asks.load(projectID: project)
+        XCTAssertFalse(vm.canShowWaitingStack(shownID: project), "no ask waits")
+
+        _ = try await insert("question", payload: Self.quick)
+        await vm.asks.load(projectID: project)
+        XCTAssertTrue(vm.canShowWaitingStack(shownID: project))
+        XCTAssertFalse(vm.canShowWaitingStack(shownID: nil), "no workbench window is key")
+        XCTAssertFalse(vm.canShowWaitingStack(shownID: project + 1), "another workbench is shown")
+        vm.drilledWorkbenchID = nil
+        XCTAssertFalse(vm.canShowWaitingStack(shownID: project), "level 1 shows no stack")
+    }
+
     /// K10: the open palette keeps every key.
     func testThePageTakesNothingUnderThePalette() async throws {
         let vm = try makeVM()

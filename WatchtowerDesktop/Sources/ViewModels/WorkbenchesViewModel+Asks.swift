@@ -98,14 +98,28 @@ extension WorkbenchesViewModel {
         return ask.sessionID == nil || ask.sessionID == sessionID
     }
 
+    /// The workbench whose stack A / ⌃⌘A would go to: the one on the page,
+    /// drilled into, with an ask waiting; nil otherwise (the key is left
+    /// alone, Navigate › Show Waiting for You is off).
+    var stackKeyboardWorkbench: Int64? {
+        guard hasWorkbenchPage, let projectID = selectedWorkbenchID, drilledWorkbenchID == projectID,
+              !asks.stack(projectID: projectID).asks.isEmpty else { return nil }
+        return projectID
+    }
+
+    /// Whether Navigate › Show Waiting for You acts for `shownID`, the
+    /// workbench of the key window (`OpenQuicklyCenter.keyWorkbench`).
+    func canShowWaitingStack(shownID: Int64?) -> Bool {
+        shownID != nil && stackKeyboardWorkbench == shownID
+    }
+
     /// A on the workbench page with no field focused, or ⌃⌘A from
     /// anywhere in its window (board #412, `OwnerAskKeyMap`): the sessions
     /// panel shown and the oldest card of "Waiting for you" given the
     /// keyboard. False — the key left to the window — when no workbench is
     /// drilled into (the panel's level 1 has no stack) or no ask waits.
     func openStackFromKeyboard() -> Bool {
-        guard hasWorkbenchPage, let projectID = selectedWorkbenchID, drilledWorkbenchID == projectID,
-              !asks.stack(projectID: projectID).asks.isEmpty else { return false }
+        guard let projectID = stackKeyboardWorkbench else { return false }
         panelVisible = true
         asks.setDrawerKeysActive(false, projectID: projectID)
         asks.requestStackKeyboard(projectID: projectID)
