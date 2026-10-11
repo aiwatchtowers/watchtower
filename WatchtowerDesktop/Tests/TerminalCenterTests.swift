@@ -265,6 +265,7 @@ final class TerminalCenterTests: XCTestCase {
             return session
         }
         appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.claudeBinary = { nil }
         let center = appState.terminalCenter
         let s = try row()
         appState.selectedDestination = .workbench
@@ -1031,6 +1032,7 @@ final class TerminalCenterTests: XCTestCase {
             )
         )
         center.shell = { "/bin/zsh" }
+        center.claudeBinary = { nil }
         center.transcriptExists = { _ in false }
         center.start(s, fresh: true)
 
