@@ -333,7 +333,11 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
 	if turn.stop {
-		if n, ok := backgroundAgents(turn.tasks, row.AgentTurns); ok && n > 0 {
+		turns, err := database.TerminalAgentTurns(row.ID)
+		if err != nil {
+			return err
+		}
+		if n, ok := backgroundAgents(turn.tasks, turns); ok && n > 0 {
 			turn.background = sql.NullInt64{Int64: n, Valid: true}
 		}
 	}

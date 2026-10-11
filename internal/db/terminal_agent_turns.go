@@ -93,6 +93,23 @@ func (t AgentTurns) trim(keep string) {
 	}
 }
 
+// TerminalAgentTurns reads row id's agent turns (empty when NULL or
+// unreadable). Only the Stop hook needs them, after it has read and checked
+// the row; GetTerminalSession leaves the column out, so the readers that open
+// a database without migrating it (`workbench asks`, the ask guard) never
+// depend on it.
+func (db *DB) TerminalAgentTurns(id int64) (AgentTurns, error) {
+	var raw sql.NullString
+	err := db.QueryRow(`SELECT agent_turns FROM terminal_sessions WHERE id = ?`, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentTurns{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading terminal session %d agent turns: %w", id, err)
+	}
+	return decodeAgentTurns(raw), nil
+}
+
 // RecordTerminalAgentTurn records that subagent or teammate agentID started
 // (start) or ended a turn at at, reported by a hook of conversation
 // sessionID on workbench workbenchID's claude row id (board #543). Each stamp

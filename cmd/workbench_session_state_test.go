@@ -1457,9 +1457,7 @@ func TestProj11_SubagentStopOnlyLowersTheCount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, errOut)
 	after := rowSnapshot(t, database, row)
-	s, err := database.GetTerminalSession(row)
-	require.NoError(t, err)
-	assert.Equal(t, db.AgentTurn{Stop: db.AgentStateStamp(stamp(10))}, s.AgentTurns["c"], "the turn's end is recorded")
+	assert.Equal(t, db.AgentTurn{Stop: db.AgentStateStamp(stamp(10))}, storedTurns(t, database, row)["c"], "the turn's end is recorded")
 	delete(before, "agent_turns")
 	delete(after, "agent_turns")
 	assert.Equal(t, before, after, "a SubagentStop over working wrote more than its turn")
@@ -1496,6 +1494,14 @@ func hookStep(t *testing.T, database *db.DB, pid, row int64, at func(int), sec i
 	return s
 }
 
+// storedTurns is row's stored agent turns (board #543).
+func storedTurns(t *testing.T, database *db.DB, row int64) db.AgentTurns {
+	t.Helper()
+	turns, err := database.TerminalAgentTurns(row)
+	require.NoError(t, err)
+	return turns
+}
+
 func bgCount(n int64) sql.NullInt64 { return sql.NullInt64{Int64: n, Valid: true} }
 
 // PROJ-11, board #543 (owner, ask #167): a teammate counts only while it is
@@ -1528,7 +1534,7 @@ func TestProj11_TeammateCountsOnlyInItsTurn(t *testing.T) {
 
 	s = hookStep(t, database, pid, row, at, 5, betaStop)
 	assert.Equal(t, bgCount(1), s.Background, "beta's turn ended")
-	assert.True(t, s.AgentTurns.Closed("abeta-0000000000000002"))
+	assert.True(t, storedTurns(t, database, row).Closed("abeta-0000000000000002"))
 
 	s = hookStep(t, database, pid, row, at, 6, idle)
 	assert.Equal(t, bgCount(1), s.Background, "the lead woke; alpha still works")
@@ -1542,7 +1548,7 @@ func TestProj11_TeammateCountsOnlyInItsTurn(t *testing.T) {
 
 	s = hookStep(t, database, pid, row, at, 9, alphaStart)
 	assert.False(t, s.Background.Valid, "a teammate's start never raises the count")
-	assert.True(t, s.AgentTurns.Open("aalpha-0000000000000001"))
+	assert.True(t, storedTurns(t, database, row).Open("aalpha-0000000000000001"))
 
 	s = hookStep(t, database, pid, row, at, 10, idle)
 	assert.Equal(t, bgCount(1), s.Background, "the lead's next Stop sees it working")
@@ -1590,9 +1596,9 @@ func TestProj11_SubagentStartNeverStartsOrRaisesTheCount(t *testing.T) {
 
 	hookStep(t, database, pid, row, at, 4, statePayload("UserPromptSubmit", briefLaunchID, ""))
 	before := rowSnapshot(t, database, row)
-	s := hookStep(t, database, pid, row, at, 5, subagentStart("agamma-1", "gamma"))
+	hookStep(t, database, pid, row, at, 5, subagentStart("agamma-1", "gamma"))
 	after := rowSnapshot(t, database, row)
-	assert.Equal(t, db.AgentTurn{Start: db.AgentStateStamp(base.Add(5 * time.Second))}, s.AgentTurns["agamma-1"])
+	assert.Equal(t, db.AgentTurn{Start: db.AgentStateStamp(base.Add(5 * time.Second))}, storedTurns(t, database, row)["agamma-1"])
 	delete(before, "agent_turns")
 	delete(after, "agent_turns")
 	assert.Equal(t, before, after, "a SubagentStart over working wrote more than its turn")

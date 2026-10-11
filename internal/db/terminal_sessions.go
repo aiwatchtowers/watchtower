@@ -50,7 +50,6 @@ type TerminalSession struct {
 	Background      sql.NullInt64 // agent_background: in-flight background subagents; NULL = none / unknown
 	BackgroundAt    time.Time     // agent_background_at; zero when NULL or unreadable
 	ChatQuestionAt  string        // chat_question_at as stored; "" when there is no chat question
-	AgentTurns      AgentTurns    // agent_turns (board #543); empty when NULL or unreadable
 }
 
 // AgentFailure flags a stored `waiting` as a turn that ended on an error (a
@@ -64,16 +63,16 @@ type AgentFailure struct {
 
 func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
-	var stateAt, failedAt, backgroundAt, turns sql.NullString
+	var stateAt, failedAt, backgroundAt sql.NullString
 	var agentError string
 	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
 		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL,
 		agent_turn_end, agent_tool_run, agent_background, agent_background_at,
-		CASE WHEN chat_question IS NULL THEN '' ELSE COALESCE(chat_question_at, '') END, agent_turns
+		CASE WHEN chat_question IS NULL THEN '' ELSE COALESCE(chat_question_at, '') END
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
 			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun,
-			&s.Background, &backgroundAt, &s.ChatQuestionAt, &turns)
+			&s.Background, &backgroundAt, &s.ChatQuestionAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -96,7 +95,6 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	if failedAt.Valid {
 		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
 	}
-	s.AgentTurns = decodeAgentTurns(turns)
 	return &s, nil
 }
 

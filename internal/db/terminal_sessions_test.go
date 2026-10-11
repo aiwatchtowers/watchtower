@@ -989,6 +989,32 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 	requireNoAgentTurns(t, d, id, "a row holding only agent turns")
 }
 
+// Board #543 review: GetTerminalSession never reads agent_turns, so the
+// readers that open a database without migrating it (`workbench asks`, the
+// ask guard, refusing only databases older than 00107) keep working on a
+// 00107 database.
+func TestGetTerminalSessionNeedsNoAgentTurnsColumn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN agent_turns`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession on a 00107 schema: %v", err)
+	}
+}
+
+// turnsOf is row id's stored agent turns.
+func turnsOf(t *testing.T, d *DB, id int64) AgentTurns {
+	t.Helper()
+	turns, err := d.TerminalAgentTurns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turns
+}
+
 // requireNoAgentTurns fails unless row id's agent_turns is NULL.
 func requireNoAgentTurns(t *testing.T, d *DB, id int64, name string) {
 	t.Helper()
@@ -1034,13 +1060,9 @@ func TestProj11_AgentTurnStampsOnlyMoveForward(t *testing.T) {
 	if turns := record(true, sec(3)); !turns.Closed("aalpha-1") {
 		t.Fatal("a start at the stop's own moment is closed")
 	}
-	s, err := d.GetTerminalSession(id)
-	if err != nil {
-		t.Fatal(err)
-	}
 	want := AgentTurn{Start: AgentStateStamp(sec(3)), Stop: AgentStateStamp(sec(3))}
-	if s.AgentTurns["aalpha-1"] != want {
-		t.Fatalf("stored %+v, want %+v", s.AgentTurns["aalpha-1"], want)
+	if turnsOf(t, d, id)["aalpha-1"] != want {
+		t.Fatalf("stored %+v, want %+v", turnsOf(t, d, id)["aalpha-1"], want)
 	}
 	if turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "", true, sec(9)); err != nil || turns != nil {
 		t.Fatalf("an empty agent id recorded: %v, %v", turns, err)
@@ -1127,12 +1149,11 @@ func TestProj11_AgentTurnWriteNeverTouchesTheState(t *testing.T) {
 	if got := otherAgentColumns(t, d, id); got != others {
 		t.Fatalf("other columns moved: %v → %v", others, got)
 	}
-	s, err := d.GetTerminalSession(id)
-	if err != nil {
-		t.Fatal(err)
+	if got := turnsOf(t, d, id); len(got) != 1 || !got.Open("a-its own conversation") {
+		t.Fatalf("turns = %+v", got)
 	}
-	if len(s.AgentTurns) != 1 || !s.AgentTurns.Open("a-its own conversation") {
-		t.Fatalf("turns = %+v", s.AgentTurns)
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession: %v", err)
 	}
 	// An unreadable stored value reads as no turns and is replaced.
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = 'not json' WHERE id = ?`, id); err != nil {
