@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/asks"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -187,6 +189,42 @@ func TestProj13_EscalationIsCompareAndTake(t *testing.T) {
 			assert.Equal(t, before, rowSnapshot(t, f.database, f.row), "nothing written")
 		})
 	}
+}
+
+// E17, a real race: two Desktop ticks on two database handles escalate the
+// same question at once — exactly one files it, the other finds it gone.
+func TestEscalationRaceFilesOneAsk(t *testing.T) {
+	f := newEscalateFixture(t, twoOptions())
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+	a := escalateArgs{workbenchID: f.pid, sessionID: f.row, at: f.at, asked: f.asked, reason: escalateReasonTimeout}
+	handles := make([]*db.DB, 2)
+	for i := range handles {
+		handles[i], err = db.Open(cfg.DBPath())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = handles[i].Close() })
+	}
+
+	results := make([]escalateResult, 2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, h := range handles {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = escalateQuestion(h, a, time.Now())
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	outcomes := []string{results[0].Outcome, results[1].Outcome}
+	assert.ElementsMatch(t, []string{escalateFiled, escalateGone}, outcomes)
+	assert.Equal(t, 1, countAsks(t, f.database, f.pid), "one ask")
 }
 
 // E19: four options make a Full ask (the drawer).
