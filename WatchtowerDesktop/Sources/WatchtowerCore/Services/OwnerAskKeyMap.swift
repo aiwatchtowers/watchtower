@@ -106,7 +106,7 @@ package enum OwnerAskKeyMap {
 
     /// The action of `press` at `place`; nil leaves the key to whoever
     /// else takes it.
-    package static func action(for press: Press, at place: Place) -> Action? {
+    package static func mappedAction(for press: Press, at place: Place) -> Action? {
         guard !press.isRepeat, !press.otherModifiers else { return nil }
         if press.shift { return press.key == .tab && isDrawer(place) ? .previousStop : nil }
         switch place {

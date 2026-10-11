@@ -210,7 +210,7 @@ struct OwnerAskCardKeys {
     /// True when the key acted; false leaves it to the window.
     func press(_ press: OwnerAskKeyMap.Press) -> Bool {
         guard isFocused(), !textHasKeyboard(),
-              let action = OwnerAskKeyMap.action(for: press, at: .card(quickChoices: quickRow?.choices.count ?? 0)) else {
+              let action = OwnerAskKeyMap.mappedAction(for: press, at: .card(quickChoices: quickRow?.choices.count ?? 0)) else {
             return false
         }
         switch action {

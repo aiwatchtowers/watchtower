@@ -59,7 +59,7 @@ struct OwnerAskDrawerKeys {
     func press(_ press: OwnerAskKeyMap.Press) -> Bool {
         guard asks.drawerKeysActive.contains(ask.projectID) else { return false }
         let place = OwnerAskKeyMap.Place.drawer(choices: current?.stop.choices(in: ask) ?? 0, isReview: ask.kind == .review)
-        guard let action = OwnerAskKeyMap.action(for: press, at: place) else { return false }
+        guard let action = OwnerAskKeyMap.mappedAction(for: press, at: place) else { return false }
         switch action {
         case .nextAsk, .previousAsk: return switchAsk(forward: action == .nextAsk)
         case .nextStop, .previousStop: return moveCursor(forward: action == .nextStop)

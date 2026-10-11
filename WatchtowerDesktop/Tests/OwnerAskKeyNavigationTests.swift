@@ -614,8 +614,8 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         XCTAssertTrue(window.performKeyEquivalent(with: try event(window, "о", keyCode: 0x26)))
         XCTAssertTrue(window.performKeyEquivalent(with: try event(window, "ф", keyCode: 0x00)))
         XCTAssertEqual(presses.map(\.key), [.character("j"), .character("a")])
-        XCTAssertEqual(OwnerAskKeyMap.action(for: presses[0], at: .drawer(choices: 0, isReview: false)), .nextAsk)
-        XCTAssertEqual(OwnerAskKeyMap.action(for: presses[1], at: .page), .openStack)
+        XCTAssertEqual(OwnerAskKeyMap.mappedAction(for: presses[0], at: .drawer(choices: 0, isReview: false)), .nextAsk)
+        XCTAssertEqual(OwnerAskKeyMap.mappedAction(for: presses[1], at: .page), .openStack)
     }
 
     /// K8: a window that is not key (a panel such as Open Quickly is) or

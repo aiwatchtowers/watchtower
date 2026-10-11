@@ -382,7 +382,7 @@ struct WorkbenchTitleRow: View {
     /// A bare key the page's catcher offers (board #412): A opens the stack,
     /// never under the open palette; anything else stays the window's.
     static func pressOnPage(_ press: OwnerAskKeyMap.Press, vm: WorkbenchesViewModel, paletteOpen: Bool) -> Bool {
-        !paletteOpen && OwnerAskKeyMap.action(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
+        !paletteOpen && OwnerAskKeyMap.mappedAction(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
     }
 
     /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;

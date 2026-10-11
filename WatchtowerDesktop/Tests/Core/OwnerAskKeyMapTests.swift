@@ -14,7 +14,7 @@ final class OwnerAskKeyMapTests: XCTestCase {
     }
 
     private func action(_ press: Press, _ place: Map.Place) -> Map.Action? {
-        Map.action(for: press, at: place)
+        Map.mappedAction(for: press, at: place)
     }
 
     // MARK: - Each key
