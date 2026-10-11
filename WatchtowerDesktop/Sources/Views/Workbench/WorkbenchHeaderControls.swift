@@ -236,6 +236,8 @@ private struct HeaderSegmentStyle: ToggleStyle {
                     .labelStyle(.iconOnly)
                     .font(.system(size: 14))
                     .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+                    // VoiceOver reads the title once, from the copy below.
+                    .accessibilityHidden(true)
                 configuration.label
                     .labelStyle(.titleOnly)
                     .font(.system(size: 13, weight: .medium))
@@ -256,7 +258,8 @@ private struct HeaderSegmentStyle: ToggleStyle {
         .onHover(perform: onHover)
         .animation(Self.animation, value: isOn)
         .animation(Self.animation, value: isHovered)
-        .accessibilityAddTraits(isOn ? .isSelected : [])
+        // The role `.toggleStyle(.button)` gave the view buttons.
+        .accessibilityAddTraits(isOn ? [.isToggle, .isSelected] : .isToggle)
     }
 }
 
@@ -275,13 +278,14 @@ private struct HeaderIconButtonStyle: ButtonStyle {
         @State private var isHovered = false
 
         var body: some View {
-            let fill = isOn ? Color.accentColor.opacity(0.16)
-                : isHovered || configuration.isPressed ? Color.primary.opacity(0.07) : .clear
             configuration.label
                 .font(.system(size: 14))
                 .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
                 .frame(width: 26, height: 26)
-                .background(fill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(
+                    HeaderSegmentStyle.fill(isOn: isOn, isHovered: isHovered || configuration.isPressed),
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
                 .contentShape(Rectangle())
                 .onHover { isHovered = $0 }
                 .animation(HeaderSegmentStyle.animation, value: isOn)

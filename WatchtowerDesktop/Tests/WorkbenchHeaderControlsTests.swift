@@ -177,6 +177,32 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(s.first.id), .sessionReport(s.first.id)])
     }
 
+    // MARK: - Split
+
+    /// The split button splits the pane, and then reads as its way back to
+    /// one pane (#562 restyled it; its label and help still flip).
+    func testTheSplitButtonSplitsAndThenOffersOnePane() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project.id
+        await vm.loadSessions(projectID: s.project.id)
+        let p = s.project.id
+        vm.setLayout(Self.split(.session(s.first.id), .board), projectID: p)
+        vm.toggleSplit(projectID: p)
+        XCTAssertFalse(vm.layout(projectID: p).isSplit)
+
+        let split = { (label: String) in
+            try self.controls(vm, s.project)
+                .inspect()
+                .find(ViewType.Button.self) { try $0.accessibilityLabel().string() == label }
+        }
+        try split("Split").tap()
+        XCTAssertTrue(vm.layout(projectID: p).isSplit)
+
+        let single = try split("Single Pane")
+        XCTAssertEqual(try single.help().string(), "Show one pane")
+    }
+
     // MARK: - ⋯ menu
 
     /// Repair install, Re-run Setup and Delete… keep their actions; Repair
