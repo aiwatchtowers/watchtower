@@ -148,10 +148,6 @@ func parseEscalateArgs(cmd *cobra.Command, positional []string) (escalateArgs, e
 // errEscalateOpenCap is open_cap's fixed text (spec Part 5.3).
 var errEscalateOpenCap = errors.New("too many open asks")
 
-// errEscalateNotFound wraps a missing workbench or session, or a session
-// that is not a claude row of the workbench.
-var errEscalateNotFound = errors.New("not found")
-
 // runEscalateQuestion parses, opens the database (migrating it, as every
 // writer CLI) and raises the question.
 func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult {
@@ -179,8 +175,7 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 		return escalateFailure(escalateErrBusy, err)
 	case errors.Is(err, db.ErrTooManyOpenAsks):
 		return escalateFailure(escalateErrOpenCap, errEscalateOpenCap)
-	case errors.Is(err, errEscalateNotFound), errors.Is(err, db.ErrWorkbenchNotFound),
-		errors.Is(err, db.ErrTerminalSessionNotFound):
+	case errors.Is(err, db.ErrNotInWorkbench), errors.Is(err, db.ErrTerminalSessionNotFound):
 		return escalateFailure(escalateErrNotFound, err)
 	}
 	return escalateFailure(escalateErrInternal, err)
@@ -192,19 +187,8 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 // (db.TakeChatQuestion), and files it as a question ask of origin chat; at
 // the open-ask cap the transaction rolls back, so the question stays.
 func escalateQuestion(database *db.DB, a escalateArgs, now time.Time) (escalateResult, error) {
-	if _, err := database.GetWorkbench(a.workbenchID); err != nil {
-		return escalateResult{}, err
-	}
-	row, err := database.GetTerminalSession(a.sessionID)
-	if err != nil {
-		return escalateResult{}, err
-	}
-	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != a.workbenchID || row.Kind != "claude" {
-		return escalateResult{}, fmt.Errorf("terminal session %d is not a claude session of workbench %d: %w",
-			a.sessionID, a.workbenchID, errEscalateNotFound)
-	}
 	res := escalateResult{OK: true, Outcome: escalateGone}
-	err = database.WithTx(func(tx *sql.Tx) error {
+	err := database.WithTx(func(tx *sql.Tx) error {
 		q, err := database.TakeChatQuestion(tx, a.sessionID, a.workbenchID, a.at)
 		if err != nil || q == nil {
 			return err

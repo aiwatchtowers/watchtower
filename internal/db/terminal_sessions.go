@@ -495,9 +495,9 @@ func (db *DB) ClearChatQuestionBefore(id, workbenchID int64, claudeSessionID str
 // after the guard's record. There is no lower bound: a `waiting` older than
 // the question, with no later `working` or run mark, means the agent has not
 // acted since (a repeated state keeps its first stamp, PROJ-11), so the
-// question is still the live one. Otherwise nil and nothing written, also
-// for another workbench's row or a shell row. ErrTerminalSessionNotFound for
-// a missing row.
+// question is still the live one. Otherwise nil and nothing written.
+// ErrTerminalSessionNotFound for a missing row, ErrNotInWorkbench for a row
+// of another workbench or a shell row (nothing written either).
 func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*ChatQuestion, error) {
 	var body, questionAt, state, stateAt sql.NullString
 	var mine bool
@@ -510,7 +510,10 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d chat question: %w", id, err)
 	}
-	if !mine || !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
+	if !mine {
+		return nil, fmt.Errorf("terminal session %d is not a claude session of workbench %d: %w", id, workbenchID, ErrNotInWorkbench)
+	}
+	if !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
 		return nil, nil
 	}
 	asked, ok := ParseAgentStateStamp(questionAt.String)
