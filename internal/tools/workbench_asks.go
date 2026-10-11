@@ -249,7 +249,7 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 			return &ValidationError{Msg: "changes: required when previous_ask_id names a withdrawn ask — say what is new"}
 		}
 	} else {
-		w, err := d.LastWithdrawnByTitle(p.ID, asks.NormalizeTitle(a.Title), time.Now().Add(-withdrawnTitleWindow))
+		w, err := d.LastWithdrawnByTitle(p.ID, a.Kind, asks.NormalizeTitle(a.Title), time.Now().Add(-withdrawnTitleWindow))
 		if err != nil {
 			return err
 		}

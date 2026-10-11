@@ -575,8 +575,9 @@ func TestAskOwnerRefusesARefiledWithdrawnTitle(t *testing.T) {
 	}
 	assert.Equal(t, before, askRowCount(t, fx.d), "a refused re-filing writes no ask")
 
-	// Another workbench, another title, a revision: all filed.
+	// Another workbench, another title, another kind, a revision: all filed.
 	mustApply(t, reg, fx.b, "ask_owner", questionAsk)
+	mustApply(t, reg, fx.a, "ask_owner", `{"kind":"check","title":"Which store?","checklist":[{"text":"a"}],"reason":"r"}`)
 	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which store for logs?"))
 	mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Which store?",`+
 		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],`+
@@ -594,6 +595,15 @@ func TestAskOwnerRefusesARefiledWithdrawnTitle(t *testing.T) {
 		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d,"reason":"r"}`, first))
 	require.Equal(t, "superseded", storedAsk(t, fx.d, fx.a, first).WithdrawnReason)
 	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Which queue?"))
+
+	// A withdrawn review blocks a review of that title, not a question.
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	review := askID(t, mustApply(t, reg, fx.a, "ask_owner", reviewAsk))
+	mustApply(t, reg, fx.a, "withdraw_ask", fmt.Sprintf(`{"ask_id":%d,"reason":"moot"}`, review))
+	_, err := proposeIn(t, reg, fx.a, "ask_owner", reviewAsk)
+	assert.Equal(t, fmt.Sprintf("title: ask #%d with this title was withdrawn; file it as a revision with previous_ask_id %d and changes",
+		review, review), refusal(t, err))
+	mustApply(t, reg, fx.a, "ask_owner", questionAskTitled("Review"))
 }
 
 // E26: a revision of a withdrawn ask must say what is new.
