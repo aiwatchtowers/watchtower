@@ -64,6 +64,19 @@ package struct TargetNotFoundError: LocalizedError, Equatable {
     }
 }
 
+/// A description save refused because the stored description is no longer
+/// the one the editor opened with — typically the agent's `update_target`
+/// landed while the owner was typing. Nothing was written.
+package struct TargetIntentConflictError: LocalizedError, Equatable {
+    package let id: Int
+
+    package init(id: Int) { self.id = id }
+
+    package var errorDescription: String? {
+        "the description of target #\(id) changed while you were editing"
+    }
+}
+
 package enum LinkDirection {
     case inbound    // target_target_id = targetID
     case outbound   // source_target_id = targetID
@@ -353,6 +366,26 @@ package enum TargetQueries {
             arguments: [intent, id]
         )
         try requireUpdated(db, id: id)
+    }
+
+    /// The workbench panel's description save: writes only over `original`,
+    /// the description the editor opened with, in the same statement — the
+    /// board's poll cannot see an agent write that lands just before the
+    /// save. A stored description that moved on throws
+    /// `TargetIntentConflictError` unless it already reads `intent`.
+    package static func updateIntent(_ db: Database, id: Int, intent: String, ifUnchangedFrom original: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET intent = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ? AND intent = ?
+                """,
+            arguments: [intent, id, original]
+        )
+        guard db.changesCount == 0 else { return }
+        guard let current = try String.fetchOne(db, sql: "SELECT intent FROM targets WHERE id = ?", arguments: [id]) else {
+            throw TargetNotFoundError(id: id)
+        }
+        guard current == intent else { throw TargetIntentConflictError(id: id) }
     }
 
     package static func updateDueDate(_ db: Database, id: Int, dueDate: String) throws {
