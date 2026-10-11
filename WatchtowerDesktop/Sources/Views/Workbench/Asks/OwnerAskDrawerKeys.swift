@@ -27,7 +27,9 @@ struct OwnerAskCommentStep: Equatable {
 /// check's steps and the note, a digit picks an option or marks a step at
 /// the cursor (the first stop without one), Return writes in its field,
 /// N / P walk a review's comments. Every change goes through the draft as
-/// a click would (`editDraft`, refused while an answer is written).
+/// a click would (`editDraft`, refused while an answer is written). Only
+/// while the drawer is active (`drawerKeysActive`: clicked, or opened from
+/// the keyboard); otherwise every key, Tab included, stays the window's.
 @MainActor
 struct OwnerAskDrawerKeys {
     let vm: WorkbenchesViewModel
@@ -55,6 +57,7 @@ struct OwnerAskDrawerKeys {
 
     /// True when the key acted; false leaves it to the window.
     func press(_ press: OwnerAskKeyMap.Press) -> Bool {
+        guard asks.drawerKeysActive.contains(ask.projectID) else { return false }
         let place = OwnerAskKeyMap.Place.drawer(choices: current?.stop.choices(in: ask) ?? 0, isReview: ask.kind == .review)
         guard let action = OwnerAskKeyMap.action(for: press, at: place) else { return false }
         switch action {
@@ -70,7 +73,7 @@ struct OwnerAskDrawerKeys {
     private func switchAsk(forward: Bool) -> Bool {
         let stack = asks.stack(projectID: ask.projectID)
         guard let other = forward ? stack.next(after: ask.id) : stack.previous(before: ask.id) else { return false }
-        Task { await vm.showAsk(other.id, projectID: ask.projectID) }
+        Task { [vm] in await vm.showAskFromKeyboard(other.id, projectID: other.projectID) }
         return true
     }
 
@@ -119,9 +122,11 @@ struct OwnerAskDrawerKeys {
         return true
     }
 
+    /// Only with a comment whose passage is in the rendered snapshot.
     private func stepComment(forward: Bool) -> Bool {
-        let comments = ask.answer?.comments.count ?? asks.drafts.askDraft(for: ask.id).comments.count
-        guard comments > 0 else { return false }
+        let anchors = ask.answer.map { $0.comments.map(OwnerAskReviewText.anchor(of:)) }
+            ?? asks.drafts.askDraft(for: ask.id).comments.map(\.anchor)
+        guard anchors.contains(where: { asks.reviewDocuments.range(of: $0, askID: ask.id) != nil }) else { return false }
         commentStep.wrappedValue = OwnerAskCommentStep(forward: forward)
         return true
     }

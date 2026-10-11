@@ -28,7 +28,7 @@ struct OwnerAskDrawerHeader: View {
                     Text("\(OwnerAskPresentation.positionLabel(position, of: stack.count)) ›").monospacedDigit()
                 }
                 .buttonStyle(.borderless)
-                .help("Next ask (J); previous ask (K) — with no field focused")
+                .help("Next ask (J); previous ask (K) — with no field focused, after a click in the drawer")
             }
             Button {
                 // The terminal under an expanded drawer is hidden: it must

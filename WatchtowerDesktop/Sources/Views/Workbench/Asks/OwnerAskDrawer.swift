@@ -111,8 +111,9 @@ struct OwnerAskDrawerHost<Workspace: View>: View {
 /// card, then the review document or the checklist, and a note — and the
 /// answer bar. A closed ask (answered, withdrawn) shows the same read-only:
 /// its answer, or the draft kept when the agent withdrew it under the owner.
-/// With no field focused its bare keys work (`OwnerAskDrawerKeys`, board
-/// #412): the keyboard cursor outlines the question, step or note it is on.
+/// With no field focused and the drawer active — clicked, or opened from
+/// the keyboard — its bare keys work (`OwnerAskDrawerKeys`, board #412):
+/// the keyboard cursor outlines the question, step or note it is on.
 struct OwnerAskDrawer: View {
     let vm: WorkbenchesViewModel
     let ask: OwnerAsk
@@ -137,7 +138,9 @@ struct OwnerAskDrawer: View {
         let keys = keys
         ScrollViewReader { proxy in
             content
-                .background(OwnerAskKeyCatcher(onKey: pressAnswerKey) { keys.press($0) })
+                .background(OwnerAskKeyCatcher(onKey: pressAnswerKey) { keys.press($0) } onMouseDown: { [asks, projectID = ask.projectID] inside in
+                    asks.setDrawerKeysActive(inside, projectID: projectID)
+                })
                 .onChange(of: cursor) { _, _ in
                     if let stop = keys.shownStop { withAnimation { proxy.scrollTo(stop) } }
                 }
@@ -248,6 +251,7 @@ struct OwnerAskDrawer: View {
     /// keys (board #412).
     private func leaveField() {
         NSApp.keyWindow?.makeFirstResponder(nil)
+        asks.setDrawerKeysActive(true, projectID: ask.projectID)
     }
 
     /// A review's focus item jumps to its place once the snapshot is
