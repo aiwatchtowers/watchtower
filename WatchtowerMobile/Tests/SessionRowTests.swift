@@ -4,7 +4,7 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// One SESSIONS row (spec §4.5, §13 B2): the Mac's resolved dot, label and
-/// glyph drawn as given, the report line, the open-ask pill and "▸ N closed".
+/// glyph drawn as given, the report line, the open-ask pill and "N closed".
 final class SessionRowTests: XCTestCase {
     private func session(_ overrides: [String: Any]) throws -> TerminalSessionState {
         try mirror(TerminalSessionState.self, DemoSeed.JSON.session(31, workbench: 7, overrides))

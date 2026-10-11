@@ -223,7 +223,7 @@ struct WorkbenchMenuModel {
         closedAsks = snapshot.asks
             .filter { $0.workbenchID == workbenchID && $0.status != .open }
             .sorted(by: WorkbenchReplicaSnapshot.newestFirst)
-        closedLabel = closedAsks.isEmpty ? nil : "▸ \(closedAsks.count) closed"
+        closedLabel = closedAsks.isEmpty ? nil : "\(closedAsks.count) closed"
         waitingHeader = "Waiting for you · \(waiting.count)"
         sessions = snapshot.sessions
             .filter { $0.workbenchID == workbenchID }

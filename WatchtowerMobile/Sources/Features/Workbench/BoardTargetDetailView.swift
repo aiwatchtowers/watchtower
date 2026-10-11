@@ -237,7 +237,9 @@ struct BoardTargetDetailView: View {
             if let value = detail.row.progressValue, let text = detail.row.progressText {
                 LabeledContent("Progress") {
                     HStack(spacing: Spacing.regular) {
-                        ThinProgressBar(value: value, tone: detail.row.progressTone).frame(width: 80)
+                        ThinProgressBar(value: value, tone: detail.row.progressTone)
+                            .frame(width: 80)
+                            .accessibilityHidden(true)
                         Text(text).font(TypeScale.time)
                     }
                 }

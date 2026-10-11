@@ -61,13 +61,15 @@ final class ScreenshotHost {
         }
     }
 
-    /// The first scroll view, breadth first, whose content is taller than
-    /// its bounds.
+    /// The first scroll view, breadth first, that can scroll: its content
+    /// plus its adjusted top and bottom insets (navigation bar, tab bar) is
+    /// taller than its bounds.
     static func tallScrollView(in root: UIView) -> UIScrollView? {
         var queue = [root]
         while !queue.isEmpty {
             let view = queue.removeFirst()
-            if let scroll = view as? UIScrollView, scroll.contentSize.height > scroll.bounds.height {
+            if let scroll = view as? UIScrollView,
+               scroll.contentSize.height + scroll.adjustedContentInset.top + scroll.adjustedContentInset.bottom > scroll.bounds.height {
                 return scroll
             }
             queue += view.subviews

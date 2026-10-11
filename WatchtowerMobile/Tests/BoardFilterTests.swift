@@ -122,6 +122,19 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertFalse(dismissed.hasMeta, "medium, no details, no progress")
     }
 
+    /// Phases 1–2 review: a row whose meta is only its bar draws no empty
+    /// dot-and-details line above the bar.
+    func testARowWithOnlyProgressDrawsNoEmptyLineAboveItsBar() throws {
+        let barOnly = try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(1, workbench: 1, ["progress": 0.5, "children_count": 2]))
+        let row = BoardRowModel(barOnly, snapshot: WorkbenchReplicaSnapshot())
+        XCTAssertTrue(row.hasMeta, "the bar is meta")
+        XCTAssertFalse(row.hasMetaLine, "medium, no details: no line above the bar")
+        let high = try mirror(WorkbenchTarget.self, DemoSeed.JSON.target(2, workbench: 1, [
+            "priority": "high", "progress": 0.5, "children_count": 2
+        ]))
+        XCTAssertTrue(BoardRowModel(high, snapshot: WorkbenchReplicaSnapshot()).hasMetaLine, "the dot needs the line")
+    }
+
     func testARowShowsAsksSessionPRPriorityAndProgress() throws {
         let open = try board(.open)
         let row = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row

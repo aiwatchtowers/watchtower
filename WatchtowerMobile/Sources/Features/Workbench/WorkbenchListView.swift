@@ -94,7 +94,10 @@ struct WorkbenchCardView: View {
                     Pill(text: branch, style: .neutral, monospaced: true)
                 }
             }
-            HStack(spacing: Spacing.regular) {
+            // Wraps at large Dynamic Type instead of squeezing (Phases 1–2
+            // review). The bar and its text are one item, so the bar stays
+            // centred on the text.
+            FlowRow(spacing: Spacing.regular) {
                 ForEach(card.stateCounts) { count in
                     HStack(spacing: 3) {
                         SessionDot(tone: count.tone, isRing: count.isRing, size: 7)
@@ -103,10 +106,12 @@ struct WorkbenchCardView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(count.text)
                 }
-                if let progress = card.progress {
-                    ThinProgressBar(value: progress, tone: card.progressTone).frame(width: 64)
+                HStack(spacing: Spacing.compact) {
+                    if let progress = card.progress {
+                        ThinProgressBar(value: progress, tone: card.progressTone).frame(width: 64)
+                    }
+                    Text(card.doneLine).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-                Text(card.doneLine).font(TypeScale.meta).foregroundStyle(.secondary)
             }
         }
     }

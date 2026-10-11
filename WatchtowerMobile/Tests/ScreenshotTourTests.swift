@@ -280,4 +280,17 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertTrue(ScreenshotHost.tallScrollView(in: root) === tall)
         XCTAssertEqual(ScreenshotHost.endOffset(of: tall), 200)
     }
+
+    /// Phases 1–2 review: a list under a navigation bar and a tab bar
+    /// scrolls when its content plus its insets is taller than its bounds,
+    /// even when the content alone fits.
+    func testAnEndShotCountsTheScrollViewsInsets() {
+        let root = UIView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        let inset = UIScrollView(frame: root.bounds)
+        inset.contentSize = CGSize(width: 100, height: 80)
+        inset.contentInset = UIEdgeInsets(top: 30, left: 0, bottom: 0, right: 0)
+        root.addSubview(inset)
+        XCTAssertTrue(ScreenshotHost.tallScrollView(in: root) === inset, "80 + 30 is taller than 100")
+        XCTAssertEqual(ScreenshotHost.endOffset(of: inset), -20, "10 pt past the resting offset of -30")
+    }
 }

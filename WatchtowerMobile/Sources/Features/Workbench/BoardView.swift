@@ -119,9 +119,11 @@ struct BoardRowView: View {
         FlatRow(icon: .symbol(row.statusGlyph, tone: row.statusTone), title: row.title, isDimmed: row.isDimmed, insets: EdgeInsets()) {
             if row.hasMeta {
                 VStack(alignment: .leading, spacing: Spacing.small) {
-                    HStack(spacing: Spacing.compact) {
-                        PriorityDot(priority: row.priority)
-                        MetaLine(items: row.details)
+                    if row.hasMetaLine {
+                        HStack(spacing: Spacing.compact) {
+                            PriorityDot(priority: row.priority)
+                            MetaLine(items: row.details)
+                        }
                     }
                     if let value = row.progressValue {
                         ThinProgressBar(value: value, tone: row.progressTone, height: 3).frame(width: 64)
