@@ -172,11 +172,7 @@ struct BoardTargetDetailView: View {
         HStack(spacing: 6) {
             Image(systemName: detail.row.statusGlyph).foregroundStyle(detail.row.statusTone.color)
             Text(detail.statusLabel)
-            if let priority = detail.row.priorityLabel {
-                Text(priority)
-                    .font(.caption.monospaced().weight(.semibold))
-                    .foregroundStyle(detail.row.priorityTone.color)
-            }
+            PriorityDot(priority: detail.row.priority)
             if let progress = detail.row.progressText {
                 Text(progress).foregroundStyle(.secondary)
             }

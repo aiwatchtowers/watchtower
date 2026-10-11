@@ -135,11 +135,7 @@ struct BoardRowView: View {
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 2) {
-                if let priority = row.priorityLabel {
-                    Text(priority)
-                        .font(.caption2.monospaced().weight(.semibold))
-                        .foregroundStyle(row.priorityTone.color)
-                }
+                PriorityDot(priority: row.priority)
                 if let progress = row.progressText {
                     Text(progress)
                         .font(.caption.monospacedDigit())

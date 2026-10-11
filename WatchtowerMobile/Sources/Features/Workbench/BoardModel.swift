@@ -38,20 +38,24 @@ struct BoardDetail: Equatable {
     let role: ToneRole
 }
 
-/// One board row: status glyph, title, sub-line (asks, sessions, PR),
-/// priority and progress.
+/// One board row: status glyph, title, sub-line (asks, sessions, PR), the
+/// priority dot and progress.
 struct BoardRowModel: Equatable, Identifiable {
     let id: Int64
     let title: String
     let statusGlyph: String
     let statusTone: PhoneTone
     let details: [BoardDetail]
-    /// "HIGH" or "LOW"; nil for medium, the default.
-    let priorityLabel: String?
-    let priorityTone: PhoneTone
+    let priority: WorkbenchTargetPriority
+    /// Red for high, blue for low; nil (no dot) for medium and unknown.
+    let priorityTone: PhoneTone?
     /// "50%", or "done" for a done target; nil for a leaf with no
     /// progress yet.
     let progressText: String?
+    /// 0…1 while `progressText` is a percent; nil for "done" and no
+    /// progress (no bar).
+    let progressValue: Double?
+    let progressTone = PhoneTone.green
     /// A done target shown for context under Open: drawn greyed.
     let isDimmed: Bool
 
@@ -61,19 +65,19 @@ struct BoardRowModel: Equatable, Identifiable {
         let status = Self.status(target.status)
         statusGlyph = status.glyph
         statusTone = status.tone
-        priorityLabel = switch target.priority {
-        case .high: "HIGH"
-        case .low: "LOW"
-        default: nil
-        }
-        priorityTone = target.priority == .high ? .red : .secondary
+        priority = target.priority
+        priorityTone = PriorityMark.tone(target.priority)
         isDimmed = target.status == .done
         if target.status == .done {
             progressText = "done"
+            progressValue = nil
         } else if target.childrenCount > 0 || target.progress > 0 {
-            progressText = "\(Int((min(1, max(0, target.progress)) * 100).rounded()))%"
+            let value = min(1, max(0, target.progress))
+            progressText = "\(Int((value * 100).rounded()))%"
+            progressValue = value
         } else {
             progressText = nil
+            progressValue = nil
         }
 
         var details: [BoardDetail] = []
@@ -93,17 +97,10 @@ struct BoardRowModel: Equatable, Identifiable {
         self.details = details
     }
 
+    /// The Mac's status glyph and tone (`TargetStatusStyle`, design pass
+    /// spec §2.3).
     static func status(_ status: WorkbenchTargetStatus) -> (glyph: String, tone: PhoneTone) {
-        switch status {
-        case .todo: ("circle", .secondary)
-        case .inProgress: ("circle.lefthalf.filled", .accent)
-        case .inReview: ("circle.dotted.circle", .accent)
-        case .blocked: ("exclamationmark.circle.fill", .red)
-        case .done: ("checkmark.circle.fill", .secondary)
-        case .dismissed: ("xmark.circle", .secondary)
-        case .snoozed: ("moon.circle", .secondary)
-        default: ("circle", .secondary)
-        }
+        TargetStatusStyle.of(status)
     }
 
     static func statusLabel(_ status: WorkbenchTargetStatus) -> String {
@@ -122,8 +119,11 @@ struct BoardRowModel: Equatable, Identifiable {
     var toneUses: [ToneUse] {
         var uses = [ToneUse(element: "target \(id) status", tone: statusTone, role: .status)]
         uses += details.map { ToneUse(element: "target \(id) \($0.text)", tone: $0.tone, role: $0.role) }
-        if priorityLabel != nil {
+        if let priorityTone {
             uses.append(ToneUse(element: "target \(id) priority", tone: priorityTone, role: .priority))
+        }
+        if progressValue != nil {
+            uses.append(ToneUse(element: "target \(id) progress", tone: progressTone, role: .progress))
         }
         return uses
     }

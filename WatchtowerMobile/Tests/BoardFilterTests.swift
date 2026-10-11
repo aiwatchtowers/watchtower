@@ -105,8 +105,9 @@ final class BoardFilterTests: XCTestCase {
         let open = try board(.open)
         let row = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row
         XCTAssertEqual(row.title, "Archive Closed Targets Now")
-        XCTAssertEqual(row.priorityLabel, "HIGH")
+        XCTAssertEqual(row.priority, .high)
         XCTAssertEqual(row.priorityTone, .red)
+        XCTAssertEqual(try XCTUnwrap(row.progressValue), 0.5, accuracy: 0.0001)
         XCTAssertEqual(row.progressText, "50%")
         XCTAssertEqual(row.details.map(\.text), ["2 asks", "1 session", "PR #175"])
         XCTAssertEqual(row.details.first?.tone, .orange)
@@ -114,7 +115,13 @@ final class BoardFilterTests: XCTestCase {
         let report = try XCTUnwrap(open.roots.first { $0.id == 430 }).row
         XCTAssertEqual(report.details.map(\.text), ["Session working"])
         XCTAssertEqual(report.details.first?.tone, .green)
-        XCTAssertNil(report.priorityLabel, "medium is the default and carries no label")
+        XCTAssertNil(report.priorityTone, "medium is the default and draws no dot")
+        let lowRow = try XCTUnwrap(open.roots.first { $0.id == 431 }).row
+        XCTAssertEqual(lowRow.priorityTone, .blue)
+        XCTAssertNil(lowRow.progressValue, "a leaf with no progress draws no bar")
+        let done = try XCTUnwrap(open.roots.first { $0.id == 420 }?.children.first { $0.id == 422 }).row
+        XCTAssertEqual(done.progressText, "done")
+        XCTAssertNil(done.progressValue, "done is a word, not a bar")
     }
 
     func testTheTargetDetailIsReadOnlyAndComplete() throws {
