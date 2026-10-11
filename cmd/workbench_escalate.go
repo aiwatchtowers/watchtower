@@ -37,6 +37,11 @@ const (
 	escalateErrInternal = "internal"
 )
 
+// escalateBusyTimeout is how long the escalation's write transaction waits
+// for another process's write lock before it answers busy (the Desktop
+// retries). A var for tests.
+var escalateBusyTimeout = 5 * time.Second
+
 // escalateTitleRunes bounds the raised ask's title (asks.Validate's cap).
 const escalateTitleRunes = 120
 
@@ -171,6 +176,9 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 		return escalateFailure(escalateErrInternal, fmt.Errorf("opening database: %w", err))
 	}
 	defer database.Close()
+	if err := database.SetBusyTimeout(escalateBusyTimeout); err != nil {
+		return escalateFailure(escalateErrInternal, err)
+	}
 	res, err := escalateQuestion(database, a, hookNow())
 	switch {
 	case err == nil:

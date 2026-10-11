@@ -301,6 +301,27 @@ func TestEscalateEnvelopeShape(t *testing.T) {
 		assert.False(t, res.OK)
 		assert.Equal(t, escalateErrBusy, res.ErrorCode)
 	})
+	t.Run("another process's write lock is busy", func(t *testing.T) {
+		g := newEscalateFixture(t, twoOptions())
+		orig := escalateBusyTimeout
+		escalateBusyTimeout = 100 * time.Millisecond
+		t.Cleanup(func() { escalateBusyTimeout = orig })
+		// RESERVED, not exclusive: reads go on, so the open and its checks
+		// pass and the write transaction is what waits.
+		held, err := g.database.Begin()
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = held.Rollback() })
+		_, err = held.Exec(`UPDATE projects SET name = name`)
+		require.NoError(t, err)
+
+		start := time.Now()
+		res := g.escalate(t, escalateReasonTimeout)
+
+		assert.Equal(t, escalateErrBusy, res.ErrorCode, "%+v", res)
+		assert.Less(t, time.Since(start), 3*time.Second, "the write transaction's short wait, not the open's 5 s")
+		require.NoError(t, held.Rollback())
+		assert.NotEmpty(t, chatQuestionAt(t, g.database, g.row), "the question is kept")
+	})
 	t.Run("a migration that cannot apply is schema", func(t *testing.T) {
 		g := newEscalateFixture(t, twoOptions())
 		require.NoError(t, goose.DownTo(g.database.DB, "migrations", 106))
