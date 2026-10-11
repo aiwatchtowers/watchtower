@@ -60,6 +60,11 @@ func sqliteDSN(dbPath, params string) string {
 	return "file:" + (&url.URL{Path: dbPath}).EscapedPath() + params
 }
 
+// ErrSchemaSetup marks an Open that reached the database but could not set
+// its pragmas or apply the migrations (as opposed to a path or driver
+// failure before it).
+var ErrSchemaSetup = errors.New("database schema setup failed")
+
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
 //
@@ -103,12 +108,12 @@ func Open(dbPath string) (*DB, error) {
 
 	if err := db.setPragmas(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("setting pragmas: %w", err)
+		return nil, fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
 	}
 
 	if err := db.migrate(); err != nil {
 		sqlDB.Close()
-		return nil, fmt.Errorf("running migrations: %w", err)
+		return nil, fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
 	}
 
 	// Logged, not returned: a database missing one feature's table must still

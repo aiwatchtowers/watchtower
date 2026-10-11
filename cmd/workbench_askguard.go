@@ -152,7 +152,7 @@ var askGuardToolReason = func(rawID, claudeID string) string {
 	if err != nil || id <= 0 {
 		return ""
 	}
-	cfg, err := askGuardConfig()
+	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {
 		return ""
 	}

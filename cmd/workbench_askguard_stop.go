@@ -427,27 +427,12 @@ func askGuardStopSetup(ctx context.Context, stdin io.Reader, stderr io.Writer, r
 	if err != nil || workbenchID <= 0 {
 		return in, 0, nil, false
 	}
-	cfg, err := askGuardConfig()
+	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
 		return in, 0, nil, false
 	}
 	return in, workbenchID, cfg, true
-}
-
-// askGuardConfig loads the config for the active workspace (or --workspace).
-func askGuardConfig() (*config.Config, error) {
-	cfg, err := config.Load(flagConfig)
-	if err != nil {
-		return nil, err
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return nil, err
-	}
-	return cfg, nil
 }
 
 // askGuardSession is the guard's handle on its session row: rowID, of

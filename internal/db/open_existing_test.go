@@ -203,3 +203,26 @@ func TestOpenExistingRW_WriteTransactionBeginsImmediate(t *testing.T) {
 	assert.GreaterOrEqual(t, elapsed, 25*time.Millisecond, "it waited for the lock")
 	assert.Less(t, elapsed, 2*time.Second)
 }
+
+// A migration that cannot apply is ErrSchemaSetup; a path that cannot be a
+// database is not.
+func TestOpenMarksSchemaSetupFailures(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	full, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, goose.DownTo(full.DB, "migrations", 106))
+	// The column 00107 adds is already there, so its ALTER fails.
+	_, err = full.Exec(`ALTER TABLE owner_asks ADD COLUMN level TEXT`)
+	require.NoError(t, err)
+	require.NoError(t, full.Close())
+
+	_, err = Open(path)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSchemaSetup)
+
+	file := filepath.Join(t.TempDir(), "a-file")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	_, err = Open(filepath.Join(file, "watchtower.db")) // its directory is a file
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrSchemaSetup)
+}

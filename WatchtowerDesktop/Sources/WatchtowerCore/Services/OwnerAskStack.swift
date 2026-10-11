@@ -44,6 +44,15 @@ package struct OwnerAskStack: Equatable, Sendable {
         return next.id == askID ? nil : next
     }
 
+    /// The ask before `askID` (K, board #412): before the first it wraps,
+    /// and from an ask no longer waiting it is the newest. nil when no
+    /// other ask waits.
+    package func previous(before askID: Int64) -> OwnerAsk? {
+        guard let index = asks.firstIndex(where: { $0.id == askID }) else { return asks.last }
+        let previous = asks[(index + asks.count - 1) % asks.count]
+        return previous.id == askID ? nil : previous
+    }
+
     /// The ask a drawer opens on by itself (board #364): the oldest open Full
     /// ask of the first session on screen that holds a Full ask the owner
     /// has not closed a drawer on (`dismissed`) — "k of N" walks the rest.

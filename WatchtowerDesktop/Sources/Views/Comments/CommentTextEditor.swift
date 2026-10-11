@@ -14,7 +14,9 @@ import WatchtowerCore
 /// when the field takes the keyboard or is clicked while it has it (a
 /// margin comment's card turning active). An `onCancel` takes Esc in this
 /// field (it never reaches the pane's Esc handling); an `onEndEditing`
-/// hears the field losing focus. Text set through the binding from outside
+/// hears the field losing focus. Each new `focusRequest` puts the keyboard
+/// in the field (an ask drawer's Return on a stop, board #412); the one it
+/// was created with does not. Text set through the binding from outside
 /// is not undoable (`updateNSView`).
 struct CommentTextEditor: View {
     @Binding var text: String
@@ -29,6 +31,7 @@ struct CommentTextEditor: View {
     var onFocus: (() -> Void)?
     var onCancel: (() -> Void)?
     var onEndEditing: (() -> Void)?
+    var focusRequest: UUID?
     @State private var contentHeight: CGFloat = 0
     @Environment(\.onPopoverSurface) private var onPopoverSurface
 
@@ -41,7 +44,7 @@ struct CommentTextEditor: View {
     var body: some View {
         CommentNSTextEditor(text: $text, contentHeight: $contentHeight, focusOnAppear: focusOnAppear,
                             leavesOnSubmit: leavesOnSubmit, onSubmit: onSubmit, onShiftSubmit: onShiftSubmit,
-                            onFocus: onFocus, onCancel: onCancel, onEndEditing: onEndEditing)
+                            onFocus: onFocus, onCancel: onCancel, onEndEditing: onEndEditing, focusRequest: focusRequest)
             .frame(height: min(max(contentHeight, minHeight), maxHeight))
             .overlay(alignment: .topLeading) {
                 if text.isEmpty, !placeholder.isEmpty {
@@ -79,6 +82,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
     let onFocus: (() -> Void)?
     let onCancel: (() -> Void)?
     let onEndEditing: (() -> Void)?
+    let focusRequest: UUID?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -105,6 +109,7 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.onShiftSubmit = onShiftSubmit
         textView.onFocus = onFocus
         textView.onCancel = onCancel
+        context.coordinator.focusRequest = focusRequest
 
         // A new width re-wraps the text: measure again.
         textView.postsFrameChangedNotifications = true
@@ -130,6 +135,11 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.onFocus = onFocus
         textView.onCancel = onCancel
         textView.isEditable = context.environment.isEnabled
+        if focusRequest != context.coordinator.focusRequest {
+            context.coordinator.focusRequest = focusRequest
+            // Not inside the SwiftUI update: the responder change runs callbacks that write state.
+            if focusRequest != nil { DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) } }
+        }
         if textView.string != text {
             // Text from outside (another ask's draft under the same field,
             // a sent comment cleared) is not an edit: it is not undoable,
@@ -153,6 +163,8 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         /// The field's own undo history (not the window's), so text set
         /// from outside can clear it without touching another field's.
         let undoManager = UndoManager()
+        /// The last `focusRequest` seen: only a new one moves the keyboard.
+        var focusRequest: UUID?
         private var measuredWidth: CGFloat?
 
         init(parent: CommentNSTextEditor) {

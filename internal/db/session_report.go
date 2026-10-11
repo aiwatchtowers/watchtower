@@ -38,7 +38,19 @@ func (db *DB) LinkSessionTarget(sessionID, targetID int64) error {
 // SessionLinkedTargets is the ids of the targets session sessionID's agent
 // wrote to, in id order.
 func (db *DB) SessionLinkedTargets(sessionID int64) ([]int64, error) {
-	rows, err := db.Query(`SELECT target_id FROM terminal_session_targets WHERE session_id = ? ORDER BY target_id`,
+	return sessionLinkedTargets(db, sessionID)
+}
+
+// SessionLinkedTargetsTx is SessionLinkedTargets inside the caller's
+// transaction.
+func (db *DB) SessionLinkedTargetsTx(tx *sql.Tx, sessionID int64) ([]int64, error) {
+	return sessionLinkedTargets(tx, sessionID)
+}
+
+func sessionLinkedTargets(q interface {
+	Query(string, ...any) (*sql.Rows, error)
+}, sessionID int64) ([]int64, error) {
+	rows, err := q.Query(`SELECT target_id FROM terminal_session_targets WHERE session_id = ? ORDER BY target_id`,
 		sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d targets: %w", sessionID, err)

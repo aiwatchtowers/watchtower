@@ -1315,30 +1315,33 @@ func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
 		}
 	}
 
-	// Another workbench's take is gone, and leaves the question.
+	// Another workbench's take, or one of a shell row whatever it holds, is
+	// ErrNotInWorkbench and leaves the row.
 	mine := row("waiting", 0)
 	otherWorkbench := newTestWorkbench(t, d)
-	before := terminalRowSnapshot(t, d, mine)
-	if err := d.WithTx(func(tx *sql.Tx) error {
-		q, err := d.TakeChatQuestion(tx, mine, otherWorkbench, at)
-		if q != nil {
-			t.Errorf("another workbench took %+v", q)
-		}
-		return err
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if after := terminalRowSnapshot(t, d, mine); after != before {
-		t.Fatalf("another workbench's take changed the row\nbefore %s\nafter  %s", before, after)
-	}
-	// A shell row is never taken, whatever it holds.
 	shell := newAgentStateRow(t, d, pid, "shell", nil)
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
 		chat_question = '{"question":"Q","options":[]}', chat_question_at = ? WHERE id = ?`, at, at, shell); err != nil {
 		t.Fatal(err)
 	}
-	if q := take(shell, at); q != nil {
-		t.Fatalf("a shell row was taken: %+v", q)
+	for _, tc := range []struct {
+		name          string
+		id, workbench int64
+	}{{"another workbench", mine, otherWorkbench}, {"a shell row", shell, pid}} {
+		before := terminalRowSnapshot(t, d, tc.id)
+		err := d.WithTx(func(tx *sql.Tx) error {
+			q, err := d.TakeChatQuestion(tx, tc.id, tc.workbench, at)
+			if q != nil {
+				t.Errorf("%s: taken %+v", tc.name, q)
+			}
+			return err
+		})
+		if !errors.Is(err, ErrNotInWorkbench) {
+			t.Fatalf("%s: err = %v, want ErrNotInWorkbench", tc.name, err)
+		}
+		if after := terminalRowSnapshot(t, d, tc.id); after != before {
+			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
+		}
 	}
 
 	err := d.WithTx(func(tx *sql.Tx) error {
