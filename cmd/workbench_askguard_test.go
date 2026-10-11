@@ -1118,3 +1118,28 @@ func TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing(t *testing.T) {
 	require.NotNil(t, q, "nothing cleared")
 	assert.Equal(t, "An older question?", q.Question, "nothing recorded")
 }
+
+// The classifier reads only the message's last 32 KiB, cut on a rune
+// boundary behind a marker; a shorter message goes whole.
+func TestAskGuardMessageTail(t *testing.T) {
+	assert.Equal(t, 32<<10, askGuardMessageLimit)
+	short := strings.Repeat("a", askGuardMessageLimit)
+	assert.Equal(t, short, askGuardMessageTail(short))
+
+	long := strings.Repeat("é", askGuardMessageLimit) + "Ship it?" // 2 bytes a rune
+	got := askGuardMessageTail(long)
+	require.True(t, strings.HasPrefix(got, askGuardCutMarker))
+	tail := strings.TrimPrefix(got, askGuardCutMarker)
+	assert.True(t, utf8.ValidString(tail), "cut on a rune boundary")
+	assert.LessOrEqual(t, len(tail), askGuardMessageLimit)
+	assert.True(t, strings.HasSuffix(tail, "Ship it?"), "the end of the message is kept")
+
+	// The hook hands the model the tail.
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	gen := &stubAskGuardGen{reply: verdictJSON("none")}
+	useAskGuardGen(t, gen)
+	_, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10), strings.NewReader(guardPayload(long, false)))
+	require.NoError(t, err)
+	assert.Equal(t, got, gen.message)
+}

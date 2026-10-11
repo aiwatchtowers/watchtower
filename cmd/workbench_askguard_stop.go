@@ -36,6 +36,14 @@ var askGuardModelBudget = 20 * time.Second
 // model call and its reads (askGuardBusyTimeout).
 const askGuardRecordBusyTimeout = time.Second
 
+// askGuardMessageLimit is how much of the turn's final message the
+// classifier reads: its last 32 KiB, where a closing request sits.
+const askGuardMessageLimit = 32 << 10
+
+// askGuardCutMarker opens a message cut to its last askGuardMessageLimit
+// bytes.
+const askGuardCutMarker = "[earlier text cut]\n"
+
 // Clip bounds of the model's question and option labels (Part 4.3).
 const (
 	askGuardQuestionRunes = 300
@@ -171,6 +179,20 @@ func normaliseAskGuardVerdict(v askGuardVerdict) askGuardVerdict {
 		v.Request = askRequestNone
 	}
 	return v
+}
+
+// askGuardMessageTail keeps message's last askGuardMessageLimit bytes, cut on
+// a rune boundary and opened by askGuardCutMarker; a shorter message is kept
+// whole.
+func askGuardMessageTail(message string) string {
+	if len(message) <= askGuardMessageLimit {
+		return message
+	}
+	tail := message[len(message)-askGuardMessageLimit:]
+	for tail != "" && !utf8.RuneStart(tail[0]) {
+		tail = tail[1:]
+	}
+	return askGuardCutMarker + tail
 }
 
 // oneLine collapses every run of whitespace, line breaks included, to one
@@ -363,7 +385,7 @@ func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Confi
 	if empty {
 		return nil, true
 	}
-	v, err := classifyAskGuard(ctx, askGuardGeneratorFactory(cfg), in.LastAssistantMessage)
+	v, err := classifyAskGuard(ctx, askGuardGeneratorFactory(cfg), askGuardMessageTail(in.LastAssistantMessage))
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: ask guard skipped: %v\n", err)
 		return nil, false
