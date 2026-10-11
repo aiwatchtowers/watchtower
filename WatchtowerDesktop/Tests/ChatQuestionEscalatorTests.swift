@@ -238,7 +238,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         await center.flushWrites()
     }
 
-    func testTheTickRunsOnlyWhileAQuestionIsHeld() async {
+    func testTheTickRunsOnlyWhileALiveSessionHoldsAQuestion() async {
         let runner = ScriptedEscalationRunner(Answer.error("busy"))
         let escalator = makeEscalator(runner)
         XCTAssertEqual(timers.pending, [ChatQuestionEscalator.tickInterval])
@@ -248,6 +248,13 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1, "the tick evaluated")
         XCTAssertEqual(timers.pending, [ChatQuestionEscalator.tickInterval], "re-armed")
 
+        live = []
+        escalator.evaluate()
+        XCTAssertEqual(timers.pending, [], "a stopped session's question, no tick")
+
+        live = [1, 2]
+        escalator.evaluate()
+        XCTAssertEqual(timers.pending, [ChatQuestionEscalator.tickInterval])
         rows = []
         escalator.evaluate()
         XCTAssertEqual(timers.pending, [], "no question, no tick")

@@ -11,7 +11,7 @@ import WatchtowerCore
 /// - Nothing is evaluated before the owner's presence has settled once: an
 ///   unknown presence at launch must not read as away (E22a).
 /// - Evaluates on every agent-state resolve, every presence change and a
-///   30 s tick while any session holds a question; at most one run in
+///   30 s tick while any live session holds a question; at most one run in
 ///   flight per session.
 /// - A transient failure (`busy`, `open_cap`) is tried again at the next
 ///   evaluation at most once a minute per session; any other failure, and
@@ -134,7 +134,9 @@ final class ChatQuestionEscalator {
             case let .escalate(reason): escalateIfDue(row, reason: reason, now: now)
             }
         }
-        armTick(questions.isEmpty == false)
+        // Only a live session's question can escalate (the policy); a
+        // stopped one changes with a read, never with time.
+        armTick(questions.contains { current.liveIDs.contains($0.id) })
     }
 
     // MARK: - Runs
