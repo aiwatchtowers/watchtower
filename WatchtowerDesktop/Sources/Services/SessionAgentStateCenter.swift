@@ -68,7 +68,8 @@ final class SessionAgentStateCenter {
     @ObservationIgnored var onRead: (() -> Void)?
     /// Every resolve of the stored rows — each read, failed or not, and each
     /// change of the live sessions — after `statuses` is published. One
-    /// subscriber (the chat question escalation).
+    /// subscriber: `AppState.wireChatQuestionEscalation` hands it to the
+    /// `ChatQuestionEscalator`.
     @ObservationIgnored var onResolved: (() -> Void)?
     @ObservationIgnored private let interval: Duration
     @ObservationIgnored private var pollTask: Task<Void, Never>?

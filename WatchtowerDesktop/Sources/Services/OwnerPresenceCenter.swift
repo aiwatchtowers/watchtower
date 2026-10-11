@@ -72,7 +72,8 @@ final class OwnerPresenceCenter {
     private(set) var hasSettled = false
 
     /// Every change of `presentSessionID`, and the first computation. One
-    /// subscriber.
+    /// subscriber: `AppState.wireChatQuestionEscalation` hands it to the
+    /// `ChatQuestionEscalator` (`follow(presence:)`).
     @ObservationIgnored var onChange: (() -> Void)?
     /// What the key window shows now. Read under observation tracking, so a
     /// change of the observable state it reads is evaluated again; key

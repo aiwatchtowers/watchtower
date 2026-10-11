@@ -1794,6 +1794,7 @@ final class AppState {
         ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
         chatQuestionEscalator?.stop()
         chatQuestionEscalator = cliRunner.map { makeChatQuestionEscalator(runner: $0, workbenches: vm, agentStates: agentStates) }
+        wireChatQuestionEscalation(agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
@@ -1804,9 +1805,18 @@ final class AppState {
         chatQuestionEscalator?.start()
     }
 
-    /// The escalation runner reading the agent states, the owner's presence
-    /// and prompt drafts; a filed ask is read at once by the asks poll and
-    /// the session's row again (its question is gone).
+    /// The escalation is the one subscriber of both hooks: every resolve of
+    /// the agent states and every presence change evaluate it.
+    private func wireChatQuestionEscalation(agentStates: SessionAgentStateCenter) {
+        guard let escalator = chatQuestionEscalator else { return }
+        agentStates.onResolved = { [weak escalator] in escalator?.evaluate() }
+        if let ownerPresenceCenter { escalator.follow(presence: ownerPresenceCenter) }
+    }
+
+    /// The escalation runner reading the agent states and prompt drafts (its
+    /// triggers and presence are wired by `wireChatQuestionEscalation`); a filed ask is
+    /// read at once by the asks poll, and the session's row again (its
+    /// question is gone).
     private func makeChatQuestionEscalator(
         runner: any CLIRunnerProtocol,
         workbenches vm: WorkbenchesViewModel,
@@ -1824,8 +1834,6 @@ final class AppState {
             agentStates?.refresh()
             Task { await vm?.asks.refreshIfChanged(projectID: projectID) }
         }
-        agentStates.onResolved = { [weak escalator] in escalator?.evaluate() }
-        if let ownerPresenceCenter { escalator.follow(presence: ownerPresenceCenter) }
         return escalator
     }
 
