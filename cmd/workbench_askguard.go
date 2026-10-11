@@ -16,7 +16,10 @@ import (
 
 // askGuardBusyTimeout bounds each of the ask guard's reads: Claude Code
 // waits for a PreToolUse hook, so a locked database lets the tool through
-// rather than stall the agent (the whole run stays well under 2 s).
+// rather than stall the agent. The PreToolUse hook runs up to ~5 short reads
+// (the workbench, then the session row, its workbench, the presence), each
+// bounded by it; WAL readers rarely wait, so a run stays well under 2 s in
+// practice, though the strict worst case is the sum of the bounds.
 const askGuardBusyTimeout = 500 * time.Millisecond
 
 // askGuardInputWait bounds the wait for the hook input: Claude Code writes
@@ -170,8 +173,14 @@ var askGuardToolReason = func(rawID, claudeID string) string {
 // the core state hooks (without them the Stop guard could not record a
 // plain-text question and would send it back), and a fresh presence write
 // naming the row. Outside such a row, or on any read failure, the owner is
-// away; nothing is printed, on stderr either.
-func askGuardOwnerHere(database *db.DB, workbenchID int64, claudeID string) bool {
+// away; nothing is printed, on stderr either. A panic here, after the
+// workbench was found, also reads as away: the tool stays denied.
+func askGuardOwnerHere(database *db.DB, workbenchID int64, claudeID string) (here bool) {
+	defer func() {
+		if recover() != nil {
+			here = false
+		}
+	}()
 	rowID, ok, err := terminalSessionRowID()
 	if err != nil || !ok || claudeID == "" {
 		return false

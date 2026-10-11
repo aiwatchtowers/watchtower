@@ -154,6 +154,13 @@ func TestAskGuard_DeniesAskUserQuestionInALiveWorkbench(t *testing.T) {
 			}
 			return askToolPayload("AskUserQuestion")
 		}, false},
+		{"a panic in the presence path", func(t *testing.T, database *db.DB, _, row int64) string {
+			setOwnerPresence(t, database, row, time.Now())
+			orig := hookNow
+			hookNow = func() time.Time { panic("boom") }
+			t.Cleanup(func() { hookNow = orig })
+			return askToolPayload("AskUserQuestion")
+		}, false},
 		{"no presence table (an older schema)", func(t *testing.T, database *db.DB, _, _ int64) string {
 			_, err := database.Exec(`DROP TABLE owner_presence`)
 			require.NoError(t, err)
