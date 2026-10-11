@@ -424,10 +424,20 @@ func TestProj13_AskGuardFinishesFastOnALockedDatabase(t *testing.T) {
 		database := writeActionsConfig(t)
 		id, err := database.CreateWorkbench("acme", t.TempDir())
 		require.NoError(t, err)
-		release := make(chan struct{})
-		t.Cleanup(func() { close(release) })
+		// Without the deadline the stall ends after 3 s with the present
+		// answer, so the assertions below fail rather than hang. The stub
+		// is waited for before the temp dir goes.
+		release, done := make(chan struct{}), make(chan struct{})
+		t.Cleanup(func() { close(release); <-done })
 		orig := askGuardOwnerPresence
-		askGuardOwnerPresence = func(*db.DB, int64, string) bool { <-release; return true }
+		askGuardOwnerPresence = func(*db.DB, int64, string) bool {
+			defer close(done)
+			select {
+			case <-release:
+			case <-time.After(3 * time.Second):
+			}
+			return true
+		}
 		t.Cleanup(func() { askGuardOwnerPresence = orig })
 
 		start := time.Now()

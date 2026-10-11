@@ -175,10 +175,11 @@ var askGuardToolReason = func(rawID, claudeID string) string {
 // still running then read as away, and the database is closed once they
 // end (sql.DB.Close waits for a running query, so the hook does not).
 func askGuardOwnerHereBy(database *db.DB, workbenchID int64, claudeID string, deadline time.Time) bool {
+	presence := askGuardOwnerPresence
 	here := make(chan bool, 1)
 	go func() {
 		defer func() { _ = database.Close() }()
-		here <- askGuardOwnerPresence(database, workbenchID, claudeID)
+		here <- presence(database, workbenchID, claudeID)
 	}()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
