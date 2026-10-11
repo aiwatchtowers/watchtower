@@ -201,15 +201,17 @@ func assertAskToolBlockGroup(t *testing.T, pre []any, bin string) {
 // replaces it with the command entry (spec 2026-10-10-owner-asks-v2 Part
 // 4.8); the owner's hooks — a marker of another workbench, or the marker not
 // on the first line — and keys stay as they were. Our command entry written
-// from another binary is updated in place, the owner's keys on it kept.
+// from another binary is updated in place, the owner's keys on it kept, and
+// the keys the owner put on our replaced prompt are carried onto it (the
+// entry's own win: its timeout 12 over the prompt's 20).
 func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) {
 	folder := fakeRepo(t)
 	const owner = `{
   "model": "sonnet",
   "hooks": {
     "Stop": [
-      {"hooks": [{"type": "command", "command": "echo owner-stop", "x-owner": 1.50}]},
-      {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nthe owner rewrote this", "timeout": 12}]},
+      {"hooks": [{"type": "command", "command": "echo owner-stop", "x-owner-stop": 4.50}]},
+      {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nthe owner rewrote this", "timeout": 20, "x-owner": 1.50}]},
       {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 8]\nanother workbench"}]},
       {"hooks": [{"type": "prompt", "prompt": "Is the work done? [watchtower-workbench ask-guard 7]"}]},
       {"hooks": [{"type": "command", "command": "/opt/old/watchtower workbench ask-guard --workbench 7 --stop", "timeout": 12, "x-ours": 3.50}]}
@@ -241,20 +243,61 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
 		countCommand(stop, WorkbenchAskGuardStopHookCommand(o.Bin, 7)) != 1 {
 		t.Fatalf("Stop must hold the owner's groups, the drift command and ours, got %#v", stop)
 	}
-	// Ours is updated in place to this binary; the owner's keys on it stay.
+	// Ours is updated in place to this binary; the owner's keys on it stay,
+	// and the owner's key on our replaced prompt is carried onto it.
 	ours := stop[3].(map[string]any)["hooks"].([]any)[0].(map[string]any)
-	if ours["command"] != WorkbenchAskGuardStopHookCommand(o.Bin, 7) || ours["type"] != "command" || ours["timeout"] != float64(12) || ours["x-ours"] != float64(3.5) {
-		t.Fatalf("our command entry must be updated in place with its other keys kept, got %#v", ours)
+	if ours["command"] != WorkbenchAskGuardStopHookCommand(o.Bin, 7) || ours["type"] != "command" || ours["timeout"] != float64(12) ||
+		ours["x-ours"] != float64(3.5) || ours["x-owner"] != float64(1.5) || len(ours) != 5 {
+		t.Fatalf("our command entry must be updated in place with its keys kept and the prompt's carried, got %#v", ours)
 	}
 	pre := eventGroups(t, after, "PreToolUse")
 	if len(pre) != 2 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) {
 		t.Fatalf("PROJ-04: the owner's PreToolUse group must stay first and as it was, got %#v", pre)
 	}
 	raw := readTestFile(t, settingsFile(folder))
-	for _, lit := range []string{`"x-owner": 1.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`} {
+	for _, lit := range []string{`"x-owner": 1.50`, `"x-owner-stop": 4.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`} {
 		if !strings.Contains(raw, lit) {
 			t.Fatalf("PROJ-04: an owner number literal changed (%s):\n%s", lit, raw)
 		}
+	}
+}
+
+// PROJ-04: with no command entry of ours yet, the one an install adds in
+// place of our edited prompt carries the owner's keys on that prompt, its
+// timeout among them; type and prompt are not carried.
+func TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt(t *testing.T) {
+	folder := fakeRepo(t)
+	writeTestFile(t, settingsFile(folder), `{"hooks": {"Stop": [
+  {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nthe owner rewrote this", "timeout": 20, "x-owner": 1.50}]}
+]}}`)
+	o := workbenchOpts(folder, newFakeClaude())
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	stop := eventGroups(t, decodeSettings(t, folder), "Stop")
+	if len(promptHooks(stop)) != 0 {
+		t.Fatalf("our prompt must be replaced, got %#v", stop)
+	}
+	cmd := WorkbenchAskGuardStopHookCommand(o.Bin, 7)
+	var ours map[string]any
+	for _, g := range stop {
+		for _, h := range g.(map[string]any)["hooks"].([]any) {
+			if hm := h.(map[string]any); hm["command"] == cmd {
+				ours = hm
+			}
+		}
+	}
+	want := map[string]any{"type": "command", "command": cmd, "timeout": float64(20), "x-owner": float64(1.5)}
+	if !reflect.DeepEqual(ours, want) {
+		t.Fatalf("the command entry must carry the prompt's keys, got %#v want %#v", ours, want)
+	}
+	raw := readTestFile(t, settingsFile(folder))
+	if !strings.Contains(raw, `"x-owner": 1.50`) {
+		t.Fatalf("PROJ-04: the owner's number literal changed:\n%s", raw)
+	}
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err != nil || rep.HookChanged {
+		t.Fatalf("a second resync must change no hook: %+v err=%v", rep, err)
 	}
 }
 

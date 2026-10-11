@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -185,8 +186,12 @@ func InstallAskGuardHooks(dir, bin string, workbenchID int64) (bool, error) {
 	return guarded || blocked, err
 }
 
-// installHook sets spec's entry for projectID to command, dropping the
-// marker prompt it replaces (hookSpec.replacesMarkerPrompt).
+// installHook sets spec's entry for projectID to command, replacing the
+// marker prompt it supersedes (hookSpec.replacesMarkerPrompt): the prompt
+// entry goes and its keys other than type and prompt (the owner's timeout
+// among them) are carried onto our command entry. A command entry already
+// there keeps the keys it holds — the in-place rule of upsertOurHook; a
+// fresh one takes the prompt's over its defaults (PROJ-04).
 func installHook(dir string, spec hookSpec, command string, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, _, err := readSettings(file)
@@ -197,12 +202,17 @@ func installHook(dir string, spec hookSpec, command string, projectID int64) (bo
 	if err != nil {
 		return false, err
 	}
-	updated, changed := upsertOurHook(groups, spec, projectID, command)
+	var carried map[string]any
+	dropped := false
 	if spec.replacesMarkerPrompt {
-		var dropped bool
-		updated, dropped = withoutHooks(updated, func(h any) bool { return isOurMarkerPrompt(h, projectID) })
-		changed = changed || dropped
+		isMarker := func(h any) bool { return isOurMarkerPrompt(h, projectID) }
+		carried = carriedKeys(groups, isMarker)
+		groups, dropped = withoutHooks(groups, isMarker)
 	}
+	held := anyHook(groups, func(h any) bool { return isOurHook(h, spec, projectID) })
+	updated, changed := upsertOurHook(groups, spec, projectID, command)
+	updated = withKeysOnOurHook(updated, spec, projectID, carried, !held)
+	changed = changed || dropped
 	if !changed {
 		return false, nil
 	}
@@ -661,6 +671,61 @@ func withOurCommand(hm map[string]any, command string) map[string]any {
 	}
 	cp["command"] = command
 	return cp
+}
+
+// carriedKeys collects the keys, other than type and prompt, of every hook
+// match picks (the first such hook wins a key), nil when none holds any.
+func carriedKeys(groups []any, match func(h any) bool) map[string]any {
+	var keys map[string]any
+	for _, g := range groups {
+		_, hs, ok := groupHooks(g)
+		if !ok {
+			continue
+		}
+		for _, h := range hs {
+			hm, ok := h.(map[string]any)
+			if !ok || !match(h) {
+				continue
+			}
+			for k, v := range hm {
+				if _, seen := keys[k]; seen || k == "type" || k == "prompt" {
+					continue
+				}
+				if keys == nil {
+					keys = map[string]any{}
+				}
+				keys[k] = v
+			}
+		}
+	}
+	return keys
+}
+
+// withKeysOnOurHook returns groups with keys set on our hook for projectID:
+// with override every key, else only those it does not hold yet.
+func withKeysOnOurHook(groups []any, spec hookSpec, projectID int64, keys map[string]any, override bool) []any {
+	if len(keys) == 0 {
+		return groups
+	}
+	out := slices.Clone(groups)
+	for i, g := range out {
+		m, hs, ok := groupHooks(g)
+		j := slices.IndexFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) })
+		if !ok || j < 0 {
+			continue
+		}
+		hm, _ := hs[j].(map[string]any)
+		cp := maps.Clone(hm)
+		for k, v := range keys {
+			if _, held := cp[k]; override || !held {
+				cp[k] = v
+			}
+		}
+		rest := slices.Clone(hs)
+		rest[j] = cp
+		out[i] = groupWithHooks(m, rest)
+	}
+	return out
 }
 
 // newOurHookGroup builds a fresh group holding only our hook running
