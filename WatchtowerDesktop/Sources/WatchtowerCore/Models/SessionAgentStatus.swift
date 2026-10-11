@@ -40,6 +40,12 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     package var agentBackground: Int?
     /// When that count was reported (same format as `agentStateAt`).
     package var agentBackgroundAt: String?
+    /// The Chat question the Stop ask guard recorded (migration 00107, Go
+    /// writes only): JSON `{"question", "options"}`; nil = none.
+    package var chatQuestion: String?
+    /// When it was recorded (same format as `agentStateAt`), kept raw: the
+    /// escalation passes it back to Go verbatim as `--at`.
+    package var chatQuestionAt: String?
 
     package init(
         id: Int64,
@@ -55,7 +61,9 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         openAsks: Int = 0,
         oldestOpenAskID: Int64? = nil,
         agentBackground: Int? = nil,
-        agentBackgroundAt: String? = nil
+        agentBackgroundAt: String? = nil,
+        chatQuestion: String? = nil,
+        chatQuestionAt: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -71,6 +79,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.oldestOpenAskID = oldestOpenAskID
         self.agentBackground = agentBackground
         self.agentBackgroundAt = agentBackgroundAt
+        self.chatQuestion = chatQuestion
+        self.chatQuestionAt = chatQuestionAt
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -89,6 +99,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case oldestOpenAskID = "oldest_open_ask_id"
         case agentBackground = "agent_background"
         case agentBackgroundAt = "agent_background_at"
+        case chatQuestion = "chat_question"
+        case chatQuestionAt = "chat_question_at"
     }
 }
 
@@ -193,7 +205,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
 
     /// The row's hook state when it was written during the run started at
     /// `startedAt`; nil otherwise.
-    private static func trustedHook(_ row: SessionAgentStateRow, startedAt: Date?) -> SessionAgentState? {
+    package static func trustedHook(_ row: SessionAgentStateRow, startedAt: Date?) -> SessionAgentState? {
         guard let stored = row.stored, writtenThisRun(row, startedAt: startedAt) else { return nil }
         return stored
     }
@@ -276,9 +288,24 @@ package struct SessionAgentStatus: Equatable, Sendable {
         return formatter
     }()
 
-    /// Parses an `agent_state_at` stamp; nil for anything else.
+    /// Parses an `agent_state_at` stamp; nil for anything else — also for
+    /// a near miss the formatter alone would take (two fraction digits, an
+    /// offset instead of `Z`), which Go's parser refuses (the shared
+    /// fixture `internal/db/testdata/stamps`).
     package static func parseStamp(_ stamp: String) -> Date? {
-        stampFormatter.date(from: stamp)
+        guard hasStampLayout(stamp) else { return nil }
+        return stampFormatter.date(from: stamp)
+    }
+
+    /// `yyyy-MM-ddTHH:mm:ss.SSSZ` character for character, digits where
+    /// the layout has digits.
+    private static func hasStampLayout(_ stamp: String) -> Bool {
+        let layout = Array("dddd-dd-ddTdd:dd:dd.dddZ".utf8)
+        let bytes = Array(stamp.utf8)
+        guard bytes.count == layout.count else { return false }
+        return zip(bytes, layout).allSatisfy { byte, want in
+            want == UInt8(ascii: "d") ? (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) : byte == want
+        }
     }
 
     /// `at` in the `agent_state_at` layout Go writes (`db.AgentStateStamp`,
