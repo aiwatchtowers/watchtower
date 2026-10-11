@@ -21,6 +21,21 @@ private final class ProbedTerminalSession: TerminalSessionProcess {
     func sendInput(_ bytes: [UInt8]) {}
 }
 
+/// A process that exits the moment it starts, as a launch whose `claude`
+/// is missing or whose resume Claude Code refuses does.
+@MainActor
+private final class ExitingTerminalSession: TerminalSessionProcess {
+    let view = NSView()
+    let pid: pid_t = 0
+    var onExit: ((Int32?) -> Void)?
+    var onOwnerInput: (([UInt8]) -> Void)?
+    var bracketedPasteMode = true
+
+    func start(_ launch: TerminalLaunch) { onExit?(127) }
+    func detach() {}
+    func sendInput(_ bytes: [UInt8]) {}
+}
+
 @MainActor
 private final class Counter {
     var value = 0
@@ -380,6 +395,251 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         XCTAssertNotNil(vm.sessionErrors[a])
         XCTAssertNil(vm.sessionErrors[b])
+    }
+
+    // MARK: - Work on it sets in progress (board #499)
+
+    private func status(_ id: Int64) async throws -> String? {
+        try await pool.read { try String.fetchOne($0, sql: "SELECT status FROM targets WHERE id = ?", arguments: [id]) }
+    }
+
+    private func history(_ id: Int64) async throws -> [TargetStatusChange] {
+        try await pool.read { try TargetQueries.statusHistory($0, targetID: id) }
+    }
+
+    /// A new session: the todo task moves to in_progress as the owner's
+    /// write, reported as the owner's (no notice), and the Board is told to
+    /// reload at once.
+    func testWorkOnANewSessionSetsATodoTaskInProgressAsTheOwners() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+
+        let started = try await rows(p).filter { $0.targetID == target }
+        let after = try await status(target)
+        let changes = try await history(target)
+        XCTAssertEqual(started.count, 1)
+        XCTAssertEqual(after, "in_progress")
+        let last = try XCTUnwrap(changes.last)
+        XCTAssertEqual(last.fromStatus, "todo")
+        XCTAssertEqual(last.actor, "owner")
+        XCTAssertEqual(ownerWrites, [.target(target)])
+        XCTAssertEqual(vm.boardReloads[p], 1)
+    }
+
+    /// An existing session opened by Work on it: a target still todo moves
+    /// too; the parent the rollup moved is reported as the owner's write.
+    func testWorkOnAnExistingSessionSetsATodoTaskInProgress() async throws {
+        let p = try await workbenchWithFolder()
+        let (group, target) = try await pool.write { d -> (Int64, Int64) in
+            let group = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Group")
+            return (group, try TestDatabase.insertWorkbenchTarget(d, projectID: p, parentID: group))
+        }
+        let existing = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "Feature", targetID: target,
+            folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+
+        let all = try await rows(p)
+        let targetStatus = try await status(target)
+        let groupStatus = try await status(group)
+        XCTAssertEqual(all.map(\.id), [existing.id], "no new row")
+        XCTAssertEqual(targetStatus, "in_progress")
+        XCTAssertEqual(groupStatus, "in_progress", "the rollup (PROJ-05)")
+        XCTAssertEqual(ownerWrites, [.target(target), .target(group)])
+    }
+
+    /// Pressing it on work already moving, waiting or closed never changes
+    /// the status — a closed target is never reopened.
+    func testWorkOnLeavesEveryOtherStatusAlone() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+        for current in ["in_progress", "in_review", "blocked", "done", "dismissed"] {
+            let target = try await pool.write {
+                try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: current, status: current)
+            }
+            let before = try await history(target)
+
+            await vm.workOn(targetID: target, targetText: current, projectID: p)
+
+            let started = try await rows(p).filter { $0.targetID == target }
+            let after = try await status(target)
+            let changes = try await history(target)
+            XCTAssertEqual(started.count, 1, "\(current): the session starts")
+            XCTAssertEqual(after, current)
+            XCTAssertEqual(changes, before, current)
+        }
+        XCTAssertEqual(ownerWrites, [])
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// A group's status follows its sub-targets (PROJ-05): its session
+    /// starts and nothing is written.
+    func testWorkOnAGroupWritesNoStatus() async throws {
+        let p = try await workbenchWithFolder()
+        let (group, child) = try await pool.write { d -> (Int64, Int64) in
+            let group = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Group")
+            return (group, try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Task", parentID: group))
+        }
+        let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+
+        await vm.workOn(targetID: group, targetText: "Group", projectID: p)
+
+        let started = try await rows(p).filter { $0.targetID == group }
+        let groupStatus = try await status(group)
+        let childStatus = try await status(child)
+        XCTAssertEqual(started.count, 1)
+        XCTAssertEqual(groupStatus, "todo")
+        XCTAssertEqual(childStatus, "todo")
+        XCTAssertEqual(ownerWrites, [])
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// The write is keyed by the target's own workbench, never the selected
+    /// one: Work on it on workbench B's target while A is selected (no
+    /// `projectID` given) reloads and reports B only.
+    func testWorkOnStatusWriteIsKeyedByTheTargetsWorkbench() async throws {
+        let a = try await workbenchWithFolder("a")
+        let b = try await workbenchWithFolder("b")
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: b) }
+        let vm = makeVM()
+        var ownerWrites: [(Int64, WorkbenchSubject)] = []
+        vm.onOwnerWrite = { project, subject in ownerWrites.append((project, subject)) }
+        await vm.reload()
+        vm.selectedWorkbenchID = a
+
+        await vm.workOn(targetID: target, targetText: "Feature")
+
+        let after = try await status(target)
+        XCTAssertEqual(after, "in_progress")
+        XCTAssertEqual(vm.boardReloads[b], 1)
+        XCTAssertNil(vm.boardReloads[a])
+        XCTAssertEqual(ownerWrites.map(\.0), [b])
+        XCTAssertEqual(ownerWrites.map(\.1), [.target(target)])
+    }
+
+    /// The status is written only after the session started: a failed read
+    /// of the target's sessions leaves it todo.
+    func testWorkOnWritesNoStatusWhenTheReadFails() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        await vm.reload()
+
+        // `readTargetSessions` reads terminal_sessions before any create.
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
+
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not read the target"), error)
+        let after = try await status(target)
+        XCTAssertEqual(after, "todo")
+        XCTAssertTrue(launches.isEmpty)
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// A failed create (the read succeeded, the row insert is refused) and
+    /// a refused launch (the folder is gone) leave the target todo.
+    func testWorkOnWritesNoStatusWhenTheSessionDidNotStart() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        await vm.reload()
+
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuse_session_insert BEFORE INSERT ON terminal_sessions
+                BEGIN SELECT RAISE(ABORT, 'insert refused'); END
+                """)
+        }
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER temp.refuse_session_insert") }
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not create a terminal session"), error)
+        let afterFailedCreate = try await status(target)
+        XCTAssertEqual(afterFailedCreate, "todo", "a failed create")
+        XCTAssertTrue(launches.isEmpty)
+
+        try FileManager.default.removeItem(atPath: acme)
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        let stored = try await rows(p)
+        let row = try XCTUnwrap(stored.first { $0.targetID == target })
+        guard case .unavailable? = center.states[row.id] else {
+            return XCTFail("got \(String(describing: center.states[row.id]))")
+        }
+        let afterRefusedLaunch = try await status(target)
+        XCTAssertEqual(afterRefusedLaunch, "todo", "a refused launch")
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// A status write that fails after the session started leaves the
+    /// session running, the target todo, and says so on the page; nothing is
+    /// reported as the owner's write and the Board is not told to reload.
+    func testWorkOnStatusWriteFailureKeepsTheSessionAndSaysSo() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        var ownerWrites: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TEMP TRIGGER refuse_target_update BEFORE UPDATE ON targets
+                BEGIN SELECT RAISE(ABORT, 'update refused'); END
+                """)
+        }
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER temp.refuse_target_update") }
+
+        let error = try XCTUnwrap(vm.sessionErrors[p])
+        XCTAssertTrue(error.contains("Could not set target #\(target)"), error)
+        let after = try await status(target)
+        XCTAssertEqual(after, "todo")
+        let stored = try await rows(p)
+        let row = try XCTUnwrap(stored.first { $0.targetID == target })
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertEqual(ownerWrites, [])
+        XCTAssertNil(vm.boardReloads[p])
+    }
+
+    /// An exit already reported by the time the session is back (the fake
+    /// reports it synchronously from `start`) writes nothing: the target stays
+    /// todo. A real quick exit arrives later and is the documented v1 limit.
+    func testWorkOnWritesNoStatusWhenTheProcessExitsAtOnce() async throws {
+        center = TerminalCenter { ExitingTerminalSession() }
+        center.shell = { "/bin/zsh" }
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
+        let vm = makeVM()
+        await vm.reload()
+
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+
+        let stored = try await rows(p)
+        let row = try XCTUnwrap(stored.first { $0.targetID == target })
+        XCTAssertEqual(center.states[row.id], .exited(127))
+        let after = try await status(target)
+        XCTAssertEqual(after, "todo")
+        XCTAssertNil(vm.boardReloads[p])
     }
 
     // MARK: - Open / delete / rename
