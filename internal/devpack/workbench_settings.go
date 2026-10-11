@@ -71,9 +71,11 @@ var (
 		stateHookSpec("StopFailure"),
 	}
 	// stateHookSpecs: every state hook an install writes and a removal takes
-	// out — the core four plus SubagentStop, which lowers the background
-	// count (board #411). The status needs all of them (HasStateHooks).
-	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"))
+	// out — the core four plus SubagentStop, which ends a subagent's or
+	// teammate's turn and lowers the background count (board #411), and
+	// SubagentStart, which opens one (board #543). The status needs all of
+	// them (HasStateHooks).
+	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"), stateHookSpec("SubagentStart"))
 	// askGuardSpec: the Stop command hook that sends a request the agent left
 	// as plain text back to ask_owner unless the owner is there to answer it
 	// (spec 2026-10-10-owner-asks-v2 Part 4, PROJ-13). It replaces the v1–v3

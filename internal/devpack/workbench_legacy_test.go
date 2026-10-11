@@ -142,6 +142,7 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		"PostToolUse":      {state},
 		"StopFailure":      {state},
 		"SubagentStop":     {state},
+		"SubagentStart":    {state},
 		"PreToolUse":       {WorkbenchAskGuardHookCommand(legacyBin, 7)},
 	}
 	if got := ourCommands(t, folder); !reflect.DeepEqual(got, want) {
