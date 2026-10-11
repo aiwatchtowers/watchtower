@@ -1016,3 +1016,28 @@ func TestProj13_ACancelledModelCallLeavesNoProcess(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// The fixed reasons are the spec's literal strings (Part 4.5); R-finish is
+// the v3 prompt's finish reason, unchanged.
+func TestAskGuardReasonsAreTheSpecsText(t *testing.T) {
+	assert.Equal(t, "You asked the owner for a review, a check or several decisions in plain text. File it with ask_owner "+
+		"(kind review, check or question with up to 4 questions), name it as 'ask #<id>' in your text, then stop.", askGuardReasonFull)
+	assert.Equal(t, "The owner is not in this session, so a question in the terminal would wait unseen. File it with "+
+		"ask_owner (kind question; one decision with 2-3 short options shows as a one-tap Quick ask), name it as "+
+		"'ask #<id>' in your text, then stop.", askGuardReasonAway)
+	assert.Equal(t, "Your work in this session looks complete, and your message still asks the owner something. File "+
+		"the open question with ask_owner and name it as 'ask #<id>', then call finish_session with a 2-3 line "+
+		"summary for the owner (what was done, the PRs, what is left on them), say 'session finished', then stop.",
+		askGuardReasonFinishAsk)
+
+	v3, err := os.ReadFile(filepath.Join("..", "internal", "devpack", "askguard_prompt.md"))
+	require.NoError(t, err)
+	flat := strings.Join(strings.Fields(string(v3)), " ")
+	_, after, ok := strings.Cut(flat, `2. Finished without saying so:`)
+	require.True(t, ok, "the v3 prompt's case 2")
+	_, reason, ok := strings.Cut(after, `"reason": "`)
+	require.True(t, ok)
+	reason, _, ok = strings.Cut(reason, `"}`)
+	require.True(t, ok)
+	assert.Equal(t, reason, askGuardReasonFinish, "R-finish is the v3 finish reason, unchanged")
+}
