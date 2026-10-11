@@ -30,7 +30,7 @@ final class WorkbenchWiringTests: XCTestCase {
             "1 working", "1 waiting for you", "1 needs approval", "2 finished", "1 failed", "1 stopped"
         ])
         XCTAssertEqual(try XCTUnwrap(acme.progress), 1.0 / 8.0, accuracy: 0.0001)
-        XCTAssertEqual(acme.countsLine, "3 in progress · 3 todo · 1 blocked · 1 done")
+        XCTAssertEqual(acme.doneLine, "1/8 done")
         XCTAssertEqual(acme.pills.map(\.text), ["3 waiting", "1 error"])
         XCTAssertEqual(try card(DemoSeed.websiteID).pills.map(\.text), [], "a working workbench is not idle")
     }
@@ -38,7 +38,7 @@ final class WorkbenchWiringTests: XCTestCase {
     func testAZeroOfZeroBoardHasNoProgressBar() throws {
         let notes = try card(DemoSeed.notesID)
         XCTAssertNil(notes.progress)
-        XCTAssertEqual(notes.countsLine, "0 in progress · 0 todo · 0 done")
+        XCTAssertEqual(notes.doneLine, "No targets", "0 of 0 draws no bar and says so")
         XCTAssertTrue(notes.stateCounts.isEmpty)
         XCTAssertEqual(notes.pills.map(\.text), ["idle"])
     }

@@ -119,18 +119,15 @@ struct WaitingCardModel: Equatable, Identifiable {
     }
 }
 
-/// The board's counts as one line: "3 in progress · 3 todo · 1 blocked ·
-/// 1 done". "todo" is the open targets that are neither in progress nor
+/// The board's counts as one line: "3 in progress · 3 todo · 1 blocked".
+/// "todo" is the open targets that are neither in progress nor
 /// blocked (in review counts there too).
 enum BoardCounts {
-    static func parts(_ workbench: Workbench, includeDone: Bool) -> [String] {
+    static func parts(_ workbench: Workbench) -> [String] {
         let todo = max(0, workbench.openTargets - workbench.inProgressTargets - workbench.blockedTargets)
         var parts = ["\(workbench.inProgressTargets) in progress", "\(todo) todo"]
         if workbench.blockedTargets > 0 {
             parts.append("\(workbench.blockedTargets) blocked")
-        }
-        if includeDone {
-            parts.append("\(workbench.doneTargets) done")
         }
         return parts
     }
@@ -151,7 +148,8 @@ struct WorkbenchCardModel: Equatable, Identifiable {
     /// done/(open+done); nil for a 0-of-0 board (no bar).
     let progress: Double?
     let progressTone = PhoneTone.green
-    let countsLine: String
+    /// "1/8 done"; "No targets" for a 0-of-0 board (which draws no bar).
+    let doneLine: String
 
     struct Pill: Equatable, Identifiable {
         let text: String
@@ -182,7 +180,7 @@ struct WorkbenchCardModel: Equatable, Identifiable {
         self.pills = pills
         let total = workbench.openTargets + workbench.doneTargets
         progress = total > 0 ? Double(workbench.doneTargets) / Double(total) : nil
-        countsLine = BoardCounts.parts(workbench, includeDone: true).joined(separator: " · ")
+        doneLine = total > 0 ? "\(workbench.doneTargets)/\(total) done" : "No targets"
     }
 
     var toneUses: [ToneUse] {
@@ -218,7 +216,7 @@ struct WorkbenchMenuModel {
         id = workbench.id
         title = workbench.name
         let branch = workbench.detached ? "detached" : workbench.branch
-        subline = ([branch].filter { !$0.isEmpty } + BoardCounts.parts(workbench, includeDone: false)).joined(separator: " · ")
+        subline = ([branch].filter { !$0.isEmpty } + BoardCounts.parts(workbench)).joined(separator: " · ")
         waiting = snapshot.openAsks(in: workbenchID).map { WaitingCardModel($0, snapshot: snapshot, now: now) }
         closedAsks = snapshot.asks
             .filter { $0.workbenchID == workbenchID && $0.status != .open }
