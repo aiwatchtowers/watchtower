@@ -2,6 +2,7 @@ package digest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,5 +64,30 @@ func TestIsolateChildKillsTheGroupAndDropsEnv(t *testing.T) {
 	}
 	if strings.Contains(string(env), "WT_DROP_ME=") || !strings.Contains(string(env), "WT_KEEP_ME=1") {
 		t.Fatalf("env = %q: WT_DROP_ME must be gone, WT_KEEP_ME kept", env)
+	}
+}
+
+// A nil cmd.Env means this process's environment: the dropped variables are
+// filtered out of it, never left in by an empty list.
+func TestIsolateChildNilEnvStartsFromTheProcessEnvironment(t *testing.T) {
+	t.Setenv("WT_DROP_ME", "1")
+	t.Setenv("WT_KEEP_ME", "1")
+	cmd := exec.Command("true")
+	IsolateChild(cmd, []string{"WT_DROP_ME"})
+	joined := strings.Join(cmd.Env, "\n")
+	if strings.Contains(joined, "WT_DROP_ME=") || !strings.Contains(joined, "WT_KEEP_ME=1") {
+		t.Fatalf("env = %q: WT_DROP_ME must be gone, WT_KEEP_ME kept", cmd.Env)
+	}
+}
+
+// A cancel after the child was waited for kills nothing and says so.
+func TestIsolateChildCancelAfterTheWaitKillsNothing(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "true")
+	IsolateChild(cmd, nil)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Cancel(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("cancel after the wait = %v, want os.ErrProcessDone", err)
 	}
 }
