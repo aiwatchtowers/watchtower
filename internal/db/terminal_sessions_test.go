@@ -1134,6 +1134,40 @@ func TestProj11_AgentTurnsCapDropsOldestClosed(t *testing.T) {
 	}
 }
 
+// agentStateSnapshot is row id's agent state columns in one string.
+func agentStateSnapshot(t *testing.T, d *DB, id int64) string {
+	t.Helper()
+	var s string
+	if err := d.QueryRow(`SELECT agent_state || agent_state_at || agent_background || agent_background_at ||
+		COALESCE(finished_at, '-') || agent_turn_end || agent_tool_run FROM terminal_sessions WHERE id = ?`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// turnScopeCase is one agent turn write and whether it may land on the row.
+type turnScopeCase struct {
+	name      string
+	workbench int64
+	session   string
+	wantWrite bool
+}
+
+// recordTurnScoped opens agent "a-<name>"'s turn at `at` for each case and
+// fails when a write landed or was refused against the case's wantWrite.
+func recordTurnScoped(t *testing.T, d *DB, id int64, at time.Time, cases []turnScopeCase) {
+	t.Helper()
+	for _, tc := range cases {
+		turns, err := d.RecordTerminalAgentTurn(id, tc.workbench, tc.session, "a-"+tc.name, true, at)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if (turns != nil) != tc.wantWrite {
+			t.Fatalf("%s: wrote = %v, want %v", tc.name, turns != nil, tc.wantWrite)
+		}
+	}
+}
+
 // Board #543: an agent turn write changes agent_turns only, and only on
 // workbench pid's claude row of the conversation that reported it.
 func TestProj11_AgentTurnWriteNeverTouchesTheState(t *testing.T) {
@@ -1151,35 +1185,14 @@ func TestProj11_AgentTurnWriteNeverTouchesTheState(t *testing.T) {
 		t.Fatal("the Stop did not write")
 	}
 	others := otherAgentColumns(t, d, id)
-	snapshot := func() string {
-		var s string
-		if err := d.QueryRow(`SELECT agent_state || agent_state_at || agent_background || agent_background_at ||
-			COALESCE(finished_at, '-') || agent_turn_end || agent_tool_run FROM terminal_sessions WHERE id = ?`, id).Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
-	before := snapshot()
+	before := agentStateSnapshot(t, d, id)
 
-	for _, tc := range []struct {
-		name      string
-		workbench int64
-		session   string
-		wantWrite bool
-	}{
+	recordTurnScoped(t, d, id, t0.Add(time.Second), []turnScopeCase{
 		{"its own conversation", pid, agentStateUUID, true},
 		{"another conversation", pid, otherUUID, false},
 		{"another workbench", other, agentStateUUID, false},
-	} {
-		turns, err := d.RecordTerminalAgentTurn(id, tc.workbench, tc.session, "a-"+tc.name, true, t0.Add(time.Second))
-		if err != nil {
-			t.Fatalf("%s: %v", tc.name, err)
-		}
-		if (turns != nil) != tc.wantWrite {
-			t.Fatalf("%s: wrote = %v, want %v", tc.name, turns != nil, tc.wantWrite)
-		}
-	}
-	if got := snapshot(); got != before {
+	})
+	if got := agentStateSnapshot(t, d, id); got != before {
 		t.Fatalf("the state columns moved: %q → %q", before, got)
 	}
 	if got := otherAgentColumns(t, d, id); got != others {
