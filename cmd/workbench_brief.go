@@ -570,13 +570,3 @@ func briefCommentLine(c db.WorkbenchComment, titles map[int64]string) string {
 	body := briefClip(c.Body, 160)
 	return fmt.Sprintf("%s on target #%d %q: %s", who, c.TargetID.Int64, briefClip(titles[c.TargetID.Int64], 60), body)
 }
-
-// briefClip collapses whitespace to single spaces and cuts s to n runes.
-func briefClip(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	r := []rune(s)
-	return string(r[:n-1]) + "…"
-}

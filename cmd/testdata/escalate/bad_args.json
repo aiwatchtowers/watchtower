@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error_code": "bad_args",
+  "error": "--session takes a positive id"
+}

@@ -203,18 +203,6 @@ func askGuardMessageTail(message string) string {
 	return askGuardCutMarker + tail
 }
 
-// oneLine collapses every run of whitespace, line breaks included, to one
-// space.
-func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-// clipRunes cuts s to at most n runes.
-func clipRunes(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return strings.TrimSpace(string([]rune(s)[:n]))
-}
-
 // askGuardResolution is what the guard knows about the session after the
 // model call (Part 4.6).
 type askGuardResolution struct {

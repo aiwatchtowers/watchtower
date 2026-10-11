@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error_code": "internal",
+  "error": "loading config: no workspace"
+}

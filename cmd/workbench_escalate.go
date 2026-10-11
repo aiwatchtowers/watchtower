@@ -42,9 +42,6 @@ const (
 // retries). A var for tests.
 var escalateBusyTimeout = 5 * time.Second
 
-// escalateTitleRunes bounds the raised ask's title (asks.Validate's cap).
-const escalateTitleRunes = 120
-
 var workbenchEscalateCmd = &cobra.Command{
 	Use:   "escalate-question",
 	Short: "Raise a terminal session's unanswered chat question to an owner ask",
@@ -234,7 +231,7 @@ func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion
 	}
 	in := asks.Input{
 		Kind:      asks.KindQuestion,
-		Title:     clipRunes(oneLine(q.Question), escalateTitleRunes),
+		Title:     clipRunes(oneLine(q.Question), asks.MaxTitleRunes),
 		Summary:   q.Question + "\n" + escalateReasonLine(a.reason, now.Sub(a.asked)),
 		Questions: []asks.Question{{ID: "q1", Question: q.Question, Options: opts}},
 	}

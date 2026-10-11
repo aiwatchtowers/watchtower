@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/asks"
-	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -165,15 +164,9 @@ const asksBusyTimeout = 2 * time.Second
 // 00107 ask columns is refused, so an older database fails clearly instead
 // of on the first query.
 func openAsksDB() (*db.DB, error) {
-	cfg, err := config.Load(flagConfig)
+	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return nil, err
 	}
 	database, err := db.OpenExisting(cfg.DBPath(), asksBusyTimeout)
 	if err != nil {
