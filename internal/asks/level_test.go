@@ -87,6 +87,7 @@ func TestLevelNoteNamesTheFirstFailedRule(t *testing.T) {
 		{"long label before a long description", KindQuestion, questionPayload(Question{Options: []Option{{Label: "A", Description: strings.Repeat("d", 101)}, {Label: long}}}), OriginAgent, `option "` + long + `": a Quick ask's labels are at most 40 characters`},
 		{"long description", KindQuestion, questionPayload(Question{Options: []Option{{Label: "A", Description: strings.Repeat("d", 101)}, {Label: "B"}}}), OriginAgent, `option "A" description: a Quick ask's descriptions are at most 100 characters`},
 		{"focus", KindQuestion, Payload{Focus: []Focus{{Text: "x"}}, Questions: []Question{{Options: optionsN(2)}}}, OriginAgent, "focus points: a Quick ask has none"},
+		{"checklist", KindQuestion, Payload{Questions: []Question{{Options: optionsN(2)}}, Checklist: []ChecklistItem{{Text: "x"}}}, OriginAgent, "a checklist: a Quick ask has none"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
