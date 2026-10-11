@@ -24,6 +24,20 @@ extension WorkbenchesViewModel {
         return true
     }
 
+    /// A Quick ask's option tapped or Reply sent, on its banner or stack
+    /// card (spec 2026-10-10 Part 9.1–9.2): the drawer's answer path
+    /// (`OwnerAsksViewModel.answer(_:with:)`). An ask withdrawn meanwhile
+    /// writes and types nothing; its card leaves with the reload, and its
+    /// drawer opens read-only on the "withdrawn" note (E29).
+    @discardableResult
+    func answerQuick(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> OwnerAsksViewModel.Delivery? {
+        let delivery = await asks.answer(ask, with: answer)
+        if delivery == nil, asks.answerNotices[ask.id] == .withdrawn {
+            await showAsk(ask.id, projectID: ask.projectID)
+        }
+        return delivery
+    }
+
     /// An `ask #N` clicked in a session's terminal (board #500): that ask's
     /// drawer, the way a stack row opens it — only for an ask of the
     /// session's own workbench. False, with nothing opened or reported, for

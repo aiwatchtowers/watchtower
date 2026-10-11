@@ -490,9 +490,20 @@ final class OwnerAsksViewModel {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
+        return await answer(ask, with: draft.answer(for: ask))
+    }
+
+    /// Writes `answer` to `ask` and delivers its line — the one path of the
+    /// drawer's answer and a Quick ask's tap or Reply (spec 2026-10-10 Part
+    /// 9.1, PROJ-12): the guarded write, then `deliver`. Nil when nothing was
+    /// written: an answer already running, the ask no longer open (the
+    /// `withdrawn` notice, the list reloaded) or a failed write
+    /// (`answerErrors`). A success discards the ask's draft.
+    @discardableResult
+    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> Delivery? {
+        guard !isAnswering(ask.id) else { return nil }
         answering.insert(ask.id)
         defer { answering.remove(ask.id) }
-        let answer = draft.answer(for: ask)
         let (askID, projectID) = (ask.id, ask.projectID)
         do {
             try await dbPool.write { db in
