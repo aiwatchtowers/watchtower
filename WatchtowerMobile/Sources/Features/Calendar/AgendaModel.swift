@@ -192,6 +192,15 @@ struct AgendaDayModel {
     /// The now line's time; nil on any day but today.
     let nowLineText: String?
 
+    /// The highlighted card's row, scrolled to the middle on appear and on
+    /// every day change (design pass spec §3 bug 2); nil when no card is
+    /// highlighted, so the day stays at the top.
+    var highlightedRowID: String? {
+        rows.first { row in
+            if case let .event(card) = row { card.isHighlighted } else { false }
+        }?.id
+    }
+
     init(
         day: Date,
         snapshot: CalendarReplicaSnapshot,
@@ -248,6 +257,22 @@ struct AgendaDayModel {
                 if left != right { return left < right }
                 return lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
             }
+    }
+}
+
+/// The agenda's scroll to its highlighted row, keyed by day and row.
+struct AgendaScrollKey: Hashable {
+    let day: Date
+    let rowID: String?
+}
+
+/// The scroll runs once per day (spec §9.2), the first time the day has a
+/// highlighted row: a return from a pushed screen, or the next meeting
+/// taking over while the user reads, must not snap the list; a snapshot
+/// that highlights a row later still scrolls to it.
+enum AgendaScroll {
+    static func target(for key: AgendaScrollKey, scrolledDay: Date?) -> String? {
+        key.day == scrolledDay ? nil : key.rowID
     }
 }
 

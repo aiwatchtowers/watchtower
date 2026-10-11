@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerSync
 
-/// Settings (reached from More): Your Mac, read-only accounts, the Workbench
+/// Settings (pushed from Now's gear): Your Mac, read-only accounts, the Workbench
 /// requests to the Mac, notifications, the parked offline chat, and Unlink
 /// this Mac.
 struct SettingsView: View {
@@ -36,12 +36,17 @@ struct SettingsView: View {
     private var yourMacSection: some View {
         Section("Your Mac") {
             // The status turns offline by the clock alone, so re-evaluate it
-            // periodically, not only on replica writes.
+            // periodically, not only on replica writes. One row: the Form
+            // lays a TimelineView's views out in one cell.
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                let status = MacStatus(heartbeat: model.snapshot.heartbeat, now: context.date)
-                statusRow(status)
-                if let name = status.macName {
-                    LabeledContent("Mac", value: name)
+                let row = MacStatusRow(status: MacStatus(heartbeat: model.snapshot.heartbeat, now: context.date), now: context.date)
+                LabeledContent {
+                    HStack(spacing: Spacing.compact) {
+                        Circle().fill(row.tone.color).frame(width: 8, height: 8)
+                        Text(row.value)
+                    }
+                } label: {
+                    Text(row.label)
                 }
                 // Nothing at all while every observation is healthy.
                 ForEach(model.diagnostics(now: context.date)) { row in
@@ -60,31 +65,6 @@ struct SettingsView: View {
             LabeledContent("Queued", value: "\(model.snapshot.queuedCount)")
             if env.transportKind == .inMemoryDemo {
                 LabeledContent("Sync", value: "Demo")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statusRow(_ status: MacStatus) -> some View {
-        switch status {
-        case .notConnected:
-            Label(status.title, systemImage: "desktopcomputer")
-                .foregroundStyle(.secondary)
-        case .online:
-            Label {
-                Text(status.title)
-            } icon: {
-                Image(systemName: "circle.fill").foregroundStyle(.green)
-            }
-        case let .offline(_, lastSeen):
-            LabeledContent {
-                Text(lastSeen, style: .relative)
-            } label: {
-                Label {
-                    Text(status.title)
-                } icon: {
-                    Image(systemName: "circle").foregroundStyle(.secondary)
-                }
             }
         }
     }

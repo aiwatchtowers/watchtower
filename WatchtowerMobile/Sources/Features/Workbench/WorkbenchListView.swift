@@ -52,61 +52,61 @@ struct WorkbenchListView: View {
                         NavigationLink(value: WorkbenchRoute(id: workbench.id)) {
                             WorkbenchCardView(card: WorkbenchCardModel(workbench))
                         }
+                        .listRowInsets(RowInsets.flat)
                     }
                 } header: {
                     Text(workbenches.count == 1 ? "1 folder on your Mac" : "\(workbenches.count) folders on your Mac")
+                        .font(TypeScale.sectionHeader)
+                        .textCase(nil)
                 } footer: {
                     Text("Workbenches are folders bound on the Mac. New ones are added there.")
+                        .font(TypeScale.meta)
                 }
             }
+            .listStyle(.plain)
             .refreshable { await env.refresh() }
         }
     }
 }
 
-/// One Workbench list card.
+/// One Workbench list row (design pass spec W1–W3): the name and its pills,
+/// the folder and the branch, then compact session counts with the board's
+/// progress.
 struct WorkbenchCardView: View {
     let card: WorkbenchCardModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(card.name)
-                    .font(.headline)
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Text(card.name).font(TypeScale.rowEmphasis).lineLimit(1)
+                Spacer(minLength: Spacing.regular)
+                ForEach(card.pills) { pill in
+                    Pill(text: pill.text, tone: pill.tone, style: pill.tone == .secondary ? .neutral : .tinted)
+                }
+            }
+            HStack(spacing: Spacing.compact) {
+                Text(card.folder)
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Spacer(minLength: 8)
-                ForEach(card.pills) { CountPill(text: $0.text, tone: $0.tone) }
+                    .truncationMode(.middle)
+                if let branch = card.branch {
+                    Pill(text: branch, style: .neutral, monospaced: true)
+                }
             }
-            Text([card.folder, card.branch].compactMap { $0 }.joined(separator: " · "))
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if !card.stateCounts.isEmpty {
-                FlowCounts(counts: card.stateCounts)
-            }
-            if let progress = card.progress {
-                ThinProgressBar(value: progress, tone: card.progressTone)
-            }
-            Text(card.countsLine)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-/// Session-state counts on one wrapping line.
-struct FlowCounts: View {
-    let counts: [SessionStateCount]
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) {
-                ForEach(counts) { SessionCountLabel(count: $0) }
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(counts) { SessionCountLabel(count: $0) }
+            HStack(spacing: Spacing.regular) {
+                ForEach(card.stateCounts) { count in
+                    HStack(spacing: 3) {
+                        SessionDot(tone: count.tone, isRing: count.isRing, size: 7)
+                        Text("\(count.amount)").font(TypeScale.time).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(count.text)
+                }
+                if let progress = card.progress {
+                    ThinProgressBar(value: progress, tone: card.progressTone).frame(width: 64)
+                }
+                Text(card.doneLine).font(TypeScale.meta).foregroundStyle(.secondary)
             }
         }
     }

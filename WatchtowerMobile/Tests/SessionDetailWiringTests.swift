@@ -54,7 +54,7 @@ final class SessionDetailWiringTests: XCTestCase {
     func testTheSessionsOpenAsksComeFirst() throws {
         let detail = try model(11)
         XCTAssertEqual(detail.asks.map(\.id), [111, 109], "open asks of this session, newest first")
-        XCTAssertEqual(detail.asks.map(\.kindLabel), ["CHECK", "ASK"])
+        XCTAssertEqual(detail.asks.map(\.kindLabel), ["Check", "Question"])
         XCTAssertEqual(detail.asksSince, "since 15m", "the oldest open ask")
     }
 

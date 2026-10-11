@@ -8,11 +8,17 @@ struct RecapView: View {
     let transcriptID: Int
 
     @Environment(AppEnvironment.self) private var env
-    @State private var tab: Tab = .recap
+    @State private var tab: Tab
     @State private var bodyModel = RecapBodyModel()
     /// The line a jump point asked for; consumed by the scroll reader.
     @State private var jumpTarget: Int?
     @State private var highlighted: Int?
+
+    /// `initialTab` is for the screenshot tour; the app always opens Recap.
+    init(transcriptID: Int, initialTab: Tab = .recap) {
+        self.transcriptID = transcriptID
+        _tab = State(initialValue: initialTab)
+    }
 
     enum Tab: String, CaseIterable, Identifiable {
         case recap = "Recap"

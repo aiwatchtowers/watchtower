@@ -1,12 +1,12 @@
 import SwiftUI
 import UIKit
 
-/// The four tabs (spec §13 A4): Now, Workbench, Calendar and More. Now and
-/// Workbench come from sub-project B, Calendar from C. More holds Settings
-/// and the voice-note entry.
+/// The three tabs (design pass spec §5, amending mobile POC spec §13 A4):
+/// Now, Workbench and Calendar. Settings is pushed from Now's gear; a voice
+/// note is the Calendar's mic button.
 struct RootTabView: View {
     enum Tab: String, CaseIterable, Identifiable {
-        case now, workbench, calendar, more
+        case now, workbench, calendar
 
         var id: Self { self }
 
@@ -15,7 +15,6 @@ struct RootTabView: View {
             case .now: "Now"
             case .workbench: "Workbench"
             case .calendar: "Calendar"
-            case .more: "More"
             }
         }
 
@@ -24,7 +23,6 @@ struct RootTabView: View {
             case .now: "clock"
             case .workbench: "hammer"
             case .calendar: "calendar"
-            case .more: "ellipsis"
             }
         }
 
@@ -34,11 +32,12 @@ struct RootTabView: View {
             self == .workbench ? openAskCount : 0
         }
 
-        /// Spec §3: 5 s while Now or Workbench is on screen, 30 s otherwise.
+        /// Spec §3: 5 s while Now (Settings included) or Workbench is on
+        /// screen, 30 s on Calendar.
         var fetchInterval: Duration {
             switch self {
             case .now, .workbench: .seconds(5)
-            case .calendar, .more: .seconds(30)
+            case .calendar: .seconds(30)
             }
         }
     }
@@ -57,8 +56,23 @@ struct RootTabView: View {
     }
 
     init() {
-        // The only tab badge is the open-ask count: a waiting-for-you element.
+        Self.configureTabBarAppearance()
+    }
+
+    /// The only tab badge is the open-ask count: a waiting-for-you element,
+    /// orange. `UITabBarItem.appearance().badgeColor` alone did not reach
+    /// the iOS 26 tab bar in the review captures (it drew red), so every
+    /// item layout of the tab bar's appearance carries the colour too.
+    static func configureTabBarAppearance() {
         UITabBarItem.appearance().badgeColor = PhoneTone.waitingBadgeColor
+        let appearance = UITabBarAppearance()
+        appearance.configureWithDefaultBackground()
+        for layout in [appearance.stackedLayoutAppearance, appearance.inlineLayoutAppearance, appearance.compactInlineLayoutAppearance] {
+            layout.normal.badgeBackgroundColor = PhoneTone.waitingBadgeColor
+            layout.selected.badgeBackgroundColor = PhoneTone.waitingBadgeColor
+        }
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
     }
 
     var body: some View {
@@ -115,62 +129,6 @@ struct RootTabView: View {
             WorkbenchListView()
         case .calendar:
             AgendaView()
-        case .more:
-            MoreView()
-        }
-    }
-}
-
-/// More: Settings, and the free voice-note entry of the recorder.
-struct MoreView: View {
-    @Environment(AppEnvironment.self) private var env
-
-    enum Row: CaseIterable, Identifiable {
-        case settings
-
-        var id: Self { self }
-
-        var title: String {
-            switch self {
-            case .settings: "Settings"
-            }
-        }
-
-        var systemImage: String {
-            switch self {
-            case .settings: "gearshape"
-            }
-        }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    Button {
-                        Task { await env.recorder.recordVoiceNote() }
-                    } label: {
-                        Label("Record a voice note", systemImage: "mic")
-                    }
-                }
-                Section {
-                    ForEach(Row.allCases) { row in
-                        NavigationLink {
-                            destination(for: row)
-                        } label: {
-                            Label(row.title, systemImage: row.systemImage)
-                        }
-                    }
-                }
-            }
-            .navigationTitle("More")
-        }
-    }
-
-    @ViewBuilder
-    private func destination(for row: Row) -> some View {
-        switch row {
-        case .settings: SettingsView()
         }
     }
 }

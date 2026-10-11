@@ -87,7 +87,7 @@ struct AskView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if form.openOnMac == nil, form.closedStatus == nil {
                 AskSendBar(form: form, ask: ask, model: model)
             }
@@ -173,40 +173,38 @@ private struct AskSendBar: View {
     let model: AskViewModel
 
     var body: some View {
-        VStack(spacing: 8) {
-            if form.review != nil {
-                HStack(spacing: 8) {
-                    Button(AskText.requestChanges) { verdict(.changes) }
+        BottomActionBar {
+            VStack(spacing: Spacing.regular) {
+                if form.review != nil {
+                    // Equal widths: both labels fill their half.
+                    HStack(spacing: Spacing.regular) {
+                        Button { verdict(.changes) } label: {
+                            Text(AskText.requestChanges).frame(maxWidth: .infinity)
+                        }
                         .buttonStyle(.bordered)
+                        .controlSize(.large)
                         .accessibilityHint("Sends the answer with changes requested")
-                    Button(AskText.approve) { verdict(.approved) }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityHint("Sends the answer approved")
+                        Button(AskText.approve) { verdict(.approved) }
+                            .buttonStyle(ProminentActionStyle())
+                            .accessibilityHint("Sends the answer approved")
+                    }
+                    .disabled(!form.canSendVerdict)
+                } else if let page = form.question, !page.isLast {
+                    Button(AskText.next) { model.next(of: page.count) }
+                        .buttonStyle(ProminentActionStyle())
+                } else {
+                    Button(AskText.send) { Task { await model.send(ask) } }
+                        .buttonStyle(ProminentActionStyle())
+                        .disabled(!form.canSend)
+                        .accessibilityLabel(AskText.send)
                 }
-                .controlSize(.large)
-                .disabled(!form.canSendVerdict)
-            } else if let page = form.question, !page.isLast {
-                Button(AskText.next) { model.next(of: page.count) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .frame(maxWidth: .infinity)
-            } else {
-                Button(AskText.send) { Task { await model.send(ask) } }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!form.canSend)
-                    .accessibilityLabel(AskText.send)
+                if let page = form.question, page.index > 0 {
+                    Button(AskText.previous) { model.previous() }
+                        .frame(minHeight: 44)
+                }
+                Text(form.footer).font(.caption).foregroundStyle(.secondary)
             }
-            if let page = form.question, page.index > 0 {
-                Button(AskText.previous) { model.previous() }
-                    .frame(minHeight: 44)
-            }
-            Text(form.footer).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.bar)
     }
 
     private func verdict(_ verdict: OwnerAskAnswer.Verdict) {

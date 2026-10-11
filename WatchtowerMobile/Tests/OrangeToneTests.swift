@@ -24,6 +24,8 @@ final class OrangeToneTests: XCTestCase {
         for target in snapshot.targets {
             uses += try XCTUnwrap(BoardTargetDetailModel(targetID: target.id, snapshot: snapshot, now: now)).toneUses
         }
+        let target415 = try XCTUnwrap(BoardTargetDetailModel(targetID: 415, snapshot: snapshot, now: now))
+        XCTAssertTrue(target415.toneUses.contains { $0.element == "target 415 waiting header" && $0.role == .waiting })
         for ask in snapshot.asks {
             uses += try XCTUnwrap(AskFormModel(
                 askID: ask.id, snapshot: snapshot, draft: AskDraft(), page: 0, now: now, applied: nil, isSending: false
@@ -77,6 +79,9 @@ final class OrangeToneTests: XCTestCase {
         }
         var snapshot = WorkbenchReplicaSnapshot()
         let now = Date()
+        for status in [MacStatus.notConnected, .online(macName: "Acme Mac"), .offline(macName: "Acme Mac", lastSeen: now)] {
+            XCTAssertNotEqual(MacStatusRow(status: status, now: now).tone, .orange, "\(status)")
+        }
         XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now).macChipTone, .orange)
         snapshot.heartbeat = HeartbeatPayload(
             updatedAt: now, appVersion: "1.0", hubID: "hub", macName: "Acme Mac", flavor: .default,

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Workbench tab, level 2: a title switcher over the workbenches, New
-/// session (the start sheet with a target picker), the mono subline and the
+/// session (the start sheet with a target picker), the branch and board counts and the
 /// Sessions | Board segment. Sessions holds the Waiting-for-you stack, its closed asks
 /// and the SESSIONS list. On Board, + opens New target.
 struct WorkbenchView: View {
@@ -16,16 +16,18 @@ struct WorkbenchView: View {
     let replica: WorkbenchReplicaModel
     let writer: BoardWriter
     @State private var workbenchID: Int64
-    @State private var segment = Segment.sessions
+    @State private var segment: Segment
     @State private var showClosed = false
     @State private var addingTarget = false
     @State private var startingSession = false
     @State private var openSession: SessionRoute?
 
-    init(replica: WorkbenchReplicaModel, writer: BoardWriter, workbenchID: Int64) {
+    /// `segment` is for the screenshot tour; the app always opens Sessions.
+    init(replica: WorkbenchReplicaModel, writer: BoardWriter, workbenchID: Int64, segment: Segment = .sessions) {
         self.replica = replica
         self.writer = writer
         _workbenchID = State(initialValue: workbenchID)
+        _segment = State(initialValue: segment)
     }
 
     var body: some View {
@@ -89,11 +91,14 @@ struct WorkbenchView: View {
 
     private func content(_ menu: WorkbenchMenuModel, now: Date) -> some View {
         VStack(spacing: 8) {
-            Text(menu.subline)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            HStack(spacing: Spacing.regular) {
+                if let branch = menu.branch {
+                    Pill(text: branch, style: .neutral, monospaced: true)
+                }
+                MetaLine(items: menu.boardCounts).font(TypeScale.meta)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, Spacing.large)
             Picker("View", selection: $segment) {
                 ForEach(Segment.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -106,45 +111,49 @@ struct WorkbenchView: View {
         }
     }
 
+    /// Sessions (design pass S2, S3): a `ScrollView`, so each ask row of the
+    /// waiting card is its own link.
     private func sessions(_ menu: WorkbenchMenuModel) -> some View {
-        List {
-            if !menu.waiting.isEmpty || menu.closedLabel != nil {
-                Section {
-                    ForEach(menu.waiting) { card in
-                        NavigationLink(value: AskRoute(id: card.id)) { WaitingCardView(card: card) }
-                            .listRowSeparator(.hidden)
-                    }
-                    if let closed = menu.closedLabel {
-                        DisclosureGroup(closed, isExpanded: $showClosed) {
-                            ForEach(menu.closedAsks) { ask in
-                                NavigationLink(value: AskRoute(id: ask.id)) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(ask.title).font(.subheadline).foregroundStyle(.primary)
-                                        Text(AskText.status(ask))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if !menu.waiting.isEmpty {
+                    SectionHeader(menu.waitingHeader, tone: menu.waitingHeaderTone)
+                    WaitingStack(asks: menu.waiting)
+                        .padding(.horizontal, Spacing.large)
+                }
+                if let closed = menu.closedLabel {
+                    DisclosureGroup(closed, isExpanded: $showClosed) {
+                        ForEach(menu.closedAsks) { ask in
+                            NavigationLink(value: AskRoute(id: ask.id)) {
+                                VStack(alignment: .leading, spacing: Spacing.tight) {
+                                    Text(ask.title).font(TypeScale.rowTitle).foregroundStyle(.primary)
+                                    Text(AskText.status(ask)).font(TypeScale.meta).foregroundStyle(.secondary)
                                 }
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
                         }
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
                     }
-                } header: {
-                    Text(menu.waitingHeader)
-                        .foregroundStyle(menu.waitingHeaderTone.color)
+                    .font(TypeScale.meta)
+                    .foregroundStyle(.secondary)
+                    .padding(RowInsets.flat)
                 }
-            }
-            Section("Sessions") {
+                SectionHeader("Sessions")
                 if let empty = menu.sessionsEmptyText {
-                    Text(empty).foregroundStyle(.secondary)
+                    Text(empty).foregroundStyle(.secondary).padding(.horizontal, Spacing.large)
                 } else {
-                    ForEach(menu.sessions) { row in
+                    ForEach(Array(menu.sessions.enumerated()), id: \.element.id) { index, row in
+                        if index > 0 {
+                            RowDivider()
+                        }
                         NavigationLink(value: SessionRoute(id: row.id)) { SessionRowView(row: row) }
+                            .buttonStyle(.plain)
                     }
                 }
             }
+            .padding(.bottom, Spacing.large)
         }
-        .listStyle(.insetGrouped)
+        .background(Color(.systemBackground))
     }
 }

@@ -101,12 +101,34 @@ final class BoardFilterTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(open.roots.first { $0.id == 431 }).hasDisclosure)
     }
 
+    /// Design pass B2: a row draws a meta line only when it has a dot,
+    /// details or a progress bar.
+    /// Final review M5: the row says its status to VoiceOver; the glyph
+    /// alone is only a symbol name.
+    func testARowSpeaksItsStatus() throws {
+        let open = try board(.open)
+        let archiveRow = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row
+        XCTAssertEqual(archiveRow.statusText, "In progress")
+        let done = try XCTUnwrap(open.roots.first { $0.id == 420 }?.children.first { $0.id == 422 }).row
+        XCTAssertEqual(done.statusText, "Done")
+    }
+
+    func testARowWithNothingToSayHasNoMetaLine() throws {
+        let open = try board(.open)
+        let archiveRow = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row
+        XCTAssertTrue(archiveRow.hasMeta)
+        let archive = try board(.archive)
+        let dismissed = try XCTUnwrap(archive.roots.first { $0.id == 391 }).row
+        XCTAssertFalse(dismissed.hasMeta, "medium, no details, no progress")
+    }
+
     func testARowShowsAsksSessionPRPriorityAndProgress() throws {
         let open = try board(.open)
         let row = try XCTUnwrap(open.roots.first { $0.id == 400 }?.children.first { $0.id == 415 }).row
         XCTAssertEqual(row.title, "Archive Closed Targets Now")
-        XCTAssertEqual(row.priorityLabel, "HIGH")
+        XCTAssertEqual(row.priority, .high)
         XCTAssertEqual(row.priorityTone, .red)
+        XCTAssertEqual(try XCTUnwrap(row.progressValue), 0.5, accuracy: 0.0001)
         XCTAssertEqual(row.progressText, "50%")
         XCTAssertEqual(row.details.map(\.text), ["2 asks", "1 session", "PR #175"])
         XCTAssertEqual(row.details.first?.tone, .orange)
@@ -114,7 +136,13 @@ final class BoardFilterTests: XCTestCase {
         let report = try XCTUnwrap(open.roots.first { $0.id == 430 }).row
         XCTAssertEqual(report.details.map(\.text), ["Session working"])
         XCTAssertEqual(report.details.first?.tone, .green)
-        XCTAssertNil(report.priorityLabel, "medium is the default and carries no label")
+        XCTAssertNil(report.priorityTone, "medium is the default and draws no dot")
+        let lowRow = try XCTUnwrap(open.roots.first { $0.id == 431 }).row
+        XCTAssertEqual(lowRow.priorityTone, .blue)
+        XCTAssertNil(lowRow.progressValue, "a leaf with no progress draws no bar")
+        let done = try XCTUnwrap(open.roots.first { $0.id == 420 }?.children.first { $0.id == 422 }).row
+        XCTAssertEqual(done.progressText, "done")
+        XCTAssertNil(done.progressValue, "done is a word, not a bar")
     }
 
     func testTheTargetDetailIsReadOnlyAndComplete() throws {

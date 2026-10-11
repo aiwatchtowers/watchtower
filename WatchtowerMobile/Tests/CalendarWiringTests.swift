@@ -282,6 +282,44 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertFalse(agenda.cards.first { $0.id == "ended" }?.showsRecord ?? true)
     }
 
+    /// Bug 2 and review focus 5 (design pass spec §9.2): the agenda scrolls
+    /// to today's current or next meeting; with none it stays at the top.
+    /// Task 9 review: the scroll runs once per day and highlighted row, so
+    /// coming back from an event does not snap the list over the user's
+    /// scroll; a later snapshot that highlights a row still scrolls.
+    /// Task 9 review and final review M3 (spec §9.2): the agenda scrolls
+    /// once per day, the first time the day has a highlighted row: not on a
+    /// return from a pushed screen, and not when the next meeting takes over
+    /// while the user reads; a snapshot that arrives later still scrolls.
+    func testTheAgendaScrollsOncePerDay() {
+        let today = day(0)
+        let key = AgendaScrollKey(day: today, rowID: "event-next")
+        XCTAssertEqual(AgendaScroll.target(for: key, scrolledDay: nil), "event-next")
+        XCTAssertNil(AgendaScroll.target(for: key, scrolledDay: today), "a return to the screen keeps the user's scroll")
+        XCTAssertNil(
+            AgendaScroll.target(for: AgendaScrollKey(day: today, rowID: "event-after"), scrolledDay: today),
+            "the next meeting taking over does not jump the list"
+        )
+        XCTAssertNil(AgendaScroll.target(for: AgendaScrollKey(day: today, rowID: nil), scrolledDay: nil), "nothing highlighted")
+        XCTAssertEqual(AgendaScroll.target(for: AgendaScrollKey(day: day(1), rowID: "event-x"), scrolledDay: today), "event-x")
+    }
+
+    func testOnlyTodaysCurrentOrNextMeetingIsScrolledTo() throws {
+        let ended = event("ended", start: now.addingTimeInterval(-7_200), minutes: 30)
+        let next = event("next", start: now.addingTimeInterval(1_500))
+        let today = AgendaDayModel(
+            day: now, snapshot: snapshot([next, ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )
+        XCTAssertEqual(today.highlightedRowID, "event-next")
+        let over = AgendaDayModel(day: now, snapshot: snapshot([ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar)
+        XCTAssertNil(over.highlightedRowID, "every meeting is over")
+        let later = event("later", start: day(1).addingTimeInterval(12 * 3_600))
+        let tomorrow = AgendaDayModel(
+            day: day(1), snapshot: snapshot([later]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )
+        XCTAssertNil(tomorrow.highlightedRowID, "only today highlights a meeting")
+    }
+
     // MARK: - Join
 
     func testJoinOpensTheConferenceURLAndNoURLMeansNoJoin() throws {

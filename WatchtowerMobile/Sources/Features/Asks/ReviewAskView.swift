@@ -18,7 +18,7 @@ struct ReviewAskView: View {
     var body: some View {
         Section {
             if let document = review.document {
-                SnapshotTextView(text: document.text, selection: $selection)
+                SnapshotTextView(document: document, selection: $selection)
                     .frame(minHeight: 320, maxHeight: 480)
                     .accessibilityLabel("Document under review")
                 if let clipped = review.clippedNotice {
@@ -110,17 +110,16 @@ private struct SelectionBox: Identifiable {
     var id: String { "\(range.location):\(range.length)" }
 }
 
-/// The snapshot's plain text, read-only and selectable; reports the
-/// selection in UTF-16 units of `text` (the anchors' offsets).
+/// The snapshot as a styled, read-only, selectable document; reports the
+/// selection in UTF-16 units of `document.text` (the anchors' offsets).
 private struct SnapshotTextView: UIViewRepresentable {
-    let text: String
+    let document: PlainTextDocument
     @Binding var selection: NSRange
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
         view.isEditable = false
         view.isSelectable = true
-        view.font = .preferredFont(forTextStyle: .body)
         view.adjustsFontForContentSizeCategory = true
         view.backgroundColor = .clear
         view.delegate = context.coordinator
@@ -129,9 +128,11 @@ private struct SnapshotTextView: UIViewRepresentable {
 
     func updateUIView(_ view: UITextView, context: Context) {
         // Text only: assigning a selection here would report it back
-        // through the delegate into the binding during a view update.
-        guard view.text != text else { return }
-        view.text = text
+        // through the delegate into the binding during a view update. The
+        // styled string is `document.text` itself, so selections stay UTF-16
+        // offsets into it.
+        guard view.attributedText.string != document.text else { return }
+        view.attributedText = ReviewDocumentStyler.attributed(document, traits: view.traitCollection)
     }
 
     func makeCoordinator() -> Coordinator {
