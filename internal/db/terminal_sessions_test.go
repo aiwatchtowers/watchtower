@@ -957,11 +957,15 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
+		if turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0); err != nil || turns == nil {
+			t.Fatalf("%s: the agent turn did not write: %v", tc.name, err)
+		}
 		if !w(tc.write(id)) {
 			t.Fatalf("%s: did not write", tc.name)
 		}
 		requireNoBackground(t, d, id, tc.name)
 		requireNoChatQuestion(t, d, id, tc.name)
+		requireNoAgentTurns(t, d, id, tc.name)
 	}
 
 	// A row holding nothing but a chat question is still cleared.
@@ -973,6 +977,242 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		t.Fatal("ClearTerminalAgentState left a row holding only a chat question")
 	}
 	requireNoChatQuestion(t, d, id, "a row holding only a question")
+
+	// Board #543: so is a row holding nothing but agent turns.
+	id = newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.ClearTerminalAgentState(id, pid, agentStateUUID)) {
+		t.Fatal("ClearTerminalAgentState left a row holding only agent turns")
+	}
+	requireNoAgentTurns(t, d, id, "a row holding only agent turns")
+}
+
+// Board #543 review: GetTerminalSession never reads agent_turns, so the
+// readers that open a database without migrating it (`workbench asks`, the
+// ask guard, refusing only databases older than 00107) keep working on a
+// 00107 database.
+func TestGetTerminalSessionNeedsNoAgentTurnsColumn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN agent_turns`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession on a 00107 schema: %v", err)
+	}
+}
+
+// turnsOf is row id's stored agent turns.
+func turnsOf(t *testing.T, d *DB, id int64) AgentTurns {
+	t.Helper()
+	turns, err := d.TerminalAgentTurns(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return turns
+}
+
+// requireNoAgentTurns fails unless row id's agent_turns holds no turn (NULL,
+// or only a new run's mark).
+func requireNoAgentTurns(t *testing.T, d *DB, id int64, name string) {
+	t.Helper()
+	var raw sql.NullString
+	if err := d.QueryRow(`SELECT agent_turns FROM terminal_sessions WHERE id = ?`, id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if doc, _ := decodeAgentTurns(raw); len(doc.Turns) != 0 {
+		t.Fatalf("%s: agent_turns kept: %s", name, raw.String)
+	}
+}
+
+// Board #543 review: a turn stamped before the run's mark — a late async
+// hook of the previous run — writes nothing; one of the new run does.
+func TestProj11_LateHookOfThePreviousRunWritesNoTurn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	if _, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aold-1", true, t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(2*time.Second))) {
+		t.Fatal("the run mark did not write")
+	}
+	requireNoAgentTurns(t, d, id, "after the mark")
+
+	turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aold-2", true, t0.Add(time.Second))
+	if err != nil || turns != nil {
+		t.Fatalf("a hook stamped before the mark wrote: %v, %v", turns, err)
+	}
+	requireNoAgentTurns(t, d, id, "after the late hook")
+
+	turns, err = d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "anew-1", true, t0.Add(3*time.Second))
+	if err != nil || !turns.Open("anew-1") || len(turns) != 1 {
+		t.Fatalf("the new run's turn: %v, %v", turns, err)
+	}
+	var since string
+	if err := d.QueryRow(`SELECT json_extract(agent_turns, '$.since') FROM terminal_sessions WHERE id = ?`, id).Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	if since != AgentStateStamp(t0.Add(2*time.Second)) {
+		t.Fatalf("the run mark went with the write: %q", since)
+	}
+}
+
+// Board #543: each turn stamp only moves forward, so async hooks landing out
+// of order never reopen a turn; a start and a stop at the same moment is
+// closed.
+func TestProj11_AgentTurnStampsOnlyMoveForward(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	sec := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Second) }
+	record := func(start bool, at time.Time) AgentTurns {
+		t.Helper()
+		turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", start, at)
+		if err != nil || turns == nil {
+			t.Fatalf("record: %v, %v", turns, err)
+		}
+		return turns
+	}
+
+	if turns := record(true, sec(2)); !turns.Open("aalpha-1") {
+		t.Fatal("a start opens the turn")
+	}
+	if turns := record(false, sec(3)); !turns.Closed("aalpha-1") || turns.Open("aalpha-1") {
+		t.Fatal("a later stop closes it")
+	}
+	if turns := record(true, sec(1)); !turns.Closed("aalpha-1") {
+		t.Fatal("a late start stamped before the stop reopened the turn")
+	}
+	if turns := record(false, sec(1)); turns["aalpha-1"].Stop != AgentStateStamp(sec(3)) {
+		t.Fatalf("an older stop moved the stamp back: %+v", turns["aalpha-1"])
+	}
+	if turns := record(true, sec(3)); !turns.Closed("aalpha-1") {
+		t.Fatal("a start at the stop's own moment is closed")
+	}
+	want := AgentTurn{Start: AgentStateStamp(sec(3)), Stop: AgentStateStamp(sec(3))}
+	if turnsOf(t, d, id)["aalpha-1"] != want {
+		t.Fatalf("stored %+v, want %+v", turnsOf(t, d, id)["aalpha-1"], want)
+	}
+	if turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "", true, sec(9)); err != nil || turns != nil {
+		t.Fatalf("an empty agent id recorded: %v, %v", turns, err)
+	}
+}
+
+// Board #543: the turns are capped; the oldest closed turns go first, and the
+// turn just recorded always stays.
+func TestProj11_AgentTurnsCapDropsOldestClosed(t *testing.T) {
+	t0 := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+	stamp := func(n int) string { return AgentStateStamp(t0.Add(time.Duration(n) * time.Second)) }
+	turns := AgentTurns{}
+	for i := range maxAgentTurns {
+		id := fmt.Sprintf("a%03d", i)
+		if i%2 == 0 {
+			turns[id] = AgentTurn{Start: stamp(i), Stop: stamp(i + 1)} // closed
+		} else {
+			turns[id] = AgentTurn{Start: stamp(i)} // open
+		}
+	}
+	turns.record("new", false, stamp(1000)) // a closed turn, the newest
+	if len(turns) != maxAgentTurns {
+		t.Fatalf("len = %d, want %d", len(turns), maxAgentTurns)
+	}
+	if _, ok := turns["a000"]; ok {
+		t.Fatal("the oldest closed turn stayed")
+	}
+	if _, ok := turns["a001"]; !ok {
+		t.Fatal("an open turn went before a closed one")
+	}
+	if !turns.Closed("new") {
+		t.Fatal("the turn just recorded went")
+	}
+}
+
+// agentStateSnapshot is row id's agent state columns in one string.
+func agentStateSnapshot(t *testing.T, d *DB, id int64) string {
+	t.Helper()
+	var s string
+	if err := d.QueryRow(`SELECT agent_state || agent_state_at || agent_background || agent_background_at ||
+		COALESCE(finished_at, '-') || agent_turn_end || agent_tool_run FROM terminal_sessions WHERE id = ?`, id).Scan(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// turnScopeCase is one agent turn write and whether it may land on the row.
+type turnScopeCase struct {
+	name      string
+	workbench int64
+	session   string
+	wantWrite bool
+}
+
+// recordTurnScoped opens agent "a-<name>"'s turn at `at` for each case and
+// fails when a write landed or was refused against the case's wantWrite.
+func recordTurnScoped(t *testing.T, d *DB, id int64, at time.Time, cases []turnScopeCase) {
+	t.Helper()
+	for _, tc := range cases {
+		turns, err := d.RecordTerminalAgentTurn(id, tc.workbench, tc.session, "a-"+tc.name, true, at)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if (turns != nil) != tc.wantWrite {
+			t.Fatalf("%s: wrote = %v, want %v", tc.name, turns != nil, tc.wantWrite)
+		}
+	}
+}
+
+// Board #543: an agent turn write changes agent_turns only, and only on
+// workbench pid's claude row of the conversation that reported it.
+func TestProj11_AgentTurnWriteNeverTouchesTheState(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100)) {
+		t.Fatal("the turn end did not write")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	others := otherAgentColumns(t, d, id)
+	before := agentStateSnapshot(t, d, id)
+
+	recordTurnScoped(t, d, id, t0.Add(time.Second), []turnScopeCase{
+		{"its own conversation", pid, agentStateUUID, true},
+		{"another conversation", pid, otherUUID, false},
+		{"another workbench", other, agentStateUUID, false},
+	})
+	if got := agentStateSnapshot(t, d, id); got != before {
+		t.Fatalf("the state columns moved: %q → %q", before, got)
+	}
+	if got := otherAgentColumns(t, d, id); got != others {
+		t.Fatalf("other columns moved: %v → %v", others, got)
+	}
+	if got := turnsOf(t, d, id); len(got) != 1 || !got.Open("a-its own conversation") {
+		t.Fatalf("turns = %+v", got)
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession: %v", err)
+	}
+	// An unreadable stored value reads as no turns and is replaced, and the
+	// write says so (ErrAgentTurnsUnreadable).
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = 'not json' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0.Add(2*time.Second))
+	if !errors.Is(err, ErrAgentTurnsUnreadable) || len(turns) != 1 || !turns.Open("aalpha-1") {
+		t.Fatalf("after an unreadable value: %+v, %v", turns, err)
+	}
 }
 
 // Board #411: EndTerminalBackground NULLs the count only while the row still

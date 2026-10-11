@@ -1,0 +1,38 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000543",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000543.jsonl",
+  "cwd": "/tmp/example/work",
+  "scratchpad_dir": "/tmp/example/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000011",
+  "permission_mode": "acceptEdits",
+  "agent_id": "aalpha-0000000000000001",
+  "agent_type": "alpha",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000543/subagents/agent-aalpha-0000000000000001.jsonl",
+  "last_assistant_message": "Ran sleep 20 and sent done to team-lead.",
+  "background_tasks": [
+    {
+      "id": "texample1",
+      "type": "teammate",
+      "status": "running",
+      "description": "Teammate alpha: sleep 20 test"
+    },
+    {
+      "id": "texample2",
+      "type": "teammate",
+      "status": "running",
+      "description": "Teammate beta: sleep 45 test"
+    },
+    {
+      "id": "bexample1",
+      "type": "shell",
+      "status": "running",
+      "description": "Sleep 45 seconds in background"
+    }
+  ],
+  "session_crons": []
+}

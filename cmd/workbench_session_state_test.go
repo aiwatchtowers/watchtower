@@ -301,6 +301,24 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 		{name: "subagent stop list not an array", stdin: func(*testing.T) io.Reader {
 			return strings.NewReader(subagentStop("a", "general-purpose", `{"a":1}`))
 		}},
+		{name: "subagent start", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(subagentStart("aalpha-1", "alpha"))
+		}},
+		{name: "subagent start of an internal agent", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(subagentStart("a1", ""))
+		}},
+		{name: "subagent start over unreadable turns", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(subagentStart("aalpha-1", "alpha"))
+		}, setup: func(t *testing.T, database *db.DB, row int64) {
+			_, err := database.Exec(`UPDATE terminal_sessions SET agent_turns = 'not json' WHERE id = ?`, row)
+			require.NoError(t, err)
+		}, wantStderr: "unreadable agent_turns replaced"},
+		{name: "subagent start bad json", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(`{"hook_event_name":"SubagentStart","session_id":`)
+		}, wantStderr: "reading the hook input"},
+		{name: "subagent start not a uuid", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(strings.ReplaceAll(subagentStart("aalpha-1", "alpha"), briefLaunchID, "../../etc"))
+		}, wantStderr: "carries no session id"},
 		{name: "panic", setup: func(t *testing.T, _ *db.DB, _ int64) {
 			orig := hookNow
 			hookNow = func() time.Time { panic("boom") }
@@ -379,6 +397,7 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 	require.Equal(t, int64(3), before["agent_background"])
 	for _, p := range []string{
 		strings.ReplaceAll(subagentStop("x", "general-purpose", "[]"), briefLaunchID, nestedSessionID),
+		strings.ReplaceAll(subagentStart("aalpha-1", "alpha"), briefLaunchID, nestedSessionID),
 		subagentToolResult(nestedSessionID),
 	} {
 		out, errOut, err := runSessionState(t, pid, strings.NewReader(p))
@@ -1308,6 +1327,27 @@ func subagentStop(agentID, agentType, field string) string {
 	return s + `}`
 }
 
+// subagentStart is a SubagentStart of briefLaunchID's subagent or teammate
+// agentID of type agentType (a teammate's name).
+func subagentStart(agentID, agentType string) string {
+	return `{"session_id":"` + briefLaunchID + `","hook_event_name":"SubagentStart",` +
+		`"agent_id":"` + agentID + `","agent_type":"` + agentType + `"}`
+}
+
+// withTeammates is the background_tasks array list with n running teammate
+// entries in front, ids that are never a hook agent_id (spec Appendix C).
+func withTeammates(n int, list string) string {
+	entries := make([]string, n)
+	for i := range entries {
+		entries[i] = `{"id":"tm` + strconv.Itoa(i) + `","type":"teammate","status":"running"}`
+	}
+	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(list, "["), "]"))
+	if rest != "" {
+		entries = append(entries, rest)
+	}
+	return "[" + strings.Join(entries, ",") + "]"
+}
+
 // subagents is a background_tasks array of running subagents with ids.
 func subagents(ids ...string) string {
 	entries := make([]string, len(ids))
@@ -1330,8 +1370,10 @@ func countedWaiting(t *testing.T, database *db.DB, pid, row int64, at func(int),
 
 // PROJ-11, board #411 (hook half): only the Stop hook raises the count from
 // NULL. Over a `waiting` without one, a late subagent tool result, a
-// SubagentStop listing subagents, the idle notice and a Stop reaching
-// `workbench session-state` (not installed there) all leave it NULL.
+// SubagentStop listing subagents, a teammate's SubagentStart and a
+// SubagentStop with that teammate in its turn (board #543), the idle notice
+// and a Stop reaching `workbench session-state` (not installed there) all
+// leave it NULL.
 func TestProj11_OnlyTheStopStartsBackground(t *testing.T) {
 	database, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
@@ -1343,6 +1385,8 @@ func TestProj11_OnlyTheStopStartsBackground(t *testing.T) {
 		stopWithBackground(subagents("a", "b")),
 		subagentToolResult(briefLaunchID),
 		subagentStop("x", "general-purpose", subagents("x", "a", "b", "c")),
+		subagentStart("aalpha-1", "alpha"),
+		subagentStop("y", "general-purpose", withTeammates(1, subagents("y", "a"))),
 		statePayload("Notification", briefLaunchID, "idle_prompt"),
 	} {
 		out, errOut, err := runSessionState(t, pid, strings.NewReader(p))
@@ -1407,16 +1451,190 @@ func TestProj11_SubagentStopOnlyLowersTheCount(t *testing.T) {
 		assert.Equal(t, finished, storedFinishedAt(t, database, row), step.name)
 	}
 
-	// Over `working`: nothing.
+	// Board #543: the stops without a usable list still recorded their turn's
+	// end (the next Stop must not count b), an internal agent's did not.
+	assert.True(t, storedTurns(t, database, row).Closed("b"), "a SubagentStop without a list records its turn's end")
+
+	// Over `working`: nothing but the turn's end (board #543: a teammate
+	// works across the main agent's turns, so its turn is recorded whatever
+	// the state).
 	at(9)
 	_, _, err = runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
 	require.NoError(t, err)
 	before := rowSnapshot(t, database, row)
 	at(10)
-	_, errOut, err := runSessionState(t, pid, strings.NewReader(subagentStop("b", "general-purpose", "[]")))
+	_, errOut, err := runSessionState(t, pid, strings.NewReader(subagentStop("c", "general-purpose", "[]")))
 	require.NoError(t, err)
 	assert.Empty(t, errOut)
-	assert.Equal(t, before, rowSnapshot(t, database, row), "a SubagentStop over working wrote")
+	after := rowSnapshot(t, database, row)
+	assert.Equal(t, db.AgentTurn{Stop: db.AgentStateStamp(stamp(10))}, storedTurns(t, database, row)["c"], "the turn's end is recorded")
+	delete(before, "agent_turns")
+	delete(after, "agent_turns")
+	assert.Equal(t, before, after, "a SubagentStop over working wrote more than its turn")
+}
+
+// fixtureInput reads a captured hook input from testdata, moved onto
+// briefLaunchID's conversation, with each replacement pair applied.
+func fixtureInput(t *testing.T, file string, replace ...string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", file))
+	require.NoError(t, err)
+	s := strings.ReplaceAll(string(b), "00000000-0000-4000-8000-000000000543", briefLaunchID)
+	return strings.NewReplacer(replace...).Replace(s)
+}
+
+// hookStep runs one hook input at second sec of the hook clock — the sync
+// Stop hook for a Stop, `workbench session-state` otherwise — and returns the
+// row after it.
+func hookStep(t *testing.T, database *db.DB, pid, row int64, at func(int), sec int, input string) *db.TerminalSession {
+	t.Helper()
+	at(sec)
+	var out, errOut string
+	if strings.Contains(input, `"hook_event_name": "Stop"`) || strings.Contains(input, `"hook_event_name":"Stop"`) {
+		out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), input)
+	} else {
+		var err error
+		out, errOut, err = runSessionState(t, pid, strings.NewReader(input))
+		require.NoError(t, err)
+	}
+	require.Empty(t, out)
+	require.Empty(t, errOut)
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	return s
+}
+
+// storedTurns is row's stored agent turns (board #543).
+func storedTurns(t *testing.T, database *db.DB, row int64) db.AgentTurns {
+	t.Helper()
+	turns, err := database.TerminalAgentTurns(row)
+	require.NoError(t, err)
+	return turns
+}
+
+func bgCount(n int64) sql.NullInt64 { return sql.NullInt64{Int64: n, Valid: true} }
+
+// PROJ-11, board #543 (owner, ask #167): a teammate counts only while it is
+// inside its own turn — between its SubagentStart and its SubagentStop. The
+// replay follows spec Appendix C.2: two teammates spawned and working at the
+// lead's Stop, one ends its turn, the lead wakes, the other ends, the lead's
+// next Stop with both idle reads no count. A teammate starting a turn over
+// the Stopped row raises nothing until the lead's next Stop.
+func TestProj11_TeammateCountsOnlyInItsTurn(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	alphaStart := fixtureInput(t, "subagentstart_teammate.json")
+	betaStart := fixtureInput(t, "subagentstart_teammate.json", "alpha", "beta", "0000000000000001", "0000000000000002")
+	alphaStop := fixtureInput(t, "subagentstop_teammate.json")
+	betaStop := fixtureInput(t, "subagentstop_teammate.json", `"aalpha-`, `"abeta-`, `"agent_type": "alpha"`, `"agent_type": "beta"`,
+		"0000000000000001", "0000000000000002")
+	inTurn := fixtureInput(t, "stop_teammates_in_turn.json")
+	idle := fixtureInput(t, "stop_teammates_idle.json")
+	internal := subagentStop("afc0000000000001", "", withTeammates(2, "[]"))
+
+	s := hookStep(t, database, pid, row, at, 0, inTurn)
+	assert.False(t, s.Background.Valid, "teammates listed but never started are not counted")
+
+	hookStep(t, database, pid, row, at, 1, alphaStart)
+	hookStep(t, database, pid, row, at, 2, betaStart)
+	s = hookStep(t, database, pid, row, at, 3, inTurn)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, bgCount(2), s.Background, "both teammates are in their turn")
+
+	s = hookStep(t, database, pid, row, at, 4, internal)
+	assert.Equal(t, bgCount(2), s.Background, "an internal agent's stop says nothing")
+	hookStep(t, database, pid, row, at, 4, `{"session_id":"`+briefLaunchID+`","hook_event_name":"SubagentStart","agent_id":"aint-1","agent_type":""}`)
+	hookStep(t, database, pid, row, at, 4, `{"session_id":"`+briefLaunchID+`","hook_event_name":"SubagentStart","agent_type":"gamma"}`)
+	assert.Len(t, storedTurns(t, database, row), 2, "an internal agent and an input without agent_id leave no turn")
+
+	s = hookStep(t, database, pid, row, at, 5, betaStop)
+	assert.Equal(t, bgCount(1), s.Background, "beta's turn ended")
+	assert.True(t, storedTurns(t, database, row).Closed("abeta-0000000000000002"))
+
+	s = hookStep(t, database, pid, row, at, 6, idle)
+	assert.Equal(t, bgCount(1), s.Background, "the lead woke; alpha still works")
+
+	s = hookStep(t, database, pid, row, at, 7, alphaStop)
+	assert.Equal(t, bgCount(0), s.Background, "the last working teammate ended its turn")
+
+	s = hookStep(t, database, pid, row, at, 8, idle)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.False(t, s.Background.Valid, "idle teammates are not counted")
+
+	s = hookStep(t, database, pid, row, at, 9, alphaStart)
+	assert.False(t, s.Background.Valid, "a teammate's start never raises the count")
+	assert.True(t, storedTurns(t, database, row).Open("aalpha-0000000000000001"))
+
+	s = hookStep(t, database, pid, row, at, 10, idle)
+	assert.Equal(t, bgCount(1), s.Background, "the lead's next Stop sees it working")
+}
+
+// PROJ-11, board #543 tail (3), spec Appendix C.3: the list keeps a finished
+// subagent until the main agent takes its result, so the last SubagentStop
+// still lists the one that stopped before it. Its recorded turn end drops it:
+// the count reaches 0 at the last SubagentStop.
+func TestProj11_FinishedSubagentStillListedIsNotCounted(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base, at := hookClock(t)
+	two := subagents("a0000000000000001", "a0000000000000002")
+
+	s := hookStep(t, database, pid, row, at, 1, stopWithBackground(two))
+	require.Equal(t, bgCount(2), s.Background)
+	s = hookStep(t, database, pid, row, at, 2, subagentStop("a0000000000000001", "general-purpose", two))
+	assert.Equal(t, bgCount(1), s.Background)
+	s = hookStep(t, database, pid, row, at, 3, fixtureInput(t, "subagentstop_finished_still_listed.json"))
+	assert.Equal(t, bgCount(0), s.Background, "the first subagent already stopped")
+	assert.Equal(t, base.Add(3*time.Second).UTC().Truncate(time.Millisecond), s.BackgroundAt.UTC())
+	assert.Equal(t, base.Add(time.Second).UTC().Truncate(time.Millisecond), s.AgentStateAt.UTC(), "the state's time stays the Stop's")
+}
+
+// PROJ-11, board #543: a SubagentStart records the turn and nothing else —
+// over a counted `waiting` (no raise, no stamp) and over `working` alike.
+func TestProj11_SubagentStartNeverStartsOrRaisesTheCount(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base, at := hookClock(t)
+	hookStep(t, database, pid, row, at, 1, stopWithBackground(withTeammates(2, subagents("a"))))
+	require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
+
+	for i, input := range []string{subagentStart("aalpha-1", "alpha"), subagentStart("abeta-1", "beta")} {
+		before := rowSnapshot(t, database, row)
+		s := hookStep(t, database, pid, row, at, 2+i, input)
+		after := rowSnapshot(t, database, row)
+		assert.Equal(t, bgCount(1), s.Background, "never raised")
+		assert.NotEqual(t, before["agent_turns"], after["agent_turns"])
+		delete(before, "agent_turns")
+		delete(after, "agent_turns")
+		assert.Equal(t, before, after, "a SubagentStart wrote more than its turn")
+	}
+
+	hookStep(t, database, pid, row, at, 4, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	before := rowSnapshot(t, database, row)
+	hookStep(t, database, pid, row, at, 5, subagentStart("agamma-1", "gamma"))
+	after := rowSnapshot(t, database, row)
+	assert.Equal(t, db.AgentTurn{Start: db.AgentStateStamp(base.Add(5 * time.Second))}, storedTurns(t, database, row)["agamma-1"])
+	delete(before, "agent_turns")
+	delete(after, "agent_turns")
+	assert.Equal(t, before, after, "a SubagentStart over working wrote more than its turn")
+}
+
+// PROJ-11, board #543: a teammate turn whose SubagentStop never came (killed
+// mid-turn) counts only while the list still shows a teammate.
+func TestProj11_LostTeammateStopIsCappedByTheList(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	hookStep(t, database, pid, row, at, 1, subagentStart("aalpha-1", "alpha"))
+	hookStep(t, database, pid, row, at, 2, subagentStart("abeta-1", "beta"))
+
+	s := hookStep(t, database, pid, row, at, 3, stopWithBackground(withTeammates(1, "[]")))
+	assert.Equal(t, bgCount(1), s.Background, "two open turns, one teammate listed")
+	s = hookStep(t, database, pid, row, at, 4, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	assert.False(t, s.Background.Valid, "no teammate listed: no open turn counts")
+	s = hookStep(t, database, pid, row, at, 5, stopWithBackground(`[]`))
+	assert.False(t, s.Background.Valid)
 }
 
 // PROJ-11, board #411 (hook half): from a counted `waiting`, a main turn

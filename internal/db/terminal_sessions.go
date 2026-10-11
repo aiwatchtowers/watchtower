@@ -121,11 +121,12 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 // that project's claude row or already holds sessionID. The new conversation
 // has its own transcript, so the turn order measured in the old one goes,
 // and so do the background agent count (agent_background and
-// agent_background_at) its Stop snapshotted and its chat question
-// (chat_question, chat_question_at).
+// agent_background_at) its Stop snapshotted, its agent turns (agent_turns)
+// and its chat question (chat_question, chat_question_at).
 func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_turn_end = NULL, agent_tool_run = 0,
-		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
+		agent_turns = NULL
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id IS NOT ?`,
 		sessionID, id, projectID, sessionID)
 	if err != nil {
@@ -142,8 +143,10 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 // claude row id — the SessionStart hook of a launch or a resume of
 // conversation sessionID, stamped at — when the workbench's folder has the session
 // state hooks: the previous run's state, error, turn order, background
-// agent count (agent_background, agent_background_at) and chat question
-// (chat_question, chat_question_at) go, and
+// agent count (agent_background, agent_background_at), agent turns
+// (agent_turns: its teammates and subagents died with the process; only the
+// run's mark stays, so a late hook of the old run writes no turn back) and chat
+// question (chat_question, chat_question_at) go, and
 // agent_state_at becomes at even when nothing was stored. That stamp with no
 // state is the run's mark: the hooks run, and the agent has not started a
 // turn, so no permission dialog can be on screen (the Desktop's PROJ-12
@@ -156,10 +159,11 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 	stamp := at.UTC().Format(agentStateAtLayout)
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
-		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
+		agent_turns = json_object('since', ?)
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
-		stamp, id, workbenchID, sessionID, stamp)
+		stamp, stamp, id, workbenchID, sessionID, stamp)
 	if err != nil {
 		return false, fmt.Errorf("marking terminal session %d's new run: %w", id, err)
 	}
@@ -177,19 +181,21 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 // run's mark (MarkTerminalAgentRun) and vouch for a state nobody reports. A
 // late async hook of the previous run may still land, stamped before the
 // run, which the Desktop does not trust. A new run starts with no error, no
-// background agent count (agent_background, agent_background_at), no chat
-// question (chat_question, chat_question_at) and no turn order either (the
-// Desktop's Start fresh moves the id without resetting it, so a row with no
-// state but a turn order, or with only a chat question, is cleared too).
+// background agent count (agent_background, agent_background_at), no agent
+// turns (agent_turns), no chat question (chat_question, chat_question_at) and
+// no turn order either (the Desktop's Start fresh moves the id without
+// resetting it, so a row with no state but a turn order, or with only a chat
+// question or agent turns, is cleared too).
 // Same row guards as SetTerminalAgentState; false when there was nothing to
 // clear or a guard held it back.
 func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = NULL,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
-		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
+		agent_turns = NULL
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state IS NOT NULL OR agent_state_at IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0
-		       OR chat_question IS NOT NULL)`,
+		       OR chat_question IS NOT NULL OR agent_turns IS NOT NULL)`,
 		id, workbenchID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)

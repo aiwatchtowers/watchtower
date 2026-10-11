@@ -1,0 +1,28 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000543",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000543.jsonl",
+  "cwd": "/tmp/example/work",
+  "prompt_id": "00000000-0000-4000-8000-000000000011",
+  "permission_mode": "acceptEdits",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Spawned both teammates and did not wait for them.",
+  "background_tasks": [
+    {
+      "id": "texample1",
+      "type": "teammate",
+      "status": "running",
+      "description": "Teammate alpha: sleep 20 test"
+    },
+    {
+      "id": "texample2",
+      "type": "teammate",
+      "status": "running",
+      "description": "Teammate beta: sleep 45 test"
+    }
+  ],
+  "session_crons": []
+}

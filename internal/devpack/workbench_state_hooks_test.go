@@ -10,10 +10,10 @@ import (
 )
 
 // The session state hooks (UserPromptSubmit, Notification, PostToolUse,
-// StopFailure, SubagentStop) are installed, recognised and removed under the
+// StopFailure, SubagentStop, SubagentStart) are installed, recognised and removed under the
 // same PROJ-02/04 rules as the SessionStart and Stop hooks.
 
-var stateEvents = []string{"UserPromptSubmit", "Notification", "PostToolUse", "StopFailure", "SubagentStop"}
+var stateEvents = []string{"UserPromptSubmit", "Notification", "PostToolUse", "StopFailure", "SubagentStop", "SubagentStart"}
 
 func eventGroups(t *testing.T, m map[string]any, event string) []any {
 	t.Helper()
@@ -86,7 +86,8 @@ func TestProj04_StateHooksKeepOwnerHooksAndKeys(t *testing.T) {
   "hooks": {
     "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo owner-prompt", "timeout": 2}]}],
     "Notification": [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "say hi", "async": false}], "x-owner": 1.50}],
-    "SubagentStop": [{"hooks": [{"type": "command", "command": "echo owner-subagent"}]}]
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "echo owner-subagent"}]}],
+    "SubagentStart": [{"hooks": [{"type": "command", "command": "echo owner-subagent-start"}]}]
   }
 }`
 	writeTestFile(t, settingsFile(folder), owner)
@@ -100,7 +101,7 @@ func TestProj04_StateHooksKeepOwnerHooksAndKeys(t *testing.T) {
 	if after["model"] != "sonnet" {
 		t.Fatalf("PROJ-04: the owner's model changed: %#v", after["model"])
 	}
-	for _, event := range []string{"UserPromptSubmit", "Notification", "SubagentStop"} {
+	for _, event := range []string{"UserPromptSubmit", "Notification", "SubagentStop", "SubagentStart"} {
 		groups := eventGroups(t, after, event)
 		ownerGroup := eventGroups(t, before, event)[0]
 		if len(groups) != 2 || !reflect.DeepEqual(groups[0], ownerGroup) || countCommand(groups, cmd) != 1 {
@@ -115,7 +116,7 @@ func TestProj04_StateHooksKeepOwnerHooksAndKeys(t *testing.T) {
 		t.Fatalf("remove: changed=%v err=%v", changed, err)
 	}
 	removed := decodeSettings(t, folder)
-	for _, event := range []string{"UserPromptSubmit", "Notification", "SubagentStop"} {
+	for _, event := range []string{"UserPromptSubmit", "Notification", "SubagentStop", "SubagentStart"} {
 		if got := eventGroups(t, removed, event); !reflect.DeepEqual(got, eventGroups(t, before, event)) {
 			t.Fatalf("PROJ-04: only our %s entry may go, got %#v", event, got)
 		}
@@ -180,10 +181,10 @@ func TestStatusWorkbench_StateHooksFalseWithOneMissing(t *testing.T) {
 	}
 }
 
-// Board #411: the SubagentStop entry joins the four older ones — async,
-// timeout 5, no matcher, the same command line — and a second install
-// changes nothing.
-func TestInstallStateHooksAddsSubagentStop(t *testing.T) {
+// Boards #411, #543: the SubagentStop and SubagentStart entries join the four
+// older ones — async, timeout 5, no matcher, the same command line — and a
+// second install changes nothing.
+func TestInstallStateHooksAddsSubagentStopAndStart(t *testing.T) {
 	dir := t.TempDir()
 	changed, err := InstallStateHooks(dir, "/usr/local/bin/watchtower", 7)
 	if err != nil || !changed {
@@ -191,8 +192,8 @@ func TestInstallStateHooksAddsSubagentStop(t *testing.T) {
 	}
 	cmd := WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", 7)
 	m := decodeSettings(t, dir)
-	if hooks := m["hooks"].(map[string]any); len(hooks) != 5 {
-		t.Fatalf("expected five state events, got %#v", hooks)
+	if hooks := m["hooks"].(map[string]any); len(hooks) != 6 {
+		t.Fatalf("expected six state events, got %#v", hooks)
 	}
 	for _, event := range stateEvents {
 		assertOneAsyncStateEntry(t, event, eventGroups(t, m, event), cmd)
@@ -206,20 +207,21 @@ func TestInstallStateHooksAddsSubagentStop(t *testing.T) {
 	}
 }
 
-// Board #411: HasStateHooks (the status's state_hooks) needs all five
-// entries, so a folder installed before SubagentStop reads "missing" and the
-// Desktop offers Repair; HasCoreStateHooks (what gates the Stop's state
-// write and the run mark) needs only the four older ones, so that folder
-// keeps its "waiting" until the repair.
-func TestHasStateHooksNeedsAllFiveCoreNeedsFour(t *testing.T) {
+// Boards #411, #543: HasStateHooks (the status's state_hooks) needs all six
+// entries, so a folder installed before SubagentStop or SubagentStart reads
+// "missing" and the Desktop offers Repair; HasCoreStateHooks (what gates the
+// Stop's state write and the run mark) needs only the four older ones, so
+// that folder keeps its "waiting" until the repair.
+func TestHasStateHooksNeedsAllSixCoreNeedsFour(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		drop       []string
 		full, core bool
 	}{
-		{"all five", nil, true, true},
-		{"the four older entries", []string{"SubagentStop"}, false, true},
-		{"the older entries without PostToolUse", []string{"SubagentStop", "PostToolUse"}, false, false},
+		{"all six", nil, true, true},
+		{"the five of 2026-10-10", []string{"SubagentStart"}, false, true},
+		{"the four older entries", []string{"SubagentStop", "SubagentStart"}, false, true},
+		{"the older entries without PostToolUse", []string{"SubagentStop", "SubagentStart", "PostToolUse"}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

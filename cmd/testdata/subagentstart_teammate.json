@@ -1,0 +1,10 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000543",
+  "transcript_path": "/tmp/example/claude/projects/-tmp-example-work/00000000-0000-4000-8000-000000000543.jsonl",
+  "cwd": "/tmp/example/work",
+  "scratchpad_dir": "/tmp/example/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-000000000011",
+  "agent_id": "aalpha-0000000000000001",
+  "agent_type": "alpha",
+  "hook_event_name": "SubagentStart"
+}
