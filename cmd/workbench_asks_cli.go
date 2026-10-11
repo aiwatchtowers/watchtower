@@ -99,6 +99,12 @@ func runWorkbenchAsks(cmd *cobra.Command, _ []string) error {
 	if err := checkWorkbenchIDFlags(cmd); err != nil {
 		return writeJSON(out, asksListFailure{OK: false, Error: err.Error()})
 	}
+	// An id flag given is a workbench to filter by: 0 there is a mistake,
+	// never "every workbench".
+	fs := cmd.Flags()
+	if legacy := fs.Changed(legacyWorkbenchFlag); (legacy || fs.Changed(workbenchFlag)) && workbenchAsksFlagWorkbench <= 0 {
+		return writeJSON(out, asksListFailure{OK: false, Error: workbenchFlagName(legacy) + " takes a positive id"})
+	}
 	list, err := listAsksForClients(workbenchAsksFlagWorkbench, workbenchAsksFlagOpen)
 	if err != nil {
 		return writeJSON(out, asksListFailure{OK: false, Error: err.Error()})
@@ -110,9 +116,6 @@ func runWorkbenchAsks(cmd *cobra.Command, _ []string) error {
 // workbench, in id order), each workbench's in ListOwnerAsks' order; open
 // keeps the open ones, otherwise every status is listed.
 func listAsksForClients(workbenchID int64, open bool) ([]askListJSON, error) {
-	if workbenchID < 0 {
-		return nil, errors.New("--workbench takes a positive id")
-	}
 	database, err := openAsksDB()
 	if err != nil {
 		return nil, err
