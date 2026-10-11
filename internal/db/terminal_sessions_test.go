@@ -1015,15 +1015,51 @@ func turnsOf(t *testing.T, d *DB, id int64) AgentTurns {
 	return turns
 }
 
-// requireNoAgentTurns fails unless row id's agent_turns is NULL.
+// requireNoAgentTurns fails unless row id's agent_turns holds no turn (NULL,
+// or only a new run's mark).
 func requireNoAgentTurns(t *testing.T, d *DB, id int64, name string) {
 	t.Helper()
-	var turns sql.NullString
-	if err := d.QueryRow(`SELECT agent_turns FROM terminal_sessions WHERE id = ?`, id).Scan(&turns); err != nil {
+	var raw sql.NullString
+	if err := d.QueryRow(`SELECT agent_turns FROM terminal_sessions WHERE id = ?`, id).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	if turns.Valid {
-		t.Fatalf("%s: agent_turns kept: %s", name, turns.String)
+	if turns := decodeAgentTurns(raw).Turns; len(turns) != 0 {
+		t.Fatalf("%s: agent_turns kept: %s", name, raw.String)
+	}
+}
+
+// Board #543 review: a turn stamped before the run's mark — a late async
+// hook of the previous run — writes nothing; one of the new run does.
+func TestProj11_LateHookOfThePreviousRunWritesNoTurn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	if _, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aold-1", true, t0); err != nil {
+		t.Fatal(err)
+	}
+	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(2*time.Second))) {
+		t.Fatal("the run mark did not write")
+	}
+	requireNoAgentTurns(t, d, id, "after the mark")
+
+	turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aold-2", true, t0.Add(time.Second))
+	if err != nil || turns != nil {
+		t.Fatalf("a hook stamped before the mark wrote: %v, %v", turns, err)
+	}
+	requireNoAgentTurns(t, d, id, "after the late hook")
+
+	turns, err = d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "anew-1", true, t0.Add(3*time.Second))
+	if err != nil || !turns.Open("anew-1") || len(turns) != 1 {
+		t.Fatalf("the new run's turn: %v, %v", turns, err)
+	}
+	var since string
+	if err := d.QueryRow(`SELECT json_extract(agent_turns, '$.since') FROM terminal_sessions WHERE id = ?`, id).Scan(&since); err != nil {
+		t.Fatal(err)
+	}
+	if since != AgentStateStamp(t0.Add(2*time.Second)) {
+		t.Fatalf("the run mark went with the write: %q", since)
 	}
 }
 

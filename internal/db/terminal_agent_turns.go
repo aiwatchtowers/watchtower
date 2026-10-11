@@ -39,16 +39,26 @@ func (t AgentTurns) Closed(agentID string) bool {
 	return ok && turn.Stop != "" && turn.Stop >= turn.Start
 }
 
+// agentTurnsDoc is the stored agent_turns value: the turns, and since — the
+// run mark (MarkTerminalAgentRun) a turn stamp must not be earlier than, so
+// a late async hook of the previous run never writes a turn back.
+type agentTurnsDoc struct {
+	Since string     `json:"since,omitempty"`
+	Turns AgentTurns `json:"turns,omitempty"`
+}
+
 // decodeAgentTurns reads a stored agent_turns value; NULL or a value that
-// does not decode reads as no turns (the next write replaces it).
-func decodeAgentTurns(raw sql.NullString) AgentTurns {
-	turns := AgentTurns{}
-	if raw.Valid {
-		if json.Unmarshal([]byte(raw.String), &turns) != nil || turns == nil {
-			return AgentTurns{}
-		}
+// does not decode reads as no turns and no run mark (the next write
+// replaces it).
+func decodeAgentTurns(raw sql.NullString) agentTurnsDoc {
+	var doc agentTurnsDoc
+	if raw.Valid && json.Unmarshal([]byte(raw.String), &doc) != nil {
+		doc = agentTurnsDoc{}
 	}
-	return turns
+	if doc.Turns == nil {
+		doc.Turns = AgentTurns{}
+	}
+	return doc
 }
 
 // record moves agentID's start (or stop) stamp forward to stamp; an earlier
@@ -107,16 +117,18 @@ func (db *DB) TerminalAgentTurns(id int64) (AgentTurns, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d agent turns: %w", id, err)
 	}
-	return decodeAgentTurns(raw), nil
+	return decodeAgentTurns(raw).Turns, nil
 }
 
 // RecordTerminalAgentTurn records that subagent or teammate agentID started
 // (start) or ended a turn at at, reported by a hook of conversation
 // sessionID on workbench workbenchID's claude row id (board #543). Each stamp
 // only moves forward, so two async hooks landing out of order never reopen a
-// turn. One write transaction, the row guards of SetTerminalAgentState; no
-// other column changes. It returns the row's turns after the write (also when
-// the stamp was not newer), or nil when a guard held it back.
+// turn, and a stamp earlier than the run's mark (a late hook of the previous
+// run, which MarkTerminalAgentRun already cleared) writes nothing. One write
+// transaction, the row guards of SetTerminalAgentState; no other column
+// changes. It returns the row's turns after the write (also when the stamp
+// was not newer), or nil when a guard held it back.
 func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID string, start bool,
 	at time.Time) (AgentTurns, error) {
 	if agentID == "" {
@@ -137,11 +149,15 @@ func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID 
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d agent turns: %w", id, err)
 	}
-	turns := decodeAgentTurns(raw)
-	if !turns.record(agentID, start, AgentStateStamp(at)) {
-		return turns, nil
+	doc := decodeAgentTurns(raw)
+	stamp := AgentStateStamp(at)
+	if stamp < doc.Since {
+		return nil, nil
 	}
-	body, err := json.Marshal(turns)
+	if !doc.Turns.record(agentID, start, stamp) {
+		return doc.Turns, nil
+	}
+	body, err := json.Marshal(doc)
 	if err != nil {
 		return nil, fmt.Errorf("encoding terminal session %d agent turns: %w", id, err)
 	}
@@ -151,5 +167,5 @@ func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("recording terminal session %d agent turn: %w", id, err)
 	}
-	return turns, nil
+	return doc.Turns, nil
 }

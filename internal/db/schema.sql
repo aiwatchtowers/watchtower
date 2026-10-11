@@ -2266,7 +2266,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
     chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (Go only)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
-    agent_turns       TEXT, -- JSON {"<agent_id>": {"start": stamp, "stop": stamp}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; NULL = none (Go only)
+    agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (Go only)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );

@@ -370,7 +370,10 @@ Desktop never reads it): per `agent_id` the stamps of its last `SubagentStart` (
 earlier than `start`. Each stamp only moves forward, so two async hooks landing out of order never reopen a turn.
 Capped at 256 entries (the oldest closed ones go first). Cleared with the rest of the run's state by a new run
 (`MarkTerminalAgentRun`, `ClearTerminalAgentState`) and a conversation switch (`SetTerminalClaudeSessionID`) —
-not by a main turn: teammates work across the lead's turns.
+not by a main turn: teammates work across the lead's turns. Stored as `{"since": <run mark>, "turns": {…}}`: the
+run mark keeps a late async hook of the previous run (stamped before the mark) from writing a turn back after the
+new run cleared them (review finding). Read only by the Stop hook (`TerminalAgentTurns`); `GetTerminalSession`
+leaves the column out, so readers that open the database without migrating it never depend on it.
 
 | Event | Writes |
 |---|---|

@@ -144,7 +144,8 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 // conversation sessionID, stamped at — when the workbench's folder has the session
 // state hooks: the previous run's state, error, turn order, background
 // agent count (agent_background, agent_background_at), agent turns
-// (agent_turns: its teammates and subagents died with the process) and chat
+// (agent_turns: its teammates and subagents died with the process; only the
+// run's mark stays, so a late hook of the old run writes no turn back) and chat
 // question (chat_question, chat_question_at) go, and
 // agent_state_at becomes at even when nothing was stored. That stamp with no
 // state is the run's mark: the hooks run, and the agent has not started a
@@ -159,10 +160,10 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
-		agent_turns = NULL
+		agent_turns = json_object('since', ?)
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
-		stamp, id, workbenchID, sessionID, stamp)
+		stamp, stamp, id, workbenchID, sessionID, stamp)
 	if err != nil {
 		return false, fmt.Errorf("marking terminal session %d's new run: %w", id, err)
 	}
