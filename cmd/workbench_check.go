@@ -225,9 +225,11 @@ func (b *backgroundTasks) UnmarshalJSON(data []byte) error {
 // SubagentStop never came stops counting once its teammate is gone. Shells,
 // monitors, idle teammates and every other type never count. No status
 // filter: Claude Code drops a finished task from the list rather than
-// changing its status (only "running" was observed, spec A.7). ok is false
+// changing its status (only "running" was observed, spec A.7). The agent
+// except (a stopping SubagentStop's own, "" for none) never counts, whatever
+// the stamps of its async hooks say. ok is false
 // when the field was absent, null or not an array.
-func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns) (n int64, ok bool) {
+func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string) (n int64, ok bool) {
 	if !tasks.present {
 		return 0, false
 	}
@@ -237,7 +239,7 @@ func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns) (n int64, ok b
 		listed[task.ID] = true
 		switch task.Type {
 		case "subagent", "workflow":
-			if !turns.Closed(task.ID) {
+			if (except == "" || task.ID != except) && !turns.Closed(task.ID) {
 				n++
 			}
 		case "teammate":
@@ -246,7 +248,7 @@ func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns) (n int64, ok b
 	}
 	var open int64
 	for id := range turns {
-		if !listed[id] && turns.Open(id) {
+		if (except == "" || id != except) && !listed[id] && turns.Open(id) {
 			open++
 		}
 	}

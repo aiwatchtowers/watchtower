@@ -253,7 +253,7 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in sessionStateI
 	if err != nil || turns == nil || start {
 		return err
 	}
-	remaining, ok := backgroundAgents(in.BackgroundTasks, turns)
+	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID)
 	if !ok {
 		return nil
 	}
@@ -337,7 +337,7 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		if err != nil {
 			return err
 		}
-		if n, ok := backgroundAgents(turn.tasks, turns); ok && n > 0 {
+		if n, ok := backgroundAgents(turn.tasks, turns, ""); ok && n > 0 {
 			turn.background = sql.NullInt64{Int64: n, Valid: true}
 		}
 	}

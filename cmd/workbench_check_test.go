@@ -299,10 +299,42 @@ func TestBackgroundAgentsCountTable(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(raw), &in), "a malformed field never fails the input")
 			assert.Equal(t, "s", in.SessionID)
 
-			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns)
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, "")
 
 			assert.Equal(t, tc.want, n)
 			assert.Equal(t, tc.wantOK, ok)
+		})
+	}
+}
+
+// A SubagentStop's own agent never counts, whatever the stamps of its async
+// hooks say (a SubagentStart stamped after its SubagentStop leaves the turn
+// open); the cases of the former `except` parameter, kept.
+func TestBackgroundAgentsLeavesOutTheStoppingAgent(t *testing.T) {
+	mixed := `[{"id":"a1","type":"subagent"},{"id":"a2","type":"subagent"},{"id":"w1","type":"workflow"},
+		{"id":"t1","type":"teammate"},{"id":"s1","type":"shell"}]`
+	const t1, t2 = "2026-10-11T10:00:00.000Z", "2026-10-11T10:00:01.000Z"
+	startedLate := db.AgentTurn{Start: t2, Stop: t1}
+	for _, tc := range []struct {
+		name, except string
+		turns        db.AgentTurns
+		want         int64
+	}{
+		{"except drops its id", "a1", nil, 2},
+		{"except drops a workflow too", "w1", nil, 2},
+		{"except naming no entry", "zz", nil, 3},
+		{"a listed subagent whose start was stamped late", "a1", db.AgentTurns{"a1": startedLate}, 2},
+		{"a teammate whose start was stamped late", "aalpha-1", db.AgentTurns{"aalpha-1": startedLate}, 3},
+		{"another teammate still in its turn", "aalpha-1", db.AgentTurns{"aalpha-1": startedLate, "abeta-1": startedLate}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var in stopHookInput
+			require.NoError(t, json.Unmarshal([]byte(`{"session_id":"s","background_tasks":`+mixed+`}`), &in))
+
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, tc.except)
+
+			assert.True(t, ok)
+			assert.Equal(t, tc.want, n)
 		})
 	}
 }
@@ -325,7 +357,7 @@ func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &in), tc.file)
 		assert.NotEmpty(t, in.SessionID, tc.file)
 
-		n, ok := backgroundAgents(in.BackgroundTasks, nil)
+		n, ok := backgroundAgents(in.BackgroundTasks, nil, "")
 
 		assert.True(t, ok, tc.file)
 		assert.Equal(t, tc.want, n, tc.file)
