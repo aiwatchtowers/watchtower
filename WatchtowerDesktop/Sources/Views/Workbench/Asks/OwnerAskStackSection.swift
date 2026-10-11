@@ -19,7 +19,8 @@ struct OwnerAskStackSection: View {
         let asks = vm.asks
         let stack = asks.stack(projectID: project.id)
         let outsideClosed = asks.closedCounts[project.id]?[nil] ?? 0
-        if !stack.asks.isEmpty || outsideClosed > 0 || asks.loadErrors[project.id] != nil {
+        let notices = asks.quickNotices(projectID: project.id)
+        if !stack.asks.isEmpty || !notices.isEmpty || outsideClosed > 0 || asks.loadErrors[project.id] != nil {
             VStack(alignment: .leading, spacing: 2) {
                 if !stack.asks.isEmpty {
                     Text("Waiting for you (\(stack.count))")
@@ -30,6 +31,7 @@ struct OwnerAskStackSection: View {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(stack.asks) { ask in
                                 OwnerAskStackRow(
+                                    vm: vm,
                                     ask: ask,
                                     sessionTitle: sessionTitle(ask),
                                     isSelected: asks.drawerAskIDs[project.id] == ask.id
@@ -41,6 +43,10 @@ struct OwnerAskStackSection: View {
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.height }, action: { rowsHeight = $0 })
                     }
                     .frame(height: min(rowsHeight, Self.maxRowsHeight))
+                }
+                // Quick answers' notices, where the owner tapped.
+                ForEach(notices) { notice in
+                    OwnerAskQuickNoticeRow(vm: vm, notice: notice).padding(.horizontal, 12)
                 }
                 if outsideClosed > 0 {
                     HStack(spacing: 4) {
@@ -70,14 +76,29 @@ struct OwnerAskStackSection: View {
 
 /// One waiting ask: its kind's icon, title, then its number (board #500,
 /// so "ask #145" in a terminal finds its row) · next step (board #366,
-/// "Answer 2 questions") · session · age.
+/// "Answer 2 questions") · session · age. A Quick ask (spec 2026-10-10
+/// Part 9.2) adds the banner's one-tap row under it; one raised from the
+/// terminal's question says "From chat · N min".
 private struct OwnerAskStackRow: View {
+    let vm: WorkbenchesViewModel
     let ask: OwnerAsk
     let sessionTitle: String
     let isSelected: Bool
     let open: () -> Void
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            openButton
+            if let row = OwnerAskQuickRow(ask: ask) {
+                OwnerAskQuickActions(vm: vm, ask: ask, row: row)
+                    .padding(.leading, 34)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 3)
+            }
+        }
+    }
+
+    private var openButton: some View {
         Button(action: open) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: OwnerAskPresentation.askKindIcon(ask.kind))
@@ -85,7 +106,10 @@ private struct OwnerAskStackRow: View {
                     .frame(width: 16)
                     .accessibilityLabel(OwnerAskPresentation.askKindLabel(ask.kind))
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(ask.title).lineLimit(1).truncationMode(.tail)
+                    HStack(spacing: 6) {
+                        Text(ask.title).lineLimit(1).truncationMode(.tail)
+                        if ask.origin == .chat { OwnerAskChatMark(askedAt: ask.chatAskedAt) }
+                    }
                     Text("\(Text.askNumber(ask.id)) \(Text(OwnerAskPresentation.nextStep(for: ask)).foregroundStyle(Color.accentColor)) · \(caption)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)

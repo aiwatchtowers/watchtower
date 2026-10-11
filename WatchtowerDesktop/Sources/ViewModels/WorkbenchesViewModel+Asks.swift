@@ -24,6 +24,25 @@ extension WorkbenchesViewModel {
         return true
     }
 
+    /// A Quick ask's option tapped or Reply sent, on its banner or stack
+    /// card (spec 2026-10-10 Part 9.1–9.2): `OwnerAsksViewModel.answerQuick`,
+    /// the drawer's answer path. When this call found the ask withdrawn
+    /// meanwhile (E29) nothing is written or typed and its card leaves with
+    /// the reload; its drawer opens read-only on the "withdrawn" note only
+    /// where it changes no page — its workbench selected, its session's
+    /// pane on screen, no drawer open — else the notice alone says so.
+    @discardableResult
+    func answerQuick(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> OwnerAsksViewModel.AnswerResult {
+        let result = await asks.answerQuick(ask, with: answer)
+        guard result == .notOpen, selectedWorkbenchID == ask.projectID, asks.drawerAskIDs[ask.projectID] == nil,
+              let sessionID = ask.sessionID,
+              layout(projectID: ask.projectID).visiblePanes.contains(.session(sessionID)) else { return result }
+        if let closed = await asks.lookUp(askID: ask.id, projectID: ask.projectID), !closed.isOpen {
+            asks.openDrawer(closed)
+        }
+        return result
+    }
+
     /// An `ask #N` clicked in a session's terminal (board #500): that ask's
     /// drawer, the way a stack row opens it — only for an ask of the
     /// session's own workbench. False, with nothing opened or reported, for

@@ -17,10 +17,11 @@ struct WorkbenchSessionView: View {
             // the ask (spec 2026-10-03 Part 8); the banner points at it.
             let drawerAsk = vm.asks.drawerAsk(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
             let waiting = vm.asks.stack(projectID: projectID).asks.filter { $0.sessionID == sessionID }
+            let notices = vm.asks.quickNotices(projectID: projectID).filter { $0.ask.sessionID == sessionID }
             OwnerAskDrawerHost(vm: vm, ask: drawerAsk) {
                 VStack(spacing: 0) {
-                    if drawerAsk == nil, !waiting.isEmpty {
-                        OwnerAskBanner(asks: waiting) { ask in vm.asks.openDrawer(ask) }
+                    if drawerAsk == nil, !waiting.isEmpty || !notices.isEmpty {
+                        OwnerAskBanner(asks: waiting, notices: notices, vm: vm)
                         Divider()
                     }
                     pane
