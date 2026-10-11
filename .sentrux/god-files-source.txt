@@ -4,6 +4,7 @@ WatchtowerDesktop/Sources/Services/MobileHub/Slices/CalendarEventSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/MeetingTranscriptSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice.swift
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift
+WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
 WatchtowerDesktop/Sources/Views/Chat/ChatThreadView.swift
 WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
@@ -14,6 +15,7 @@ WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskReviewBody.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
+WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
 WatchtowerMobile/Sources/Features/Asks/AskFormModel.swift
 WatchtowerMobile/Sources/Features/Calendar/AgendaModel.swift
 WatchtowerMobile/Sources/Features/Workbench/BoardTargetDetailModel.swift
