@@ -1669,7 +1669,7 @@ func TestChatQuestionClearedByASelfStartedTurn(t *testing.T) {
 
 // Only the owner's prompt and a self-started turn clear the question: a
 // subagent's tool result, a SubagentStop, a notification, a StopFailure and
-// the hook's Stop keep it, and no clear touches the state columns.
+// the hook's Stop keep it.
 func TestChatQuestionKeptByOtherHookEvents(t *testing.T) {
 	database, pid, row := briefSessionFixture(t)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
@@ -1689,4 +1689,77 @@ func TestChatQuestionKeptByOtherHookEvents(t *testing.T) {
 		sessionStateStep(t, pid, payload)
 		assert.Equal(t, asked, chatQuestionAt(t, database, row), "after %s", payload)
 	}
+}
+
+// stateColumns is row's snapshot without the chat question's two columns.
+func stateColumns(t *testing.T, database *db.DB, row int64) map[string]any {
+	t.Helper()
+	snap := rowSnapshot(t, database, row)
+	delete(snap, "chat_question")
+	delete(snap, "chat_question_at")
+	return snap
+}
+
+// A prompt the time-order guard refuses (stamped before the stored state,
+// after the question) still clears the question, and the clear alone
+// touches no other column (PROJ-11).
+func TestChatQuestionClearedByARefusedPromptTouchesNothingElse(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now().Truncate(time.Millisecond)
+	orig := hookNow
+	hookNow = func() time.Time { return base }
+	t.Cleanup(func() { hookNow = orig })
+	askChatQuestion(t, database, pid, row, base.Add(-10*time.Second))
+	_, err := database.Exec(`UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?, finished_at = ?,
+		agent_turn_end = 512, agent_background = 1, agent_background_at = ? WHERE id = ?`,
+		db.AgentStateStamp(base.Add(10*time.Second)), db.AgentStateStamp(base), db.AgentStateStamp(base), row)
+	require.NoError(t, err)
+	before := stateColumns(t, database, row)
+
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+
+	assert.Empty(t, chatQuestionAt(t, database, row), "the refused prompt still cleared the question")
+	assert.Equal(t, before, stateColumns(t, database, row), "the clear touched another column")
+}
+
+// A self-started turn's tool result keeps a question asked after it (the
+// clear keeps anything at or after the event).
+func TestChatQuestionNewerThanTheSelfStartedTurnIsKept(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base := time.Now().Truncate(time.Millisecond)
+	orig := hookNow
+	t.Cleanup(func() { hookNow = orig })
+	hookNow = func() time.Time { return base }
+	sessionStateStep(t, pid, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	askChatQuestion(t, database, pid, row, base.Add(5*time.Second))
+	asked := chatQuestionAt(t, database, row)
+
+	hookNow = func() time.Time { return base.Add(2 * time.Second) }
+	sessionStateStep(t, pid, statePayload("PostToolUse", briefLaunchID, ""))
+
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+	assert.Equal(t, asked, chatQuestionAt(t, database, row), "a question newer than the tool result is kept")
+}
+
+// A prompt whose clear fails still records its working: the two errors are
+// reported together, one stderr line.
+func TestChatQuestionFailedClearStillRecordsThePrompt(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	sessionStateStep(t, pid, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	askChatQuestion(t, database, pid, row, hookNow())
+	_, err := database.Exec(`CREATE TRIGGER refuse_chat_clear BEFORE UPDATE OF chat_question ON terminal_sessions
+		BEGIN SELECT RAISE(ABORT, 'refused'); END`)
+	require.NoError(t, err)
+
+	out, errOut, err := runSessionState(t, pid, strings.NewReader(statePayload("UserPromptSubmit", briefLaunchID, "")))
+
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, errOut, "refused")
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write ran despite the failed clear")
+	assert.NotEmpty(t, chatQuestionAt(t, database, row))
 }

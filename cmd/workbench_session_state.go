@@ -303,11 +303,19 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
+	var clearErr error
 	if prompt {
-		if err := clearChatQuestion(database, row, workbenchID, sessionID, at); err != nil {
-			return err
-		}
+		clearErr = clearChatQuestion(database, row, workbenchID, sessionID, at)
 	}
+	return errors.Join(clearErr, recordAgentStateOver(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn))
+}
+
+// recordAgentStateOver is recordAgentState's decision over the row it read:
+// a repeat (at most a background report), a write the guards hold back, or
+// writeAgentState. A failed prompt clear never skips it.
+func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
+	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
+	rowID := row.ID
 	switch {
 	case repeatsAgentState(row, state, failure, prompt, turn.background):
 		if turn.stop && turn.background.Valid {

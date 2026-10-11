@@ -408,7 +408,7 @@ var ErrChatQuestionNotRecorded = errors.New("chat question not recorded")
 // own `waiting` may be stamped and still be that turn end's (spec
 // 2026-10-10-owner-asks-v2 Part 5.3, F9): the drift-check hook writes it in
 // parallel with the ask guard's record. Its Swift twin is
-// ChatQuestionEscalationPolicy.stateTolerance (the Desktop's escalation
+// ChatQuestionEscalationPolicy.stateToleranceMillis (the Desktop's escalation
 // decision): change both together.
 const chatQuestionStateTolerance = 30 * time.Second
 
