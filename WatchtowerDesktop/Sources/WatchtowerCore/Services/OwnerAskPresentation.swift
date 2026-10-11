@@ -150,6 +150,17 @@ package enum OwnerAskPresentation {
         ["#\(ask.id)", askKindLabel(ask.kind), askStatusLine(ask, replacedBy: nil)].joined(separator: " · ")
     }
 
+    /// The caption of an ask raised from the agent's terminal question
+    /// (spec 2026-10-10 Part 9.1): "From chat · 12 min", its age in whole
+    /// minutes and "<1 min" under a minute — a stamp ahead of `now` (another
+    /// clock) included. Nil when `askedAt` is no `agent_state_at` stamp, as
+    /// on an ask the agent filed.
+    package static func chatMark(askedAt: String, now: Date) -> String? {
+        guard let asked = SessionAgentStatus.parseStamp(askedAt) else { return nil }
+        let minutes = Int(now.timeIntervalSince(asked) / 60)
+        return minutes < 1 ? "From chat · <1 min" : "From chat · \(minutes) min"
+    }
+
     package static func askKindIcon(_ kind: OwnerAskKind) -> String {
         switch kind {
         case .review: "doc.text.magnifyingglass"
