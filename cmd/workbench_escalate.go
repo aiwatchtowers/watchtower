@@ -205,7 +205,7 @@ func escalateQuestion(database *db.DB, a escalateArgs, now time.Time) (escalateR
 		if err != nil || q == nil {
 			return err
 		}
-		ask, level, err := escalatedAsk(tx, a, *q, now)
+		ask, level, err := escalatedAsk(database, tx, a, *q, now)
 		if err != nil {
 			return err
 		}
@@ -225,9 +225,9 @@ func escalateQuestion(database *db.DB, a escalateArgs, now time.Time) (escalateR
 // escalatedAsk builds the raised ask (Part 5.3 step 2): one question q1 with
 // the stored options, the question clipped to the title on one line, the
 // full question then the reason's line as the summary, the session's single
-// linked target, origin chat asked at a.at; validated with origin chat, its
+// linked target (none for none or several), origin chat asked at a.at; validated with origin chat, its
 // level classified.
-func escalatedAsk(tx *sql.Tx, a escalateArgs, q db.ChatQuestion, now time.Time) (db.OwnerAsk, string, error) {
+func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion, now time.Time) (db.OwnerAsk, string, error) {
 	opts := make([]asks.Option, 0, len(q.Options))
 	for _, o := range q.Options {
 		opts = append(opts, asks.Option{Label: o.Label, Recommended: o.Recommended})
@@ -246,9 +246,13 @@ func escalatedAsk(tx *sql.Tx, a escalateArgs, q db.ChatQuestion, now time.Time) 
 	if err != nil {
 		return db.OwnerAsk{}, "", fmt.Errorf("encoding the ask: %w", err)
 	}
-	target, err := soleLinkedTarget(tx, a.sessionID)
+	var target sql.NullInt64
+	linked, err := database.SessionLinkedTargetsTx(tx, a.sessionID)
 	if err != nil {
 		return db.OwnerAsk{}, "", err
+	}
+	if len(linked) == 1 {
+		target = sql.NullInt64{Int64: linked[0], Valid: true}
 	}
 	level := asks.Level(asks.KindQuestion, payload, asks.OriginChat)
 	return db.OwnerAsk{
@@ -275,29 +279,4 @@ func escalateReasonLine(reason string, waited time.Duration) string {
 		return "Asked in the terminal while you were away."
 	}
 	return fmt.Sprintf("Asked in the terminal; no answer for %d min.", max(int(waited/time.Minute), 0))
-}
-
-// soleLinkedTarget is the one target session sessionID's agent wrote to
-// (terminal_session_targets); none when it wrote to none or to several.
-func soleLinkedTarget(tx *sql.Tx, sessionID int64) (sql.NullInt64, error) {
-	rows, err := tx.Query(`SELECT target_id FROM terminal_session_targets WHERE session_id = ? LIMIT 2`, sessionID)
-	if err != nil {
-		return sql.NullInt64{}, fmt.Errorf("reading session %d's targets: %w", sessionID, err)
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return sql.NullInt64{}, fmt.Errorf("reading session %d's targets: %w", sessionID, err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return sql.NullInt64{}, fmt.Errorf("reading session %d's targets: %w", sessionID, err)
-	}
-	if len(ids) != 1 {
-		return sql.NullInt64{}, nil
-	}
-	return sql.NullInt64{Int64: ids[0], Valid: true}, nil
 }
