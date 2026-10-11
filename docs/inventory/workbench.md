@@ -239,7 +239,7 @@ entry (v1–v3, installed until 2026-10-11) is recognised by its first line
 being exactly the marker `[watchtower-workbench ask-guard N]`: an install,
 `resync` or Repair replaces every such `Stop` prompt of N — an edited one
 too, since it is ours — with the command entry, every key the owner had put
-on the prompt other than `type` and `prompt` carried onto it (a command entry
+on the prompt other than `type`, `prompt` and `command` carried onto it (a command entry
 already there keeps its own keys, as above; a fresh one takes the prompt's,
 its `timeout` among them); another workbench's marker prompt and a prompt with
 the marker off its first line are the owner's and stay; `integrate remove`
@@ -282,7 +282,7 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_StateHooksKeepOwnerHooksAndKeys` (the owner's own entries under the state events — a matcher, `async`, unknown keys and number literals — stay as they were next to exactly one entry of ours; remove takes only ours)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_MalformedStateEventLeavesTheFileByteIdentical` (each state event of the wrong type leaves the file byte-identical)
 - `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` (rewritten 2026-10-11 to the command entry: our edited marker prompt is replaced by the command entry, which carries the owner's keys from it — `x-owner` with its number literal kept; the owner's hooks — a marker of another workbench, the marker off the first line — and keys stay as they were; our command entry written from another binary is updated in place with the owner's keys on it kept; the owner's `Stop` and `PreToolUse` hooks stay)
-- `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt` (since 2026-10-11: with no command entry of ours yet, the fresh one carries every key of our replaced prompt but `type` and `prompt`, its `timeout` among them; a second resync changes nothing)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt` (since 2026-10-11: with no command entry of ours yet, the fresh one carries every key of our replaced prompt but `type`, `prompt` and `command`, its `timeout` among them; a `command` key on the prompt never replaces ours (pinned by `TestProj04_AskGuardNeverCarriesACommandKeyOfOurPrompt`); a second resync changes nothing)
 - `internal/devpack/workbench_ask_guard_test.go::TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical` and its `Stop` twin `TestProj04_MalformedStopWithOurPromptLeavesTheFileByteIdentical` (since 2026-10-11: a malformed `hooks.Stop` holding our old marker prompt is neither upgraded nor removed, and is reported once by the install, the removal and the status)
 - supporting: `internal/devpack/workbench_ask_guard_test.go::TestAskToolBlock_InAnotherMatcherGroupIsRepaired` (our entry under `""`, `"*"`, no matcher or `Bash` counts as missing and moves back to its own group, the owner's hooks there kept), `TestRemoveAskGuardHooksKeepsTheOwnerEntries`, `TestStatusWorkbench_AskGuardFlagsEachMissingHook` (a marker prompt alone is not installed, Repair replaces it)
 

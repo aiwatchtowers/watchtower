@@ -301,6 +301,33 @@ func TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt(t *testing
 	}
 }
 
+// PROJ-04: a command key the owner put on our old prompt is inert data, never
+// carried: the fresh entry runs our command, so it stays recognised as ours
+// and a second resync adds no other.
+func TestProj04_AskGuardNeverCarriesACommandKeyOfOurPrompt(t *testing.T) {
+	folder := fakeRepo(t)
+	writeTestFile(t, settingsFile(folder), `{"hooks": {"Stop": [
+  {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nthe owner rewrote this", "command": "echo x", "x-owner": 1.50}]}
+]}}`)
+	o := workbenchOpts(folder, newFakeClaude())
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	stop := eventGroups(t, decodeSettings(t, folder), "Stop")
+	if countCommand(stop, "echo x") != 0 {
+		t.Fatalf("the prompt's command key must not be carried, got %#v", stop)
+	}
+	assertOneAskGuardCommand(t, stop, o.Bin)
+	once := readTestFile(t, settingsFile(folder))
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err != nil || rep.HookChanged {
+		t.Fatalf("a second resync must change no hook: %+v err=%v", rep, err)
+	}
+	if twice := readTestFile(t, settingsFile(folder)); twice != once {
+		t.Fatalf("a second resync rewrote the settings:\n%s\nwas\n%s", twice, once)
+	}
+}
+
 func TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 	const content = `{"hooks": {"PreToolUse": {"matcher": "Bash"}}}`
