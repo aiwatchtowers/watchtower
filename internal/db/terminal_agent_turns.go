@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// ErrAgentTurnsUnreadable: RecordTerminalAgentTurn found a stored
+// ErrAgentTurnsUnreadable says RecordTerminalAgentTurn found a stored
 // agent_turns it could not decode and replaced it, losing the turns it held
 // (the write itself went through, and the turns it returns are valid).
 var ErrAgentTurnsUnreadable = errors.New("unreadable agent_turns replaced")
