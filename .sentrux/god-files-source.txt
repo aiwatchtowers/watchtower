@@ -1,5 +1,5 @@
+WatchtowerDesktop/Sources/App/AppState+MobileHub.swift
 WatchtowerDesktop/Sources/App/Navigation.swift
-WatchtowerDesktop/Sources/Services/MobileHub/SlicePublisher.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/CalendarEventSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/MeetingTranscriptSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice.swift
@@ -12,6 +12,7 @@ WatchtowerDesktop/Sources/Views/Ideas/IdeasView.swift
 WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
+WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskDrawer.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskReviewBody.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
