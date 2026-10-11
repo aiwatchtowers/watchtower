@@ -120,7 +120,7 @@ func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, asks.KindQuestion, a.Kind)
 			assert.Equal(t, "open", a.Status)
-			assert.Equal(t, strings.TrimSpace(string([]rune(strings.TrimSpace(long))[:escalateTitleRunes])), a.Title)
+			assert.Equal(t, strings.TrimSpace(string([]rune(strings.TrimSpace(long))[:asks.MaxTitleRunes])), a.Title)
 			assert.Equal(t, long+"\n"+tc.line, a.Summary)
 			assert.Equal(t, asks.OriginChat, a.Origin)
 			assert.Equal(t, asks.LevelQuick, a.Level)
@@ -252,10 +252,11 @@ func TestEscalateZeroOptionsIsQuick(t *testing.T) {
 	assert.Equal(t, asks.LevelQuick, res.Level)
 	a, err := f.database.GetOwnerAsk(f.pid, res.AskID)
 	require.NoError(t, err)
+	// The wire shape the Desktop decodes: "options":[], never null.
+	assert.JSONEq(t, `{"focus":[],"questions":[{"id":"q1","question":"What is the staging host name?","options":[]}],"checklist":[]}`,
+		a.Payload)
 	var p asks.Payload
 	require.NoError(t, json.Unmarshal([]byte(a.Payload), &p))
-	require.Len(t, p.Questions, 1)
-	assert.Empty(t, p.Questions[0].Options)
 	_, err = asks.Validate(asks.Input{Kind: a.Kind, Title: a.Title, Questions: p.Questions}, asks.OriginChat)
 	assert.NoError(t, err)
 }

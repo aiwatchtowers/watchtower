@@ -280,6 +280,23 @@ func TestValidateNormalizesPayload(t *testing.T) {
 	}
 }
 
+// A chat question with no options stores "options":[] — the shape the
+// Desktop's decoder reads — never null.
+func TestValidateZeroOptionChatQuestionStoresAnEmptyList(t *testing.T) {
+	in := Input{Kind: KindQuestion, Title: "Staging host", Questions: []Question{{Question: "What is the staging host name?"}}}
+	p, err := Validate(in, OriginChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(p.Questions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `[{"id":"1","question":"What is the staging host name?","options":[]}]`; string(raw) != want {
+		t.Errorf("questions JSON = %s, want %s", raw, want)
+	}
+}
+
 // Every testdata/cards file is a ```watchtower-question body. Go runs it as
 // the questions of a question ask; the Swift Core test runs the same file
 // through ChatQuestionCard's decoder, and both must agree with the file name.

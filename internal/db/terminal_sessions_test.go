@@ -1297,6 +1297,7 @@ func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
 		{"a turn running", "working", 0, at},
 		{"a permission prompt", "approval", 0, at},
 		{"waiting stamped 31 s after", "waiting", 31 * time.Second, at},
+		{"waiting stamped 30.001 s after", "waiting", 30*time.Second + time.Millisecond, at},
 	} {
 		id := row(tc.state, tc.offset)
 		before := terminalRowSnapshot(t, d, id)
@@ -1307,9 +1308,10 @@ func TestTakeChatQuestionIsCompareAndTake(t *testing.T) {
 			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
 		}
 	}
-	// -1 min: a waiting older than the question (a repeated state keeps its
-	// first stamp) is still the turn end the question waits on.
-	for _, offset := range []time.Duration{29 * time.Second, -time.Minute} {
+	// Exactly 30 s is still in; -1 min: a waiting older than the question (a
+	// repeated state keeps its first stamp) is still the turn end the
+	// question waits on.
+	for _, offset := range []time.Duration{29 * time.Second, 30 * time.Second, -time.Minute} {
 		if q := take(row("waiting", offset), at); q == nil {
 			t.Fatalf("waiting stamped %v from the question: not taken", offset)
 		}

@@ -16,7 +16,7 @@ import (
 	"watchtower/internal/sessionreport"
 )
 
-var updateSessionReportGolden = flag.Bool("update", false, "rewrite the cmd/testdata/session_report_*.json goldens")
+var updateSessionReportGolden = flag.Bool("update", false, "rewrite the cmd/testdata session_report_*.json and escalate/ goldens")
 
 // board314 is the sessionreport #314 fixture: workbench 1, session 1.
 var board314 = filepath.Join("..", "internal", "sessionreport", "testdata", "board_314.sql")

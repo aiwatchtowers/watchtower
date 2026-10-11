@@ -1227,7 +1227,7 @@ func TestAskGuardReasonsAreTheSpecsText(t *testing.T) {
 		"summary for the owner (what was done, the PRs, what is left on them), say 'session finished', then stop.",
 		askGuardReasonFinishAsk)
 
-	v3, err := os.ReadFile(filepath.Join("..", "internal", "devpack", "askguard_prompt.md"))
+	v3, err := os.ReadFile(filepath.Join("..", "internal", "devpack", "testdata", "askguard_prompt_v3.md"))
 	require.NoError(t, err)
 	flat := strings.Join(strings.Fields(string(v3)), " ")
 	_, after, ok := strings.Cut(flat, `2. Finished without saying so:`)

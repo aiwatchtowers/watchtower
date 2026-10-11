@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error_code": "schema",
+  "error": "opening database: schema setup failed"
+}

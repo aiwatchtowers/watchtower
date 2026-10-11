@@ -279,33 +279,3 @@ func (db *DB) SetReadOnly() error {
 	}
 	return nil
 }
-
-// hasColumn checks whether a table has a specific column via PRAGMA table_info.
-// table must be a valid identifier (alphanumeric + underscore only).
-func hasColumn(querier interface {
-	Query(string, ...any) (*sql.Rows, error)
-}, table, column string) bool {
-	// Validate table name to prevent SQL injection — PRAGMA doesn't support parameterized table names.
-	for _, r := range table {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_') {
-			return false
-		}
-	}
-	rows, err := querier.Query("PRAGMA table_info(" + table + ")")
-	if err != nil {
-		return false
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid int
-		var name, typ string
-		var notNull, pk int
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err == nil {
-			if name == column {
-				return true
-			}
-		}
-	}
-	return false
-}
