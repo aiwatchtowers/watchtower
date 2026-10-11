@@ -248,6 +248,10 @@ CloudKit keeps two environments per container, Development and Production, and a
 
 ## Phone app
 
+### Design layer (design pass)
+
+`Sources/DesignSystem/` names the values the Mac uses, so the phone's screens stop inventing their own: `PhoneTone` (moved here), `Spacing`/`Radius`/`RowInsets`, `TypeScale`, the target status glyph and tone (`TargetStatusStyle`, the Mac's model table), `PriorityDot` (high red, low blue, medium none), `card(_:)`, `Pill`/`CountBadge`/`FilterChip`, `FlatRow`/`RowDivider`/`SectionHeader`, `BottomActionBar`/`ProminentActionStyle`/`RecordButton`, and `SessionDot`/`ThinProgressBar`/`StepRow`/`FlowRow`. There is no custom colour or font: semantic SwiftUI colours, Dynamic Type and SF Symbols, accent system blue. Spec: `docs/superpowers/specs/2026-10-11-mobile-design-pass-design.md` §2.
+
 ### App shell (A11)
 
 - **Boot.** `WatchtowerMobileApp` builds one `AppRoot` for the app's lifetime, which owns the current `AppEnvironment` and the link flow (A12) (or shows `BootFailureView` when the replica cannot open; a signed build without its app group container refuses to boot rather than keep the replica elsewhere). The replica lives in the app group `group.com.aiwatchtowers.watchtower.mobile`, so the notification extensions can read it.
@@ -277,7 +281,7 @@ CloudKit keeps two environments per container, Development and Production, and a
 - **Counts.** Board progress is `done_targets / (open_targets + done_targets)`, no bar at 0 of 0. "todo" is `open − in progress − blocked`. Session-state counts are the hub's `session_counts`; "not running" is not shown. Now sums them over all workbenches.
 - **Board filters.** Open (`todo`, `in_progress`, `in_review`, `blocked`), In progress, Blocked and Archive. Archive shows only `archived` records and the others never do; a matching target keeps its ancestors from the same pool for context, and under Open a shown parent keeps its done children (greyed, "done"); chip counts stay match-only. A node has a disclosure only with visible children.
 - **Sibling order** is the Mac's: priority high/medium/other, then status in_progress/in_review/blocked/todo/done/other, then id (`BoardModel.boardOrder`, a third twin of Core's `WorkbenchBoardOrder` and Go's `boardSiblingOrder`; change all three together).
-- **Orange only for waiting and asks.** Views paint only tones the screen models hand them. Each model lists its `ToneUse`s with a `ToneRole` decided from the data; `OrangeToneTests` runs every DemoSeed screen and fails on orange outside a waiting or ask role, and checks that the data-driven tones (status, priority, Mac chip) are never orange. The SwiftLint rule `orange_outside_phone_tone` (WatchtowerMobile only) forbids naming orange under `Sources/Features/` outside `PhoneTone.swift` (`PhoneTone.waitingForYou`). The project has no snapshot library.
+- **Orange only for waiting and asks.** Views paint only tones the screen models hand them. Each model lists its `ToneUse`s with a `ToneRole` decided from the data; `OrangeToneTests` runs every DemoSeed screen and fails on orange outside a waiting or ask role, and checks that the data-driven tones (status, priority, Mac chip) are never orange. The SwiftLint rule `orange_outside_phone_tone` (WatchtowerMobile only) forbids naming orange under `Sources/Features/` and `Sources/DesignSystem/` outside `Sources/DesignSystem/PhoneTone.swift` (`PhoneTone.waitingForYou`); the design layer itself gets orange only from `PhoneTone`. The project has no snapshot library.
 - **DemoSeed** adds three workbenches (one without sessions and with an empty board), ten sessions covering every state kind, open REVIEW/ASK/CHECK asks plus closed ones, a board tree with archived targets and a comment thread.
 
 ### Session detail (B7)

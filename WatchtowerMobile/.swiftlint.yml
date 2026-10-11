@@ -162,14 +162,16 @@ type_name:
     warning: 50
     error: 60
 
-# Mobile-only (spec §14): orange is for waiting-for-you and ask elements
-# only, so under Sources/Features/ only PhoneTone.swift may name it; screens
-# use `PhoneTone.waitingForYou` or a session record's published tone.
+# Mobile-only (mobile POC spec §14, design pass spec §2.1): orange is for
+# waiting-for-you and ask elements only, so under Sources/Features/ and
+# Sources/DesignSystem/ only DesignSystem/PhoneTone.swift may name it;
+# screens and the design layer use `PhoneTone.waitingForYou` or a session
+# record's published tone.
 custom_rules:
   orange_outside_phone_tone:
     name: "Orange outside PhoneTone"
-    included: ".*/Sources/Features/.*\\.swift"
-    excluded: ".*/Sources/Features/Workbench/PhoneTone\\.swift"
+    included: ".*/Sources/(Features|DesignSystem)/.*\\.swift"
+    excluded: ".*/Sources/DesignSystem/PhoneTone\\.swift"
     regex: "\\.orange\\b|systemOrange"
     message: "Orange is for waiting-for-you and asks only: use PhoneTone.waitingForYou (PhoneTone.swift)."
     severity: error
