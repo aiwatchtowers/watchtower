@@ -374,9 +374,15 @@ struct WorkbenchTitleRow: View {
         // (board #412); never under the open palette. Labelled: a trailing
         // closure would be `onKey`.
         // swiftlint:disable:next trailing_closure
-        .background(OwnerAskKeyCatcher(onPress: { press in
-            !paletteOpen && OwnerAskKeyMap.action(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
+        .background(OwnerAskKeyCatcher(onPress: { [vm, paletteOpen] press in
+            Self.pressOnPage(press, vm: vm, paletteOpen: paletteOpen)
         }))
+    }
+
+    /// A bare key the page's catcher offers (board #412): A opens the stack,
+    /// never under the open palette; anything else stays the window's.
+    static func pressOnPage(_ press: OwnerAskKeyMap.Press, vm: WorkbenchesViewModel, paletteOpen: Bool) -> Bool {
+        !paletteOpen && OwnerAskKeyMap.action(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
     }
 
     /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;

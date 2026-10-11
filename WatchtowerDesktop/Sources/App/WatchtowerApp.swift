@@ -475,6 +475,12 @@ struct WatchtowerApp: App {
                 Button("Forward") { if let shown { navigation.goForward(project: shown) } }
                     .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoForward(workbenchID: shown?.id))
+                Divider()
+                // Board #412: the one key that may take the keyboard from
+                // the terminal — the owner's explicit chord, not a bare key.
+                Button("Show Waiting for You") { _ = appState.workbenchesViewModel?.openStackFromKeyboard() }
+                    .keyboardShortcut("a", modifiers: [.control, .command])
+                    .disabled(shown == nil)
             }
         }
 
