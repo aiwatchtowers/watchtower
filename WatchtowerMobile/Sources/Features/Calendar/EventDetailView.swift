@@ -96,35 +96,34 @@ struct EventDetailView: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) { bottomBar(model) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar(model) }
     }
 
     @ViewBuilder
     private func bottomBar(_ model: EventDetailModel) -> some View {
         if !model.actionTitles.isEmpty {
-            HStack(spacing: 10) {
-                if let url = model.joinURL {
-                    Button {
-                        openURL(url)
-                    } label: {
-                        Label("Join", systemImage: "video").frame(maxWidth: .infinity)
+            BottomActionBar {
+                HStack(spacing: 10) {
+                    if let url = model.joinURL {
+                        Button {
+                            openURL(url)
+                        } label: {
+                            Label("Join", systemImage: "video").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.bordered)
-                }
-                if let meeting = model.meetingEvent {
-                    Button {
-                        Task { await env.recorder.recordMeeting(meeting) }
-                    } label: {
-                        Label("Record this meeting", systemImage: "record.circle").frame(maxWidth: .infinity)
+                    if let meeting = model.meetingEvent {
+                        Button {
+                            Task { await env.recorder.recordMeeting(meeting) }
+                        } label: {
+                            Label("Record this meeting", systemImage: "record.circle").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(PhoneTone.red.color)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(PhoneTone.red.color)
                 }
+                .controlSize(.large)
             }
-            .controlSize(.large)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
         }
     }
 }

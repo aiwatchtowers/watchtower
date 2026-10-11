@@ -108,6 +108,7 @@
 		E63A4444EF067CDCA69793F2 /* ScreenshotHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DA83C1670B014AE0EEE9F63 /* ScreenshotHost.swift */; };
 		E82759D734B8F4E2ECEB8B6D /* AskViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B954B0B07DB7C38EB952181 /* AskViewModel.swift */; };
 		EA24F0F9A7FA7AC5481E8A53 /* SettingsViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B73829BDCC72FD6095664C /* SettingsViewModel.swift */; };
+		EA4C8909AA7F7D8EE8C3969A /* Bars.swift in Sources */ = {isa = PBXBuildFile; fileRef = C01947B686F94F5886C734CB /* Bars.swift */; };
 		EAC8764F94CE640D172AC883 /* AppRootWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3734E9D1BDF9ADC4CC57B2F /* AppRootWiringTests.swift */; };
 		EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */; };
 		EC0F4A463518D23CE682829B /* LinkingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B5B699BB78B091C005BF279 /* LinkingViewModel.swift */; };
@@ -243,6 +244,7 @@
 		BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingsListModel.swift; sourceTree = "<group>"; };
 		BEDADC4689182E2C4442544B /* ScreenshotTourTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotTourTests.swift; sourceTree = "<group>"; };
 		BFCBBC92D3DFC415396C183C /* CheckAskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckAskView.swift; sourceTree = "<group>"; };
+		C01947B686F94F5886C734CB /* Bars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Bars.swift; sourceTree = "<group>"; };
 		C3F9240000D56B30D4AB7332 /* NotifyContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C7D008B26401148680559F68 /* AskFormModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskFormModel.swift; sourceTree = "<group>"; };
 		CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrangeToneTests.swift; sourceTree = "<group>"; };
@@ -461,6 +463,7 @@
 		769A2C47AF0A256116B61D76 /* DesignSystem */ = {
 			isa = PBXGroup;
 			children = (
+				C01947B686F94F5886C734CB /* Bars.swift */,
 				321E6860B503B814C29C52CE /* Card.swift */,
 				8AC5C38598DF31C3BD382645 /* FlatRow.swift */,
 				08D768F21290828AFDF991CD /* Metrics.swift */,
@@ -734,6 +737,7 @@
 				2136FE8F54449CEC21A48FCC /* AskFormModel.swift in Sources */,
 				45583C3714F8D53FB5EE744C /* AskView.swift in Sources */,
 				E82759D734B8F4E2ECEB8B6D /* AskViewModel.swift in Sources */,
+				EA4C8909AA7F7D8EE8C3969A /* Bars.swift in Sources */,
 				CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */,
 				6D2113501104D37D681C2F8E /* BoardTargetDetailModel.swift in Sources */,
 				AA7B463BE6184B04A23F9DF9 /* BoardTargetDetailView.swift in Sources */,
