@@ -89,7 +89,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
     override func setUp() async throws {
         now = asked
         rows = [row()]
-        live = [1]
+        live = [1, 2]
         presence = .present
         drafts = []
         filed = []
@@ -109,9 +109,9 @@ final class ChatQuestionEscalatorTests: XCTestCase {
 
     private func stamp(_ date: Date) -> String { SessionAgentStatus.formatStamp(date) }
 
-    private func row(at questionAt: Date? = nil, state: String = "waiting") -> SessionAgentStateRow {
+    private func row(_ id: Int64 = 1, at questionAt: Date? = nil, state: String = "waiting") -> SessionAgentStateRow {
         let at = questionAt ?? asked
-        var row = SessionAgentStateRow(id: 1, projectID: 7, title: "s", agentState: state,
+        var row = SessionAgentStateRow(id: id, projectID: 7, title: "s", agentState: state,
                                        agentStateAt: stamp(at), workbenchName: "acme")
         row.chatQuestion = #"{"question":"Red or orange?","options":[]}"#
         row.chatQuestionAt = stamp(at)
@@ -136,7 +136,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         )
         escalator.sessions = { [weak self] in
             guard let self else { return .empty }
-            return .init(rows: rows, liveIDs: live, startedAt: [1: started])
+            return .init(rows: rows, liveIDs: live, startedAt: [1: started, 2: started])
         }
         escalators.append(escalator)
         return escalator
@@ -158,7 +158,7 @@ final class ChatQuestionEscalatorTests: XCTestCase {
     }
 
     private func settled(_ escalator: ChatQuestionEscalator) async {
-        await eventually("the run settles") { !escalator.isEscalating(1) }
+        await eventually("the runs settle") { !escalator.isEscalating(1) && !escalator.isEscalating(2) }
     }
 
     // MARK: - Settling and triggers
@@ -254,6 +254,34 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         XCTAssertTrue(escalator.isEscalating(1))
         runner.release(0)
         await settled(escalator)
+    }
+
+    /// The in-flight rule is per session: session 1's run does not hold
+    /// session 2's back.
+    func testARunInFlightDoesNotBlockAnotherSession() async {
+        let runner = ScriptedEscalationRunner(Answer.gone)
+        runner.hold()
+        rows = [row(1), row(2)]
+        let escalator = makeEscalator(runner)
+        now = asked.addingTimeInterval(600)
+        escalator.evaluate()
+        await eventually("both sessions run") { runner.invocations.count == 2 }
+        XCTAssertEqual(runner.invocations.map { $0[5] }, ["1", "2"])
+        runner.release(0)
+        runner.release(1)
+        await settled(escalator)
+    }
+
+    /// The stop rule is per session too: session 1's `gone` leaves session
+    /// 2's question to escalate.
+    func testAStoppedSessionDoesNotStopAnother() async {
+        let runner = ScriptedEscalationRunner(Answer.gone)
+        let escalator = makeEscalator(runner)
+        await evaluate(escalator, after: 600)
+        XCTAssertEqual(runner.invocations.count, 1)
+        rows = [row(1), row(2)]
+        await evaluate(escalator, after: 700)
+        XCTAssertEqual(runner.invocations.map { $0[5] }, ["1", "2"])
     }
 
     /// E20: `busy` and `open_cap` keep the question; tried again at most
