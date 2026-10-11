@@ -26,7 +26,7 @@ package enum ChatQuestionEscalationPolicy {
     /// guard recorded the question.
     package static let stateToleranceMillis: Int64 = 30_000
 
-    package enum Reason: String, Equatable, Sendable {
+    package enum Reason: String, CaseIterable, Equatable, Sendable {
         case timeout, left, away
     }
 

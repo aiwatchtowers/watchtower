@@ -367,7 +367,8 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         now = asked.addingTimeInterval(600)
         escalator.evaluate()
         await eventually("both sessions run") { runner.invocations.count == 2 }
-        XCTAssertEqual(runner.invocations.map { $0[5] }, ["1", "2"])
+        // Each run starts in its own Task, so their order is not fixed.
+        XCTAssertEqual(Set(runner.invocations.map { $0[5] }), ["1", "2"])
         runner.release(0)
         runner.release(1)
         await settled(escalator)

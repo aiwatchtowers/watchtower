@@ -62,6 +62,67 @@ final class ChatQuestionEscalationResultTests: XCTestCase {
         XCTAssertEqual(result.verdict, .filed(askID: 7))
     }
 
+    // MARK: Go's goldens (cmd/testdata/escalate, written from the verb's constants)
+
+    private static let goldens = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent() // Core
+        .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // WatchtowerDesktop
+        .deletingLastPathComponent() // repo root
+        .appendingPathComponent("cmd/testdata/escalate")
+
+    private struct Contract: Decodable {
+        let reasons: [String]
+        let errorCodes: [String]
+        let transient: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case reasons, transient
+            case errorCodes = "error_codes"
+        }
+    }
+
+    private func contract() throws -> Contract {
+        try JSONDecoder().decode(Contract.self, from: Data(contentsOf: Self.goldens.appendingPathComponent("contract.json")))
+    }
+
+    private func golden(_ name: String) throws -> ChatQuestionEscalationResult {
+        try JSONDecoder().decode(
+            ChatQuestionEscalationResult.self,
+            from: Data(contentsOf: Self.goldens.appendingPathComponent(name))
+        )
+    }
+
+    /// Every envelope Go prints decodes, and its verdict is the one the runner
+    /// acts on: filed, gone, or a known code retried exactly when the contract
+    /// calls it transient.
+    func testEveryGoEnvelopeGoldenDecodes() throws {
+        XCTAssertEqual(try golden("filed_quick.json").verdict, .filed(askID: 42))
+        XCTAssertEqual(try golden("filed_quick.json").level, .quick)
+        XCTAssertEqual(try golden("filed_full.json").level, .full)
+        XCTAssertEqual(try golden("gone.json").verdict, .gone)
+        let contract = try contract()
+        for raw in contract.errorCodes {
+            let result = try golden("\(raw).json")
+            XCTAssertFalse(result.ok, raw)
+            let code = try XCTUnwrap(result.errorCode, raw)
+            XCTAssertNotEqual(code, .other(raw), "\(raw) is a code this build does not know")
+            XCTAssertEqual(code.isTransient, contract.transient.contains(raw), raw)
+        }
+        let files = try FileManager.default.contentsOfDirectory(atPath: Self.goldens.path)
+            .filter { $0.hasSuffix(".json") && $0 != "contract.json" }
+        XCTAssertEqual(
+            Set(files),
+            Set(contract.errorCodes.map { "\($0).json" } + ["filed_quick.json", "filed_full.json", "gone.json"]),
+            "a new golden needs an assertion here"
+        )
+    }
+
+    /// The Desktop passes exactly the reasons the verb takes.
+    func testTheReasonsAreTheContracts() throws {
+        XCTAssertEqual(ChatQuestionEscalationPolicy.Reason.allCases.map(\.rawValue), try contract().reasons)
+    }
+
     func testUnparsableOutputThrows() {
         XCTAssertThrowsError(try decode("not json"))
         XCTAssertThrowsError(try decode(#"{"outcome":"filed"}"#), "ok is required")
