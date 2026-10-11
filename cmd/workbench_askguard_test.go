@@ -973,6 +973,7 @@ func TestAskGuardModelChildIsIsolated(t *testing.T) {
 			assert.Contains(t, read("stdin"), marker, "the message travels on stdin")
 			assert.NotContains(t, read("env"), terminalSessionEnv+"=", "the child never gets the terminal session variable")
 			assert.Equal(t, read("pid"), read("pgid"), "the child leads its own process group")
+			assert.Contains(t, read("argv"), "--model", "a model call")
 		})
 	}
 }
