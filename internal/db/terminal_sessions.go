@@ -511,9 +511,17 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 	if err := json.Unmarshal([]byte(body.String), &q); err != nil {
 		return nil, fmt.Errorf("decoding terminal session %d chat question: %w", id, err)
 	}
-	if _, err := tx.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND chat_question_at = ?`, id, workbenchID, at); err != nil {
+	res, err := tx.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND chat_question_at = ?`, id, workbenchID, at)
+	if err != nil {
 		return nil, fmt.Errorf("taking terminal session %d chat question: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("taking terminal session %d chat question: %w", id, err)
+	}
+	if n != 1 {
+		return nil, nil
 	}
 	return &q, nil
 }
