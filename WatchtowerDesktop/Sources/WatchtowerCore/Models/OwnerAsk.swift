@@ -11,6 +11,19 @@ package enum OwnerAskStatus: String, Codable, CaseIterable, Sendable {
     case open, answered, delivered, withdrawn
 }
 
+/// How the owner answers an ask (spec 2026-10-10 Part 3): `quick` with one
+/// tap in the banner or the stack, `full` in the drawer. Go classifies it
+/// once, when the ask is filed; the Desktop only reads the column.
+package enum OwnerAskLevel: String, Codable, CaseIterable, Sendable {
+    case quick, full
+}
+
+/// Who filed an ask: the agent through `ask_owner`, or Watchtower raising
+/// the agent's unanswered terminal question (`chat`).
+package enum OwnerAskOrigin: String, Codable, CaseIterable, Sendable {
+    case agent, chat
+}
+
 /// One `focus` item: what the agent wants looked at, on a review optionally
 /// tied to a heading or a quoted passage of the snapshot.
 package struct OwnerAskFocus: Hashable, Sendable {
@@ -59,7 +72,7 @@ package struct OwnerAskPayload: Equatable, Sendable {
         if raw.questions > 0 {
             // Go validated them on `ask_owner`; a card Swift refuses is a
             // broken row, not an ask without questions.
-            guard let card = ChatQuestionParser.decodeCard(data) else {
+            guard let card = ChatQuestionParser.decodeOwnerAskQuestions(data) else {
                 throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "payload questions are not a valid card"))
             }
             questions = card.questions
@@ -105,9 +118,9 @@ package struct OwnerAskPayload: Equatable, Sendable {
     private struct Ignored: Decodable {}
 }
 
-/// An `owner_asks` row (migration 00100): something the workbench agent
-/// asked the owner — a review of a document snapshot, a manual check or a
-/// question. Go's `ask_owner` writes it; the Desktop only answers it.
+/// An `owner_asks` row (migrations 00100, 00107): something the workbench
+/// agent asked the owner — a review of a document snapshot, a manual check
+/// or a question. Go writes it; the Desktop only answers it.
 package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let id: Int64
     package let projectID: Int64
@@ -116,6 +129,11 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let sessionID: Int64?
     package let targetID: Int64?
     package let kind: OwnerAskKind
+    package let level: OwnerAskLevel
+    package let origin: OwnerAskOrigin
+    /// When the agent asked the question in the terminal (`agent_state_at`
+    /// layout), kept raw; empty unless `origin` is `chat`.
+    package let chatAskedAt: String
     package let title: String
     package let summary: String
     /// A review re-round: what changed since `previousAskID`.
@@ -133,8 +151,9 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
     package let answeredAt: String
     package let deliveredAt: String
 
-    /// Throws on a kind, status, payload or answer it cannot read: such a row
-    /// is broken, and showing it as something else would answer the wrong ask.
+    /// Throws on a kind, level, origin, status, payload or answer it cannot
+    /// read: such a row is broken, and showing it as something else would
+    /// answer the wrong ask.
     package init(row: Row) throws {
         id = row["id"]
         projectID = row["project_id"]
@@ -145,6 +164,17 @@ package struct OwnerAsk: FetchableRecord, Identifiable, Equatable, Sendable {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "unknown ask kind \(kindValue)"))
         }
         self.kind = kind
+        let levelValue: String = row["level"] ?? ""
+        guard let level = OwnerAskLevel(rawValue: levelValue) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "unknown ask level \(levelValue)"))
+        }
+        self.level = level
+        let originValue: String = row["origin"] ?? ""
+        guard let origin = OwnerAskOrigin(rawValue: originValue) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "unknown ask origin \(originValue)"))
+        }
+        self.origin = origin
+        chatAskedAt = row["chat_asked_at"] ?? ""
         let statusValue: String = row["status"] ?? ""
         guard let status = OwnerAskStatus(rawValue: statusValue) else {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "unknown ask status \(statusValue)"))

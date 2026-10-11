@@ -6,7 +6,7 @@ final class OwnerAskStackTests: XCTestCase {
     private func ask(_ id: Int64, session: Int64?, minutesAgo: Double, status: String = "open") throws -> OwnerAsk {
         let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-minutesAgo * 60))
         return try OwnerAsk(row: Row([
-            "id": id, "project_id": 1, "session_id": session, "kind": "question", "title": "Ask \(id)",
+            "id": id, "project_id": 1, "level": "full", "origin": "agent", "session_id": session, "kind": "question", "title": "Ask \(id)",
             "status": status, "created_at": created
         ]))
     }

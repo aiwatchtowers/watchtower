@@ -14,7 +14,7 @@ final class OwnerAskPresentationTests: XCTestCase {
     ) throws -> OwnerAsk {
         let payload = #"{"questions":[\#(questions ? Self.question : "")],"checklist":\#(checklist)}"#
         return try OwnerAsk(row: Row([
-            "id": 4, "project_id": 1, "kind": kind.rawValue, "title": "t", "payload": payload,
+            "id": 4, "project_id": 1, "level": "full", "origin": "agent", "kind": kind.rawValue, "title": "t", "payload": payload,
             "status": status, "withdrawn_reason": reason
         ]))
     }
@@ -30,7 +30,7 @@ final class OwnerAskPresentationTests: XCTestCase {
         XCTAssertEqual(step(try ask(.question)), "Answer questions")
         let second = Self.question.replacingOccurrences(of: #""id":"a""#, with: #""id":"b""#)
         let two = try OwnerAsk(row: Row([
-            "id": 5, "project_id": 1, "kind": "question", "title": "t", "status": "open",
+            "id": 5, "project_id": 1, "level": "full", "origin": "agent", "kind": "question", "title": "t", "status": "open",
             "payload": #"{"questions":[\#(Self.question),\#(second)]}"#
         ]))
         XCTAssertEqual(step(two), "Answer 2 questions")
@@ -115,7 +115,7 @@ final class OwnerAskPresentationTests: XCTestCase {
     /// number, kind and status.
     func testLinkCardDetailNamesNumberKindAndStatus() throws {
         let ask = try OwnerAsk(row: Row([
-            "id": 12, "project_id": 1, "kind": "check", "title": "Try the export", "payload": "{}",
+            "id": 12, "project_id": 1, "level": "full", "origin": "agent", "kind": "check", "title": "Try the export", "payload": "{}",
             "status": "open", "withdrawn_reason": ""
         ]))
         XCTAssertEqual(OwnerAskPresentation.linkCardDetail(ask), "#12 · Check · Waiting for you")
