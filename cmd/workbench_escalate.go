@@ -157,7 +157,7 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 	if err != nil {
 		return escalateFailure(escalateErrBadArgs, err)
 	}
-	cfg, err := askGuardConfig()
+	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {
 		return escalateFailure(escalateErrInternal, fmt.Errorf("loading config: %w", err))
 	}
