@@ -29,7 +29,7 @@ Non-goals: merged Now/calendar/asks across Macs, deduplicating sources two Macs 
 - **Invariant I-1 ("one Mac per iCloud account publishes, a phone links to exactly one hub") is replaced** by: *a hub publishes only into its own zones; a phone links to at most 4 hubs and shows one at a time.*
 - Spec §2.3 step 6 ("switch from <old> to <new>?" with unlink of the old hub) is dropped: linking a new Mac adds it.
 - The take-over flow (`otherHub`, `takeOver()`, `tookOver`, risk 6) is removed.
-- The link flow (A8 Mac `MobileLinkCenter`, A12 phone link persistence) is not built yet; it is built multi-hub from the start, per this spec.
+- The single-hub link flow (A8 Mac `MobileLinkCenter` and shares, A12 phone `LinkStore`) is already built. F1 moves its shares onto the hub's own zones and makes the single-link phone sync its hub's zones; F2 turns the phone side multi-link.
 
 ## 3. Mac hub
 
@@ -45,7 +45,7 @@ The hub writes `DataZone-<hub_id>` and `RelayZone-<hub_id>` in its owner's priva
 ### 3.3 Zone lifecycle
 
 - Only the hub creates and deletes its zones.
-- Turning the mobile hub off in Settings deletes the hub's two zones (the phones see an unlink, §6) and its staged assets.
+- Turning the mobile hub off in Settings deletes the hub's two zones (the phones see an unlink, §6) and its staged assets. Only when the zone delete succeeds does the hub also wipe its sync state and forget its linked phones; a failed or offline delete leaves everything as it was.
 - A reinstall that loses the sidecar makes a new `hub_id`; the old zones stay behind. They are small, the phone shows that Mac as long offline and offers Forget (§5.6). No cloud cleanup in phase F.
 
 ### 3.4 Shares and link
@@ -58,7 +58,7 @@ A8 creates two zone-wide shares per hub (DataZone read-only, RelayZone read-writ
 
 ### 3.6 No migration
 
-POC only, no users: the hub deletes the legacy fixed-name `DataZone`/`RelayZone` at its first start on the new build (only when they hold its own heartbeat or no heartbeat), and test phones link again.
+POC only, no users: at its first start on the new build the hub forgets what it believes it has published and resets its relay cursor (the exactly-once ledger is kept), once, behind a marker. It deletes the legacy fixed-name `DataZone`/`RelayZone` only when they hold its own heartbeat or no heartbeat (a heartbeat it cannot read keeps them), and checks that once. Test phones link again.
 
 ## 4. Kit (WatchtowerSync)
 
@@ -71,7 +71,7 @@ POC only, no users: the hub deletes the legacy fixed-name `DataZone`/`RelayZone`
 
 ### 4.2 Each engine limited to its zones
 
-Every fetch and send passes `CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(own))` and `SendChangesOptions(scope: .zoneIDs(own))`. A transport neither downloads nor sends another hub's changes.
+Every fetch and send passes `CKSyncEngine.FetchChangesOptions(scope: .zoneIDs(own))` and `SendChangesOptions(scope: .zoneIDs(own))`, and the delegate's `nextFetchChangesOptions` scopes the engine's own push-driven fetches. A zone scope filters which zones a fetch covers; it does not force one, so the transport keeps polling its own zones directly. Spike F0 checks the real behaviour. Every inbound path still filters by `cloudZone(for:)`.
 
 ### 4.3 Spike F0 and the fallback
 
@@ -134,7 +134,7 @@ A recording goes to the Mac that was active when it started; the ledger row reco
 
 ## 6. Errors
 
-1. **Hub zones vanish** (the Mac turned the hub off, removed the phone or deleted the share): that session gets `.unlinked`, its row turns `unlinked_by_mac`, its data stays read-only until Forget. Other hubs are untouched.
+1. **Hub zones vanish** (the Mac turned the hub off, removed the phone or deleted the share — or the owner reset their iCloud data, even though the Mac re-creates the zones afterwards): that session gets `.unlinked`, its row turns `unlinked_by_mac`, its data stays read-only until Forget, and the phone must scan the QR again. Other hubs are untouched.
 2. **The phone's Apple ID changes**: every session and the registry are wiped (accepted shares belong to the account too); onboarding.
 3. **Quota, rate limit, store failure** stay within one hub's transport; the row shows the error.
 4. **Misaddressed record**: `wrong_hub` echo (§3.5).
