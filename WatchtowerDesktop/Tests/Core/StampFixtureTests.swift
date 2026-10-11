@@ -41,4 +41,11 @@ final class StampFixtureTests: XCTestCase {
             XCTAssertEqual(SessionAgentStatus.formatStamp(instant), valid.stamp)
         }
     }
+
+    /// Go's formatter floors a pre-epoch instant: -1.5 s is half a second
+    /// into the second before.
+    func testAPreEpochInstantFloorsLikeGo() {
+        XCTAssertEqual(SessionAgentStatus.formatStamp(Date(timeIntervalSince1970: -1.5)), "1969-12-31T23:59:58.500Z")
+        XCTAssertEqual(SessionAgentStatus.formatStamp(Date(timeIntervalSince1970: -0.001)), "1969-12-31T23:59:59.999Z")
+    }
 }

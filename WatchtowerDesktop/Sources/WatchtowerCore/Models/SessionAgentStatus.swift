@@ -288,24 +288,15 @@ package struct SessionAgentStatus: Equatable, Sendable {
         return formatter
     }()
 
-    /// Parses an `agent_state_at` stamp; nil for anything else — also for
-    /// a near miss the formatter alone would take (two fraction digits, an
-    /// offset instead of `Z`), which Go's parser refuses (the shared
-    /// fixture `internal/db/testdata/stamps`).
+    /// Parses an `agent_state_at` stamp; nil for anything else. Only a
+    /// stamp that formats back to itself counts: that refuses the near
+    /// misses the formatter alone would take and Go's parser refuses — two
+    /// fraction digits, an offset instead of `Z`, a day or hour past the end
+    /// (`2026-02-30`, `24:00`) — and keeps a stamp read and written back
+    /// byte-identical (the shared fixture `internal/db/testdata/stamps`).
     package static func parseStamp(_ stamp: String) -> Date? {
-        guard hasStampLayout(stamp) else { return nil }
-        return stampFormatter.date(from: stamp)
-    }
-
-    /// `yyyy-MM-ddTHH:mm:ss.SSSZ` character for character, digits where
-    /// the layout has digits.
-    private static func hasStampLayout(_ stamp: String) -> Bool {
-        let layout = Array("dddd-dd-ddTdd:dd:dd.dddZ".utf8)
-        let bytes = Array(stamp.utf8)
-        guard bytes.count == layout.count else { return false }
-        return zip(bytes, layout).allSatisfy { byte, want in
-            want == UInt8(ascii: "d") ? (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte) : byte == want
-        }
+        guard let date = stampFormatter.date(from: stamp), formatStamp(date) == stamp else { return nil }
+        return date
     }
 
     /// `at` in the `agent_state_at` layout Go writes (`db.AgentStateStamp`,
@@ -315,9 +306,13 @@ package struct SessionAgentStatus: Equatable, Sendable {
     package static func formatStamp(_ at: Date) -> String {
         // Rounded to the microsecond first: a `Date` holds a binary double,
         // so an exact millisecond may sit just under its own value.
-        let millis = Int64((at.timeIntervalSince1970 * 1_000_000).rounded()) / 1000
-        let whole = secondsFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(millis / 1000)))
-        return whole + "." + String(format: "%03lld", millis % 1000) + "Z"
+        // Floor division, as Go's: a pre-epoch instant keeps a positive
+        // fraction of the second before it.
+        let micros = Int64((at.timeIntervalSince1970 * 1_000_000).rounded())
+        let millis = micros >= 0 ? micros / 1000 : (micros - 999) / 1000
+        let seconds = millis >= 0 ? millis / 1000 : (millis - 999) / 1000
+        let whole = secondsFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(seconds)))
+        return whole + "." + String(format: "%03lld", millis - seconds * 1000) + "Z"
     }
 
     /// The stamp up to its whole seconds, UTC and the Gregorian calendar

@@ -110,7 +110,7 @@ Lanes: **Go** tasks can run in parallel where dependencies allow (one table = on
 
 ### C3. Escalation policy (Swift-Core)
 - **Files:** `WatchtowerCore/Services/ChatQuestionEscalationPolicy.swift`, the terminal session row model (`chatQuestionAt` kept as the raw string — F16), `Tests/Core/ChatQuestionEscalationPolicyTests.swift`, `Tests/Core/StampFixtureTests.swift` (reads `internal/db/testdata/stamps`).
-- **Produces:** `ChatQuestionEscalationPolicy.decide(row:presence:hasOwnerDraft:now:) -> Decision (.none / .escalate(.timeout | .left | .away))`; constants `timeout = 600 s`, `leaveGrace = 90 s`, `draftCap = 1800 s`.
+- **Produces:** `ChatQuestionEscalationPolicy.decide(row:live:startedAt:presence:hasOwnerDraft:now:) -> Decision (.none / .unreadableStamp / .escalate(.timeout | .left | .away))` — `row` is the `fetchAgentStates` row (`SessionAgentStateRow` with `chatQuestion`/`chatQuestionAt`), `live`/`startedAt` carry `SessionAgentStatus.effective`'s run rules, `presence` is `.present` or `.away(since:)`, `.unreadableStamp` is the spec's "none (logged once)" row for the runner to log; constants `timeout = 600 s`, `leaveGrace = 90 s`, `draftCap = 1800 s`.
 - **Depends on:** G1, G3 (stamp fixture).
 - **Tests:** a table over spec Part 5.2: `testTenMinutesPresentEscalates` (599 s none, 600 s escalate), `testLeavingEscalatesAfterTheGrace` (89 s none, 90 s left), `testComingBackInsideTheGraceKeepsTheQuestion` (E13a), `testAQuestionRecordedWhileAwayEscalatesAtOnce` (E10b), `testADraftDefersUpToTheCap` (E13b, E15), `testNotWaitingNeverEscalates` (E11, E11a), `testNotLiveNeverEscalates` (E22), `testEarlierRunNeverEscalates`, `testFutureOrUnparsableStampIsNone`; the stamp fixture parses and is kept byte-identical (E35).
 

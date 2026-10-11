@@ -276,13 +276,14 @@ One light-tier call per Stop (also on `stop_hook_active`, row 1), against one mo
 
 ### 5.2 When the Desktop escalates
 
-Pure Core `ChatQuestionEscalationPolicy.decide(row:presence:hasOwnerDraft:now:) -> none | escalate(reason)` over a live session of this run (`SessionAgentStatus.effective` rules) with a non-NULL `chat_question_at`. `presence` carries whether S is present now and, if not, since when the owner has been away from S (in memory; "away since" starts at the 2 s-debounced loss).
+Pure Core `ChatQuestionEscalationPolicy.decide(row:live:startedAt:presence:hasOwnerDraft:now:) -> none | unreadableStamp | escalate(reason)` over a live session of this run with a non-NULL `chat_question_at` (`live` and `startedAt` carry `SessionAgentStatus.effective`'s run rules). Like Go's take (5.3), it also requires `agent_state_at ≤ chat_question_at + 30 s`, compared in whole milliseconds, so it never escalates a row Go would answer `gone`. `presence` carries whether S is present now and, if not, since when the owner has been away from S (in memory; "away since" starts at the 2 s-debounced loss).
 
 | Case (first match wins) | Result |
 |---|---|
 | Session not live, standalone, or the stored state is from an earlier run | `none` |
 | The stored `agent_state` is not `waiting` (a turn is running or a permission prompt is up) | `none` |
-| `chat_question_at` unparsable, or in the future by > 5 s | `none` (logged once) |
+| `chat_question_at` unparsable, or in the future by > 5 s | `unreadableStamp` — nothing escalates; the runner logs it once |
+| `agent_state_at` more than 30 s after `chat_question_at` (Go's take would refuse it) | `none` |
 | `now - chat_question_at ≥ 30 min` | `escalate(timeout)` — the hard cap, drafts or not |
 | The owner has a draft in S's prompt (`TerminalCenter.promptDrafts`) | `none` — the owner is answering; re-evaluated on every tick |
 | Not present, and the owner was already away when the question was recorded (away since ≤ `chat_question_at`) | `escalate(away)` — at once |

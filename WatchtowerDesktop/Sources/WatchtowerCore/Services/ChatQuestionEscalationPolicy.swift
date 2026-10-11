@@ -9,7 +9,7 @@ import Foundation
 ///
 /// Never escalates a row Go's compare-and-take would refuse as gone
 /// (`db.TakeChatQuestion`): a live workbench session of this run, its trusted
-/// hook state `waiting`, `agent_state_at` at most `stateTolerance` after the
+/// hook state `waiting`, `agent_state_at` at most `stateToleranceMillis` after the
 /// question.
 package enum ChatQuestionEscalationPolicy {
     /// How long a present owner may stay silent.
@@ -21,9 +21,10 @@ package enum ChatQuestionEscalationPolicy {
     package static let draftCap: TimeInterval = 1800
     /// A stamp further ahead of the Desktop's clock is not trusted.
     package static let futureTolerance: TimeInterval = 5
-    /// Go's `chatQuestionStateTolerance`: the Stop's own `waiting` may be
-    /// stamped just after the guard recorded the question.
-    package static let stateTolerance: TimeInterval = 30
+    /// Go's `chatQuestionStateTolerance`, in milliseconds (the stamps'
+    /// resolution): the Stop's own `waiting` may be stamped just after the
+    /// guard recorded the question.
+    package static let stateToleranceMillis: Int64 = 30_000
 
     package enum Reason: String, Equatable, Sendable {
         case timeout, left, away
@@ -31,6 +32,10 @@ package enum ChatQuestionEscalationPolicy {
 
     package enum Decision: Equatable, Sendable {
         case none
+        /// `chat_question_at` does not parse or is more than
+        /// `futureTolerance` ahead of the clock: nothing to do, but the
+        /// runner logs it once.
+        case unreadableStamp
         case escalate(Reason)
     }
 
@@ -43,9 +48,10 @@ package enum ChatQuestionEscalationPolicy {
     }
 
     /// `row` is the session's `fetchAgentStates` row; `live` and `startedAt`
-    /// are the session's process and its start, as for
-    /// `SessionAgentStatus.effective`; `hasOwnerDraft` is text the owner
-    /// typed in the session's prompt and has not submitted.
+    /// are the session's process and its start, carrying
+    /// `SessionAgentStatus.effective`'s run rules (a state written before
+    /// `startedAt`, or with no known start, is no state); `hasOwnerDraft` is
+    /// text the owner typed in the session's prompt and has not submitted.
     package static func decide(
         row: SessionAgentStateRow,
         live: Bool,
@@ -54,12 +60,13 @@ package enum ChatQuestionEscalationPolicy {
         hasOwnerDraft: Bool,
         now: Date
     ) -> Decision {
-        guard live, row.projectID != nil, row.chatQuestion != nil,
-              SessionAgentStatus.trustedHook(row, startedAt: startedAt) == .waiting,
-              let rawAt = row.chatQuestionAt, let asked = SessionAgentStatus.parseStamp(rawAt),
-              asked.timeIntervalSince(now) <= futureTolerance,
-              let stateAt = row.agentStateAt.flatMap(SessionAgentStatus.parseStamp),
-              stateAt.timeIntervalSince(asked) <= stateTolerance else { return .none }
+        guard live, row.projectID != nil, row.chatQuestion != nil, let rawAt = row.chatQuestionAt,
+              SessionAgentStatus.trustedHook(row, startedAt: startedAt) == .waiting else { return .none }
+        guard let asked = SessionAgentStatus.parseStamp(rawAt), asked.timeIntervalSince(now) <= futureTolerance else {
+            return .unreadableStamp
+        }
+        guard let stateAt = row.agentStateAt.flatMap(SessionAgentStatus.parseStamp),
+              Int64((stateAt.timeIntervalSince(asked) * 1000).rounded()) <= stateToleranceMillis else { return .none }
         let age = now.timeIntervalSince(asked)
         if age >= draftCap { return .escalate(.timeout) }
         if hasOwnerDraft { return .none }

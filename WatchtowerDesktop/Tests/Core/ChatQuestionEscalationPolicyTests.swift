@@ -140,15 +140,40 @@ final class ChatQuestionEscalationPolicyTests: XCTestCase {
         XCTAssertEqual(decide(none, after: 1800), .none)
     }
 
+    /// Spec Part 5.2 row 3: nothing escalates, and the runner logs it once.
     func testFutureOrUnparsableStampIsNone() {
         let future = row(questionAt: stamp(asked.addingTimeInterval(6)))
-        XCTAssertEqual(decide(future, after: 0), .none, "6 s ahead of the clock")
-        XCTAssertEqual(decide(future, presence: .away(since: started), after: 0), .none)
+        XCTAssertEqual(decide(future, after: 0), .unreadableStamp, "6 s ahead of the clock")
+        XCTAssertEqual(decide(future, presence: .away(since: started), after: 0), .unreadableStamp)
         let tolerated = row(questionAt: stamp(asked.addingTimeInterval(5)))
         XCTAssertEqual(decide(tolerated, presence: .away(since: started), after: 0), .escalate(.away),
                        "5 s ahead is tolerated")
-        for bad in ["", "yesterday", "2026-10-10T12:34:56Z"] {
-            XCTAssertEqual(decide(row(questionAt: bad), after: 1800), .none, bad)
+        XCTAssertEqual(decide(tolerated, after: 0), .none)
+        for bad in ["", "yesterday", "2026-10-10T12:34:56Z", "2026-02-30T00:00:00.000Z"] {
+            XCTAssertEqual(decide(row(questionAt: bad), after: 1800), .unreadableStamp, bad)
+        }
+    }
+
+    /// The row rules come first: a bad stamp on a session that is not live
+    /// or not waiting is plain `none`.
+    func testAnUnreadableStampOfARowThatCannotEscalateIsNone() {
+        XCTAssertEqual(decide(row(questionAt: "yesterday"), live: false, after: 0), .none)
+        XCTAssertEqual(decide(row(state: "working", questionAt: "yesterday"), after: 0), .none)
+    }
+
+    /// The tolerance is compared at the stamps' resolution: exactly 30.000 s
+    /// after the question still takes, one millisecond more does not.
+    func testTheStateToleranceIsInclusiveToTheMillisecond() throws {
+        var exact = row()
+        exact.chatQuestionAt = "2026-10-10T12:34:56.789Z"
+        exact.agentStateAt = "2026-10-10T12:35:26.789Z"
+        var over = exact
+        over.agentStateAt = "2026-10-10T12:35:26.790Z"
+        let asked = try XCTUnwrap(SessionAgentStatus.parseStamp("2026-10-10T12:34:56.789Z"))
+        let now = asked.addingTimeInterval(600)
+        for (candidate, want) in [(exact, Policy.Decision.escalate(.timeout)), (over, .none)] {
+            XCTAssertEqual(Policy.decide(row: candidate, live: true, startedAt: asked.addingTimeInterval(-60),
+                                         presence: .present, hasOwnerDraft: false, now: now), want)
         }
     }
 }
