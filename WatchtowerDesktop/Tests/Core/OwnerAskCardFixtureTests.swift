@@ -3,12 +3,13 @@ import XCTest
 
 /// An ask's questions are a chat question card: Go's `asks.Validate` and the
 /// Swift `ChatQuestionParser` decoder accept and reject the same
-/// `internal/asks/testdata/cards` files.
+/// `internal/asks/testdata/cards` files. An `owner_ask_*` file is an owner
+/// ask's questions, not a chat card, and has its own tests.
 final class OwnerAskCardFixtureTests: XCTestCase {
     func testTheCardDecoderAgreesWithGoOnEveryFixture() throws {
         let files = try OwnerAskFixtures.files("cards")
         XCTAssertGreaterThanOrEqual(files.count, 10)
-        for file in files {
+        for file in files where !file.name.hasPrefix("owner_ask_") {
             let card = ChatQuestionParser.decodeCard(file.data)
             if file.name.hasPrefix("valid_") {
                 XCTAssertNotNil(card, "\(file.name) is accepted by Go")

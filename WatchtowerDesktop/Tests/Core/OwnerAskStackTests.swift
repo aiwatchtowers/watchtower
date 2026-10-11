@@ -3,11 +3,15 @@ import GRDB
 @testable import WatchtowerCore
 
 final class OwnerAskStackTests: XCTestCase {
-    private func ask(_ id: Int64, session: Int64?, minutesAgo: Double, status: String = "open") throws -> OwnerAsk {
+    private func ask(
+        _ id: Int64, session: Int64?, minutesAgo: Double, status: String = "open", level: String = "full"
+    ) throws -> OwnerAsk {
         let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-minutesAgo * 60))
+        // A Quick ask has the one question with options its one-tap row needs.
+        let payload = level == "quick" ? #"{"questions":[{"id":"1","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"# : "{}"
         return try OwnerAsk(row: Row([
-            "id": id, "project_id": 1, "session_id": session, "kind": "question", "title": "Ask \(id)",
-            "status": status, "created_at": created
+            "id": id, "project_id": 1, "level": level, "origin": "agent", "session_id": session, "kind": "question", "title": "Ask \(id)",
+            "status": status, "created_at": created, "payload": payload
         ]))
     }
 
@@ -71,6 +75,42 @@ final class OwnerAskStackTests: XCTestCase {
         XCTAssertNil(OwnerAskStack([]).askToOpen(sessionsOnScreen: [7], dismissed: []))
     }
 
+    /// Board #501: a Quick ask never opens the drawer by itself — it is
+    /// answered with one tap in the banner over its terminal.
+    func testAQuickAskNeverOpensTheDrawerByItself() throws {
+        let onlyQuick = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 9, level: "quick"),
+            try ask(2, session: 7, minutesAgo: 5, level: "quick")
+        ])
+        XCTAssertNil(onlyQuick.askToOpen(sessionsOnScreen: [7], dismissed: []), "a session holding only Quick asks opens nothing")
+    }
+
+    /// The banner's test decides: an ask stored `quick` in a shape without
+    /// a one-tap row (here two questions) has Open, so it opens by itself.
+    func testAQuickLevelAskWithoutAOneTapRowOpensLikeAFullOne() throws {
+        let created = ISO8601DateFormatter().string(from: Date())
+        let question = #"{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}"#
+        let second = question.replacingOccurrences(of: #""id":"a""#, with: #""id":"b""#)
+        let odd = try OwnerAsk(row: Row([
+            "id": 1, "project_id": 1, "level": "quick", "origin": "agent", "session_id": 7, "kind": "question", "title": "t",
+            "status": "open", "created_at": created, "payload": #"{"questions":[\#(question),\#(second)]}"#
+        ]))
+        XCTAssertEqual(OwnerAskStack([odd]).askToOpen(sessionsOnScreen: [7], dismissed: [])?.id, 1)
+    }
+
+    func testAFullAskAfterAQuickOneInTheSameSessionOpensTheFullOne() throws {
+        let stack = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 9, level: "quick"),
+            try ask(2, session: 7, minutesAgo: 5),
+            try ask(3, session: 8, minutesAgo: 8, level: "quick"),
+            try ask(4, session: 8, minutesAgo: 2)
+        ])
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7, 8], dismissed: [])?.id, 2)
+        XCTAssertEqual(stack.askToOpen(sessionsOnScreen: [7, 8], dismissed: [2])?.id, 4,
+                       "session 7's Full ask was closed; its Quick one does not count")
+        XCTAssertNil(stack.askToOpen(sessionsOnScreen: [7], dismissed: [2]))
+    }
+
     func testNoAsksIsAnEmptyStack() {
         let stack = OwnerAskStack([])
         XCTAssertEqual(stack.count, 0)
@@ -89,5 +129,18 @@ final class OwnerAskStackTests: XCTestCase {
         XCTAssertEqual(stack.next(after: 3)?.id, 1, "past the last it wraps")
         XCTAssertEqual(stack.next(after: 9)?.id, 1, "from an ask no longer waiting, the oldest")
         XCTAssertNil(OwnerAskStack([try ask(1, session: 7, minutesAgo: 1)]).next(after: 1), "alone, nothing comes next")
+    }
+
+    /// K in the drawer or on a stack card (board #412).
+    func testPreviousWalksBackAndWraps() throws {
+        let stack = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 3),
+            try ask(2, session: 8, minutesAgo: 2),
+            try ask(3, session: nil, minutesAgo: 1)
+        ])
+        XCTAssertEqual(stack.previous(before: 2)?.id, 1)
+        XCTAssertEqual(stack.previous(before: 1)?.id, 3, "before the first it wraps")
+        XCTAssertEqual(stack.previous(before: 9)?.id, 3, "from an ask no longer waiting, the newest")
+        XCTAssertNil(OwnerAskStack([try ask(1, session: 7, minutesAgo: 1)]).previous(before: 1), "alone, nothing comes before")
     }
 }

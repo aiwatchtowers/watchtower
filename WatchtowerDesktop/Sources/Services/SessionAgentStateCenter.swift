@@ -66,12 +66,17 @@ final class SessionAgentStateCenter {
     /// or not (an answer held because a read failed goes on the next one
     /// that succeeds). One subscriber.
     @ObservationIgnored var onRead: (() -> Void)?
+    /// Every resolve of the stored rows — each read, failed or not, and each
+    /// change of the live sessions — after `statuses` is published. One
+    /// subscriber: `AppState.wireChatQuestionEscalation` hands it to the
+    /// `ChatQuestionEscalator`.
+    @ObservationIgnored var onResolved: (() -> Void)?
     @ObservationIgnored private let interval: Duration
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
     @ObservationIgnored private var following = false
     /// The last good read, resolved again whenever liveness changes.
-    @ObservationIgnored private var rows: [SessionAgentStateRow] = []
+    @ObservationIgnored private(set) var rows: [SessionAgentStateRow] = []
     /// Reads overlap (the poll, a refresh): only one started after the last
     /// applied read is applied, so a slow older read never undoes a newer one.
     @ObservationIgnored private var readsStarted = 0
@@ -183,6 +188,7 @@ final class SessionAgentStateCenter {
         let next = SessionAgentStatus.resolve(rows, liveIDs: live, startedAt: startedAt, now: now, displayOver: over)
         publish(next)
         prober?.probeDue(rows, statuses: next, startedAt: startedAt, now: now)
+        onResolved?()
     }
 
     /// Assigned only on a change, so an unchanged read re-renders nothing;

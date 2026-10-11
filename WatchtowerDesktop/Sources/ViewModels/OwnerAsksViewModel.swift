@@ -38,6 +38,30 @@ final class OwnerAsksViewModel {
         case noSession
     }
 
+    /// What one `answer(_:with:)` call came to.
+    enum AnswerResult: Equatable {
+        /// Written; the line went as the delivery says.
+        case delivered(Delivery)
+        /// An answer to the ask was already being written: nothing done.
+        case busy
+        /// The ask was no longer open (withdrawn, superseded): nothing written.
+        case notOpen
+        /// Not written: an answer Go would refuse, or the write failed
+        /// (`answerErrors`).
+        case failed
+
+        var delivery: Delivery? {
+            if case let .delivered(delivery) = self { delivery } else { nil }
+        }
+    }
+
+    /// A Quick answer's notice where the owner tapped (`quickNotices`).
+    struct QuickNotice: Identifiable, Equatable {
+        let ask: OwnerAsk
+        let notice: AnswerNotice
+        var id: Int64 { ask.id }
+    }
+
     /// What the last answer to an ask came to, shown beside it.
     enum AnswerNotice: Equatable {
         /// Written; the line went as the delivery says. An ask without a
@@ -105,6 +129,9 @@ final class OwnerAsksViewModel {
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
     /// The last answer's outcome per ask id, until dismissed.
     private(set) var answerNotices: [Int64: AnswerNotice] = [:]
+    /// The asks answered (or found withdrawn) from a Quick ask's row, as
+    /// they were, until their notice is dismissed (`quickNotices`).
+    private(set) var quickAnswered: [Int64: OwnerAsk] = [:]
     /// Why the last read of a workbench's asks failed; the next read clears it.
     private(set) var loadErrors: [Int64: String] = [:]
     /// Why the last answer to an ask failed, apart from the reads: a good
@@ -139,6 +166,15 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private(set) var roomySessions: Set<Int64> = []
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
+    /// A (or ⌃⌘A) on the workbench page (board #412): that workbench's
+    /// stack gives its oldest card the keyboard once its
+    /// `OwnerAskStackSection` shows it (`takeStackKeyboardRequest`).
+    private(set) var stackKeyboardRequest: StackKeyboardRequest?
+    /// Workbenches whose drawer takes the bare keys (board #412): a click
+    /// in it, or an ask opened or switched from the keyboard, made it
+    /// active; a click elsewhere or the drawer going ends it. Read at key
+    /// time only.
+    @ObservationIgnored private(set) var drawerKeysActive: Set<Int64> = []
     /// The drawer's width, kept across launches under `drawerWidthKey`.
     private(set) var drawerWidth: Double
 
@@ -245,6 +281,15 @@ final class OwnerAsksViewModel {
             // The last list stays beside the error.
             loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
         }
+    }
+
+    /// The ask an `ask #N` in a session's terminal names (board #500), any
+    /// status, only when it is one of `projectID`'s: from the open list,
+    /// else read. nil — no link — for a number of another workbench or one
+    /// that names no ask; a failed read throws. Writes no state.
+    func linkedAsk(askID: Int64, projectID: Int64) async throws -> OwnerAsk? {
+        if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
+        return try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
     }
 
     /// The ask a stack row, a closed list or a notice names: from the open
@@ -370,6 +415,34 @@ final class OwnerAsksViewModel {
         return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")"
     }
 
+    // MARK: - Keyboard (board #412)
+
+    struct StackKeyboardRequest: Equatable {
+        let projectID: Int64
+        let at: Date
+    }
+
+    /// How long a stack request waits for its section: one never shown
+    /// must not move the keyboard on a later visit.
+    static let stackKeyboardWindow: TimeInterval = 2
+
+    func requestStackKeyboard(projectID: Int64, now: Date = Date()) {
+        stackKeyboardRequest = StackKeyboardRequest(projectID: projectID, at: now)
+    }
+
+    /// Whether `projectID`'s section gives its oldest card the keyboard
+    /// now: once per request, only its own workbench's, and only while
+    /// fresh. Another workbench's request stays for its own section.
+    func takeStackKeyboardRequest(projectID: Int64, now: Date = Date()) -> Bool {
+        guard let request = stackKeyboardRequest, request.projectID == projectID else { return false }
+        stackKeyboardRequest = nil
+        return now.timeIntervalSince(request.at) < Self.stackKeyboardWindow
+    }
+
+    func setDrawerKeysActive(_ active: Bool, projectID: Int64) {
+        if active { drawerKeysActive.insert(projectID) } else { drawerKeysActive.remove(projectID) }
+    }
+
     // MARK: - Drawer
 
     func openDrawer(askID: Int64, projectID: Int64) {
@@ -399,6 +472,7 @@ final class OwnerAsksViewModel {
     func hideDrawer(projectID: Int64) {
         if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
         drawerAskIDs[projectID] = nil
+        drawerKeysActive.remove(projectID)
         drawerExpanded = false
     }
 
@@ -425,6 +499,7 @@ final class OwnerAsksViewModel {
 
     func dismissNotice(askID: Int64) {
         answerNotices[askID] = nil
+        quickAnswered[askID] = nil
     }
 
     // MARK: - Answering
@@ -462,7 +537,7 @@ final class OwnerAsksViewModel {
     /// would; nil when it names none or that button is off.
     @discardableResult
     func pressKey(on ask: OwnerAsk, shift: Bool) -> Task<Void, Never>? {
-        guard let action = OwnerAskPresentation.keyAction(for: ask, draft: drafts.askDraft(for: ask.id), shift: shift)
+        guard let action = OwnerAskPresentation.keyAction(for: ask, shift: shift)
         else { return nil }
         return press(action, on: ask)
     }
@@ -481,10 +556,26 @@ final class OwnerAsksViewModel {
         if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.askDraft(for: ask.id)
         guard !isAnswering(ask.id), draft.isAnswerable(for: ask) else { return nil }
-        answering.insert(ask.id)
-        defer { answering.remove(ask.id) }
-        let answer = draft.answer(for: ask)
+        return await answer(ask, with: draft.answer(for: ask)).delivery
+    }
+
+    /// Writes `answer` to `ask` and delivers its line — the one path of the
+    /// drawer's answer and a Quick ask's tap or Reply (spec 2026-10-10 Part
+    /// 9.1, PROJ-12): the guarded write, then `deliver`. Nothing is written
+    /// while an answer to it is running (`busy`), for an answer Go's reader
+    /// would refuse (`failed`, the reason in `answerErrors`), for an ask no
+    /// longer open (`notOpen`: the `withdrawn` notice, the list reloaded) or
+    /// when the write fails (`failed`). A success discards the ask's draft.
+    @discardableResult
+    func answer(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
+        guard !isAnswering(ask.id) else { return .busy }
         let (askID, projectID) = (ask.id, ask.projectID)
+        if let problem = answer.problem(kind: ask.kind, payload: ask.payload) {
+            answerErrors[askID] = "This answer cannot be sent: \(problem.message)"
+            return .failed
+        }
+        answering.insert(askID)
+        defer { answering.remove(askID) }
         do {
             try await dbPool.write { db in
                 try OwnerAskQueries.answer(db, askID: askID, projectID: projectID, with: answer)
@@ -492,10 +583,10 @@ final class OwnerAsksViewModel {
         } catch AskAnswerError.notOpen {
             answerNotices[askID] = .withdrawn
             await load(projectID: projectID)
-            return nil
+            return .notOpen
         } catch {
             answerErrors[askID] = "Could not save the answer: \(error.localizedDescription)"
-            return nil
+            return .failed
         }
         answerErrors[askID] = nil
         drafts.discard(askID)
@@ -515,7 +606,49 @@ final class OwnerAsksViewModel {
         }
         await load(projectID: projectID)
         await onAnswered?()
-        return delivery
+        return .delivered(delivery)
+    }
+
+    /// A Quick ask's tap or Reply (spec 2026-10-10 Part 9.1): `answer(_:with:)`,
+    /// then the ask's notice is shown where the owner tapped
+    /// (`quickNotices`) — the card goes, the notice stays until dismissed.
+    /// A written answer also leaves the open list at once, so no live
+    /// buttons remain even when the reload after it failed.
+    @discardableResult
+    func answerQuick(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> AnswerResult {
+        let result = await self.answer(ask, with: answer)
+        switch result {
+        case let .delivered(delivery):
+            // A sent line needs no notice where the owner tapped.
+            if delivery != .submitted { quickAnswered[ask.id] = ask }
+            openAsks[ask.projectID]?.removeAll { $0.id == ask.id }
+        case .notOpen:
+            quickAnswered[ask.id] = ask
+        case .busy, .failed:
+            break
+        }
+        return result
+    }
+
+    /// Whether an answer to `askID` was written (its notice says where the
+    /// line went): a Quick ask's row takes no more taps.
+    func isAnswered(_ askID: Int64) -> Bool {
+        if case .delivered = answerNotices[askID] { return true }
+        return false
+    }
+
+    /// What became of the workbench's Quick answers, oldest ask first, for
+    /// the banner and the stack (the drawer shows its own): every notice
+    /// but "sent" — a line held, queued, typed or copied, an answer left
+    /// for the brief, an ask withdrawn under the tap. Until dismissed.
+    func quickNotices(projectID: Int64) -> [QuickNotice] {
+        quickAnswered.values
+            .filter { $0.projectID == projectID }
+            .sorted { $0.id < $1.id }
+            .compactMap { ask in
+                guard let notice = answerNotices[ask.id], notice != .delivered(.submitted) else { return nil }
+                return QuickNotice(ask: ask, notice: notice)
+            }
     }
 
     /// The session states changed or were read again
@@ -546,6 +679,8 @@ final class OwnerAsksViewModel {
                 continue
             }
             answerNotices[askID] = .delivered(delivery)
+            // Sent: its Quick notice, if any, has nothing left to say.
+            if delivery == .submitted { quickAnswered[askID] = nil }
             showHint(delivery, sessionID: held.sessionID)
         }
     }

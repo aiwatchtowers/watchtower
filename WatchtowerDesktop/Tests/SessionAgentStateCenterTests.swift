@@ -317,6 +317,25 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(reads, 2)
     }
 
+    /// `onResolved` fires on every resolve: a read that succeeded, one that
+    /// failed (the last good rows, resolved again) and a change of the live
+    /// sessions with no read.
+    func testOnResolvedFiresOnEveryReadAndLivenessChange() async throws {
+        let center = makeCenter(interval: .seconds(60))
+        var resolves = 0
+        center.onResolved = { resolves += 1 }
+        let row = try await session()
+        await center.poll()
+        XCTAssertEqual(resolves, 1, "a read")
+        log.fail = true
+        await center.poll()
+        XCTAssertEqual(resolves, 2, "a failed read")
+        center.start()
+        XCTAssertEqual(resolves, 3, "following the live sessions resolves at once")
+        terminals.start(row, fresh: true)
+        await eventually("a liveness change resolves") { resolves >= 4 }
+    }
+
     /// `onChange` fires on a change of the statuses only.
     func testOnChangeFiresOnlyWhenTheStatusesChange() async throws {
         let center = makeCenter(interval: .seconds(60))
@@ -595,6 +614,55 @@ final class SessionAgentStateCenterTests: XCTestCase {
             "workbench", "session-probe", "--workbench", String(try XCTUnwrap(row.projectID)), "--session", String(row.id)
         ]])
         XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundAgents: 2), "busy keeps the count")
+    }
+
+    /// Owner asks v2 Part 5.2: `initWorkbenches` wires the escalation to
+    /// the agent-state reads. A live session holding a question recorded
+    /// while the owner is in no session, one read: one `escalate-question`.
+    func testInitWorkbenchesWiresTheChatQuestionEscalation() async throws {
+        let appState = AppState()
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
+        appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.terminalCenter.transcriptExists = { _ in true }
+        appState.terminalCenter.now = { [started] in started }
+        appState.mainWindowIsKey = { false }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"outcome":"gone"}"#.utf8))
+        appState.initWorkbenches(
+            dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier(),
+            sessionNotifier: RecordingSessionNotifier()
+        )
+        defer {
+            appState.chatQuestionEscalator?.stop()
+            appState.ownerPresenceCenter?.stop()
+            appState.sessionAgentStateCenter?.stop()
+            appState.workbenchNotificationCenter?.stop()
+        }
+        let center = try XCTUnwrap(appState.sessionAgentStateCenter)
+        center.isAppActive = { false }
+        let row = try await session()
+        appState.terminalCenter.start(row, fresh: true)
+        // Recorded now: after the presence center started, so the owner,
+        // in no session, was already away (E10b).
+        let asked = SessionAgentStatus.formatStamp(Date())
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = 'waiting', agent_state_at = ?,
+                        chat_question = '{"question":"Red or orange?","options":[]}', chat_question_at = ?
+                    WHERE id = ?
+                    """,
+                arguments: [asked, asked, row.id]
+            )
+        }
+
+        await center.poll()
+
+        let escalations = { runner.invocations.filter { $0.starts(with: ["workbench", "escalate-question"]) } }
+        await eventually("the read escalates") { !escalations().isEmpty }
+        XCTAssertEqual(escalations(), [[
+            "workbench", "escalate-question", "--workbench", String(try XCTUnwrap(row.projectID)),
+            "--session", String(row.id), "--at", asked, "--reason", "away"
+        ]])
     }
 
     // MARK: - Notices

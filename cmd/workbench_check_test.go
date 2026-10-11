@@ -216,7 +216,7 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 		devpack.WorkbenchHookCommand("/usr/local/bin/watchtower", p.ID),
 		devpack.WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", p.ID),
 		devpack.WorkbenchAskGuardHookCommand("/usr/local/bin/watchtower", p.ID),
-		"[watchtower-workbench ask-guard 7]",
+		devpack.WorkbenchAskGuardStopHookCommand("/usr/local/bin/watchtower", p.ID),
 	}
 	for _, c := range ours {
 		require.Contains(t, string(installed), c)

@@ -100,6 +100,34 @@ package struct OwnerAskAnswer: Equatable, Sendable {
         self.note = note
     }
 
+    /// A Quick ask's one-tap answer (spec 2026-10-10 Part 9.1): `label`
+    /// picked for its one question.
+    package static func quick(label: String, questionID: String) -> Self {
+        Self(answers: [QuestionAnswer(id: questionID, labels: [label])])
+    }
+
+    /// The most a Reply carries, in runes (Go's `utf8.RuneCountInString`).
+    package static let maxReplyRunes = 500
+
+    /// A Quick ask's free Reply as the answer to its one question: one line
+    /// — line breaks and control characters as spaces — trimmed and cut to
+    /// `maxReplyRunes` on a character boundary. Nil when nothing is left: a
+    /// blank Reply sends nothing.
+    package static func reply(_ text: String, questionID: String) -> Self? {
+        let oneLine = text.map { character in
+            character.isNewline || character.unicodeScalars.contains { $0.properties.generalCategory == .control } ? " " : character
+        }
+        var clipped = ""
+        var runes = 0
+        for character in String(oneLine).trimmingCharacters(in: .whitespaces) {
+            runes += character.unicodeScalars.count
+            guard runes <= maxReplyRunes else { break }
+            clipped.append(character)
+        }
+        let other = clipped.trimmingCharacters(in: .whitespaces)
+        return other.isEmpty ? nil : Self(answers: [QuestionAnswer(id: questionID, other: other)])
+    }
+
     /// The JSON stored in `owner_asks.answer`: sorted keys, no whitespace,
     /// slashes unescaped — what Go's `json.Marshal` of `asks.Answer` gives.
     package func encoded() throws -> String {

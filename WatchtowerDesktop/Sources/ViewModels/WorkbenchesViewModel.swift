@@ -275,6 +275,19 @@ final class WorkbenchesViewModel {
         terminalCenter?.onPathLink = { [weak self] workbenchID, location in
             Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
         }
+        // A hover card that cannot be read shows nothing (logged); a click
+        // still reports the failure (`openTerminalAskLink`).
+        terminalCenter?.askLinkLookUp = { [weak self] workbenchID, askID in
+            do {
+                return try await self?.asks.linkedAsk(askID: askID, projectID: workbenchID)
+            } catch {
+                NSLog("OwnerAsks: ask #%lld link lookup failed: %@", askID, error.localizedDescription)
+                return nil
+            }
+        }
+        terminalCenter?.onAskLink = { [weak self] workbenchID, askID in
+            Task { await self?.openTerminalAskLink(askID, workbenchID: workbenchID) }
+        }
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }

@@ -78,4 +78,35 @@ final class OwnerAskAnswerTests: XCTestCase {
         let twice = OwnerAskAnswer(checklist: [.init(id: "1", state: .ok), .init(id: "1", state: .skipped)])
         XCTAssertEqual(twice.problem(kind: .check, payload: check)?.message, #"checklist[1].id: item "1" marked twice"#)
     }
+
+    /// The answer a Quick ask's tap and its Reply write (spec 2026-10-10
+    /// Part 9.1) — byte for byte the Go-validated fixtures.
+    func testQuickAndReplyBuildersWriteTheFixturesGoAccepts() throws {
+        func canonical(_ name: String) throws -> String {
+            let data = try Data(contentsOf: OwnerAskFixtures.directory("answers").appendingPathComponent(name))
+            let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any], name)
+            return try XCTUnwrap(fixture["canonical"] as? String, name)
+        }
+        XCTAssertEqual(try OwnerAskAnswer.quick(label: "snake_case", questionID: "1").encoded(),
+                       try canonical("valid_question_quick.json"))
+        XCTAssertEqual(try XCTUnwrap(OwnerAskAnswer.reply("staging.example.com", questionID: "q1")).encoded(),
+                       try canonical("valid_question_reply.json"))
+    }
+
+    /// A reply is one trimmed line of at most 500 characters; a blank one
+    /// is no answer.
+    func testAReplyIsOneTrimmedLine() throws {
+        func other(_ text: String) -> String? {
+            OwnerAskAnswer.reply(text, questionID: "q1")?.answers.first?.other
+        }
+        XCTAssertEqual(other("  first\nsecond\r\nthird\tend  "), "first second third end", "CR LF is one line break")
+        XCTAssertEqual(other("bell\u{07}ring"), "bell ring", "control characters become spaces")
+        XCTAssertNil(other(""))
+        XCTAssertNil(other(" \n\t "))
+        XCTAssertEqual(other(String(repeating: "я", count: 600))?.unicodeScalars.count, 500, "500 runes, not bytes")
+        let family = "👨‍👩‍👧"
+        let clipped = try XCTUnwrap(other(String(repeating: "a", count: 498) + family))
+        XCTAssertEqual(clipped, String(repeating: "a", count: 498), "never cuts a character in half")
+        XCTAssertEqual(OwnerAskAnswer.reply("x", questionID: "q1")?.answers.first?.labels, [])
+    }
 }

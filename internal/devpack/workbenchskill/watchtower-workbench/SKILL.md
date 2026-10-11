@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v5
+x-watchtower-pack: v6
 ---
 
 # Watchtower Workbench
@@ -24,7 +24,7 @@ At session start a hook prints the workbench brief: counts, the open part of the
 - `list_comments` — by `target_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
-- `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`, each with two to four options), with a `title`, an optional `summary`, `focus` points and `target_id`. A follow-up round passes `previous_ask_id` and `changes`. It returns at once with the ask id; never wait for the answer (see "Asking the owner").
+- `ask_owner` — ask the owner for a document review (`kind: review`, `doc_path`), a check they run (`kind: check`, `checklist`) or a decision (`kind: question`, `questions`, each with two to four options), with a `title`, an optional `summary`, `focus` points, `target_id` and `level` (`quick` or `full`; by default from its shape). A follow-up round passes `previous_ask_id` and `changes`. It returns at once with the ask id; never wait for the answer (see "Asking the owner").
 - `get_ask` — one ask by `ask_id`; once answered, the answer as JSON and as text. Reading it marks the answer delivered.
 - `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
 - `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
@@ -71,14 +71,23 @@ The first prompt `Work on group #<id>` hands you a target with sub-targets.
 
 ## Asking the owner
 
-Anything that waits for the owner — an answer, a decision, a manual check, a document review — is an `ask_owner` call. Never leave it as text in the terminal, and never as a target comment: the owner answers asks from one stack in Watchtower, and a question in the terminal is easily missed. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): a check at the end of every turn sends a request left as plain text back to you, and the named ask is how it knows you filed it.
+The owner answers asks from one stack in Watchtower. A question has one of three levels — choose it by what you need:
+
+- **Chat** — a short question the owner can answer from the conversation (a clarification, a yes/no, a choice of two). Ask it in plain text, as one short question, and end the turn. The check at the end of every turn lets it stand when the owner is in this session, and otherwise sends you back to file it. If it waits unanswered, Watchtower raises it to an ask for you (see "Raised from chat").
+- **Quick** — one decision with 2–3 short options (labels up to 40 characters, descriptions up to 100): `ask_owner` with `kind: question` and one question; the owner answers with one tap. The level follows the shape; `level: quick` on a shape that is not Quick is stored `full`, and the result's `level_note` says why.
+- **Full** — a review, a manual check, or several related decisions: always an `ask_owner` call, never text. `level: full` opens even a Quick-shaped question in the drawer (when its summary must be read).
+
+Anything beyond a Chat question is an `ask_owner` call — never text in the terminal, and never as a target comment. The `AskUserQuestion` tool is blocked here. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): the end-of-turn check sends a review, a check or several decisions left as plain text back to you, and the named ask is how it knows you filed it.
 
 - **When to ask:** a spec, plan or design before you build on it (`kind: review`, `doc_path` = the file, relative to this folder); a decision with no sensible default (`kind: question`); a manual check you cannot run yourself (`kind: check`, one `checklist` step per thing to try).
-- **What not to ask:** progress, reports, or anything with a sensible default — state the default you took and go on.
+- **What not to ask:** process questions with a sensible default (which branch name, whether to run the tests, whether to commit, the order of independent tasks) — state the default you took and go on; anything you can find out yourself — run the command, read the file, take the screenshot, check the log; clarifications the conversation already answers; progress reports and "shall I continue?".
+- **Collect decisions:** when several decisions are pending, file one ask with up to 4 questions instead of a series. While an ask of yours is open, add a related decision not as a second ask but as a revision of it: `previous_ask_id` = the open ask, `questions` = its questions plus the new one (up to 4), `changes` = what you added — the open ask is withdrawn as superseded; a `hint` in the result says when you are starting a series.
 - **A review re-round:** after revising the document, file a new review ask with `previous_ask_id` = the earlier ask and `changes` = what you changed (the earlier ask, if still open, is withdrawn as superseded). The owner sees the document as it was when you asked, so ask again after every revision they should read.
 - **After filing**, keep working on whatever does not depend on the answer. If nothing can proceed, end the turn — do not wait at the prompt or poll.
 - **The answer** arrives as a line `Ask #N answered (…)` typed into this session, or as an entry in the next session's brief. Either way, call `get_ask N` first and act on what it says: an approved review lets you build on the document; changes requested come as comments on passages, each with its quote and heading — revise, then ask again as above.
 - **No longer needed:** `withdraw_ask` an open ask you found the answer to, or whose work was dropped.
+- **Withdrawn means withdrawn:** file a withdrawn ask again only with new data, as a revision: `previous_ask_id` = the withdrawn ask, `changes` = what is new. `ask_owner` refuses that revision without `changes`, and refuses a new ask with the title of an ask of the same kind you withdrew in the last 7 days.
+- **Raised from chat:** an ask with `origin: chat` (`get_ask`, `list_asks`) is your own terminal question that waited; its answer is the answer to that question — act on it as on any ask. If the owner answered in the terminal meanwhile, `withdraw_ask` it.
 - **Board status:** waiting for the owner is never `in_review` (see Rules). The target the ask is about goes `blocked` only when nothing on it can proceed until the answer comes.
 
 ## Running a plan (subagent-driven development)

@@ -44,7 +44,7 @@ const (
 )
 
 var briefRules = []string{
-	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; anything that waits on the owner (a question, a decision, a check, a review) is an ask_owner call, never terminal text or a comment, and you keep working; comments are for blockers and done summaries.",
+	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; a short clarification may be asked in plain text while the owner is in the session; anything else that waits on the owner (a decision, a check, a review) is an ask_owner call — several decisions in one ask — never a comment, and you keep working; comments are for blockers and done summaries.",
 }
 
 var workbenchBriefCmd = &cobra.Command{
@@ -569,14 +569,4 @@ func briefCommentLine(c db.WorkbenchComment, titles map[int64]string) string {
 	}
 	body := briefClip(c.Body, 160)
 	return fmt.Sprintf("%s on target #%d %q: %s", who, c.TargetID.Int64, briefClip(titles[c.TargetID.Int64], 60), body)
-}
-
-// briefClip collapses whitespace to single spaces and cuts s to n runes.
-func briefClip(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	r := []rune(s)
-	return string(r[:n-1]) + "…"
 }

@@ -17,14 +17,17 @@ comments and the agent's asks to the owner (`owner_asks`, PROJ-12/13),
 worked on by Claude Code through
 `watchtower mcp --workbench N` (DEV-06 in `dev-surface.md`), a workbench skill,
 a `SessionStart` hook (the brief), a `Stop` hook (the board drift check, PROJ-07),
-the session state hooks (PROJ-11) and the ask guard (a `Stop` prompt hook and a
-`PreToolUse` block of `AskUserQuestion`, PROJ-13). Each Desktop terminal session
+the session state hooks (PROJ-11) and the ask guard (a `Stop` command hook
+that reads whether the owner is in the session — a prompt hook until
+2026-10-11 — and a `PreToolUse` block of `AskUserQuestion`, PROJ-13). Each Desktop terminal session
 has a report of its own work, and the agent marks it finished with
 `finish_session` (PROJ-14). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`; owner asks:
 `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`; session
 report and states: `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; board
-archive: `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md`.
+archive: `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md`; owner
+asks v2 (levels, presence, Quick asks, asks for other clients):
+`docs/superpowers/specs/2026-10-10-owner-asks-v2-design.md`.
 
 **Naming (2026-10-02):** this feature was called *Projects* until the
 Workbench rename (`docs/superpowers/specs/2026-10-02-workbench-rename-design.md`).
@@ -43,7 +46,8 @@ under `mcp --project N`) until the owner resyncs it; see
 `internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_asks,workbench_finish,workbench_images,workbench_scope,workbench_names}.go` +
 `internal/db/workbench_images.go` + `internal/workbenchfiles/` +
 `internal/asks/` + `internal/db/owner_asks.go` + `internal/db/migrations/00100_owner_asks.sql` + `internal/kb/{fileset,source_workbench}.go` +
-`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_prompt.md` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
+`cmd/{workbench,workbench_brief,workbench_brief_session,workbench_check,workbench_askguard,workbench_askguard_stop,workbench_asks_cli,workbench_escalate,workbench_session_state,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/devpack/askguard_classifier.md` + `internal/devpack/testdata/askguard_prompt_v{1,2,3}.md` +
+`internal/db/owner_presence.go` + `internal/db/migrations/00107_owner_asks_v2.sql` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
 `internal/db/terminal_sessions.go` + `internal/db/migrations/00098_terminal_session_agent_state.sql` +
 `internal/db/session_report.go` + `internal/db/migrations/00101_workbench_session_report.sql` +
 `internal/db/workbench_archive_reads.go` + `internal/db/migrations/00103_workbench_board_archive.sql` + `internal/tools/workbench_board.go` +
@@ -52,7 +56,9 @@ under `mcp --project N`) until the owner resyncs it; see
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionAgentStatus,Services/SessionAgentNoticePolicy}.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionReport,Services/SessionStatePresentation,Services/SessionSwitcherPresentation,Services/SessionReportPresentation}.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/OwnerAsk,Database/Queries/OwnerAskQueries,Services/OwnerAsk*}.swift` +
-`WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift`
+`WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift` +
+`WatchtowerDesktop/Sources/WatchtowerCore/{Services/OwnerPresencePolicy,Services/ChatQuestionEscalationPolicy,Models/ChatQuestionEscalationResult,Database/Queries/OwnerPresenceQueries}.swift` +
+`WatchtowerDesktop/Sources/Services/{OwnerPresenceCenter,ChatQuestionEscalator}.swift`
 **Last full audit:** 2026-09-29
 
 ## PROJ-01 — workbench targets never reach a non-board reader
@@ -84,15 +90,16 @@ calls on it.
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
 `watchtower-workbench` skill, our hook entries — `SessionStart`, `Stop` and,
 since 2026-10-03, the session state entries under `UserPromptSubmit`,
 `Notification`, `PostToolUse` and `StopFailure` (PROJ-11) and the two ask
-guard entries — the `Stop` prompt hook and the `PreToolUse` command hook
-matched to `AskUserQuestion` (PROJ-13) — the local
+guard entries — the `Stop` command hook (a prompt hook until 2026-10-11;
+a leftover marker prompt of the workbench goes too) and the `PreToolUse`
+command hook matched to `AskUserQuestion` (PROJ-13) — the local
 `watchtower-workbench` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the workbench row, which removes every workbench target,
@@ -104,7 +111,10 @@ together with its folder files' search index entries (`kb_documents`/`kb_chunks`
 of source `project_doc` for that workbench, PROJ-08) and, since 2026-10-04,
 its code questions (`chat_conversations` of context type `code_question`
 whose `context_id` starts with `<id>:`, the prefix matched exactly, with
-their messages and search rows by cascade), and then removes
+their messages and search rows by cascade); since 2026-10-11 the owner's
+presence row (`owner_presence`, migration `00107`) that names one of its
+sessions is left in no session (`session_id` NULL by `ON DELETE SET NULL`),
+so it never points at a gone row. It then removes
 the workbench's stored image copies (`<workspace>/project_files/<id>/`,
 `workbenchfiles.Store.RemoveWorkbench`; a failure is reported as `files_ok:
 false` and never undoes the delete). Deleting one workbench target
@@ -129,7 +139,7 @@ registered against a dead id — is worse than no workbench at all, and the owne
 must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
-- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive)
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (owner asks included — an open one bound to a session and a target, an answered one — while another workbench's ask survives; no `terminal_session_targets` or `workbench_pr_states` row of it is left, another workbench's PR cache row survives; its code questions and their messages and search rows are gone, another workbench's question and a main-chat row with the same `context_id` survive; since 2026-10-11 a presence row on one of its sessions is left with `session_id` NULL)
 - `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
 - `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
@@ -207,23 +217,33 @@ owner fix a line by hand.
 
 ## PROJ-04 — the install never overwrites the owner's content
 
-**Status:** Enforced
+**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395)
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
 owner has, adding a fixed set of entries of ours: one under `SessionStart`
 (the brief); under `Stop` the drift check (PROJ-07) and, since 2026-10-03,
-the ask guard prompt hook (PROJ-13) — two entries of ours on that event; one
+the ask guard (PROJ-13) — since 2026-10-11 the command entry `workbench
+ask-guard --workbench N --stop` (`timeout: 30`), before that a prompt hook —
+two entries of ours on that event; one
 each under `UserPromptSubmit`, `Notification`, `PostToolUse`,
 `StopFailure` and, since 2026-10-10, `SubagentStop` (the five session state
 hooks, PROJ-11); and, since 2026-10-03, one
 `PreToolUse` command entry in its own group with matcher `AskUserQuestion`
 (the ask tool block, PROJ-13). A command entry is recognised per event by its
-command suffix after a `watchtower` binary, the prompt entry by its first
-line being exactly the marker `[watchtower-workbench ask-guard N]`
-(installing twice leaves one of each; the state and ask guard entries have no
-legacy spelling, so nothing else is taken for one). Our prompt entry whose
-text was edited is set back in place, the owner's other keys on it kept; our
+command suffix after a `watchtower` binary (installing twice leaves one of
+each; the state and ask guard entries have no legacy spelling, so nothing
+else is taken for one), and our command entry written from another binary is
+updated in place, the owner's keys on it kept. The old ask guard prompt
+entry (v1–v3, installed until 2026-10-11) is recognised by its first line
+being exactly the marker `[watchtower-workbench ask-guard N]`: an install,
+`resync` or Repair replaces every such `Stop` prompt of N — an edited one
+too, since it is ours — with the command entry, every key the owner had put
+on the prompt other than `type`, `prompt` and `command` carried onto it (a command entry
+already there keeps its own keys, as above; a fresh one takes the prompt's,
+its `timeout` among them); another workbench's marker prompt and a prompt with
+the marker off its first line are the owner's and stay; `integrate remove`
+takes out the command entry and any leftover marker prompt of N. Our
 `PreToolUse` entry found in another matcher group is taken out of that group
 (the owner's hooks there kept) and re-added in its own `AskUserQuestion`
 group. A malformed settings file — `hooks`, or the entry list of any event
@@ -253,7 +273,7 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 **Test guards:**
 - `internal/devpack/workbench_settings_test.go::TestProj04_InstallKeepsOwnerSettingsKeysAndHooks`
 - `internal/devpack/workbench_settings_test.go::TestProj04_MalformedSettingsLeftByteIdentical`
-- `internal/devpack/workbench_settings_test.go::TestProj04_RemoveDeletesOnlyOurHook`
+- `internal/devpack/workbench_settings_test.go::TestProj04_RemoveDeletesOnlyOurHook` (since 2026-10-11 also the Stop command entry and a leftover marker prompt; the owner's prompt and the marker off the first line stay)
 - `internal/devpack/workbench_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
 - `internal/devpack/workbench_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
 - `internal/devpack/workbench_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
@@ -261,9 +281,10 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/workbench_legacy_test.go::TestProj04_ResyncKeepsAnEditedLegacySkill` (an edited legacy skill and its sidecar stay byte-identical, reported `drifted`, its exclude line kept; a later removal keeps it too)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_StateHooksKeepOwnerHooksAndKeys` (the owner's own entries under the state events — a matcher, `async`, unknown keys and number literals — stay as they were next to exactly one entry of ours; remove takes only ours)
 - `internal/devpack/workbench_state_hooks_test.go::TestProj04_MalformedStateEventLeavesTheFileByteIdentical` (each state event of the wrong type leaves the file byte-identical)
-- `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` (our edited prompt entry is set back in place with the owner's keys on it kept; the owner's `Stop` and `PreToolUse` hooks stay)
-- `internal/devpack/workbench_ask_guard_test.go::TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`
-- supporting: `internal/devpack/workbench_ask_guard_test.go::TestAskToolBlock_InAnotherMatcherGroupIsRepaired` (our entry under `""`, `"*"`, no matcher or `Bash` counts as missing and moves back to its own group, the owner's hooks there kept)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` (rewritten 2026-10-11 to the command entry: our edited marker prompt is replaced by the command entry, which carries the owner's keys from it — `x-owner` with its number literal kept; the owner's hooks — a marker of another workbench, the marker off the first line — and keys stay as they were; our command entry written from another binary is updated in place with the owner's keys on it kept; the owner's `Stop` and `PreToolUse` hooks stay)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt` (since 2026-10-11: with no command entry of ours yet, the fresh one carries every key of our replaced prompt but `type`, `prompt` and `command`, its `timeout` among them; a `command` key on the prompt never replaces ours (pinned by `TestProj04_AskGuardNeverCarriesACommandKeyOfOurPrompt`); a second resync changes nothing)
+- `internal/devpack/workbench_ask_guard_test.go::TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical` and its `Stop` twin `TestProj04_MalformedStopWithOurPromptLeavesTheFileByteIdentical` (since 2026-10-11: a malformed `hooks.Stop` holding our old marker prompt is neither upgraded nor removed, and is reported once by the install, the removal and the status)
+- supporting: `internal/devpack/workbench_ask_guard_test.go::TestAskToolBlock_InAnotherMatcherGroupIsRepaired` (our entry under `""`, `"*"`, no matcher or `Bash` counts as missing and moves back to its own group, the owner's hooks there kept), `TestRemoveAskGuardHooksKeepsTheOwnerEntries`, `TestStatusWorkbench_AskGuardFlagsEachMissingHook` (a marker prompt alone is not installed, Repair replaces it)
 
 **Locked since:** 2026-09-29
 
@@ -671,7 +692,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer Claude Code and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
@@ -764,6 +785,17 @@ registry with no readable entry file) is a failed probe, never "gone". Two
 consecutive failed probes for the same count show it as over without a
 write.
 
+Since 2026-10-11 (owner asks v2, board #395, owner approved in ask #148):
+the chat question columns (`chat_question`, `chat_question_at`, PROJ-13) are
+written by the ask guard, the state hooks' clears and the escalation only,
+and never change a state, its time, `finished_at`, the turn order or the
+background count; a new run or conversation also clears them. The state
+hooks' clears are a `UserPromptSubmit` whose event time is later than
+`chat_question_at` (whatever its own state write does — a failed clear never
+skips that write) and a main-thread `PostToolUse` whose `working` write ends
+a stored `waiting`; a subagent's tool result, a `SubagentStop`, a
+notification and a StopFailure keep the question.
+
 **Why locked:** Owner decisions of board #312 (2026-10-03), and the states
 brainstorm of the session report (1a, 2a, 3a, 4: all). A status hook that
 injected text into the agent, blocked a prompt, or showed a state for a dead
@@ -792,7 +824,8 @@ it again once it was cleared; only Go writes it.
 - `cmd/workbench_session_state_test.go::TestProj11_EndedTurnsToolResultNeverOverwritesTheStop` (board #368: the ended turn's tool result whose hook starts after the Stop's leaves `waiting`; a later self-started turn's first tool result still records `working`)
 - `cmd/workbench_session_state_test.go::TestProj11_StopReplacesItsTurnsLateToolResult` (board #368: the ended turn's tool result landing first with a later stamp is replaced by the Stop's `waiting`, the stored time never goes back; a subagent's `working` keeps the time order)
 - Board #411, background count (2026-10-10) — the hook half in `cmd/workbench_session_state_test.go`: `TestProj11_StopRecordsBackgroundSubagents` (subagents and workflows count, shells and teammates do not; none, absent or malformed → NULL), `TestProj11_MalformedBackgroundTasksStillRecordWaiting`, `TestProj11_StopOverWaitingWithAnotherCountWrites` (another count is a transition: it writes and advances `agent_state_at`), `TestProj11_StopWithTheSameCountRefreshesTheReportTime` (only `agent_background_at` moves), `TestProj11_OnlyTheStopStartsBackground` (a late subagent tool result, a `SubagentStop`, the idle notice and a Stop reaching `session-state` leave a NULL count NULL), `TestProj11_SubagentStopOnlyLowersTheCount` (the min rule, its own id left out, an empty `agent_type`, a missing or non-array list and an older stamp ignored, state, stamp and `finished_at` untouched), `TestProj11_MainTurnAndIdleNoticeClearTheCount` (a permission prompt keeps it), `TestProj11_StopStateWriteNeedsOnlyTheCoreHooks` (a folder without the `SubagentStop` entry keeps its `waiting` and run mark; the status reports `state_hooks` false), `TestProj11_MalformedSubagentStopKeepsTheStopWaiting` (an owner's malformed `hooks.SubagentStop`: the Stop still records `waiting`, the status refuses the file and reads `state_hooks` false — PROJ-04)
-- Board #411, the db half in `internal/db/terminal_sessions_test.go`: `TestProj11_StopWriteStoresTheSnapshot`, `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_LowerTerminalBackgroundOnlyLowers` (never raises, never touches another column), `TestProj11_StopOverWaitingWithAnotherCountWrites` (a failed `waiting` keeps its error through a counted Stop and an idle notice, and `agent_failed_at` moves with `agent_state_at` so the row still reads Error; Desktop twin `SessionAgentStatusTests.testProj11_ErrorOutranksACountedStopOnGosRowShape`), `TestProj11_MainTurnAndIdleNoticeClearTheCount`, `TestProj11_NewRunAndConversationSwitchClearTheCount` (`MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`)
+- Board #411, the db half in `internal/db/terminal_sessions_test.go`: `TestProj11_StopWriteStoresTheSnapshot`, `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_LowerTerminalBackgroundOnlyLowers` (never raises, never touches another column), `TestProj11_StopOverWaitingWithAnotherCountWrites` (a failed `waiting` keeps its error through a counted Stop and an idle notice, and `agent_failed_at` moves with `agent_state_at` so the row still reads Error; Desktop twin `SessionAgentStatusTests.testProj11_ErrorOutranksACountedStopOnGosRowShape`), `TestProj11_MainTurnAndIdleNoticeClearTheCount`, `TestProj11_NewRunAndConversationSwitchClearTheCount` (`MarkTerminalAgentRun`, `ClearTerminalAgentState`, `SetTerminalClaudeSessionID`; since 2026-10-11 also the chat question, including a row holding only a question)
+- Owner asks v2 (2026-10-11, board #395): `internal/db/terminal_sessions_test.go::TestProj11_ChatQuestionWritesNeverTouchTheState` (every chat question write — set, replace, clear, take — leaves `agent_state`, `agent_state_at`, `finished_at`, `agent_turn_end`, `agent_tool_run` and `agent_background*` byte-identical); supporting: `TestChatQuestionSetReplaceClear`, `TestSetChatQuestionRefusesAStopOlderThanTheRun`, `TestClearChatQuestionBeforeKeepsANewerQuestion`, `TestTakeChatQuestionIsCompareAndTake` (same file); `cmd/workbench_session_state_test.go` (`TestChatQuestionClearedByTheOwnersPrompt`, `TestChatQuestionKeptByAnOlderPrompt`, `TestChatQuestionClearedByASelfStartedTurn`, `TestChatQuestionKeptByOtherHookEvents`, `TestChatQuestionClearedByARefusedPromptTouchesNothingElse`, `TestChatQuestionNewerThanTheSelfStartedTurnIsKept`, `TestChatQuestionFailedClearStillRecordsThePrompt`); `TestProj11_HookNeverWritesStdoutAndExitsZero` and every PROJ-11 hook guard above unchanged
 - Board #411, the Desktop in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_BackgroundAgentsAreNotStopped`, `testProj11_BackgroundWithAsksIsNotWaitingOnAsk`, `testProj11_BackgroundEndsOnGrace` (a count lowered to 0 ends after 120 s; a count > 0 never ends on the Desktop's clock), `testProj11_UnreadableOrFutureBackgroundStampIsNotBackground`, `testProj11_BackgroundIsAtPrompt`; `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_BackgroundIsNeverAnnouncedTheStopAfterOnce`
 - Board #411, the staleness probe (2026-10-10, registry only, ask #142) — in `cmd/workbench_session_probe_test.go`: `TestProj11_ProbeNeverStartsBackground` (a `waiting` with no count: nothing written whatever the registry reads), `TestProj11_ProbeNeverEndsOnAFailedReading` (a `ps` that cannot answer for an existing pid, or a registry whose every entry file is unreadable → `ok: false`, the row byte-identical), `TestSessionProbeStageOneTable` (a count stale for 30 min: `busy` and `waiting` write nothing; `idle`, `shell`, a missing or unknown status, no entry, a dead or reused pid end the count and only it; not stale, an unparsable stamp or a row back to `working` → `not_stale`, nothing written), `TestSessionProbeStaleStampWithoutACountIsNotStale` (a NULL or 0 count next to a stale stamp → `not_stale`, nothing written), `TestSessionProbeNeverTouchesStateOrFinished` (whatever the outcome: `agent_state`, its time, `finished_at`, the turn order and the error stay), `TestSessionProbeEnvelopeShape` (one JSON object, exit 0; `ok: false` with an error on a missing row, another workbench, no ids, a broken config), `TestSessionProbeWorkbenchFlags` (the legacy `--project` spelling works; both flags → `ok: false`), `TestSessionProbeHasNoPingFlag` (no ping is built: `--ping` is an unknown flag); in `internal/db/terminal_sessions_test.go`: `TestEndTerminalBackgroundIsCompareAndClear` (clears only the two columns, only on the stamp the probe read; a newer heartbeat or Stop, a row back to `working`, another conversation or workbench → nothing written; a second end is a no-op); supporting in `internal/claudesession/registry_test.go`: `TestFindSessionPrefersTheLiveEntryOfASession`, `TestAliveRejectsAReusedPID` (a `ps` error is unknown, never dead), `TestFindSessionFirstWriteEntryHasNoStatus`, `TestFindSessionUnreadableRegistryIsAnError`, `TestFindSessionPropagatesAnUnreadableProcessTable`, `TestFindSessionTakesTheConfigDirLiterally`
 - Board #411, the Desktop half of the staleness probe (2026-10-10, ask #142; the Desktop only decides when to run `workbench session-probe` and never writes) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testNeedsProbeTable` (a count above zero whose report is at least 30 min old, never one from the future), `testProj11_DisplayOverEndsTheCountWithoutAWrite` (a count shown over reads as finished / ask / stopped); in `WatchtowerDesktop/Tests/Core/SessionProbeResultTests.swift`: `testDecodesEveryOutcomeAndTheFailureEnvelope`; in `WatchtowerDesktop/Tests/SessionBackgroundProberTests.swift`: `testNoProbeBeforeThirtyMinutes`, `testABusyCountIsProbedAgainOnlyAfterAnotherThirtyMinutes`, `testNoProbeOutsideAgentsWorking` (Needs approval, working, not live, standalone, an earlier run, a count of 0 or none), `testOneProbeInFlightPerSession`, `testOneFailedProbeNeverEndsTheCount`, `testTwoFailedProbesShowTheCountOverWithoutAWrite` (cleared by a probe that runs, a new report and a new run), `testAnEndedCountAsksForARead`, `testStopCancelsTheProbe`; in `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift`: `testAProbeThatEndsTheCountPostsOneStoppedNotice`, `testTwoFailedProbesShowStoppedOnceWithoutAWrite`
@@ -906,55 +939,144 @@ would send the agent to read an answer that is not there — the
 - `cmd/workbench_brief_session_test.go::TestProj12_ANewRunWithTheStateHooksIsMarked` (startup and resume with the state hooks mark the run; without them, or for a nested `claude -p`, nothing is stamped), `cmd/workbench_brief_session_test.go::TestProj12_CompactWhileIdleKeepsTheRunsState` (a `compact` SessionStart onto the same or a new id keeps a turn's `waiting` or the run's mark and its stamp)
 - `WatchtowerDesktop/Tests/Core/OwnerAskQueriesTests.swift` (`testAnsweringAnAskWithdrawnMeanwhileThrowsNotOpenAndWritesNothing`)
 - `cmd/workbench_brief_test.go::TestProj12_AnsweredAskSurvivesAFullBoard`
+- Quick ask (board #501, 2026-10-11; wording unchanged — a tap or a Reply in the banner or the stack is an answer in the Desktop and goes through the drawer's own call, `OwnerAsksViewModel.answer(_:with:)`, spec 2026-10-10 Part 11.2): `WatchtowerDesktop/Tests/OwnerAsksViewModelTests.swift::testProj12_AQuickAnswerFromTheBannerIsStoredThenDeliveredLikeTheDrawers` (the same stored answer and line bytes as the drawer's, stored before anything is typed; the same paste, pause and Return rules: held at a permission prompt, only pasted over the owner's draft), `testProj12_AReplyIsSentAsOtherOnOneLine` (line breaks and control characters as spaces, trimmed, at most 500 runes; a blank Reply sends nothing); supporting: `testAQuickTapOnAWithdrawnAskTypesNothing` (withdrawn meanwhile: nothing written or typed, the card leaves the banner and the stack)
 - supporting: `OwnerAsksViewModelTests` (`testCopiedShowsTheCopiedAnswerHint` — no keystroke and no Return without bracketed paste; `testAPermissionPromptDuringThePauseLeavesTheLineTyped`; `testAHeldAnswerGoesNowhereOnceItsSessionStops`, `testAHeldAnswerNeverReachesALaterRunOfItsSession`, `testTwoHeldAnswersToOneSessionGoOneAfterTheOther`, `testAnAnswerDuringAnotherAnswersPauseIsQueuedThenGoesNext`, `testDismissingAHeldAnswerCancelsItsDelivery`, `testAfterTheOwnersReturnOrADialogKeyTheLineIsSubmitted`, `testAHoldThatEndedBeforeTheWaitIsNotMarkedStillWaiting`); `TerminalCenterTests::testATypedAnswerHintStaysThroughKeysIntoAPermissionDialog`; `CodeHandoffCenterTests::testAnAnswerIntoASessionWaitingThisRunIsSubmitted`, `testAHandOffIntoABackgroundSessionIsAtThePrompt` (board #411, ruling R52); `TerminalOwnerInputTests::testOnlyTheOwnersInputIsReported` (the owner's bytes, never the app's paste); `SessionAgentStateCenterTests::testAnAnswerHeldAtAPermissionPromptGoesOnTheReadThatShowsItAnswered` (the wiring through the stored states); `SessionAgentStatusTests::testTheRunsMarkSaysTheHooksReportThisRun`; `TerminalCenterTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testALineIntoARelaunchedRunDuringAnOldPauseIsSubmitted`, `testTheOwnersReturnDuringThePauseSkipsOurs` — also `\` then Return is no submit, `testTheOwnersReturnDuringThePauseOverADialogOrAFailedReadLeavesTheLineTyped`, `testTheOwnersReturnDuringThePauseCountsWhateverTheCallersOtherCondition`, `testARestartDropsTheLastRunsPasteBar`); `cmd/workbench_brief_session_test.go::TestApplySessionStart_HooksReadErrorStillMovesTheID`; `OwnerAsksViewModelTests` (`testARelaunchDuringThePauseGetsNoReturn`, `testARelaunchDuringTheReadBeforeThePasteTypesNothing`, `testTheOwnersReturnDuringThePauseSendsTheAnswer`); `internal/db/terminal_sessions_test.go` (`TestMarkTerminalAgentRun_NewRunStartsEmpty`, `TestClearTerminalAgentState_LeavesNoStamp`); `cmd/workbench_brief_test.go::TestProjectBrief_AnsweredAsksForItsSession` (own and session-less listed, another session's counted, nothing delivered by the brief); `internal/tools/workbench_asks_test.go::TestGetAsk_OpenAnsweredAndAnotherWorkbench` (only `get_ask` delivers)
 
 **Locked since:** 2026-10-03
 
 ## PROJ-13 — the ask guard never traps a turn
 
-**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; the pass clause reworded during implementation; amended 2026-10-03 with the `finish_session` reminder (prompt v2), see the changelog)
+**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; amended 2026-10-03 with the `finish_session` reminder (prompt v2); amended 2026-10-10 for the ask guard v3 (#478); rewritten 2026-10-11 for presence and the three ask levels — owner approved 2026-10-05, ask #66; 2026-10-10, asks #145/#146; the business spec that amends PROJ-13 approved 2026-10-11, ask #148; board #395, see the changelog)
 
-**Observable:** The `Stop` prompt hook (`type: prompt`, `timeout: 30`,
-`internal/devpack/askguard_prompt.md`, pinned by a golden) tells the model to
-return `{"ok": true}` when `stop_hook_active` is true, or when
-`last_assistant_message` says it filed an ask (for example names
-`ask #<number>` — Claude Code's Stop input has no `tool_calls`, and the skill
-has the agent name every ask it filed in its final text), or when the message
-asks the owner for nothing; it blocks only a message that clearly waits on
-the owner, and passes when unsure. Since 2026-10-03 the prompt is v2 (spec
-`2026-10-03-workbench-session-report-design.md` Part 5): after the request
-check it also blocks, once, a message that reports the session's work
-complete and does not say it called `finish_session` (for example "session
-finished"); a progress report, a pause for an answer or a partial result is
-not complete, and the first failure is the one returned. The pass rules —
-`stop_hook_active`, when unsure — are unchanged. `integrate`/`resync` set
-every prompt entry carrying our marker, the v1 text or an edit of it, to v2
-(the PROJ-04 rule for our edited prompt; another workbench's marker is left
-as it is). The intent is one nudge per stop: the
-prompt tells the model to pass when `stop_hook_active` is set (pinned by the
-golden; the model's compliance is not something a test can check). The
-`PreToolUse` command hook (`workbench ask-guard --workbench N
---pre-tool-use`, matcher `AskUserQuestion`, `timeout: 5`) prints the deny
-decision only when workbench N exists and its stdin (read for at most 0.5 s)
-names `tool_name` `AskUserQuestion`; on any failure — another tool,
-unreadable, empty or never-closed input, a bad or unknown id, a deleted
-workbench, a broken config, a missing or locked database, a panic — it
-prints nothing on stdout or stderr and exits 0, so the tool runs. It opens
-the database with `db.OpenExisting` (never creates it, never migrates,
-`query_only`, a 500 ms busy timeout), so it finishes in under 2 s.
+**Observable:** The `Stop` ask guard is the command hook `workbench ask-guard
+--workbench N --stop` (`timeout: 30`). It never blocks when `stop_hook_active`
+is true, and it blocks at most once per Stop, so the Stop after a block always
+passes. It classifies `last_assistant_message` with the v4 text
+(`internal/devpack/askguard_classifier.md`, pinned by a golden) through
+Watchtower's light-tier model (≤ 20 s, its child process group killed and
+reaped on the budget or a signal), and decides by a fixed table: in the
+request phase a named ask covers only itself: a request for a review, a manual
+check or several decisions left as text that is not the named ask is sent back
+(`R-full`); a single short question left as text that is not the named ask
+passes only when the owner is present in this session (its pane on screen in
+the key window of the active app, the screen awake and unlocked:
+`owner_presence` names the session with a write at most 90 s old), the folder
+has the core state hooks, the finish check passes, and the question is
+recorded on the session (`chat_question`, `chat_question_at`); otherwise it is
+sent back (`R-away`); a closing summary after `finish_session` is never a
+request. Then, as in v2/v3, a message that says all of the session's work is
+complete without saying it called `finish_session` is sent back (`R-finish`;
+with a short question it would have passed, `R-finish-ask`, nothing recorded).
+On `stop_hook_active` a short question is still recorded (raised at once by
+the Desktop when the owner is away), never sent back. The reasons are fixed Go
+strings. An input or model failure — unreadable, empty or never-closed input,
+a model timeout, error or malformed output, a panic — prints nothing on stdout
+and exits 0, so the turn ends. A database failure — cannot open, locked,
+missing columns, a read or the record failing — counts as the owner being
+away, so a short question is sent back once and never passed unrecorded
+outside a continued turn (on `stop_hook_active` it passes unrecorded, never
+blocked). The
+guard opens the database with `db.OpenExistingRW` (never creates, never
+migrates), reads under a 500 ms busy timeout, writes only the chat question,
+after the model call and under a 1 s busy timeout, and never touches
+`agent_state`, its time, `finished_at`, the turn order or the background
+count. A recorded chat question is cleared by the guard's next Stop of that
+conversation that records none, the owner's next prompt, a turn the agent
+starts itself, a new run or conversation, or its escalation; `workbench
+escalate-question` raises it to an ask only while it is still the stored one
+(compare on `chat_question_at`) and the session still waits on that turn end
+(`agent_state = 'waiting'`, stamped at most 30 s after it), never twice.
+`integrate`/`resync` replace every `Stop` prompt entry carrying our marker for
+N (v1–v3 or an edit) with the command entry; `integrate status` reports
+`ask_guard` only for the command entry. The `PreToolUse` command hook
+(`workbench ask-guard --workbench N --pre-tool-use`, matcher
+`AskUserQuestion`, `timeout: 5`) prints the deny decision only when workbench
+N exists and its stdin (read for at most 0.5 s) names `tool_name`
+`AskUserQuestion`; when one of those checks fails — another tool, unreadable,
+empty or never-closed input, a bad or unknown id, a deleted workbench, a
+broken config, a missing or locked database, a panic — it prints nothing on
+stdout or stderr and exits 0, so the tool runs. Once both checks pass it
+always denies; the reason is the present one only when the presence read
+succeeds and names this session, and the away reason otherwise (a failed
+presence read never lets the tool run). It opens the database with
+`db.OpenExisting` (`query_only`, 500 ms busy timeout), and its reads share a
+1.4 s budget counted from the database open (`askGuardReadBudget`: the
+workbench read under its busy timeout, then the presence reads; with the 0.5 s
+stdin wait that stays under 2 s) — presence reads still running at its end
+read as away, so it denies with the away reason — so it finishes in under 2 s.
 
-**Why locked:** Owner decision (spec 2026-10-03, decision 3) and the PROJ-07
-precedent: a guard that could loop a turn, fail a turn, or block a tool
-because Watchtower is broken would be worse than none.
+**Implementation notes (2026-10-11; what the code does where it is more
+precise than the wording above):** (1) The model child is an isolated CLI
+child (`SetIsolatedChild`: its own process group, killed whole and waited for
+on the budget, a SIGINT, a SIGTERM — Claude Code's hook timeout — or a SIGHUP
+— its terminal gone; it never inherits `WATCHTOWER_TERMINAL_SESSION_ID`), the
+message travels on stdin, and the classifier reads only the message's last 32
+KiB (cut on a rune boundary behind a fixed `[earlier text cut]` line). A
+signal at any point before the output writes nothing more and prints nothing.
+(2) The `--stop` run calls no model at all, and prints nothing, when the
+workbench certainly no longer exists (a deleted workbench's leftover hook,
+read `query_only`; a database that cannot be read is not "gone"), or on a
+`stop_hook_active` turn outside a Desktop terminal row of the payload's
+conversation (nothing to record or clear). A bad id or a broken config also
+prints nothing. (3) A read failure after the session matched blocks only the
+record: the older question is still cleared (4.2 step 6). (4) "Present" for
+the `PreToolUse` reason is resolved as the Stop guard does: the presence names
+this session's `claude` row of workbench N running the payload's conversation,
+**and** the folder has the core state hooks (without them the Stop guard could
+not record a plain-text question, so the agent is pointed at `ask_owner`). Any
+read failure or a panic after the workbench was found reads as away; the tool
+stays denied. The hook's reads share a 1.4 s budget counted from the database
+open (`askGuardReadBudget`): the workbench read (under the 500 ms busy
+timeout), then the presence reads (the session row, its workbench, the state
+hooks, the presence), raced against the budget's end; presence reads still
+running then read as away and the hook denies with the away reason (the
+database is closed once they end). (5) `workbench escalate-question` opens the
+database with `db.Open` (it migrates, as every writer CLI), waits up to 5 s
+for the write lock (then `busy`), takes the question only from workbench N's
+`claude` row, and answers a flag it cannot parse with a `bad_args` envelope,
+exit 0. (6) The classifier call is registered as `workbench.ask_guard` on the
+light tier in `digest.TierForSource` (both providers; on codex the message
+goes to OpenAI, business D1). Its text is embedded and **not** a prompt-store
+entry — a documented exception to the DB-backed prompts rule, since this
+contract pins the text.
 
-**Test guards:**
-- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` (the golden — the v2 text since 2026-10-03 — carries both pass clauses)
-- `internal/devpack/workbench_ask_guard_test.go::TestProj13_V1PromptIsUpgradedToV2` (the v1 text and an edit of it both become v2; another workbench's v1 prompt stays; a second resync changes nothing)
-- `cmd/workbench_askguard_test.go::TestProj13_AskGuardFailurePrintsNothingAndExitsZero`
-- `cmd/workbench_askguard_test.go::TestProj13_AskGuardFinishesFastOnALockedDatabase`
-- `cmd/workbench_askguard_test.go::TestProj13_AskGuardWithNoDatabaseCreatesNothing`
-- `cmd/workbench_askguard_test.go::TestProj13_AskGuardNeverRunsAMigration`
-- supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench`, `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys`
+**Why locked:** Owner decision (spec 2026-10-03, decision 3), the PROJ-07
+precedent, and the three ask levels (asks #66, #145, #146): a guard that could
+loop a turn or fail a turn would be worse than none; one that bounced a quick
+question while the owner is watching wastes the owner's time; one that let a
+question through to an empty room leaves it unseen — so a question passes as
+text only where the owner is, and only once it is recorded for raising. A
+broken Watchtower may cost at most one send-back of a plain-text question
+(what every plain-text question got before v4), never a loop and never a
+blocked tool: the owner approved this narrowing of "never block because
+Watchtower is broken" with v4 (business D1, ask #148).
+
+**Test guards** (names kept where they exist; none relaxed):
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` — now over the v4 classifier golden. Each clause it checked over v3 maps to a v4 golden clause or a named Go guard, so no assertion is dropped:
+
+  | v3 clause checked before | v4 home |
+  |---|---|
+  | `Return {"ok": true} unless a failure case below clearly applies.` | golden: outline 2 (default unless a case clearly applies) |
+  | `Return {"ok": true} when stop_hook_active is true.` | Go row 1: `cmd/workbench_askguard_test.go::TestProj13_ContinuedTurnNeverBlocks` |
+  | `These pass, except that failure case 1 takes priority over this list:` | golden: outline 7 (the request check takes priority) |
+  | `- Unfinished work is never case 2: …` (with "a question … inside a progress report is still case 1") | golden: outline 8 (unfinished work, incl. a next step the agent takes) and outline 7 (request inside a progress report) |
+  | `- A named ask is never a failure: … including step-by-step help …` | golden: outline 3 (`names_ask` incl. step-by-step help, `request_outside_ask`); Go: `TestProj13_StopGuardDecisionTable` rows E7, E7a, E7b |
+  | `- A closing summary that says it called finish_session … never affects case 2.` | golden: outline 4; Go: decision table row E9b |
+  | `and names no "ask #<number>".` | Go: decision table row 3 (covered) and rows E7/E7b |
+  | `does not say it called finish_session (for example "session finished")` | golden: outline 8 |
+  | `When unsure, return {"ok": true}.` | golden: outline 2 ("and when unsure") |
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_OlderPromptsAreUpgradedToTheCurrent` (#478's guard, rewritten to the same strictness: v1, v2, v3 and an edited marker prompt of N each become the one command entry; another workbench's marker prompt stays; a second resync changes nothing; the owner's `Stop` hooks and keys byte-exact)
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardFailurePrintsNothingAndExitsZero` (extended to `--stop`: every input failure, a model timeout, a model error, malformed model output, a panic)
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardFinishesFastOnALockedDatabase` (both modes; `--stop` with a stub model: a locked DB reads as away)
+- `cmd/workbench_askguard_test.go::TestProj13_AskGuardWithNoDatabaseCreatesNothing`, `TestProj13_AskGuardNeverRunsAMigration` (both modes)
+- `cmd/workbench_askguard_test.go::TestProj13_StopGuardDecisionTable` (each row of the table with a stub model and seeded presence)
+- `cmd/workbench_askguard_test.go::TestProj13_ChatPassesOnlyWhenPresentAndRecorded` (present → pass and recorded; stale write, another session present, no env, nested session, no core state hooks, read error, write error → `R-away`)
+- `cmd/workbench_askguard_test.go::TestProj13_ContinuedTurnNeverBlocks` (every model verdict with `stop_hook_active`: nothing printed; a chat request recorded present or away)
+- `cmd/workbench_askguard_test.go::TestProj13_StopGuardNeverTouchesTheStateColumns`
+- `cmd/workbench_askguard_test.go::TestProj13_ACancelledModelCallLeavesNoProcess` (SIGTERM mid-call: the stub's process group is gone before the hook exits)
+- `cmd/workbench_escalate_test.go::TestProj13_EscalationIsCompareAndTake` (filed once; a cleared or replaced question, a state off `waiting` or stamped later than the tolerance → `gone`, nothing written; a second run → `gone`)
+- supporting (escalation): `cmd/workbench_escalate_test.go` (`TestEscalateFilesAQuickAskWithTheSameOptions`, `TestEscalationRaceFilesOneAsk`, `TestEscalateFourOptionsIsFull`, `TestEscalateZeroOptionsIsQuick`, `TestEscalateAtTheOpenCapKeepsTheQuestion`, `TestEscalateEnvelopeShape`); `internal/db/terminal_sessions_test.go::TestTakeChatQuestionIsCompareAndTake`
+- supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench` (now with both reasons), `TestAskToolDenialReasonsAreTheSpecsText`, `TestAskGuardReasonsAreTheSpecsText`, `TestDecideStopTable`, `TestStopWithoutAQuestionClearsTheOlderOne`, `TestAskGuardModelOutputNormalisation`, `TestAskGuardMessageTail`, `TestAskGuardModelChildIsIsolated`, `TestStopGuardReadFailureStillClearsTheOlderQuestion`, `TestStopGuardDeletedWorkbenchPassesSilently`, `TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing`, `TestStopGuardContinuedTurnWithoutASessionCallsNoModel`, `TestStopGuardUnreadableSessionVariableReadsAsAway`, `TestTierForSourceAskGuardIsLight`; `internal/devpack/workbench_ask_guard_test.go::TestAskGuardClassifier_IsTheV4Golden`; `internal/digest/isolated_child_test.go` (`TestIsolateChildKillsTheGroupAndDropsEnv`, `TestIsolateChildCancelAfterTheWaitKillsNothing`); `internal/db/owner_presence_test.go::TestOwnerPresentInStaleWriteIsAbsent`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys` (a prompt-only folder → `ask_guard: false`)
 
 **Locked since:** 2026-10-03
 
@@ -1174,6 +1296,27 @@ other direction.
   second may be submitted with the answer. The 500 ms pause is a timing
   choice, checked by hand against Claude Code, not by a test.
 
+- **Owner asks v2 (2026-10-11, PROJ-13 rewritten, board #395/#501/#503).**
+  (a) of the owner-asks note above now reads: one light-tier call per Stop
+  through Watchtower's provider registry (also on `stop_hook_active`, none
+  on an empty message or a continued turn outside a Desktop terminal row),
+  up to the 20 s budget inside the 30 s hook timeout; on codex the final
+  message goes to OpenAI (business D1). Until Repair a folder keeps the old
+  prompt hook, which bounces every Chat question as before; `integrate
+  status` reports `ask_guard: false` for it. (b) Presence knows no idle
+  keyboard: an owner idle in front of the session is caught only by the
+  10-minute rule. (c) A chat question pending when its session's process
+  ends is never raised; the next run's mark clears it. (d) Watchtower never
+  withdraws a raised ask by itself; the skill tells the agent to withdraw it
+  when the owner answered in the terminal (no mechanical check). (e) A
+  Desktop that hangs or crashes leaves the presence row stale; Go trusts it
+  for 90 s, so for up to 90 s a question may pass to an owner who is gone —
+  the escalation runs on the Desktop and does not run while it is down. (f)
+  The level is stored once, when the ask is filed; asks filed before
+  migration `00107` stay Full. (g) `workbench asks --json` is read-only: an
+  answer from another client is the planned next step (spec Part 10.3) and
+  will need a PROJ-12 amendment.
+
 - **Session agent state ordering and subagents (PROJ-11, board #367).**
   (a) Closed 2026-10-04 by board #368 (events of a turn are ordered by the
   turn, see PROJ-11). What still orders by hook-process start time: a tool
@@ -1239,6 +1382,8 @@ other direction.
 
 ## Changelog
 
+- 2026-10-11 (owner asks v2, board #395/#501/#503, spec `docs/superpowers/specs/2026-10-10-owner-asks-v2-design.md`, business spec `docs/superpowers/specs/2026-10-10-owner-asks-v2-business.md`, plan `docs/superpowers/plans/2026-10-10-owner-asks-v2.md`; **owner approved the business spec, which amends PROJ-13, in ask #148 on 2026-10-11**, on top of asks #66, #145 and #146): **PROJ-13 rewritten** — the `Stop` ask guard is the command hook `workbench ask-guard --workbench N --stop` (v4 classifier `internal/devpack/askguard_classifier.md`, light tier, fixed Go decision table, presence from `owner_presence`): a short question passes as terminal text only while the owner is in the session and once it is recorded (`chat_question`, `chat_question_at`, migration `00107`), otherwise it is sent back (`R-away`); a review, a check or several decisions left as text get `R-full`; the finish reminder stays (`R-finish`, `R-finish-ask`); a database failure now reads as the owner away (at most one send-back, never a loop — the narrowing of "never block because Watchtower is broken" the owner approved, business D1); the `AskUserQuestion` denial reason follows presence. The v3 golden assertions each map to a v4 golden clause or a named Go guard (table under PROJ-13); `TestProj13_OlderPromptsAreUpgradedToTheCurrent` is rewritten to the command entry at the same strictness; new guards `TestProj13_StopGuardDecisionTable`, `TestProj13_ChatPassesOnlyWhenPresentAndRecorded`, `TestProj13_ContinuedTurnNeverBlocks`, `TestProj13_StopGuardNeverTouchesTheStateColumns`, `TestProj13_ACancelledModelCallLeavesNoProcess`, `TestProj13_EscalationIsCompareAndTake`; the failure, locked-DB, no-DB and no-migration guards are extended to `--stop`. **Implementation rulings:** the PROJ-13 implementation notes (light tier as an isolated child, the message's last 32 KiB, SIGHUP too, a deleted workbench and a continued turn outside a terminal row call no model, a read failure blocks only the record, the `AskUserQuestion` present reason also needs the core state hooks, its reads share a 1.4 s budget from the database open, presence reads cut off at its end reading as away — named in the Observable's under-2 s sentence too —, and `escalate-question`'s open, lock wait and `bad_args` for unparsable flags); the classifier text is a documented exception to the DB-backed prompts rule. **PROJ-11 amended** (one paragraph, meaning unchanged) — the chat question columns are written only by the guard, the state hooks' clears and the escalation, never change a state or its time, and a new run or conversation clears them; new guard `TestProj11_ChatQuestionWritesNeverTouchTheState`, `TestProj11_NewRunAndConversationSwitchClearTheCount` extended. **PROJ-04 amended** — the install replaces every marker prompt of N (an edited one too) with the Stop command entry, carrying the owner's keys on that prompt onto it; `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` rewritten to the command entry with its check kept — the owner's key on our edited prompt is now asserted on the command entry, number literal included — as are the owner's keys on our command entry written from another binary (updated in place) and the owner's own hooks and keys; new `TestProj04_AskGuardCommandEntryCarriesTheKeysOfOurReplacedPrompt`, new `Stop` twin `TestProj04_MalformedStopWithOurPromptLeavesTheFileByteIdentical`, `TestProj04_RemoveDeletesOnlyOurHook` extended. **PROJ-02 strengthened** — the delete leaves the owner's presence row in no session (`ON DELETE SET NULL`); `TestProj02_DeleteProjectLeavesNoRows` extended. **PROJ-12** wording unchanged: Quick ask answers from the banner and the stack go through the drawer's call; two supporting guards added. Also (not a contract change): `ask_owner` stores the level and refuses re-filing a withdrawn ask without a revision — the 7-day window runs from the withdrawal, not the filing (`owner_asks.withdrawn_at`, `00107`; asks withdrawn before it carry `''` and never match), and the title refusal matches the ask's kind as well (spec Part 8's text names only the title). None of the guards was relaxed.
+- 2026-10-10 (board #478, **owner approved 2026-10-09 (#478)** in chat): **PROJ-13 amended** — the ask guard prompt is v3. v2 failed almost every intermediate report and step-by-step help on an ask already filed, which Claude Code prints as "Stop hook error" and which looped the agent. v3 passes by default, states that unfinished work is never case 2, that a named `ask #<number>` (including step-by-step help on it) is never a failure and that a closing summary after `finish_session` is not case 1 (it never affects case 2), gives failure case 1 priority over that pass list, and enumerates exactly two failure cases (a request left as text, a completed session without `finish_session`; "a PR opened or merged" alone no longer counts as complete). The pass rules (`stop_hook_active`, when unsure) are unchanged. The golden is updated to v3 and `TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` pins more pass clauses than before; `TestProj13_V1PromptIsUpgradedToV2` is renamed `TestProj13_OlderPromptsAreUpgradedToTheCurrent` and now also covers a v2 install and an edited v2 (fixture `internal/devpack/testdata/askguard_prompt_v2.md`), its assertions unchanged.
 - 2026-10-10 (board #411, spec `docs/superpowers/specs/2026-10-10-session-background-agents-design.md`): **PROJ-11 amended 2026-10-10, approved by the owner in ask #139** (what counts, the 120 s grace and the `SubagentStop` hook in ask #138; the staleness probe in asks #138, #140 and #142: the registry decides, the ping is not built) — a session whose main turn ended while background subagents still run shows **Agents working** instead of Stopped. Migration `00106` adds `terminal_sessions.agent_background` and `agent_background_at` (Go writes, the Desktop reads); the Stop hook stores the count of `subagent`/`workflow` entries of its input's `background_tasks`; a subagent's tool result over a counted `waiting` only refreshes the report time; the new async state hook `SubagentStop` only lowers the count; every main turn, a StopFailure, the idle notice, a new run and a conversation switch clear it. No new `agent_state` value: Agents working is a presentation of the stored `waiting`, so the turn order, repeats, failures, `finished_at`, `isAtPrompt` (ruling R52) and PROJ-12's Return are untouched — PROJ-12 gains two guards pinning that an answer into an Agents working session gets its Return and one into its background agent's permission prompt is held. The state hooks split into the core four (gating the Stop's state write and the run mark) and all five (the status's `state_hooks`), so a folder set up earlier keeps recording until Re-run Setup or Repair adds the `SubagentStop` entry; **PROJ-04** names the fifth event, the malformed-file rule covering it. Guards rewritten to the new rule, none relaxed: `TestProj11_PostToolUseIntoWorkingClearsFinished`'s subagent half (a counted `waiting` changes only `agent_background_at`), `testProj11_StateOrder` (nine kinds), `testProj11_OneNoticePerTransition` (agents working posts nothing, the stop after it once); extended: `TestProj11_HookNeverWritesStdoutAndExitsZero`, `testProj11_StateFromAnEarlierRunIsIgnored`, `TestProj04_MalformedStateEventLeavesTheFileByteIdentical` and `TestProj04_StateHooksKeepOwnerHooksAndKeys` (now over `SubagentStop` too). New guards listed under PROJ-11 and PROJ-12. v1 note "Session agent state ordering and subagents" (d) extended.
 - 2026-10-07 (board #415, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md`): **PROJ-15 amended 2026-10-07, approved by the owner in ask #106** (the spec §3 wording and all four §1 decisions as recommended) — "Archive Closed Targets Now". Migration `00105` adds `projects.archived_through` (a UTC moment, NULL = never pressed, `CHECK` it parses) and recreates `workbench_target_archive` with a second branch: a closed subtree whose newest close time is not after the moment is archived whatever `archive_after_days` says, including Never (decision 1); both `done` and `dismissed` count (decision 4). The Observable's first sentence is replaced and one sentence added after "Reopening restores it"; "hidden, never lost", groups-go-whole, restore-by-reopening and the drift guarantee are unchanged, and "Why locked" is unchanged — Undo is an extra, not the only way back. Writers: the Desktop's `WorkbenchQueries.archiveClosedTargetsNow`/`clearArchivedThrough` (the header's "Archive Closed Targets Now" / "Undo Archive Now") and the Go twins `db.ArchiveWorkbenchClosedNow`/`db.ClearWorkbenchArchivedThrough`; no CLI writer, no MCP tool. Every existing PROJ-15 guard runs unchanged (`TestProj15_PerWorkbenchSettingAndNever` still asserts that 0 archives nothing with no stamp); new guards in `internal/db/proj15_archive_now_test.go`, a stamp-only case in `TestProj15_DriftStillSeesArchivedUnmergedWork`. PROJ-05/06/07/09 untouched: the button writes only `projects`. v1 note "Board archive" extended.
 - 2026-10-07 (board #396, with #387/#388/#389; owner directive 2026-10-05 «send it right away», approved as an amendment of PROJ-12): **PROJ-12 amended** — an answer is also submitted into a session whose hooks have not written a state yet this run, when its SessionStart hook marked the run. Root cause: a relaunch or resume (`startup`/`resume`) cleared the row's state, so `SessionAgentStatus.at` was nil until the agent's next turn and the line was only pasted ("press Return to send") into an idle session; a compaction while idle continues the run and changed nothing. Now the SessionStart hook writes the run's mark (`MarkTerminalAgentRun`: no state, a stamp of this run) when the workbench's folder has the session state hooks (`workbenchHasStateHooks`), even with nothing to clear; without them `ClearTerminalAgentState` clears with no stamp (it used to stamp the clear), so a mark always means the state hooks run. The Desktop reads it as `SessionAgentStatus.runMarked`/`hooksReported`; the dot, `isAtPrompt` (hand-offs, ruling R52) and PROJ-11's states and notices are unchanged. The permission-dialog guard (`needsApproval` before the paste and after the pause, failed reads) and the owner-draft guard are unchanged. Also: the Return goes only into the process run the line was pasted into (`TerminalCenter.runs`; a relaunch reuses the process object, #387 — also for held answers and the read before the paste), the owner's submitting Return during the pause skips ours and leaves no bar (#388), a restart drops the last run's paste bar (#389), and the condition that withheld a Return is logged. Guards rewritten to the new rule, none relaxed: `testProj12_WithoutAHookStateThisRunTheLineIsOnlyPasted` → `testProj12_WithoutTheStateHooksTheLineIsOnlyPasted` (same assertions), `CodeHandoffCenterTests::testAnAnswerIntoASessionWithOnlyAnEarlierRunsStateIsOnlyPasted` → `testProj12_WithoutTheStateHooksAnAnswerIsOnlyPasted` (the earlier run's state kept, plus no row, an earlier run's mark and an unknown value; the bar asserted). New guards `testProj12_AFreshOrResumedRunWithTheStateHooksGetsTheReturn`, `testProj12_ACompactWhileIdleKeepsTheReturn`, `TestProj12_ANewRunWithTheStateHooksIsMarked`, `TestProj12_CompactWhileIdleKeepsTheRunsState`. Limit (h) rewritten. No hook setting changed (the SessionStart entry already ran for every source), so no Re-run Setup. PROJ-11's guards are unchanged; its "the SessionStart clear of a new run" is now the mark or the stampless clear.

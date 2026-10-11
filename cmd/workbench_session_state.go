@@ -291,6 +291,11 @@ func terminalSessionRowID() (id int64, ok bool, err error) {
 // to the time order. A Stop's background count that differs from the
 // stored one makes its `waiting` a change; one repeating the stored count
 // only refreshes agent_background_at (a fresh report, not a transition).
+// A prompt clears a chat question asked before it (the owner answered or
+// moved on in the terminal), whatever its state write does; so does a
+// main-thread tool result whose `working` ends a `waiting` (the agent went
+// on by itself). Nothing else touches the question (PROJ-11, spec
+// 2026-10-10-owner-asks-v2 Part 4.7).
 func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
 	row, err := hookSessionRow(database, rowID, workbenchID, sessionID)
@@ -298,6 +303,19 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
+	var clearErr error
+	if prompt {
+		clearErr = clearChatQuestion(database, row, workbenchID, sessionID, at)
+	}
+	return errors.Join(clearErr, recordAgentStateOver(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn))
+}
+
+// recordAgentStateOver is recordAgentState's decision over the row it read:
+// a repeat (at most a background report), a write the guards hold back, or
+// writeAgentState. A failed prompt clear never skips it.
+func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
+	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
+	rowID := row.ID
 	switch {
 	case repeatsAgentState(row, state, failure, prompt, turn.background):
 		if turn.stop && turn.background.Valid {
@@ -308,6 +326,14 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt) && !stopEndsToolRun(row, turn):
 		return nil
 	}
+	return writeAgentState(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn)
+}
+
+// writeAgentState is recordAgentState's write over the row it read: the
+// turn order's last check, then the guarded UPDATE, then the chat question's
+// clear when a main-thread tool result ended a `waiting`.
+func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
+	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
 	order := db.AgentOrder{Stop: turn.stop, Background: turn.background}
 	if turn.toolRun {
 		order.ToolRun, order.SeenTurnEnd = true, row.TurnEnd
@@ -318,8 +344,24 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err = database.SetTerminalAgentState(rowID, workbenchID, sessionID, state, at, onlyFrom, failure, prompt, order)
-	return err
+	written, err := database.SetTerminalAgentState(row.ID, workbenchID, sessionID, state, at, onlyFrom, failure, prompt, order)
+	if err != nil || !written || !turn.toolRun || row.AgentState.String != agentStateWaiting {
+		return err
+	}
+	return clearChatQuestion(database, row, workbenchID, sessionID, at)
+}
+
+// clearChatQuestion drops row's chat question when one is stored: the read
+// row says so first, so the common case (no question) never waits for the
+// write lock; ClearChatQuestionBefore keeps a question asked at or after at.
+func clearChatQuestion(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID string, at time.Time) error {
+	if row.ChatQuestionAt == "" {
+		return nil
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	return database.ClearChatQuestionBefore(row.ID, workbenchID, sessionID, at)
 }
 
 // stopEndsToolRun: the Stop replaces a main-thread tool result's `working`

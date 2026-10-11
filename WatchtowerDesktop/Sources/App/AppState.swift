@@ -293,6 +293,17 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// Which workbench session the owner is in (owner asks v2, Part 2),
+    /// written for Go's Stop guard and read by the chat question escalation.
+    private(set) var ownerPresenceCenter: OwnerPresenceCenter?
+    /// Raises an unanswered Chat question into an owner ask (owner asks v2,
+    /// Part 5); nil without a CLI runner.
+    private(set) var chatQuestionEscalator: ChatQuestionEscalator?
+    /// Whether a main window is the key window (Settings, a sheet's window
+    /// and the Open Quickly panel are not); seamed for tests.
+    @ObservationIgnored var mainWindowIsKey: @MainActor () -> Bool = {
+        NSApp?.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isKeyWindow } ?? false
+    }
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
@@ -641,6 +652,10 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    // The owner is in no session once the app is gone.
+                    self?.ownerPresenceCenter?.clearForQuit()
+                    // An escalate-question child gets SIGTERM.
+                    self?.chatQuestionEscalator?.stop()
                 }
             }
         }
@@ -1775,12 +1790,66 @@ final class AppState {
         sessionAgentStateCenter = agentStates
         sessionReportCenter?.stop()
         sessionReportCenter = reports
+        ownerPresenceCenter?.stop()
+        ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
+        chatQuestionEscalator?.stop()
+        chatQuestionEscalator = cliRunner.map { makeChatQuestionEscalator(runner: $0, workbenches: vm, agentStates: agentStates) }
+        wireChatQuestionEscalation(agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
         vm.asks.start()
         agentStates.start()
         reports.start()
+        ownerPresenceCenter?.start()
+        chatQuestionEscalator?.start()
+    }
+
+    /// The escalation is the one subscriber of both hooks: every resolve of
+    /// the agent states and every presence change evaluate it.
+    private func wireChatQuestionEscalation(agentStates: SessionAgentStateCenter) {
+        guard let escalator = chatQuestionEscalator else { return }
+        agentStates.onResolved = { [weak escalator] in escalator?.evaluate() }
+        if let ownerPresenceCenter { escalator.follow(presence: ownerPresenceCenter) }
+    }
+
+    /// The escalation runner reading the agent states and prompt drafts (its
+    /// triggers and presence are wired by `wireChatQuestionEscalation`); a filed ask is
+    /// read at once by the asks poll, and the session's row again (its
+    /// question is gone).
+    private func makeChatQuestionEscalator(
+        runner: any CLIRunnerProtocol,
+        workbenches vm: WorkbenchesViewModel,
+        agentStates: SessionAgentStateCenter
+    ) -> ChatQuestionEscalator {
+        let escalator = ChatQuestionEscalator(runner: runner)
+        let terminals = terminalCenter
+        escalator.sessions = { [weak agentStates] in
+            ChatQuestionEscalator.Sessions(
+                rows: agentStates?.rows ?? [], liveIDs: terminals.liveClaudeIDs, startedAt: terminals.startedAt
+            )
+        }
+        escalator.hasOwnerDraft = { terminals.promptDrafts.contains($0) }
+        escalator.onFiled = { [weak vm, weak agentStates] projectID in
+            agentStates?.refresh()
+            Task { await vm?.asks.refreshIfChanged(projectID: projectID) }
+        }
+        return escalator
+    }
+
+    /// The presence center reading the workbench page through `vm`, only
+    /// while the Workbench tab is shown in the key main window.
+    private func makeOwnerPresenceCenter(dbPool: DatabasePool, workbenches vm: WorkbenchesViewModel) -> OwnerPresenceCenter {
+        let center = OwnerPresenceCenter(writer: OwnerPresenceCenter.databaseWriter(dbPool))
+        center.screen = { [weak self, weak vm] in
+            guard let self, let vm else { return .other }
+            // Every observable input is read whatever the window, so the
+            // center's tracker sees the same state when the window turns key.
+            let onTab = selectedDestination == .workbench
+            let shown = vm.ownerPresenceScreen()
+            return onTab && mainWindowIsKey() ? shown : .other
+        }
+        return center
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
