@@ -1155,6 +1155,58 @@ func TestChatQuestionSetReplaceClear(t *testing.T) {
 	}
 }
 
+// A guard's record stamped before the row's newer run or turn is stale: it
+// writes nothing. A waiting or approval stamped after it never refuses it.
+func TestSetChatQuestionRefusesAStopOlderThanTheRun(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	for _, tc := range []struct {
+		name  string
+		write func(id int64) bool
+	}{
+		{"a new run marked after the Stop", func(id int64) bool {
+			return w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0.Add(time.Second)))
+		}},
+		{"a prompt after the Stop", func(id int64) bool {
+			return w(d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0.Add(time.Second), "", nil, true, AgentOrder{}))
+		}},
+	} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !tc.write(id) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0)
+		if !errors.Is(err, ErrChatQuestionNotRecorded) {
+			t.Fatalf("%s: err = %v, want ErrChatQuestionNotRecorded", tc.name, err)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+
+	for _, state := range []string{"waiting", "approval"} {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, state, t0.Add(time.Second), "", nil, false, AgentOrder{})) {
+			t.Fatalf("%s: did not write", state)
+		}
+		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+			t.Fatalf("a %s stamped after the Stop refused the record: %v", state, err)
+		}
+	}
+	// A run or turn not newer than the Stop never refuses it.
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.MarkTerminalAgentRun(id, pid, agentStateUUID, t0)) {
+		t.Fatal("the mark did not write")
+	}
+	if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
+		t.Fatalf("a mark at the Stop's own time refused the record: %v", err)
+	}
+}
+
 func TestClearChatQuestionBeforeKeepsANewerQuestion(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)

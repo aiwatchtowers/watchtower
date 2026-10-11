@@ -425,8 +425,14 @@ type ChatQuestionOption struct {
 // SetChatQuestion records q, asked at the Stop of conversation
 // claudeSessionID at at, on workbench workbenchID's claude row id. A newer
 // Stop's question replaces an older one; an older one never replaces a newer
-// one (an unreadable stored stamp never blocks). Only the two chat question
-// columns change (PROJ-11). ErrChatQuestionNotRecorded when no row took it.
+// one (an unreadable stored stamp never blocks). A Stop older than the row's
+// run or turn is stale and records nothing: a run mark (no state) or a
+// `working` stamped after at means the owner or a new run moved on since —
+// the question would outlive the clear that run or prompt already did. A
+// `waiting` or `approval` stamped after at does not refuse it: the Stop's own
+// async state hook may land just after the guard's stamp. Only the two chat
+// question columns change (PROJ-11). ErrChatQuestionNotRecorded when no row
+// took it.
 func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q ChatQuestion, at time.Time) error {
 	if q.Options == nil {
 		q.Options = []ChatQuestionOption{}
@@ -438,8 +444,10 @@ func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q C
 	stamp := AgentStateStamp(at)
 	res, err := db.Exec(`UPDATE terminal_sessions SET chat_question = ?, chat_question_at = ?
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
-		  AND (chat_question_at IS NULL OR chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')`,
-		string(body), stamp, id, workbenchID, claudeSessionID, stamp)
+		  AND (chat_question_at IS NULL OR chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')
+		  AND (agent_state IN ('waiting', 'approval') OR agent_state_at IS NULL OR agent_state_at <= ?
+		       OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
+		string(body), stamp, id, workbenchID, claudeSessionID, stamp, stamp)
 	if err != nil {
 		return fmt.Errorf("recording terminal session %d chat question: %w", id, err)
 	}
