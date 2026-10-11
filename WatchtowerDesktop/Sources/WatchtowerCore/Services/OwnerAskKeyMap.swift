@@ -163,10 +163,10 @@ package enum OwnerAskKeyStop: Hashable, Sendable {
 
     /// The stops of `ask` in drawer order; none on a closed ask or while an
     /// answer is written (`editable` false).
-    package static func stops(for ask: OwnerAsk, editable: Bool) -> [OwnerAskKeyStop] {
+    package static func stops(for ask: OwnerAsk, editable: Bool) -> [Self] {
         guard editable else { return [] }
-        let questions = ask.payload.questions.map { OwnerAskKeyStop.question($0.id) }
-        let steps = ask.kind == .check ? ask.payload.checklist.map { OwnerAskKeyStop.step($0.id) } : []
+        let questions = ask.payload.questions.map { Self.question($0.id) }
+        let steps = ask.kind == .check ? ask.payload.checklist.map { Self.step($0.id) } : []
         return questions + steps + [.note]
     }
 

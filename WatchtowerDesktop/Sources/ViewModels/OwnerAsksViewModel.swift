@@ -166,6 +166,9 @@ final class OwnerAsksViewModel {
     @ObservationIgnored private(set) var roomySessions: Set<Int64> = []
     /// The drawer takes the whole session pane; closing it resets this.
     var drawerExpanded = false
+    /// A on the workbench page (board #412): the stack's oldest card takes
+    /// the keyboard once `OwnerAskStackSection` shows it, which clears this.
+    var stackKeyboardRequested = false
     /// The drawer's width, kept across launches under `drawerWidthKey`.
     private(set) var drawerWidth: Double
 

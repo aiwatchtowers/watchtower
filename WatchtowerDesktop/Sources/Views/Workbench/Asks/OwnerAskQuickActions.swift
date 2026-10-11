@@ -9,7 +9,8 @@ import WatchtowerCore
 /// given. The Reply text is the ask's draft (the question's "Other"), so it
 /// outlives the view and the drawer shows it. Every answer goes through
 /// `WorkbenchesViewModel.answerQuick`, the drawer's path; the row is off
-/// while it is written and once it was.
+/// while it is written and once it was. With the banner or card holding the
+/// keyboard, 1–3 tap the first three buttons (`OwnerAskCardKeys`).
 struct OwnerAskQuickActions: View {
     /// Past this a label is cut with "…"; its full text is in the help.
     static let maxChoiceWidth: CGFloat = 150
@@ -45,7 +46,7 @@ struct OwnerAskQuickActions: View {
 
     private var choiceRow: some View {
         FlowLayout(spacing: 6) {
-            ForEach(row.choices, id: \.label) { choiceButton($0) }
+            ForEach(Array(row.choices.enumerated()), id: \.element.label) { choiceButton($1, index: $0) }
             Button("Reply…") { replying = true }
                 .buttonStyle(.bordered)
                 .help("Answer in your own words, on one line")
@@ -55,9 +56,10 @@ struct OwnerAskQuickActions: View {
     }
 
     @ViewBuilder
-    private func choiceButton(_ choice: OwnerAskQuickRow.Choice) -> some View {
+    private func choiceButton(_ choice: OwnerAskQuickRow.Choice, index: Int) -> some View {
         let label = MarkdownView.inlineLabel(choice.label)
         let plain = String(label.characters)
+        let tooltip = choice.tooltip.map { String(MarkdownView.inlineLabel($0).characters) } ?? plain
         let button = Button {
             send(row.answer(picking: choice.label))
         } label: {
@@ -68,7 +70,7 @@ struct OwnerAskQuickActions: View {
             }
         }
         .accessibilityLabel(plain)
-        .help(choice.tooltip.map { String(MarkdownView.inlineLabel($0).characters) } ?? plain)
+        .help(OwnerAskCardKeys.hint(tooltip, index: index))
         if choice.isProminent {
             button.buttonStyle(.borderedProminent).accessibilityHint("Recommended")
         } else {
@@ -171,5 +173,66 @@ struct OwnerAskQuickNoticeRow: View {
                 .buttonStyle(.borderless)
                 .controlSize(.small)
         }
+    }
+}
+
+/// A banner's or stack card's keys while it holds the keyboard (board #412,
+/// `OwnerAskKeyMap.Place.card`): 1–3 tap that option of a Quick ask — the
+/// same `answerQuick` a click runs, off while the row is —, Return opens
+/// the ask in the drawer, J / K (↓ / ↑) move to the next or previous card.
+/// Nothing unless `focused`: a key typed in the terminal or a field never
+/// reaches a card.
+@MainActor
+struct OwnerAskCardKeys {
+    let vm: WorkbenchesViewModel
+    let ask: OwnerAsk
+    let focused: Bool
+    let open: () -> Void
+    /// To the next (true) or previous card; false when there is none.
+    var move: (Bool) -> Bool = { _ in false }
+
+    /// A choice's help with its key, for the first three.
+    static func hint(_ tooltip: String, index: Int) -> String {
+        index < OwnerAskKeyMap.maxQuickDigit ? "\(tooltip) (press \(index + 1))" : tooltip
+    }
+
+    /// True when the key acted; false leaves it to the window.
+    func press(_ press: OwnerAskKeyMap.Press) -> Bool {
+        guard focused, let action = OwnerAskKeyMap.action(for: press, at: .card(quickChoices: quickRow?.choices.count ?? 0)) else {
+            return false
+        }
+        switch action {
+        case let .choose(option): return answer(option)
+        case .open:
+            open()
+            return true
+        case .nextAsk, .previousAsk: return move(action == .nextAsk)
+        default: return false
+        }
+    }
+
+    /// The row a digit taps: none while an answer is written or once one was.
+    private var quickRow: OwnerAskQuickRow? {
+        guard OwnerAskQuickRow.isEnabled(answering: vm.asks.isAnswering(ask.id), answered: vm.asks.isAnswered(ask.id)) else {
+            return nil
+        }
+        return OwnerAskQuickRow(ask: ask)
+    }
+
+    private func answer(_ option: Int) -> Bool {
+        guard let row = quickRow, option < row.choices.count else { return false }
+        let answer = row.answer(picking: row.choices[option].label)
+        Task { [vm, ask] in await vm.answerQuick(ask, with: answer) }
+        return true
+    }
+}
+
+extension OwnerAskKeyMap.Press {
+    /// A SwiftUI key press as the key map reads it.
+    init(_ press: KeyPress) {
+        self.init(characters: String(press.key.character),
+                  shift: press.modifiers.contains(.shift),
+                  otherModifiers: !press.modifiers.isDisjoint(with: [.command, .option, .control]),
+                  isRepeat: press.phase == .repeat)
     }
 }

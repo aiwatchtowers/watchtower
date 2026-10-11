@@ -8,16 +8,27 @@ import WatchtowerCore
 /// one-tap row (`OwnerAskQuickActions`), Details opening the drawer — one
 /// raised from the terminal's question says "From chat · N min". Under it,
 /// the session's Quick answers' notices (`quickNotices`) until dismissed —
-/// also once no ask waits.
+/// also once no ask waits. Holding the keyboard (Tab with keyboard
+/// navigation on; a click leaves it with the terminal), it takes
+/// `OwnerAskCardKeys`: 1–3 answer a Quick ask, Return opens (board #412).
 struct OwnerAskBanner: View {
     /// The session's open asks, oldest first; may be empty while notices show.
     let asks: [OwnerAsk]
     let notices: [OwnerAsksViewModel.QuickNotice]
     let vm: WorkbenchesViewModel
+    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if let first = asks.first { askRow(first) }
+            if let first = asks.first {
+                askRow(first)
+                    .focusable(interactions: .activate)
+                    .focused($focused)
+                    .onKeyPress(phases: .down) { press in
+                        OwnerAskCardKeys(vm: vm, ask: first, focused: focused) { open(first) }
+                            .press(OwnerAskKeyMap.Press(press)) ? .handled : .ignored
+                    }
+            }
             ForEach(notices) { OwnerAskQuickNoticeRow(vm: vm, notice: $0) }
         }
         .font(.callout)
@@ -41,6 +52,7 @@ struct OwnerAskBanner: View {
                 titleLine(first)
                 Button("Open") { open(first) }
                     .controlSize(.small)
+                    .help("Open in the drawer (Return while the banner has the keyboard)")
             }
         }
     }

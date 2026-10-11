@@ -95,6 +95,17 @@ extension WorkbenchesViewModel {
         return ask.sessionID == nil || ask.sessionID == sessionID
     }
 
+    /// A on the workbench page with no field focused (board #412,
+    /// `OwnerAskKeyMap`): the sessions panel shown and the oldest card of
+    /// "Waiting for you" given the keyboard. False — the key left to the
+    /// window — when no workbench page is on screen or no ask waits.
+    func openStackFromKeyboard() -> Bool {
+        guard hasWorkbenchPage, let projectID = selectedWorkbenchID, !asks.stack(projectID: projectID).asks.isEmpty else { return false }
+        panelVisible = true
+        asks.stackKeyboardRequested = true
+        return true
+    }
+
     /// The drawer's "k of N ›": the next ask of the stack, switching to its
     /// session when another one filed it.
     func showNextAsk(after askID: Int64, projectID: Int64) async {

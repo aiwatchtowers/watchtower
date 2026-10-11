@@ -6,6 +6,8 @@ import WatchtowerCore
 /// next step, session and age. A click puts the ask's session on screen and opens the
 /// drawer on it (`WorkbenchesViewModel.showAsk`). The closed asks filed
 /// from outside the app have no session row: their "N closed" sits here.
+/// A on the page (board #412) gives the oldest card the keyboard; a card
+/// holding it takes `OwnerAskCardKeys`.
 struct OwnerAskStackSection: View {
     /// Past this the rows scroll, so a long stack never pushes the
     /// session list off the panel.
@@ -14,6 +16,7 @@ struct OwnerAskStackSection: View {
     let vm: WorkbenchesViewModel
     let project: Workbench
     @State private var rowsHeight: CGFloat = 0
+    @FocusState private var focusedAsk: Int64?
 
     var body: some View {
         let asks = vm.asks
@@ -27,6 +30,7 @@ struct OwnerAskStackSection: View {
                         .sidebarSectionLabel()
                         .padding(.horizontal, 12)
                         .accessibilityAddTraits(.isHeader)
+                        .help(Self.keysHint)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 2) {
                             ForEach(stack.asks) { ask in
@@ -37,6 +41,11 @@ struct OwnerAskStackSection: View {
                                     isSelected: asks.drawerAskIDs[project.id] == ask.id
                                 ) {
                                     Task { await vm.showAsk(ask.id, projectID: project.id) }
+                                }
+                                .focusable()
+                                .focused($focusedAsk, equals: ask.id)
+                                .onKeyPress(phases: .down) { press in
+                                    cardKeys(ask, stack: stack).press(OwnerAskKeyMap.Press(press)) ? .handled : .ignored
                                 }
                             }
                         }
@@ -65,6 +74,26 @@ struct OwnerAskStackSection: View {
             }
             .padding(.top, 4)
             .padding(.bottom, 6)
+            .onChange(of: asks.stackKeyboardRequested, initial: true) { _, requested in
+                guard requested else { return }
+                asks.stackKeyboardRequested = false
+                // On the next turn: a section shown by the same key (the
+                // panel was hidden) takes no focus in its first update.
+                let first = stack.asks.first?.id
+                DispatchQueue.main.async { focusedAsk = first }
+            }
+        }
+    }
+
+    static let keysHint = "Press A (no field focused) to go here; then J / K or ↓ / ↑ move, 1–3 answer a Quick ask, Return opens"
+
+    private func cardKeys(_ ask: OwnerAsk, stack: OwnerAskStack) -> OwnerAskCardKeys {
+        OwnerAskCardKeys(vm: vm, ask: ask, focused: focusedAsk == ask.id) {
+            Task { await vm.showAsk(ask.id, projectID: project.id) }
+        } move: { forward in
+            guard let other = forward ? stack.next(after: ask.id) : stack.previous(before: ask.id) else { return false }
+            focusedAsk = other.id
+            return true
         }
     }
 

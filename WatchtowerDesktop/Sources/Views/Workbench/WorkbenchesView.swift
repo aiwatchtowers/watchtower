@@ -370,6 +370,13 @@ struct WorkbenchTitleRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background { shortcuts }
+        // A, with no field focused: "Waiting for you" takes the keyboard
+        // (board #412); never under the open palette. Labelled: a trailing
+        // closure would be `onKey`.
+        // swiftlint:disable:next trailing_closure
+        .background(OwnerAskKeyCatcher(onPress: { press in
+            !paletteOpen && OwnerAskKeyMap.action(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
+        }))
     }
 
     /// ⌘T and ⌘1…⌘9 (the session switcher shows them) as hidden buttons;

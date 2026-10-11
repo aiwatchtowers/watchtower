@@ -10,18 +10,28 @@ import WatchtowerCore
 /// target comment is sent), the terminal or the Files editor keep their
 /// ⌘↩. Not a `.keyboardShortcut` on the buttons: SwiftUI runs one before
 /// the focused view, so it would take ⌘↩ from all of them.
+///
+/// With `onPress` it also offers the bare keys of `OwnerAskKeyMap`
+/// (board #412) under the same rule — AppKit hands every key down to the
+/// window's key equivalents before the focused view — and takes one when
+/// `onPress` acts on it; laid behind the page it does that alone (no
+/// `onKey`, so ⌘↩ passes on to the drawer's).
 struct OwnerAskKeyCatcher: NSViewRepresentable {
-    /// The key pressed; true for ⌘⇧↩.
-    let onKey: (Bool) -> Void
+    /// The key pressed; true for ⌘⇧↩. nil leaves both keys alone.
+    var onKey: ((Bool) -> Void)?
+    /// A bare key while no field has the keyboard; true when it acted.
+    var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
 
     func makeNSView(context: Context) -> CatcherView {
         let view = CatcherView()
         view.onKey = onKey
+        view.onPress = onPress
         return view
     }
 
     func updateNSView(_ view: CatcherView, context: Context) {
         view.onKey = onKey
+        view.onPress = onPress
     }
 
     enum Key {
@@ -44,15 +54,29 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         }
     }
 
+    /// `event` as `OwnerAskKeyMap` reads it; nil for anything but a key down.
+    static func press(_ event: NSEvent) -> OwnerAskKeyMap.Press? {
+        guard event.type == .keyDown else { return nil }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let keypadEnter = event.keyCode == CommentEditorKeys.keypadEnterKeyCode
+        return OwnerAskKeyMap.Press(characters: keypadEnter ? "\r" : event.charactersIgnoringModifiers ?? "",
+                                    shift: flags.contains(.shift),
+                                    otherModifiers: !flags.isDisjoint(with: [.command, .option, .control]),
+                                    isRepeat: event.isARepeat)
+    }
+
     final class CatcherView: NSView {
         var onKey: ((Bool) -> Void)?
+        var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
-            guard let window, let key = OwnerAskKeyCatcher.answerKey(event), takesKeys(in: window) else {
-                return super.performKeyEquivalent(with: event)
+            guard let window, takesKeys(in: window) else { return super.performKeyEquivalent(with: event) }
+            if let onKey, let key = OwnerAskKeyCatcher.answerKey(event) {
+                onKey(key == .commandShiftReturn)
+                return true
             }
-            onKey?(key == .commandShiftReturn)
-            return true
+            if let onPress, let press = OwnerAskKeyCatcher.press(event), onPress(press) { return true }
+            return super.performKeyEquivalent(with: event)
         }
 
         /// Nothing has the keyboard, or read-only text inside the drawer —
