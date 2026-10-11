@@ -906,52 +906,69 @@ func TestTierForSourceAskGuardIsLight(t *testing.T) {
 	assert.Equal(t, digest.TierLight, digest.TierForSource(askGuardSource))
 }
 
-// fakeClaudeConfig writes a config whose claude binary is script (in dir)
+// fakeModelConfig writes a config whose provider's binary is script (in dir)
 // and returns its path.
-func fakeClaudeConfig(t *testing.T, dir, script string) string {
+func fakeModelConfig(t *testing.T, dir, provider, script string) string {
 	t.Helper()
 	path := filepath.Join(dir, "config.yaml")
-	body := "active_workspace: test\nclaude_path: " + strconv.Quote(script) + "\nai:\n  provider: claude\n"
+	body := "active_workspace: test\n" + provider + "_path: " + strconv.Quote(script) + "\nai:\n  provider: " + provider + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
 	return path
 }
 
-// The production model client (askGuardGeneratorFactory) runs the CLI in its
-// own process group, without the Desktop terminal's session variable, and
-// with the message on stdin, never on argv. A fake claude binary records all
-// three; the real CLI is never invoked.
+// The production model client (askGuardGeneratorFactory) runs the CLI — on
+// either provider — in its own process group, without the Desktop terminal's
+// session variable, and with the message on stdin, never on argv. A fake
+// binary records all three; the real CLIs are never invoked.
 func TestAskGuardModelChildIsIsolated(t *testing.T) {
 	const marker = "AGENT-MESSAGE-ask-guard-7c2d"
-	dir := t.TempDir()
-	verdict, err := json.Marshal(map[string]any{"type": "result", "result": e1Verdict, "is_error": false})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "reply"), verdict, 0o600))
-	script := filepath.Join(dir, "fake-claude")
-	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+
-		"printf '%s\\n' \"$@\" > '"+dir+"/argv'\n"+
-		"env > '"+dir+"/env'\n"+
-		"ps -o pgid= -p $$ | tr -d ' ' > '"+dir+"/pgid'\n"+
-		"echo $$ > '"+dir+"/pid'\n"+
-		"cat > '"+dir+"/stdin'\n"+
-		"cat '"+dir+"/reply'\n"), 0o755))
-	t.Setenv(terminalSessionEnv, "42")
-	cfg, err := config.Load(fakeClaudeConfig(t, dir, script))
-	require.NoError(t, err)
+	for _, tc := range []struct {
+		provider string
+		reply    func(t *testing.T) []byte
+	}{
+		{"claude", func(t *testing.T) []byte {
+			b, err := json.Marshal(map[string]any{"type": "result", "result": e1Verdict, "is_error": false})
+			require.NoError(t, err)
+			return b
+		}},
+		{"codex", func(t *testing.T) []byte {
+			b, err := json.Marshal(map[string]any{"type": "item.completed",
+				"item": map[string]any{"type": "agent_message", "text": e1Verdict}})
+			require.NoError(t, err)
+			return b
+		}},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "reply"), append(tc.reply(t), '\n'), 0o600))
+			script := filepath.Join(dir, "fake-"+tc.provider)
+			require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+
+				"printf '%s\\n' \"$@\" > '"+dir+"/argv'\n"+
+				"env > '"+dir+"/env'\n"+
+				"ps -o pgid= -p $$ | tr -d ' ' > '"+dir+"/pgid'\n"+
+				"echo $$ > '"+dir+"/pid'\n"+
+				"cat > '"+dir+"/stdin'\n"+
+				"cat '"+dir+"/reply'\n"), 0o755))
+			t.Setenv(terminalSessionEnv, "42")
+			cfg, err := config.Load(fakeModelConfig(t, dir, tc.provider, script))
+			require.NoError(t, err)
 
-	v, err := classifyAskGuard(context.Background(), askGuardGeneratorFactory(cfg), marker)
+			v, err := classifyAskGuard(context.Background(), askGuardGeneratorFactory(cfg), marker)
 
-	require.NoError(t, err)
-	assert.Equal(t, askRequestChat, v.Request)
-	read := func(name string) string {
-		b, err := os.ReadFile(filepath.Join(dir, name))
-		require.NoError(t, err)
-		return strings.TrimSpace(string(b))
+			require.NoError(t, err)
+			assert.Equal(t, askRequestChat, v.Request)
+			read := func(name string) string {
+				b, err := os.ReadFile(filepath.Join(dir, name))
+				require.NoError(t, err)
+				return strings.TrimSpace(string(b))
+			}
+			assert.NotContains(t, read("argv"), marker, "the message never reaches argv")
+			assert.Contains(t, read("stdin"), marker, "the message travels on stdin")
+			assert.NotContains(t, read("env"), terminalSessionEnv+"=", "the child never gets the terminal session variable")
+			assert.Equal(t, read("pid"), read("pgid"), "the child leads its own process group")
+		})
 	}
-	assert.NotContains(t, read("argv"), marker, "the message never reaches argv")
-	assert.Contains(t, read("stdin"), marker, "the message travels on stdin")
-	assert.NotContains(t, read("env"), terminalSessionEnv+"=", "the child never gets the terminal session variable")
-	assert.Equal(t, read("pid"), read("pgid"), "the child leads its own process group")
-	assert.Contains(t, read("argv"), "--model", "a model call")
 }
 
 // E10a (PROJ-13): Claude Code's SIGTERM (its hook timeout), or a SIGHUP,
@@ -973,7 +990,9 @@ func cancelledModelCallLeavesNoProcess(t *testing.T, sig syscall.Signal) {
 		"sleep 60 &\n"+
 		"echo $! > '"+dir+"/child.tmp' && mv '"+dir+"/child.tmp' '"+dir+"/child'\n"+
 		"wait\n"), 0o755))
-	cfgPath := fakeClaudeConfig(t, dir, script)
+	cfgPath := fakeModelConfig(t, dir, "claude", script)
+	t.Setenv("HOME", t.TempDir())
+	unsetTerminalEnv(t) // the subprocess inherits this environment
 
 	p := startCLI(t, "--config", cfgPath, "workbench", "ask-guard", "--workbench", "1", "--stop")
 	_, err := io.WriteString(p.stdin, guardPayload(e1Message, false))
