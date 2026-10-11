@@ -16,16 +16,19 @@ import (
 
 // askGuardBusyTimeout bounds each of the ask guard's reads: Claude Code
 // waits for a PreToolUse hook, so a locked database lets the tool through
-// rather than stall the agent. The PreToolUse hook runs up to ~5 short reads
-// (the workbench, then the session row, its workbench, the presence), each
-// bounded by it; WAL readers rarely wait, so a run stays well under 2 s in
-// practice, though the strict worst case is the sum of the bounds.
+// rather than stall the agent.
 const askGuardBusyTimeout = 500 * time.Millisecond
 
 // askGuardInputWait bounds the wait for the hook input: Claude Code writes
-// it and closes stdin at once. With the busy timeout the run stays under
-// 2 s. A var for tests.
+// it and closes stdin at once. A var for tests.
 var askGuardInputWait = 500 * time.Millisecond
+
+// askGuardReadBudget bounds the PreToolUse hook's reads together, from the
+// database open on: the workbench read (askGuardBusyTimeout), then the
+// presence reads (the session row, its workbench, the hooks, the presence),
+// cut off at the budget's end and read as away. With askGuardInputWait the
+// hook finishes in under 2 s (PROJ-13).
+const askGuardReadBudget = 1400 * time.Millisecond
 
 // askGuardTool is the one tool the guard denies.
 const askGuardTool = "AskUserQuestion"
@@ -153,19 +156,43 @@ var askGuardToolReason = func(rawID, claudeID string) string {
 	if err != nil {
 		return ""
 	}
+	deadline := time.Now().Add(askGuardReadBudget)
 	database, err := db.OpenExisting(cfg.DBPath(), askGuardBusyTimeout)
 	if err != nil {
 		return ""
 	}
-	defer database.Close()
 	if _, err := database.GetWorkbench(id); err != nil {
+		_ = database.Close()
 		return ""
 	}
-	if askGuardOwnerHere(database, id, claudeID) {
+	if askGuardOwnerHereBy(database, id, claudeID, deadline) {
 		return askToolDenialReasonPresent
 	}
 	return askToolDenialReasonAway
 }
+
+// askGuardOwnerHereBy is askGuardOwnerPresence answered by deadline: reads
+// still running then read as away, and the database is closed once they
+// end (sql.DB.Close waits for a running query, so the hook does not).
+func askGuardOwnerHereBy(database *db.DB, workbenchID int64, claudeID string, deadline time.Time) bool {
+	presence := askGuardOwnerPresence
+	here := make(chan bool, 1)
+	go func() {
+		defer func() { _ = database.Close() }()
+		here <- presence(database, workbenchID, claudeID)
+	}()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case h := <-here:
+		return h
+	case <-timer.C:
+		return false
+	}
+}
+
+// askGuardOwnerPresence is askGuardOwnerHere; a var for tests.
+var askGuardOwnerPresence = askGuardOwnerHere
 
 // askGuardOwnerHere reports whether the owner is in the Desktop terminal
 // session this hook runs in, resolved as the Stop guard does (Part 4.6): a
