@@ -32,19 +32,13 @@ private struct RecordingCaptureView: View {
 
     var body: some View {
         let recorder = env.recorder
+        let chrome = RecorderChrome(phase: recorder.phase)
         VStack(spacing: 20) {
             HStack {
                 Button("Minimize") { recorder.minimize() }
                 Spacer()
-                if recorder.phase == .recording {
-                    Label("REC", systemImage: "circle.fill")
-                        .labelStyle(.titleAndIcon)
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.red)
-                } else {
-                    Text("PAUSED")
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.secondary)
+                if let chrome {
+                    markView(chrome)
                 }
             }
 
@@ -88,43 +82,62 @@ private struct RecordingCaptureView: View {
 
             Spacer(minLength: 0)
 
-            controls(recorder)
+            if let chrome {
+                controls(recorder, chrome)
+            }
         }
     }
 
-    private func controls(_ recorder: PhoneRecorderController) -> some View {
+    @ViewBuilder
+    private func markView(_ chrome: RecorderChrome) -> some View {
+        switch chrome.mark {
+        case .recording:
+            Label(chrome.markText, systemImage: "circle.fill")
+                .labelStyle(.titleAndIcon)
+                .font(.footnote.weight(.bold))
+                .foregroundStyle(chrome.markTone.color)
+        case .starting:
+            HStack(spacing: Spacing.compact) {
+                ProgressView().controlSize(.small)
+                Text(chrome.markText)
+            }
+            .font(.footnote.weight(.bold))
+            .foregroundStyle(chrome.markTone.color)
+        case .paused, .saving:
+            Text(chrome.markText)
+                .font(.footnote.weight(.bold))
+                .foregroundStyle(chrome.markTone.color)
+        }
+    }
+
+    private func controls(_ recorder: PhoneRecorderController, _ chrome: RecorderChrome) -> some View {
         HStack(alignment: .center, spacing: 36) {
-            let paused = recorder.phase != .recording
-            RoundButton(
-                systemImage: paused ? "play.fill" : "pause.fill",
-                label: paused ? "Resume" : "Pause",
-                size: 64
-            ) {
-                if paused {
+            RoundButton(systemImage: chrome.leftSystemImage, label: chrome.leftTitle, size: 64) {
+                if chrome.resumes {
                     recorder.resume()
                 } else {
                     recorder.pause()
                 }
             }
-            .disabled(!recorder.isCapturing)
+            .disabled(!chrome.isLeftEnabled)
 
             Button {
                 Task { await recorder.stop() }
             } label: {
                 ZStack {
                     Circle().fill(.red)
-                    RoundedRectangle(cornerRadius: 6).fill(.white).frame(width: 30, height: 30)
+                    RoundedRectangle(cornerRadius: Radius.chip).fill(.white).frame(width: 30, height: 30)
                 }
                 .frame(width: 88, height: 88)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Stop")
-            .disabled(!recorder.isCapturing)
+            .disabled(!chrome.areCaptureControlsEnabled)
 
             RoundButton(systemImage: "bookmark.fill", label: "Mark moment", size: 64) {
                 recorder.markMoment()
             }
-            .disabled(!recorder.isCapturing)
+            .disabled(!chrome.areCaptureControlsEnabled)
         }
         .padding(.bottom, 8)
     }

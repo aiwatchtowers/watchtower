@@ -51,6 +51,7 @@
 		539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43762D471529DE769FDD240A /* WorkbenchView.swift */; };
 		5499E788A16EA0CBDE2FD812 /* TargetStatusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D403CB3F9A7FA2CB7C28C34 /* TargetStatusStyle.swift */; };
 		5679863B13AEE6564739DBE9 /* ConflictPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30368F9308E6A9844739763B /* ConflictPrompt.swift */; };
+		61DAF868A96DA3A609732EA7 /* RecorderChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF8F8EF7B0FD80D2412EE8A /* RecorderChrome.swift */; };
 		62E010AEAA71C7111D15A4FD /* ScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0879174780AFEA40D8A455F2 /* ScanView.swift */; };
 		63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */; };
 		645E4C039AA033B8351C973D /* StartSessionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2EA3DB88312AF8F548C2C0 /* StartSessionSheet.swift */; };
@@ -227,6 +228,7 @@
 		97CC9289784B65CCD3F4654A /* SessionDetailViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDetailViewModel.swift; sourceTree = "<group>"; };
 		9830582A7A7341EA949DD972 /* NotifyContent.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NotifyContent.entitlements; sourceTree = "<group>"; };
 		9C8A95C95B93D99054219A43 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		9CF8F8EF7B0FD80D2412EE8A /* RecorderChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecorderChrome.swift; sourceTree = "<group>"; };
 		9DA83C1670B014AE0EEE9F63 /* ScreenshotHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotHost.swift; sourceTree = "<group>"; };
 		9DAFF0E5198E84EF086B49F0 /* RecapModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecapModel.swift; sourceTree = "<group>"; };
 		9DEBD9ECF17CEA4057EAF471 /* NotificationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationService.swift; sourceTree = "<group>"; };
@@ -387,6 +389,7 @@
 				5B2FF6957297A743DA4709CA /* AVAudioCaptureEngine.swift */,
 				02DCE8DDB1FC8393DD7264FF /* PhoneRecorderController.swift */,
 				CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */,
+				9CF8F8EF7B0FD80D2412EE8A /* RecorderChrome.swift */,
 				67BF6DB29267D73FA3E8AEA6 /* RecorderNotices.swift */,
 				86DE68E84DD6BBD3754E6B69 /* RecordingView.swift */,
 			);
@@ -780,6 +783,7 @@
 				2F47C10DBB0A5DCFEB6B5474 /* QuestionAskView.swift in Sources */,
 				F7B8E24A6579D709545DD78A /* RecapModel.swift in Sources */,
 				2845132B2A7150A900A1A0F2 /* RecapView.swift in Sources */,
+				61DAF868A96DA3A609732EA7 /* RecorderChrome.swift in Sources */,
 				7E1CEB00E2AEA4E1FADAFBA0 /* RecorderNotices.swift in Sources */,
 				6612C16C080C84633E82CA43 /* RecordingView.swift in Sources */,
 				63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */,
