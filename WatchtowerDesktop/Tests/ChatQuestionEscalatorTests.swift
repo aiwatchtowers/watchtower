@@ -324,6 +324,27 @@ final class ChatQuestionEscalatorTests: XCTestCase {
         XCTAssertEqual(filed, [7])
     }
 
+    /// Go clears the question in the filing transaction: a read landing
+    /// while the run is in flight drops the bookkeeping, and the filed ask
+    /// is still announced.
+    func testFiledIsAnnouncedAfterAReadDroppedTheQuestion() async {
+        let runner = ScriptedEscalationRunner(Answer.filed)
+        runner.hold()
+        let escalator = makeEscalator(runner)
+        now = asked.addingTimeInterval(600)
+        escalator.evaluate()
+        await eventually("the run starts") { runner.invocations.count == 1 }
+        var cleared = row()
+        cleared.chatQuestion = nil
+        cleared.chatQuestionAt = nil
+        rows = [cleared]
+        escalator.evaluate()
+        runner.release(0)
+        await settled(escalator)
+        XCTAssertEqual(filed, [7])
+        XCTAssertEqual(logs.filter { $0.contains("raised as ask #31") }.count, 1)
+    }
+
     /// The policy's `unreadableStamp` raises nothing and is logged once
     /// per question, though `decide` returns it on every tick.
     func testAnUnreadableStampIsLoggedOnce() async {

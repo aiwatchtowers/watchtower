@@ -168,13 +168,16 @@ final class ChatQuestionEscalator {
     ) {
         guard inFlight[session]?.token == token else { return }
         inFlight[session] = nil
-        guard var entry = entries[session], entry.at == at else { return }
-        switch result.verdict {
-        case let .filed(askID):
-            entry.stopped = true
+        // Go clears the question in the filing transaction, so a read may
+        // have dropped the entry already: a filed ask is announced whatever
+        // the bookkeeping says.
+        if case let .filed(askID) = result.verdict {
             log("[ChatEscalation] session \(session): question raised as ask #\(askID.map(String.init) ?? "?")")
             onFiled?(projectID)
-        case .gone:
+        }
+        guard var entry = entries[session], entry.at == at else { return }
+        switch result.verdict {
+        case .filed, .gone:
             entry.stopped = true
         case let .transient(message):
             logFailure(&entry, session: session, "escalation failed, retrying in a minute: \(message)")
