@@ -1757,7 +1757,33 @@ final class AppState {
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter,
             agentStates: agentStates, lineDelivery: lineDelivery
         )
-        wireCodeCenters(vm, dbPool: dbPool)
+        vm.codeFiles.codeIndex = codeIndexCenter
+        openQuicklyCenter.workbenches = vm
+        codeNavigationCenter.workbenches = vm
+        vm.codeFiles.navigation = codeNavigationCenter
+        codeUsagesCenter.useWorkspace(dbPool.path)
+        codeUsagesCenter.workbenches = vm
+        codeUsagesCenter.navigation = codeNavigationCenter
+        codeNavigationCenter.usages = codeUsagesCenter
+        vm.codeFiles.usages = codeUsagesCenter
+        codeQuestionCenter.workbenches = vm
+        codeQuestionCenter.navigation = codeNavigationCenter
+        codeQuestionCenter.codeIndex = codeIndexCenter
+        codeQuestionCenter.embeddedChats = embeddedChatCenter
+        codeQuestionCenter.dbPool = dbPool
+        codeQuestionCenter.dictation = dictationCenter
+        codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }
+        codeQuestionCenter.usages = codeUsagesCenter
+        openQuicklyCenter.questions = codeQuestionCenter
+        vm.codeFiles.questions = codeQuestionCenter
+        codeHandoffCenter.workbenches = vm
+        codeHandoffCenter.terminalCenter = terminalCenter
+        codeHandoffCenter.dbPool = dbPool
+        codeQuestionCenter.handoff = codeHandoffCenter
+        openQuicklyCenter.onHandToClaude = { [weak self] query, project in
+            guard let self else { return }
+            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
+        }
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)
             codeUsagesCenter?.workbenchRemoved($0)
@@ -1792,11 +1818,7 @@ final class AppState {
         sessionLineDelivery = lineDelivery
         sessionReportCenter?.stop()
         sessionReportCenter = reports
-        ownerPresenceCenter?.stop()
-        ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
-        chatQuestionEscalator?.stop()
-        chatQuestionEscalator = cliRunner.map { makeChatQuestionEscalator(runner: $0, workbenches: vm, agentStates: agentStates) }
-        wireChatQuestionEscalation(agentStates: agentStates)
+        replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()
@@ -1806,38 +1828,6 @@ final class AppState {
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
         initMobileHub(dbPool: dbPool)
-    }
-
-    /// The code viewer's centers on the workbenches view model (navigation,
-    /// usages, questions, hand-off), split out of `initWorkbenches`.
-    private func wireCodeCenters(_ vm: WorkbenchesViewModel, dbPool: DatabasePool) {
-        vm.codeFiles.codeIndex = codeIndexCenter
-        openQuicklyCenter.workbenches = vm
-        codeNavigationCenter.workbenches = vm
-        vm.codeFiles.navigation = codeNavigationCenter
-        codeUsagesCenter.useWorkspace(dbPool.path)
-        codeUsagesCenter.workbenches = vm
-        codeUsagesCenter.navigation = codeNavigationCenter
-        codeNavigationCenter.usages = codeUsagesCenter
-        vm.codeFiles.usages = codeUsagesCenter
-        codeQuestionCenter.workbenches = vm
-        codeQuestionCenter.navigation = codeNavigationCenter
-        codeQuestionCenter.codeIndex = codeIndexCenter
-        codeQuestionCenter.embeddedChats = embeddedChatCenter
-        codeQuestionCenter.dbPool = dbPool
-        codeQuestionCenter.dictation = dictationCenter
-        codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }
-        codeQuestionCenter.usages = codeUsagesCenter
-        openQuicklyCenter.questions = codeQuestionCenter
-        vm.codeFiles.questions = codeQuestionCenter
-        codeHandoffCenter.workbenches = vm
-        codeHandoffCenter.terminalCenter = terminalCenter
-        codeHandoffCenter.dbPool = dbPool
-        codeQuestionCenter.handoff = codeHandoffCenter
-        openQuicklyCenter.onHandToClaude = { [weak self] query, project in
-            guard let self else { return }
-            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
-        }
     }
 
     private static let mobileHubLogger = Logger(subsystem: Constants.bundleID, category: "MobileHub")
@@ -1893,6 +1883,21 @@ final class AppState {
         } else if let pool = mobileHubPool {
             initMobileHub(dbPool: pool)
         }
+    }
+
+    /// The presence center and the question escalator for a rebuilt
+    /// workbench state, the previous ones stopped.
+    private func replaceOwnerPresence(
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)?,
+        workbenches vm: WorkbenchesViewModel,
+        agentStates: SessionAgentStateCenter
+    ) {
+        ownerPresenceCenter?.stop()
+        ownerPresenceCenter = makeOwnerPresenceCenter(dbPool: dbPool, workbenches: vm)
+        chatQuestionEscalator?.stop()
+        chatQuestionEscalator = cliRunner.map { makeChatQuestionEscalator(runner: $0, workbenches: vm, agentStates: agentStates) }
+        wireChatQuestionEscalation(agentStates: agentStates)
     }
 
     /// The escalation is the one subscriber of both hooks: every resolve of

@@ -1,5 +1,6 @@
 import AppKit
 import GRDB
+import WatchtowerCore
 
 /// Settings → Mobile drives the toggle and reads the hub through these.
 extension AppState: MobileSettingsHost {}
@@ -20,32 +21,6 @@ extension AppState {
         } else {
             openMainWindow?()
         }
-    }
-
-    /// The last step of `buildMobileHub`: the link center (when the storage
-    /// has a share service), the relay processor that hands it the phones'
-    /// `device` records, and the hub it hangs on.
-    func assembleMobileHub(
-        storage: MobileHubStorage,
-        dbPool: DatabasePool,
-        dispatcher: MobileHubCommandDispatcher,
-        publisher: SlicePublisher,
-        companions: [any HubCompanion],
-        recordingUploads: RelayProcessor.RecordingUploads
-    ) throws -> MobileHubService {
-        let hostInfo = HubHostInfo.live(dbPool: dbPool, ownerUser: storage.ownerUser)
-        let linkCenter = MobileLinkCenter.forHub(storage: storage, macName: hostInfo.macName, publisher: publisher)
-        let processor = RelayProcessor(
-            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
-            hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
-            deviceRecords: linkCenter?.relayRoute
-        )
-        let hub = MobileHubService(
-            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: hostInfo, companions: companions
-        ) { [weak self] in self?.isMobileSyncEnabled ?? false }
-        linkCenter?.attach(to: hub)
-        return hub
     }
 
     /// B registers its slice sources and dispatcher handlers here.
@@ -138,5 +113,31 @@ extension AppState {
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
         )
+    }
+
+    /// The last step of `buildMobileHub`: the link center (when the storage
+    /// has a share service), the relay processor that hands it the phones'
+    /// `device` records, and the hub it hangs on.
+    func assembleMobileHub(
+        storage: MobileHubStorage,
+        dbPool: DatabasePool,
+        dispatcher: MobileHubCommandDispatcher,
+        publisher: SlicePublisher,
+        companions: [any HubCompanion],
+        recordingUploads: RelayProcessor.RecordingUploads
+    ) throws -> MobileHubService {
+        let hostInfo = HubHostInfo.live(dbPool: dbPool, ownerUser: storage.ownerUser)
+        let linkCenter = MobileLinkCenter.forHub(storage: storage, macName: hostInfo.macName, publisher: publisher)
+        let processor = RelayProcessor(
+            transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
+            hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
+            deviceRecords: linkCenter?.relayRoute
+        )
+        let hub = MobileHubService(
+            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
+            hostInfo: hostInfo, companions: companions
+        ) { [weak self] in self?.isMobileSyncEnabled ?? false }
+        linkCenter?.attach(to: hub)
+        return hub
     }
 }
