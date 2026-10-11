@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 
@@ -54,7 +53,10 @@ var workbenchEscalateCmd = &cobra.Command{
 		"error_code busy, open_cap, not_found, bad_args, schema or internal, nothing written. Always\n" +
 		"exits 0. The Desktop runs it; nothing is typed into the terminal.",
 	// No root schema/config pre-run: a broken config answers ok: false like
-	// any other failure; the DB is opened by the command.
+	// any other failure; the DB is opened by the command. Skipping
+	// ensureSchemaFormat is safe, as for session-state: the Desktop runs this
+	// only over a chat_question_at it read, which only a goose-era database
+	// past that legacy upgrade holds.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	Args:              cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
@@ -68,8 +70,8 @@ var workbenchEscalateCmd = &cobra.Command{
 }
 
 var (
-	workbenchEscalateFlagWorkbench string
-	workbenchEscalateFlagSession   string
+	workbenchEscalateFlagWorkbench int64
+	workbenchEscalateFlagSession   int64
 	workbenchEscalateFlagAt        string
 	workbenchEscalateFlagReason    string
 )
@@ -77,7 +79,7 @@ var (
 func init() {
 	c := workbenchEscalateCmd
 	addWorkbenchIDFlag(c, &workbenchEscalateFlagWorkbench, "workbench id")
-	c.Flags().StringVar(&workbenchEscalateFlagSession, "session", "", "terminal session id")
+	c.Flags().Int64Var(&workbenchEscalateFlagSession, "session", 0, "terminal session id")
 	c.Flags().StringVar(&workbenchEscalateFlagAt, "at", "", "the chat_question_at the Desktop read, verbatim")
 	c.Flags().StringVar(&workbenchEscalateFlagReason, "reason", "", "timeout, left or away")
 	// A flag cobra cannot parse is a bad_args envelope with exit 0, never a
@@ -103,9 +105,10 @@ func escalateFailure(code string, err error) escalateResult {
 }
 
 // writeEscalateResult prints res and never fails the command: the exit code
-// stays 0 whatever happened (an unwritable stdout has no reader anyway).
+// stays 0 whatever happened (an unwritable stdout has no reader anyway, so
+// its error is dropped on purpose).
 func writeEscalateResult(w io.Writer, res escalateResult) error {
-	_ = json.NewEncoder(w).Encode(res)
+	_ = writeJSON(w, res)
 	return nil
 }
 
@@ -125,11 +128,10 @@ func parseEscalateArgs(cmd *cobra.Command, positional []string) (escalateArgs, e
 	if len(positional) > 0 {
 		return a, fmt.Errorf("unexpected argument %q", briefClip(positional[0], 40))
 	}
-	var err error
-	if a.workbenchID, err = strconv.ParseInt(strings.TrimSpace(workbenchEscalateFlagWorkbench), 10, 64); err != nil || a.workbenchID <= 0 {
+	if a.workbenchID = workbenchEscalateFlagWorkbench; a.workbenchID <= 0 {
 		return a, errors.New("--workbench takes a positive id")
 	}
-	if a.sessionID, err = strconv.ParseInt(strings.TrimSpace(workbenchEscalateFlagSession), 10, 64); err != nil || a.sessionID <= 0 {
+	if a.sessionID = workbenchEscalateFlagSession; a.sessionID <= 0 {
 		return a, errors.New("--session takes a positive id")
 	}
 	a.at = workbenchEscalateFlagAt
