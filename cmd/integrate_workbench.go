@@ -291,9 +291,10 @@ type workbenchStatusJSON struct {
 	// PostToolUse, StopFailure, SubagentStop) is installed; false with one
 	// missing.
 	StateHooks bool `json:"state_hooks"`
-	// AskGuard: the Stop prompt hook sending a plain-text request to
-	// ask_owner; AskToolBlock: the PreToolUse hook denying AskUserQuestion.
-	// A workbench missing either is offered Repair.
+	// AskGuard: the Stop command hook sending a plain-text request to
+	// ask_owner — false for a folder holding only the old marker prompt
+	// hook; AskToolBlock: the PreToolUse hook denying AskUserQuestion. A
+	// workbench missing either is offered Repair.
 	AskGuard     bool `json:"ask_guard"`
 	AskToolBlock bool `json:"ask_tool_block"`
 }
