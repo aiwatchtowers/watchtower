@@ -44,15 +44,28 @@ package struct OwnerAskStack: Equatable, Sendable {
         return next.id == askID ? nil : next
     }
 
-    /// The ask a drawer opens on by itself (board #364): the oldest open ask
-    /// of the first session on screen that holds an ask the owner has not
-    /// closed a drawer on (`dismissed`) — "k of N" walks the rest. An ask
-    /// filed outside the app never opens by itself. nil when none.
+    /// The ask before `askID` (K, board #412): before the first it wraps,
+    /// and from an ask no longer waiting it is the newest. nil when no
+    /// other ask waits.
+    package func previous(before askID: Int64) -> OwnerAsk? {
+        guard let index = asks.firstIndex(where: { $0.id == askID }) else { return asks.last }
+        let previous = asks[(index + asks.count - 1) % asks.count]
+        return previous.id == askID ? nil : previous
+    }
+
+    /// The ask a drawer opens on by itself (board #364): the oldest open Full
+    /// ask of the first session on screen that holds a Full ask the owner
+    /// has not closed a drawer on (`dismissed`) — "k of N" walks the rest.
+    /// A Quick ask — one with a one-tap row, `OwnerAskQuickRow`, the banner's
+    /// own test — never opens by itself: it is answered with one tap in the
+    /// banner over its terminal (board #501). Neither does an ask filed
+    /// outside the app. nil when none.
     package func askToOpen(sessionsOnScreen: Set<Int64>, dismissed: Set<Int64>) -> OwnerAsk? {
-        groups.first { group in
-            guard let session = group.sessionID, sessionsOnScreen.contains(session) else { return false }
-            return group.asks.contains { !dismissed.contains($0.id) }
-        }?.asks.first
+        groups.lazy.compactMap { group -> OwnerAsk? in
+            guard let session = group.sessionID, sessionsOnScreen.contains(session) else { return nil }
+            let full = group.asks.filter { OwnerAskQuickRow(ask: $0) == nil }
+            return full.contains { !dismissed.contains($0.id) } ? full.first : nil
+        }.first
     }
 
     /// One group per session in the order of its oldest ask; the asks

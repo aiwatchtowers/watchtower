@@ -47,8 +47,14 @@ agents working in the background beat "finished", "waiting for you" and "stopped
   gone, and so is the state.
 - **An older Claude Code** that does not report background work: the session shows Stopped as today. Nothing
   gets worse.
-- **Long-lived teammates and background shells** (for example a `tail -f`) do not count as agents working —
-  only subagents and workflows do. Otherwise a session with a log tail would look busy forever.
+- **Background shells** (for example a `tail -f`) do not count as agents working — only subagents, workflows
+  and working teammates do. Otherwise a session with a log tail would look busy forever.
+- **Named teammates (agent teams)** count only while they work on something (amended 2026-10-11, board #543, your
+  choice in ask #167: "only while they work"). A teammate waiting for its next message does not count; when every
+  teammate waits and no subagent runs, the row turns Stopped as before. A teammate that starts working while the
+  row already shows Stopped shows up again when the main agent next ends a turn.
+- **The last agent finishing** brings the count to zero at once, even when two agents finish in the same moment
+  (before 2026-10-11 the count could stay at 1 until the main agent woke).
 - **A background agent asks for a permission:** Needs approval, as today.
 
 ## What you need to do once
@@ -87,3 +93,5 @@ Approved by the owner on 2026-10-10 (ask #139), including the PROJ-11 amendment 
 3. After the count drops to zero, keep "Agents working" up to 2 min while the main agent wakes.
 4. The live-count hook is added (Re-run Setup once).
 5. Older Claude Code: Stopped as today (default taken).
+6. (2026-10-11, ask #167) Teammates count only while they are in their own turn. One more hook entry is added,
+   so existing folders need Re-run Setup (or Repair) once more; until then teammates are not counted, as before.

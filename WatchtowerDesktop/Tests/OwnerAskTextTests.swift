@@ -16,7 +16,8 @@ final class OwnerAskTextTests: XCTestCase {
 
     private func ask(kind: String = "question", summary: String = "", payload: String = "{}") throws -> OwnerAsk {
         try OwnerAsk(row: Row([
-            "id": 1, "project_id": 1, "kind": kind, "title": "Ask", "status": "open", "summary": summary, "payload": payload
+            "id": 1, "project_id": 1, "level": "full", "origin": "agent", "kind": kind, "title": "Ask", "status": "open",
+            "summary": summary, "payload": payload
         ]))
     }
 

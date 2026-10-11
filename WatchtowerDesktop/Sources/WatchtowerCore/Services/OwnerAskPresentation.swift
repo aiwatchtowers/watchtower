@@ -27,24 +27,36 @@ package enum OwnerAskPresentation {
         }
     }
 
-    /// The buttons as the bar shows them for `draft`: a check's Send says
-    /// how many items are still unmarked (they go as skipped; it does not
-    /// block — spec 2026-10-03 Part 3).
-    package static func answerActions(for ask: OwnerAsk, draft: OwnerAskDraft) -> [AnswerAction] {
-        let actions = answerActions(for: ask.kind)
-        guard ask.kind == .check else { return actions }
+    /// "N not checked" over a check's Send: the items still unmarked
+    /// (they go as Didn't check; it does not block — spec 2026-10-03
+    /// Part 3, board #502); nil when there are none or `ask` is no check.
+    package static func notChecked(_ ask: OwnerAsk, draft: OwnerAskDraft) -> String? {
+        guard ask.kind == .check else { return nil }
         let unmarked = ask.payload.checklist.filter { draft.checks[$0.id] == nil }.count
-        guard unmarked > 0 else { return actions }
-        return actions.map { AnswerAction(label: "\($0.label) (\(unmarked) unmarked)", verdict: $0.verdict, isPrimary: $0.isPrimary) }
+        return unmarked > 0 ? "\(unmarked) not checked" : nil
     }
+
+    /// A check item's buttons (board #502): what the owner found, with its
+    /// SF Symbol; the stored values stay `ok`/`broken`/`skipped`.
+    package struct CheckStateOption: Sendable {
+        package let state: OwnerAskAnswer.CheckState
+        package let label: String
+        package let icon: String
+    }
+
+    package static let checkStates: [CheckStateOption] = [
+        CheckStateOption(state: .ok, label: "Works", icon: "checkmark"),
+        CheckStateOption(state: .broken, label: "Doesn't work", icon: "xmark"),
+        CheckStateOption(state: .skipped, label: "Didn't check", icon: "minus")
+    ]
 
     /// The answer button a key presses (owner ask #90): ⌘↩ the primary
     /// one — a review's Approve, a check's Send, a question's Answer — and
     /// ⌘⇧↩ (`shift`) a review's Request changes; nil when the key names no
     /// button of `ask`. Never inferred from the draft: whether it can
     /// answer is still `canAnswer`'s.
-    package static func keyAction(for ask: OwnerAsk, draft: OwnerAskDraft, shift: Bool) -> AnswerAction? {
-        answerActions(for: ask, draft: draft).first { $0.isPrimary != shift }
+    package static func keyAction(for ask: OwnerAsk, shift: Bool) -> AnswerAction? {
+        answerActions(for: ask.kind).first { $0.isPrimary != shift }
     }
 
     /// The key that presses `action`, for its button's help.
@@ -71,7 +83,7 @@ package enum OwnerAskPresentation {
         if let verdict = action.verdict { draft.verdict = verdict }
         guard let problem = draft.problem(for: ask) else { return nil }
         switch problem {
-        case .brokenWithoutNote: return "Add a note to each broken item"
+        case .brokenWithoutNote: return "Say what happened on each item that doesn't work"
         case .noteTooLong: return "Shorten the note to \(OwnerAskAnswerProblem.maxNoteRunes) characters"
         case .questionUnanswered, .emptyQuestionAnswer: return "Answer every question"
         case .verdictRequired: return "Choose Approve or Request changes"
@@ -79,17 +91,16 @@ package enum OwnerAskPresentation {
         }
     }
 
-    /// "1 ok · 1 broken · 1 unmarked": the marks of the payload's items,
-    /// empty counts left out.
+    /// "Works 1 · Doesn't work 1": the marks of the payload's items by
+    /// their button labels, empty counts left out; the unmarked ones are
+    /// `notChecked`'s.
     package static func checkSummary(_ items: [OwnerAskCheckItem], marks: [String: OwnerAskAnswer.CheckState]) -> String {
-        let states = items.map { marks[$0.id] }
-        let parts: [(Int, String)] = [
-            (states.filter { $0 == .ok }.count, "ok"),
-            (states.filter { $0 == .broken }.count, "broken"),
-            (states.filter { $0 == .skipped }.count, "skipped"),
-            (states.filter { $0 == nil }.count, "unmarked")
-        ]
-        return parts.filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+        let states = items.compactMap { marks[$0.id] }
+        let parts = checkStates.compactMap { option in
+            let count = states.filter { $0 == option.state }.count
+            return count > 0 ? "\(option.label) \(count)" : nil
+        }
+        return parts.joined(separator: " · ")
     }
 
     /// The drawer's place in the stack, "k of N".
@@ -131,6 +142,23 @@ package enum OwnerAskPresentation {
         case 1: "\(verb) 1 \(noun)"
         default: "\(verb) \(count) \(noun)s"
         }
+    }
+
+    /// The line under the title on an `ask #N` link's hover card (board
+    /// #500): "#12 · Check · Waiting for you".
+    package static func linkCardDetail(_ ask: OwnerAsk) -> String {
+        ["#\(ask.id)", askKindLabel(ask.kind), askStatusLine(ask, replacedBy: nil)].joined(separator: " · ")
+    }
+
+    /// The caption of an ask raised from the agent's terminal question
+    /// (spec 2026-10-10 Part 9.1): "From chat · 12 min", its age in whole
+    /// minutes and "<1 min" under a minute — a stamp ahead of `now` (another
+    /// clock) included. Nil when `askedAt` is no `agent_state_at` stamp, as
+    /// on an ask the agent filed.
+    package static func chatMark(askedAt: String, now: Date) -> String? {
+        guard let asked = SessionAgentStatus.parseStamp(askedAt) else { return nil }
+        let minutes = Int(now.timeIntervalSince(asked) / 60)
+        return minutes < 1 ? "From chat · <1 min" : "From chat · \(minutes) min"
     }
 
     package static func askKindIcon(_ kind: OwnerAskKind) -> String {

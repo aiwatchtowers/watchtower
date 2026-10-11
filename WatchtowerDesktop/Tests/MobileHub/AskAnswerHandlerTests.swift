@@ -304,7 +304,7 @@ final class AskAnswerHandlerTests: XCTestCase {
             (.queued, "queued"), (.copied, "copied"), (.noSession, "no_session")
         ]
         for (delivery, wire) in deliveries {
-            XCTAssertEqual(AskAnswerHandler.outcome(.stored(delivery)), .applied(["delivery": .string(wire)]))
+            XCTAssertEqual(AskAnswerHandler.outcome(.delivered(delivery)), .applied(["delivery": .string(wire)]))
         }
         XCTAssertEqual(AskAnswerHandler.outcome(.notOpen), .failed(.askNotOpen))
         XCTAssertEqual(AskAnswerHandler.outcome(.invalid("bad")), .failed(.invalidAnswer, message: "bad"))
@@ -463,7 +463,7 @@ final class AskAnswerHandlerTests: XCTestCase {
             answer: { _, _ in
                 enter.yield()
                 await withCheckedContinuation { parked = $0 }
-                return .stored(.submitted)
+                return .delivered(.submitted)
             }
         )
 
@@ -479,7 +479,7 @@ final class AskAnswerHandlerTests: XCTestCase {
         let handler = AskAnswerHandler(
             dbPool: pool, sidecar: sidecar, timeout: .seconds(30),
             sleep: { _ in try? await Task.sleep(for: .seconds(3600)) },
-            answer: { _, _ in .stored(.typed) }
+            answer: { _, _ in .delivered(.typed) }
         )
 
         let outcome = try await handler.handle(action(ask: ask, workbench: p))

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"watchtower/internal/asks"
 )
@@ -32,6 +33,10 @@ type OwnerAsk struct {
 	CreatedAt       string
 	AnsweredAt      string
 	DeliveredAt     string
+	Level           string // quick | full (asks.Level, stored); '' on insert = full
+	Origin          string // agent | chat; '' on insert = agent
+	ChatAskedAt     string // origin chat only: when it was asked in the terminal (agent_state_at format)
+	WithdrawnAt     string // when it was withdrawn (created_at's format); '' while not, or withdrawn before 00107
 }
 
 // OwnerAskFilter selects the asks of one workbench.
@@ -62,7 +67,7 @@ const (
 	ownerAskHead = `a.id, a.project_id, a.session_id, a.target_id, a.kind, a.title, a.summary, a.changes,
 	a.payload, a.doc_path, `
 	ownerAskTail = `, a.previous_ask_id, a.status, a.withdrawn_reason, a.answer, a.created_at,
-	a.answered_at, a.delivered_at`
+	a.answered_at, a.delivered_at, a.level, a.origin, a.chat_asked_at, a.withdrawn_at`
 	ownerAskCols = ownerAskHead + `a.doc_snapshot` + ownerAskTail
 	// ownerAskListCols leaves doc_snapshot out: it holds up to 2 MiB a row.
 	ownerAskListCols = ownerAskHead + `''` + ownerAskTail
@@ -76,7 +81,7 @@ func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 	var a OwnerAsk
 	if err := row.Scan(&a.ID, &a.WorkbenchID, &a.SessionID, &a.TargetID, &a.Kind, &a.Title, &a.Summary, &a.Changes,
 		&a.Payload, &a.DocPath, &a.DocSnapshot, &a.PreviousAskID, &a.Status, &a.WithdrawnReason, &a.Answer,
-		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt); err != nil {
+		&a.CreatedAt, &a.AnsweredAt, &a.DeliveredAt, &a.Level, &a.Origin, &a.ChatAskedAt, &a.WithdrawnAt); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -89,8 +94,20 @@ func scanOwnerAsk(row interface{ Scan(...any) error }) (*OwnerAsk, error) {
 // ask past asks.MaxOpenPerWorkbench open asks fails with ErrTooManyOpenAsks;
 // the caller's rollback then undoes the supersede too. The target, the
 // session and the previous ask (of the same kind) must belong to the
-// workbench.
+// workbench. An empty Level stores full and an empty Origin agent; an ask of
+// origin chat needs ChatAskedAt and any other must leave it empty (refused
+// otherwise, before anything is written).
 func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err error) {
+	if a.Level == "" {
+		a.Level = asks.LevelFull
+	}
+	if a.Origin == "" {
+		a.Origin = asks.OriginAgent
+	}
+	if (a.Origin == asks.OriginChat) != (a.ChatAskedAt != "") {
+		return 0, 0, fmt.Errorf("chat_asked_at: set exactly when origin is %s (origin %q, chat_asked_at %q)",
+			asks.OriginChat, a.Origin, a.ChatAskedAt)
+	}
 	if a.TargetID.Valid {
 		if err := checkTargetInWorkbench(tx, a.WorkbenchID, a.TargetID.Int64); err != nil {
 			return 0, 0, err
@@ -118,10 +135,11 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 		a.Payload = "{}"
 	}
 	res, err := tx.Exec(`INSERT INTO owner_asks
-		(project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path, doc_snapshot, previous_ask_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(project_id, session_id, target_id, kind, title, summary, changes, payload, doc_path, doc_snapshot, previous_ask_id,
+		 level, origin, chat_asked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.WorkbenchID, a.SessionID, a.TargetID, a.Kind, a.Title, a.Summary, a.Changes, a.Payload,
-		a.DocPath, a.DocSnapshot, a.PreviousAskID)
+		a.DocPath, a.DocSnapshot, a.PreviousAskID, a.Level, a.Origin, a.ChatAskedAt)
 	if err != nil {
 		return 0, 0, fmt.Errorf("inserting ask: %w", err)
 	}
@@ -160,11 +178,54 @@ func supersedeOwnerAsk(tx *sql.Tx, a OwnerAsk) (int64, error) {
 	if prev.Status != "open" {
 		return 0, nil
 	}
-	if _, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?
+	if _, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
 		WHERE id = ? AND status = 'open'`, WithdrawnSuperseded, prev.ID); err != nil {
 		return 0, fmt.Errorf("superseding ask %d: %w", prev.ID, err)
 	}
 	return prev.ID, nil
+}
+
+// askCreatedAtLayout is the form of owner_asks.created_at and withdrawn_at
+// (askNowSQL in SQL).
+const askCreatedAtLayout = "2006-01-02T15:04:05Z"
+
+// askNowSQL is the current time in askCreatedAtLayout, as created_at's default.
+const askNowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ','now')`
+
+// LastWithdrawnByTitle returns workbench projectID's ask of kind the agent
+// withdrew (withdrawn_reason agent) most recently, at or after since, whose
+// asks.NormalizeTitle equals normTitle; nil when there is none. Another kind
+// never matches: a revision must keep the kind. An ask
+// withdrawn before migration 00107 has no withdrawn_at and never matches.
+// DocSnapshot is left empty.
+func (db *DB) LastWithdrawnByTitle(projectID int64, kind, normTitle string, since time.Time) (*OwnerAsk, error) {
+	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
+		WHERE a.project_id = ? AND a.kind = ? AND a.status = 'withdrawn' AND a.withdrawn_reason = ? AND a.withdrawn_at >= ?
+		ORDER BY a.withdrawn_at DESC, a.id DESC`, projectID, kind, WithdrawnByAgent, since.UTC().Format(askCreatedAtLayout))
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		if asks.NormalizeTitle(list[i].Title) == normTitle {
+			return &list[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// RecentOpenQuestionAsk returns session sessionID's newest open question ask
+// filed at or after since, other than excludeID (0 = none: the ask the new
+// one supersedes), for ask_owner's series hint; nil when there is none. Call
+// it before filing the new ask, which would otherwise find itself.
+// DocSnapshot is left empty.
+func (db *DB) RecentOpenQuestionAsk(sessionID int64, since time.Time, excludeID int64) (*OwnerAsk, error) {
+	list, err := db.queryOwnerAsks(`SELECT `+ownerAskListCols+` FROM owner_asks a
+		WHERE a.session_id = ? AND a.status = 'open' AND a.kind = 'question' AND a.created_at >= ? AND a.id != ?
+		ORDER BY a.id DESC LIMIT 1`, sessionID, since.UTC().Format(askCreatedAtLayout), excludeID)
+	if err != nil || len(list) == 0 {
+		return nil, err
+	}
+	return &list[0], nil
 }
 
 // GetOwnerAsk returns ask id of workbench projectID, snapshot included;
@@ -235,7 +296,7 @@ func (db *DB) WithdrawOwnerAsk(projectID, id int64, reason string) error {
 		return fmt.Errorf("invalid withdrawn reason %q", reason)
 	}
 	return db.WithTx(func(tx *sql.Tx) error {
-		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?
+		res, err := tx.Exec(`UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = ?, withdrawn_at = `+askNowSQL+`
 			WHERE id = ? AND project_id = ? AND status = 'open'`, reason, id, projectID)
 		if err != nil {
 			return fmt.Errorf("withdrawing ask %d: %w", id, err)

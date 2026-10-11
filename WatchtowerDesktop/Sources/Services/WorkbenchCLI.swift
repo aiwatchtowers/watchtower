@@ -236,9 +236,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// installed before it existed lacks it until a Repair.
     let stopHook: Bool
     /// The session-state hooks — the core four (`UserPromptSubmit`,
-    /// `Notification`, `PostToolUse`, `StopFailure`, board #312) and
-    /// `SubagentStop` (board #411): all five present. A workbench installed
-    /// before any of them lacks them until a Repair.
+    /// `Notification`, `PostToolUse`, `StopFailure`, board #312),
+    /// `SubagentStop` (board #411) and `SubagentStart` (board #543): all six
+    /// present. A workbench installed before any of them lacks them until a
+    /// Repair.
     let stateHooks: Bool
     /// The ask guard (owner asks, spec 2026-10-03 §6): the Stop prompt hook
     /// sending a plain-text request to `ask_owner`, and the PreToolUse hook
@@ -492,6 +493,32 @@ struct WorkbenchCLI {
     func gitCreateBranch(projectID: Int64, name: String) async throws -> WorkbenchGitSwitchResult {
         let data = try await runner.run(args: ["workbench", "git", "create", "--workbench", String(projectID), "--name", name, "--json"])
         return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
+    }
+
+    /// Raises session `sessionID`'s recorded Chat question into an owner ask
+    /// (owner asks v2, Part 5.3). `at` is the `chat_question_at` the Desktop
+    /// read, passed back verbatim: Go files only while it is still the stored
+    /// question. Go always exits 0 with one envelope; a run that does not
+    /// comes back as the Desktop's own envelope, never thrown: a binary that
+    /// could not be started as `launchFailure` (retried), a non-zero exit,
+    /// unparsable stdout or a cancel as `failure` (not retried).
+    func escalateQuestion(
+        projectID: Int64,
+        sessionID: Int64,
+        at: String,
+        reason: ChatQuestionEscalationPolicy.Reason
+    ) async -> ChatQuestionEscalationResult {
+        let args = ["workbench", "escalate-question", "--workbench", String(projectID),
+                    "--session", String(sessionID), "--at", at, "--reason", reason.rawValue]
+        do {
+            let data = try await runner.run(args: args)
+            return try JSONDecoder().decode(ChatQuestionEscalationResult.self, from: data)
+        } catch CLIRunnerError.launchFailed(let underlying) {
+            return .launchFailure(underlying.localizedDescription)
+        } catch {
+            // A DecodingError's localizedDescription drops the key path.
+            return .failure(error is DecodingError ? String(describing: error) : error.localizedDescription)
+        }
     }
 
     /// Removes what was installed in the folder, then the workbench and every

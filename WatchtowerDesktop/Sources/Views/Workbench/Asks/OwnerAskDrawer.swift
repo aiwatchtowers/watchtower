@@ -111,12 +111,18 @@ struct OwnerAskDrawerHost<Workspace: View>: View {
 /// card, then the review document or the checklist, and a note — and the
 /// answer bar. A closed ask (answered, withdrawn) shows the same read-only:
 /// its answer, or the draft kept when the agent withdrew it under the owner.
+/// With no field focused and the drawer active — clicked, or opened from
+/// the keyboard — its bare keys work (`OwnerAskDrawerKeys`, board #412):
+/// the keyboard cursor outlines the question, step or note it is on.
 struct OwnerAskDrawer: View {
     let vm: WorkbenchesViewModel
     let ask: OwnerAsk
     @State private var scrollTarget: DocumentScrollTarget?
     @State private var showingDiff = false
     @State private var topHeight: CGFloat = 0
+    @State private var cursor: Int?
+    @State private var fieldFocus: OwnerAskFieldFocus?
+    @State private var commentStep: OwnerAskCommentStep?
 
     private var asks: OwnerAsksViewModel { vm.asks }
 
@@ -124,7 +130,36 @@ struct OwnerAskDrawer: View {
     /// being written (`OwnerAsksViewModel.editDraft`).
     private var editable: Bool { ask.isOpen && !asks.isAnswering(ask.id) }
 
+    private var keys: OwnerAskDrawerKeys {
+        OwnerAskDrawerKeys(vm: vm, ask: ask, editable: editable, cursor: $cursor, fieldFocus: $fieldFocus, commentStep: $commentStep)
+    }
+
     var body: some View {
+        let keys = keys
+        ScrollViewReader { proxy in
+            content
+                .background(OwnerAskKeyCatcher(
+                    onPress: { keys.press($0) },
+                    onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
+                    onKey: pressAnswerKey
+                ))
+                .onChange(of: cursor) { _, _ in
+                    if let stop = keys.shownStop { withAnimation { proxy.scrollTo(stop) } }
+                }
+        }
+        .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
+        .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
+        // "k of N ›" swaps the ask under the same drawer.
+        .onChange(of: ask.id) { _, _ in
+            scrollTarget = nil
+            showingDiff = false
+            cursor = nil
+            fieldFocus = nil
+            commentStep = nil
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             OwnerAskDrawerHeader(vm: vm, ask: ask)
             Divider()
@@ -149,14 +184,6 @@ struct OwnerAskDrawer: View {
             )
         }
         .background(Color(nsColor: .textBackgroundColor))
-        .background(OwnerAskKeyCatcher(onKey: pressAnswerKey))
-        .modifier(OwnerAskLinks(vm: vm, projectID: ask.projectID))
-        .sheet(isPresented: $showingDiff) { OwnerAskDiffSheet(asks: asks, ask: ask) }
-        // "k of N ›" swaps the ask under the same drawer.
-        .onChange(of: ask.id) { _, _ in
-            scrollTarget = nil
-            showingDiff = false
-        }
     }
 
     /// The notice, the agent's header card and the question card.
@@ -177,7 +204,10 @@ struct OwnerAskDrawer: View {
                 onAnswer: nil,
                 draftPicks: picksBinding,
                 editable: editable,
-                onKey: pressAnswerKey
+                onKey: pressAnswerKey,
+                keyboardStop: keys.shownStop,
+                fieldFocus: fieldFocus,
+                onLeaveField: leaveField
             )
         }
     }
@@ -203,7 +233,7 @@ struct OwnerAskDrawer: View {
                     .frame(height: min(topHeight, geometry.size.height * 0.4))
                     Divider()
                 }
-                OwnerAskReviewBody(asks: asks, ask: ask, editable: editable, scrollTarget: scrollTarget)
+                OwnerAskReviewBody(asks: asks, ask: ask, editable: editable, scrollTarget: scrollTarget, commentStep: commentStep)
                 if editable || !note.isEmpty {
                     Divider()
                     noteView.padding(.horizontal, 14).padding(.vertical, 8)
@@ -217,6 +247,13 @@ struct OwnerAskDrawer: View {
     /// nothing while it is off.
     private func pressAnswerKey(_ shift: Bool) {
         asks.pressKey(on: ask, shift: shift)
+    }
+
+    /// Esc in a drawer field: the keyboard leaves it, back to the drawer's
+    /// keys (board #412).
+    private func leaveField() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        asks.setDrawerKeysActive(true, projectID: ask.projectID)
     }
 
     /// A review's focus item jumps to its place once the snapshot is
@@ -253,7 +290,10 @@ struct OwnerAskDrawer: View {
                 editable: editable,
                 mark: { id, state in asks.editDraft(ask.id) { $0.checks[id] = state } },
                 setNote: { id, text in asks.editDraft(ask.id) { $0.checkNotes[id] = text } },
-                onKey: pressAnswerKey
+                onKey: pressAnswerKey,
+                keyboardStop: keys.shownStop,
+                fieldFocus: fieldFocus,
+                onLeaveField: leaveField
             )
         case .question: EmptyView()
         }
@@ -268,8 +308,13 @@ struct OwnerAskDrawer: View {
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
                 onSubmit: { pressAnswerKey(false) },
-                onShiftSubmit: { pressAnswerKey(true) }
+                onShiftSubmit: { pressAnswerKey(true) },
+                onCancel: leaveField,
+                focusRequest: OwnerAskFieldFocus.request(fieldFocus, for: .note)
             )
+            .ownerAskKeyCursor(keys.shownStop == .note)
+            .help("Tab to the note, Return to write in it, Esc to leave it")
+            .id(OwnerAskKeyStop.note)
         } else if !note.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Note").font(.caption.weight(.semibold)).foregroundStyle(.secondary)

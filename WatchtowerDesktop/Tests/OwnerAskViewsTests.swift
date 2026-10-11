@@ -96,6 +96,70 @@ final class OwnerAskViewsTests: XCTestCase {
         XCTAssertEqual(started, 0, "a click never starts a stopped session's agent")
     }
 
+    /// Board #500: an `ask #N` clicked in a terminal opens exactly that
+    /// ask's drawer, with its session on screen; a number of another
+    /// workbench or of no ask is no link — nothing opens, nothing is
+    /// reported.
+    func testATerminalAskLinkOpensThatAskOfItsOwnWorkbenchOnly() async throws {
+        let s = try await seed()
+        let other = try await pool.write { d in
+            let p = try TestDatabase.insertWorkbench(d, folder: "/tmp/other")
+            return try TestDatabase.insertOwnerAsk(d, projectID: p, payload: Self.questions)
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project
+        await vm.asks.load(projectID: s.project)
+
+        let foreign = await vm.openTerminalAskLink(other, workbenchID: s.project)
+        let missing = await vm.openTerminalAskLink(other + 100, workbenchID: s.project)
+        XCTAssertFalse(foreign, "an ask of another workbench is no link")
+        XCTAssertFalse(missing, "a number naming no ask is no link")
+        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+        XCTAssertNil(vm.asks.loadErrors[s.project], "no link reports nothing")
+        let foreignAsk = try await vm.asks.linkedAsk(askID: other, projectID: s.project)
+        XCTAssertNil(foreignAsk)
+
+        let opened = await vm.openTerminalAskLink(s.secondAsk, workbenchID: s.project)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.secondAsk)
+        XCTAssertTrue(shows(vm, session: s.second, project: s.project), "the ask's session goes on screen")
+        XCTAssertEqual(started, 0, "a click never starts a stopped session's agent")
+    }
+
+    /// A link whose read fails is no "no such ask": the click goes through
+    /// `showAsk`, which reports the failure in the asks' load error.
+    func testATerminalAskLinkWhoseReadFailsReportsIt() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project
+        await vm.asks.load(projectID: s.project)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE owner_asks RENAME TO owner_asks_gone") }
+
+        let opened = await vm.openTerminalAskLink(s.secondAsk + 100, workbenchID: s.project)
+
+        XCTAssertFalse(opened)
+        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+        XCTAssertTrue(vm.asks.loadErrors[s.project]?.hasPrefix("Could not load the ask") == true,
+                      vm.asks.loadErrors[s.project] ?? "no error")
+    }
+
+    /// A closed ask is still a link: its drawer opens read-only.
+    func testATerminalAskLinkToAClosedAskOpensIt() async throws {
+        let s = try await seed()
+        let closed = try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: s.project, payload: Self.questions, status: "withdrawn",
+                                            withdrawnReason: "agent")
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project
+        await vm.asks.load(projectID: s.project)
+        let linked = try await vm.asks.linkedAsk(askID: closed, projectID: s.project)
+        XCTAssertEqual(linked?.status, .withdrawn)
+        let opened = await vm.openTerminalAskLink(closed, workbenchID: s.project)
+        XCTAssertTrue(opened)
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], closed)
+    }
+
     func testNextMovesToTheNextAskAndSwitchesSession() async throws {
         let s = try await seed()
         let vm = makeVM()

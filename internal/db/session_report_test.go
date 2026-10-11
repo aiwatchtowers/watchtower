@@ -429,3 +429,17 @@ func TestClearTerminalAgentState_ClearsTheError(t *testing.T) {
 		assert.Empty(t, agentError)
 	}
 }
+
+func TestSessionLinkedTargetsTxReadsInsideTheTransaction(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	sid := newTestSession(t, d, pid)
+	tid := insertWorkbenchTargetRow(t, d, pid, "board item")
+	require.NoError(t, d.LinkSessionTarget(sid, tid))
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
+		ids, err := d.SessionLinkedTargetsTx(tx, sid)
+		require.NoError(t, err)
+		assert.Equal(t, []int64{tid}, ids)
+		return nil
+	}))
+}

@@ -171,8 +171,8 @@ func TestProjectSources_AddIsIdempotentAndRemoveIsScoped(t *testing.T) {
 
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
 // (docs/inventory/workbench.md): deleting a project leaves no project, target,
-// source, comment, ask, session link or PR cache row of it, and touches no
-// other project.
+// source, comment, ask, session link or PR cache row of it, leaves the owner's
+// presence on one of its sessions in no session, and touches no other project.
 // Task 12 adds the folder half.
 func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	d := openTestDB(t)
@@ -205,6 +205,7 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	markAskAnswered(t, d, answered)
 	keepAsk := mustInsertAsk(t, d, questionAsk(keep, "Theirs"))
 	require.NoError(t, d.LinkSessionTarget(sid, parent))
+	setPresence(t, d, sid, "2026-10-10T12:00:00.000Z")
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: keep, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 	// The folder files' search index entries (PROJ-08), this project's and another's.
@@ -271,6 +272,9 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	var standalone int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
 	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")
+	var presence sql.NullInt64
+	require.NoError(t, d.QueryRow(`SELECT session_id FROM owner_presence WHERE id = 1`).Scan(&presence))
+	assert.False(t, presence.Valid, "the presence row is left in no session")
 	for _, conv := range []int64{question, noFile} {
 		for _, q := range []string{
 			`SELECT COUNT(*) FROM chat_conversations WHERE id = ?`,

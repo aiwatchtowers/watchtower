@@ -197,7 +197,7 @@ func TestAllTablesExist(t *testing.T) {
 		"chat_artifact_comments",
 		"projects", "project_sources", "project_comments", "project_target_images",
 		"terminal_sessions", "target_status_history", "owner_asks",
-		"terminal_session_targets", "workbench_pr_states",
+		"terminal_session_targets", "workbench_pr_states", "owner_presence",
 	}
 
 	for _, table := range expectedTables {
@@ -1191,14 +1191,6 @@ func tableColumns(t *testing.T, database *DB, table string) map[string]bool {
 	}
 	require.NoError(t, rows.Err())
 	return cols
-}
-
-// requireCol asserts that a column exists in the column set returned by tableColumns.
-func requireCol(t *testing.T, cols map[string]bool, col string) {
-	t.Helper()
-	if !cols[col] {
-		t.Errorf("expected column %q to exist", col)
-	}
 }
 
 // tableExists checks whether a table exists in the database.

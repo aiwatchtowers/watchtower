@@ -2264,6 +2264,9 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_tool_run    INTEGER NOT NULL DEFAULT 0, -- 1 = the stored state came from a main-thread PostToolUse (Go only)
     agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0), -- in-flight background subagents at the last Stop of this run, lowered by later reports; NULL = none / unknown; meaningful only under agent_state = 'waiting' (hooks only)
     agent_background_at TEXT, -- last report about those subagents (the Stop, a subagent's tool result, a SubagentStop), agent_state_at format; NULL when agent_background is NULL
+    chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (Go only)
+    chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
+    agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (Go only)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );
@@ -2294,11 +2297,24 @@ CREATE TABLE IF NOT EXISTS owner_asks (
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     answered_at      TEXT NOT NULL DEFAULT '',
     delivered_at     TEXT NOT NULL DEFAULT '',
+    level            TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('quick','full')),    -- Go's classification (00107): quick = banner, full = drawer
+    origin           TEXT NOT NULL DEFAULT 'agent' CHECK (origin IN ('agent','chat')),  -- chat = a terminal question Watchtower raised after it waited
+    chat_asked_at    TEXT NOT NULL DEFAULT '',   -- origin chat only: when it was asked in the terminal; '' otherwise
+    withdrawn_at     TEXT NOT NULL DEFAULT '',   -- when it was withdrawn (00107); '' while not, and for asks withdrawn before 00107
     CHECK ((kind = 'review') = (doc_path != '')),
     CHECK ((status IN ('answered','delivered')) = (answer != ''))
 );
 CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+
+-- The one session the owner is looking at (00107): a singleton written by the
+-- Desktop only (enter + 30 s heartbeat; NULL on leave, lock, sleep, quit),
+-- read by Go. A seen_at older than 90 s reads as absent.
+CREATE TABLE IF NOT EXISTS owner_presence (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL, -- NULL = in no session
+    seen_at    TEXT NOT NULL DEFAULT '' -- last write, agent_state_at format
+);
 
 -- Which targets a workbench session's agent wrote to (00101): one row per
 -- (session, target), upserted by the workbench write tools. Go writes it.

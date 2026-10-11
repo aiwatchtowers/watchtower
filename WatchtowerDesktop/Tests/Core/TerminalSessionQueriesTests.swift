@@ -238,4 +238,24 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertNil(rows[1].agentBackgroundAt)
         }
     }
+
+    func testFetchAgentStatesReadsTheChatQuestionRaw() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let asking = try TerminalSessionQueries.create(db, claude(project, "Asking"))
+            let quiet = try TerminalSessionQueries.create(db, claude(project, "Quiet"))
+            let question = #"{"question":"Red or orange?","options":[{"label":"Red","recommended":true}]}"#
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET chat_question = ?, chat_question_at = ? WHERE id = ?",
+                arguments: [question, "2026-10-10T12:34:56.789Z", asking.id]
+            )
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            XCTAssertEqual(rows.map(\.id), [asking.id, quiet.id])
+            XCTAssertEqual(rows[0].chatQuestion, question)
+            XCTAssertEqual(rows[0].chatQuestionAt, "2026-10-10T12:34:56.789Z", "the stamp is kept as stored")
+            XCTAssertNil(rows[1].chatQuestion, "no question reads as nil")
+            XCTAssertNil(rows[1].chatQuestionAt)
+        }
+    }
 }

@@ -100,15 +100,28 @@ final class HandoffTextTests: XCTestCase {
     }
 
     /// A link's text is kept only when it cites the line the link opens —
-    /// a range or a column after it stays as written; any other line
-    /// (`a.go:99`, `a.go:123` for line 12) gives way to the link's own.
+    /// a range after it stays as written; any other line (`a.go:99`,
+    /// `a.go:123` for line 12) gives way to the link's own.
     func testALinksTextIsKeptOnlyForTheLineItOpens() throws {
-        let answer = "[a.go:99](a.go#L12), [a.go:123](a.go#L12), [a.go:12-14](a.go#L12), [a.go:12:5](a.go#L12)"
+        let answer = "[a.go:99](a.go#L12), [a.go:123](a.go#L12), [a.go:12-14](a.go#L12)"
         let text = try XCTUnwrap(HandoffText.conversation(
             origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),
             messages: [message("user", "q"), message("assistant", answer)]
         ))
-        XCTAssertTrue(text.hasSuffix("References: a.go:12, a.go:12-14, a.go:12:5"), text)
+        XCTAssertTrue(text.hasSuffix("References: a.go:12, a.go:12-14"), text)
+    }
+
+    /// A link's text keeps its column only when the link opens that column:
+    /// no column in the text or the same one stays as written, a different
+    /// one (or one the link does not open at all) gives way to the link's
+    /// own form (#416).
+    func testALinksTextKeepsOnlyTheColumnItOpens() throws {
+        let answer = "[a.go:12:5](a.go:12:5), [b.go:12](b.go:12:5), [c.go:12:99](c.go:12:5), [d.go:12:7](d.go#L12)"
+        let text = try XCTUnwrap(HandoffText.conversation(
+            origin: CodeQuestionOrigin(path: "", line: 0, selection: nil),
+            messages: [message("user", "q"), message("assistant", answer)]
+        ))
+        XCTAssertTrue(text.hasSuffix("References: a.go:12:5, b.go:12, c.go:12:5, d.go:12"), text)
     }
 
     func testQuestionWithNoFileOpen() throws {

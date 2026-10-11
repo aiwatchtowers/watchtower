@@ -79,6 +79,7 @@ struct OwnerAskMarginComments: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+                .help("N / P: next / previous comment, with no field focused")
             if let draftID = comment.draftID {
                 // Labelled: which closure parameter it is reads at a glance.
                 // swiftlint:disable trailing_closure

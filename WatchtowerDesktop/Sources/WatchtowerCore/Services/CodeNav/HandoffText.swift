@@ -110,9 +110,10 @@ package enum HandoffText {
     /// The `path:line` citations of an answer, in order, by
     /// `CodeLineLinks`' own rules (fenced code and URLs are not citations).
     /// Each is read off the link's URL; a citation's own text is kept when it
-    /// names that file at that line, so a range or a column stays as
-    /// written, while a link's text ("the plan", a folder-less name, another
-    /// line of the file) never stands in for it.
+    /// names that file at that line and no column other than the one the
+    /// link opens, so a range or a matching column stays as written, while a
+    /// link's text ("the plan", a folder-less name, another line or column
+    /// of the file) never stands in for it.
     private static func citations(in answer: String) -> [String] {
         let linked = CodeLineLinks.linkified(answer) as NSString
         let range = NSRange(location: 0, length: linked.length)
@@ -121,8 +122,12 @@ package enum HandoffText {
                   let target = CodeLineLinks.target(from: url), let line = target.line else { return nil }
             let text = linked.substring(with: match.range(at: 1))
             let cited = "\(target.path):\(line)"
-            if text.hasPrefix(cited), text.dropFirst(cited.count).first?.isNumber != true { return text }
-            return "\(target.path):\(line)" + (target.col.map { ":\($0)" } ?? "")
+            let opened = cited + (target.col.map { ":\($0)" } ?? "")
+            guard text.hasPrefix(cited) else { return opened }
+            let rest = text.dropFirst(cited.count)
+            guard rest.first?.isNumber != true else { return opened }
+            let col = rest.first == ":" ? Int(rest.dropFirst().prefix(while: \.isNumber)) : nil
+            return col == nil || col == target.col ? text : opened
         }
     }
 }

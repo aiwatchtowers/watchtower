@@ -216,7 +216,7 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 		devpack.WorkbenchHookCommand("/usr/local/bin/watchtower", p.ID),
 		devpack.WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", p.ID),
 		devpack.WorkbenchAskGuardHookCommand("/usr/local/bin/watchtower", p.ID),
-		"[watchtower-workbench ask-guard 7]",
+		devpack.WorkbenchAskGuardStopHookCommand("/usr/local/bin/watchtower", p.ID),
 	}
 	for _, c := range ours {
 		require.Contains(t, string(installed), c)
@@ -252,27 +252,43 @@ func TestStopHookReason_CapsAndClips(t *testing.T) {
 	}
 }
 
-func TestBackgroundSubagentsCountsSubagentsAndWorkflows(t *testing.T) {
+// The count of spec §11.3 (boards #411, #543): subagents and workflows that
+// are not closed turns, plus open unlisted turns up to the listed teammates.
+func TestBackgroundAgentsCountTable(t *testing.T) {
 	mixed := `[{"id":"a1","type":"subagent"},{"id":"a2","type":"subagent"},{"id":"w1","type":"workflow"},
 		{"id":"s1","type":"shell"},{"id":"m1","type":"monitor"},{"id":"t1","type":"teammate"},
 		{"id":"c1","type":"cloud session"},{"id":"p1","type":"MCP task"},{"id":"u1","type":"something new"}]`
+	const t1, t2, t3 = "2026-10-11T10:00:00.000Z", "2026-10-11T10:00:01.000Z", "2026-10-11T10:00:02.000Z"
+	open := db.AgentTurn{Start: t2, Stop: t1}
+	closed := db.AgentTurn{Start: t1, Stop: t2}
+	teammates := `[{"id":"tm1","type":"teammate"},{"id":"tm2","type":"teammate"},{"id":"sh","type":"shell"}]`
 	for _, tc := range []struct {
-		name, field, except string
-		want                int64
-		wantOK              bool
+		name, field string
+		turns       db.AgentTurns
+		want        int64
+		wantOK      bool
 	}{
-		{"subagents and workflows only", mixed, "", 3, true},
-		{"except drops its id", mixed, "a1", 2, true},
-		{"except drops a workflow too", mixed, "w1", 2, true},
-		{"except naming no entry", mixed, "zz", 3, true},
-		{"empty list", `[]`, "", 0, true},
-		{"absent", "", "", 0, false},
-		{"null", `null`, "", 0, false},
-		{"object instead of array", `{"x":1}`, "", 0, false},
-		{"string instead of array", `"subagent"`, "", 0, false},
-		{"non-string type", `[{"id":"a1","type":7},{"id":"a2","type":["subagent"]}]`, "", 0, true},
-		{"non-object entries", `[1,"a",null,true,[{"type":"subagent"}]]`, "", 0, true},
-		{"non-string id keeps a valid type", `[{"id":5,"type":"subagent"}]`, "", 1, true},
+		{"subagents and workflows only", mixed, nil, 3, true},
+		{"a closed subagent turn drops its entry", mixed, db.AgentTurns{"a1": closed}, 2, true},
+		{"a stop with no start drops it too", mixed, db.AgentTurns{"a1": {Stop: t1}}, 2, true},
+		{"start and stop at the same time is closed", mixed, db.AgentTurns{"a1": {Start: t1, Stop: t1}}, 2, true},
+		{"a resumed subagent counts again", mixed, db.AgentTurns{"a1": {Start: t3, Stop: t2}}, 3, true},
+		{"an open listed subagent counts once", mixed, db.AgentTurns{"a1": open}, 3, true},
+		{"a workflow id in the turns is dropped when closed", mixed, db.AgentTurns{"w1": closed}, 2, true},
+		{"one teammate in its turn", mixed, db.AgentTurns{"aalpha-1": open}, 4, true},
+		{"two turns open but one teammate listed", mixed, db.AgentTurns{"aalpha-1": open, "abeta-1": open}, 4, true},
+		{"two teammates in their turn", teammates, db.AgentTurns{"aalpha-1": open, "abeta-1": open}, 2, true},
+		{"idle teammates", teammates, db.AgentTurns{"aalpha-1": closed, "abeta-1": closed}, 0, true},
+		{"teammates never started", teammates, nil, 0, true},
+		{"an open turn with no teammate listed", `[{"id":"sh","type":"shell"}]`, db.AgentTurns{"aalpha-1": open}, 0, true},
+		{"empty list", `[]`, db.AgentTurns{"aalpha-1": open}, 0, true},
+		{"absent", "", db.AgentTurns{"aalpha-1": open}, 0, false},
+		{"null", `null`, nil, 0, false},
+		{"object instead of array", `{"x":1}`, nil, 0, false},
+		{"string instead of array", `"subagent"`, nil, 0, false},
+		{"non-string type", `[{"id":"a1","type":7},{"id":"a2","type":["subagent"]}]`, nil, 0, true},
+		{"non-object entries", `[1,"a",null,true,[{"type":"subagent"}]]`, nil, 0, true},
+		{"non-string id keeps a valid type", `[{"id":5,"type":"subagent"}]`, nil, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := `{"session_id":"s"}`
@@ -283,7 +299,7 @@ func TestBackgroundSubagentsCountsSubagentsAndWorkflows(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(raw), &in), "a malformed field never fails the input")
 			assert.Equal(t, "s", in.SessionID)
 
-			n, ok := backgroundSubagents(in.BackgroundTasks, tc.except)
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, "")
 
 			assert.Equal(t, tc.want, n)
 			assert.Equal(t, tc.wantOK, ok)
@@ -291,8 +307,40 @@ func TestBackgroundSubagentsCountsSubagentsAndWorkflows(t *testing.T) {
 	}
 }
 
-// The inputs captured from Claude Code (spec A.7): a Stop with two
-// background subagents and a background shell, and one with none.
+// A SubagentStop's own agent never counts, whatever the stamps of its async
+// hooks say (a SubagentStart stamped after its SubagentStop leaves the turn
+// open); the cases of the former `except` parameter, kept.
+func TestBackgroundAgentsLeavesOutTheStoppingAgent(t *testing.T) {
+	mixed := `[{"id":"a1","type":"subagent"},{"id":"a2","type":"subagent"},{"id":"w1","type":"workflow"},
+		{"id":"t1","type":"teammate"},{"id":"s1","type":"shell"}]`
+	const t1, t2 = "2026-10-11T10:00:00.000Z", "2026-10-11T10:00:01.000Z"
+	startedLate := db.AgentTurn{Start: t2, Stop: t1}
+	for _, tc := range []struct {
+		name, except string
+		turns        db.AgentTurns
+		want         int64
+	}{
+		{"except drops its id", "a1", nil, 2},
+		{"except drops a workflow too", "w1", nil, 2},
+		{"except naming no entry", "zz", nil, 3},
+		{"a listed subagent whose start was stamped late", "a1", db.AgentTurns{"a1": startedLate}, 2},
+		{"a teammate whose start was stamped late", "aalpha-1", db.AgentTurns{"aalpha-1": startedLate}, 3},
+		{"another teammate still in its turn", "aalpha-1", db.AgentTurns{"aalpha-1": startedLate, "abeta-1": startedLate}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var in stopHookInput
+			require.NoError(t, json.Unmarshal([]byte(`{"session_id":"s","background_tasks":`+mixed+`}`), &in))
+
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, tc.except)
+
+			assert.True(t, ok)
+			assert.Equal(t, tc.want, n)
+		})
+	}
+}
+
+// The inputs captured from Claude Code (spec A.7, Appendix C): Stops with
+// background subagents, with teammates and with none, with no turns stored.
 func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
 	for _, tc := range []struct {
 		file string
@@ -300,6 +348,8 @@ func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
 	}{
 		{"testdata/stop_background_tasks.json", 2},
 		{"testdata/stop_no_background_tasks.json", 0},
+		{"testdata/stop_teammates_in_turn.json", 0},
+		{"testdata/stop_teammates_idle.json", 0},
 	} {
 		raw, err := os.ReadFile(tc.file)
 		require.NoError(t, err)
@@ -307,7 +357,7 @@ func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &in), tc.file)
 		assert.NotEmpty(t, in.SessionID, tc.file)
 
-		n, ok := backgroundSubagents(in.BackgroundTasks, "")
+		n, ok := backgroundAgents(in.BackgroundTasks, nil, "")
 
 		assert.True(t, ok, tc.file)
 		assert.Equal(t, tc.want, n, tc.file)

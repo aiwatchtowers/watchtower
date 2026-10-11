@@ -146,7 +146,7 @@ final class OwnerAsksStructuredAnswerTests: XCTestCase {
 
             let want = try XCTUnwrap(expected[scenario])
             XCTAssertEqual(draftDelivery, want, "\(scenario): the draft path")
-            XCTAssertEqual(outcome, .stored(want), "\(scenario): the structured path delivers alike")
+            XCTAssertEqual(outcome, .delivered(want), "\(scenario): the structured path delivers alike")
             let row = try await stored(structuredAskID)
             XCTAssertEqual(row.status, "answered", "\(scenario)")
             XCTAssertEqual(try OwnerAskAnswer.decode(row.answer), yes, "\(scenario)")
@@ -253,7 +253,7 @@ final class OwnerAsksStructuredAnswerTests: XCTestCase {
 
         let outcome = await vm.asks.answer(ask, with: yes)
 
-        XCTAssertEqual(outcome, .stored(.noSession))
+        XCTAssertEqual(outcome, .delivered(.noSession))
         XCTAssertTrue(vm.asks.drafts.askDraft(for: askID).isEmpty, "answered elsewhere: the draft goes, as a Desktop answer's does")
         let row = try await stored(askID)
         XCTAssertEqual(try OwnerAskAnswer.decode(row.answer), yes, "the structured answer is what is stored")
@@ -266,7 +266,7 @@ final class OwnerAsksStructuredAnswerTests: XCTestCase {
         let vm = makeVM()
         let ask = try await openAsk(vm, project: p, id: askID)
         vm.asks.drafts.update(askID) { $0.picks["a"] = .init(labels: ["No"]) }
-        var during: OwnerAsksViewModel.AnswerOutcome?
+        var during: OwnerAsksViewModel.AnswerResult?
         let yes = yes
         onPause = { [weak vm] in
             guard let vm, during == nil else { return }
