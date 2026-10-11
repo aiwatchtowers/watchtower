@@ -75,11 +75,12 @@ struct SessionRowModel: Equatable, Identifiable {
     }
 }
 
-/// One Waiting-for-you card: REVIEW, ASK or CHECK, the title and
-/// "Session · #target · age" (Now prefixes the workbench).
+/// One Waiting-for-you ask: its kind (word and the Mac's icon), the title and "Session · #target · age" (Now prefixes the workbench).
 struct WaitingCardModel: Equatable, Identifiable {
     let id: Int64
     let kindLabel: String
+    /// The Mac's kind icon (`OwnerAskPresentation.swift:136-142`).
+    let kindIcon: String
     let title: String
     let subline: String
     /// Label, tint and border of the card.
@@ -88,10 +89,15 @@ struct WaitingCardModel: Equatable, Identifiable {
     init(_ ask: OwnerAsk, snapshot: WorkbenchReplicaSnapshot, now: Date, showWorkbench: Bool = false) {
         id = ask.id
         kindLabel = switch ask.kind {
-        case .review: "REVIEW"
-        case .check: "CHECK"
-        case .question: "ASK"
-        default: ask.kind.rawValue.uppercased()
+        case .review: "Review"
+        case .check: "Check"
+        case .question: "Question"
+        default: ask.kind.rawValue.capitalized
+        }
+        kindIcon = switch ask.kind {
+        case .review: "doc.text.magnifyingglass"
+        case .check: "checklist"
+        default: "questionmark.bubble"
         }
         title = ask.title
         var parts: [String] = []
