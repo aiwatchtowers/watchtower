@@ -15,23 +15,37 @@ import WatchtowerCore
 /// (board #412) under the same rule — AppKit hands every key down to the
 /// window's key equivalents before the focused view — and takes one when
 /// `onPress` acts on it; laid behind the page it does that alone (no
-/// `onKey`, so ⌘↩ passes on to the drawer's).
+/// `onKey`, so ⌘↩ passes on to the drawer's). Every key needs its window
+/// to be the key window with no sheet: AppKit offers key equivalents to
+/// the main window too while a panel (Open Quickly) is key. With
+/// `onMouseDown` it reports each click in its window and whether it fell
+/// inside its own frame (the drawer's active state, board #412).
 struct OwnerAskKeyCatcher: NSViewRepresentable {
     /// The key pressed; true for ⌘⇧↩. nil leaves both keys alone.
     var onKey: ((Bool) -> Void)?
     /// A bare key while no field has the keyboard; true when it acted.
     var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
+    /// A click in the window; true when inside this view.
+    var onMouseDown: ((Bool) -> Void)?
 
     func makeNSView(context: Context) -> CatcherView {
         let view = CatcherView()
-        view.onKey = onKey
-        view.onPress = onPress
+        update(view)
         return view
     }
 
     func updateNSView(_ view: CatcherView, context: Context) {
+        update(view)
+    }
+
+    static func dismantleNSView(_ view: CatcherView, coordinator: ()) {
+        view.stopWatchingClicks()
+    }
+
+    private func update(_ view: CatcherView) {
         view.onKey = onKey
         view.onPress = onPress
+        view.onMouseDown = onMouseDown
     }
 
     enum Key {
@@ -60,6 +74,7 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let keypadEnter = event.keyCode == CommentEditorKeys.keypadEnterKeyCode
         return OwnerAskKeyMap.Press(characters: keypadEnter ? "\r" : event.charactersIgnoringModifiers ?? "",
+                                    keyCode: event.keyCode,
                                     shift: flags.contains(.shift),
                                     otherModifiers: !flags.isDisjoint(with: [.command, .option, .control]),
                                     isRepeat: event.isARepeat)
@@ -68,6 +83,46 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
     final class CatcherView: NSView {
         var onKey: ((Bool) -> Void)?
         var onPress: ((OwnerAskKeyMap.Press) -> Bool)?
+        var onMouseDown: ((Bool) -> Void)? {
+            didSet { watchClicks() }
+        }
+        /// The app's key window. No key window at all is a window shown by
+        /// nobody (a unit test's): it counts as key.
+        var keyWindow: @MainActor () -> NSWindow? = { NSApplication.shared.keyWindow }
+        private var clickMonitor: Any?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            watchClicks()
+        }
+
+        /// A local monitor while it is in a window and someone listens.
+        private func watchClicks() {
+            guard window != nil, onMouseDown != nil else {
+                stopWatchingClicks()
+                return
+            }
+            guard clickMonitor == nil else { return }
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+                MainActor.assumeIsolated { self?.clicked(event) }
+                return event
+            }
+        }
+
+        private func clicked(_ event: NSEvent) {
+            guard let window, event.window === window else { return }
+            onMouseDown?(isInside(event.locationInWindow))
+        }
+
+        func stopWatchingClicks() {
+            if let clickMonitor { NSEvent.removeMonitor(clickMonitor) }
+            clickMonitor = nil
+        }
+
+        /// Whether a point in window coordinates falls on this view.
+        func isInside(_ point: NSPoint) -> Bool {
+            convert(bounds, to: nil).contains(point)
+        }
 
         override func performKeyEquivalent(with event: NSEvent) -> Bool {
             guard let window, takesKeys(in: window) else { return super.performKeyEquivalent(with: event) }
@@ -79,15 +134,18 @@ struct OwnerAskKeyCatcher: NSViewRepresentable {
             return super.performKeyEquivalent(with: event)
         }
 
-        /// Nothing has the keyboard, or read-only text inside the drawer —
+        /// In the key window with no sheet up: nothing has the keyboard
+        /// (the terminal, Monaco, any field or other view keeps every key),
+        /// or read-only text inside the drawer —
         /// told by where its visible part's middle is. Clipped to its own
         /// bounds: outside a scroll view a text view's `visibleRect` can
         /// reach past them, over the drawer.
-        private func takesKeys(in window: NSWindow) -> Bool {
+        func takesKeys(in window: NSWindow) -> Bool {
+            guard window.attachedSheet == nil, keyWindow().map({ $0 === window }) ?? true else { return false }
             guard let responder = window.firstResponder, responder !== window else { return true }
             guard let text = responder as? NSTextView, !text.isEditable else { return false }
             let visible = text.convert(text.visibleRect.intersection(text.bounds), to: nil)
-            return convert(bounds, to: nil).contains(NSPoint(x: visible.midX, y: visible.midY))
+            return isInside(NSPoint(x: visible.midX, y: visible.midY))
         }
     }
 }
