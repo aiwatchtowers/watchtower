@@ -10,12 +10,15 @@ extension WorkbenchesViewModel {
     /// app has no session: its drawer opens at the page's trailing edge.
     /// The drawer opens once the session is on screen (it closes whenever
     /// that session leaves it, `setLayout`). Returns false when the ask is
-    /// gone or could not be read.
+    /// gone or could not be read. `keepKeyboard` (a switch started from the
+    /// keyboard, board #412): the terminal coming on screen does not take
+    /// the keyboard.
     @discardableResult
-    func showAsk(_ askID: Int64, projectID: Int64) async -> Bool {
+    func showAsk(_ askID: Int64, projectID: Int64, keepKeyboard: Bool = false) async -> Bool {
         if selectedWorkbenchID != projectID { drill(into: projectID) }
         guard let ask = await asks.lookUp(askID: askID, projectID: projectID) else { return false }
         if let sessionID = ask.sessionID {
+            if keepKeyboard { terminalCenter?.keepKeyboardOnAttach(sessionID) }
             await revealTerminal(projectID: projectID, sessionID: sessionID)
             // A failed open already reports itself; no drawer beside nothing.
             guard layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return true }
@@ -93,6 +96,42 @@ extension WorkbenchesViewModel {
     func isObscured(sessionID: Int64, projectID: Int64) -> Bool {
         guard asks.drawerExpanded, let ask = asks.drawerAsk(projectID: projectID) else { return false }
         return ask.sessionID == nil || ask.sessionID == sessionID
+    }
+
+    /// The workbench whose stack A / ⌃⌘A would go to: the one on the page,
+    /// drilled into, with an ask waiting; nil otherwise (the key is left
+    /// alone, Navigate › Show Waiting for You is off).
+    var stackKeyboardWorkbench: Int64? {
+        guard hasWorkbenchPage, let projectID = selectedWorkbenchID, drilledWorkbenchID == projectID,
+              !asks.stack(projectID: projectID).asks.isEmpty else { return nil }
+        return projectID
+    }
+
+    /// Whether Navigate › Show Waiting for You acts for `shownID`, the
+    /// workbench of the key window (`OpenQuicklyCenter.keyWorkbench`).
+    func canShowWaitingStack(shownID: Int64?) -> Bool {
+        shownID != nil && stackKeyboardWorkbench == shownID
+    }
+
+    /// A on the workbench page with no field focused, or ⌃⌘A from
+    /// anywhere in its window (board #412, `OwnerAskKeyMap`): the sessions
+    /// panel shown and the oldest card of "Waiting for you" given the
+    /// keyboard. False — the key left to the window — when no workbench is
+    /// drilled into (the panel's level 1 has no stack) or no ask waits.
+    func openStackFromKeyboard() -> Bool {
+        guard let projectID = stackKeyboardWorkbench else { return false }
+        panelVisible = true
+        asks.setDrawerKeysActive(false, projectID: projectID)
+        asks.requestStackKeyboard(projectID: projectID)
+        return true
+    }
+
+    /// An ask opened or switched from the keyboard (J / K in the drawer,
+    /// Return on a card, board #412): its terminal coming on screen leaves
+    /// the keyboard alone, and the drawer then takes the bare keys.
+    func showAskFromKeyboard(_ askID: Int64, projectID: Int64) async {
+        guard await showAsk(askID, projectID: projectID, keepKeyboard: true) else { return }
+        asks.setDrawerKeysActive(true, projectID: projectID)
     }
 
     /// The drawer's "k of N ›": the next ask of the stack, switching to its

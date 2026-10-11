@@ -131,6 +131,13 @@ final class TerminalCenter {
     /// The latest keyboard focus move asked into a session's terminal
     /// (`requestKeyboardFocus`); its host honours each serial once.
     private(set) var keyboardFocusRequest: KeyboardFocusRequest?
+    /// Sessions whose terminal, attached before the stamp passes, leaves
+    /// the keyboard where it is (`keepKeyboardOnAttach`, board #412).
+    @ObservationIgnored private var keepKeyboardUntil: [Int64: Date] = [:]
+    /// How long `keepKeyboardOnAttach` waits for the attach it covers: an
+    /// attach it never sees (the session did not come on screen) must not
+    /// keep the keyboard from a later one the owner asked for.
+    static let keepKeyboardWindow: TimeInterval = 2
     /// When the current process run of each session started — the session
     /// agent state's trust rule (board #312): a hook state stamped before it
     /// belongs to an earlier run. Replaced on every relaunch.
@@ -253,6 +260,21 @@ final class TerminalCenter {
     /// palette took it away).
     func requestKeyboardFocus(_ sessionID: Int64) {
         keyboardFocusRequest = KeyboardFocusRequest(sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1)
+    }
+
+    /// An ask switched from the keyboard (J / K in the drawer, Return on a
+    /// card, board #412) puts `sessionID` on screen: its next attach leaves
+    /// the keyboard where it is, so keys meant for the asks never land in
+    /// the agent's input as an owner draft.
+    func keepKeyboardOnAttach(_ sessionID: Int64, now: Date = Date()) {
+        keepKeyboardUntil[sessionID] = now.addingTimeInterval(Self.keepKeyboardWindow)
+    }
+
+    /// Taken by the host on an attach: whether that attach leaves the
+    /// keyboard alone. Once only, and only within the window.
+    func takeKeepKeyboard(_ sessionID: Int64, now: Date = Date()) -> Bool {
+        guard let until = keepKeyboardUntil.removeValue(forKey: sessionID) else { return false }
+        return now < until
     }
 
     /// The latest request's serial when it is for `sessionID`.

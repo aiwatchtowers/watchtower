@@ -204,7 +204,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
             TerminalHost(session: process, focusSerial: center.keyboardFocusSerial(for: session.id),
-                         obscured: obscured || drawerCovers)
+                         obscured: obscured || drawerCovers) { [id = session.id] in center.takeKeepKeyboard(id) }
         }
     }
 }
@@ -269,6 +269,9 @@ private struct TerminalHost: NSViewRepresentable {
     let focusSerial: Int?
     /// Under an expanded ask drawer: no attach or request moves focus here.
     let obscured: Bool
+    /// Asked on an attach: true leaves the keyboard where it is
+    /// (`TerminalCenter.takeKeepKeyboard`, board #412).
+    let keepsKeyboard: () -> Bool
 
     /// The focus request serial already honoured.
     final class Coordinator {
@@ -295,7 +298,8 @@ private struct TerminalHost: NSViewRepresentable {
         let terminal = session.view
         let attached = TerminalHostAttachment.attach(terminal, to: container)
         let focus = TerminalHostAttachment.needsFocus(
-            attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured
+            attached: attached, requested: focusSerial, honoured: coordinator.honouredSerial, obscured: obscured,
+            keepsKeyboard: attached && keepsKeyboard()
         )
         coordinator.honouredSerial = focusSerial
         guard focus else { return }
@@ -344,8 +348,10 @@ enum TerminalHostAttachment {
     /// (`TerminalCenter.requestKeyboardFocus`) it has not honoured yet —
     /// never while an expanded ask drawer covers it (`obscured`; such a
     /// request is dropped, not kept for later).
-    static func needsFocus(attached: Bool, requested: Int?, honoured: Int?, obscured: Bool = false) -> Bool {
-        !obscured && (attached || (requested != nil && requested != honoured))
+    /// An attach covered by `keepsKeyboard` (an ask switched from the
+    /// keyboard) moves nothing either; a request still does.
+    static func needsFocus(attached: Bool, requested: Int?, honoured: Int?, obscured: Bool = false, keepsKeyboard: Bool = false) -> Bool {
+        !obscured && ((attached && !keepsKeyboard) || (requested != nil && requested != honoured))
     }
 
     /// Whether the keyboard is in a session's terminal (a view inside a
