@@ -124,8 +124,7 @@ struct PhoneRecordingsSnapshot: Equatable {
 @Observable
 final class PhoneRecordingsModel {
     private(set) var snapshot = PhoneRecordingsSnapshot()
-    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
-    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "PhoneRecordingsModel")
+    @ObservationIgnored private var cancellable: ResilientObservation?
 
     /// The recordings slices re-read on every replica write; a write that
     /// leaves them equal publishes nothing.
@@ -140,13 +139,11 @@ final class PhoneRecordingsModel {
 
     func start(store: ReplicaStore) {
         guard cancellable == nil else { return }
-        cancellable = Self.observation(store: store).start(
-            in: store.reader,
-            scheduling: .async(onQueue: .main),
-            onError: { Self.logger.error("recordings observation failed: \($0.localizedDescription, privacy: .public)") },
-            onChange: { [weak self] value in
-                MainActor.assumeIsolated { self?.snapshot = value }
-            }
+        cancellable = ResilientObservation(
+            name: "recordings",
+            reader: store.reader,
+            observation: { Self.observation(store: store) },
+            onChange: { [weak self] value in self?.snapshot = value }
         )
     }
 }

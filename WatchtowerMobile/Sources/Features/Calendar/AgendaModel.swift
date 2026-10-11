@@ -278,8 +278,9 @@ enum AgendaScroll {
 
 // MARK: - Week strip
 
-/// Monday to Sunday around the selected day; today is filled in the
-/// accent colour.
+/// Seven days starting on today, paged by seven (the page holding the
+/// selected day), so the first page shows what is coming rather than the
+/// calendar week; today is filled in the accent colour.
 struct WeekStripModel {
     struct Day: Identifiable, Equatable {
         let date: Date
@@ -298,18 +299,21 @@ struct WeekStripModel {
     /// `eventDays` holds the start of each local day that has events.
     init(selected: Date, today: Date, eventDays: Set<Date>, calendar: Calendar) {
         let selectedStart = calendar.startOfDay(for: selected)
-        // weekday: 1 = Sunday … 7 = Saturday; Monday is 0 days back.
-        let back = (calendar.component(.weekday, from: selectedStart) + 5) % 7
-        let monday = calendar.date(byAdding: .day, value: -back, to: selectedStart) ?? selectedStart
-        let letters = ["M", "T", "W", "T", "F", "S", "S"]
+        let todayStart = calendar.startOfDay(for: today)
+        // Calendar days, not 24 h steps, so a DST change keeps the pages aligned.
+        let daysFromToday = calendar.dateComponents([.day], from: todayStart, to: selectedStart).day ?? 0
+        let pageOffset = Int((Double(daysFromToday) / 7).rounded(.down)) * 7
+        let first = calendar.date(byAdding: .day, value: pageOffset, to: todayStart) ?? todayStart
+        // Indexed by weekday: 1 = Sunday … 7 = Saturday.
+        let letters = ["S", "M", "T", "W", "T", "F", "S"]
         let format = CalendarFormat(calendar: calendar)
         days = (0..<7).map { offset in
-            let date = calendar.date(byAdding: .day, value: offset, to: monday) ?? monday
+            let date = calendar.date(byAdding: .day, value: offset, to: first) ?? first
             let isToday = calendar.isDate(date, inSameDayAs: today)
             let hasEvents = eventDays.contains(date)
             return Day(
                 date: date,
-                letter: letters[offset],
+                letter: letters[calendar.component(.weekday, from: date) - 1],
                 number: String(calendar.component(.day, from: date)),
                 isToday: isToday,
                 isSelected: calendar.isDate(date, inSameDayAs: selectedStart),

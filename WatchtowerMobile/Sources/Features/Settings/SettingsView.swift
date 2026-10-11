@@ -48,6 +48,12 @@ struct SettingsView: View {
                 } label: {
                     Text(row.label)
                 }
+                // Nothing at all while every observation is healthy.
+                ForEach(model.diagnostics(now: context.date)) { row in
+                    Text(row.text)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             LabeledContent("Last sync") {
                 if let last = env.lastSyncAt {

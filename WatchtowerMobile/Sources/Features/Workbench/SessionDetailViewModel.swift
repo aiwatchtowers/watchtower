@@ -99,8 +99,7 @@ final class SessionDetailViewModel {
 
     @ObservationIgnored private let store: ReplicaStore
     @ObservationIgnored private let requester: SessionReportRequester
-    @ObservationIgnored private var cancellable: AnyDatabaseCancellable?
-    nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "SessionDetailViewModel")
+    @ObservationIgnored private var cancellable: ResilientObservation?
 
     init(sessionID: Int64, store: ReplicaStore, requester: SessionReportRequester) {
         self.sessionID = sessionID
@@ -113,19 +112,18 @@ final class SessionDetailViewModel {
         guard cancellable == nil else { return }
         let sessionID = sessionID
         let store = store
-        let observation = ValueObservation.tracking { db in
-            try SessionDetailRecords.read(sessionID: sessionID, from: db, store: store)
-        }
-        .removeDuplicates()
-        cancellable = observation.start(
-            in: store.reader,
-            scheduling: .async(onQueue: .main),
-            onError: { Self.logger.error("session detail observation failed: \($0.localizedDescription, privacy: .public)") },
-            onChange: { [weak self] value in
-                MainActor.assumeIsolated {
-                    self?.report = value.report
-                    self?.timeline = value.timeline
+        cancellable = ResilientObservation(
+            name: "session detail",
+            reader: store.reader,
+            observation: {
+                ValueObservation.tracking { db in
+                    try SessionDetailRecords.read(sessionID: sessionID, from: db, store: store)
                 }
+                .removeDuplicates()
+            },
+            onChange: { [weak self] value in
+                self?.report = value.report
+                self?.timeline = value.timeline
             }
         )
     }
