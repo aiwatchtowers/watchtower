@@ -17,7 +17,11 @@ struct MetaLine: View {
         HStack(spacing: Spacing.compact) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 if index > 0 {
-                    Text("·").foregroundStyle(.secondary)
+                    // The item before's priority: a separator never collapses
+                    // before the item it follows.
+                    Text("·")
+                        .foregroundStyle(.secondary)
+                        .layoutPriority(Double(items.count - index + 1))
                 }
                 Text(item.text)
                     .foregroundStyle(item.tone.color)
