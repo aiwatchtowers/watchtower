@@ -11,6 +11,7 @@ struct ReviewAskView: View {
     let review: AskFormModel.Review
     let model: AskViewModel
     let isEditable: Bool
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var composing: NSRange?
     @State private var commentText = ""
@@ -18,7 +19,7 @@ struct ReviewAskView: View {
     var body: some View {
         Section {
             if let document = review.document {
-                SnapshotTextView(document: document, selection: $selection)
+                SnapshotTextView(document: document, category: UIContentSizeCategory(dynamicTypeSize), selection: $selection)
                     .frame(minHeight: 320, maxHeight: 480)
                     .accessibilityLabel("Document under review")
                 if let clipped = review.clippedNotice {
@@ -34,7 +35,7 @@ struct ReviewAskView: View {
                 .disabled(!isEditable || selection.length == 0)
             }
         } header: {
-            Text(review.docPath).textCase(nil).font(.caption.monospaced())
+            Text(review.docPath).textCase(nil).font(TypeScale.code)
         } footer: {
             Text(review.commentsLine)
         }
@@ -114,6 +115,8 @@ private struct SelectionBox: Identifiable {
 /// selection in UTF-16 units of `document.text` (the anchors' offsets).
 private struct SnapshotTextView: UIViewRepresentable {
     let document: PlainTextDocument
+    /// The Dynamic Type size to style at; a change restyles the same text.
+    let category: UIContentSizeCategory
     @Binding var selection: NSRange
 
     func makeUIView(context: Context) -> UITextView {
@@ -127,12 +130,23 @@ private struct SnapshotTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
-        // Text only: assigning a selection here would report it back
-        // through the delegate into the binding during a view update. The
-        // styled string is `document.text` itself, so selections stay UTF-16
-        // offsets into it.
-        guard view.attributedText.string != document.text else { return }
-        view.attributedText = ReviewDocumentStyler.attributed(document, traits: view.traitCollection)
+        let coordinator = context.coordinator
+        guard ReviewDocumentStyler.needsRestyle(
+            shown: view.attributedText.string, styledCategory: coordinator.styledCategory, document: document, category: category
+        ) else { return }
+        // A size change keeps the text, so it keeps the selection. While
+        // restyling, the delegate ignores the programmatic selection change,
+        // so nothing writes the binding during this view update. The string
+        // is `document.text` itself, so selections stay UTF-16 offsets into it.
+        let kept = view.attributedText.string == document.text ? view.selectedRange : nil
+        coordinator.isRestyling = true
+        let traits = view.traitCollection.modifyingTraits { $0.preferredContentSizeCategory = category }
+        view.attributedText = ReviewDocumentStyler.attributed(document, traits: traits)
+        if let kept {
+            view.selectedRange = kept
+        }
+        coordinator.isRestyling = false
+        coordinator.styledCategory = category
     }
 
     func makeCoordinator() -> Coordinator {
@@ -141,12 +155,16 @@ private struct SnapshotTextView: UIViewRepresentable {
 
     final class Coordinator: NSObject, UITextViewDelegate {
         let selection: Binding<NSRange>
+        /// The size the shown text was styled at; nil before the first style.
+        var styledCategory: UIContentSizeCategory?
+        var isRestyling = false
 
         init(selection: Binding<NSRange>) {
             self.selection = selection
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !isRestyling else { return }
             selection.wrappedValue = textView.selectedRange
         }
     }

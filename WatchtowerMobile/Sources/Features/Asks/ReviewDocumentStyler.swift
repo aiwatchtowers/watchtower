@@ -32,6 +32,18 @@ enum ReviewDocumentStyler {
         return styled
     }
 
+    /// The text view shows `shown`, styled at `styledCategory`. It restyles
+    /// when the document changed (a newer round) or the Dynamic Type size
+    /// did: the attributed fonts do not follow a size change by themselves.
+    static func needsRestyle(
+        shown: String,
+        styledCategory: UIContentSizeCategory?,
+        document: PlainTextDocument,
+        category: UIContentSizeCategory
+    ) -> Bool {
+        shown != document.text || styledCategory != category
+    }
+
     /// The marker a list line starts with, its leading spaces included:
     /// "• ", "N. ", "☐ " or "☑ "; nil for any other line.
     static func listPrefix(of line: String) -> String? {

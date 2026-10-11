@@ -105,4 +105,23 @@ final class ReviewDocumentStylerTests: XCTestCase {
         XCTAssertEqual(anchor, CommentAnchorBuilder.anchor(selection: (document.text as NSString).range(of: "the Stop hook"), in: document))
         XCTAssertEqual(anchor.heading, "Steps")
     }
+
+    /// Phases 1–2 review and review focus 2: the same text at a new Dynamic
+    /// Type size restyles; the attributed fonts do not follow a size change
+    /// by themselves. The text stays `document.text`.
+    func testADynamicTypeChangeRestylesTheSameText() {
+        let document = fixture()
+        XCTAssertTrue(ReviewDocumentStyler.needsRestyle(shown: "", styledCategory: nil, document: document, category: .large), "first show")
+        XCTAssertFalse(ReviewDocumentStyler.needsRestyle(shown: document.text, styledCategory: .large, document: document, category: .large))
+        XCTAssertTrue(
+            ReviewDocumentStyler.needsRestyle(shown: document.text, styledCategory: .large, document: document, category: .accessibilityLarge),
+            "same text, a new size"
+        )
+        XCTAssertTrue(ReviewDocumentStyler.needsRestyle(shown: "Old round", styledCategory: .large, document: document, category: .large))
+
+        let large = ReviewDocumentStyler.attributed(document, traits: UITraitCollection(preferredContentSizeCategory: .large))
+        let huge = ReviewDocumentStyler.attributed(document, traits: UITraitCollection(preferredContentSizeCategory: .accessibilityLarge))
+        XCTAssertEqual(huge.string, document.text)
+        XCTAssertGreaterThan(font(huge, at: 0)?.pointSize ?? 0, font(large, at: 0)?.pointSize ?? 0, "the restyle is at the new size")
+    }
 }
