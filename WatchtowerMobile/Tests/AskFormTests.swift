@@ -329,10 +329,37 @@ final class AskFormTests: XCTestCase {
         let form = try formOf(model, snapshot)
 
         XCTAssertEqual(form.closedStatus, "Answered and delivered")
-        XCTAssertEqual(form.closedLines, ["Keep the counter?: No", "Note: Not needed"])
+        XCTAssertEqual(form.closedLines, [
+            AskFormModel.ClosedLine(label: "Keep the counter?", value: "No"),
+            AskFormModel.ClosedLine(label: "Note", value: "Not needed")
+        ], "the question over its answer: no \"?:\" (design pass A6)")
         XCTAssertNil(form.question)
         XCTAssertFalse(form.isEditable)
         XCTAssertNil(form.openOnMac, "a closed ask is shown, not sent to the Mac")
+    }
+
+    /// Design pass A6 and review focus 1: each stored part is a label over a
+    /// value; a question answered with nothing reads "No answer", never an
+    /// empty line.
+    func testAClosedAnswerIsLabelAndValuePairs() async throws {
+        let fixture = try await makeFixture()
+        let snapshot = try replica([try makeAsk(161, [
+            "kind": "check", "status": "answered",
+            "payload": [
+                "questions": [["id": "q", "question": "Keep it?", "options": [["label": "Yes"], ["label": "No"]]]],
+                "checklist": [["id": "1", "text": "Open the menu"]]
+            ],
+            "answer": [
+                "verdict": "approved", "answers": [["id": "q", "labels": [String](), "other": ""]],
+                "checklist": [["id": "1", "state": "broken", "note": "The menu is empty"]], "comments": [[String: Any]](), "note": ""
+            ]
+        ])])
+        let form = try formOf(AskViewModel(askID: 161, drafts: fixture.drafts, answerer: fixture.answerer), snapshot)
+        XCTAssertEqual(form.closedLines, [
+            AskFormModel.ClosedLine(label: "Verdict", value: "Approved"),
+            AskFormModel.ClosedLine(label: "Keep it?", value: "No answer"),
+            AskFormModel.ClosedLine(label: "Open the menu", value: "Broken — The menu is empty")
+        ])
     }
 
     // MARK: - On its way and back
@@ -481,7 +508,10 @@ final class AskFormTests: XCTestCase {
         XCTAssertNil(AskFormModel.successor(of: 110, in: demo), "110 is the open round of the superseded #107")
         XCTAssertEqual(AskFormModel.successor(of: 107, in: demo)?.id, 110)
         XCTAssertEqual(try form(111).checks.count, 2)
-        XCTAssertEqual(try form(105).closedLines, ["Keep the archived counter?: Drop it", "Note: Not needed on the board."])
+        XCTAssertEqual(try form(105).closedLines, [
+            AskFormModel.ClosedLine(label: "Keep the archived counter?", value: "Drop it"),
+            AskFormModel.ClosedLine(label: "Note", value: "Not needed on the board.")
+        ])
     }
 
     // MARK: - One answer per ask in flight

@@ -104,6 +104,13 @@ struct AskFormModel {
         let needsNote: Bool
     }
 
+    /// One part of a closed ask's stored answer: what was asked, over what
+    /// was answered (design pass A6).
+    struct ClosedLine: Equatable {
+        let label: String
+        let value: String
+    }
+
     /// The answer on its way, refused, or applied.
     enum Status: Equatable {
         case none
@@ -140,7 +147,7 @@ struct AskFormModel {
     let noteHint: String?
     /// A closed ask: its status and its stored answer, read-only.
     let closedStatus: String?
-    let closedLines: [String]
+    let closedLines: [ClosedLine]
     let status: Status
     let isEditable: Bool
     let canSend: Bool
@@ -253,24 +260,26 @@ struct AskFormModel {
         )
     }
 
-    private static func closedLines(_ ask: OwnerAsk) -> [String] {
+    private static func closedLines(_ ask: OwnerAsk) -> [ClosedLine] {
         guard let answer = ask.answer else { return [] }
-        var lines: [String] = []
+        var lines: [ClosedLine] = []
         if let verdict = answer.verdict {
-            lines.append(verdict == .approved ? "Approved" : "Changes requested")
+            lines.append(ClosedLine(label: "Verdict", value: verdict == .approved ? "Approved" : "Changes requested"))
         }
         let questions = Dictionary((ask.payload?.questions ?? []).map { ($0.id, $0.question) }) { first, _ in first }
         for item in answer.answers {
             let picked = (item.labels + (item.other.isEmpty ? [] : ["Other: \(item.other)"])).joined(separator: ", ")
-            lines.append("\(questions[item.id] ?? item.id): \(picked)")
+            lines.append(ClosedLine(label: questions[item.id] ?? item.id, value: picked.isEmpty ? "No answer" : picked))
         }
         let checks = Dictionary((ask.payload?.checklist ?? []).map { ($0.id, $0.text) }) { first, _ in first }
         for item in answer.checklist {
             let note = item.note.isEmpty ? "" : " — \(item.note)"
-            lines.append("\(checks[item.id] ?? item.id): \(AskText.check(item.state))\(note)")
+            lines.append(ClosedLine(label: checks[item.id] ?? item.id, value: "\(AskText.check(item.state))\(note)"))
         }
-        lines += answer.comments.map { "“\($0.quote)” — \($0.body)" }
-        if !answer.note.isEmpty { lines.append("Note: \(answer.note)") }
+        lines += answer.comments.map { ClosedLine(label: "“\($0.quote)”", value: $0.body) }
+        if !answer.note.isEmpty {
+            lines.append(ClosedLine(label: "Note", value: answer.note))
+        }
         return lines
     }
 

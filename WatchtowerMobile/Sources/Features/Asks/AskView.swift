@@ -53,7 +53,13 @@ struct AskView: View {
                     if form.closedLines.isEmpty {
                         Text("No answer was stored").foregroundStyle(.secondary)
                     }
-                    ForEach(form.closedLines, id: \.self) { Text($0) }
+                    ForEach(Array(form.closedLines.enumerated()), id: \.offset) { _, line in
+                        VStack(alignment: .leading, spacing: Spacing.tight) {
+                            Text(line.label).font(TypeScale.meta).foregroundStyle(.secondary)
+                            Text(line.value).font(.callout)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
                 }
             } else {
                 if let page = form.question {
