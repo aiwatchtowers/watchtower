@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/asks"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -111,7 +113,7 @@ func listAsksForClients(workbenchID int64, open bool) ([]askListJSON, error) {
 	if workbenchID < 0 {
 		return nil, errors.New("--workbench takes a positive id")
 	}
-	_, database, err := openJiraCmdDB()
+	database, err := openAsksDB()
 	if err != nil {
 		return nil, err
 	}
@@ -146,6 +148,40 @@ func listAsksForClients(workbenchID int64, open bool) ([]askListJSON, error) {
 		}
 	}
 	return list, nil
+}
+
+// asksBusyTimeout is how long a read of the asks waits out another process's
+// write lock.
+const asksBusyTimeout = 2 * time.Second
+
+// openAsksDB opens the active workspace's database read-only: it never
+// creates the file and never migrates (db.OpenExisting). A schema without the
+// 00107 ask columns is refused, so an older database fails clearly instead
+// of on the first query.
+func openAsksDB() (*db.DB, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, err
+	}
+	database, err := db.OpenExisting(cfg.DBPath(), asksBusyTimeout)
+	if err != nil {
+		return nil, err
+	}
+	ok, err := database.HasColumns("owner_asks", "level", "origin", "chat_asked_at", "withdrawn_at")
+	if err == nil && !ok {
+		err = errors.New("the database predates the ask levels (migration 00107): open the Watchtower app to upgrade it")
+	}
+	if err != nil {
+		database.Close()
+		return nil, err
+	}
+	return database, nil
 }
 
 // askSessionTitle is the title of a's terminal session, "" when it has none

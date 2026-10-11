@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -188,4 +191,45 @@ func keys(m map[int64]map[string]any) []int64 {
 		out = append(out, k)
 	}
 	return out
+}
+
+// A read verb never creates the database: with none there it answers
+// ok: false and leaves no file or directory behind.
+func TestAsksJSONWithNoDatabaseCreatesNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: test\n"), 0o600))
+	orig := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = orig })
+	cfg, err := config.Load(flagConfig)
+	require.NoError(t, err)
+
+	got := runAsksJSON(t)
+
+	assert.Equal(t, false, got["ok"])
+	assert.Contains(t, got["error"], "opening database")
+	_, statErr := os.Stat(cfg.WorkspaceDir())
+	assert.True(t, os.IsNotExist(statErr), "the verb created %s", cfg.WorkspaceDir())
+	_, statErr = os.Stat(cfg.DBPath())
+	assert.True(t, os.IsNotExist(statErr), "the verb created the database")
+}
+
+// A database without the 00107 ask columns answers ok: false, never
+// migrated: the columns are still missing afterwards.
+func TestAsksJSONRefusesAnOlderSchema(t *testing.T) {
+	database := writeActionsConfig(t)
+	_, err := database.Exec(`DROP TABLE owner_asks`)
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TABLE owner_asks (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL,
+		kind TEXT NOT NULL, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open')`)
+	require.NoError(t, err)
+
+	got := runAsksJSON(t)
+
+	assert.Equal(t, false, got["ok"])
+	assert.Contains(t, got["error"], "00107")
+	has, err := database.HasColumns("owner_asks", "level")
+	require.NoError(t, err)
+	assert.False(t, has, "the verb migrated the database")
 }
