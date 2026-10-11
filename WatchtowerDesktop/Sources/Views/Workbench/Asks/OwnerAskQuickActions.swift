@@ -87,7 +87,11 @@ struct OwnerAskQuickActions: View {
                     if let answer = row.reply(text) { send(answer) }
                 }
                 .onExitCommand { cancelReply() }
-                .onAppear { replyFocused = true }
+                // Only the owner's Reply… tap takes the keyboard: a field shown
+                // because the draft already holds text (the other row of the
+                // same ask, the drawer's Other…, a banner coming back) never
+                // takes it from the terminal.
+                .onAppear { if replying { replyFocused = true } }
             Button("Cancel") { cancelReply() }
                 .buttonStyle(.borderless)
                 .help("Back to the options (Esc)")
