@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// ErrAgentTurnsUnreadable: RecordTerminalAgentTurn found a stored
+// agent_turns it could not decode and replaced it, losing the turns it held
+// (the write itself went through, and the turns it returns are valid).
+var ErrAgentTurnsUnreadable = errors.New("unreadable agent_turns replaced")
+
 // maxAgentTurns caps the turns one run keeps: a run that launches more
 // subagents than this loses its oldest closed turns first, which only lets a
 // long-finished subagent that is somehow still listed count again.
@@ -49,16 +54,16 @@ type agentTurnsDoc struct {
 
 // decodeAgentTurns reads a stored agent_turns value; NULL or a value that
 // does not decode reads as no turns and no run mark (the next write
-// replaces it).
-func decodeAgentTurns(raw sql.NullString) agentTurnsDoc {
-	var doc agentTurnsDoc
+// replaces it); ok is false for a value that does not decode.
+func decodeAgentTurns(raw sql.NullString) (doc agentTurnsDoc, ok bool) {
+	ok = true
 	if raw.Valid && json.Unmarshal([]byte(raw.String), &doc) != nil {
-		doc = agentTurnsDoc{}
+		doc, ok = agentTurnsDoc{}, false
 	}
 	if doc.Turns == nil {
 		doc.Turns = AgentTurns{}
 	}
-	return doc
+	return doc, ok
 }
 
 // record moves agentID's start (or stop) stamp forward to stamp; an earlier
@@ -117,7 +122,8 @@ func (db *DB) TerminalAgentTurns(id int64) (AgentTurns, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d agent turns: %w", id, err)
 	}
-	return decodeAgentTurns(raw).Turns, nil
+	doc, _ := decodeAgentTurns(raw)
+	return doc.Turns, nil
 }
 
 // RecordTerminalAgentTurn records that subagent or teammate agentID started
@@ -128,7 +134,9 @@ func (db *DB) TerminalAgentTurns(id int64) (AgentTurns, error) {
 // run, which MarkTerminalAgentRun already cleared) writes nothing. One write
 // transaction, the row guards of SetTerminalAgentState; no other column
 // changes. It returns the row's turns after the write (also when the stamp
-// was not newer), or nil when a guard held it back.
+// was not newer), or nil when a guard held it back; with the turns,
+// ErrAgentTurnsUnreadable when it replaced a stored value it could not
+// decode.
 func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID string, start bool,
 	at time.Time) (AgentTurns, error) {
 	if agentID == "" {
@@ -149,7 +157,7 @@ func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID 
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d agent turns: %w", id, err)
 	}
-	doc := decodeAgentTurns(raw)
+	doc, readable := decodeAgentTurns(raw)
 	stamp := AgentStateStamp(at)
 	if stamp < doc.Since {
 		return nil, nil
@@ -166,6 +174,9 @@ func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID 
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("recording terminal session %d agent turn: %w", id, err)
+	}
+	if !readable {
+		return doc.Turns, fmt.Errorf("terminal session %d: %w", id, ErrAgentTurnsUnreadable)
 	}
 	return doc.Turns, nil
 }

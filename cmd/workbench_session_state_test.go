@@ -307,6 +307,12 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 		{name: "subagent start of an internal agent", stdin: func(*testing.T) io.Reader {
 			return strings.NewReader(subagentStart("a1", ""))
 		}},
+		{name: "subagent start over unreadable turns", stdin: func(*testing.T) io.Reader {
+			return strings.NewReader(subagentStart("aalpha-1", "alpha"))
+		}, setup: func(t *testing.T, database *db.DB, row int64) {
+			_, err := database.Exec(`UPDATE terminal_sessions SET agent_turns = 'not json' WHERE id = ?`, row)
+			require.NoError(t, err)
+		}, wantStderr: "unreadable agent_turns replaced"},
 		{name: "subagent start bad json", stdin: func(*testing.T) io.Reader {
 			return strings.NewReader(`{"hook_event_name":"SubagentStart","session_id":`)
 		}, wantStderr: "reading the hook input"},

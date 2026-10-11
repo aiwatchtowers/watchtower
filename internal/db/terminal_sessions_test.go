@@ -1023,7 +1023,7 @@ func requireNoAgentTurns(t *testing.T, d *DB, id int64, name string) {
 	if err := d.QueryRow(`SELECT agent_turns FROM terminal_sessions WHERE id = ?`, id).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	if turns := decodeAgentTurns(raw).Turns; len(turns) != 0 {
+	if doc, _ := decodeAgentTurns(raw); len(doc.Turns) != 0 {
 		t.Fatalf("%s: agent_turns kept: %s", name, raw.String)
 	}
 }
@@ -1191,12 +1191,13 @@ func TestProj11_AgentTurnWriteNeverTouchesTheState(t *testing.T) {
 	if _, err := d.GetTerminalSession(id); err != nil {
 		t.Fatalf("GetTerminalSession: %v", err)
 	}
-	// An unreadable stored value reads as no turns and is replaced.
+	// An unreadable stored value reads as no turns and is replaced, and the
+	// write says so (ErrAgentTurnsUnreadable).
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = 'not json' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
 	turns, err := d.RecordTerminalAgentTurn(id, pid, agentStateUUID, "aalpha-1", true, t0.Add(2*time.Second))
-	if err != nil || len(turns) != 1 || !turns.Open("aalpha-1") {
+	if !errors.Is(err, ErrAgentTurnsUnreadable) || len(turns) != 1 || !turns.Open("aalpha-1") {
 		t.Fatalf("after an unreadable value: %+v, %v", turns, err)
 	}
 }

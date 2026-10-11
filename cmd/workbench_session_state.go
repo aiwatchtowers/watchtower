@@ -245,19 +245,22 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in sessionStateI
 		return fmt.Errorf("the hook input carries no session id (%q)", briefClip(in.SessionID, 40))
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
-		return err
+		return fmt.Errorf("recording the agent turn: %w", err)
 	}
 	start := in.HookEventName == "SubagentStart"
 	turns, err := database.RecordTerminalAgentTurn(rowID, workbenchID, in.SessionID, in.AgentID, start,
 		at.Truncate(time.Millisecond))
-	if err != nil || turns == nil || start {
+	// A replaced unreadable value is reported, never a reason to skip the
+	// count: the turns returned are what the row now holds.
+	replaced := errors.Is(err, db.ErrAgentTurnsUnreadable)
+	if (err != nil && !replaced) || turns == nil || start {
 		return err
 	}
 	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID)
 	if !ok {
-		return nil
+		return err
 	}
-	return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, &remaining)
+	return errors.Join(err, recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, &remaining))
 }
 
 // toolRunTurn classifies a PostToolUse: subagent is true for one fired
