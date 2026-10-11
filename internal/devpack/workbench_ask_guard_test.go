@@ -200,7 +200,8 @@ func assertAskToolBlockGroup(t *testing.T, pre []any, bin string) {
 // PROJ-04 with PROJ-13: our edited marker prompt is ours, so an install
 // replaces it with the command entry (spec 2026-10-10-owner-asks-v2 Part
 // 4.8); the owner's hooks — a marker of another workbench, or the marker not
-// on the first line — and keys stay as they were.
+// on the first line — and keys stay as they were. Our command entry written
+// from another binary is updated in place, the owner's keys on it kept.
 func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) {
 	folder := fakeRepo(t)
 	const owner = `{
@@ -210,7 +211,8 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
       {"hooks": [{"type": "command", "command": "echo owner-stop", "x-owner": 1.50}]},
       {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 7]\nthe owner rewrote this", "timeout": 12}]},
       {"hooks": [{"type": "prompt", "prompt": "[watchtower-workbench ask-guard 8]\nanother workbench"}]},
-      {"hooks": [{"type": "prompt", "prompt": "Is the work done? [watchtower-workbench ask-guard 7]"}]}
+      {"hooks": [{"type": "prompt", "prompt": "Is the work done? [watchtower-workbench ask-guard 7]"}]},
+      {"hooks": [{"type": "command", "command": "/opt/old/watchtower workbench ask-guard --workbench 7 --stop", "timeout": 12, "x-ours": 3.50}]}
     ],
     "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo owner-pre", "x-owner-pre": 2.50}]}]
   }
@@ -235,16 +237,21 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
 			t.Fatalf("PROJ-04: Stop group %d changed: %#v", j, stop[i])
 		}
 	}
-	if len(stop) != 5 || len(promptHooks(stop)) != 2 || countCommand(stop, WorkbenchStopHookCommand(o.Bin, 7)) != 1 {
+	if len(stop) != 5 || len(promptHooks(stop)) != 2 || countCommand(stop, WorkbenchStopHookCommand(o.Bin, 7)) != 1 ||
+		countCommand(stop, WorkbenchAskGuardStopHookCommand(o.Bin, 7)) != 1 {
 		t.Fatalf("Stop must hold the owner's groups, the drift command and ours, got %#v", stop)
 	}
-	assertOneAskGuardCommand(t, stop, o.Bin)
+	// Ours is updated in place to this binary; the owner's keys on it stay.
+	ours := stop[3].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if ours["command"] != WorkbenchAskGuardStopHookCommand(o.Bin, 7) || ours["type"] != "command" || ours["timeout"] != float64(12) || ours["x-ours"] != float64(3.5) {
+		t.Fatalf("our command entry must be updated in place with its other keys kept, got %#v", ours)
+	}
 	pre := eventGroups(t, after, "PreToolUse")
 	if len(pre) != 2 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) {
 		t.Fatalf("PROJ-04: the owner's PreToolUse group must stay first and as it was, got %#v", pre)
 	}
 	raw := readTestFile(t, settingsFile(folder))
-	for _, lit := range []string{`"x-owner": 1.50`, `"x-owner-pre": 2.50`} {
+	for _, lit := range []string{`"x-owner": 1.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`} {
 		if !strings.Contains(raw, lit) {
 			t.Fatalf("PROJ-04: an owner number literal changed (%s):\n%s", lit, raw)
 		}
