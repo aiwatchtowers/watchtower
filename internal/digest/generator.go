@@ -50,6 +50,10 @@ type ClaudeGenerator struct {
 	// stdinOnly routes every user message through stdin regardless of its
 	// size (see SetStdinOnly).
 	stdinOnly bool
+	// isolated runs the child in its own process group without the
+	// variables in dropEnv (see SetIsolatedChild).
+	isolated bool
+	dropEnv  []string
 }
 
 // NewClaudeGenerator creates a generator that uses the Claude CLI.
@@ -64,6 +68,13 @@ func NewClaudeGenerator(modelLight, modelStrong, claudePath string) *ClaudeGener
 // user message carries the owner's chat text set it (CHAT-04: `chat title`);
 // every other caller keeps the size-based routing.
 func (g *ClaudeGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
+
+// SetIsolatedChild makes every subsequent Generate run claude through
+// IsolateChild: its own process group, killed whole on cancel and reaped
+// after the call, and none of the variables in dropEnv.
+func (g *ClaudeGenerator) SetIsolatedChild(dropEnv ...string) {
+	g.isolated, g.dropEnv = true, dropEnv
+}
 
 // modelForContext picks the tier model for a call: the source tag routes to
 // light or strong; an untagged call uses the strong model.
@@ -295,11 +306,17 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 		env = append(env, e)
 	}
 	cmd.Env = append(env, richPATH)
+	if g.isolated {
+		IsolateChild(cmd, g.dropEnv)
+	}
 
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	output, err := cmd.Output()
+	if g.isolated {
+		ReapChild(cmd)
+	}
 	if err != nil {
 		if execErr, ok := err.(*exec.Error); ok {
 			if execErr.Err == exec.ErrNotFound {
