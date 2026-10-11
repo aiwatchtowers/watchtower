@@ -130,4 +130,17 @@ final class OwnerAskStackTests: XCTestCase {
         XCTAssertEqual(stack.next(after: 9)?.id, 1, "from an ask no longer waiting, the oldest")
         XCTAssertNil(OwnerAskStack([try ask(1, session: 7, minutesAgo: 1)]).next(after: 1), "alone, nothing comes next")
     }
+
+    /// K in the drawer or on a stack card (board #412).
+    func testPreviousWalksBackAndWraps() throws {
+        let stack = OwnerAskStack([
+            try ask(1, session: 7, minutesAgo: 3),
+            try ask(2, session: 8, minutesAgo: 2),
+            try ask(3, session: nil, minutesAgo: 1)
+        ])
+        XCTAssertEqual(stack.previous(before: 2)?.id, 1)
+        XCTAssertEqual(stack.previous(before: 1)?.id, 3, "before the first it wraps")
+        XCTAssertEqual(stack.previous(before: 9)?.id, 3, "from an ask no longer waiting, the newest")
+        XCTAssertNil(OwnerAskStack([try ask(1, session: 7, minutesAgo: 1)]).previous(before: 1), "alone, nothing comes before")
+    }
 }

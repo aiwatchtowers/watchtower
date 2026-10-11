@@ -8,12 +8,16 @@ import WatchtowerCore
 /// one-tap row (`OwnerAskQuickActions`), Details opening the drawer — one
 /// raised from the terminal's question says "From chat · N min". Under it,
 /// the session's Quick answers' notices (`quickNotices`) until dismissed —
-/// also once no ask waits.
+/// also once no ask waits. Its title part holding the keyboard (Tab with
+/// keyboard navigation on; a click leaves it with the terminal), it takes
+/// `OwnerAskCardKeys`: 1–3 answer a Quick ask, Return opens and lets go of
+/// the keyboard (board #412). The Reply field is never inside it.
 struct OwnerAskBanner: View {
     /// The session's open asks, oldest first; may be empty while notices show.
     let asks: [OwnerAsk]
     let notices: [OwnerAsksViewModel.QuickNotice]
     let vm: WorkbenchesViewModel
+    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -31,7 +35,7 @@ struct OwnerAskBanner: View {
     private func askRow(_ first: OwnerAsk) -> some View {
         if let row = OwnerAskQuickRow(ask: first) {
             VStack(alignment: .leading, spacing: 6) {
-                titleLine(first)
+                titleLine(first).modifier(cardFocus(first))
                 OwnerAskQuickActions(vm: vm, ask: first, row: row) { open(first) }
                     // A new ask starts with its own Reply state, not the last one's.
                     .id(first.id)
@@ -41,8 +45,23 @@ struct OwnerAskBanner: View {
                 titleLine(first)
                 Button("Open") { open(first) }
                     .controlSize(.small)
+                    .help("Open in the drawer (Return while the banner has the keyboard)")
             }
+            .modifier(cardFocus(first))
         }
+    }
+
+    private func cardFocus(_ first: OwnerAsk) -> OwnerAskCardFocus<Bool> {
+        let keys = OwnerAskCardKeys(vm: vm, ask: first) {
+            focused
+        } open: {
+            open(first)
+            vm.asks.setDrawerKeysActive(true, projectID: first.projectID)
+        } release: {
+            focused = false
+            OwnerAskCardKeys.releaseKeyboard()
+        }
+        return OwnerAskCardFocus(focus: $focused, value: true, keys: keys)
     }
 
     private func titleLine(_ first: OwnerAsk) -> some View {

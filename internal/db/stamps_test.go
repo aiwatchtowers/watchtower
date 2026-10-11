@@ -56,3 +56,21 @@ func TestStampFixtureRoundTrips(t *testing.T) {
 		assert.True(t, has, c)
 	}
 }
+
+// ParseAgentStateStamp agrees with the fixture: every valid stamp parses to
+// its instant, every invalid one is refused.
+func TestParseAgentStateStampOverTheFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "stamps", "stamps.json"))
+	require.NoError(t, err)
+	var f stampFixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	for _, v := range f.Valid {
+		at, ok := ParseAgentStateStamp(v.Stamp)
+		assert.True(t, ok, v.Stamp)
+		assert.Equal(t, v.UnixMS, at.UnixMilli(), v.Stamp)
+	}
+	for _, s := range f.Invalid {
+		_, ok := ParseAgentStateStamp(s)
+		assert.False(t, ok, "%q must not parse", s)
+	}
+}

@@ -35,7 +35,7 @@ func (db *DB) OwnerPresentIn(sessionID int64, now time.Time) (bool, error) {
 	if !session.Valid || session.Int64 != sessionID {
 		return false, nil
 	}
-	seen, ok := parseAgentStamp(seenAt)
+	seen, ok := ParseAgentStateStamp(seenAt)
 	if !ok {
 		return false, nil
 	}

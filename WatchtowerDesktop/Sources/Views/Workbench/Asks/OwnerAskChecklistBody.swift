@@ -4,7 +4,8 @@ import WatchtowerCore
 /// A manual check's steps (spec 2026-10-03 Part 8, board #502): each marked
 /// Works, Doesn't work (with "What happened?") or Didn't check; an item left
 /// unmarked is sent as Didn't check. The summary line counts the marks.
-/// Read-only for a closed ask.
+/// Read-only for a closed ask. From the keyboard (board #412) the drawer's
+/// cursor outlines a step, 1–3 mark it and Return goes into its note.
 struct OwnerAskChecklistBody: View {
     let items: [OwnerAskCheckItem]
     let marks: [String: OwnerAskAnswer.CheckState]
@@ -14,6 +15,10 @@ struct OwnerAskChecklistBody: View {
     var setNote: (String, String) -> Void = { _, _ in }
     /// ⌘↩ (false) / ⌘⇧↩ (true) in a note: the ask's answer buttons.
     var onKey: (Bool) -> Void = { _ in }
+    /// The drawer's keyboard cursor and its Return (board #412).
+    var keyboardStop: OwnerAskKeyStop?
+    var fieldFocus: OwnerAskFieldFocus?
+    var onLeaveField: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -43,7 +48,7 @@ struct OwnerAskChecklistBody: View {
                 }
             }
             HStack(spacing: 4) {
-                ForEach(OwnerAskPresentation.checkStates, id: \.state) { option in
+                ForEach(Array(OwnerAskPresentation.checkStates.enumerated()), id: \.element.state) { index, option in
                     let value = option.state
                     Button {
                         mark(item.id, state == value ? nil : value)
@@ -56,6 +61,7 @@ struct OwnerAskChecklistBody: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!editable)
+                    .help(editable ? "\(option.label) (press \(index + 1); Tab moves between steps)" : "")
                     .accessibilityAddTraits(state == value ? .isSelected : [])
                 }
             }
@@ -67,6 +73,8 @@ struct OwnerAskChecklistBody: View {
                     .padding(.leading, 18)
             }
         }
+        .ownerAskKeyCursor(keyboardStop == .step(item.id))
+        .id(OwnerAskKeyStop.step(item.id))
     }
 
     @ViewBuilder
@@ -78,7 +86,9 @@ struct OwnerAskChecklistBody: View {
                 minHeight: CommentTextEditor.formMinHeight,
                 maxHeight: CommentTextEditor.formMaxHeight,
                 onSubmit: { onKey(false) },
-                onShiftSubmit: { onKey(true) }
+                onShiftSubmit: { onKey(true) },
+                onCancel: onLeaveField,
+                focusRequest: OwnerAskFieldFocus.request(fieldFocus, for: .step(item.id))
             )
         } else if let note = notes[item.id], !note.isEmpty {
             MarkdownView(text: note, lineBreaks: true).font(.callout).foregroundStyle(.secondary)
