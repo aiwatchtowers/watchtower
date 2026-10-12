@@ -173,11 +173,18 @@ func procInside(p Proc, roots []string) bool {
 	return false
 }
 
-// protectedExe: Watchtower's CLI, daemon or app, Claude Code and Codex are
-// never orphans.
+// protectedExe: Watchtower's CLI, daemon or app, Claude Code (its native
+// install runs from .../claude/versions/<version>) and Codex are never
+// orphans; neither is a process whose executable is unknown (fail closed).
 func protectedExe(exe string) bool {
+	if exe == "" {
+		return true
+	}
 	switch filepath.Base(exe) {
 	case "watchtower", "claude", "codex":
+		return true
+	}
+	if strings.Contains(exe, "/claude/versions/") {
 		return true
 	}
 	return strings.Contains(exe, "/Watchtower") && strings.Contains(exe, ".app/")
