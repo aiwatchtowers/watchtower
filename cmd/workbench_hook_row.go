@@ -50,28 +50,19 @@ func hookAgentFor(cmd *cobra.Command, raw string) (agentkind.Kind, error) {
 	return agentkind.Codex, nil
 }
 
-// resolveHookRow is the terminal_sessions row a hook of agent runs in, named
-// by the terminal env var (read through env). ok is false, with a nil error,
-// when the hook has no row to act on: no or an unparsable variable for
-// Codex, a deleted row, a row of another kind or without a workbench. For
-// Claude Code the row must also be of workbench flagWorkbench (today's
-// guard), and an unparsable variable is an error as before; a Codex row
-// gives its own workbench and flagWorkbench is not read. err is a database
-// read failure.
-func resolveHookRow(d *db.DB, agent agentkind.Kind, flagWorkbench int64, env func(string) string) (db.TerminalSession, bool, error) {
-	if !agentkind.IsAgent(string(agent)) {
-		return db.TerminalSession{}, false, fmt.Errorf("unknown agent %q", briefClip(string(agent), 40))
-	}
+// resolveCodexHookRow is the codex terminal_sessions row a Codex hook runs
+// in, named by the terminal env var (read through env); the row gives its
+// own workbench. ok is false, with a nil error, when the hook has no row to
+// act on: no or an unparsable variable, a deleted row, a row of another kind
+// or without a workbench. err is a database read failure.
+func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession, bool, error) {
 	raw := strings.TrimSpace(env(terminalSessionEnv))
 	if raw == "" {
 		return db.TerminalSession{}, false, nil
 	}
 	rowID, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || rowID <= 0 {
-		if agent == agentkind.Codex {
-			return db.TerminalSession{}, false, nil
-		}
-		return db.TerminalSession{}, false, fmt.Errorf("invalid %s %q", terminalSessionEnv, briefClip(raw, 40))
+		return db.TerminalSession{}, false, nil
 	}
 	row, err := d.GetTerminalSession(rowID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
@@ -80,8 +71,7 @@ func resolveHookRow(d *db.DB, agent agentkind.Kind, flagWorkbench int64, env fun
 	if err != nil {
 		return db.TerminalSession{}, false, err
 	}
-	if row.Kind != string(agent) || !row.WorkbenchID.Valid || row.WorkbenchID.Int64 <= 0 ||
-		(agent == agentkind.Claude && row.WorkbenchID.Int64 != flagWorkbench) {
+	if row.Kind != string(agentkind.Codex) || !row.WorkbenchID.Valid || row.WorkbenchID.Int64 <= 0 {
 		return db.TerminalSession{}, false, nil
 	}
 	return *row, true, nil
@@ -101,7 +91,7 @@ func codexHookRow(stderr io.Writer, what string, open func() (*db.DB, error)) (d
 		fmt.Fprintf(stderr, "watchtower: %s: %v\n", what, err)
 		return nil, db.TerminalSession{}, false
 	}
-	row, ok, err = resolveHookRow(database, agentkind.Codex, 0, os.Getenv)
+	row, ok, err = resolveCodexHookRow(database, os.Getenv)
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: %s: %v\n", what, err)
 	}

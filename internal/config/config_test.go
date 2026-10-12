@@ -8,8 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/agentkind"
 )
 
 func writeTestConfig(t *testing.T, content string) string {
@@ -719,26 +717,22 @@ func TestFeatureGateDefaults(t *testing.T) {
 	}
 }
 
-func TestConfig_DefaultAgentUnknownReadsClaude(t *testing.T) {
+func TestConfig_DefaultAgentReadsTheRawValue(t *testing.T) {
 	for _, tc := range []struct {
 		name, yaml string
 		raw        string
-		want       agentkind.Kind
 	}{
-		{"absent key defaults to claude", "", "claude", agentkind.Claude},
-		{"claude", "workbench:\n  default_agent: claude\n", "claude", agentkind.Claude},
-		{"codex", "workbench:\n  default_agent: codex\n", "codex", agentkind.Codex},
-		{"empty", "workbench:\n  default_agent: \"\"\n", "", agentkind.Claude},
-		{"unknown agent", "workbench:\n  default_agent: gemini\n", "gemini", agentkind.Claude},
-		{"shell is no agent", "workbench:\n  default_agent: shell\n", "shell", agentkind.Claude},
-		{"wrong case", "workbench:\n  default_agent: Codex\n", "Codex", agentkind.Claude},
+		{"absent key defaults to claude", "", "claude"},
+		{"claude", "workbench:\n  default_agent: claude\n", "claude"},
+		{"codex", "workbench:\n  default_agent: codex\n", "codex"},
+		{"empty", "workbench:\n  default_agent: \"\"\n", ""},
+		{"unknown agent", "workbench:\n  default_agent: gemini\n", "gemini"},
+		{"wrong case", "workbench:\n  default_agent: Codex\n", "Codex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := Load(writeTestConfig(t, tc.yaml))
 			require.NoError(t, err)
 			assert.Equal(t, tc.raw, cfg.Workbench.DefaultAgent)
-			assert.Equal(t, tc.want, cfg.Workbench.Agent())
 		})
 	}
-	assert.Equal(t, agentkind.Claude, WorkbenchConfig{}.Agent(), "the zero value reads Claude Code")
 }

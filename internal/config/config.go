@@ -416,15 +416,6 @@ type WorkbenchConfig struct {
 	DefaultAgent string `mapstructure:"default_agent"`
 }
 
-// Agent is DefaultAgent as an agent kind; an empty or unknown value reads
-// Claude Code, today's only agent before the key existed.
-func (c WorkbenchConfig) Agent() agentkind.Kind {
-	if k, ok := agentkind.Parse(c.DefaultAgent); ok {
-		return k
-	}
-	return agentkind.Claude
-}
-
 // Load reads config from the given path, binds env vars, and returns the config.
 func Load(configPath string) (*Config, error) {
 	v := viper.New()

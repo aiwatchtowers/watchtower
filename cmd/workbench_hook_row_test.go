@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
@@ -42,11 +41,11 @@ func envOf(rowID string) func(string) string {
 
 func rowEnv(id int64) func(string) string { return envOf(strconv.FormatInt(id, 10)) }
 
-func TestResolveHookRow_CodexFromEnv(t *testing.T) {
+func TestResolveCodexHookRow_CodexFromEnv(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	codex := insertHookRow(t, database, pid, "codex")
 
-	row, ok, err := resolveHookRow(database, agentkind.Codex, 0, envOf(" "+strconv.FormatInt(codex, 10)+"\n"))
+	row, ok, err := resolveCodexHookRow(database, envOf(" "+strconv.FormatInt(codex, 10)+"\n"))
 
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -55,76 +54,46 @@ func TestResolveHookRow_CodexFromEnv(t *testing.T) {
 	assert.Equal(t, "codex", row.Kind)
 	assert.False(t, row.ClaudeSessionID.Valid, "no session id before the first SessionStart")
 
-	row, ok, err = resolveHookRow(database, agentkind.Codex, pid+100, rowEnv(codex))
+	row, ok, err = resolveCodexHookRow(database, rowEnv(codex))
 	require.NoError(t, err)
-	assert.True(t, ok, "a codex hook has no --workbench to compare")
+	assert.True(t, ok)
 	assert.Equal(t, codex, row.ID)
 }
 
-func TestResolveHookRow_NoEnvIsSilentNoop(t *testing.T) {
+func TestResolveCodexHookRow_NoEnvIsSilentNoop(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	insertHookRow(t, database, pid, "codex")
 	for _, raw := range []string{"", "  ", "abc", "-3", "0", "1.5", "99999999999999999999"} {
-		row, ok, err := resolveHookRow(database, agentkind.Codex, 0, envOf(raw))
+		row, ok, err := resolveCodexHookRow(database, envOf(raw))
 		require.NoError(t, err, "%q", raw)
 		assert.False(t, ok, "%q", raw)
 		assert.Equal(t, db.TerminalSession{}, row)
 	}
 }
 
-func TestResolveHookRow_RowOfAnotherKindIsNoop(t *testing.T) {
+func TestResolveCodexHookRow_RowOfAnotherKindIsNoop(t *testing.T) {
 	database, pid, claude := briefSessionFixture(t)
 	shell := insertHookRow(t, database, pid, "shell")
 	orphan := insertHookRow(t, database, 0, "codex") // a codex row without a workbench
 	for name, id := range map[string]int64{"claude": claude, "shell": shell, "codex without a workbench": orphan} {
-		row, ok, err := resolveHookRow(database, agentkind.Codex, pid, rowEnv(id))
+		row, ok, err := resolveCodexHookRow(database, rowEnv(id))
 		require.NoError(t, err, name)
 		assert.False(t, ok, name)
 		assert.Equal(t, db.TerminalSession{}, row, name)
 	}
 }
 
-func TestResolveHookRow_DeletedRowIsNoop(t *testing.T) {
+func TestResolveCodexHookRow_DeletedRowIsNoop(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	codex := insertHookRow(t, database, pid, "codex")
 	_, err := database.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, codex)
 	require.NoError(t, err)
 
-	row, ok, err := resolveHookRow(database, agentkind.Codex, 0, rowEnv(codex))
+	row, ok, err := resolveCodexHookRow(database, rowEnv(codex))
 
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Equal(t, db.TerminalSession{}, row)
-}
-
-func TestResolveHookRow_ClaudePathUnchanged(t *testing.T) {
-	database, pid, claude := briefSessionFixture(t)
-	codex := insertHookRow(t, database, pid, "codex")
-
-	row, ok, err := resolveHookRow(database, agentkind.Claude, pid, rowEnv(claude))
-	require.NoError(t, err)
-	require.True(t, ok)
-	assert.Equal(t, claude, row.ID)
-	assert.Equal(t, briefLaunchID, row.ClaudeSessionID.String)
-
-	_, ok, err = resolveHookRow(database, agentkind.Claude, pid+1, rowEnv(claude))
-	require.NoError(t, err)
-	assert.False(t, ok, "a claude row of another workbench than --workbench")
-
-	_, ok, err = resolveHookRow(database, agentkind.Claude, pid, rowEnv(codex))
-	require.NoError(t, err)
-	assert.False(t, ok, "a claude hook never takes a codex row")
-
-	_, ok, err = resolveHookRow(database, agentkind.Claude, pid, envOf(""))
-	require.NoError(t, err)
-	assert.False(t, ok, "no env var: an external terminal")
-
-	_, ok, err = resolveHookRow(database, agentkind.Claude, pid, envOf("abc"))
-	assert.ErrorContains(t, err, `invalid `+terminalSessionEnv+` "abc"`, "reported as terminalSessionRowID does")
-	assert.False(t, ok)
-
-	_, _, err = resolveHookRow(database, "shell", pid, rowEnv(claude))
-	assert.ErrorContains(t, err, "unknown agent")
 }
 
 // codexHookCase is one run of a hook command with --agent codex.

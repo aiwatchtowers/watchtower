@@ -55,7 +55,6 @@ final class TerminalSessionPolicyTests: XCTestCase {
 
     func testAgentKindNamesAndSQLList() {
         XCTAssertEqual(AgentKind.allCases.map(\.displayName), ["Claude Code", "Codex"])
-        XCTAssertEqual(AgentKind.allCases.map(\.label), ["claude-code", "codex-cli"])
         XCTAssertEqual(AgentKind.sqlKinds, "('claude','codex')")
     }
 
