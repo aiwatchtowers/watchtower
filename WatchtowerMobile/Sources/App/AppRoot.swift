@@ -60,12 +60,12 @@ final class AppRoot {
     static func live() throws -> AppRoot {
         let defaults = UserDefaults.standard
         guard CloudKitTransport.entitlementPresent() else {
-            return demo(try AppEnvironment(), defaults: defaults)
+            return demo(try AppEnvironment(energy: BatteryDiagnostics.shared.counter), defaults: defaults)
         }
         let store = LinkStore(defaults: defaults)
         let identity = DeviceIdentity.current(defaults: defaults)
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
-            try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device)
+            try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device, energy: BatteryDiagnostics.shared.counter)
         }
         let scope = store.bootScope
         let hubID = store.bootHubID
@@ -237,7 +237,7 @@ extension AppRoot: LinkHost {
     }
 
     func fetchGrant(deviceID: String) async -> DeviceGrant? {
-        await env.refresh()
+        await env.refresh(.link)
         let store = env.store
         do {
             return try await store.reader.read { db in

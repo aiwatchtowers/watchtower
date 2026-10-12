@@ -13,18 +13,39 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppDelegate")
 
+    /// Keeps MetricKit's reports for Settings → Battery; held for the
+    /// process's lifetime.
+    private var metricSubscriber: MetricSubscriber?
+
+    /// Counts the cold launch, background (a push or fetch woke the app)
+    /// or foreground, and subscribes to MetricKit. Nothing while the app
+    /// only hosts XCTest.
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        guard !WatchtowerMobileApp.Boot.isHostingTests(ProcessInfo.processInfo.environment) else { return true }
+        let diagnostics = BatteryDiagnostics.shared
+        diagnostics.counter.record(application.applicationState == .background ? .coldLaunchBackground : .coldLaunchForeground)
+        let subscriber = MetricSubscriber(history: diagnostics.metrics)
+        subscriber.register()
+        metricSubscriber = subscriber
+        return true
+    }
+
     func application(
         _ application: UIApplication,
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        BatteryDiagnostics.shared.counter.record(.silentPush)
         Task { @MainActor in
             guard let env = Self.root?.env else {
                 Self.logger.warning("remote notification with no environment (degraded boot?)")
                 completionHandler(.noData)
                 return
             }
-            completionHandler(await env.refresh() ? .newData : .failed)
+            completionHandler(await env.refresh(.push) ? .newData : .failed)
         }
     }
 }

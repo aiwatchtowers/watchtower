@@ -97,17 +97,28 @@ struct ObservationDiagnostic: Identifiable, Equatable {
 }
 
 /// Live Settings state: one observation over the heartbeat, this phone's
-/// grant and the outbox overlay, re-read on every replica write.
+/// grant and the outbox overlay, re-read on every replica write; and the
+/// Battery section, re-read by `refreshBattery()`.
 @MainActor
 @Observable
 final class SettingsViewModel {
     private(set) var snapshot = SettingsSnapshot()
+    /// Settings → Battery; nil until the first `refreshBattery()`.
+    private(set) var battery: BatteryReport?
     @ObservationIgnored private var cancellable: ResilientObservation?
     @ObservationIgnored private var observedDeviceID: String?
     @ObservationIgnored private let health: ObservationHealth
+    @ObservationIgnored private let diagnostics: BatteryDiagnostics
 
-    init(health: ObservationHealth = .shared) {
+    init(health: ObservationHealth = .shared, diagnostics: BatteryDiagnostics = .shared) {
         self.health = health
+        self.diagnostics = diagnostics
+    }
+
+    /// Re-reads the counters and the newest MetricKit report (neither is
+    /// observable: the view calls this on appear and periodically).
+    func refreshBattery() {
+        battery = BatteryReport(diagnostics: diagnostics)
     }
 
     /// One row per replica observation that failed since launch, in name

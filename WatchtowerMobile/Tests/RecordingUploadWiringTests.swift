@@ -71,7 +71,7 @@ final class RecordingUploadWiringTests: XCTestCase {
     func testAnUploadWhileTheMacSleepsStaysPendingAndSaysSo() async throws {
         let wired = try await makeWired()
         let recording = try await recordAndStop(wired)
-        await wired.env.refresh()
+        await wired.env.refresh(.pull)
 
         let uploads = try await relayUploads(in: wired.transport)
         XCTAssertEqual(uploads.map(\.status), [.pending], "no echo from a sleeping Mac")
@@ -97,7 +97,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path))
 
         try await echo(recording, status: .received, in: wired.transport)
-        await wired.env.refresh()
+        await wired.env.refresh(.pull)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "received → the local copy goes")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))
@@ -110,7 +110,7 @@ final class RecordingUploadWiringTests: XCTestCase {
         let recording = try await recordAndStop(wired)
 
         try await echo(recording, status: .failed, error: "The Mac could not save the recording.", in: wired.transport)
-        await wired.env.refresh()
+        await wired.env.refresh(.pull)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: recording.fileURL(in: wired.directory).path), "failed → the only copy is kept")
         let row = try XCTUnwrap(try wired.env.store.phoneRecording(id: recording.id))

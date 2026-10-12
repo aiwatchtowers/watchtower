@@ -11,6 +11,34 @@ enum TransportKind: String, Sendable {
     case inMemoryDemo
 }
 
+/// What started a fetch (`AppEnvironment.refresh(_:)`): counted per day for
+/// the battery diagnostics.
+enum FetchTrigger: Sendable {
+    /// The fetch loop's timed cycle.
+    case loop
+    /// A silent push.
+    case push
+    /// Pull to refresh.
+    case pull
+    /// The loop's first cycle on the return to the foreground.
+    case foreground
+    /// The boot's first fetch.
+    case launch
+    /// The link flow's grant reads.
+    case link
+
+    var energyEvent: EnergyEvent {
+        switch self {
+        case .loop: .fetchLoop
+        case .push: .fetchPush
+        case .pull: .fetchPull
+        case .foreground: .fetchForeground
+        case .launch: .fetchLaunch
+        case .link: .fetchLink
+        }
+    }
+}
+
 /// What the CloudKit transport tells the link flow (spec §9).
 enum LinkSignal: Sendable {
     /// `shared` scope: the Mac's zones are gone (`TransportEvent.unlinked`).
@@ -114,6 +142,9 @@ final class AppEnvironment {
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
     @ObservationIgnored private let uploader: RecordingUploader
+    /// Counts fetches by trigger (the battery diagnostics); nil counts
+    /// nothing.
+    @ObservationIgnored private let energy: EnergyCounter?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     /// The loop's wait between cycles; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -130,31 +161,36 @@ final class AppEnvironment {
     /// in-memory demo transport with DemoSeed. `recordingsDirectory` is for
     /// tests: nil keeps the phone's own recordings folder. A live build
     /// runs `hubID`'s zones in `scope`'s database, linked as `linkedDevice`
-    /// (`AppRoot` reads all three from the `LinkStore`).
+    /// (`AppRoot` reads all three from the `LinkStore`). `energy` counts
+    /// the fetches, the CloudKit requests and the upload attempts (the app
+    /// passes `BatteryDiagnostics.shared.counter`; nil counts nothing).
     convenience init(
         recordingsDirectory: URL? = nil,
         scope: CloudDatabaseScope = .private,
         hubID: String = AppEnvironment.unlinkedHubID,
-        linkedDevice: LinkedDevice? = nil
+        linkedDevice: LinkedDevice? = nil,
+        energy: EnergyCounter? = nil
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
             let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
             try self.init(
                 transport: CloudKitTransport(
-                    store: transportStore, scope: scope, hubID: hubID, role: .phone
+                    store: transportStore, scope: scope, hubID: hubID, role: .phone, energy: energy
                 ),
                 replicaPath: Self.liveReplicaPath(in: directory),
                 transportKind: .cloudKit,
                 linkedDevice: linkedDevice,
-                recordingsDirectory: recordingsDirectory
+                recordingsDirectory: recordingsDirectory,
+                energy: energy
             )
         } else {
             try self.init(
                 transport: InMemoryCloudTransport(),
                 replicaPath: try Self.applicationSupportDirectory().appendingPathComponent("replica.sqlite").path,
                 transportKind: .inMemoryDemo,
-                recordingsDirectory: recordingsDirectory
+                recordingsDirectory: recordingsDirectory,
+                energy: energy
             )
         }
     }
@@ -165,7 +201,8 @@ final class AppEnvironment {
     /// builds the recorder over the environment's uploader; tests pass a
     /// fake audio engine and clock, the app the microphone. `sleep` is the
     /// fetch loop's wait between cycles. `linkedDevice` is the saved link
-    /// (the demo kind is always `DemoSeed.device`).
+    /// (the demo kind is always `DemoSeed.device`). `energy` counts the
+    /// fetches and the upload attempts.
     init(
         transport: any CloudSyncTransport,
         replicaPath: String,
@@ -174,7 +211,8 @@ final class AppEnvironment {
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
         makeRecorder: ((RecordingUploader) throws -> PhoneRecorderController)? = nil,
-        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        energy: EnergyCounter? = nil
     ) throws {
         assert(
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
@@ -182,6 +220,7 @@ final class AppEnvironment {
         )
         store = try ReplicaStore(path: replicaPath)
         self.sleep = sleep
+        self.energy = energy
         self.transport = transport
         self.transportKind = transportKind
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
@@ -213,7 +252,8 @@ final class AppEnvironment {
             transport: transport,
             store: store,
             directory: try recordingsDirectory ?? PhoneRecorderController.defaultDirectory(),
-            deviceID: device?.deviceID
+            deviceID: device?.deviceID,
+            energy: energy
         )
         self.uploader = uploader
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
@@ -269,7 +309,7 @@ final class AppEnvironment {
                 await cloud.start()
             }
         }
-        await refresh()
+        await refresh(.launch)
         // An action the Mac never answered within 24 h is failed locally, so
         // the queued count never counts it forever.
         do {
@@ -284,7 +324,7 @@ final class AppEnvironment {
         await recorder.recoverOnLaunch()
         await recorder.uploadPending()
         isBootstrapped = true
-        restartLoop()
+        restartLoop(firstCycle: .loop)
     }
 
     /// The outbox's one applied observer, shared by the app and the tests:
@@ -312,9 +352,11 @@ final class AppEnvironment {
 
     /// One fetch: DataZone, then RelayZone echoes. Returns false when the
     /// data fetch failed. Used by the loop, silent pushes and pull to
-    /// refresh; every success stamps `lastSyncAt`.
+    /// refresh; every success stamps `lastSyncAt`. `trigger` is counted
+    /// for the battery diagnostics.
     @discardableResult
-    func refresh() async -> Bool {
+    func refresh(_ trigger: FetchTrigger) async -> Bool {
+        energy?.record(trigger.energyEvent)
         do {
             _ = try await hydrator.hydrateOnce()
         } catch {
@@ -335,7 +377,7 @@ final class AppEnvironment {
     func setFetchInterval(_ interval: Duration) {
         guard interval != fetchInterval else { return }
         fetchInterval = interval
-        restartLoop()
+        restartLoop(firstCycle: .loop)
     }
 
     /// Scene phase: the loop pauses in the background and resumes, with an
@@ -345,7 +387,7 @@ final class AppEnvironment {
         isActive = active
         // A capture keeps going in the background, but its timer slows.
         recorder.setForeground(active)
-        restartLoop()
+        restartLoop(firstCycle: .foreground)
     }
 
     /// The recorder's "See recordings": closes the finished recorder and
@@ -398,17 +440,21 @@ final class AppEnvironment {
         await (transport as? CloudKitTransport)?.stop()
     }
 
-    private func restartLoop() {
+    /// `firstCycle` is what the loop's immediate first cycle counts as;
+    /// the timed ones after it count as `.loop`.
+    private func restartLoop(firstCycle: FetchTrigger) {
         loopTask?.cancel()
         loopTask = nil
         guard isBootstrapped, isActive, !stopped else { return }
         let interval = fetchInterval
         let sleep = sleep
         loopTask = Task { [weak self] in
+            var trigger = firstCycle
             while !Task.isCancelled {
                 guard let self else { return }
                 self.fetchCycles += 1
-                await self.refresh()
+                await self.refresh(trigger)
+                trigger = .loop
                 try? await sleep(interval)
             }
         }
@@ -426,7 +472,7 @@ final class AppEnvironment {
 
     /// The app group container's Application Support directory. A signed
     /// build without it throws instead of falling back silently.
-    static func appGroupDirectory() throws -> URL {
+    nonisolated static func appGroupDirectory() throws -> URL {
         guard let group = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID) else {
             logger.fault("app group container \(appGroupID, privacy: .public) is unavailable")
             throw AppEnvironmentError.appGroupUnavailable
@@ -438,7 +484,7 @@ final class AppEnvironment {
 
     /// Unsigned builds keep the replica in Application Support, which an
     /// uninstall removes (spec §10).
-    private static func applicationSupportDirectory() throws -> URL {
+    nonisolated static func applicationSupportDirectory() throws -> URL {
         try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

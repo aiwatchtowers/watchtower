@@ -64,7 +64,7 @@ struct WorkbenchListView: View {
                 }
             }
             .listStyle(.plain)
-            .refreshable { await env.refresh() }
+            .refreshable { await env.refresh(.pull) }
         }
     }
 }

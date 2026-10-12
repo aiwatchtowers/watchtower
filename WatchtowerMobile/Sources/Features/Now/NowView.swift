@@ -43,7 +43,7 @@ struct NowView: View {
             .navigationDestination(for: AskRoute.self) { route in
                 AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
             }
-            .refreshable { await env.refresh() }
+            .refreshable { await env.refresh(.pull) }
         }
     }
 

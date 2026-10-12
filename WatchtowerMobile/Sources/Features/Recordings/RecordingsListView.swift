@@ -19,7 +19,7 @@ struct RecordingsListView: View {
             ))
         }
         .navigationTitle("Recordings")
-        .refreshable { await env.refresh() }
+        .refreshable { await env.refresh(.pull) }
     }
 
     private func content(_ model: RecordingsListModel) -> some View {

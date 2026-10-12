@@ -16,6 +16,9 @@ struct SettingsView: View {
             accountsSection
             workbenchSection
             notificationsSection
+            if let battery = model.battery {
+                BatterySection(report: battery)
+            }
             Section {
                 Text("Chat without the Mac — later")
                     .foregroundStyle(.secondary)
@@ -28,6 +31,14 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .task(id: env.linkedDevice?.deviceID) {
             model.start(store: env.store, deviceID: env.linkedDevice?.deviceID)
+        }
+        // The counters change on every fetch; re-read them while Settings
+        // is on screen.
+        .task {
+            while !Task.isCancelled {
+                model.refreshBattery()
+                try? await Task.sleep(for: .seconds(30))
+            }
         }
     }
 

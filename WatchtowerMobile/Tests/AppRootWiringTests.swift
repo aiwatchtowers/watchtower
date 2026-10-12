@@ -163,7 +163,7 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: replicaPath), "the live replica's file is in place")
         let now = Date()
         try await transports[2].save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
-        let fetched = await last.refresh()
+        let fetched = await last.refresh(.pull)
         XCTAssertTrue(fetched)
         XCTAssertEqual(try sliceCountSync(last), 1, "the live replica takes writes")
     }
