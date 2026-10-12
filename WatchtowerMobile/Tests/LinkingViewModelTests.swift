@@ -560,6 +560,48 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertTrue(container.left.isEmpty, "a private link has no shares to leave")
     }
 
+    /// Board #63: an unlink during a capture says the recording was kept,
+    /// with what else was not sent.
+    func testUnlinkDuringACaptureSaysTheRecordingWasKept() async throws {
+        let model = try await linkedModel(code())
+        host.notSentCount = 2
+        host.stopsRecording = true
+
+        await model.unlink()
+
+        XCTAssertEqual(model.notice, .recordingKept(notSent: 2))
+        XCTAssertEqual(
+            LinkNotice.recordingKept(notSent: 2).message,
+            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link again. "
+                + "Not sent: 2 items were still waiting for your Mac"
+        )
+        XCTAssertEqual(
+            LinkNotice.recordingKept(notSent: 0).message,
+            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link again"
+        )
+        model.startScan()
+        XCTAssertNil(model.notice, "read by the next scan")
+    }
+
+    func testRemovedOrAnAccountSwitchDuringACaptureSaysTheRecordingWasKept() async throws {
+        container.userRecordNameValue = "_colleague-a"
+        let removed = try await linkedModel(code())
+        host.stopsRecording = true
+
+        await removed.removedByMac()
+
+        XCTAssertEqual(removed.notice, .recordingKept(notSent: 0), "the kept recording also says the link ended")
+
+        let switched = try await linkedModel(code())
+        host.stopsRecording = true
+        container.userRecordNameValue = "_colleague-b"
+
+        await switched.accountChanged()
+
+        XCTAssertNil(switched.link)
+        XCTAssertEqual(switched.notice, .recordingKept(notSent: 0))
+    }
+
     func testUnlinkInSharedScopeLeavesTheShares() async throws {
         container.userRecordNameValue = "_colleague-a"
         let model = try await linkedModel(code())

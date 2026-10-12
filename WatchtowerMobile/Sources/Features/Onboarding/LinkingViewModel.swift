@@ -107,7 +107,7 @@ final class LinkingViewModel {
         // A report about the last link is read by now; moved and stale stay
         // until the heartbeat clears them.
         switch notice {
-        case .removed, .notSent: notice = nil
+        case .removed, .notSent, .recordingKept: notice = nil
         case .moved, .stale, nil: break
         }
         phase = .scanning
@@ -195,8 +195,7 @@ final class LinkingViewModel {
             return
         }
         phase = .checking
-        let notSent = await unlinkCurrent(writeUnlinked: true)
-        notice = notSent > 0 ? .notSent(notSent) : nil
+        notice = LinkNotice.after(await unlinkCurrent(writeUnlinked: true))
         await connect(request.payload, userRecordName: request.userRecordName)
     }
 
@@ -339,9 +338,12 @@ final class LinkingViewModel {
         store.pending = nil
         link = record
         writesBlocked = false
-        // A notice about an old link no longer applies; the "Not sent"
-        // report of a switch's unlink stays.
-        if case .notSent = notice {} else { notice = nil }
+        // A notice about an old link no longer applies; the report of a
+        // switch's unlink ("Not sent", a recording kept) stays.
+        switch notice {
+        case .notSent, .recordingKept: break
+        default: notice = nil
+        }
         await host?.setLink(identity.linkedDevice(for: record), writesAllowed: true)
         phase = .linked(macName: record.macName)
     }
@@ -358,8 +360,7 @@ final class LinkingViewModel {
     func unlink() async {
         guard link != nil, !isBusy else { return }
         phase = .unlinking
-        let notSent = await unlinkCurrent(writeUnlinked: true)
-        notice = notSent > 0 ? .notSent(notSent) : nil
+        notice = LinkNotice.after(await unlinkCurrent(writeUnlinked: true))
         phase = .idle
     }
 
@@ -367,10 +368,12 @@ final class LinkingViewModel {
     /// removed, maybe while offline).
     func removedByMac() async {
         guard link != nil else { return }
-        _ = await unlinkCurrent(writeUnlinked: false)
+        let wipe = await unlinkCurrent(writeUnlinked: false)
         pendingSwitch = nil
         if !isBusy { phase = .idle }
-        notice = .removed
+        // A recording the removal cut short is the news that matters: it
+        // also says the link ended.
+        notice = wipe.stoppedRecording ? .recordingKept(notSent: 0) : .removed
     }
 
     /// The transport saw an iCloud account change. Another account ends the
@@ -390,10 +393,10 @@ final class LinkingViewModel {
         guard current != link.userRecordName, self.link == link else { return }
         Self.logger.notice("iCloud account changed while linked: unlinking")
         store.pending = nil
-        _ = await unlinkCurrent(writeUnlinked: false)
+        let wipe = await unlinkCurrent(writeUnlinked: false)
         pendingSwitch = nil
         phase = .idle
-        notice = nil
+        notice = wipe.stoppedRecording ? .recordingKept(notSent: 0) : nil
     }
 
     /// After each fetch: the heartbeat names another hub (moved: writes
@@ -418,14 +421,14 @@ final class LinkingViewModel {
         switch notice {
         case .moved, .stale, nil:
             notice = stale ? .stale : nil
-        case .removed, .notSent:
+        case .removed, .notSent, .recordingKept:
             break
         }
     }
 
     /// Ends the current link: the `unlinked` record (best effort), leaving
-    /// the shares in `shared` scope, then the wipe. Returns what was not
-    /// sent.
+    /// the shares in `shared` scope, then the wipe. Returns what the wipe
+    /// lost, and whether it stopped a capture (kept for the next link).
     ///
     /// The link ends before the first await: a removal or an account signal
     /// arriving meanwhile (leaving the shares is what makes the Mac's zones
@@ -439,8 +442,8 @@ final class LinkingViewModel {
     /// environment is retired (replaced by the next launch or link) and the
     /// `unlinked` record keeps its chance to go out until then (its
     /// delivery guarantee is #143's).
-    private func unlinkCurrent(writeUnlinked: Bool) async -> Int {
-        guard let current = link, let host else { return 0 }
+    private func unlinkCurrent(writeUnlinked: Bool) async -> LocalWipe {
+        guard let current = link, let host else { return LocalWipe() }
         let device = linkedDevice
         store.link = nil
         link = nil
@@ -450,7 +453,7 @@ final class LinkingViewModel {
             return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         }
         let scope = current.databaseScope
-        let notSent = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID)
+        let wipe = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID)
         do {
             let transport = try await host.prepare(scope: scope, hubID: current.hubID)
             try await transport.save([try deviceRecord(for: device, linkNonce: nil, unlinked: true)])
@@ -462,16 +465,16 @@ final class LinkingViewModel {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: current.hubID)
                 host.retireEnvironment()
-                return notSent
+                return wipe
             } catch {
                 Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }
         }
         // The linked hub's zones are still reachable (a private link, or
         // shares not left): end on the phone's own database, unlinked.
-        // Nothing is left to count.
+        // Nothing is left to count or to stop.
         _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
-        return notSent
+        return wipe
     }
 
     private func deviceRecord(for device: LinkedDevice, linkNonce: String?, unlinked: Bool = false) throws -> CloudRecord {

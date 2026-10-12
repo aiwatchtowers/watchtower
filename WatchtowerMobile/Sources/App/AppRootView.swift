@@ -40,7 +40,7 @@ struct AppRootView: View {
 }
 
 /// The link's notice above the tabs (spec §9): moved and stale offer a
-/// new scan; a "Not sent" report can be closed.
+/// new scan; a "Not sent" or a kept-recording report can be closed.
 struct LinkNoticeBanner: View {
     @Environment(LinkingViewModel.self) private var linking
     let notice: LinkNotice
@@ -59,7 +59,7 @@ struct LinkNoticeBanner: View {
                 Button("Scan") { linking.startScan() }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
-            case .removed, .notSent:
+            case .removed, .notSent, .recordingKept:
                 Button {
                     linking.dismissNotice()
                 } label: {

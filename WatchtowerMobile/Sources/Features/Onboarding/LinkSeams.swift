@@ -58,10 +58,21 @@ protocol LinkHost: AnyObject {
     func retireEnvironment()
     /// Stops sync, wipes the replica, the outbox and the transport's store
     /// (buffer, send queue, engine state), and restarts unlinked on
-    /// `hubID`'s zones in `scope`'s database. Returns how many outbox items
-    /// and recordings were still waiting for the Mac (reported "Not sent").
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int
+    /// `hubID`'s zones in `scope`'s database. A running capture is stopped
+    /// and saved first, and recordings still on their way to the Mac are
+    /// kept for the next link. Returns what the wipe lost.
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> LocalWipe
     func requestNotificationPermission() async
     /// Selects the Now tab.
     func openNow()
+}
+
+/// What a wipe reports to the link flow.
+struct LocalWipe: Equatable {
+    /// Outbox items, and recordings whose audio is gone, that were still
+    /// waiting for the Mac (reported "Not sent").
+    var notSent = 0
+    /// A capture was running: it was stopped, saved and kept, and goes to
+    /// the Mac after the next link.
+    var stoppedRecording = false
 }

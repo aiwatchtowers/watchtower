@@ -212,11 +212,15 @@ final class FakeLinkHost: LinkHost {
     /// The hub of each wipe's restart, in call order.
     private(set) var wipedHubIDs: [String] = []
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int {
+    /// The next wipe reports a capture it stopped (once).
+    var stopsRecording = false
+
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> LocalWipe {
         wipedHubIDs.append(hubID)
         log.append("wipe \(Self.describe(scope))")
         wipes += 1
-        return notSentCount
+        defer { stopsRecording = false }
+        return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording)
     }
 
     func requestNotificationPermission() async {

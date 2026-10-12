@@ -40,7 +40,7 @@ final class AppRoot {
     /// the same database and hub.
     @ObservationIgnored private var retired = false
     /// The restart running or queued last: restarts run one at a time.
-    @ObservationIgnored private var restartTask: Task<Void, Error>?
+    @ObservationIgnored private var restartTask: Task<LocalWipe, Error>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     /// `restarter` nil keeps `env` for good (the demo, tests).
@@ -161,15 +161,21 @@ final class AppRoot {
     /// saved change token past the compacted prefix and still send the old
     /// queue). Restarts queue behind each other, so two teardowns never
     /// share an environment. No-op for a root without a restarter.
-    private func restart(scope: CloudDatabaseScope, hubID: String, device: LinkedDevice?, wipe: Bool) async throws {
-        guard let restarter else { return }
+    ///
+    /// A wipe never takes the owner's audio: a running capture is stopped
+    /// and saved first, and every recording still on its way to the Mac is
+    /// carried into the next replica (`AppEnvironment.handOverRecordings`)
+    /// and sent after the next link. Returns what the wipe lost.
+    @discardableResult
+    private func restart(scope: CloudDatabaseScope, hubID: String, device: LinkedDevice?, wipe: Bool) async throws -> LocalWipe {
+        guard let restarter else { return LocalWipe() }
         let previous = restartTask
         let task = Task {
             _ = await previous?.result
-            try await self.performRestart(scope: scope, hubID: hubID, device: device, wipe: wipe, restarter: restarter)
+            return try await self.performRestart(scope: scope, hubID: hubID, device: device, wipe: wipe, restarter: restarter)
         }
         restartTask = task
-        try await task.value
+        return try await task.value
     }
 
     private func performRestart(
@@ -178,10 +184,16 @@ final class AppRoot {
         device: LinkedDevice?,
         wipe: Bool,
         restarter: Restarter
-    ) async throws {
+    ) async throws -> LocalWipe {
         let old = env
         old.onLinkSignal = nil
         old.onFetched = nil
+        var outcome = LocalWipe()
+        var handover = AppEnvironment.RecordingHandover()
+        if wipe {
+            handover = await old.handOverRecordings()
+            outcome = LocalWipe(notSent: Self.pendingActionCount(old) + handover.lost, stoppedRecording: handover.stoppedCapture)
+        }
         await old.shutDown()
         do {
             if wipe {
@@ -191,6 +203,9 @@ final class AppRoot {
                 }
             }
             let next = try restarter.make(scope, hubID, device)
+            // In the same main-actor turn as the init: before the boot's
+            // launch sweep can run.
+            next.adoptRecordings(handover.kept)
             wire(next)
             env = next
             self.scope = scope
@@ -201,6 +216,7 @@ final class AppRoot {
             failure = error.localizedDescription
             throw error
         }
+        return outcome
     }
 
     /// The replica and its WAL files. The stopped environment's pool may
@@ -218,15 +234,13 @@ final class AppRoot {
         }
     }
 
-    /// Outbox items and recordings still waiting for the Mac: what a wipe
-    /// loses ("Not sent").
-    private func notSentCount() -> Int {
+    /// Outbox items still waiting for the Mac: what a wipe loses besides
+    /// recordings it could not keep ("Not sent").
+    private static func pendingActionCount(_ env: AppEnvironment) -> Int {
         do {
-            let actions = try env.store.pendingActions().filter { $0.state == .pending }.count
-            let recordings = try env.store.phoneRecordings().filter { [.recording, .waiting, .uploading].contains($0.state) }.count
-            return actions + recordings
+            return try env.store.pendingActions().filter { $0.state == .pending }.count
         } catch {
-            Self.logger.error("not-sent count failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("not-sent count failed: \(error.localizedDescription, privacy: .public)")
             return 0
         }
     }
@@ -278,14 +292,13 @@ extension AppRoot: LinkHost {
         retired = true
     }
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int {
-        let notSent = notSentCount()
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> LocalWipe {
         do {
-            try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
+            return try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
         } catch {
             // `failure` is set: the app shows BootFailureView.
+            return LocalWipe()
         }
-        return notSent
     }
 
     func requestNotificationPermission() async {
