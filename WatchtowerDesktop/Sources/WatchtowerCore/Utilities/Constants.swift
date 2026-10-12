@@ -216,8 +216,8 @@ package enum Constants {
     /// fish all read the same way.
     package nonisolated static let loginShellProbe =
         #"printf '\#(probePathMarker)%s\n\#(probeCodexHomeMarker)%s\n' "$PATH" "$CODEX_HOME""#
-    private nonisolated static let probePathMarker = "WATCHTOWER_PROBE_PATH="
-    private nonisolated static let probeCodexHomeMarker = "WATCHTOWER_PROBE_CODEX_HOME="
+    nonisolated private static let probePathMarker = "WATCHTOWER_PROBE_PATH="
+    nonisolated private static let probeCodexHomeMarker = "WATCHTOWER_PROBE_CODEX_HOME="
 
     /// The probe's output read back: PATH, and CODEX_HOME (spec 2026-10-12
     /// §7: the Codex the login shell launches reads it, so the trust step,

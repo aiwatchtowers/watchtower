@@ -411,12 +411,14 @@ final class WorkbenchCLITests: XCTestCase {
     /// did not load and codex reads as not found — and an older CLI without
     /// the key decodes as nil.
     func testTrustErrorShowsInTheHelp() throws {
-        let failed = try status(#"{"found":true,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"trust_error":"codex hook trust unavailable: no answer within 10s"}"#)
+        let failed = try status(#"{"found":true,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"#
+            + #""trust_error":"codex hook trust unavailable: no answer within 10s"}"#)
         XCTAssertEqual(failed.codex?.trustError, "codex hook trust unavailable: no answer within 10s")
         XCTAssertFalse(failed.needsRepair)
         XCTAssertTrue(failed.repairHelp.contains("Codex trust check failed: codex hook trust unavailable"), failed.repairHelp)
 
-        let unresolved = try status(#"{"found":false,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"trust_error":"could not resolve the codex binary: loading config: bad"}"#)
+        let unresolved = try status(#"{"found":false,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"#
+            + #""trust_error":"could not resolve the codex binary: loading config: bad"}"#)
         XCTAssertEqual(unresolved.codex?.state, .absent)
         XCTAssertTrue(unresolved.repairHelp.contains("loading config: bad"), unresolved.repairHelp)
 
