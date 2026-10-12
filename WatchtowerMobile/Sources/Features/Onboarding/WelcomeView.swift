@@ -30,6 +30,18 @@ struct OnboardingView: View {
     }
 }
 
+/// One line of Welcome's "what the phone does" (design pass O1).
+struct WelcomeFeature: Equatable {
+    let symbol: String
+    let text: String
+
+    static let all: [Self] = [
+        Self(symbol: "questionmark.bubble", text: "Answer your agents' asks"),
+        Self(symbol: "terminal", text: "Follow and start sessions"),
+        Self(symbol: "calendar", text: "Record and recap meetings")
+    ]
+}
+
 /// First run, and after an unlink: what Watchtower is, the scan, and the
 /// checklist for a Mac that shows no code.
 struct WelcomeView: View {
@@ -37,28 +49,36 @@ struct WelcomeView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 24) {
+            VStack(spacing: Spacing.page) {
                 Spacer()
-                Image(systemName: "desktopcomputer.and.iphone")
-                    .font(.system(size: 56))
-                    .foregroundStyle(.tint)
-                VStack(spacing: 8) {
+                Image("AppIconImage")
+                    .resizable()
+                    .frame(width: 72, height: 72)
+                    // The app icon's own corner (O1), not a card radius.
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .accessibilityHidden(true)
+                VStack(spacing: Spacing.regular) {
                     Text("Watchtower")
                         .font(.largeTitle.bold())
                     Text("Your Mac's Watchtower on this iPhone: asks, sessions, the board and your meetings.")
                         .multilineTextAlignment(.center)
                         .foregroundStyle(.secondary)
                 }
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(WelcomeFeature.all, id: \.text) { feature in
+                        FlatRow(icon: .symbol(feature.symbol, tone: .accent), title: feature.text, insets: EdgeInsets()) {
+                            EmptyView()
+                        }
+                    }
+                }
                 if let notice = linking.notice {
                     Text(notice.message)
                         .font(.subheadline)
                         .multilineTextAlignment(.center)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                        .card(.plain)
                 }
                 Spacer()
-                VStack(spacing: 12) {
+                VStack(spacing: Spacing.medium) {
                     Text("On your Mac: Settings → Mobile → Use Watchtower on iPhone.")
                         .font(.footnote)
                         .multilineTextAlignment(.center)
@@ -78,7 +98,8 @@ struct WelcomeView: View {
                     }
                 }
             }
-            .padding()
+            .padding(.horizontal, Spacing.page)
+            .padding(.vertical, Spacing.large)
         }
     }
 }
