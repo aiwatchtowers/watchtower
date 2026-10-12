@@ -60,7 +60,8 @@ func claudeHookInputs(t *testing.T) map[string][]byte {
 	require.NoError(t, err)
 	inputs := map[string][]byte{}
 	for _, f := range files {
-		if strings.HasPrefix(filepath.Base(f), "session_report") {
+		base := filepath.Base(f)
+		if strings.HasPrefix(base, "session_report") || strings.HasSuffix(base, ".golden.json") {
 			continue // not a hook input
 		}
 		raw, err := os.ReadFile(f)
