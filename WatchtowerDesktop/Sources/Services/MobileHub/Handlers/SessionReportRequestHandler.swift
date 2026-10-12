@@ -12,7 +12,7 @@ import WatchtowerSync
 /// reaches the phone through the `session_report` slice.
 ///
 /// A session outside the report window (`SessionReportSlice.window`: not a
-/// `claude` session of a published workbench, or neither live nor active
+/// agent session of a published workbench, or neither live nor active
 /// in the last 7 days) fails `not_found`: no report would ever reach the
 /// phone. Owns its timeout (one DB read) and never calls back into the
 /// relay processor.

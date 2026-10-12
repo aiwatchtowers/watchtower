@@ -83,7 +83,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             TerminalSessionState.Tone.knownValues.map(\.rawValue),
             ["green", "orange", "blue", "red", "secondary"]
         )
-        XCTAssertEqual(TerminalSessionState.Agent.knownValues.map(\.rawValue), ["claude_code"])
+        XCTAssertEqual(TerminalSessionState.Agent.knownValues.map(\.rawValue), ["claude_code", "codex_cli"])
         XCTAssertEqual(OwnerAsk.Kind.knownValues.map(\.rawValue), ["review", "check", "question"])
         XCTAssertEqual(OwnerAsk.Status.knownValues.map(\.rawValue), ["open", "answered", "delivered", "withdrawn"])
         XCTAssertEqual(OwnerAsk.WithdrawnReason.knownValues.map(\.rawValue), ["agent", "superseded"])
@@ -192,6 +192,20 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.reportDone, 1)
         XCTAssertEqual(session.reportTotal, 2)
         XCTAssertEqual(session.reportPRLine, "PR #175 open")
+    }
+
+    /// `codex_cli` decodes as the known Codex agent; an agent this build does
+    /// not know (or an empty one) keeps its raw string as an open value
+    /// instead of failing the record.
+    func testUnknownAgentDecodesAsOpenValue() throws {
+        for (raw, known) in [("codex_cli", true), ("gemini_cli", false), ("", false)] {
+            var json = try object("terminal_session")
+            json["agent"] = raw
+            let session = try TerminalSessionState.decode(payload: try data(json))
+            XCTAssertEqual(session.agent.rawValue, raw)
+            XCTAssertEqual(session.agent.isKnown, known, raw)
+        }
+        XCTAssertEqual(TerminalSessionState.Agent(rawValue: "codex_cli"), .codexCLI)
     }
 
     func testOpenQuestionAskFixture() throws {

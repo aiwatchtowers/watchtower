@@ -480,6 +480,27 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertFalse(center.liveIDs.contains(session.id))
     }
 
+    /// The phone sees codex board sessions, so it may stop one (board #399);
+    /// a shell on the board stays out of reach.
+    func testStopOnACodexBoardSessionIsAppliedAndOnAShellFailsNotFound() async throws {
+        let p = try await workbench()
+        let codex = try await insertSession(p, kind: .codex)
+        let shell = try await insertSession(p, kind: .shell)
+        let handlers = makeHandlers(makeVM())
+
+        let codexOutcome = try await handlers.handle(stop(codex.id))
+        let shellOutcome = try await handlers.handle(stop(shell.id))
+
+        XCTAssertEqual(codexOutcome, .applied())
+        XCTAssertEqual(shellOutcome.reason, .notFound)
+    }
+
+    /// Exit 127 names the agent that was not found.
+    func testExit127ReasonFollowsTheSessionsAgent() {
+        XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.claude), .claudeNotFound)
+        XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.codex), .codexNotFound)
+    }
+
     func testStopOnAnUnknownOrNonBoardSessionFailsNotFound() async throws {
         let standalone = try await insertSession(nil)
         center.start(standalone, fresh: false)

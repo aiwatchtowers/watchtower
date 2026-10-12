@@ -19,6 +19,8 @@ public enum ActionReason: String, Codable, CaseIterable, Sendable {
     case stateUnknown = "state_unknown"
     case cannotType = "cannot_type"
     case claudeNotFound = "claude_not_found"
+    /// A phone start launched Codex and the login shell found no `codex`.
+    case codexNotFound = "codex_not_found"
     case expired
     case cancelled
     /// The hub restarted between `begun` and `done` (spec §5.2 rule 1).

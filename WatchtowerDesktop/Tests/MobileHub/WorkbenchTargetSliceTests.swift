@@ -275,6 +275,25 @@ final class WorkbenchTargetSliceTests: XCTestCase {
         XCTAssertNil(payload["work_on_prompt_clipped"])
     }
 
+    /// A target's `session_ids` name its codex sessions too (board #399);
+    /// a shell never.
+    func testCodexSessionsAreListedOnTheirTarget() throws {
+        let now = Date()
+        let (target, claude, codex, linked) = try dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            let target = try TestDatabase.insertWorkbenchTarget(db, projectID: project)
+            let claude = try SliceSeed.insertSession(db, projectID: project, targetID: target, lastActiveAt: now.addingTimeInterval(-60))
+            let codex = try SliceSeed.insertSession(db, projectID: project, kind: "codex", targetID: target, lastActiveAt: now)
+            let linked = try SliceSeed.insertSession(db, projectID: project, kind: "codex", lastActiveAt: now.addingTimeInterval(-120))
+            try SliceSeed.linkSession(db, sessionID: linked, targetID: target)
+            try SliceSeed.insertSession(db, projectID: project, kind: "shell", targetID: target)
+            return (target, claude, codex, linked)
+        }
+        let payload = try XCTUnwrap(try targetPayloads()[target])
+        let ids = (payload["session_ids"] as? [Any])?.compactMap { ($0 as? NSNumber)?.int64Value }
+        XCTAssertEqual(ids, [codex, claude, linked])
+    }
+
     // MARK: - Comments
 
     func testTheNewest200CommentsPerTargetArePublished() throws {
