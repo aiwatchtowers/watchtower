@@ -473,10 +473,10 @@ struct WatchtowerApp: App {
                     .disabled(shown == nil)
                 Button("Back") { if let shownRoot { navigation.goBack(root: shownRoot) } }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
-                    .disabled(!navigation.canGoBack(workbenchID: shown?.id))
+                    .disabled(!navigation.canGoBack(root: shownRoot))
                 Button("Forward") { if let shownRoot { navigation.goForward(root: shownRoot) } }
                     .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
-                    .disabled(!navigation.canGoForward(workbenchID: shown?.id))
+                    .disabled(!navigation.canGoForward(root: shownRoot))
                 Divider()
                 // Board #412: the one key that may take the keyboard from
                 // the terminal — the owner's explicit chord, not a bare key.

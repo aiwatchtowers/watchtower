@@ -96,7 +96,7 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files), "the Files pane is on screen")
         XCTAssertTrue(menu.asked.isEmpty)
         XCTAssertTrue(searches.started.isEmpty, "no text search when the index knows the word")
-        XCTAssertTrue(center.canGoBack(workbenchID: project.id))
+        XCTAssertTrue(center.canGoBack(root: project.mainCodeRoot))
         XCTAssertEqual(beeps, 0)
     }
 
@@ -123,10 +123,10 @@ final class CodeNavigationCenterTests: XCTestCase {
         center.usages = usages
         menu.answer = .showAllUsages
         await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), root: root, anchor: nil)
-        XCTAssertEqual(usages.usages(for: project.id)?.word, "save")
+        XCTAssertEqual(usages.usages(for: project.mainCodeRoot)?.word, "save")
         XCTAssertEqual(searches.started.map(\.options.query), ["save"])
         XCTAssertNil(vm.codeFiles.reveals[root])
-        XCTAssertFalse(center.canGoBack(workbenchID: project.id), "no jump, no history")
+        XCTAssertFalse(center.canGoBack(root: project.mainCodeRoot), "no jump, no history")
     }
 
     func testDismissingTheMenuGoesNowhere() async {
@@ -135,7 +135,7 @@ final class CodeNavigationCenterTests: XCTestCase {
         await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), root: root, anchor: nil)
         XCTAssertNil(vm.codeFiles.reveals[root])
         XCTAssertTrue(vm.codeFiles.tabs(for: root).tabs.isEmpty)
-        XCTAssertFalse(center.canGoBack(workbenchID: project.id))
+        XCTAssertFalse(center.canGoBack(root: project.mainCodeRoot))
     }
 
     // MARK: Heuristic and nothing found
@@ -291,7 +291,7 @@ final class CodeNavigationCenterTests: XCTestCase {
         await center.goToDefinition(request("save", at: "src/views/list.swift", 7, 4), root: root, anchor: nil)
         // The page reports the cursor where the reveal put it.
         vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/store.swift", line: 12, col: 10), root: root)
-        XCTAssertFalse(center.canGoForward(workbenchID: project.id))
+        XCTAssertFalse(center.canGoForward(root: project.mainCodeRoot))
 
         center.goBack(root: root)
         let back = vm.codeFiles.reveals[root]
@@ -300,8 +300,8 @@ final class CodeNavigationCenterTests: XCTestCase {
         let tabs = vm.codeFiles.tabs(for: root)
         XCTAssertEqual(tabs.active, "src/views/list.swift")
         XCTAssertEqual(tabs.tabs.first { $0.path == "src/views/list.swift" }?.isPreview, true, "back activates the tab, keeps it as it was")
-        XCTAssertFalse(center.canGoBack(workbenchID: project.id))
-        XCTAssertTrue(center.canGoForward(workbenchID: project.id))
+        XCTAssertFalse(center.canGoBack(root: project.mainCodeRoot))
+        XCTAssertTrue(center.canGoForward(root: project.mainCodeRoot))
 
         vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 7, col: 4), root: root)
         center.goForward(root: root)
@@ -326,14 +326,14 @@ final class CodeNavigationCenterTests: XCTestCase {
 
         center.goBack(root: root)
         XCTAssertEqual(vm.codeFiles.tabs(for: root).active, "src/views/list.swift")
-        XCTAssertTrue(center.canGoForward(workbenchID: project.id), "Back kept the location it left for Forward")
+        XCTAssertTrue(center.canGoForward(root: project.mainCodeRoot), "Back kept the location it left for Forward")
         vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 7, col: 4), root: root)
 
         center.goForward(root: root)
         let forward = vm.codeFiles.reveals[root]
         XCTAssertEqual(forward.map { CodeNavLocation(path: $0.path, line: $0.line ?? 0, col: $0.col) },
                        CodeNavLocation(path: "src/store.swift", line: 12, col: 10))
-        XCTAssertTrue(center.canGoBack(workbenchID: project.id), "Forward kept the location it left for Back")
+        XCTAssertTrue(center.canGoBack(root: project.mainCodeRoot), "Forward kept the location it left for Back")
     }
 
     func testACursorMessageNamingTheFileLeftBehindKeepsNothingForForward() async {
@@ -343,7 +343,7 @@ final class CodeNavigationCenterTests: XCTestCase {
         vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 12, col: 10), root: root)
 
         center.goBack(root: root)
-        XCTAssertFalse(center.canGoForward(workbenchID: project.id),
+        XCTAssertFalse(center.canGoForward(root: project.mainCodeRoot),
                        "the location on screen is unknown, so nothing is kept — why the page names the new file first")
     }
 
@@ -358,15 +358,27 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertEqual(tabs.tabs.first { $0.path == "src/views/list.swift" }?.isPreview, false)
     }
 
+    /// #565: a jump recorded in one root never goes Back in another of the
+    /// same workbench (a worktree's paths are not the main folder's).
+    func testHistoryIsPerCodeRoot() async {
+        let (center, _) = makeCenter(symbols: [saveInStore])
+        await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), root: root, anchor: nil)
+        let worktree = CodeRoot(workbenchID: project.id, worktree: project.folderURL.appendingPathComponent(".claude/worktrees/mobile-a"))
+        XCTAssertTrue(center.canGoBack(root: root))
+        XCTAssertFalse(center.canGoBack(root: worktree), "the worktree has no history of its own yet")
+        center.goBack(root: worktree)
+        XCTAssertTrue(center.canGoBack(root: root), "Back in the worktree took nothing from the main folder")
+    }
+
     func testHistoryIsPerWorkbenchAndOutlivesThePage() async {
         let (center, _) = makeCenter(symbols: [saveInStore])
         let page = FakeDefinitionPage(answer: true)
         center.registerPage(page, for: project.id)
         await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), root: root, anchor: nil)
         center.unregisterPage(page, for: project.id)
-        XCTAssertTrue(center.canGoBack(workbenchID: project.id), "the Files pane going away keeps its history")
-        XCTAssertFalse(center.canGoBack(workbenchID: 1234))
-        XCTAssertFalse(center.canGoBack(workbenchID: nil))
+        XCTAssertTrue(center.canGoBack(root: project.mainCodeRoot), "the Files pane going away keeps its history")
+        XCTAssertFalse(center.canGoBack(root: CodeRoot(workbenchID: 1234, worktree: URL(fileURLWithPath: "/tmp/other"))))
+        XCTAssertFalse(center.canGoBack(root: nil))
     }
 
     // MARK: Jump bar
@@ -416,7 +428,7 @@ final class CodeNavigationCenterTests: XCTestCase {
         let (center, vm) = makeCenter(symbols: [saveInStore])
         vm.codeFiles.open("src/views/list.swift", root: root, preview: true)
         vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/views/list.swift", line: 4, col: 2), root: root)
-        XCTAssertFalse(center.canGoBack(workbenchID: project.id), "‹ off before any jump")
+        XCTAssertFalse(center.canGoBack(root: project.mainCodeRoot), "‹ off before any jump")
 
         center.openFromJumpBar(path: "src/store.swift", line: 12, col: 10, root: root)
         let reveal = vm.codeFiles.reveals[root]
@@ -424,15 +436,15 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertEqual(reveal?.line, 12)
         XCTAssertEqual(reveal?.col, 10)
         XCTAssertEqual(vm.codeFiles.tabs(for: root).tabs.first { $0.path == "src/store.swift" }?.isPreview, false)
-        XCTAssertTrue(center.canGoBack(workbenchID: project.id), "‹ on after a jump bar jump")
-        XCTAssertFalse(center.canGoForward(workbenchID: project.id))
+        XCTAssertTrue(center.canGoBack(root: project.mainCodeRoot), "‹ on after a jump bar jump")
+        XCTAssertFalse(center.canGoForward(root: project.mainCodeRoot))
 
         // The page reports the cursor where the reveal put it.
         vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/store.swift", line: 12, col: 10), root: root)
         center.goBack(root: root)
         XCTAssertEqual(vm.codeFiles.reveals[root]?.path, "src/views/list.swift")
         XCTAssertEqual(vm.codeFiles.reveals[root]?.line, 4)
-        XCTAssertTrue(center.canGoForward(workbenchID: project.id), "› on after going back")
+        XCTAssertTrue(center.canGoForward(root: project.mainCodeRoot), "› on after going back")
     }
 
     func testAJumpBarFilePickOpensTheFileWhereItsCursorWas() {
@@ -443,7 +455,7 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertEqual(vm.codeFiles.tabs(for: root).active, "src/store.swift")
         XCTAssertEqual(vm.codeFiles.tabs(for: root).tabs.first { $0.path == "src/store.swift" }?.isPreview, false)
         XCTAssertNil(vm.codeFiles.reveals[root]?.line, "no line: the file's own cursor")
-        XCTAssertTrue(center.canGoBack(workbenchID: project.id))
+        XCTAssertTrue(center.canGoBack(root: project.mainCodeRoot))
     }
 
     /// Whether `task` ends within `eventually`'s wait — a failure, not a

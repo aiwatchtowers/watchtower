@@ -73,7 +73,7 @@ final class CodeNavQuitTests: XCTestCase {
 
         await stub.assertAllGroupsReaped()
         await definition.value
-        XCTAssertEqual(usages.usages(for: project.id)?.status, .stopped, "the list keeps what it found")
+        XCTAssertEqual(usages.usages(for: project.mainCodeRoot)?.status, .stopped, "the list keeps what it found")
     }
 }
 

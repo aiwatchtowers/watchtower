@@ -61,7 +61,7 @@ struct JumpBar: View {
         } label: {
             Image(systemName: "chevron.left")
         }
-        .disabled(navigation?.canGoBack(workbenchID: root.workbenchID) != true)
+        .disabled(navigation?.canGoBack(root: root) != true)
         .help("Back (⌃⌘←)")
         .accessibilityLabel("Back")
         Button {
@@ -69,7 +69,7 @@ struct JumpBar: View {
         } label: {
             Image(systemName: "chevron.right")
         }
-        .disabled(navigation?.canGoForward(workbenchID: root.workbenchID) != true)
+        .disabled(navigation?.canGoForward(root: root) != true)
         .help("Forward (⌃⌘→)")
         .accessibilityLabel("Forward")
     }
