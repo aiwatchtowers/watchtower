@@ -572,3 +572,33 @@ func TestSessionProbe_CodexRowIsUnknownWithoutClaudeDir(t *testing.T) {
 	assert.False(t, s.Background.Valid, "the count ended")
 	assert.Equal(t, agentStateWaiting, s.AgentState.String)
 }
+
+// hookSessionRow takes any agent's row: a nested `claude` the codex agent
+// runs inherits the row's env var, and its Claude Code state, Stop and ask
+// guard hooks must leave a codex row alone whether it stores an id yet or
+// not (#399 m6).
+func TestProj11_NestedClaudeHooksNeverTouchACodexRow(t *testing.T) {
+	database, pid, _ := codexRowFixture(t, "")
+	installBriefStateHooks(t, database, pid)
+	wb := strconv.FormatInt(pid, 10)
+	for _, stored := range []string{"", codexTUISession} {
+		row := codexRowIn(t, database, pid, stored)
+		before := rowSnapshot(t, database, row)
+		for _, tc := range []struct{ event, notification string }{
+			{"UserPromptSubmit", ""}, {"Notification", "permission_prompt"}, {"PostToolUse", ""},
+			{"SubagentStart", ""}, {"SubagentStop", ""}, {"StopFailure", ""},
+		} {
+			out, _, err := runSessionState(t, pid, strings.NewReader(statePayload(tc.event, nestedSessionID, tc.notification)))
+			require.NoError(t, err, tc.event)
+			assert.Empty(t, out, tc.event)
+		}
+		stop := `{"session_id":"` + nestedSessionID + `","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":""}`
+		out, _, err := runWorkbenchCheckCmd(t, strings.NewReader(stop), "check", "--workbench", wb, "--stop-hook")
+		require.NoError(t, err)
+		assert.Empty(t, out, "Stop")
+		out, _, err = runAskGuardStopHook(t, wb, strings.NewReader(stop))
+		require.NoError(t, err)
+		assert.Empty(t, out, "ask guard Stop")
+		assert.Equal(t, before, rowSnapshot(t, database, row), "stored %q", stored)
+	}
+}
