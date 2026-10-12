@@ -50,14 +50,18 @@ const (
 
 // bornReason is "" when an item born at birth (known or not) is younger
 // than the session (spec §2 rule 2), else why it is kept. A zero session
-// start is unknown too: nothing can be shown younger than it. The times are
-// compared as they are — truncating either would let an item born a moment
-// before the session start count as the session's.
+// start is unknown too: nothing can be shown younger than it.
+//
+// terminal_sessions.created_at is stored with second precision (migration
+// 00084 writes strftime('%Y-%m-%dT%H:%M:%SZ','now')), so the real start lies
+// anywhere in [sessionCreated, sessionCreated+1s). Fail closed: an item born
+// inside that second may predate the session, so it counts as owned only
+// when born at or after sessionCreated+1s.
 func bornReason(birth time.Time, known bool, sessionCreated time.Time) string {
 	switch {
 	case !known || sessionCreated.IsZero():
 		return ReasonCreatedUnknown
-	case birth.Before(sessionCreated):
+	case birth.Before(sessionCreated.Add(time.Second)):
 		return ReasonExistedBeforeSession
 	}
 	return ""

@@ -26,19 +26,22 @@ func TestPlan_UnknownSessionStartKeepsEverything(t *testing.T) {
 	wantItem(t, p, "branch:feat/x", ActionKeep, ReasonCheckedOut)
 }
 
-// Neither time is truncated: an item born a fraction of a second before the
-// session start, within the same second, existed before the session.
-func TestBornReason_SubSecondBeforeTheStartIsNotOwned(t *testing.T) {
+// The stored session start has second precision (created_at is written by
+// strftime('%Y-%m-%dT%H:%M:%SZ')), so the real start may be up to a second
+// later: an item born within that second is not the session's.
+func TestBornReason_WithinTheStoredStartSecondIsNotOwned(t *testing.T) {
 	t.Parallel()
-	start := time.Date(2026, 10, 12, 12, 0, 0, 800_000_000, time.UTC)
+	start := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	cases := []struct {
 		birth time.Time
 		want  string
 	}{
 		{start.Add(-300 * time.Millisecond), ReasonExistedBeforeSession},
-		{start.Add(-time.Nanosecond), ReasonExistedBeforeSession},
-		{start, ""},
-		{start.Add(100 * time.Millisecond), ""},
+		{start, ReasonExistedBeforeSession},
+		{start.Add(500 * time.Millisecond), ReasonExistedBeforeSession},
+		{start.Add(time.Second - time.Nanosecond), ReasonExistedBeforeSession},
+		{start.Add(time.Second), ""},
+		{start.Add(2 * time.Second), ""},
 	}
 	for _, tc := range cases {
 		if got := bornReason(tc.birth, true, start); got != tc.want {
