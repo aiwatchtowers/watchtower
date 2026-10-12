@@ -22,7 +22,7 @@ var workbenchLaunchArgsCmd = &cobra.Command{
 	Short: "Print how to launch an agent in a workbench terminal (codex only)",
 	Long: "Prints one JSON object {\"binary\", \"path_prepend\", \"args\"}: the codex binary (codex_path from\n" +
 		"config, else the nvm-aware lookup), its directory to put in front of PATH, and the launch flags\n" +
-		"(--no-daemon, the workbench MCP server, the workbench hooks). The caller appends\n" +
+		"(--no-daemon, the update check off, the workbench MCP server, the workbench hooks). The caller appends\n" +
 		"`[resume <id>] -- <prompt>`; the `--` is needed, codex refuses a prompt that starts with '-'.\n" +
 		"No codex binary: exit 3 and {\"error\":\"codex_not_found\"}. A bad invocation (missing --json,\n" +
 		"no --workbench, an unknown agent, or --agent claude, whose argv the Desktop builds itself)\n" +

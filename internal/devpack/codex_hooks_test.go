@@ -230,7 +230,7 @@ func TestCodexLaunchArgs_Resolution(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, cfgPath, la.Binary)
 	assert.Equal(t, filepath.Dir(cfgPath), la.PathPrepend)
-	assert.Equal(t, "--no-daemon", la.Args[0])
+	assert.Equal(t, []string{"--no-daemon", "-c", "check_for_update_on_startup=false"}, la.Args[:3])
 
 	for _, stale := range []string{"", "/nonexistent/codex", "codex", filepath.Dir(foundPath)} {
 		la, err = CodexLaunchArgs(&config.Config{CodexPath: stale}, "/w", 1, found)

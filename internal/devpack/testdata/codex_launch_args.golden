@@ -1,5 +1,7 @@
 --no-daemon
 -c
+check_for_update_on_startup=false
+-c
 mcp_servers.watchtower-workbench.command="/Users/example/Library/Application Support/Watchtower/bin/watchtower"
 -c
 mcp_servers.watchtower-workbench.args=["mcp","--workbench","7","--agent","codex"]

@@ -28,6 +28,9 @@ const CodexMCPServerName = "watchtower-workbench"
 // env_vars.
 const codexSessionEnvVar = "WATCHTOWER_TERMINAL_SESSION_ID"
 
+// codexNoUpdateCheck keeps codex's startup update notice off screen.
+const codexNoUpdateCheck = "check_for_update_on_startup=false"
+
 // CodexHook is one hook handler of the codex workbench hook set. Group is the
 // index of the matcher group within Event; codex's trust key for a
 // launch-flag hook is /<session-flags>/config.toml:<event_snake>:<group>:<handler>,
@@ -152,14 +155,16 @@ type LaunchArgs struct {
 // workbench workbenchID, with bin the watchtower binary the MCP server and the
 // hooks run. The binary is cfg.CodexPath when that names a file, else find's
 // answer (an absolute path to a file). find returns ErrCodexNotFound (or any error) when it has none.
-// Args: --no-daemon, the MCP overrides, then the hook overrides (spec §4.2).
+// Args: --no-daemon, the update check off, the MCP overrides, then the hook overrides (spec §4.2).
 // The caller appends `[resume <id>] -- <prompt>`.
 func CodexLaunchArgs(cfg *config.Config, bin string, workbenchID int64, find func() (string, error)) (LaunchArgs, error) {
 	codexBin, err := resolveCodexBinary(cfg, find)
 	if err != nil {
 		return LaunchArgs{}, err
 	}
-	args := []string{"--no-daemon"}
+	// The update notice takes Enter as consent to `npm install -g`, and the
+	// Desktop types owner answers into the TUI with Enter.
+	args := []string{"--no-daemon", "-c", codexNoUpdateCheck}
 	args = append(args, CodexMCPOverrides(bin, workbenchID)...)
 	args = append(args, CodexHookOverrides(CodexHookSet(bin))...)
 	return LaunchArgs{Binary: codexBin, PathPrepend: filepath.Dir(codexBin), Args: args}, nil

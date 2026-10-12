@@ -81,7 +81,8 @@ func TestLaunchArgs_CodexPathConfigWins(t *testing.T) {
 	require.Equal(t, 0, code, out)
 	la := decodeLaunchArgs(t, out)
 	assert.Equal(t, configured, la.Binary)
-	assert.Equal(t, "--no-daemon", la.Args[0])
+	assert.Equal(t, []string{"--no-daemon", "-c", "check_for_update_on_startup=false"}, la.Args[:3],
+		"the update notice would take a typed Enter as consent to npm install")
 	assert.Contains(t, la.Args, `mcp_servers.watchtower-workbench.args=["mcp","--workbench","7","--agent","codex"]`)
 	assert.Contains(t, la.Args, `mcp_servers.watchtower-workbench.command="`+launchArgsTestBin+`"`)
 }
