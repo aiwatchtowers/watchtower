@@ -37,7 +37,8 @@ final class HubHeartbeatTests: XCTestCase {
         transport: StubHubTransport,
         sidecar: HubSyncState,
         host: HubHostInfo = testHostInfo(),
-        now: Date? = nil
+        now: Date? = nil,
+        reprobeEvery: Duration = .seconds(3600)
     ) throws -> MobileHubService {
         let instant = now ?? self.now
         let publisher = SlicePublisher(
@@ -52,7 +53,7 @@ final class HubHeartbeatTests: XCTestCase {
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
             hostInfo: host,
             relayIdleInterval: .seconds(3600), relayActiveInterval: .seconds(3600),
-            availabilityReprobeInterval: .seconds(3600),
+            availabilityReprobeInterval: reprobeEvery,
             heartbeatInterval: .seconds(3600),
             now: { instant }, isEnabled: { true }
         )
@@ -99,6 +100,23 @@ final class HubHeartbeatTests: XCTestCase {
         XCTAssertEqual(hub.status, .running, "each Mac publishes into its own zones (spec §2)")
         XCTAssertEqual(try savedHeartbeats(transport).count, 2)
         XCTAssertEqual(try savedHeartbeats(transport).last?.updatedAt, now, "stamped with this Mac's clock")
+    }
+
+    func testAFailedFirstHeartbeatLeavesTheHubUnavailableAndTheReprobeRestartsIt() async throws {
+        let transport = StubHubTransport()
+        transport.failNextSaves(1)
+        let hub = try makeHub(transport: transport, sidecar: try HubSyncState.inMemory(), reprobeEvery: .milliseconds(20))
+
+        let status = await hub.enable()
+
+        guard case .unavailable(let message) = status else {
+            return XCTFail("expected .unavailable, got \(status)")
+        }
+        XCTAssertTrue(message.hasPrefix("Couldn't write the heartbeat"), message)
+        XCTAssertFalse(hub.isPublishing)
+        await awaitHubCondition("the reprobe loop restarts the hub") { hub.status == .running }
+        XCTAssertTrue(hub.isPublishing)
+        XCTAssertEqual(try savedHeartbeats(transport).count, 1, "the retried write went through")
     }
 
     func testThreeFailedTicksInARowStopTheHubAsUnavailable() async throws {

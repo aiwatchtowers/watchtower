@@ -209,12 +209,19 @@ final class MobileHubServiceTests: XCTestCase {
         let service = makeService(transport: transport)
         await service.start()
         defer { service.stop() }
+        let hubID = try sidecar.ensureHubID()
+        let enabledAt = try HubIdentity(sidecar: sidecar).ensureEnabledAt(Date(timeIntervalSince1970: 1_800_000_000))
 
         transport.fireAccountReset()
 
         XCTAssertTrue(try sidecar.hashes(forKind: .workbench).isEmpty)
         XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey))
         XCTAssertEqual(try sidecar.relayPhase("action-1"), .done, "phone UUIDs cannot collide across accounts")
+        XCTAssertEqual(try sidecar.ensureHubID(), hubID, "hub_id names this hub's zones and survives")
+        XCTAssertEqual(
+            try HubIdentity(sidecar: sidecar).ensureEnabledAt(Date(timeIntervalSince1970: 1_900_000_000)), enabledAt,
+            "enabled_at survives"
+        )
     }
 
     /// A server-side DataZone deletion wipes what the hub believes is

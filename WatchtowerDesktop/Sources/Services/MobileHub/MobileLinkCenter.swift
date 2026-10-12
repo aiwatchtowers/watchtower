@@ -441,9 +441,13 @@ final class MobileLinkCenter {
         openCode = nil
         do {
             try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
+        } catch {
+            logger.error("hub zones deleted: share sweep flag not reset: \(error.localizedDescription, privacy: .public)")
+        }
+        do {
             try sidecar.clearLinkState()
         } catch {
-            logger.error("hub zones deleted: link state not cleared: \(error.localizedDescription, privacy: .public)")
+            logger.error("hub zones deleted: linked phones not cleared: \(error.localizedDescription, privacy: .public)")
         }
         reloadDevices()
         nudge([.deviceGrant])
