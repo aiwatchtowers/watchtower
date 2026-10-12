@@ -200,25 +200,14 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         return encoder
     }
 
-    /// base64url without padding (RFC 4648 §5).
+    /// base64url without padding (RFC 4648 §5); see `WireBytes.base64URL`.
     static func encodeBase64URL(_ data: Data) -> String {
-        var string = data.base64EncodedString()
-        string = string.replacingOccurrences(of: "+", with: "-")
-        string = string.replacingOccurrences(of: "/", with: "_")
-        while string.hasSuffix("=") { string.removeLast() }
-        return string
+        WireBytes.base64URL(data)
     }
 
-    /// Accepts only the canonical unpadded base64url form: anything that does
-    /// not re-encode to the same string (padding, `+`, `/`, stray characters
-    /// or trailing bits) is nil.
+    /// Canonical unpadded base64url only; see `WireBytes.fromBase64URL`.
     static func decodeBase64URL(_ string: String) -> Data? {
-        guard !string.isEmpty else { return nil }
-        var base64 = string.replacingOccurrences(of: "-", with: "+")
-        base64 = base64.replacingOccurrences(of: "_", with: "/")
-        base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
-        guard let data = Data(base64Encoded: base64), encodeBase64URL(data) == string else { return nil }
-        return data
+        WireBytes.fromBase64URL(string)
     }
 
     private struct VersionProbe: Decodable {
