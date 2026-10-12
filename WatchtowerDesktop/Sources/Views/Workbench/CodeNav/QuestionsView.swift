@@ -168,8 +168,8 @@ private struct QuestionConversationView: View {
                 }
                 .keyboardShortcut(.return, modifiers: [.command, .option])
                 .disabled(busy)
-                .help("Hand to Claude Code (⌥⌘↩)")
-                .accessibilityLabel("Hand to Claude Code")
+                .help("Hand to Session (⌥⌘↩)")
+                .accessibilityLabel("Hand to Session")
             }
             Button {
                 confirmsDelete = true

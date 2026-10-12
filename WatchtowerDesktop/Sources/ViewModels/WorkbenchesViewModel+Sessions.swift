@@ -59,6 +59,9 @@ extension WorkbenchesViewModel {
         case inProgress
         /// A read or write failed; the message says which.
         case failed(String)
+        /// The launch found no binary for the session's agent (`launch-args`
+        /// exit 3): nothing started.
+        case agentNotFound(AgentKind)
     }
 
     /// The selected project's sessions, most recently active first (the
@@ -177,20 +180,25 @@ extension WorkbenchesViewModel {
 
     // MARK: - Creating
 
-    func newSession(projectID: Int64, placement: Placement = .show) async {
+    /// A new agent session of the workbench: `agent`, or the default agent
+    /// (Settings → Workbench → Default agent, D1) when nil.
+    func newSession(projectID: Int64, placement: Placement = .show, agent: AgentKind? = nil) async {
         let ticket = beginSwitch(projectID: projectID)
+        let agent = agent ?? currentDefaultAgent()
         guard let project = await project(id: projectID) else { return }
         await startNewSession(
-            project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+            project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
+            agent: agent
         )
     }
 
     /// A terminal outside any project, in `folder`, put on screen (a
     /// standalone terminal replaces the project page). A shell is named
-    /// mechanically and never gets an AI title.
+    /// mechanically and never gets an AI title. Codex is never offered here:
+    /// its launch arguments come from a workbench (`launch-args`).
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
         let title = switch kind {
-        case .claude: TerminalSessionNaming.provisional(now: now())
+        case .claude, .codex: TerminalSessionNaming.provisional(now: now())
         case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
         }
         let row = await createAndStart(
@@ -202,14 +210,19 @@ extension WorkbenchesViewModel {
         if let row { showStandalone(row.id) }
     }
 
-    /// Creates a `claude` session row with a new Claude session id and starts
-    /// it fresh (`--session-id`).
+    /// Creates an agent session row and starts it fresh: Claude Code with a
+    /// new session id (`--session-id`), Codex with none (it mints its own).
     func startNewSession(
-        project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show, ticket: Int? = nil
+        project: Workbench,
+        title: String,
+        prompt: String? = nil,
+        placement: Placement = .show,
+        ticket: Int? = nil,
+        agent: AgentKind
     ) async {
         await createAndStart(
-            .init(projectID: project.id, kind: .claude, title: title, folderPath: project.folderPath,
-                  claudeSessionID: Self.newClaudeSessionID()),
+            .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
+                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: prompt,
             placement: placement,
             ticket: ticket ?? beginSwitch(projectID: project.id)
@@ -227,15 +240,24 @@ extension WorkbenchesViewModel {
     /// Once the session started, a task still `todo` moves to `in_progress`
     /// as the owner's write (board #499, `markInProgressOnWorkOn`): the
     /// brainstorm and the spec are work on it too.
+    ///
+    /// `agent` nil is the default agent (D1): the target's latest session of
+    /// any agent is reopened, else a default-agent one starts. The menu's
+    /// "Work on It with …" passes its agent: only a session of that agent is
+    /// reopened, else one of it starts.
     func workOn(
-        targetID: Int64, targetText: String, projectID: Int64? = nil, placement: Placement = .keeping(.board)
+        targetID: Int64,
+        targetText: String,
+        projectID: Int64? = nil,
+        placement: Placement = .keeping(.board),
+        agent: AgentKind? = nil
     ) async {
         // A failure is on the page already (or logged, if superseded); a
         // second press while this target's start runs (`inProgress`) is
         // dropped silently, as a double click.
         guard let row = try? await startTarget(
             targetID, title: targetText, prompt: nil, mode: .openExisting, placement: placement,
-            askedIn: projectID ?? selectedWorkbenchID
+            askedIn: projectID ?? selectedWorkbenchID, agent: agent
         ) else { return }
         await markInProgressOnWorkOn(targetID, session: row)
     }
@@ -276,7 +298,8 @@ extension WorkbenchesViewModel {
 
     /// A start on a board target from outside the board's own buttons (the
     /// phone, mobile POC spec §6.5): Work on it's read, reuse rule and launch
-    /// path, with the session named after the target's stored text.
+    /// path, with the session named after the target's stored text. A new
+    /// session runs the default agent (D6: the phone has no agent picker).
     /// `prompt` replaces the work-on prompt, and `planFirst` follows either
     /// with `TerminalLaunch.planFirstSuffix`; both apply only to a new
     /// session (a reopened one resumes its conversation). Under every
@@ -299,7 +322,7 @@ extension WorkbenchesViewModel {
     /// switch ticket and errors (the target's workbench is known only after
     /// the read; the page's is the one it almost always is). `checkLaunch`:
     /// a launch that did not run throws (`startForTarget`); Work on it leaves
-    /// that to the pane.
+    /// that to the pane. `agent`: see `workOn`.
     private func startTarget(
         _ targetID: Int64,
         title: String?,
@@ -308,7 +331,8 @@ extension WorkbenchesViewModel {
         placement: Placement,
         askedIn: Int64?,
         planFirst: Bool = false,
-        checkLaunch: Bool = false
+        checkLaunch: Bool = false,
+        agent: AgentKind? = nil
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
@@ -331,9 +355,11 @@ extension WorkbenchesViewModel {
             throw TargetStartError.notOnBoard
         }
         if ticket != nil, found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }
-        if mode == .openExisting, let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
+        let candidates = agent.map { picked in found.rows.filter { $0.kind.agent == picked } } ?? found.rows
+        if mode == .openExisting, let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: candidates) {
             return try await reopen(existing, placement: placement, ticket: ticket, checkLaunch: checkLaunch)
         }
+        let agent = agent ?? currentDefaultAgent()
         let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
         // A blank brief is no brief: the work-on prompt goes instead.
         let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -341,9 +367,10 @@ extension WorkbenchesViewModel {
             targetID: targetID, isGroup: found.isGroup, vocabulary: vocabulary(projectID: found.project.id)
         )
         return try await createAndActivate(
-            .init(projectID: found.project.id, kind: .claude, title: text.isEmpty ? "Target #\(targetID)" : text,
+            .init(projectID: found.project.id, kind: TerminalSession.Kind(agent),
+                  title: text.isEmpty ? "Target #\(targetID)" : text,
                   targetID: targetID, folderPath: found.project.folderPath,
-                  claudeSessionID: Self.newClaudeSessionID()),
+                  claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: planFirst ? "\(brief) \(TerminalLaunch.planFirstSuffix)" : brief,
             placement: placement,
             ticket: ticket,
@@ -380,7 +407,8 @@ extension WorkbenchesViewModel {
             await open(row, placement: placement, ticket: ticket)
         } else {
             await startNewSession(
-                project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+                project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
+                agent: currentDefaultAgent()
             )
         }
     }
@@ -424,11 +452,13 @@ extension WorkbenchesViewModel {
         return row
     }
 
-    /// "Start fresh" after a failed resume: a new Claude session id under the
-    /// same row and title. A shell has no Claude session: it just opens.
+    /// "Start fresh" after a failed resume: a new agent session under the
+    /// same row and title — a new Claude session id, or for Codex no id at
+    /// all (Codex mints one; `resetAgentSession`). A shell has no agent
+    /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
         let ticket = beginSwitch(projectID: session.projectID)
-        guard session.kind == .claude else {
+        guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)
             return
         }
@@ -442,7 +472,10 @@ extension WorkbenchesViewModel {
                 guard let current = try TerminalSessionQueries.fetch(db, id: session.id) else {
                     throw TerminalSessionQueryError.notFound(session.id)
                 }
-                try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
+                switch agent {
+                case .claude: try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
+                case .codex: try TerminalSessionQueries.resetAgentSession(db, id: session.id)
+                }
                 try TerminalSessionQueries.touch(db, id: session.id)
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
@@ -536,7 +569,7 @@ extension WorkbenchesViewModel {
         }
         guard let row, TerminalSessionPolicy.needsTitle(row, attempts: titleAttempts[sessionID, default: 0]),
               notYetTitledStreak[sessionID, default: 0] < Self.maxNotYetTitledPolls,
-              let uuid = row.claudeSessionID, terminalCenter?.transcriptExists(uuid) ?? true else { return }
+              row.claudeSessionID != nil, terminalCenter?.hasTranscript(row) ?? true else { return }
         do {
             if try await titleService(sessionID).written {
                 notYetTitledStreak[sessionID] = nil
@@ -621,6 +654,7 @@ extension WorkbenchesViewModel {
     private func launchCheck(_ row: TerminalSession) throws {
         guard let failure = launchFailure(row) else { return }
         NSLog("WorkbenchesViewModel: session %lld did not launch: %@", row.id, failure)
+        if let agent = terminalCenter?.missingAgent[row.id] { throw TargetStartError.agentNotFound(agent) }
         throw TargetStartError.failed(failure)
     }
 
@@ -656,12 +690,14 @@ extension WorkbenchesViewModel {
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        if let center = terminalCenter {
-            let mode = center.start(row, fresh: fresh, prompt: prompt)
+        if let center = terminalCenter, let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
+            let row = plan.row
+            let mode = await center.launch(row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume)
+            // Keyed by the mode, whatever the agent (spec 2026-10-12 §7).
             switch mode {
-            case .resumeClaude?:
+            case .resumeAgent?:
                 resumeStarts[row.id] = now()
-            case .newClaude? where !fresh:
+            case .newAgent(_, sessionID: _?, _)? where !fresh:
                 // A relaunch of the stored id: a missed transcript makes it a
                 // `--session-id` of an id Claude Code already used, which it
                 // refuses at once — only Start fresh (a new id) gets out.
@@ -678,6 +714,45 @@ extension WorkbenchesViewModel {
         }
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+    }
+
+    /// The row `activate` launches and, for a Codex row, whether it resumes
+    /// (decided here once; the center does not look for the rollout again).
+    /// A Codex relaunch whose stored id has no rollout forgets the id and
+    /// rollout path BEFORE the launch (spec 2026-10-12 §5, §7), so the new
+    /// session's SessionStart stores its own id. nil — nothing launches, the
+    /// failure reported — when Codex's sessions folder could not be listed
+    /// (the id stays) or the reset did not go in.
+    private func rowToLaunch(
+        _ row: TerminalSession, fresh: Bool, center: TerminalCenter, ticket: Int?
+    ) async -> (row: TerminalSession, codexResume: Bool?)? { // swiftlint:disable:this discouraged_optional_boolean
+        guard row.kind == .codex else { return (row, nil) }
+        guard !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return (row, false) }
+        // The stored rollout path needs no home. Past it, never reset an id
+        // on a lookup in a home that is not the login shell's: an
+        // unresolved environment is "unknown", not "no rollout".
+        let codexHome: URL
+        do {
+            if try center.codexResumes(row, codexHome: nil) { return (row, true) }
+            guard let home = await resolveCodexHome() else { throw CodexHomeUnresolved() }
+            codexHome = home
+            if try center.codexResumes(row, codexHome: home) { return (row, true) }
+        } catch {
+            await failed(row, "Could not check Codex's saved sessions", error, ticket: ticket, background: ticket == nil)
+            return nil
+        }
+        NSLog("WorkbenchesViewModel: Codex session %lld starts anew: no rollout for id %@ (stored path %@) under %@",
+              row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", codexHome.path)
+        do {
+            let reset = try await dbPool.write { db in
+                try TerminalSessionQueries.resetAgentSession(db, id: row.id)
+                return try TerminalSessionQueries.fetch(db, id: row.id) ?? row
+            }
+            return (reset, false)
+        } catch {
+            await failed(row, "Could not reset the Codex session", error, ticket: ticket, background: ticket == nil)
+            return nil
+        }
     }
 
     /// `layout` with session `id` placed the way `placement` says.
@@ -731,5 +806,13 @@ extension WorkbenchesViewModel {
 
     private func setSessionError(_ message: String?, projectID: Int64?) {
         sessionActionErrors[projectID] = message
+    }
+}
+
+/// The login shell did not answer, so its CODEX_HOME is unknown.
+private struct CodexHomeUnresolved: LocalizedError {
+    var errorDescription: String? {
+        "your login shell did not answer (it timed out or failed), so Codex's CODEX_HOME is unknown and "
+            + "the saved session was kept; try again, or use Start fresh"
     }
 }

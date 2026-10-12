@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/workbenchfiles"
 )
@@ -217,4 +219,107 @@ func TestResolveComment_FailedResolveLeavesNoReply(t *testing.T) {
 	c, err := fx.d.GetWorkbenchComment(root)
 	require.NoError(t, err)
 	assert.Equal(t, "resolved", c.Status)
+}
+
+// seedAgentSession inserts a terminal session of kind for workbench
+// projectID; a codex row has no agent session id before its first
+// SessionStart.
+func seedAgentSession(t *testing.T, d *db.DB, projectID int64, kind string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, ?, 'Session', '/tmp/acme', CASE WHEN ? = 'claude' THEN 'uuid' END)`, projectID, kind, kind)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+// commentLabels posts an add_comment and a resolve_comment reply under b
+// with the terminal session env env, and returns both comments' labels.
+func commentLabels(t *testing.T, fx workbenchFixture, env string, agent agentkind.Kind) (string, string) {
+	t.Helper()
+	reg := askRegistry(t, fx.d, env)
+	b := directBinding(fx.a)
+	b.Agent = agent
+	rc, err := reg.Propose(context.Background(), "add_comment",
+		json.RawMessage(fmt.Sprintf(`{"target_id":%d,"body":"Which DB?","reason":"r"}`, fx.aTarget)), b)
+	require.NoError(t, err)
+	require.Equal(t, "applied", rc.Status, "receipt: %+v", rc)
+	added, err := fx.d.GetWorkbenchComment(int64(rc.Result.(map[string]any)["comment_id"].(float64)))
+	require.NoError(t, err)
+	rc, err = reg.Propose(context.Background(), "resolve_comment",
+		json.RawMessage(fmt.Sprintf(`{"comment_id":%d,"reply":"Done.","reason":"r"}`, added.ID)), b)
+	require.NoError(t, err)
+	require.Equal(t, "applied", rc.Status, "receipt: %+v", rc)
+	reply, err := fx.d.GetWorkbenchComment(int64(rc.Result.(map[string]any)["reply_id"].(float64)))
+	require.NoError(t, err)
+	return added.AgentLabel, reply.AgentLabel
+}
+
+// Spec 2026-10-12 §6.5: a comment from a codex session row is labelled
+// codex-cli whatever the MCP's --agent says, a claude row claude-code.
+func TestAgentLabel_CodexRowIsCodexCLI(t *testing.T) {
+	codexRow := &db.TerminalSession{Kind: "codex"}
+	for _, flag := range []agentkind.Kind{"", agentkind.Claude, agentkind.Codex} {
+		assert.Equal(t, "codex-cli", agentLabelFor(codexRow, flag), "flag %q", flag)
+		assert.Equal(t, "claude-code", agentLabelFor(&db.TerminalSession{Kind: "claude"}, flag), "flag %q", flag)
+	}
+
+	fx := newWorkbenchFixture(t)
+	codex := seedAgentSession(t, fx.d, fx.a, "codex")
+	added, reply := commentLabels(t, fx, strconv.FormatInt(codex, 10), agentkind.Claude)
+	assert.Equal(t, "codex-cli", added)
+	assert.Equal(t, "codex-cli", reply, "a resolve_comment reply carries the same label")
+
+	claude := seedAgentSession(t, fx.d, fx.a, "claude")
+	added, reply = commentLabels(t, fx, strconv.FormatInt(claude, 10), agentkind.Codex)
+	assert.Equal(t, "claude-code", added)
+	assert.Equal(t, "claude-code", reply)
+}
+
+// Without a session row of this workbench naming an agent — no env, garbage,
+// a gone row, another workbench's row, a shell row — the label is the
+// --agent flag, and without the flag claude-code (the label before Codex).
+func TestAgentLabel_NoRowUsesFlagThenDefault(t *testing.T) {
+	for _, tc := range []struct {
+		row  *db.TerminalSession
+		flag agentkind.Kind
+		want string
+	}{
+		{nil, "", "claude-code"},
+		{nil, agentkind.Claude, "claude-code"},
+		{nil, agentkind.Codex, "codex-cli"},
+		{nil, "gemini", "claude-code"},
+		{&db.TerminalSession{Kind: "shell"}, agentkind.Codex, "codex-cli"},
+		{&db.TerminalSession{Kind: "shell"}, "", "claude-code"},
+	} {
+		assert.Equal(t, tc.want, agentLabelFor(tc.row, tc.flag), "row %+v flag %q", tc.row, tc.flag)
+	}
+
+	fx := newWorkbenchFixture(t)
+	theirs := seedAgentSession(t, fx.d, fx.b, "claude")
+	shell := seedAgentSession(t, fx.d, fx.a, "shell")
+	for _, env := range []string{"", "garbage", "999999", strconv.FormatInt(theirs, 10), strconv.FormatInt(shell, 10)} {
+		for flag, want := range map[agentkind.Kind]string{"": "claude-code", agentkind.Codex: "codex-cli", agentkind.Claude: "claude-code"} {
+			added, reply := commentLabels(t, fx, env, flag)
+			assert.Equal(t, want, added, "env %q flag %q", env, flag)
+			assert.Equal(t, want, reply, "env %q flag %q", env, flag)
+		}
+	}
+}
+
+// A later Apply of a stored row (no live binding) has no flag: claude-code.
+func TestAgentLabel_StoredRowApplyFallsBackToClaude(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	id, err := fx.d.InsertAgentAction(db.AgentAction{Tool: "add_comment", Status: "approved", Surface: WorkbenchSurface,
+		ContextType: WorkbenchContextType, ContextID: strconv.FormatInt(fx.a, 10),
+		ArgsJSON: fmt.Sprintf(`{"target_id":%d,"body":"Later.","reason":"r"}`, fx.aTarget)})
+	require.NoError(t, err)
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "applied", row.Status, row.Error)
+	var label string
+	require.NoError(t, fx.d.QueryRow(`SELECT agent_label FROM project_comments WHERE body = 'Later.'`).Scan(&label))
+	assert.Equal(t, "claude-code", label)
 }

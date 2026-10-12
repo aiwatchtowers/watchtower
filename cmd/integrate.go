@@ -30,6 +30,22 @@ var integrateClaudeCodeCmd = &cobra.Command{
 	RunE:  runIntegrateClaudeCode,
 }
 
+var integrateCodexCmd = &cobra.Command{
+	Use:   "codex --workbench N [--remove]",
+	Short: "Set up (or with --remove take out) the codex part of a workbench folder",
+	Long: `Installs the workbench skill into the folder's .agents/skills (kept out of git),
+removes the Watchtower hooks codex may have imported from Claude Code into the
+folder's .codex, and trusts the workbench hooks through codex's own app-server
+(an upsert of their hooks.state entries in ~/.codex/config.toml, nothing else).
+The MCP server and the hooks themselves are launch flags ('workbench launch-args').
+Without a codex binary the trust step is skipped and reported, not failed.
+
+--remove takes out the skill copy, its exclude line and the imported hooks. It
+leaves the hook trust in ~/.codex/config.toml: one entry serves every workbench.`,
+	Args: cobra.NoArgs,
+	RunE: runIntegrateCodex,
+}
+
 var integrateStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Report what is installed, missing, or edited",
@@ -49,11 +65,14 @@ var (
 	integrateMCPOnly     bool
 	integrateWorkbenchID int64
 	integrateJSON        bool
+	integrateCodexRemove bool
 )
 
 func init() {
 	rootCmd.AddCommand(integrateCmd)
-	integrateCmd.AddCommand(integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd)
+	integrateCmd.AddCommand(integrateClaudeCodeCmd, integrateCodexCmd, integrateStatusCmd, integrateRemoveCmd)
+	integrateCodexCmd.Flags().Int64Var(&integrateWorkbenchID, workbenchFlag, 0, "the Watchtower workbench whose folder to set up (required)")
+	integrateCodexCmd.Flags().BoolVar(&integrateCodexRemove, "remove", false, "take the codex part out of the folder instead")
 
 	for _, c := range []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd} {
 		c.Flags().StringVar(&integrateScope, "scope", "user",
@@ -135,6 +154,16 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return registerMCPWithClaudeCode()
+}
+
+func runIntegrateCodex(cmd *cobra.Command, _ []string) error {
+	if integrateWorkbenchID <= 0 {
+		return usageError("--workbench N is required: the codex part is installed into a workbench folder only")
+	}
+	if integrateCodexRemove {
+		return runIntegrateForWorkbench(cmd, runCodexRemove)
+	}
+	return runIntegrateForWorkbench(cmd, runCodexInstall)
 }
 
 func runIntegrateStatus(cmd *cobra.Command, args []string) error {

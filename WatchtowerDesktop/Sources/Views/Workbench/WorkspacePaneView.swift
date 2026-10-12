@@ -102,8 +102,8 @@ struct WorkspacePaneView: View {
                     }
                     .disabled(pane == .session(session.id))
                 }
-                Button("New session") {
-                    Task { await vm.newSession(inPane: pane, projectID: project.id) }
+                NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
+                    Task { await vm.newSession(inPane: pane, projectID: project.id, agent: agent) }
                 }
             }
         } label: {

@@ -716,3 +716,23 @@ func TestFeatureGateDefaults(t *testing.T) {
 		t.Error("targets.next_step.enabled should default true")
 	}
 }
+
+func TestConfig_DefaultAgentReadsTheRawValue(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml string
+		raw        string
+	}{
+		{"absent key defaults to claude", "", "claude"},
+		{"claude", "workbench:\n  default_agent: claude\n", "claude"},
+		{"codex", "workbench:\n  default_agent: codex\n", "codex"},
+		{"empty", "workbench:\n  default_agent: \"\"\n", ""},
+		{"unknown agent", "workbench:\n  default_agent: gemini\n", "gemini"},
+		{"wrong case", "workbench:\n  default_agent: Codex\n", "Codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Load(writeTestConfig(t, tc.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tc.raw, cfg.Workbench.DefaultAgent)
+		})
+	}
+}

@@ -123,7 +123,7 @@ struct EventRecordingStatus: Equatable {
     /// The job's percent while it transcribes, clamped to 0…100; nil in any
     /// other job state.
     static func transcribingPercent(_ job: RecordingJob) -> Int? {
-        job.status == .transcribing ? min(100, max(0, job.percent ?? 0)) : nil
+        job.status == .transcribing ? PhoneTranscriptStage.clampedPercent(job.percent) : nil
     }
 
     /// One phone recording's pill; `inFlight` while the upload or the Mac's

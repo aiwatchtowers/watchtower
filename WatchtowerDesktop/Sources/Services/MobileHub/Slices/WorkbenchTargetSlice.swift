@@ -213,7 +213,7 @@ struct WorkbenchTargetSlice: SliceSource {
 private struct TargetFacts {
     /// target id → open `owner_asks` filed on it.
     var openAsks: [Int64: Int] = [:]
-    /// target id → `claude` sessions with this `target_id` or linked through
+    /// target id → agent sessions (`claude`, `codex`) with this `target_id` or linked through
     /// `terminal_session_targets`, the most recently active first.
     var sessions: [Int64: [Int64]] = [:]
     /// target id → its newest `target_status_history` row.
@@ -235,7 +235,7 @@ private struct TargetFacts {
                 SELECT session_id, target_id FROM terminal_session_targets
             ) AS link
             JOIN terminal_sessions s ON s.id = link.session_id
-            WHERE s.kind = 'claude' AND s.project_id IS NOT NULL
+            WHERE s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL
             ORDER BY link.target_id, s.last_active_at DESC, s.id DESC
             """) {
             facts.sessions[row["target_id"], default: []].append(row["session_id"])

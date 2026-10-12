@@ -88,6 +88,12 @@ package enum SessionSwitcherPresentation {
         /// Whether the row draws the state label (glyph and caption): a
         /// workbench session; a standalone terminal shows its plain caption.
         package var showsStateLabel: Bool { session.projectID != nil }
+
+        /// "Codex" on a Codex session (board #399); Claude Code rows and
+        /// shells carry no tag, so a Claude-only list looks as before.
+        package var agentTag: String? {
+            session.kind == .codex ? AgentKind.codex.displayName : nil
+        }
     }
 
     /// The highest ⌘N the switchers bind.

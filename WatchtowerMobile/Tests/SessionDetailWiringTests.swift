@@ -51,6 +51,15 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertNil(detail.approvalNotice)
     }
 
+    /// Codex gets its product name (board #399); an unknown agent keeps its
+    /// raw value.
+    func testTheAgentLineNamesEachAgent() {
+        XCTAssertEqual(SessionDetailModel.agentName(.claudeCode), "Claude Code")
+        XCTAssertEqual(SessionDetailModel.agentName(.codexCLI), "Codex")
+        XCTAssertEqual(SessionDetailModel.agentName(.init(rawValue: "gemini_cli")), "gemini_cli")
+        XCTAssertEqual(SessionDetailModel.agentName(.init(rawValue: "")), "")
+    }
+
     func testTheSessionsOpenAsksComeFirst() throws {
         let detail = try model(11)
         XCTAssertEqual(detail.asks.map(\.id), [111, 109], "open asks of this session, newest first")

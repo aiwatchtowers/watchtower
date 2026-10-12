@@ -4,13 +4,13 @@ import Foundation
 package enum TerminalSessionPolicy {
     package static let maxTitleAttempts = 5
 
-    /// A workbench's active session: the most recently focused live claude
-    /// session (`lastFocused` is ordered oldest → newest), else the most
-    /// recently active live claude session.
+    /// A workbench's active session: the most recently focused live agent
+    /// session (`claude` or `codex`; `lastFocused` is ordered oldest → newest),
+    /// else the most recently active live agent session.
     package static func activeSession(
         _ sessions: [TerminalSession], live: Set<Int64>, lastFocused: [Int64]
     ) -> TerminalSession? {
-        let candidates = sessions.filter { $0.kind == .claude && live.contains($0.id) }
+        let candidates = sessions.filter { $0.kind.isAgent && live.contains($0.id) }
         for id in lastFocused.reversed() {
             if let hit = candidates.first(where: { $0.id == id }) { return hit }
         }
@@ -28,8 +28,19 @@ package enum TerminalSessionPolicy {
     /// with a Watchtower prompt that the transcript records as a user message,
     /// so titling them would name them after that prompt, not the owner.
     package static func needsTitle(_ s: TerminalSession, attempts: Int) -> Bool {
-        s.kind == .claude && s.titleSource == .auto && s.targetID == nil
+        s.kind.isAgent && s.titleSource == .auto && s.targetID == nil
             && !TerminalSessionNaming.isSetupTitle(s.title) && attempts < maxTitleAttempts
+    }
+
+    /// The button over a session that is not running: "Resume" when it has
+    /// an agent session to resume (Claude Code always has an id; Codex only
+    /// once its first SessionStart stored one), else "Start".
+    package static func reopenLabel(_ s: TerminalSession) -> String {
+        switch s.kind {
+        case .claude: "Resume"
+        case .codex: s.claudeSessionID == nil ? "Start" : "Resume"
+        case .shell: "Start"
+        }
     }
 
     /// `lastActiveAt` is fixed-format ISO, so a string compare orders it; ties go to the higher id.

@@ -1,0 +1,14 @@
+{
+  "session_id": "01a10000-0000-7000-8000-000000000001",
+  "turn_id": "01a10000-0000-7000-8000-000000000003",
+  "transcript_path": "/Users/example/.codex/sessions/2026/10/12/rollout-2026-10-12T15-00-11-01a10000-0000-7000-8000-000000000001.jsonl",
+  "cwd": "/Users/example/projects/example",
+  "hook_event_name": "PermissionRequest",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "touch example.txt",
+    "description": "example"
+  }
+}

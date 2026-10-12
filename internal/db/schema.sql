@@ -2242,15 +2242,16 @@ CREATE INDEX IF NOT EXISTS idx_project_comments_target   ON project_comments(tar
 CREATE INDEX IF NOT EXISTS idx_project_comments_parent   ON project_comments(parent_id);
 
 -- Embedded terminal sessions; project_id NULL = a standalone terminal.
+-- kind 'claude' and 'codex' are agent sessions (Claude Code, Codex CLI).
 CREATE TABLE IF NOT EXISTS terminal_sessions (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id        INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-    kind              TEXT NOT NULL CHECK(kind IN ('claude','shell')),
+    kind              TEXT NOT NULL CHECK(kind IN ('claude','codex','shell')),
     title             TEXT NOT NULL,
     title_source      TEXT NOT NULL DEFAULT 'auto' CHECK(title_source IN ('auto','ai','user')),
     target_id         INTEGER REFERENCES targets(id) ON DELETE SET NULL,
     folder_path       TEXT NOT NULL,
-    claude_session_id TEXT,
+    claude_session_id TEXT, -- the agent's own session id (Claude Code or Codex); NULL on a shell row, and on a codex row until its first SessionStart
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     closed_at         TEXT, -- legacy, unused since 2026-10-01 (no Close action): not a "session open" flag
@@ -2267,10 +2268,11 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (Go only)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
     agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (Go only)
+    agent_transcript_path TEXT, -- the transcript path the agent's SessionStart hook reported (00109); NULL = none (Go only)
     agent_cwd         TEXT, -- the main agent's working directory as the last main-thread hook reported it (absolute; Go only); NULL = unknown
     agent_cwd_at      TEXT, -- that report's event time, agent_state_at format; NULL with agent_cwd
     CHECK (title != '' AND folder_path != ''),
-    CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
+    CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);

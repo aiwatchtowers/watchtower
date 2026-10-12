@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
@@ -70,6 +71,9 @@ type Binding struct {
 	ChatProjectID  int64
 	DirectApply    bool
 	LegacyNames    bool
+	// Agent is `mcp --agent`: the agent a workbench session runs, when no
+	// terminal session row names it (agentLabelFor). Empty = not given.
+	Agent agentkind.Kind
 }
 
 // turnID is the turn a proposal attaches to right now.
@@ -355,7 +359,7 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		return Receipt{}, err
 	}
 	if trust == TrustExecute {
-		return r.applyTrusted(ctx, id)
+		return r.applyTrusted(ctx, id, b)
 	}
 	where := "in this chat"
 	if b.DirectApply {
@@ -591,12 +595,12 @@ func (r *Registry) prepareProposalArgs(ctx context.Context, t *Tool, args json.R
 
 // applyTrusted runs an execute-trust proposal inline: the row was inserted
 // as approved, so stamp decided_at the way an owner approval would, then
-// apply it.
-func (r *Registry) applyTrusted(ctx context.Context, id int64) (Receipt, error) {
+// apply it under live, the binding it was proposed under.
+func (r *Registry) applyTrusted(ctx context.Context, id int64, live Binding) (Receipt, error) {
 	if _, err := r.finishTransition(id, []string{"approved"}, "approved", "", ""); err != nil {
 		return Receipt{}, err
 	}
-	applied, err := r.Apply(ctx, id)
+	applied, err := r.apply(ctx, id, live)
 	if err != nil {
 		// The row exists even though Apply itself could not finish the
 		// transition (a rare DB-level race) — the model must still learn
@@ -652,6 +656,12 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 // left in `executing` by a process that died mid-flight is not applicable
 // either; `watchtower actions apply --force` reclaims it.
 func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error) {
+	return r.apply(ctx, id, Binding{})
+}
+
+// apply is Apply; live is the binding of an inline apply (applyTrusted), whose
+// process-only Agent the stored row cannot carry. A later Apply has none.
+func (r *Registry) apply(ctx context.Context, id int64, live Binding) (*db.AgentAction, error) {
 	row, err := r.db.GetAgentAction(id)
 	if err != nil {
 		return nil, err
@@ -683,6 +693,7 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 		return r.finishTransition(id, from, "failed", "", "unknown tool "+row.Tool)
 	}
 	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row), Retry: row.Status == "failed"}
+	call.Binding.Agent = live.Agent
 	// Re-scope against the stored binding: a retried or late-applied workbench
 	// row must still belong to a live workbench and touch only its rows.
 	if err := r.WorkbenchAlive(ctx, call.Binding); err != nil {

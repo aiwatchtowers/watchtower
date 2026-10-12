@@ -663,7 +663,7 @@ final class CodeQuestionCenter {
         reloadQuestionList(workbenchID: workbenchID)
     }
 
-    // MARK: Hand to Claude Code (spec §9.5)
+    // MARK: Hand to Session (spec §9.5)
 
     /// The popover's ⌥⌘↩: it closes and its conversation goes to the
     /// page's hand-off sheet. Not while an answer streams (the button is
