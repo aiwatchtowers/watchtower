@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 )
@@ -286,5 +287,251 @@ func TestExecCommandRunnerClassifiesFailures(t *testing.T) {
 	wantDir, _ := filepath.EvalSymlinks(dir)
 	if gotDir != wantDir {
 		t.Fatalf("the runner must run in dir: got %q want %q", gotDir, wantDir)
+	}
+}
+
+// fakeCmdCodex stands in for codex's app-server in cmd tests: it lists the
+// launch-flag hooks of the watchtower binary's codex hook set and keeps the
+// trust they get.
+type fakeCmdCodex struct {
+	bin     string // the codex binary codexFindBinary resolves
+	trusted map[string]bool
+	writes  int
+}
+
+func useFakeCmdCodex(t *testing.T) *fakeCmdCodex {
+	t.Helper()
+	f := &fakeCmdCodex{bin: filepath.Join(t.TempDir(), "codex"), trusted: map[string]bool{}}
+	if err := os.WriteFile(f.bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	prevFind, prevStart := codexFindBinary, codexAppServerStart
+	codexFindBinary = func() (string, error) { return f.bin, nil }
+	codexAppServerStart = func(_ context.Context, bin string, _, _ []string) (codex.AppServer, error) {
+		if bin != f.bin {
+			return nil, fmt.Errorf("unexpected codex %q", bin)
+		}
+		return f, nil
+	}
+	t.Cleanup(func() { codexFindBinary, codexAppServerStart = prevFind, prevStart })
+	return f
+}
+
+func (f *fakeCmdCodex) ListHooks(context.Context, string) ([]codex.HookEntry, error) {
+	var out []codex.HookEntry
+	for i, h := range devpack.CodexHookSet("/usr/local/bin/watchtower") {
+		key := fmt.Sprintf("/<session-flags>/config.toml:%d", i)
+		trust := "untrusted"
+		if f.trusted[key] {
+			trust = "trusted"
+		}
+		out = append(out, codex.HookEntry{Key: key, Command: h.Command, CurrentHash: "sha256:" + key,
+			TrustStatus: trust, Source: "sessionFlags", Event: strings.ToLower(h.Event[:1]) + h.Event[1:]})
+	}
+	return out, nil
+}
+
+func (f *fakeCmdCodex) TrustHooks(_ context.Context, entries []codex.HookEntry) error {
+	f.writes++
+	for _, e := range entries {
+		f.trusted[e.Key] = true
+	}
+	return nil
+}
+
+func (f *fakeCmdCodex) Close() error { return nil }
+
+func codexSkillPath(folder string) string {
+	return filepath.Join(folder, ".agents", "skills", devpack.WorkbenchSkillName, "SKILL.md")
+}
+
+func TestIntegrateStatusJSON_HasCodexObjectAndKeepsClaudeKeys(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	useFakeCmdCodex(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runWorkbenchInstall(context.Background(), &out, p); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := runCodexInstall(context.Background(), &out, p); err != nil {
+		t.Fatalf("codex install: %v\n%s", err, out.String())
+	}
+	out.Reset()
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	got := strings.ReplaceAll(out.String(), p.FolderPath, "/Users/example/acme")
+	golden := filepath.Join("testdata", "integrate_status_codex.golden.json")
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != string(want) {
+		t.Fatalf("status --json drifted from %s:\n%s", golden, got)
+	}
+}
+
+func TestIntegrateStatusJSON_CodexNotFoundIsNullTrust(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"found": false, "skill": false, "hooks_trusted": nil, "imported_duplicates": false}
+	if fmt.Sprint(got["codex"]) != fmt.Sprint(want) {
+		t.Fatalf("codex = %v, want %v", got["codex"], want)
+	}
+	out.Reset()
+	if err := runWorkbenchStatus(context.Background(), &out, p, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "  codex    not found, skill missing, hooks trusted unknown\n") {
+		t.Fatalf("text status:\n%s", out.String())
+	}
+}
+
+func TestIntegrateCodex_InstallReportsAndIsIdempotent(t *testing.T) {
+	f := useFakeCmdCodex(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runCodexInstall(context.Background(), &out, p); err != nil {
+		t.Fatalf("install: %v\n%s", err, out.String())
+	}
+	want := fmt.Sprintf("Workbench 7 (%s), codex:\n  skill    installed (.agents/skills/watchtower-workbench)\n  trust    hooks trusted\n", p.FolderPath)
+	if out.String() != want {
+		t.Fatalf("report:\n%s\nwant:\n%s", out.String(), want)
+	}
+	out.Reset()
+	if err := runCodexInstall(context.Background(), &out, p); err != nil {
+		t.Fatal(err)
+	}
+	if f.writes != 1 || !strings.Contains(out.String(), "skill    unchanged") {
+		t.Fatalf("second run: writes=%d\n%s", f.writes, out.String())
+	}
+}
+
+func TestIntegrateCodex_MissingCodexIsNotAnError(t *testing.T) {
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runCodexInstall(context.Background(), &out, p); err != nil {
+		t.Fatalf("a missing codex must not fail the install (D5): %v", err)
+	}
+	if !strings.Contains(out.String(), "trust    skipped — codex not found") {
+		t.Fatalf("report:\n%s", out.String())
+	}
+	if _, err := os.Stat(codexSkillPath(p.FolderPath)); err != nil {
+		t.Fatalf("the skill is installed anyway: %v", err)
+	}
+}
+
+func TestIntegrateCodex_FolderGoneIsCleanError(t *testing.T) {
+	useFakeCmdCodex(t)
+	p := testWorkbench(t)
+	p.FolderPath = filepath.Join(p.FolderPath, "gone")
+	for name, run := range map[string]workbenchIntegrateFunc{"install": runCodexInstall, "remove": runCodexRemove} {
+		var out bytes.Buffer
+		err := run(context.Background(), &out, p)
+		if err == nil || !strings.Contains(err.Error(), "no longer exists") {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+		if _, statErr := os.Stat(p.FolderPath); !os.IsNotExist(statErr) {
+			t.Fatalf("%s recreated the folder", name)
+		}
+	}
+	var out bytes.Buffer
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err == nil {
+		t.Fatalf("status of a gone folder must fail")
+	}
+}
+
+func TestIntegrateCodex_RemoveKeepsTrust(t *testing.T) {
+	f := useFakeCmdCodex(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runCodexInstall(context.Background(), &out, p); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runCodexRemove(context.Background(), &out, p); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.FolderPath, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf(".agents survived: %v", err)
+	}
+	if len(f.trusted) != len(devpack.CodexHookSet("x")) || f.writes != 1 {
+		t.Fatalf("removal touched the trust: %v", f.trusted)
+	}
+	if !strings.Contains(out.String(), "left in place") {
+		t.Fatalf("report:\n%s", out.String())
+	}
+}
+
+func TestIntegrateCodex_RequiresWorkbench(t *testing.T) {
+	prev := integrateWorkbenchID
+	integrateWorkbenchID = 0
+	t.Cleanup(func() { integrateWorkbenchID = prev })
+	err := runIntegrateCodex(integrateCodexCmd, nil)
+	var ec *exitCodeError
+	if !errors.As(err, &ec) || ec.code != 2 {
+		t.Fatalf("err = %v, want a usage error", err)
+	}
+}
+
+// PROJ-02: `workbench delete` also takes the codex skill copy out.
+func TestProj02_WorkbenchDeleteRemovesTheCodexSkill(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	useFakeCmdCodex(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runCodexInstall(context.Background(), &out, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := workbenchRemoveInstall(context.Background(), nil, p); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.FolderPath, ".agents")); !os.IsNotExist(err) {
+		t.Fatalf("PROJ-02: the codex skill survived workbench delete (err=%v)", err)
+	}
+	gone := &db.Workbench{ID: 7, FolderPath: filepath.Join(p.FolderPath, "gone")}
+	if err := workbenchRemoveInstall(context.Background(), nil, gone); err == nil ||
+		strings.Count(err.Error(), "no longer exists") != 1 {
+		t.Fatalf("a gone folder is one error, got %v", err)
+	}
+}
+
+func TestWorkbenchResync_RefreshesTheCodexPart(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	database := writeActionsConfig(t)
+	pid, err := database.CreateWorkbench("acme", resyncFolder(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := database.GetWorkbench(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := workbenchExecutable
+	workbenchExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
+	t.Cleanup(func() { workbenchExecutable = prev })
+
+	res, err := resyncWorkbench(context.Background(), database, p, false)
+	if err != nil || res.Codex != nil {
+		t.Fatalf("no codex, no skill copy: codex step skipped; got %+v, err %v", res.Codex, err)
+	}
+
+	useFakeCmdCodex(t)
+	res, err = resyncWorkbench(context.Background(), database, p, false)
+	if err != nil || res.Codex == nil || !res.Codex.OK || res.Codex.Skill != "installed" ||
+		res.Codex.HooksTrusted == nil || !*res.Codex.HooksTrusted {
+		t.Fatalf("codex found: the part is installed; got %+v, err %v", res.Codex, err)
+	}
+	b, _ := json.Marshal(res)
+	if !strings.Contains(string(b), `"codex":{"ok":true,"error":"","found":true,"skill":"installed","hooks_trusted":true,"duplicates_removed":false}`) {
+		t.Fatalf("resync JSON: %s", b)
 	}
 }
