@@ -60,13 +60,20 @@ struct WorkbenchSessionsPanel: View {
     private var header: some View {
         HStack(spacing: 6) {
             WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)
-            Button {
-                Task { await vm.newSessionOnPage() }
+            // A click starts the default agent; the menu offers each agent.
+            Menu {
+                NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
+                    Task { await vm.newSessionOnPage(agent: agent) }
+                }
             } label: {
                 Image(systemName: "plus")
+            } primaryAction: {
+                Task { await vm.newSessionOnPage() }
             }
-            .buttonStyle(.borderless)
-            .help("New session")
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("New \(vm.defaultAgent.displayName) session — hold for the other agents")
             .accessibilityLabel("New session")
         }
         .padding(.horizontal, 12)
@@ -160,6 +167,7 @@ struct TerminalSessionRow: View {
                 if let badge = row.badge {
                     Text(badge).font(.caption2).foregroundStyle(.secondary)
                 }
+                if let tag = row.agentTag { AgentTag(text: tag) }
             }
             Spacer(minLength: 0)
         }
@@ -272,7 +280,7 @@ private struct SessionActionDialogs: ViewModifier {
                 }
                 Button("Cancel", role: .cancel) { deleting = nil }
             } message: {
-                Text("Its process stops and it leaves the list. Claude Code's own transcript is kept.")
+                Text(AgentChoicePresentation.deleteSessionMessage(deleting?.kind ?? .claude))
             }
     }
 }
@@ -309,5 +317,21 @@ private struct RenameSessionSheet: View {
         guard !trimmed.isEmpty else { return }
         onSave(trimmed)
         dismiss()
+    }
+}
+
+/// The New session menus' entries (board #399, D1): one per agent, an agent
+/// whose CLI is known to be missing disabled with a hint.
+struct NewSessionMenuItems: View {
+    let vm: WorkbenchesViewModel
+    let projectID: Int64
+    let start: (AgentKind) -> Void
+
+    var body: some View {
+        ForEach(AgentChoicePresentation.newSession { vm.agentAvailable($0, projectID: projectID) }) { choice in
+            Button(choice.title) { start(choice.agent) }
+                .disabled(!choice.isAvailable)
+                .help(choice.hint ?? "")
+        }
     }
 }

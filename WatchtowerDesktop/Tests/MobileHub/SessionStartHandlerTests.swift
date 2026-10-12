@@ -250,6 +250,50 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertEqual(center.missingAgent[codex.id], .codex)
     }
 
+    /// D6 (board #399): a start from the phone runs the Mac's default agent
+    /// — the phone has no picker. Claude Code stays the default.
+    func testPhoneStartUsesDefaultAgent() async throws {
+        let p = try await workbench()
+        let first = try await target(p)
+        let vm = makeVM()
+        let claudeOutcome = try await makeHandlers(vm).handle(start(first, startParams(p)))
+        XCTAssertEqual(claudeOutcome.status, .applied)
+        let claudeRows = try await rows(p)
+        XCTAssertEqual(claudeRows.map(\.kind), [.claude])
+
+        let second = try await target(p, "Ship that")
+        vm.readDefaultAgent = { .codex }
+        center.codexLaunchArgs = { _ in CodexLaunchArgs(binary: "/Users/example/bin/codex", pathPrepend: "", args: []) }
+        let codexOutcome = try await makeHandlers(vm).handle(start(second, startParams(p)))
+        XCTAssertEqual(codexOutcome.status, .applied)
+        let all = try await rows(p)
+        let codex = try XCTUnwrap(all.first { $0.targetID == second })
+        XCTAssertEqual(codex.kind, .codex)
+        XCTAssertNil(codex.claudeSessionID, "Codex mints its own id")
+        XCTAssertTrue(launches.last?.environment.contains { $0.hasPrefix("WATCHTOWER_CODEX_COMMAND=") } == true,
+                      "the Codex launch ran")
+    }
+
+    /// End to end: the default agent is Codex and `launch-args` finds no
+    /// `codex` — a new session from the phone fails `codexNotFound`, with
+    /// Codex's message and no process.
+    func testPhoneStartCodexMissingReturnsCodexNotFound() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let vm = makeVM()
+        vm.readDefaultAgent = { .codex }
+        center.codexLaunchArgs = { _ in throw WorkbenchCLIError.agentNotFound(.codex) }
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p)))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .codexNotFound)
+        XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127, agent: .codex))
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        let created = try await rows(p)
+        XCTAssertEqual(created.map(\.kind), [.codex])
+    }
+
     /// Any other launch-args failure is no not-found: a plain write failure.
     func testCodexLaunchArgsOtherFailureIsNoNotFound() async throws {
         let p = try await workbench()

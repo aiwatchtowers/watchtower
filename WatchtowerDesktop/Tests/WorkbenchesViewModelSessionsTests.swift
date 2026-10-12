@@ -741,6 +741,67 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.map(\.args), [["-l"]])
     }
 
+    // MARK: - Agent choice (board #399, D1)
+
+    /// Work on It runs the default agent; the menu's other agent starts (or
+    /// reopens) a session of that agent only; a plain Work on It reopens the
+    /// target's latest session whatever its agent.
+    func testWorkOnUsesDefaultAgentAndMenuOffersOther() async throws {
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
+        let vm = makeVM()
+        vm.readDefaultAgent = { .codex }
+        await vm.reload()
+        XCTAssertEqual(vm.defaultAgent, .codex, "the menus read the setting on reload")
+
+        await vm.workOn(targetID: target, targetText: "Ship it")
+        var all = try await rows(p)
+        XCTAssertEqual(all.map(\.kind), [.codex])
+        XCTAssertNil(all.first?.claudeSessionID, "Codex mints its own id")
+        XCTAssertEqual(all.first?.targetID, target)
+
+        await vm.workOn(targetID: target, targetText: "Ship it")
+        all = try await rows(p)
+        XCTAssertEqual(all.count, 1, "the target's session is reopened")
+
+        await vm.workOn(targetID: target, targetText: "Ship it", agent: .claude)
+        all = try await rows(p)
+        XCTAssertEqual(all.map(\.kind).sorted { $0.rawValue < $1.rawValue }, [.claude, .codex],
+                       "Work on It with Claude Code: the codex session is not that agent's")
+        let claude = try XCTUnwrap(all.first { $0.kind == .claude })
+        XCTAssertTrue(TerminalLaunch.isValidSessionID(try XCTUnwrap(claude.claudeSessionID)))
+
+        await vm.workOn(targetID: target, targetText: "Ship it", agent: .claude)
+        all = try await rows(p)
+        XCTAssertEqual(all.count, 2, "now it has one: reopened")
+    }
+
+    /// The New session menus' entries start the picked agent; no agent is
+    /// the default.
+    func testNewSessionStartsThePickedAgent() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        await vm.newSession(projectID: p, agent: .codex)
+        await vm.newSession(projectID: p)
+        vm.readDefaultAgent = { .codex }
+        await vm.newSession(projectID: p)
+        let kinds = try await rows(p).sorted { $0.id < $1.id }.map(\.kind)
+        XCTAssertEqual(kinds, [.codex, .claude, .codex])
+    }
+
+    /// Standalone terminals and shells ignore the default agent: Codex needs
+    /// a workbench, and a shell is a shell.
+    func testShellSessionsUnaffected() async throws {
+        let vm = makeVM()
+        vm.readDefaultAgent = { .codex }
+        await vm.newStandalone(kind: .shell, folder: folder)
+        await vm.newStandalone(kind: .claude, folder: folder)
+        let kinds = vm.standaloneSessions.map(\.kind).sorted { $0.rawValue < $1.rawValue }
+        XCTAssertEqual(kinds, [.claude, .shell])
+        XCTAssertEqual(launches.first?.args, ["-l"], "the shell runs the login shell")
+        XCTAssertFalse(launches.contains { $0.environment.contains { $0.hasPrefix("WATCHTOWER_CODEX_COMMAND=") } })
+    }
+
     // MARK: - Resume failure / start fresh
 
     func testAResumeExitingNonZeroAtOnceOffersStartFreshWhichUsesANewID() async throws {

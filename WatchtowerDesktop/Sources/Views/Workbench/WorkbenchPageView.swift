@@ -38,9 +38,9 @@ struct WorkbenchPageView: View {
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
         .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
-        // Hand to Claude Code (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
+        // Hand to Session (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in
-            HandToClaudeSheet(handoff: appState.codeHandoffCenter, request: request)
+            HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)
         }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }

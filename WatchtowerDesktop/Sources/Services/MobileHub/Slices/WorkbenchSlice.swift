@@ -23,17 +23,22 @@ struct WorkbenchSlice: SliceSource {
     /// states; until then every count is 0.
     let sessionCounts: @Sendable (Database) throws -> [Int64: Payload.SessionCounts]
     let now: @Sendable () -> Date
+    /// `workbench.default_agent` (board #399, D6): what a phone start runs,
+    /// so the start sheet can name it.
+    let defaultAgent: @Sendable () -> AgentKind
 
     init(
         home: String = FileManager.default.homeDirectoryForCurrentUser.path,
         gitStatus: @escaping @Sendable (Int64) -> WorkbenchGitSnapshot? = { _ in nil },
         sessionCounts: @escaping @Sendable (Database) throws -> [Int64: Payload.SessionCounts] = { _ in [:] },
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        defaultAgent: @escaping @Sendable () -> AgentKind = { .claude }
     ) {
         self.home = home
         self.gitStatus = gitStatus
         self.sessionCounts = sessionCounts
         self.now = now
+        self.defaultAgent = defaultAgent
     }
 
     struct Payload: Encodable, Equatable {
@@ -67,6 +72,8 @@ struct WorkbenchSlice: SliceSource {
         let lastSessionActivity: Date?
         let archiveAfterDays: Int
         let targetsMore: Int?
+        /// `TerminalSessionSlice.wireAgent`: `claude_code` or `codex_cli`.
+        let defaultAgent: String
     }
 
     func records(_ db: Database) throws -> [SliceRecord] {
@@ -76,8 +83,9 @@ struct WorkbenchSlice: SliceSource {
         let counts = try sessionCounts(db)
         let encoder = RelayCoder.makeEncoder()
         let stamp = now()
+        let agent = TerminalSessionSlice.wireAgent(defaultAgent())
         return try summaries.map { summary in
-            let payload = makePayload(summary, window: window, sessions: counts[summary.id] ?? .init())
+            let payload = makePayload(summary, window: window, sessions: counts[summary.id] ?? .init(), agent: agent)
             return SliceRecord(kind: kind, id: String(summary.id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
     }
@@ -85,7 +93,8 @@ struct WorkbenchSlice: SliceSource {
     private func makePayload(
         _ summary: WorkbenchSwitcherSummary,
         window: WorkbenchTargetWindow,
-        sessions: Payload.SessionCounts
+        sessions: Payload.SessionCounts,
+        agent: String
     ) -> Payload {
         let project = summary.project
         let name = SliceClip.text(project.name, limit: 200)
@@ -110,7 +119,8 @@ struct WorkbenchSlice: SliceSource {
             sessionCounts: sessions,
             lastSessionActivity: SliceDate.parse(summary.lastSessionActivity),
             archiveAfterDays: project.archiveAfterDays,
-            targetsMore: more > 0 ? more : nil
+            targetsMore: more > 0 ? more : nil,
+            defaultAgent: agent
         )
     }
 

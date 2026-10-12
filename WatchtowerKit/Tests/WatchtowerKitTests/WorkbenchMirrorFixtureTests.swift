@@ -111,6 +111,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(workbench.branch, "feature/acme-export")
         XCTAssertFalse(workbench.detached)
         XCTAssertEqual(workbench.changes, 3)
+        XCTAssertEqual(workbench.defaultAgent, .codexCLI)
         XCTAssertEqual(workbench.openAsks, 2)
         XCTAssertEqual(workbench.openTargets, 9)
         XCTAssertEqual(workbench.inProgressTargets, 2)
@@ -125,6 +126,16 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(workbench.lastSessionActivity, t0)
         XCTAssertEqual(workbench.archiveAfterDays, 14)
         XCTAssertEqual(workbench.targetsMore, 1)
+    }
+
+    /// A hub older than Codex support sends no `default_agent` (board #399):
+    /// the record still decodes, and the phone reads Claude Code.
+    func testWorkbenchWithoutDefaultAgentDecodes() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: try fixture("workbench")) as? [String: Any])
+        json["default_agent"] = nil
+        let workbench = try Workbench.decode(payload: try JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(workbench.defaultAgent)
+        XCTAssertEqual(workbench.id, 7)
     }
 
     func testWorkbenchTargetFixture() throws {

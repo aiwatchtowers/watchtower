@@ -322,6 +322,102 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.installStatus[3]?.needsRepair, true)
     }
 
+    // MARK: - Codex part (board #399)
+
+    private func statusJSON(codex: String) -> Data {
+        Data(#"{"skill":"unchanged","hook":true,"mcp":true,"codex":\#(codex)}"#.utf8)
+    }
+
+    private let codexMissing = #"{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":false}"#
+    private let codexBare = #"{"found":true,"skill":false,"hooks_trusted":false,"imported_duplicates":false}"#
+    private let codexReady = #"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#
+
+    /// D5: Setup installs the Codex part only when the status finds codex.
+    func testSetupRunsCodexInstallOnlyWhenFound() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let without = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)), .success(Data()), .success(statusJSON(codex: codexMissing))
+        ])
+        await makeVM(without).createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        XCTAssertEqual(without.invocations.map { Array($0.prefix(2)) }, [
+            ["workbench", "create"], ["integrate", "claude-code"], ["integrate", "status"]
+        ], "no codex: nothing about it runs")
+
+        let with = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)), .success(Data()), .success(statusJSON(codex: codexBare)),
+            .success(Data()), .success(statusJSON(codex: codexReady))
+        ])
+        let vm = makeVM(with)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        XCTAssertEqual(with.invocations, [
+            ["workbench", "create", "--folder", "/tmp/acme", "--json"],
+            ["integrate", "claude-code", "--workbench", String(id)],
+            ["integrate", "status", "--workbench", String(id), "--json"],
+            ["integrate", "codex", "--workbench", String(id)],
+            ["integrate", "status", "--workbench", String(id), "--json"]
+        ])
+        XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
+        XCTAssertNil(vm.installErrors[id])
+    }
+
+    /// A failed Codex step never fails the Claude Code setup: the workbench
+    /// is announced as installed, its Claude Code setup session starts, and
+    /// the Codex failure is a note beside Repair.
+    func testFailedCodexSetupLeavesClaudeSetupAlone() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)), .success(Data()), .success(statusJSON(codex: codexBare)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "codex app-server timed out")),
+            .success(statusJSON(codex: codexBare))
+        ])
+        let vm = makeVM(runner)
+        vm.readDefaultAgent = { .codex }
+        var announced: [Bool] = []
+        vm.onWorkbenchCreated = { announced.append($1) }
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        XCTAssertEqual(announced, [true])
+        XCTAssertTrue(vm.installErrors[id]?.contains("Setting up Codex failed") == true, "\(vm.installErrors)")
+        XCTAssertTrue(vm.installErrors[id]?.contains("timed out") == true)
+        XCTAssertEqual(vm.installStatus[id]?.claudeNeedsRepair, false)
+        XCTAssertEqual(vm.installStatus[id]?.codexNeedsRepair, true, "Repair offers Codex again")
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
+        XCTAssertEqual(rows.map(\.kind), [.claude], "Codex is the default, but its part is not in the folder")
+    }
+
+    /// With Codex the default and its part installed, the setup session runs Codex.
+    func testSetupSessionRunsTheDefaultAgent() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)), .success(Data()), .success(statusJSON(codex: codexBare)),
+            .success(Data()), .success(statusJSON(codex: codexReady))
+        ])
+        let vm = makeVM(runner)
+        vm.readDefaultAgent = { .codex }
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
+        XCTAssertEqual(rows.map(\.kind), [.codex])
+        XCTAssertEqual(rows.first?.claudeSessionID, nil, "Codex mints its own id")
+    }
+
+    /// Repair runs each agent's part only when it needs it; a Codex failure
+    /// is its own note.
+    func testRepairRunsOnlyThePartsThatNeedIt() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(statusJSON(codex: codexBare)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "codex app-server timed out")),
+            .success(statusJSON(codex: codexBare))
+        ])
+        let vm = makeVM(runner)
+        await vm.refreshInstallStatus(projectID: id)
+        await vm.repairInstall(projectID: id)
+        XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [
+            ["integrate", "status"], ["integrate", "codex"], ["integrate", "status"]
+        ], "the Claude Code part is whole: not re-installed")
+        XCTAssertTrue(vm.installErrors[id]?.contains("Repairing Codex failed") == true, "\(vm.installErrors)")
+        XCTAssertFalse(vm.installErrors[id]?.contains("Repair failed") == true, "Claude Code did not fail")
+    }
+
     func testRevealSelectsTheProjectAndPane() {
         let vm = makeVM()
         vm.selectedWorkbenchID = 4

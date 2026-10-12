@@ -180,17 +180,22 @@ extension WorkbenchesViewModel {
 
     // MARK: - Creating
 
-    func newSession(projectID: Int64, placement: Placement = .show) async {
+    /// A new agent session of the workbench: `agent`, or the default agent
+    /// (Settings → Workbench → Default agent, D1) when nil.
+    func newSession(projectID: Int64, placement: Placement = .show, agent: AgentKind? = nil) async {
         let ticket = beginSwitch(projectID: projectID)
+        let agent = agent ?? currentDefaultAgent()
         guard let project = await project(id: projectID) else { return }
         await startNewSession(
-            project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+            project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
+            agent: agent
         )
     }
 
     /// A terminal outside any project, in `folder`, put on screen (a
     /// standalone terminal replaces the project page). A shell is named
-    /// mechanically and never gets an AI title.
+    /// mechanically and never gets an AI title. Codex is never offered here:
+    /// its launch arguments come from a workbench (`launch-args`).
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
         let title = switch kind {
         case .claude, .codex: TerminalSessionNaming.provisional(now: now())
@@ -213,10 +218,10 @@ extension WorkbenchesViewModel {
         prompt: String? = nil,
         placement: Placement = .show,
         ticket: Int? = nil,
-        agent: AgentKind = .claude
+        agent: AgentKind
     ) async {
         await createAndStart(
-            .init(projectID: project.id, kind: agent == .codex ? .codex : .claude, title: title,
+            .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
                   folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: prompt,
             placement: placement,
@@ -235,15 +240,24 @@ extension WorkbenchesViewModel {
     /// Once the session started, a task still `todo` moves to `in_progress`
     /// as the owner's write (board #499, `markInProgressOnWorkOn`): the
     /// brainstorm and the spec are work on it too.
+    ///
+    /// `agent` nil is the default agent (D1): the target's latest session of
+    /// any agent is reopened, else a default-agent one starts. The menu's
+    /// "Work on It with …" passes its agent: only a session of that agent is
+    /// reopened, else one of it starts.
     func workOn(
-        targetID: Int64, targetText: String, projectID: Int64? = nil, placement: Placement = .keeping(.board)
+        targetID: Int64,
+        targetText: String,
+        projectID: Int64? = nil,
+        placement: Placement = .keeping(.board),
+        agent: AgentKind? = nil
     ) async {
         // A failure is on the page already (or logged, if superseded); a
         // second press while this target's start runs (`inProgress`) is
         // dropped silently, as a double click.
         guard let row = try? await startTarget(
             targetID, title: targetText, prompt: nil, mode: .openExisting, placement: placement,
-            askedIn: projectID ?? selectedWorkbenchID
+            askedIn: projectID ?? selectedWorkbenchID, agent: agent
         ) else { return }
         await markInProgressOnWorkOn(targetID, session: row)
     }
@@ -284,7 +298,8 @@ extension WorkbenchesViewModel {
 
     /// A start on a board target from outside the board's own buttons (the
     /// phone, mobile POC spec §6.5): Work on it's read, reuse rule and launch
-    /// path, with the session named after the target's stored text.
+    /// path, with the session named after the target's stored text. A new
+    /// session runs the default agent (D6: the phone has no agent picker).
     /// `prompt` replaces the work-on prompt, and `planFirst` follows either
     /// with `TerminalLaunch.planFirstSuffix`; both apply only to a new
     /// session (a reopened one resumes its conversation). Under every
@@ -307,7 +322,7 @@ extension WorkbenchesViewModel {
     /// switch ticket and errors (the target's workbench is known only after
     /// the read; the page's is the one it almost always is). `checkLaunch`:
     /// a launch that did not run throws (`startForTarget`); Work on it leaves
-    /// that to the pane.
+    /// that to the pane. `agent`: see `workOn`.
     private func startTarget(
         _ targetID: Int64,
         title: String?,
@@ -316,7 +331,8 @@ extension WorkbenchesViewModel {
         placement: Placement,
         askedIn: Int64?,
         planFirst: Bool = false,
-        checkLaunch: Bool = false
+        checkLaunch: Bool = false,
+        agent: AgentKind? = nil
     ) async throws -> TerminalSession {
         guard workingOnTarget.insert(targetID).inserted else { throw TargetStartError.inProgress }
         defer { workingOnTarget.remove(targetID) }
@@ -339,9 +355,11 @@ extension WorkbenchesViewModel {
             throw TargetStartError.notOnBoard
         }
         if ticket != nil, found.project.id != askedIn { ticket = beginSwitch(projectID: found.project.id) }
-        if mode == .openExisting, let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
+        let candidates = agent.map { picked in found.rows.filter { $0.kind.agent == picked } } ?? found.rows
+        if mode == .openExisting, let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: candidates) {
             return try await reopen(existing, placement: placement, ticket: ticket, checkLaunch: checkLaunch)
         }
+        let agent = agent ?? currentDefaultAgent()
         let text = (title ?? found.targetText).trimmingCharacters(in: .whitespacesAndNewlines)
         // A blank brief is no brief: the work-on prompt goes instead.
         let given = prompt?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -349,9 +367,10 @@ extension WorkbenchesViewModel {
             targetID: targetID, isGroup: found.isGroup, vocabulary: vocabulary(projectID: found.project.id)
         )
         return try await createAndActivate(
-            .init(projectID: found.project.id, kind: .claude, title: text.isEmpty ? "Target #\(targetID)" : text,
+            .init(projectID: found.project.id, kind: TerminalSession.Kind(agent),
+                  title: text.isEmpty ? "Target #\(targetID)" : text,
                   targetID: targetID, folderPath: found.project.folderPath,
-                  claudeSessionID: Self.newClaudeSessionID()),
+                  claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: planFirst ? "\(brief) \(TerminalLaunch.planFirstSuffix)" : brief,
             placement: placement,
             ticket: ticket,
@@ -388,7 +407,8 @@ extension WorkbenchesViewModel {
             await open(row, placement: placement, ticket: ticket)
         } else {
             await startNewSession(
-                project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+                project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket,
+                agent: currentDefaultAgent()
             )
         }
     }

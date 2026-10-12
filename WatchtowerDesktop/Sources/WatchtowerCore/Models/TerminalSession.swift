@@ -10,6 +10,14 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     package enum Kind: String, Codable, Sendable {
         case claude, codex, shell
 
+        /// The row kind that runs `agent`.
+        package init(_ agent: AgentKind) {
+            switch agent {
+            case .claude: self = .claude
+            case .codex: self = .codex
+            }
+        }
+
         /// The agent this session runs; nil for a shell.
         package var agent: AgentKind? { AgentKind(rawValue: rawValue) }
 

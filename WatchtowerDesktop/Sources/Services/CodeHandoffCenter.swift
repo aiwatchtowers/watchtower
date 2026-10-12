@@ -14,9 +14,10 @@ struct CodeHandoffRequest: Identifiable, Equatable {
 
 /// Where the sheet sends a hand-off.
 enum CodeHandoffTarget: Hashable {
-    /// A running Claude Code session of the workbench.
+    /// A running agent session (Claude Code or Codex) of the workbench.
     case session(Int64)
-    case newSession
+    /// A new session of this agent.
+    case newSession(AgentKind)
 }
 
 /// One running session the sheet offers.
@@ -29,10 +30,10 @@ struct CodeHandoffSessionChoice: Identifiable, Equatable {
     var isWaitingForApproval: Bool { state.kind == .needsApproval }
 }
 
-/// "Hand to Claude Code" (⌥⌘↩, spec 2026-10-02 §9.5), on `AppState`: a code
-/// question goes from the popover, the Questions tab or Open Quickly to a
-/// workbench Claude Code session — "ask" answers in place, "delegate" goes
-/// to Claude Code. A request opens the page's sheet; its Send is the
+/// "Hand to Session" (⌥⌘↩, spec 2026-10-02 §9.5; board #399), on
+/// `AppState`: a code question goes from the popover, the Questions tab or
+/// Open Quickly to a workbench agent session (Claude Code or Codex) — "ask"
+/// answers in place, "delegate" goes to the agent. A request opens the page's sheet; its Send is the
 /// owner's confirmation. A running session gets the text pasted
 /// (`TerminalCenter.submitPrompt`) and submitted only when it waits idle at
 /// its prompt and its prompt holds nothing not sent, such as an ask's
@@ -116,15 +117,21 @@ final class CodeHandoffCenter {
             .map { CodeHandoffSessionChoice(session: $0, state: vm.sessionState($0)) }
     }
 
+    /// The sheet's new-session entries, one per agent in a fixed order, each
+    /// disabled when its CLI is known to be missing.
+    func newSessionChoices(workbenchID: Int64) -> [AgentChoice] {
+        AgentChoicePresentation.newSession { workbenches?.agentAvailable($0, projectID: workbenchID) ?? true }
+    }
+
     /// The session Send comments would use when it can take the text, else
-    /// a new session.
+    /// a new session of the default agent.
     func defaultTarget(workbenchID: Int64) -> CodeHandoffTarget {
         let choices = choices(workbenchID: workbenchID)
         if let active = terminalCenter?.activeSession(projectID: workbenchID),
            let choice = choices.first(where: { $0.id == active.id }), !choice.isWaitingForApproval {
             return .session(active.id)
         }
-        return .newSession
+        return .newSession(workbenches?.defaultAgent ?? .claude)
     }
 
     /// The sheet's Send. True when the hand-off went (the sheet closes);
@@ -160,10 +167,10 @@ final class CodeHandoffCenter {
             guard requests[workbenchID]?.id == request.id else { return false }
             finish(request)
             await vm.open(session, placement: .beside(.files))
-        case .newSession:
+        case let .newSession(agent):
             finish(request)
             await vm.startNewSession(project: request.project, title: TerminalSessionNaming.provisional(now: now()),
-                                     prompt: request.text, placement: .beside(.files))
+                                     prompt: request.text, placement: .beside(.files), agent: agent)
         }
         return true
     }

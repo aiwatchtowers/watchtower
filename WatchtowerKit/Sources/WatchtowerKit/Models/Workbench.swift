@@ -39,6 +39,11 @@ public struct Workbench: SliceMirror, Identifiable {
     public let archiveAfterDays: Int
     /// Board targets past the per-workbench window.
     public let targetsMore: Int?
+    /// The agent a start from the phone runs: the Mac's default agent
+    /// (Settings → Workbench → Default agent, board #399). One value for every
+    /// workbench, carried on each record. nil from a hub older than Codex
+    /// support, which starts Claude Code.
+    public let defaultAgent: TerminalSessionState.Agent?
 
     /// Session counts over the workbench's published `terminal_session`
     /// records, by resolved state.

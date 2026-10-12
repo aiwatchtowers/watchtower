@@ -110,8 +110,31 @@ struct WorkbenchResynced: Decodable, Equatable {
     let indexError: String
     let indexed: Int
     let indexSkipped: Bool
+    /// The codex part (board #399, spec §4.1): nil when the step was skipped
+    /// — no codex binary and no codex skill copy in the folder — and from a
+    /// CLI older than Codex support.
+    let codex: Codex?
+
+    /// `workbench resync --json`'s `codex` object.
+    struct Codex: Decodable, Equatable {
+        let ok: Bool
+        let error: String
+        let found: Bool
+        /// A devpack state, as `skill` above.
+        let skill: String
+        /// nil: codex could not be asked.
+        let hooksTrusted: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        let duplicatesRemoved: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case ok, error, found, skill
+            case hooksTrusted = "hooks_trusted"
+            case duplicatesRemoved = "duplicates_removed"
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
+        case codex
         case integrationOK = "integration_ok"
         case integrationError = "integration_error"
         case skill, excluded, suggestions
@@ -148,12 +171,13 @@ struct WorkbenchResynced: Decodable, Equatable {
         legacyMCPRemoved = try c.decodeIfPresent(Bool.self, forKey: .legacyMCPRemoved) ?? false
         legacyHooksReplaced = try c.decodeIfPresent(Bool.self, forKey: .legacyHooksReplaced) ?? false
         legacyPermissionRules = try c.decodeIfPresent(Int.self, forKey: .legacyPermissionRules) ?? 0
+        codex = try c.decodeIfPresent(Codex.self, forKey: .codex)
     }
 
     /// What the workbench page shows: what was added, what failed, then the
     /// suggestions. Never empty.
     var summaryLines: [Line] {
-        var lines = indexLines + integrationLines
+        var lines = indexLines + integrationLines + codexLines
         if lines.isEmpty { lines.append(Line(text: "Everything was already up to date.", problem: false)) }
         lines += suggestions.map { Line(text: "Next: \($0)", problem: false) }
         if !suggestionsError.isEmpty {
@@ -195,6 +219,32 @@ struct WorkbenchResynced: Decodable, Equatable {
             lines.append(Line(text: "Installing into the folder failed: \(integrationError)", problem: true))
         }
         return lines + legacyLines
+    }
+
+    /// The codex part's lines. A failed codex step is its own problem line:
+    /// it never makes the Claude Code part read as failed.
+    private var codexLines: [Line] {
+        guard let codex else { return [] }
+        let skillName = WorkbenchVocabulary.current.skillName
+        var lines: [Line] = []
+        switch codex.skill {
+        case "installed": lines.append(Line(text: "Installed the \(skillName) skill for Codex", problem: false))
+        case "updated": lines.append(Line(text: "Updated the \(skillName) skill for Codex", problem: false))
+        case "drifted", "foreign":
+            lines.append(Line(text: "Your own copy of the \(skillName) skill for Codex (.agents/skills) was kept, "
+                              + "so its update was not applied", problem: true))
+        default: break
+        }
+        if codex.duplicatesRemoved {
+            lines.append(Line(text: "Removed the Watchtower hooks Codex had imported into .codex", problem: false))
+        }
+        if codex.ok, codex.hooksTrusted == false {
+            lines.append(Line(text: "Codex does not trust every Watchtower hook yet — use Repair install", problem: true))
+        }
+        if !codex.ok {
+            lines.append(Line(text: "Setting up Codex failed: \(codex.error)", problem: true))
+        }
+        return lines
     }
 
     /// What the migration did to a folder set up before the rename. Go twin:
@@ -262,8 +312,55 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// old one. A CLI that does not send the key gets `mcp`, which keeps the
     /// pre-`current_mcp` repair rule.
     let currentMCP: Bool
+    /// The codex part (board #399, spec §4.5); nil from a CLI older than
+    /// Codex support, which has no codex part to repair.
+    let codex: Codex?
+
+    /// `integrate status --json`'s `codex` object.
+    struct Codex: Decodable, Equatable {
+        /// A codex binary was found (`codex_path`, then PATH).
+        let found: Bool
+        /// The skill copy in `.agents/skills` is there and current.
+        let skill: Bool
+        /// nil: codex could not be asked (it timed out, or speaks an unknown
+        /// protocol) — no Repair is offered for an unknown.
+        let hooksTrusted: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        /// Watchtower hooks codex imported from Claude Code's settings into
+        /// the folder's `.codex` are still there (they would run twice).
+        let importedDuplicates: Bool
+
+        init(found: Bool, skill: Bool, hooksTrusted: Bool?, importedDuplicates: Bool = false) { // swiftlint:disable:this discouraged_optional_boolean
+            self.found = found
+            self.skill = skill
+            self.hooksTrusted = hooksTrusted
+            self.importedDuplicates = importedDuplicates
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case found, skill
+            case hooksTrusted = "hooks_trusted"
+            case importedDuplicates = "imported_duplicates"
+        }
+
+        /// Without codex nothing is offered (D5: setup skips it quietly).
+        var needsRepair: Bool {
+            found && (!skill || hooksTrusted == false || importedDuplicates)
+        }
+
+        /// The Codex part of the install tooltip.
+        var summary: String {
+            let trust = switch hooksTrusted {
+            case true?: "trusted"
+            case false?: "not trusted"
+            case nil: "trust unknown"
+            }
+            return "Codex: skill \(skill ? "on" : "missing") · hooks \(trust)"
+                + (importedDuplicates ? " · imported duplicate hooks in .codex" : "")
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
+        case codex
         case skill, hook, mcp, legacy
         case stopHook = "stop_hook"
         case stateHooks = "state_hooks"
@@ -286,11 +383,12 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
-        legacySkill: String = ""
+        legacySkill: String = "",
+        codex: Codex? = nil
     ) {
         self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks,
                   askGuard: askGuard, askToolBlock: askToolBlock, mcp: mcp,
-                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp)
+                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp, codex: codex)
     }
 
     init(
@@ -304,8 +402,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
-        currentMCP: Bool
+        currentMCP: Bool,
+        codex: Codex? = nil
     ) {
+        self.codex = codex
         self.legacy = legacy
         self.currentMCP = currentMCP
         self.legacySkill = legacySkill
@@ -338,11 +438,35 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
         // A CLI older than `current_mcp`: fall back to `mcp`, so needsRepair keeps the old rule.
         currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP) ?? mcp
+        // A CLI older than Codex support has no codex part.
+        codex = try c.decodeIfPresent(Codex.self, forKey: .codex)
     }
 
-    /// Whether Repair can fix something. Without `claude` an unregistered
-    /// MCP server is not repairable from here — see `manualMCPCommand`.
+    /// Whether Repair can fix something: the Claude Code part or the Codex
+    /// part.
     var needsRepair: Bool {
+        claudeNeedsRepair || codexNeedsRepair
+    }
+
+    /// The Codex part needs `integrate codex` (codex found, and its skill
+    /// missing, its hooks untrusted or imported twice). An unknown trust is
+    /// no repair: it is only logged.
+    var codexNeedsRepair: Bool {
+        codex?.needsRepair ?? false
+    }
+
+    /// Whether the agent's CLI is there to launch: `claude_found`, or the
+    /// codex part's `found` (a CLI without a codex part cannot launch Codex).
+    func agentFound(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: claudeFound
+        case .codex: codex?.found ?? false
+        }
+    }
+
+    /// The Claude Code part. Without `claude` an unregistered MCP server is
+    /// not repairable from here — see `manualMCPCommand`.
+    var claudeNeedsRepair: Bool {
         (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || !stateHooks
             || !askGuard || !askToolBlock
             || (claudeFound && (!mcp || missesCurrentMCP))
@@ -445,6 +569,15 @@ struct WorkbenchCLI {
     /// registration into the workbench folder. Idempotent — also the Repair action.
     func install(projectID: Int64) async throws {
         _ = try await runner.run(args: ["integrate", "claude-code", "--workbench", String(projectID)])
+    }
+
+    /// The Codex part of the folder install (board #399, D5): the skill copy
+    /// in `.agents/skills`, the imported duplicate hooks out of `.codex`,
+    /// and the hook trust through codex's own app-server. Idempotent — also
+    /// Repair's Codex step. Only run when codex is found: without it the
+    /// CLI would still copy the skill.
+    func installCodex(projectID: Int64) async throws {
+        _ = try await runner.run(args: ["integrate", "codex", "--workbench", String(projectID)])
     }
 
     func status(projectID: Int64) async throws -> WorkbenchInstallStatus {

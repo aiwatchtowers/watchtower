@@ -75,8 +75,8 @@ struct WorkbenchHeaderControls: View {
                 .disabled(slot == .session(session.id))
             }
             Divider()
-            Button("New session") {
-                Task { await vm.newSession(inPane: slot, projectID: project.id) }
+            NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
+                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent) }
             }
         } label: {
             // The Terminal segment's right end: a hairline, then the chevron,
@@ -298,12 +298,14 @@ private struct HeaderIconButtonStyle: ButtonStyle {
 
 extension WorkbenchInstallStatus {
     /// What is installed and what is missing, for the install icons' and
-    /// Repair install's help.
+    /// Repair install's help. The Codex line shows only once codex is found
+    /// (D5: without it Codex is skipped quietly).
     var repairHelp: String {
         "Skill \(skillDisplay) · hook \(hook ? "on" : "missing") · "
             + "drift hook \(stopHook ? "on" : "missing") · "
             + "state hooks \(stateHooks ? "on" : "missing") · "
             + "ask guard \(askGuard && askToolBlock ? "on" : "missing") · MCP \(mcp ? "on" : "missing")"
+            + (codex.flatMap { $0.found ? "\n" + $0.summary : nil } ?? "")
     }
 }
 

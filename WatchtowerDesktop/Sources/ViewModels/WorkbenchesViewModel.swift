@@ -59,6 +59,13 @@ final class WorkbenchesViewModel {
     /// workbench; the next successful write clears it.
     private(set) var archiveSettingErrors: [Int64: String] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
+    /// The default agent (Settings → Workbench → Default agent, D1) as last
+    /// read: menus label themselves with it. A launch reads it afresh
+    /// (`currentDefaultAgent`), since Settings saves from another window.
+    private(set) var defaultAgent: AgentKind = .claude
+    /// Reads `workbench.default_agent`; AppState wires the config file. A
+    /// test VM launches Claude Code unless it sets this.
+    @ObservationIgnored var readDefaultAgent: @MainActor () -> AgentKind = { .claude }
     /// Why installing or repairing a project's install failed. It explains
     /// the Repair button, so it stays until a status read finds nothing to
     /// repair — the page's own `.task` read races `createWorkbench`'s and must
@@ -346,7 +353,22 @@ final class WorkbenchesViewModel {
         summary.openAsks + summary.unreadAgentComments
     }
 
+    /// The default agent, read now; the menus' copy follows it.
+    func currentDefaultAgent() -> AgentKind {
+        let agent = readDefaultAgent()
+        if defaultAgent != agent { defaultAgent = agent }
+        return agent
+    }
+
+    /// Whether `agent`'s CLI is there for this workbench, as its last install
+    /// status read says. Unknown (not read yet, or the read failed) counts as
+    /// there: the launch itself says when it is not.
+    func agentAvailable(_ agent: AgentKind, projectID: Int64) -> Bool {
+        installStatus[projectID]?.agentFound(agent) ?? true
+    }
+
     func reload() async {
+        _ = currentDefaultAgent()
         let previousIDs = summaries.map(\.id)
         do {
             summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
@@ -525,13 +547,42 @@ final class WorkbenchesViewModel {
         await reload()
         selectedWorkbenchID = created.id
         await refreshInstallStatus(projectID: created.id)
+        // D5: the Codex part only when codex is found (the status says so);
+        // its failure never fails the Claude Code setup.
+        if installStatus[created.id]?.codexNeedsRepair == true {
+            await installCodexPart(projectID: created.id, failure: "Setting up Codex failed — use Repair.")
+            await refreshInstallStatus(projectID: created.id)
+        }
         guard let project = selectedWorkbench else { return }
         onWorkbenchCreated?(project, installed)
         // After a failed install the setup would run without the skill, hook
         // and MCP server it relies on, so no first-run session.
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
-                                  prompt: TerminalLaunch.firstRunPrompt(vocabulary(projectID: project.id)))
+                                  prompt: TerminalLaunch.firstRunPrompt(vocabulary(projectID: project.id)),
+                                  agent: setupAgent(projectID: project.id))
+        }
+    }
+
+    /// The first-run session's agent: the default one, unless that is Codex
+    /// and its part is not in the folder (codex missing, or its setup failed)
+    /// — then Claude Code, whose install just succeeded.
+    private func setupAgent(projectID: Int64) -> AgentKind {
+        let agent = currentDefaultAgent()
+        guard agent == .codex else { return agent }
+        let codex = installStatus[projectID]?.codex
+        return codex?.found == true && codex?.skill == true ? .codex : .claude
+    }
+
+    /// `integrate codex`: Setup's and Repair's Codex step. A failure becomes
+    /// an install note beside Repair, after the Claude Code part's own.
+    private func installCodexPart(projectID: Int64, failure: String) async {
+        guard let cli else { return }
+        do {
+            try await cli.installCodex(projectID: projectID)
+        } catch {
+            let note = "\(failure) \(error.localizedDescription)"
+            installNotes[projectID] = installNotes[projectID].map { "\($0) \(note)" } ?? note
         }
     }
 
@@ -553,6 +604,10 @@ final class WorkbenchesViewModel {
             let status = try await cli.status(projectID: projectID)
             installStatus[projectID] = status
             statusReadErrors[projectID] = nil
+            if let codex = status.codex, codex.found, codex.hooksTrusted == nil {
+                // Spec §4.5: an unknown trust offers no Repair, only this line.
+                NSLog("WorkbenchesViewModel: codex could not be asked about hook trust for workbench %lld", projectID)
+            }
             if !status.needsRepair { installNotes[projectID] = nil }
         } catch {
             // The process runner terminates the child on cancel, which can
@@ -596,10 +651,18 @@ final class WorkbenchesViewModel {
         repairing.insert(projectID)
         defer { repairing.remove(projectID) }
         installNotes[projectID] = nil
-        do {
-            try await cli.install(projectID: projectID)
-        } catch {
-            installNotes[projectID] = "Repair failed: \(error.localizedDescription)"
+        // Each agent's part only when it needs it; a status not read yet
+        // repairs Claude Code, as before Codex.
+        let status = installStatus[projectID]
+        if status?.claudeNeedsRepair ?? true {
+            do {
+                try await cli.install(projectID: projectID)
+            } catch {
+                installNotes[projectID] = "Repair failed: \(error.localizedDescription)"
+            }
+        }
+        if status?.codexNeedsRepair == true {
+            await installCodexPart(projectID: projectID, failure: "Repairing Codex failed:")
         }
         await refreshInstallStatus(projectID: projectID)
     }
