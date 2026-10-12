@@ -38,8 +38,8 @@ func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, bra
 	return found, nil
 }
 
-// RecordSessionWorktree records (root, branch) for session sessionID at at
-// (agent_state_at format) inside tx, or in its own transaction when tx is
+// RecordSessionWorktree records (root, branch) for session sessionID at time
+// `at` (agent_state_at format) inside tx, or in its own transaction when tx is
 // nil. A pair already recorded is left as it is. recorded is false, with no
 // error, when the pair was already there or the session already holds
 // MaxSessionWorktrees rows.

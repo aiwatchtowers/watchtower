@@ -106,8 +106,8 @@ func resolvePath(p string) string {
 	if abs, err := filepath.Abs(p); err == nil {
 		p = abs
 	}
-	if real, err := filepath.EvalSymlinks(p); err == nil {
-		return real
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
 	}
 	return filepath.Clean(p)
 }

@@ -207,10 +207,13 @@ func (b *builder) branchCatches() []branchCatch {
 // catchDefaultBranch is B1; an unknown default branch keeps every branch.
 func catchDefaultBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
 	if b.repo.defaultBranch == "" {
+		// The lookup error is reported as the keep detail, not returned:
+		// an unknown default branch keeps the branch rather than failing.
+		detail := ""
 		if b.repo.defaultErr != nil {
-			return ReasonDefaultBranchUnknown, b.repo.defaultErr.Error(), nil
+			detail = b.repo.defaultErr.Error()
 		}
-		return ReasonDefaultBranchUnknown, "", nil
+		return ReasonDefaultBranchUnknown, detail, nil
 	}
 	if br.Name == b.repo.defaultBranch {
 		return ReasonDefaultBranch, "", nil
