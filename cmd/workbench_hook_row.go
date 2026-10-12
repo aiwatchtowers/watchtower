@@ -121,9 +121,9 @@ func openHookDB() (*db.DB, error) {
 
 // readCodexHook resolves the Codex row a state, Stop or ask-guard hook runs
 // in, then reads its event (at most limit bytes, waiting at most wait). It
-// records nothing yet: the Codex event mapping (spec §6.3, §6.4) consumes
-// the row and event it returns. ok is false when there is no row or no
-// event; a real failure is one stderr line prefixed with what.
+// records nothing: the Codex event mapping (spec §6.3, §6.4) consumes the
+// row and event it returns. ok is false when there is no row or no event; a
+// real failure is one stderr line prefixed with what.
 func readCodexHook(stdin io.Reader, stderr io.Writer, what string, wait time.Duration, limit int64,
 	open func() (*db.DB, error)) (row db.TerminalSession, ev hookEvent, ok bool) {
 	database, row, ok := codexHookRow(stderr, what, open)

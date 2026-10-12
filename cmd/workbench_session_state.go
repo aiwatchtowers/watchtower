@@ -63,8 +63,7 @@ var workbenchSessionStateCmd = &cobra.Command{
 			return nil
 		}
 		if agent == agentkind.Codex {
-			readCodexHook(cmd.InOrStdin(), cmd.ErrOrStderr(), "session state not recorded", sessionStateInputWait,
-				sessionStateStdinLimit, openHookDB)
+			runCodexSessionStateHook(cmd.InOrStdin(), cmd.ErrOrStderr())
 			return nil
 		}
 		if err := checkWorkbenchIDFlags(cmd); err != nil {
@@ -111,13 +110,16 @@ func (in hookEvent) agentFailure() *db.AgentFailure {
 // tool call the transcript places before the stop, writes nothing. A
 // SubagentStart or SubagentStop records no state (ok true, state ""):
 // recordHookAgentState routes it to the agent turns and the background count
-// (boards #411, #543). ok is false for an event
-// that records nothing — an unknown event or notification type, or a
+// (boards #411, #543). A Codex PermissionRequest is Claude Code's
+// permission_prompt notification (spec 2026-10-12 §6.3). ok is false for an
+// event that records nothing — an unknown event or notification type, or a
 // missing one.
 func agentStateFor(event, notificationType string) (state, onlyFrom string, ok bool) {
 	switch event {
 	case "UserPromptSubmit":
 		return agentStateWorking, "", true
+	case "PermissionRequest":
+		return agentStateApproval, "", true
 	case "Stop", "StopFailure":
 		return agentStateWaiting, "", true
 	case "PostToolUse":
@@ -181,12 +183,6 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		return nil
 	}
 	turn, subagentToolRun := in.toolRunTurn()
-	if subagentToolRun {
-		// A background subagent works on after the main turn stopped to
-		// wait for the owner: its tool results clear only a granted
-		// permission; over the Stop's count they are a heartbeat.
-		onlyFrom = agentStateApproval
-	}
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,
 	// so Claude Code never waits for it.
@@ -197,15 +193,83 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	defer database.Close()
 	switch {
 	case in.agentTurnEvent():
-		return recordAgentTurn(database, rowID, workbenchID, in, at)
+		return recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Claude)
 	case subagentToolRun:
-		// At most one of the two writes: one needs approval, the other waiting.
-		if err := recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn); err != nil {
-			return err
-		}
-		return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, nil)
+		return recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
 	}
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, in.agentFailure(),
+		in.Event == "UserPromptSubmit", at, turn)
+}
+
+// recordSubagentToolRun records a subagent's tool result: a background
+// subagent works on after the main turn stopped to wait for the owner, so
+// its tool results clear only a granted permission, and over the Stop's
+// count they are a heartbeat. At most
+// one of the two writes lands: one needs approval, the other waiting.
+func recordSubagentToolRun(database *db.DB, rowID, workbenchID int64, sessionID, state string, at time.Time) error {
+	if err := recordAgentState(database, rowID, workbenchID, sessionID, state, agentStateApproval, nil, false, at, hookTurn{}); err != nil {
+		return err
+	}
+	return recordBackgroundReport(database, rowID, workbenchID, sessionID, at, nil)
+}
+
+// codexStateEvents are the Codex events `session-state --agent codex`
+// records (spec 2026-10-12 §6.3). Codex has no Notification or StopFailure,
+// so a payload naming one records nothing (a codex row never gets
+// agent_failed_at), and its Stop is the drift check's.
+var codexStateEvents = map[string]bool{
+	"UserPromptSubmit": true, "PermissionRequest": true, "PostToolUse": true,
+	"SubagentStart": true, "SubagentStop": true,
+}
+
+// runCodexSessionStateHook is `workbench session-state --agent codex`: the
+// Claude Code hook's contract (nothing on stdout, exit 0, a real failure is
+// one stderr line) on the Codex row the hook runs in.
+func runCodexSessionStateHook(stdin io.Reader, stderr io.Writer) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(stderr, "watchtower: session state not recorded: panic: %v\n", r)
+		}
+	}()
+	at := hookNow()
+	row, in, ok := readCodexHook(stdin, stderr, "session state not recorded", sessionStateInputWait,
+		sessionStateStdinLimit, openHookDB)
+	if !ok {
+		return
+	}
+	if err := recordCodexHookState(row, in, at); err != nil {
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
+	}
+}
+
+// recordCodexHookState records a Codex state event of row's session (spec
+// §6.3) the way the Claude Code hook does, with two differences: the
+// subagent turns count the background agents themselves (Codex sends no
+// background_tasks), and a main-thread tool result is ordered by time only —
+// Codex runs its state hooks synchronously, so no hook outlives its turn and
+// the transcript turn order is not needed. An event of another session (a
+// foreign id, or a row with no id yet: spec I6) writes nothing.
+func recordCodexHookState(row db.TerminalSession, in hookEvent, at time.Time) error {
+	if !codexStateEvents[in.Event] || in.SessionID == "" || in.SessionID != row.ClaudeSessionID.String ||
+		(in.agentTurnEvent() && in.AgentID == "") {
+		return nil
+	}
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	rowID, workbenchID := row.ID, row.WorkbenchID.Int64
+	state, _, _ := agentStateFor(in.Event, "")
+	turn, subagentToolRun := in.toolRunTurn()
+	switch {
+	case in.agentTurnEvent():
+		return recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Codex)
+	case subagentToolRun:
+		return recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at)
+	}
+	turn.transcriptPath = ""
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil,
 		in.Event == "UserPromptSubmit", at, turn)
 }
 
@@ -226,8 +290,9 @@ func (in hookEvent) recordsAgentTurn() bool {
 // row (board #543), whatever its state: a teammate works across the main
 // agent's turns. A SubagentStop with a list then lowers the Stop's count to
 // what that list and the recorded turns still count (board #411); it never
-// raises or starts one.
-func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at time.Time) error {
+// raises or starts one. For agent Codex, which sends no list, the count is
+// the turns still open (codexBackgroundCount).
+func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at time.Time, agent agentkind.Kind) error {
 	if !terminal.IsSessionID(in.SessionID) {
 		return fmt.Errorf("the hook input carries no session id (%q)", briefClip(in.SessionID, 40))
 	}
@@ -244,6 +309,9 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at
 		return err
 	}
 	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID)
+	if agent == agentkind.Codex {
+		remaining, ok = codexBackgroundCount(turns), true
+	}
 	if !ok {
 		return err
 	}
@@ -399,11 +467,12 @@ func stopEndsToolRun(row *db.TerminalSession, turn hookTurn) bool {
 	return turn.stop && row.ToolRun && row.AgentState.String == agentStateWorking
 }
 
-// hookSessionRow reads workbench workbenchID's claude row rowID when the
-// hook came from the conversation the row runs: a nested `claude -p` the
-// agent starts inherits the env var but has its own session id, and must
-// not move the row. nil, nil when the row is gone (deleted while its
-// terminal ran) or belongs to another workbench, kind or conversation.
+// hookSessionRow reads workbench workbenchID's agent row rowID (claude or
+// codex) when the hook came from the conversation the row runs: a nested
+// `claude -p` the agent starts inherits the env var but has its own session
+// id, and must not move the row. nil, nil when the row is gone (deleted while
+// its terminal ran) or belongs to another workbench, kind or conversation;
+// a codex row with no id yet matches no conversation (spec I6).
 func hookSessionRow(database *db.DB, rowID, workbenchID int64, sessionID string) (*db.TerminalSession, error) {
 	if !terminal.IsSessionID(sessionID) {
 		return nil, fmt.Errorf("the hook input carries no session id (%q)", briefClip(sessionID, 40))
@@ -415,7 +484,7 @@ func hookSessionRow(database *db.DB, rowID, workbenchID int64, sessionID string)
 	if err != nil {
 		return nil, err
 	}
-	if row.WorkbenchID.Int64 != workbenchID || row.Kind != "claude" || row.ClaudeSessionID.String != sessionID {
+	if row.WorkbenchID.Int64 != workbenchID || !agentkind.IsAgent(row.Kind) || row.ClaudeSessionID.String != sessionID {
 		return nil, nil
 	}
 	return row, nil

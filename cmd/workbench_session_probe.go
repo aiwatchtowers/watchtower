@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/claudesession"
 	"watchtower/internal/db"
 )
@@ -122,7 +123,7 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return res, nil
 	}
 	var rawStatus string
-	res.Outcome, rawStatus, err = registryOutcome(row.ClaudeSessionID.String)
+	res.Outcome, rawStatus, err = sessionOutcome(row)
 	if err != nil {
 		return sessionProbeResult{}, err
 	}
@@ -144,6 +145,17 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 func backgroundCountStale(row *db.TerminalSession, now time.Time) bool {
 	return row.AgentState.String == agentStateWaiting && row.Background.Valid && row.Background.Int64 > 0 &&
 		now.Sub(row.BackgroundAt) >= probeStaleAfter
+}
+
+// sessionOutcome is the verdict on row's session: Claude Code's registry
+// for a claude row. Codex keeps no such registry, so a codex row is unknown
+// without reading ~/.claude, and its stale count ends (spec 2026-10-12
+// §6.3: the existing failure path, one notice).
+func sessionOutcome(row *db.TerminalSession) (outcome, rawStatus string, err error) {
+	if row.Kind == string(agentkind.Codex) {
+		return probeUnknown, "", nil
+	}
+	return registryOutcome(row.ClaudeSessionID.String)
 }
 
 // registryOutcome is the registry's verdict on conversation sessionID, with
