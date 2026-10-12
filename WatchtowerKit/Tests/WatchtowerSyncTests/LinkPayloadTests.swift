@@ -122,6 +122,14 @@ final class LinkPayloadTests: XCTestCase {
         }
     }
 
+    func testAnAllZeroHubKeyIsBadEncoding() throws {
+        for name in ["hub_kx", "hub_sig"] {
+            var object = try Self.fixtureObject()
+            object[name] = LinkPayload.encodeBase64URL(Data(count: 32))
+            XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.badEncoding))
+        }
+    }
+
     func testAQRWithHubKeysStaysUnderTheEncoderLimit() throws {
         let share = "https://www.icloud.com/share/" + String(repeating: "x", count: 120 - 29)
         let payload = LinkPayload.issue(

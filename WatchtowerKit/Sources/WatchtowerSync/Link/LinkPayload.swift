@@ -103,15 +103,15 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         self.hubAgreementKey = hubAgreementKey
     }
 
-    /// Throws `DecodingError.dataCorrupted` for a hub key that is not base64url of exactly 32 bytes.
+    /// Throws `DecodingError.dataCorrupted` for a hub key that is not base64url of exactly 32 bytes, or is all zero (a small-order point).
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         let signingKey = try values.decode(String.self, forKey: .hubSigningKey)
         let agreementKey = try values.decode(String.self, forKey: .hubAgreementKey)
         for (key, value) in [(CodingKeys.hubSigningKey, signingKey), (.hubAgreementKey, agreementKey)]
-        where Self.decodeBase64URL(value)?.count != 32 {
+        where Self.decodeBase64URL(value).map({ $0.count != 32 || $0.allSatisfy { $0 == 0 } }) ?? true {
             throw DecodingError.dataCorruptedError(
-                forKey: key, in: values, debugDescription: "hub key is not 32 bytes of base64url")
+                forKey: key, in: values, debugDescription: "hub key is not 32 non-zero bytes of base64url")
         }
         self.init(
             v: try values.decode(Int.self, forKey: .v),
