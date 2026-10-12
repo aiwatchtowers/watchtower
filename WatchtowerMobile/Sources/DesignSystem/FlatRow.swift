@@ -56,7 +56,7 @@ struct MetaLine: View {
     }
 }
 
-/// A flat row's icon: an SF Symbol in a tone, a session dot, or nothing.
+/// A flat row's icon: an SF Symbol in a tone, or a session dot.
 enum FlatRowIcon: Equatable {
     case symbol(String, tone: PhoneTone)
     case session(tone: PhoneTone, isRing: Bool)
