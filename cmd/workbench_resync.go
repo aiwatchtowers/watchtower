@@ -206,6 +206,11 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 		cfgErr = fmt.Errorf("loading config (codex_path ignored, codex looked up on PATH): %w", cfgErr)
 	}
 	if !devpack.CodexFound(cfg, codexFindBinary) && !devpack.CodexSkillInstalled(p.FolderPath) {
+		if cfgErr != nil { // codex may be reachable only through the ignored codex_path
+			res.codexErr = cfgErr
+			res.Codex = &resyncCodexJSON{Error: cfgErr.Error()}
+			return cfgErr
+		}
 		return nil
 	}
 	ctx, cancel := codexShutdownContext(ctx)
