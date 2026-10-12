@@ -45,8 +45,4 @@ package enum WhisperSegmentConfidence {
         if avgLogprob < minAvgLogprob { return .lowLogprob }
         return nil
     }
-
-    package static func shouldDrop(noSpeechProb: Float, avgLogprob: Float, compressionRatio: Float) -> Bool {
-        dropReason(noSpeechProb: noSpeechProb, avgLogprob: avgLogprob, compressionRatio: compressionRatio) != nil
-    }
 }

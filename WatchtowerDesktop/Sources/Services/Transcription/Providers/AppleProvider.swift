@@ -136,6 +136,7 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
         progress(0, 1)
         let locale = AppleLocaleCatalog.resolveLocale(langset: config.langset)
         let (input, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
+        try Task.checkCancellation() // a cancelled detection is no reason to decode a half-muted buffer
         var drops = WindowDropCounts()
         defer { gate.logSummary(engineDrops: drops) }
         guard let input else {

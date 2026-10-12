@@ -126,6 +126,20 @@ final class SpeechGateTranscriberTests: XCTestCase {
         XCTAssertEqual(output.text, "spoken")
     }
 
+    func testCancellationIsNotADetectorFailure() async throws {
+        // A cancelled detector call must not switch the recording to the
+        // energy fallback (nor log a failure) and must not open the window.
+        let engine = SegmentEngine()
+        engine.script = [.success([segment("spoken", 0, 1)]), .success([segment("spoken", 0, 1)])]
+        let detector = FakeSpeechDetector()
+        detector.error = CancellationError()
+        let output = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: detector)
+            .transcribe(samples: audio([0.1...0.9, 0.1...0.9])) { _, _ in }
+        XCTAssertEqual(detector.calls, 2, "no switch to the fallback: the detector is asked for every window")
+        XCTAssertEqual(engine.decodedWindowSizes, [])
+        XCTAssertEqual(output.text, "")
+    }
+
     func testNextRecordingRetriesTheDetectorAfterAFailure() async throws {
         // The detector lives as long as the warm transcriber; a failure must
         // not pin later recordings to the fallback.

@@ -44,6 +44,9 @@ struct WindowSpeechGate {
             do {
                 ranges = try await detector.speechRanges(in: window)
             } catch {
+                // A cancelled run is not a detector failure: the window is
+                // not decoded, and the loop stops at its next cancel check.
+                if error is CancellationError || Task.isCancelled { return .silent }
                 detectorFailed = true
                 NSLog("SpeechGate: speech detector failed (%@) — energy fallback for this recording",
                       String(describing: type(of: error)))

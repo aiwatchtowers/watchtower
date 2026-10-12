@@ -3,7 +3,7 @@ import XCTest
 
 final class WhisperSegmentConfidenceTests: XCTestCase {
     private func drops(_ noSpeech: Float, _ logprob: Float, _ compression: Float) -> Bool {
-        WhisperSegmentConfidence.shouldDrop(noSpeechProb: noSpeech, avgLogprob: logprob, compressionRatio: compression)
+        WhisperSegmentConfidence.dropReason(noSpeechProb: noSpeech, avgLogprob: logprob, compressionRatio: compression) != nil
     }
 
     func testNoSpeechWithLowConfidenceDrops() {
