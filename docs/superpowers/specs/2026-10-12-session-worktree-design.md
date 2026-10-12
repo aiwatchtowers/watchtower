@@ -88,7 +88,7 @@ skips the state write (`errors.Join`).
 | key | meaning |
 |---|---|
 | `folder_requested` | F as given (`""` without `--folder`) |
-| `folder_scope` | `main` (F is the workbench folder, inside it, or inside the main worktree), `worktree` (inside a linked worktree of the repo), `outside` (not under any listed worktree, or no repository), `missing` (F does not exist), `""` (unresolved: the worktrees could not be listed — git unavailable, the listing failed or the workbench folder did not resolve; no verdict, keep the last known place) |
+| `folder_scope` | `main` (F is the workbench folder, inside it, or inside the main worktree), `worktree` (inside a linked worktree of the repo), `outside` (not under any listed worktree, or no repository), `missing` (F does not exist), `""` (unresolved: the worktrees could not be listed — git unavailable, the listing failed, the workbench folder did not resolve, or F failed to resolve for a reason other than not existing; no verdict, keep the last known place) |
 | `folder_root` | the folder git ran in: the workbench folder for `main`/`outside`/`missing`; for `worktree`, the worktree's top level joined with the workbench folder's path relative to the main top level when that exists (a workbench in a repository subfolder), else the worktree top level |
 | `worktree_name` | base name of the linked worktree's top level; `""` otherwise |
 
@@ -137,7 +137,9 @@ worktree root (the worktree crumb reveals its folder in Finder).
 
 `ResolveFolder(ctx, o Options, requested string) (ResolvedFolder, error)` — `Options.Folder` is the workbench folder.
 `gitbin.InsideRepository(workbench)` first; then `git worktree list --porcelain -z` **in the workbench folder**;
-`requested` realpath'd (missing → `missing`, no git); matched against the listed paths (realpath'd, longest prefix
+`requested` realpath'd (not absolute → `outside`; missing → `missing`, no git; any other realpath failure, e.g.
+permission denied on a parent, → scope `""` with the error, no git — never `outside`, which the Desktop maps to the
+main folder and would let a branch switch in that worktree skip its live-agent confirmation); matched against the listed paths (realpath'd, longest prefix
 wins, `prunable` entries included only for the `missing` verdict). The result carries `Scope`, `Root`,
 `WorktreeName`, `MainTopLevel`. Paths compare case-insensitively on macOS. git unavailable → scope `""` with no
 error (the command's own git call reports git as unavailable); a failed listing → scope `""` and the error (status:
