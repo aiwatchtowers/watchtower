@@ -11,7 +11,9 @@ extension WorkbenchesViewModel {
         if let projectID = selectedWorkbenchID { await loadSessions(projectID: projectID) }
         await loadSwitcherSummaries()
         do {
-            goToSessions = try await dbPool.read { try TerminalSessionQueries.fetchAllWorkbenchSessions($0) }
+            let read = try await dbPool.read { try TerminalSessionQueries.fetchAllWorkbenchSessions($0) }
+            // A session waiting in the Undo batch is hidden here too (PROJ-17).
+            goToSessions = withoutPendingDeletes(read)
             goToError = nil
         } catch {
             goToError = "Could not load sessions: \(error.localizedDescription)"

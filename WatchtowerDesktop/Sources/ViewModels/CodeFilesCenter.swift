@@ -105,10 +105,10 @@ final class CodeFilesCenter {
     @ObservationIgnored private var buffers: [BufferKey: CodeFileBuffer] = [:]
     /// `buffers`' keys by page id: an edit finds its buffer in O(1).
     @ObservationIgnored private var bufferKeys: [String: BufferKey] = [:]
-    /// The buffers of removed worktrees by page id, locked: the dirty ones
-    /// until Discard, the clean ones for `pendingTimeout` — text the page
-    /// hands over late still lands (never on disk) and, once it makes a
-    /// buffer dirty, joins `orphanedEdits`.
+    /// The buffers of removed worktrees by page id, locked, clean ones too,
+    /// until Discard or the workbench is deleted (`forgetRemovedBuffers`) — text
+    /// the page hands over late, however late, still lands (never on disk)
+    /// and, once it makes a buffer dirty, joins `orphanedEdits`.
     @ObservationIgnored private var removedBuffers: [String: OrphanedEdit] = [:]
     @ObservationIgnored private var watchers: [CodeRoot: FolderWatcher] = [:]
     /// The roots shown at least once (their folder watched, git read).
@@ -623,10 +623,10 @@ final class CodeFilesCenter {
     }
 
     /// The worktree of `root` was removed (spec §7): it is never written
-    /// again. Clean buffers, the tabs and their saved key, the recents, the
-    /// tree and the marks go; buffers with unsaved edits are locked and
-    /// listed in `orphanedEdits` for Copy or Discard. The main root is never
-    /// "removed".
+    /// again. The tabs and their saved key, the recents, the tree and the
+    /// marks go; every buffer is locked and kept (late page text still
+    /// lands), those with unsaved edits listed in `orphanedEdits` for Copy
+    /// or Discard. The main root is never "removed".
     func rootRemoved(_ root: CodeRoot) {
         guard !root.isMain else { return }
         removedRoots.insert(root)
@@ -637,7 +637,6 @@ final class CodeFilesCenter {
             removedBuffers[buffer.id] = record
             if buffer.isDirty { orphanedEdits.append(record) }
         }
-        freeCleanRemovedBuffersLater()
         tabsByRoot[root] = nil
         defaults.removeObject(forKey: CodeTabs.key(root: root))
         recents[root] = nil
@@ -649,21 +648,11 @@ final class CodeFilesCenter {
         questions?.codeRootRemoved(root)
     }
 
-    /// A removed worktree's clean buffers have nothing to Copy or Discard:
-    /// they are kept only as long as the page may still hand over its last
-    /// text (`pendingTimeout`), then freed. Dirty ones stay for the banner.
-    private func freeCleanRemovedBuffersLater() {
-        let grace = pendingTimeout
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: grace)
-            self?.freeCleanRemovedBuffers()
-        }
-    }
-
-    /// Internal for tests.
-    func freeCleanRemovedBuffers() {
-        let listed = Set(orphanedEdits.map(\.id))
-        removedBuffers = removedBuffers.filter { id, record in listed.contains(id) || record.buffer.isDirty }
+    /// The workbench was deleted: its removed worktrees' locked buffers and
+    /// unsaved edits go (nothing can hand text over for them any more).
+    func forgetRemovedBuffers(workbenchID: Int64) {
+        orphanedEdits.removeAll { $0.root.workbenchID == workbenchID }
+        removedBuffers = removedBuffers.filter { $0.value.root.workbenchID != workbenchID }
     }
 
     /// The session's place resolves to a live worktree at the path of a

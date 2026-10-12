@@ -727,6 +727,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let probe = ProbedTerminalSession()
         center.makeProcess = { probe }
         let vm = makeVM()
+        vm.deleteSleep = { _ in } // the Undo window ends at once (PROJ-17)
         await vm.reload()
         vm.selectedWorkbenchID = p
         await vm.newSession(projectID: p)
@@ -737,6 +738,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         }
 
         await vm.delete(row)
+        await vm.deleteCommitTask?.value
 
         XCTAssertTrue(rowExistedAtDetach, "the process closed while the row still existed")
         XCTAssertNil(center.states[row.id])

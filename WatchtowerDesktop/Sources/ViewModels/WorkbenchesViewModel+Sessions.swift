@@ -131,7 +131,9 @@ extension WorkbenchesViewModel {
         let load = workbenchLoads[projectID, default: SessionLoads()].started + 1
         workbenchLoads[projectID, default: SessionLoads()].started = load
         do {
-            let rows = try await readWorkbenchSessions(projectID)
+            let read = try await readWorkbenchSessions(projectID)
+            // Filtered once read: a delete made while the read ran is hidden too.
+            let rows = withoutPendingDeletes(read)
             let loads = workbenchLoads[projectID, default: SessionLoads()]
             guard load > loads.applied else { return true }
             workbenchLoads[projectID]?.applied = load
@@ -159,8 +161,9 @@ extension WorkbenchesViewModel {
         standaloneLoads += 1
         let load = standaloneLoads
         do {
-            let rows = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+            let read = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
             guard load == standaloneLoads else { return true }
+            let rows = withoutPendingDeletes(read)
             standaloneSessions = rows
             if let id = selectedStandaloneID, !rows.contains(where: { $0.id == id }) {
                 selectedStandaloneID = nil
@@ -382,15 +385,18 @@ extension WorkbenchesViewModel {
     /// workbench, and the sessions of that workbench working on it.
     typealias TargetSessions = (project: Workbench, targetText: String, isGroup: Bool, rows: [TerminalSession])
 
-    /// nil when the target is not on a workbench board.
+    /// nil when the target is not on a workbench board. A session waiting in
+    /// the Undo batch is never among the rows: "open existing" must not
+    /// resume a session the owner just deleted (PROJ-17).
     private func readTargetSessions(_ targetID: Int64) async throws -> TargetSessions? {
-        try await dbPool.read { db in
+        let hidden = pendingDeletes.ids
+        return try await dbPool.read { db in
             guard let target = try TargetQueries.fetchByID(db, id: Int(targetID)),
                   let projectID = target.workbenchID,
                   let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
             let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
             let isGroup = try TargetQueries.hasChildren(db, id: targetID, workbenchID: projectID)
-            return (project, target.text, isGroup, rows.filter { $0.projectID == projectID })
+            return (project, target.text, isGroup, rows.filter { $0.projectID == projectID && !hidden.contains($0.id) })
         }
     }
 
@@ -485,26 +491,6 @@ extension WorkbenchesViewModel {
         }
         resumeFailed.remove(row.id)
         await activate(row, fresh: true, prompt: nil, placement: placement, ticket: ticket)
-    }
-
-    /// Closes the process first, then deletes the row and drops it from the
-    /// layout. Claude Code's transcript is left alone.
-    func delete(_ session: TerminalSession) async {
-        setSessionError(nil, projectID: session.projectID)
-        await terminalCenter?.close(sessionID: session.id)
-        forgetProcessState(session.id)
-        titleAttempts[session.id] = nil
-        notYetTitledStreak[session.id] = nil
-        do {
-            try await dbPool.write { try TerminalSessionQueries.delete($0, id: session.id) }
-        } catch {
-            setSessionError("Could not delete the session: \(error.localizedDescription)", projectID: session.projectID)
-            await loadSessions(projectID: session.projectID)
-            return
-        }
-        if let projectID = session.projectID { forgetInLayout(session.id, projectID: projectID) }
-        if selectedStandaloneID == session.id { selectedStandaloneID = nil }
-        await loadSessions(projectID: session.projectID)
     }
 
     /// An empty name is refused (the title stays as it was).
@@ -793,18 +779,18 @@ extension WorkbenchesViewModel {
         return message
     }
 
-    private func forgetInLayout(_ sessionID: Int64, projectID: Int64) {
+    func forgetInLayout(_ sessionID: Int64, projectID: Int64) {
         var updated = layout(projectID: projectID)
         updated.forgetSession(sessionID, fallback: .board)
         if updated != layout(projectID: projectID) { setLayout(updated, projectID: projectID) }
     }
 
-    private func forgetProcessState(_ sessionID: Int64) {
+    func forgetProcessState(_ sessionID: Int64) {
         resumeStarts[sessionID] = nil
         resumeFailed.remove(sessionID)
     }
 
-    private func setSessionError(_ message: String?, projectID: Int64?) {
+    func setSessionError(_ message: String?, projectID: Int64?) {
         sessionActionErrors[projectID] = message
     }
 }
