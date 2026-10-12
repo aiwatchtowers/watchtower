@@ -128,7 +128,7 @@ type LaunchServices interface {
 
 // Deps are a plan's collaborators. Git, DB and Procs are required; a nil
 // Sizer leaves sizes unknown, a nil LS lists no lsreg items, a nil Clock is
-// time.Now.
+// time.Now, a nil Home is os.UserHomeDir.
 type Deps struct {
 	Git   GitRunner
 	DB    Store
@@ -136,6 +136,9 @@ type Deps struct {
 	Sizer Sizer
 	LS    LaunchServices
 	Clock func() time.Time
+	// Home is the owner's home directory: nothing under its .claude is
+	// ever removed (spec §5 "never, by construction").
+	Home func() (string, error)
 }
 
 // OrphansIn splits the processes whose cwd or executable is inside one of

@@ -44,6 +44,8 @@ type builder struct {
 	session    SessionInfo // session mode
 	seen       observed    // session mode
 	folders    []string
+	claudeHome []string // ~/.claude as given and symlink-resolved
+	homeErr    error    // the home directory is unknown: every worktree is kept
 	procs      []Proc
 	activity   map[int64]SessionActivity
 	live       map[int64]bool
@@ -144,6 +146,7 @@ func (b *builder) loadFacts(ctx context.Context) error {
 	for _, f := range folders {
 		b.folders = append(b.folders, resolvePath(f))
 	}
+	b.loadClaudeHome()
 	acts, err := b.deps.DB.AllSessionActivity(ctx)
 	if err != nil {
 		return fmt.Errorf("reading the terminal sessions: %w", err)
@@ -162,6 +165,25 @@ func (b *builder) loadFacts(ctx context.Context) error {
 		return b.loadOwners(ctx)
 	}
 	return b.loadObserved(ctx)
+}
+
+// loadClaudeHome locates ~/.claude; a failure is kept in homeErr, so every
+// worktree is kept as check_failed rather than the plan failing.
+func (b *builder) loadClaudeHome() {
+	home := os.UserHomeDir
+	if b.deps.Home != nil {
+		home = b.deps.Home
+	}
+	dir, err := home()
+	switch {
+	case err != nil:
+		b.homeErr = err
+	case dir == "" || !filepath.IsAbs(dir):
+		b.homeErr = fmt.Errorf("home directory %q is not an absolute path", dir)
+	default:
+		claude := filepath.Join(dir, ".claude")
+		b.claudeHome = []string{claude, resolvePath(claude)}
+	}
 }
 
 func (b *builder) loadOwners(ctx context.Context) error {

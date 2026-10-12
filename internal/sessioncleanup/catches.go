@@ -23,9 +23,11 @@ const (
 	// failed reading origin/HEAD); every branch is kept.
 	ReasonDefaultBranchUnknown = "default_branch_unknown"
 	ReasonCheckedOut           = "checked_out"
-	ReasonNotAWorktree         = "not_a_worktree"
-	ReasonNotABranch           = "not_a_branch"
-	ReasonSessionRecent        = "session_recent"
+	// ReasonClaudeHome: the worktree is under the owner's ~/.claude.
+	ReasonClaudeHome    = "claude_home"
+	ReasonNotAWorktree  = "not_a_worktree"
+	ReasonNotABranch    = "not_a_branch"
+	ReasonSessionRecent = "session_recent"
 	// ReasonCheckFailed: a catch could not be evaluated (git or a file read
 	// failed); the item is kept with the error in detail.
 	ReasonCheckFailed = "check_failed"
@@ -52,10 +54,24 @@ func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 		own = catchRecentOwner
 	}
 	if w.Prunable {
-		return []worktreeCatch{catchFolders, own, catchUnpushed}
+		return []worktreeCatch{catchClaudeHome, catchFolders, own, catchUnpushed}
 	}
-	return []worktreeCatch{catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
+	return []worktreeCatch{catchClaudeHome, catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
 		catchSessionInIt, catchUnpushed, catchOperation}
+}
+
+// catchClaudeHome keeps anything under the owner's ~/.claude, and every
+// worktree when the home directory is unknown.
+func catchClaudeHome(_ context.Context, b *builder, w worktree) (string, string, error) {
+	if b.homeErr != nil {
+		return "", "", fmt.Errorf("locating the home directory: %w", b.homeErr)
+	}
+	for _, dir := range b.claudeHome {
+		if pathWithin(w.Root, dir) {
+			return ReasonClaudeHome, dir, nil
+		}
+	}
+	return "", "", nil
 }
 
 // catchFolders is W1: the main worktree, a workbench folder or a worktree

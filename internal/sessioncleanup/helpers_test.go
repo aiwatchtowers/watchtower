@@ -24,6 +24,7 @@ type fixture struct {
 	procs          *fakeProcs
 	sessionCreated time.Time
 	git            GitRunner // nil = SystemGit
+	home           func() (string, error)
 }
 
 const testSession, testWorkbench = int64(7), int64(3)
@@ -112,7 +113,7 @@ func (f *fixture) deps() Deps {
 	if f.git != nil {
 		g = f.git
 	}
-	return Deps{Git: g, DB: f.store, Procs: f.procs}
+	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home}
 }
 
 func (f *fixture) plan(r Request) Plan {

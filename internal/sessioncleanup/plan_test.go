@@ -451,3 +451,30 @@ func (g *recordingGit) RunGit(context.Context, string, string, ...string) ([]byt
 	g.calls++
 	return nil, -1, errors.New("not run")
 }
+
+// Nothing under the owner's ~/.claude is ever removed, in the session's
+// cleanup or the sweep; an unknown home directory keeps every worktree.
+func TestProj16_ClaudeHomeIsNeverRemoved(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	home := filepath.Join(f.base, "home")
+	f.home = func() (string, error) { return home, nil }
+	root := filepath.Join(home, ".claude", "worktrees", "agent-1")
+	gitIn(t, f.repo, "worktree", "add", "-q", "-b", "feat/agent", root, "main")
+	f.commit(root, "agent.txt", "work\n")
+	gitIn(t, root, "push", "-q", "origin", "feat/agent")
+	f.record(root, "feat/agent")
+
+	p := f.plan(Request{DeclaredWorktrees: []string{root}})
+	wantItem(t, p, "worktree:"+root, ActionKeep, ReasonClaudeHome)
+	wantItem(t, p, "branch:feat/agent", ActionKeep, ReasonCheckedOut)
+	wantItem(t, f.plan(Request{Sweep: true}), "worktree:"+root, ActionKeep, ReasonClaudeHome)
+
+	if err := os.RemoveAll(root); err != nil { // prunable: still under ~/.claude
+		t.Fatal(err)
+	}
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonClaudeHome)
+
+	f.home = func() (string, error) { return "", errors.New("no home") }
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCheckFailed)
+}
