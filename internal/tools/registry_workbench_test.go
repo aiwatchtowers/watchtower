@@ -40,8 +40,8 @@ func newWorkbenchEchoTool(t *testing.T, external bool, surfaces []string, execut
 	}
 }
 
-func directBinding(projectID int64) Binding {
-	return Binding{Surface: "project", WorkbenchID: projectID, DirectApply: true}
+func directBinding(workbenchID int64) Binding {
+	return Binding{Surface: "project", WorkbenchID: workbenchID, DirectApply: true}
 }
 
 const pechoArgs = `{"text":"hi","reason":"r"}`

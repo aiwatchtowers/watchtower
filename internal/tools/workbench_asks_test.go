@@ -35,10 +35,10 @@ func askRegistry(t *testing.T, d *db.DB, env string) *Registry {
 	return reg
 }
 
-func seedTerminalSession(t *testing.T, d *db.DB, projectID int64) int64 {
+func seedTerminalSession(t *testing.T, d *db.DB, workbenchID int64) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
-		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid')`, projectID)
+		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid')`, workbenchID)
 	require.NoError(t, err)
 	id, err := res.LastInsertId()
 	require.NoError(t, err)
@@ -72,9 +72,9 @@ func askID(t *testing.T, out map[string]any) int64 {
 	return int64(id)
 }
 
-func storedAsk(t *testing.T, d *db.DB, projectID, id int64) *db.OwnerAsk {
+func storedAsk(t *testing.T, d *db.DB, workbenchID, id int64) *db.OwnerAsk {
 	t.Helper()
-	a, err := d.GetOwnerAsk(projectID, id)
+	a, err := d.GetOwnerAsk(workbenchID, id)
 	require.NoError(t, err)
 	return a
 }

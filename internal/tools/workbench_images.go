@@ -37,23 +37,23 @@ type ingestedImages struct {
 	byPath map[string]workbenchfiles.Image
 }
 
-// ingestImages copies every path into workbench projectID's directory before
+// ingestImages copies every path into workbench workbenchID's directory before
 // any row is written, so a refused file fails the whole call with nothing
 // on the board. A copy already there (same content) is reused.
-func ingestImages(d *db.DB, store workbenchfiles.Store, projectID int64, paths []string) (*ingestedImages, error) {
+func ingestImages(d *db.DB, store workbenchfiles.Store, workbenchID int64, paths []string) (*ingestedImages, error) {
 	in := &ingestedImages{store: store, byPath: map[string]workbenchfiles.Image{}}
 	for _, p := range paths {
 		p = strings.TrimSpace(p)
 		if _, ok := in.byPath[p]; ok {
 			continue
 		}
-		img, err := store.Ingest(projectID, p)
+		img, err := store.Ingest(workbenchID, p)
 		if err != nil {
 			var rej *workbenchfiles.RejectError
 			if errors.As(err, &rej) {
 				err = &ValidationError{Msg: rej.Error()}
 			}
-			return nil, in.undo(d, projectID, err)
+			return nil, in.undo(d, workbenchID, err)
 		}
 		in.byPath[p] = img
 	}
@@ -62,11 +62,11 @@ func ingestImages(d *db.DB, store workbenchfiles.Store, projectID int64, paths [
 
 // attach writes the rows attaching paths (already ingested) to target
 // targetID inside tx.
-func (in *ingestedImages) attach(tx *sql.Tx, projectID, targetID int64, paths []string) error {
+func (in *ingestedImages) attach(tx *sql.Tx, workbenchID, targetID int64, paths []string) error {
 	for _, p := range paths {
 		img := in.byPath[strings.TrimSpace(p)]
 		_, err := db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{
-			WorkbenchID: projectID, TargetID: targetID, FileName: img.FileName,
+			WorkbenchID: workbenchID, TargetID: targetID, FileName: img.FileName,
 			MIME: img.MIME, Size: img.Size, SHA256: img.SHA256, Path: img.Path,
 		})
 		if errors.Is(err, db.ErrTooManyImages) {
@@ -84,14 +84,14 @@ func (in *ingestedImages) attach(tx *sql.Tx, projectID, targetID int64, paths []
 // session may be attaching right now. It returns the error to report:
 // writeErr, its message extended (and its kind kept) when the cleanup failed
 // too, so a leftover copy is never silent.
-func (in *ingestedImages) undo(d *db.DB, projectID int64, writeErr error) error {
+func (in *ingestedImages) undo(d *db.DB, workbenchID int64, writeErr error) error {
 	var created []string
 	for _, img := range in.byPath {
 		if img.Created {
 			created = append(created, img.Path)
 		}
 	}
-	cerr := discardUnreferenced(d, in.store, projectID, created)
+	cerr := discardUnreferenced(d, in.store, workbenchID, created)
 	if cerr == nil {
 		return writeErr
 	}
@@ -105,11 +105,11 @@ func (in *ingestedImages) undo(d *db.DB, projectID int64, writeErr error) error 
 
 // discardUnreferenced removes those of paths that no row of the workbench
 // names — the copies of detached images, or of a failed write.
-func discardUnreferenced(d *db.DB, store workbenchfiles.Store, projectID int64, paths []string) error {
+func discardUnreferenced(d *db.DB, store workbenchfiles.Store, workbenchID int64, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	keep, err := d.WorkbenchImagePaths(projectID)
+	keep, err := d.WorkbenchImagePaths(workbenchID)
 	if err != nil {
 		return err
 	}
