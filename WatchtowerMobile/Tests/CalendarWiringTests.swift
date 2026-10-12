@@ -78,7 +78,7 @@ final class CalendarWiringTests: XCTestCase {
             eventID: "ad", snapshot: snapshot([allDay]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertFalse(detail.showsRecord)
-        XCTAssertFalse(detail.actionTitles.contains("Record this meeting"))
+        XCTAssertFalse(detail.actions.contains(.record))
     }
 
     /// Review focus 2: west of UTC the stored UTC midnight is the previous
@@ -331,15 +331,49 @@ final class CalendarWiringTests: XCTestCase {
             eventID: "e1", snapshot: snapshot([withLink]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertEqual(detail.joinURL, URL(string: url))
-        XCTAssertTrue(detail.actionTitles.contains("Join"))
+        XCTAssertTrue(detail.actions.contains(.join))
 
         let without = event("e2", start: now)
         let bare = try XCTUnwrap(EventDetailModel(
             eventID: "e2", snapshot: snapshot([without]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertNil(bare.joinURL)
-        XCTAssertFalse(bare.actionTitles.contains("Join"))
-        XCTAssertEqual(bare.actionTitles, ["Record this meeting"])
+        XCTAssertFalse(bare.actions.contains(.join))
+        XCTAssertEqual(bare.actions, [.record])
+    }
+
+    /// Design pass C4 and review focus 3: a finished event (end <= now) with
+    /// a recap has one button, Open recap; a running one keeps Join and
+    /// Record even with a recap, and a finished one without a recap keeps
+    /// them too.
+    func testAPastEventWithARecapOffersOnlyOpenRecap() throws {
+        let url = "https://meet.example.com/abc"
+        let past = event("past", start: now.addingTimeInterval(-7_200), minutes: 30, conference: url)
+        let endsNow = event("ends-now", start: now.addingTimeInterval(-1_800), minutes: 30, conference: url)
+        let running = event("running", start: now.addingTimeInterval(-600), minutes: 30, conference: url)
+        let bare = event("bare", start: now.addingTimeInterval(-7_200), minutes: 30, conference: url)
+        func recap(_ id: Int, of eventID: String) -> MeetingTranscript {
+            MeetingTranscript(
+                id: id, eventID: eventID, title: "Recap", durationSec: 600,
+                createdAt: Self.iso.string(from: now.addingTimeInterval(-3_600)),
+                updatedAt: Self.iso.string(from: now.addingTimeInterval(-3_600)), speakers: [], summary: "Done.",
+                keyDecisions: [], actionItems: [], openQuestions: []
+            )
+        }
+        let replica = snapshot(
+            [past, endsNow, running, bare],
+            transcripts: [recap(9, of: "past"), recap(10, of: "ends-now"), recap(11, of: "running")]
+        )
+        func actions(_ id: String) throws -> [EventAction] {
+            try XCTUnwrap(EventDetailModel(
+                eventID: id, snapshot: replica, recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+            )).actions
+        }
+        XCTAssertEqual(try actions("past"), [.openRecap(9)])
+        XCTAssertEqual(try actions("ends-now"), [.openRecap(10)], "an event that ends now is over")
+        XCTAssertEqual(try actions("running"), [.join, .record], "a running meeting still records")
+        XCTAssertEqual(try actions("bare"), [.join, .record], "no recap: Join and Record stay")
+        XCTAssertEqual([EventAction.join, .record, .openRecap(9)].map(\.title), ["Join", "Record", "Open recap"])
     }
 
     // MARK: - Now tab

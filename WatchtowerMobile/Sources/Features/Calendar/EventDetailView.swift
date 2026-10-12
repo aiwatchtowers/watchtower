@@ -2,8 +2,8 @@ import SwiftUI
 import WatchtowerKit
 
 /// One event: the time line, attendees, the Prep card, linked targets
-/// (read-only), the Recording section, and the bottom bar with Join and the
-/// red Record this meeting.
+/// (read-only), the Recording section, and the bottom bar: Join and the red
+/// Record, or Open recap once the event is over and has one.
 struct EventDetailView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.openURL) private var openURL
@@ -101,29 +101,41 @@ struct EventDetailView: View {
 
     @ViewBuilder
     private func bottomBar(_ model: EventDetailModel) -> some View {
-        if !model.actionTitles.isEmpty {
+        if !model.actions.isEmpty {
             BottomActionBar {
-                HStack(spacing: 10) {
-                    if let url = model.joinURL {
-                        Button {
-                            openURL(url)
-                        } label: {
-                            Label("Join", systemImage: "video").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    if let meeting = model.meetingEvent {
-                        Button {
-                            Task { await env.recorder.recordMeeting(meeting) }
-                        } label: {
-                            Label("Record this meeting", systemImage: "record.circle").frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(PhoneTone.red.color)
+                HStack(spacing: Spacing.regular) {
+                    ForEach(model.actions, id: \.self) { action in
+                        actionButton(action, model)
                     }
                 }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(_ action: EventAction, _ model: EventDetailModel) -> some View {
+        switch action {
+        case .join:
+            if let url = model.joinURL {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label(action.title, systemImage: "video").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
                 .controlSize(.large)
             }
+        case .record:
+            if let meeting = model.meetingEvent {
+                RecordButton(fillsWidth: true) {
+                    Task { await env.recorder.recordMeeting(meeting) }
+                }
+            }
+        case let .openRecap(id):
+            Button(action.title) {
+                env.navigation.calendarPath.append(.recap(id))
+            }
+            .buttonStyle(ProminentActionStyle())
         }
     }
 }
