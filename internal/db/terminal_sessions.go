@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"watchtower/internal/agentkind"
 )
 
 var ErrTerminalSessionNotFound = errors.New("terminal session not found")
@@ -40,7 +42,8 @@ type TerminalSession struct {
 	Title           string
 	TitleSource     string
 	FolderPath      string
-	ClaudeSessionID sql.NullString
+	ClaudeSessionID sql.NullString // the agent's own session id (Claude Code or Codex); NULL on a codex row until its first SessionStart
+	TranscriptPath  sql.NullString // agent_transcript_path; read on codex rows only (Claude readers keep their own lookup)
 	AgentState      sql.NullString
 	AgentStateAt    time.Time     // zero when never reported
 	AgentFailure    *AgentFailure // nil when the stored state is no StopFailure
@@ -95,6 +98,16 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	if failedAt.Valid {
 		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
 	}
+	// Only a codex row reads agent_transcript_path: a codex row exists only
+	// once 00109 added the column, so the readers that open a database
+	// without migrating it (`workbench asks`, the Claude hooks) keep working
+	// on a 00108 database.
+	if s.Kind == string(agentkind.Codex) {
+		if err := db.QueryRow(`SELECT agent_transcript_path FROM terminal_sessions WHERE id = ?`, id).
+			Scan(&s.TranscriptPath); err != nil {
+			return nil, fmt.Errorf("reading terminal session %d transcript path: %w", id, err)
+		}
+	}
 	return &s, nil
 }
 
@@ -113,21 +126,23 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 	return n > 0, nil
 }
 
-// SetTerminalClaudeSessionID points project projectID's claude row id at the
-// Claude Code conversation it now runs — the SessionStart hook after /clear
-// or a resume that switched conversations, so the Desktop's next relaunch
+// SetTerminalClaudeSessionID points project projectID's agent row id at the
+// conversation (Claude Code or Codex) it now runs — the SessionStart hook
+// after /clear or a resume that switched conversations, so the Desktop's next relaunch
 // resumes it. The same column write as the Desktop's
 // `TerminalSessionQueries.replaceClaudeSessionID`; false when the row is not
-// that project's claude row or already holds sessionID. The new conversation
+// that project's agent row or already holds sessionID. The new conversation
 // has its own transcript, so the turn order measured in the old one goes,
 // and so do the background agent count (agent_background and
-// agent_background_at) its Stop snapshotted, its agent turns (agent_turns)
-// and its chat question (chat_question, chat_question_at).
+// agent_background_at) its Stop snapshotted, its agent turns (agent_turns),
+// its chat question (chat_question, chat_question_at) and the old transcript's
+// path (agent_transcript_path; the switch's SessionStart stores the new one).
 func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
-	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_turn_end = NULL, agent_tool_run = 0,
+	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULL,
+		agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
 		agent_turns = NULL
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id IS NOT ?`,
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id IS NOT ?`,
 		sessionID, id, projectID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d claude session id: %w", id, err)
@@ -139,8 +154,59 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 	return n > 0, nil
 }
 
+// SetTerminalAgentSessionID stores the session id a codex row's first
+// SessionStart reported (Codex mints its own id, spec 2026-10-12 §5): it
+// writes only over a NULL id on workbench workbenchID's codex row id, never
+// moves an id once set (that is SetTerminalClaudeSessionID's switch path),
+// and never touches a claude row. transcriptPath goes to
+// agent_transcript_path ("" stores NULL). Like SetTerminalClaudeSessionID it
+// clears the turn order, the background agent count, the agent turns and
+// the chat question. false when a guard held it back or sessionID is "".
+func (db *DB) SetTerminalAgentSessionID(id, workbenchID int64, sessionID, transcriptPath string) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_transcript_path = NULLIF(?, ''),
+		agent_turn_end = NULL, agent_tool_run = 0,
+		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
+		agent_turns = NULL
+		WHERE id = ? AND project_id = ? AND kind = 'codex' AND claude_session_id IS NULL`,
+		sessionID, transcriptPath, id, workbenchID)
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d agent session id: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d agent session id: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// SetTerminalTranscriptPath stores path, the transcript path a SessionStart
+// of conversation sessionID reported, on workbench workbenchID's agent row
+// id (either agent kind; only codex readers use it in v1). The row must
+// still run sessionID. false when path is "", nothing changed or a guard
+// held it back.
+func (db *DB) SetTerminalTranscriptPath(id, workbenchID int64, sessionID, path string) (bool, error) {
+	if path == "" {
+		return false, nil
+	}
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_transcript_path = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
+		  AND agent_transcript_path IS NOT ?`,
+		path, id, workbenchID, sessionID, path)
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d transcript path: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d transcript path: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // MarkTerminalAgentRun starts a new process run of workbench workbenchID's
-// claude row id — the SessionStart hook of a launch or a resume of
+// agent row id — the SessionStart hook of a launch or a resume of
 // conversation sessionID, stamped at — when the workbench's folder has the session
 // state hooks: the previous run's state, error, turn order, background
 // agent count (agent_background, agent_background_at), agent turns
@@ -161,7 +227,7 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
 		agent_turns = json_object('since', ?)
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, stamp, id, workbenchID, sessionID, stamp)
 	if err != nil {
@@ -175,7 +241,7 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 }
 
 // ClearTerminalAgentState starts a new process run of workbench workbenchID's
-// claude row id with no agent state when the folder lacks the session state
+// agent row id with no agent state when the folder lacks the session state
 // hooks (with them, MarkTerminalAgentRun): no hook of this run will report,
 // so agent_state_at becomes NULL — a stamp of this run would read as the
 // run's mark (MarkTerminalAgentRun) and vouch for a state nobody reports. A
@@ -193,7 +259,7 @@ func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string) (
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
 		agent_turns = NULL
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND (agent_state IS NOT NULL OR agent_state_at IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0
 		       OR chat_question IS NOT NULL OR agent_turns IS NOT NULL)`,
 		id, workbenchID, sessionID)
@@ -233,7 +299,7 @@ type AgentOrder struct {
 	Background sql.NullInt64
 }
 
-// SetTerminalAgentState records what workbench workbenchID's claude row id is
+// SetTerminalAgentState records what workbench workbenchID's agent row id is
 // doing, reported by a Claude Code hook of conversation sessionID at at.
 // failure is a StopFailure's error (nil for every other event): the write
 // stores agent_failed_at = at and its Error, or clears both. prompt says the
@@ -308,7 +374,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		agent_background_at = CASE WHEN ? = 1 THEN agent_background_at ELSE ? END,
 		finished_at = CASE WHEN ? = 'working' AND (agent_state IS NOT 'working' OR ? = 1)
 		                   THEN NULL ELSE finished_at END
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND (agent_state IS NOT ? OR (? = 1 AND (agent_failed_at IS NULL OR agent_error IS NOT ?))
 		       OR (? = 'working' AND ? = 1 AND finished_at IS NOT NULL)
 		       OR (? = 'waiting' AND agent_background IS NOT ?))
@@ -332,7 +398,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 }
 
 // LowerTerminalBackground records a later report about the background
-// subagents the Stop counted on workbench workbenchID's claude row id (board
+// subagents the Stop counted on workbench workbenchID's agent row id (board
 // #411), from a hook of conversation sessionID at at: a subagent's tool
 // result (count nil, a heartbeat) or a SubagentStop (count = the subagents
 // its snapshot still lists). It sets agent_background_at = at and, with
@@ -349,7 +415,7 @@ func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, a
 	}
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_background_at = ?,
 		agent_background = CASE WHEN ? IS NULL THEN agent_background ELSE MIN(agent_background, ?) END
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND agent_state = 'waiting' AND agent_background > 0
 		  AND (agent_background_at IS NULL OR agent_background_at < ? OR agent_background_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, lower, lower, id, workbenchID, sessionID, stamp)
@@ -364,7 +430,7 @@ func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, a
 }
 
 // EndTerminalBackground ends the background subagent count of workbench
-// workbenchID's claude row id on the staleness probe's verdict (board #411):
+// workbenchID's agent row id on the staleness probe's verdict (board #411):
 // it NULLs agent_background and agent_background_at only while the row is a
 // counted `waiting` of conversation sessionID still stamped seenAt, the
 // agent_background_at the probe read — a report or Stop that landed since
@@ -372,7 +438,7 @@ func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, a
 // false when a guard held it back.
 func (db *DB) EndTerminalBackground(id, workbenchID int64, sessionID, seenAt string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_background = NULL, agent_background_at = NULL
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND agent_state = 'waiting' AND agent_background IS NOT NULL AND agent_background_at = ?`,
 		id, workbenchID, sessionID, seenAt)
 	if err != nil {
@@ -387,14 +453,14 @@ func (db *DB) EndTerminalBackground(id, workbenchID int64, sessionID, seenAt str
 
 // SetTerminalTurnEnd records that the sync Stop hook of conversation
 // sessionID let a turn end when its transcript was end bytes long, on
-// workbench workbenchID's claude row id (same row guards as
+// workbench workbenchID's agent row id (same row guards as
 // SetTerminalAgentState). A main-thread PostToolUse whose tool call sits
 // before it belongs to an ended turn. Written before the Stop's state write,
 // and also when that write is a repeat (a turn without a prompt over a stored
 // `waiting`). false when nothing changed or a guard held it back.
 func (db *DB) SetTerminalTurnEnd(id, workbenchID int64, sessionID string, end int64) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_turn_end = ?
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND agent_turn_end IS NOT ?`,
 		end, id, workbenchID, sessionID, end)
 	if err != nil {
@@ -434,7 +500,7 @@ type ChatQuestionOption struct {
 }
 
 // SetChatQuestion records q, asked at the Stop of conversation
-// claudeSessionID at at, on workbench workbenchID's claude row id. A newer
+// claudeSessionID at at, on workbench workbenchID's agent row id. A newer
 // Stop's question replaces an older one; an older one never replaces a newer
 // one (an unreadable stored stamp never blocks). A Stop older than the row's
 // run or turn is stale and records nothing: a run mark (no state) or a
@@ -457,7 +523,7 @@ func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q C
 	}
 	stamp := AgentStateStamp(at)
 	res, err := db.Exec(`UPDATE terminal_sessions SET chat_question = ?, chat_question_at = ?
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND (chat_question_at IS NULL OR chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')
 		  AND (agent_state IN ('waiting', 'approval') OR (agent_state = 'working' AND agent_tool_run = 1)
 		       OR agent_state_at IS NULL OR agent_state_at <= ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
@@ -475,7 +541,7 @@ func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q C
 	return nil
 }
 
-// ClearChatQuestionBefore clears workbench workbenchID's claude row id's chat
+// ClearChatQuestionBefore clears workbench workbenchID's agent row id's chat
 // question when the row runs conversation claudeSessionID and the question
 // was recorded before eventAt (a later Stop that records none, the owner's
 // next prompt, a turn the agent started itself); a newer question stays. An unreadable
@@ -484,7 +550,7 @@ func (db *DB) SetChatQuestion(id, workbenchID int64, claudeSessionID string, q C
 func (db *DB) ClearChatQuestionBefore(id, workbenchID int64, claudeSessionID string, eventAt time.Time) error {
 	stamp := AgentStateStamp(eventAt)
 	if _, err := db.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ? AND chat_question_at IS NOT NULL
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ? AND chat_question_at IS NOT NULL
 		  AND (chat_question_at < ? OR chat_question_at NOT GLOB '`+agentStateAtGlob+`')`,
 		id, workbenchID, claudeSessionID, stamp); err != nil {
 		return fmt.Errorf("clearing terminal session %d chat question: %w", id, err)
@@ -494,7 +560,7 @@ func (db *DB) ClearChatQuestionBefore(id, workbenchID int64, claudeSessionID str
 
 // TakeChatQuestion is the escalation's compare-and-take inside the caller's
 // write transaction (spec Part 5.3, F9): it returns workbench workbenchID's
-// claude row id's chat question and clears it only while chat_question_at is
+// agent row id's chat question and clears it only while chat_question_at is
 // still at (not cleared, not replaced), agent_state is `waiting` and
 // agent_state_at is at most 30 s after the question — the Stop's own
 // `waiting`, written by the parallel drift-check hook, may be stamped just
@@ -508,7 +574,7 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 	var body, questionAt, state, stateAt sql.NullString
 	var mine bool
 	err := tx.QueryRow(`SELECT chat_question, chat_question_at, agent_state, agent_state_at,
-		project_id IS ? AND kind = 'claude'
+		project_id IS ? AND kind IN `+agentkind.SQLKinds()+`
 		FROM terminal_sessions WHERE id = ?`, workbenchID, id).Scan(&body, &questionAt, &state, &stateAt, &mine)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
@@ -517,7 +583,7 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 		return nil, fmt.Errorf("reading terminal session %d chat question: %w", id, err)
 	}
 	if !mine {
-		return nil, fmt.Errorf("terminal session %d is not a claude session of workbench %d: %w", id, workbenchID, ErrNotInWorkbench)
+		return nil, fmt.Errorf("terminal session %d is not an agent session of workbench %d: %w", id, workbenchID, ErrNotInWorkbench)
 	}
 	if !body.Valid || questionAt.String != at || state.String != "waiting" || !stateAt.Valid {
 		return nil, nil
@@ -534,7 +600,7 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 		return nil, fmt.Errorf("decoding terminal session %d chat question: %w", id, err)
 	}
 	res, err := tx.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND chat_question_at = ?`, id, workbenchID, at)
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND chat_question_at = ?`, id, workbenchID, at)
 	if err != nil {
 		return nil, fmt.Errorf("taking terminal session %d chat question: %w", id, err)
 	}
