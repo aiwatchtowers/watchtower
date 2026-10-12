@@ -11,6 +11,7 @@ WatchtowerDesktop/Sources/Views/Chat/ChatThreadView.swift
 WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
 WatchtowerDesktop/Sources/Views/Ideas/IdeasView.swift
 WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift
+WatchtowerDesktop/Sources/Views/Sidebar/SidebarView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
 WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskDrawer.swift
@@ -19,6 +20,7 @@ WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskStackSection.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
+WatchtowerMobile/Sources/App/DemoSeed+Calendar.swift
 WatchtowerMobile/Sources/Features/Asks/AskFormModel.swift
 WatchtowerMobile/Sources/Features/Calendar/AgendaModel.swift
 WatchtowerMobile/Sources/Features/Now/NowView.swift
