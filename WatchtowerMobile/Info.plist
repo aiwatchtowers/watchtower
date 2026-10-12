@@ -23,6 +23,10 @@
 	<!-- The recorder captures meetings and voice notes for the Mac to transcribe. -->
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Watchtower records meetings and voice notes so your Mac can transcribe them.</string>
+	<!-- Only exempt encryption (HTTPS and CloudKit through the system): spares the
+	     export-compliance question on every App Store Connect upload. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<!-- remote-notification: silent CloudKit pushes wake the sync engine.
 	     audio: an active phone recording keeps capturing through lock and background.
 	     fetch: background refresh for the shared database scope. -->

@@ -37,8 +37,10 @@ settings:
   base:
     SWIFT_VERSION: "5.10"
     MARKETING_VERSION: "1.0"
-    # Bump for every App Store Connect upload. The extensions inherit it, so
-    # their versions always match the app's.
+    # Local builds only: `make mobile-archive`/`mobile-testflight` override it
+    # on the command line with the archive's Unix time, so every upload gets a
+    # new, higher number. The extensions inherit it, so their versions always
+    # match the app's.
     CURRENT_PROJECT_VERSION: "1"
 
 targets:
