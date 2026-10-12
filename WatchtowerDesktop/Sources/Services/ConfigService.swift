@@ -32,6 +32,11 @@ final class ConfigService {
     var aiProvider: String?
     var claudePath: String?
     var codexPath: String?
+    /// `workbench.default_agent` (board #399, D1): the agent a new workbench
+    /// session, Work on It and a phone start launch unless the owner picks
+    /// the other one. Go twin: `config.WorkbenchConfig.Agent()` — a missing,
+    /// empty, unknown or wrong-case value reads Claude Code.
+    var workbenchDefaultAgent: AgentKind = .claude
     var calendarEnabled: Bool = false
     /// Mirrors Go's `DefaultCalendarSyncDaysAhead` (internal/config/defaults.go).
     /// `save()` always writes `calendar.sync_days_ahead`, so a Swift default
@@ -118,6 +123,7 @@ final class ConfigService {
 
             claudePath = yaml["claude_path"] as? String
             codexPath = yaml["codex_path"] as? String
+            workbenchDefaultAgent = Self.agent(fromYAML: yaml)
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? false
@@ -175,6 +181,33 @@ final class ConfigService {
         if let val = aiModelStrong, !val.isEmpty { aiModels["strong"] = val } else { aiModels.removeValue(forKey: "strong") }
         if !aiModels.isEmpty { ai["models"] = aiModels } else { ai.removeValue(forKey: "models") }
         if !ai.isEmpty { yaml["ai"] = ai } else { yaml.removeValue(forKey: "ai") }
+    }
+
+    /// `workbench.default_agent` straight from the file, off the main actor
+    /// (the phone hub's slice reads it while publishing): Claude Code when
+    /// the file is missing or unreadable.
+    nonisolated static func readWorkbenchDefaultAgent(configPath: String = Constants.configPath) -> AgentKind {
+        guard let data = FileManager.default.contents(atPath: configPath),
+              let str = String(data: data, encoding: .utf8),
+              let yaml = try? Yams.load(yaml: str) as? [String: Any] else { return .claude }
+        return agent(fromYAML: yaml)
+    }
+
+    /// Go reads the value exactly (no trimming, no case folding).
+    nonisolated private static func agent(fromYAML yaml: [String: Any]) -> AgentKind {
+        guard let workbench = yaml["workbench"] as? [String: Any],
+              let raw = workbench["default_agent"] as? String else { return .claude }
+        return AgentKind(rawValue: raw) ?? .claude
+    }
+
+    /// `workbench.default_agent`: Claude Code, the default, is written only
+    /// over a value already on disk, so a fresh config gains no section.
+    /// Other `workbench` keys are kept.
+    private func applyWorkbenchSection(to yaml: inout [String: Any]) {
+        var workbench = (yaml["workbench"] as? [String: Any]) ?? [:]
+        if workbenchDefaultAgent == .claude, workbench["default_agent"] == nil { return }
+        workbench["default_agent"] = workbenchDefaultAgent.rawValue
+        yaml["workbench"] = workbench
     }
 
     func save() throws {
@@ -256,6 +289,8 @@ final class ConfigService {
 
         // Codex path override
         if let val = codexPath, !val.isEmpty { yaml["codex_path"] = val } else { yaml.removeValue(forKey: "codex_path") }
+
+        applyWorkbenchSection(to: &yaml)
 
         let output = try Yams.dump(object: yaml, allowUnicode: true)
 

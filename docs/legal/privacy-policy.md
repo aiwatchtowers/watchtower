@@ -25,7 +25,7 @@ Watchtower is operated by the individual developer who builds and distributes it
 end user's own machine. There is no Watchtower server that receives or stores
 user data.
 
-Contact: **tv88dn@gmail.com**
+Contact: **info@aiwatchtowers.com**
 
 ## What Google user data the App accesses
 
@@ -99,4 +99,4 @@ updated" date above.
 
 ## Contact
 
-Questions about this policy: **tv88dn@gmail.com**
+Questions about this policy: **info@aiwatchtowers.com**

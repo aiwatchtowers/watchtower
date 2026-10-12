@@ -59,7 +59,7 @@ final class SessionReportSummaryRunner: HubCompanion, Sendable {
 
     /// The workbenches a pass works over.
     struct Workbenches: Sendable {
-        /// With a live `claude` session: the 60 s cadence.
+        /// With a live agent session: the 60 s cadence.
         let live: [Int64]
         /// Published (`WorkbenchSlice.publishedWorkbenches`): a requested
         /// workbench runs while listed here; one that leaves it is forgotten

@@ -261,7 +261,11 @@ extension HubSyncState {
         let path = dir.appendingPathComponent("hubstate.db").path
         let state = try HubSyncState(path: path)
         try state.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
-        return (state, try DatabaseQueue(path: path), dir)
+        // The hub writes the same file from its own queue; without a busy
+        // timeout a test's raw write can fail with "database is locked".
+        var config = Configuration()
+        config.busyMode = .timeout(5)
+        return (state, try DatabaseQueue(path: path, configuration: config), dir)
     }
 
     /// A sidecar the per-hub zone adoption already ran on (most tests seed

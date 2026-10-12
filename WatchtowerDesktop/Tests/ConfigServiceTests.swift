@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import Yams
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 @Suite("ConfigService")
@@ -480,5 +481,47 @@ struct ConfigServiceTests {
 
         let ai = yaml?["ai"] as? [String: Any]
         #expect(ai?["provider"] as? String == "codex", "Desktop-owned field must still be updated; got: \(raw)")
+    }
+
+    /// `workbench.default_agent` (board #399, D1): read as Go reads it, written
+    /// back without touching the rest of the `workbench` section.
+    @Test("Default agent round-trips the config")
+    func testDefaultAgentSettingRoundTripsConfig() throws {
+        let path = makeTempConfig("""
+        workbench:
+          default_agent: codex
+          other_key: kept
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.workbenchDefaultAgent == .codex)
+
+        svc.workbenchDefaultAgent = .claude
+        try svc.save()
+        var saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        var workbench = saved?["workbench"] as? [String: Any]
+        #expect(workbench?["default_agent"] as? String == "claude", "a value on disk is overwritten, not dropped")
+        #expect(workbench?["other_key"] as? String == "kept")
+
+        svc.workbenchDefaultAgent = .codex
+        try svc.save()
+        saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        workbench = saved?["workbench"] as? [String: Any]
+        #expect(workbench?["default_agent"] as? String == "codex")
+        #expect(ConfigService(configPath: path).workbenchDefaultAgent == .codex)
+    }
+
+    /// Missing, empty, unknown or wrong-case values read Claude Code (Go's
+    /// `WorkbenchConfig.Agent()`), and a fresh config gains no section.
+    @Test("Default agent degenerate values read Claude Code")
+    func testDefaultAgentDegenerateValuesReadClaude() throws {
+        for yaml in ["sync:\n  workers: 1", "workbench: {}", "workbench:\n  default_agent: \"\"",
+                     "workbench:\n  default_agent: Codex", "workbench:\n  default_agent: gemini",
+                     "workbench:\n  default_agent: 3", "workbench: codex"] {
+            #expect(ConfigService(configPath: makeTempConfig(yaml)).workbenchDefaultAgent == .claude, "\(yaml)")
+        }
+        let path = makeTempConfig("sync:\n  workers: 1")
+        try ConfigService(configPath: path).save()
+        let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["workbench"] == nil, "the Claude default writes nothing on a fresh config")
     }
 }

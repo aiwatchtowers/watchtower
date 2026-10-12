@@ -14,15 +14,15 @@ protocol SessionAgentNotifying {
 
 extension NotificationService: SessionAgentNotifying {}
 
-/// What each workbench Claude Code session's agent is doing — working,
+/// What each workbench agent session (Claude Code or Codex) is doing — working,
 /// stopped, needing approval, finished, waiting on an ask — as its workbench
 /// hooks and tools write it to `terminal_sessions` (board #312, spec
 /// 2026-10-03-session-agent-state decision 10; the states of spec
-/// 2026-10-03-workbench-session-report §4b). Every workbench `claude` row is
+/// 2026-10-03-workbench-session-report §4b). Every workbench agent row is
 /// read, live or not, plus the live standalone ones. The writes come from
 /// another process, so GRDB observation never fires: a 1 s poll, only while
-/// at least one `claude` session runs here (it follows
-/// `TerminalCenter.liveClaudeIDs`), and one read on app activation, when the
+/// at least one agent session runs here (it follows
+/// `TerminalCenter.liveAgentIDs`), and one read on app activation, when the
 /// Workbench tab appears and right after an ask is answered — a session that
 /// is not live changes in no other way. Owned by `AppState`, so it keeps
 /// going with the Workbench tab or the window closed. Never writes: Go is the
@@ -36,8 +36,8 @@ extension NotificationService: SessionAgentNotifying {}
 final class SessionAgentStateCenter {
     nonisolated static let pollInterval: Duration = .seconds(1)
 
-    /// Keyed by `terminal_sessions.id`: every workbench `claude` session,
-    /// live or not, and the live standalone `claude` terminals.
+    /// Keyed by `terminal_sessions.id`: every workbench agent session,
+    /// live or not, and the live standalone agent terminals.
     private(set) var statuses: [Int64: SessionAgentStatus] = [:]
 
     /// The DB read, given the live `claude` ids; seamed so a test can count
@@ -157,7 +157,7 @@ final class SessionAgentStateCenter {
         readsStarted += 1
         let token = readsStarted
         do {
-            let next = try await read(terminalCenter.liveClaudeIDs.sorted())
+            let next = try await read(terminalCenter.liveAgentIDs.sorted())
             failing = false
             guard token > readApplied else { return true }
             readApplied = token
@@ -182,7 +182,7 @@ final class SessionAgentStateCenter {
     /// are probed.
     private func publishResolved() {
         let now = clock()
-        let live = terminalCenter.liveClaudeIDs
+        let live = terminalCenter.liveAgentIDs
         let startedAt = terminalCenter.startedAt
         let over = prober?.displayOver(rows, liveIDs: live, startedAt: startedAt) ?? []
         let next = SessionAgentStatus.resolve(rows, liveIDs: live, startedAt: startedAt, now: now, displayOver: over)
@@ -206,12 +206,12 @@ final class SessionAgentStateCenter {
         }
     }
 
-    /// Starts the loop while a `claude` session is live and ends it when the
+    /// Starts the loop while an agent session is live and ends it when the
     /// last one stops, re-armed on every change of the live set.
     private func followLiveness() {
         guard following else { return }
         let live = withObservationTracking {
-            terminalCenter.liveClaudeIDs
+            terminalCenter.liveAgentIDs
         } onChange: { [weak self] in
             Task { @MainActor in self?.followLiveness() }
         }

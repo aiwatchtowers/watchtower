@@ -11,10 +11,34 @@ import Foundation
 /// children never see it; `positionalPrompt` keeps a leading "-" from
 /// being read as a flag.
 package struct TerminalLaunch: Equatable, Sendable {
+    /// `newAgent`'s `sessionID` is the id the app chose (Claude Code, always
+    /// set) or nil (Codex mints its own, spec 2026-10-12 §5). `resumeAgent`
+    /// reopens a stored id.
     package enum Mode: Equatable, Sendable {
-        case newClaude(uuid: String, prompt: String?)
-        case resumeClaude(uuid: String)
+        case newAgent(AgentKind, sessionID: String?, prompt: String?)
+        case resumeAgent(AgentKind, sessionID: String)
         case shell
+
+        package static func newClaude(uuid: String, prompt: String?) -> Self {
+            .newAgent(.claude, sessionID: uuid, prompt: prompt)
+        }
+
+        package static func resumeClaude(uuid: String) -> Self {
+            .resumeAgent(.claude, sessionID: uuid)
+        }
+
+        /// The agent the mode launches; nil for a shell.
+        package var agent: AgentKind? {
+            switch self {
+            case let .newAgent(agent, _, _), let .resumeAgent(agent, _): agent
+            case .shell: nil
+            }
+        }
+
+        var prompt: String? {
+            if case let .newAgent(_, _, prompt) = self { return prompt }
+            return nil
+        }
     }
 
     /// Names the `terminal_sessions` row a `claude` process runs in, so the
@@ -39,22 +63,33 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// `NAME=value` entries added to the terminal's environment.
     package var environment: [String] = []
 
-    /// Does not validate `uuid`: callers check `isValidSessionID` first.
-    /// `rowID` reaches a `claude` launch's environment as `sessionRowEnv`.
-    package static func make(shell: String?, folder: String, mode: Mode, rowID: Int64? = nil) -> Self {
+    /// Does not validate a session id: callers check `isValidSessionID`
+    /// first. `rowID` reaches an agent launch's environment as
+    /// `sessionRowEnv`. A Codex mode runs `codex` as `launch-args` resolved
+    /// it (`codex`), its script in `codexCommandEnv`; without one there is
+    /// no binary to run, and the launch exits 127 ("Codex was not found").
+    package static func make(
+        shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, codex: CodexLaunchArgs? = nil
+    ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
         let args: [String]
         switch mode {
-        case let .newClaude(uuid, prompt):
+        case let .newAgent(.claude, uuid, prompt):
             // `env -u` keeps the prompt out of everything Claude Code runs.
             // `/bin/sh` reads the variable: the login shell only runs a
             // single-quoted literal, so one whose `$VAR` is not POSIX
             // (nushell's `$env.VAR`) or that quotes differently (csh) still
             // passes the prompt as one argument.
+            let uuid = uuid ?? ""
             args = ["-l", "-c", prompt == nil ? "exec claude --session-id \(uuid)"
                 : "exec /bin/sh -c 'exec env -u \(firstPromptEnv) claude --session-id \(uuid) \"$\(firstPromptEnv)\"'"]
-        case let .resumeClaude(uuid):
+        case let .resumeAgent(.claude, uuid):
             args = ["-l", "-c", "exec claude --resume \(uuid)"]
+        case .newAgent(.codex, _, _), .resumeAgent(.codex, _):
+            // `TerminalCenter.start` refuses a Codex launch without its args
+            // before it gets here; `make` stays total for any other caller,
+            // and 127 reads as "Codex was not found" (`exitMessage`).
+            args = ["-l", "-c", codex == nil ? "exit 127" : codexLoginCommand]
         case .shell:
             args = ["-l"]
         }
@@ -62,10 +97,44 @@ package struct TerminalLaunch: Equatable, Sendable {
         if let rowID, mode != .shell {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
         }
-        if case let .newClaude(_, prompt?) = mode {
-            launch.environment.append("\(firstPromptEnv)=\(positionalPrompt(prompt))")
+        if mode.agent == .codex, let codex {
+            launch.environment.append("\(codexCommandEnv)=\(codexScript(codex, mode: mode))")
+        }
+        if let prompt = mode.prompt {
+            launch.environment.append("\(firstPromptEnv)=\(mode.agent == .codex ? prompt : positionalPrompt(prompt))")
         }
         return launch
+    }
+
+    /// The `/bin/sh` script a Codex launch runs, carried in the environment.
+    package static let codexCommandEnv = "WATCHTOWER_CODEX_COMMAND"
+
+    /// The login shell's command for Codex: a fixed literal with no quote or
+    /// backslash inside, so every login shell (fish and nushell too) passes
+    /// it to `/bin/sh` as is; `/bin/sh` reads the script from
+    /// `codexCommandEnv` and runs it, so only `/bin/sh` ever parses values.
+    package static let codexLoginCommand = "exec /bin/sh -c 'eval \"$\(codexCommandEnv)\"'"
+
+    /// The Codex script (spec 2026-10-12 §7): `<binary> <launch-args…>
+    /// [resume '<id>'] [-- "$PROMPT"]`, every value single-quoted, with
+    /// `path_prepend` ahead of `PATH` so an nvm `codex` finds its `node`.
+    /// Nothing follows `resume <id>` but `--` and the prompt: a `-c` after
+    /// the subcommand would replace every root `-c` (the hooks and the MCP
+    /// server). The prompt is read from the environment, after `--`, so one
+    /// starting with "-" is no flag. `env -u` drops both variables before
+    /// `codex` runs.
+    static func codexScript(_ codex: CodexLaunchArgs, mode: Mode) -> String {
+        var words = ["exec", "env", "-u", firstPromptEnv, "-u", codexCommandEnv, shellQuote(codex.binary)]
+            + codex.args.map(shellQuote)
+        if case let .resumeAgent(_, id) = mode { words += ["resume", shellQuote(id)] }
+        if mode.prompt != nil { words += ["--", "\"$\(firstPromptEnv)\""] }
+        let path = codex.pathPrepend.isEmpty ? "" : "PATH=\(shellQuote(codex.pathPrepend)):\"$PATH\" "
+        return path + words.joined(separator: " ")
+    }
+
+    /// POSIX single quotes, with a `'` inside written `'\''` (for `/bin/sh`).
+    package static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 
     /// `claude`'s usage documents no `--` before the prompt, so a prompt
@@ -74,8 +143,9 @@ package struct TerminalLaunch: Equatable, Sendable {
         prompt.hasPrefix("-") ? " " + prompt : prompt
     }
 
-    /// Lowercase canonical UUID only (same as Go's `uuidRe`): the id is
-    /// interpolated into a shell command, so nothing else may pass.
+    /// Lowercase canonical UUID only, any version (Claude Code's v4, Codex's
+    /// v7; same as Go's `uuidRe`): the id is interpolated into a shell
+    /// command, so nothing else may pass.
     package static func isValidSessionID(_ id: String) -> Bool {
         let scalars = Array(id.unicodeScalars)
         guard scalars.count == 36 else { return false }
@@ -108,15 +178,40 @@ package struct TerminalLaunch: Equatable, Sendable {
 
     /// The terminal pane's line after the session ends. 127 is the shell's
     /// "command not found": `exec claude` found no `claude` on the login
-    /// shell's PATH, which a bare exit code would not tell the owner.
-    package static func exitMessage(code: Int32?) -> String {
-        switch code {
-        case 127?:
+    /// shell's PATH, which a bare exit code would not tell the owner. For
+    /// Codex it also names a `launch-args` that found no `codex`.
+    package static func exitMessage(code: Int32?, agent: AgentKind = .claude) -> String {
+        switch (agent, code) {
+        case (.claude, 127?):
             "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
-        case let code?:
-            "Claude Code exited (code \(code))."
-        case nil:
-            "Claude Code exited."
+        case (.codex, 127?):
+            "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."
+        case let (agent, code?):
+            "\(agent.displayName) exited (code \(code))."
+        case let (agent, nil):
+            "\(agent.displayName) exited."
         }
+    }
+}
+
+/// `watchtower workbench launch-args --agent codex --workbench N --json`
+/// (spec 2026-10-12 §4.2): the `codex` binary, the folder to put ahead of
+/// `PATH` (its own, so an nvm install finds `node`), and the argv elements
+/// that follow the binary (`--no-daemon`, the update-check, MCP and hook
+/// overrides), each one raw.
+package struct CodexLaunchArgs: Decodable, Equatable, Sendable {
+    package let binary: String
+    package let pathPrepend: String
+    package let args: [String]
+
+    package init(binary: String, pathPrepend: String, args: [String]) {
+        self.binary = binary
+        self.pathPrepend = pathPrepend
+        self.args = args
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case binary, args
+        case pathPrepend = "path_prepend"
     }
 }

@@ -1,14 +1,14 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, and whenever a feature is agreed, a spec or plan is written or revised, a plan is executed task by task, or you need the owner's answer, decision, check or review. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v6
+x-watchtower-pack: v7
 ---
 
 # Watchtower Workbench
 
 This folder is bound to a Watchtower workbench. The owner follows the work in the Watchtower app: a **board** of targets with sub-targets, **asks** — the reviews, checks and decisions waiting for them — and **comments** on targets. The board outlives your session — it is how the owner, and the next session, know where things stand. Keep it true.
 
-The tools come from the `watchtower-workbench` MCP server (in Claude Code they appear as `mcp__watchtower-workbench__<tool>`). They act only on this workbench and apply immediately — there is no approval step, so every write must be something you would say out loud to the owner. Every write tool takes a `reason`: one short sentence saying why.
+The tools come from the `watchtower-workbench` MCP server: Claude Code shows them as `mcp__watchtower-workbench__<tool>`, Codex as `mcp__watchtower_workbench__<tool>`. They act only on this workbench and apply immediately — there is no approval step, so every write must be something you would say out loud to the owner. Every write tool takes a `reason`: one short sentence saying why.
 
 At session start a hook prints the workbench brief: counts, the open part of the board with ids, the comments that are new for you and the asks the owner answered for you. Read it before anything else, and act on answered asks and new owner comments first.
 
@@ -77,7 +77,7 @@ The owner answers asks from one stack in Watchtower. A question has one of three
 - **Quick** — one decision with 2–3 short options (labels up to 40 characters, descriptions up to 100): `ask_owner` with `kind: question` and one question; the owner answers with one tap. The level follows the shape; `level: quick` on a shape that is not Quick is stored `full`, and the result's `level_note` says why.
 - **Full** — a review, a manual check, or several related decisions: always an `ask_owner` call, never text. `level: full` opens even a Quick-shaped question in the drawer (when its summary must be read).
 
-Anything beyond a Chat question is an `ask_owner` call — never text in the terminal, and never as a target comment. The `AskUserQuestion` tool is blocked here. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): the end-of-turn check sends a review, a check or several decisions left as plain text back to you, and the named ask is how it knows you filed it.
+Anything beyond a Chat question is an `ask_owner` call — never text in the terminal, and never as a target comment. The `AskUserQuestion` tool is blocked here, and so is Codex's `request_user_input`. Whenever you filed an ask in a turn, name it in your final text as `ask #<id>` (e.g. "filed ask #12 for the spec review"): the end-of-turn check sends a review, a check or several decisions left as plain text back to you, and the named ask is how it knows you filed it.
 
 - **When to ask:** a spec, plan or design before you build on it (`kind: review`, `doc_path` = the file, relative to this folder); a decision with no sensible default (`kind: question`); a manual check you cannot run yourself (`kind: check`, one `checklist` step per thing to try).
 - **What not to ask:** process questions with a sensible default (which branch name, whether to run the tests, whether to commit, the order of independent tasks) — state the default you took and go on; anything you can find out yourself — run the command, read the file, take the screenshot, check the log; clarifications the conversation already answers; progress reports and "shall I continue?".
@@ -110,7 +110,7 @@ When the work this session was started for is done or handed to the owner — it
 
 ## Images
 
-When a target comes from a message in which the owner shared an image — a screenshot of the bug, a mockup, a diagram — attach that image to the target (`images` in `create_targets`, or `add_images` on an existing target), so the context travels with it. Pass the file's absolute path: a file the owner dragged in or named, or the path Claude Code shows for a pasted image. If the image was pasted and you have no file path for it, say so in the terminal and ask the owner for the file, rather than describing the image in the intent. PNG, JPEG, GIF and WebP up to 5 MB each; Watchtower keeps its own copy, so the original may be moved or deleted afterwards. Detach an image (`remove_image_ids`) only when the owner asks or it clearly belongs to another target.
+When a target comes from a message in which the owner shared an image — a screenshot of the bug, a mockup, a diagram — attach that image to the target (`images` in `create_targets`, or `add_images` on an existing target), so the context travels with it. Pass the file's absolute path: a file the owner dragged in or named, or the path your agent shows for a pasted image. If the image was pasted and you have no file path for it, say so in the terminal and ask the owner for the file, rather than describing the image in the intent. PNG, JPEG, GIF and WebP up to 5 MB each; Watchtower keeps its own copy, so the original may be moved or deleted afterwards. Detach an image (`remove_image_ids`) only when the owner asks or it clearly belongs to another target.
 
 ## Keeping the board in step with git
 

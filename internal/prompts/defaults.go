@@ -144,7 +144,7 @@ var DefaultVersions = map[string]int{
 	TargetsNextStep:            1,  // v1: single next action per target with urgency and action buttons
 	InboxStyleSample:           1,  // v1: owner communication-style profile from their own Slack messages
 	ChatTitle:                  1,  // v1: light-tier conversation title from the first exchange
-	TerminalTitle:              1,  // v1: light-tier name for an embedded Claude Code session
+	TerminalTitle:              2,  // v2: agent-neutral (Claude Code or Codex); v1 named a Claude Code session
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -195,7 +195,7 @@ var Descriptions = map[string]string{
 	TargetsNextStep:            "Target next step: pick the single next action for one target, with urgency and up to three action buttons",
 	InboxStyleSample:           "Style profile: distill the owner's Slack writing style from a sample of their own messages (strong tier)",
 	ChatTitle:                  "AI Chat: name a conversation from its first exchange (light tier, at most 60 characters)",
-	TerminalTitle:              "Terminal: name an embedded Claude Code session from the owner's first messages (light tier, 3-6 words)",
+	TerminalTitle:              "Terminal: name an embedded coding-agent session from the owner's first messages (light tier, 3-6 words)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1532,13 +1532,13 @@ You name a conversation between the owner and their work assistant. Read the fir
 - no quotes, no trailing period, no markdown, no emoji;
 - reply with the title only, on one line.`
 
-// defaultTerminalTitle names an embedded Claude Code session
-// (`watchtower terminal title`, light tier). No language-directive slot: the
+// defaultTerminalTitle names an embedded coding-agent session — Claude Code
+// or Codex (`watchtower terminal title`, light tier). No language-directive slot: the
 // name follows the language the owner wrote in, not the digest language.
-const defaultTerminalTitle = `You name a terminal session from the owner's first messages to a coding agent.
+const defaultTerminalTitle = `You name an embedded coding-agent session from the owner's first messages to the agent.
 Reply with only the name: 3 to 6 words, no quotes, no trailing period, in the
 language the owner wrote in. Name the task, not the tool ("Fix login redirect",
-not "Claude session").`
+not "Agent session").`
 
 // DictationModeInstructions returns the destination-specific instruction block
 // and the JSON contract for one dictation cleanup mode.

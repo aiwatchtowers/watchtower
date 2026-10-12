@@ -122,6 +122,17 @@ final class RecordingsWiringTests: XCTestCase {
         XCTAssertEqual(entry.tone, .purple)
     }
 
+    /// A percent outside 0...100 reads the same clamp everywhere.
+    func testAnOutOfRangePercentIsClamped() async throws {
+        let (store, recording, _) = try await ledger()
+        var recordings = try await snapshot(of: store)
+        recordings.jobs[recording.id] = RecordingJob(id: recording.id, status: .transcribing, percent: 140, updatedAt: now)
+        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Transcribing on Mac · 100%")
+        recordings.jobs[recording.id] = RecordingJob(id: recording.id, status: .transcribing, percent: -5, updatedAt: now)
+        XCTAssertEqual(list(recordings).inProgress.first?.statusText, "Transcribing on Mac · 0%")
+        XCTAssertEqual(PhoneTranscriptStage.clampedPercent(nil), 0)
+    }
+
     func testADoneJobIsReadyAndOpensItsTranscript() async throws {
         let (store, recording, _) = try await ledger()
         var recordings = try await snapshot(of: store)

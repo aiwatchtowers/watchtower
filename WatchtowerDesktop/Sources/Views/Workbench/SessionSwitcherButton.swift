@@ -23,9 +23,9 @@ struct SessionSwitcher: View {
                     showsPopover = false
                     Task { await vm.showSession(id: id) }
                 },
-                onNewSession: {
+                onNewSession: { agent in
                     showsPopover = false
-                    Task { await vm.newSessionOnPage() }
+                    Task { await vm.newSessionOnPage(agent: agent) }
                 },
                 onShowPanel: {
                     showsPopover = false

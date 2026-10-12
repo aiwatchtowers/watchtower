@@ -34,13 +34,16 @@ const gitListBudget = 5 * time.Second
 var hiddenNames = []string{".git", ".build", "node_modules", ".DS_Store", ".swiftpm", "DerivedData", ".idea", ".worktrees"}
 
 // hiddenDirs are skipped as a whole, at any depth: Claude Code's worktrees
-// of the folder hold copies of its documents, and the skills the workbench
-// install writes (internal/devpack; git-excluded in a repository) are
-// Watchtower's, not the owner's.
+// of the folder hold copies of its documents, Codex's project folder holds
+// its own state, and the skills the workbench install writes for either
+// agent (internal/devpack; git-excluded in a repository) are Watchtower's,
+// not the owner's.
 var hiddenDirs = []string{
 	".claude/worktrees",
 	".claude/skills/" + devpack.WorkbenchSkillName,
 	".claude/skills/" + devpack.LegacySkillName,
+	".codex",
+	".agents/skills/" + devpack.WorkbenchSkillName,
 }
 
 // File is one text document of the folder.
@@ -66,7 +69,7 @@ func ListTextFiles(ctx context.Context, folder string) ([]File, error) {
 // git does not ignore (internal/workbenchgit, within gitListBudget);
 // elsewhere, or when no git is installed, a walk. Either way only regular
 // files are listed (a symlink is never followed), and the hidden names and
-// directories (.claude/worktrees, the installed skills) are skipped. A
+// directories (.claude/worktrees, .codex, the installed skills) are skipped. A
 // failed git run is an error, never an empty listing: a caller pruning by
 // the listing would otherwise drop every entry of the folder.
 func (l Lister) List(ctx context.Context, folder string) ([]File, error) {

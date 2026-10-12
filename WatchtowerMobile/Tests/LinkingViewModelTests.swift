@@ -787,6 +787,28 @@ final class LinkingViewModelTests: XCTestCase {
         await flow.value
     }
 
+    /// A wall-clock jump neither brings the hint forward nor holds it back:
+    /// the elapsed time comes from the monotonic source.
+    func testTheWaitedTimeIgnoresAWallClockJump() {
+        let model = makeModel()
+        model.startScan()
+        XCTAssertEqual(model.phaseElapsed(), 0)
+        clock.advance(by: 5)
+        clock.jumpWallClock(by: 3600)
+        XCTAssertEqual(model.phaseElapsed(), 5, "an hour forward on the wall clock")
+        clock.jumpWallClock(by: -7200)
+        XCTAssertEqual(model.phaseElapsed(), 5, "and back")
+        XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", waited: 19.9).hint)
+        XCTAssertNotNil(LinkStepsModel(waitingFor: "Acme Mac", waited: 20).hint)
+        XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", waited: nil).hint)
+    }
+
+    /// VoiceOver reads a step as its text and one of four values.
+    func testAStepReadsItsStateAsAWord() {
+        let values = [StepRow.State.done, .current, .waiting, .todo, .failed].map(\.accessibilityValue)
+        XCTAssertEqual(values, ["Done", "In progress", "In progress", "Not started", "Failed"])
+    }
+
     /// Design pass O2 and review focus 5: checking makes step 1 current;
     /// waiting makes it done and step 2 current; the hint appears after 20 s
     /// of waiting, never before (a start stamped in the future included);

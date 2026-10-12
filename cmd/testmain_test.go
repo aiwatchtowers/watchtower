@@ -7,7 +7,9 @@ import (
 	"os"
 	"testing"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/extract"
 )
@@ -68,6 +70,12 @@ func TestMain(m *testing.M) {
 	// to list tools (QC-02); tests that need a listing stub it themselves.
 	listServerTools = func(context.Context, externalmcp.ServerSpec) ([]db.ExternalTool, error) {
 		return nil, errors.New("tools/list is stubbed out in cmd tests")
+	}
+	// No cmd test may run a real codex (its app-server writes
+	// ~/.codex/config.toml): codex is not found unless a test says otherwise.
+	codexFindBinary = func() (string, error) { return "", devpack.ErrCodexNotFound }
+	codexAppServerStart = func(context.Context, string, []string, []string) (codex.AppServer, error) {
+		return nil, errors.New("the codex app-server is stubbed out in cmd tests")
 	}
 	if err := db.InitTestTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)

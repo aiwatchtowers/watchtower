@@ -55,7 +55,7 @@ struct WorkbenchSessionView: View {
                 if let session {
                     Text("\(session.title) is not running.")
                         .foregroundStyle(.secondary)
-                    Button(session.kind == .claude ? "Resume" : "Start") {
+                    Button(TerminalSessionPolicy.reopenLabel(session)) {
                         Task { await vm?.open(session, placement: .inPlace) }
                     }
                 } else if vm?.sessionErrors[projectID] == nil {
@@ -148,7 +148,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             switch state {
             case .running?:
                 if let session, let hint = center.answerHints[session.id] {
-                    AnswerReturnHint(hint: hint, shared: center.sharedPrompts.contains(session.id)) {
+                    AnswerReturnHint(hint: hint, shared: center.sharedPrompts.contains(session.id), agent: session.kind.agent) {
                         // A held answer's Dismiss cancels its typing: the brief lists it.
                         if hint.isHeld, let workbenches = vm {
                             workbenches.asks.cancelHeldAnswers(sessionID: session.id)
@@ -160,7 +160,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                 } else if let session, center.clipboardHints.contains(session.id) || center.pasteHints.contains(session.id) {
                     let copied = center.clipboardHints.contains(session.id)
                     HStack {
-                        Label(pasteNote(copied: copied, shared: center.sharedPrompts.contains(session.id)),
+                        Label(pasteNote(copied: copied, shared: center.sharedPrompts.contains(session.id), agent: session.kind.agent),
                               systemImage: copied ? "doc.on.clipboard" : "checkmark")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
@@ -175,7 +175,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                 host(center)
                 Divider()
                 HStack {
-                    Text(TerminalLaunch.exitMessage(code: code))
+                    Text(TerminalLaunch.exitMessage(code: code, agent: session?.kind.agent ?? .claude))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     // A failed resume fails again on Restart: only a new id gets out.
@@ -195,9 +195,9 @@ private struct TerminalSessionPane<NotStarted: View>: View {
         }
     }
 
-    private func pasteNote(copied: Bool, shared: Bool) -> String {
+    private func pasteNote(copied: Bool, shared: Bool, agent: AgentKind?) -> String {
         if copied { return OwnerAsksViewModel.copiedNote }
-        return shared ? OwnerAsksViewModel.sentBesideTextNote : OwnerAsksViewModel.sentNote
+        return shared ? OwnerAsksViewModel.sentBesideTextNote(into: agent) : OwnerAsksViewModel.sentNote(into: agent)
     }
 
     @ViewBuilder
@@ -221,6 +221,8 @@ private struct TerminalSessionPane<NotStarted: View>: View {
 private struct AnswerReturnHint: View {
     let hint: TerminalCenter.AnswerHint
     let shared: Bool
+    /// The session's agent, named in the held text.
+    let agent: AgentKind?
     let dismiss: () -> Void
 
     var body: some View {
@@ -254,7 +256,7 @@ private struct AnswerReturnHint: View {
         switch hint {
         case .typed: shared ? OwnerAsksViewModel.answerTypedBesideTextNote : OwnerAsksViewModel.answerTypedNote
         case .copied: OwnerAsksViewModel.answerCopiedNote
-        case .held: OwnerAsksViewModel.answerHeldNote
+        case .held: OwnerAsksViewModel.answerHeldNote(for: agent)
         case .stillHeld: OwnerAsksViewModel.answerStillHeldNote
         case .queued: OwnerAsksViewModel.answerQueuedNote
         }
