@@ -258,6 +258,16 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.prompts, [nil, "one", nil])
     }
 
+    func testGateOffKeepsTheThreeWindowExpiryLive() async throws {
+        var cfg = forcedConfig()
+        cfg.speechGate = false
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success(""), .success(""), .success(""), .success("five")]
+        _ = try await StreamingTranscriber(engine: engine, config: cfg)
+            .run(samples: stream(of: [Float](repeating: 0, count: 8000), pieceSize: 700)) { _ in }
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
+    }
+
     func testFailedWindowKeepsPromptLive() async throws {
         // speech → failed window → speech: the context survives (the error/silence asymmetry).
         let engine = MockEngine()

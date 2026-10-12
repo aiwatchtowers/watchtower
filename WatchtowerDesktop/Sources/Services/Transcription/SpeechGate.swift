@@ -115,7 +115,8 @@ func decodeGatedWindow(
     }
     let prompt = contextPromptTail(prevText: promptText, prevLang: previousLanguage, language: language, config: config)
     do {
-        let segments = try await engine.transcribeWindow(window, language: language, prompt: prompt)
+        let segments = try await engine.transcribeWindow(window, language: language, prompt: prompt,
+                                                         dropDoubtful: config.speechGate)
         return .decoded(gate.keep(segments, in: verdict), language: language)
     } catch {
         return .failed(error)

@@ -45,7 +45,7 @@ struct StreamingTranscriber {
         var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
-        var promptState = ContextPromptState()
+        var promptState = ContextPromptState(speechGate: config.speechGate)
         var lastEngineError: Error?
         var chunkIndex = 0
         var gate = WindowSpeechGate(detector: speechDetector, config: config)

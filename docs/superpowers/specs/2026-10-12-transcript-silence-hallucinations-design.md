@@ -127,9 +127,14 @@ Deviations accepted during implementation; the constants carry the numbers in th
   tightenings were evaluated and rejected — "≤ 3 words need ≥ 50 % overlap" dropped a real phrase whose start
   Whisper stretched 16 s into the pause; "drop a short segment ending outside speech" is fitted to a tiny sample and
   would drop short real replies whose end Whisper stretches to the window edge.
-- D3: the logprob judged is the segment's own text-token mean (WhisperKit's segment `avgLogprob` is per decode pass).
+- D3: both inputs are the segment's own — the text-token logprob mean and the compression ratio of its own text
+  tokens (WhisperKit copies the decode pass's values onto every segment, so a looping pass would drop the real
+  speech beside the loop).
   The −1.6 cut-off stays: a real sentence at 0 dB SNR scored −1.48, so −1.2 lost speech. WhisperKit 0.18 never
   computes `noSpeechProb`, so the first rule is dormant.
+- Kill switch (D1) covers L3 and L4 too: the transcribers pass `speechGate` to the engine per call (`dropDoubtful`),
+  and `ContextPromptState` keeps the old three-window expiry with the gate off — dictation and a gate-off run decode
+  exactly as before.
 - D5: no engine wrote over zeros on the corpus, so Parakeet and Apple keep whole-buffer decoding (muted); a
   recording with no detected speech is not decoded. The kill switch also covers the new phrase-filter uses.
 - Known leftovers after all layers: short phrases at speech edges («Звучить.», «Играет музыка.», «Спасибо.»,

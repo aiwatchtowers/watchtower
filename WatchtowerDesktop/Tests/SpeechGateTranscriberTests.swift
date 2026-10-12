@@ -216,4 +216,39 @@ final class SpeechGateTranscriberTests: XCTestCase {
         XCTAssertEqual(batch.text, "alpha\nbeta\ngamma")
         XCTAssertEqual(batchEngine.decodedWindowSizes.count, 3)
     }
+
+    func testDoubtfulSegmentDropFollowsTheGate() async throws {
+        // L3 runs inside the engine; the transcribers hand it config.speechGate
+        // per call, the same on both paths.
+        final class FlagEngine: WhisperWindowEngine, @unchecked Sendable {
+            var flags: [Bool] = []
+            func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 0.9] }
+            func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+                XCTFail("the transcribers must always pass the L3 flag")
+                return []
+            }
+            func transcribeWindow(
+                _ samples: [Float],
+                language: String,
+                prompt: String?,
+                dropDoubtful: Bool
+            ) async throws -> [TranscribedSegment] {
+                flags.append(dropDoubtful)
+                return [TranscribedSegment(text: "x", startSec: 0, endSec: 1)]
+            }
+        }
+        let samples = audio([0.1...0.9, 0.1...0.9])
+        for gate in [true, false] {
+            var cfg = config()
+            cfg.speechGate = gate
+            let batch = FlagEngine()
+            _ = try await WindowedTranscriber(engine: batch, config: cfg, speechDetector: FakeSpeechDetector())
+                .transcribe(samples: samples) { _, _ in }
+            let live = FlagEngine()
+            _ = try await StreamingTranscriber(engine: live, config: cfg, speechDetector: FakeSpeechDetector())
+                .run(samples: stream(samples)) { _ in }
+            XCTAssertEqual(batch.flags, [gate, gate])
+            XCTAssertEqual(live.flags, batch.flags)
+        }
+    }
 }

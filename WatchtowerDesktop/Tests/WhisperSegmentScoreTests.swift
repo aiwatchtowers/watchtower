@@ -64,5 +64,10 @@ final class WhisperSegmentScoreTests: XCTestCase {
         let result = WhisperKitEngine.confidentSegments(segments, specialTokenBegin: begin)
         XCTAssertEqual(result.segments.map(\.text), ["real speech"])
         XCTAssertEqual(result.counts.confidence, 1)
+
+        // With the speech gate off (kill switch, dictation) L3 keeps everything.
+        let ungated = WhisperKitEngine.confidentSegments(segments, specialTokenBegin: begin, dropDoubtful: false)
+        XCTAssertEqual(ungated.segments.map(\.text), ["real speech", "loop loop loop"])
+        XCTAssertEqual(ungated.counts, WindowDropCounts())
     }
 }

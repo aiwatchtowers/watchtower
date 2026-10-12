@@ -12,7 +12,7 @@ import Foundation
 /// Each window is decoded conditioned on the previous *speech* window's text
 /// tail (`contextPromptTail`), so context survives a failed window just like
 /// language does — but a silent window expires it
-/// (`ContextPromptState.silenceLimit`).
+/// (`ContextPromptState.silenceLimit`; three with the speech gate off).
 /// If no window produces speech and at least one failed with an engine error,
 /// the last engine error is thrown — total engine failure never masquerades
 /// as an all-silence recording.
@@ -39,7 +39,7 @@ struct WindowedTranscriber {
         var segments: [TranscriptSegment] = []
         var langStats: [String: Int] = [:]
         var prevLang: String?
-        var promptState = ContextPromptState()
+        var promptState = ContextPromptState(speechGate: config.speechGate)
         var lastEngineError: Error?
         var gate = WindowSpeechGate(detector: speechDetector, config: config)
         defer { gate.logSummary(engineDrops: engine.takeDropCounts()) }

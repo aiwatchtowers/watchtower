@@ -256,6 +256,24 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.prompts, [nil, "one", nil, nil, nil])
     }
 
+    func testGateOffKeepsTheThreeWindowExpiry() async throws {
+        // The kill switch (and dictation) keep today's limit: two silent
+        // windows still prompt, the third expires the context.
+        var config = tinyConfig()
+        config.forcedLanguage = "en"
+        config.speechGate = false
+        let engine = MockEngine()
+        engine.texts = [
+            .success("one"),
+            .success(""), .success(""), .success(""),
+            .success("after the pause")
+        ]
+
+        _ = try await run(engine, config, windows: 5)
+
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
+    }
+
     func testSilenceStreakResetsOnSpeech() async throws {
         // Speech after a pause refreshes the context and resets the streak, so
         // an expiry never turns the feature off for the rest of a recording.

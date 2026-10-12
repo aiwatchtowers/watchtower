@@ -135,13 +135,28 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         }
     }
 
+    /// Without the flag: today's decode, no L3.
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+        try await transcribeWindow(samples, language: language, prompt: prompt, dropDoubtful: false)
+    }
+
+    func transcribeWindow(
+        _ samples: [Float],
+        language: String,
+        prompt: String?,
+        dropDoubtful: Bool
+    ) async throws -> [TranscribedSegment] {
         try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
-            try await decode(samples, language: language, promptTokens: tokens)
+            try await decode(samples, language: language, promptTokens: tokens, dropDoubtful: dropDoubtful)
         }
     }
 
-    private func decode(_ samples: [Float], language: String, promptTokens: [Int]?) async throws -> [TranscribedSegment] {
+    private func decode(
+        _ samples: [Float],
+        language: String,
+        promptTokens: [Int]?,
+        dropDoubtful: Bool
+    ) async throws -> [TranscribedSegment] {
         let results: [TranscriptionResult] = try await whisperKit.transcribe(
             audioArray: samples,
             decodeOptions: Self.decodingOptions(language: language, promptTokens: promptTokens)
@@ -153,6 +168,7 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         let specialTokenBegin = whisperKit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
         let (confident, confidenceCounts) = Self.confidentSegments(results.flatMap(\.segments),
                                                                    specialTokenBegin: specialTokenBegin,
+                                                                   dropDoubtful: dropDoubtful,
                                                                    observer: segmentScoreObserver)
         var counts = confidenceCounts
         let cleaned = confident.withoutHallucinations()
@@ -163,11 +179,13 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
     }
 
     /// L3 over one decode's segments: maps each to a `TranscribedSegment`
-    /// and drops those `WhisperSegmentConfidence` rejects on the segment's
-    /// own score. Pure apart from the bench observer.
+    /// and, with `dropDoubtful` (the speech gate on), drops those
+    /// `WhisperSegmentConfidence` rejects on the segment's own score. Pure
+    /// apart from the bench observer.
     static func confidentSegments(
         _ segments: [TranscriptionSegment],
         specialTokenBegin: Int,
+        dropDoubtful: Bool = true,
         observer: (@Sendable (ScoredWhisperSegment) -> Void)? = nil
     ) -> (segments: [TranscribedSegment], counts: WindowDropCounts) {
         var counts = WindowDropCounts()
@@ -181,11 +199,11 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
                                      specialTokenBegin: specialTokenBegin,
                                      passAvgLogprob: segment.avgLogprob,
                                      passCompressionRatio: segment.compressionRatio)
-            let reason = WhisperSegmentConfidence.dropReason(
+            let reason = dropDoubtful ? WhisperSegmentConfidence.dropReason(
                 noSpeechProb: segment.noSpeechProb,
                 avgLogprob: score.avgLogprob,
                 compressionRatio: score.compressionRatio
-            )
+            ) : nil
             observer?(ScoredWhisperSegment(segment: mapped, noSpeechProb: segment.noSpeechProb, score: score,
                                            temperature: segment.temperature, dropReason: reason))
             guard reason == nil else {
