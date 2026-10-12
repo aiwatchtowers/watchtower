@@ -2,6 +2,7 @@ WatchtowerDesktop/Sources/App/AppState+MobileHub.swift
 WatchtowerDesktop/Sources/App/Navigation.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/CalendarEventSlice.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/MeetingTranscriptSlice.swift
+WatchtowerDesktop/Sources/Services/MobileHub/Slices/SessionReportRunner.swift
 WatchtowerDesktop/Sources/Services/MobileHub/Slices/TerminalSessionSlice.swift
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift
 WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
@@ -20,6 +21,7 @@ WatchtowerDesktop/Sources/Views/Workbench/Asks/OwnerAskStackSection.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchTargetPanel.swift
 WatchtowerDesktop/Sources/Views/Workbench/WorkbenchesView.swift
+WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/CloudKitTransport.swift
 WatchtowerMobile/Sources/App/DemoSeed+Calendar.swift
 WatchtowerMobile/Sources/Features/Asks/AskFormModel.swift
 WatchtowerMobile/Sources/Features/Calendar/AgendaModel.swift

@@ -1,0 +1,23 @@
+{
+  "project_id": 7,
+  "folder": "/Users/example/acme",
+  "skill": "unchanged",
+  "skill_path": "/Users/example/acme/.claude/skills/watchtower-workbench/SKILL.md",
+  "hook": true,
+  "stop_hook": true,
+  "mcp": true,
+  "claude_found": true,
+  "legacy": false,
+  "legacy_skill": "",
+  "current_mcp": true,
+  "state_hooks": true,
+  "ask_guard": true,
+  "ask_tool_block": true,
+  "codex": {
+    "found": true,
+    "skill": true,
+    "skill_state": "unchanged",
+    "hooks_trusted": true,
+    "imported_duplicates": false
+  }
+}

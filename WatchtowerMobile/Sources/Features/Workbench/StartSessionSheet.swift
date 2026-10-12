@@ -7,7 +7,7 @@ import WatchtowerSync
 /// agent, the brief, "Bring the window forward on the Mac" (off) and "Plan
 /// first, then ask me" (on). A target that already has a session offers
 /// Open it or Start a new one. Once sent, the sheet follows the Mac:
-/// Sent to your Mac → Mac picked it up → Starting Claude Code → Open
+/// Sent to your Mac → Mac picked it up → Starting <agent> → Open
 /// session. The progress lives in `SessionStarter`, so the sheet can be
 /// left and reopened.
 struct StartSessionSheet: View {

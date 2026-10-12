@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	Version   = "0.15.0"
+	Version   = "0.16.1"
 	Commit    = "unknown"
 	BuildDate = "unknown"
 	// BuildFlavor names the build profile the artifact was produced with

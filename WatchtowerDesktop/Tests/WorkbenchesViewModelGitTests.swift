@@ -112,7 +112,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     private func liveClaudeCenter() throws -> TerminalCenter {
         let center = terminalCenter()
         try startClaude(in: center, folder: folder.path, projectID: project.id)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: project.id, workTree: folder.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: project.id, workTree: folder.path))
         return center
     }
 

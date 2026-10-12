@@ -6,10 +6,10 @@ import WatchtowerSync
 /// (spec §6.5, §9).
 enum SessionStartText {
     static let sheetTitle = "New session on the Mac"
+    /// The agent a hub older than Codex support starts.
     static let agent = "Claude Code"
     static let sent = "Sent to your Mac"
     static let pickedUp = "Mac picked it up"
-    static let starting = "Starting Claude Code"
     static let openSession = "Open session"
     static let ended = "The session ended"
     static let clippedBrief = "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
@@ -22,6 +22,17 @@ enum SessionStartText {
     static let outcomeUnknown = "Your Mac restarted while applying this — check it on the Mac"
     static let startFailed = "Your Mac could not start the session"
     static let stopFailed = "Your Mac could not stop the session"
+
+    /// "Starting Codex": the progress step naming the agent that starts.
+    static func starting(_ agentName: String) -> String {
+        "Starting \(agentName)"
+    }
+
+    /// The agent a phone start runs: the Mac's default agent (board #399,
+    /// D6 — the phone has no picker), Claude Code from an older hub.
+    static func agentName(_ workbench: Workbench?) -> String {
+        workbench?.defaultAgent.map(SessionDetailModel.agentName) ?? agent
+    }
 
     /// The hub's message, else a fallback for the reason.
     static func failure(_ row: PendingAction, fallback: String) -> String {
@@ -116,7 +127,7 @@ struct StartProgressModel: Equatable {
     /// The session ended: the sheet offers Start a new one.
     let isEnded: Bool
 
-    init(stage: StartStage, macOnline: Bool) {
+    init(stage: StartStage, macOnline: Bool, agentName: String = SessionStartText.agent) {
         self.stage = stage
         let reached: Int
         switch stage {
@@ -126,7 +137,7 @@ struct StartProgressModel: Equatable {
         case .open, .ended: reached = 3
         case .failed: reached = -1
         }
-        let titles = [SessionStartText.sent, SessionStartText.pickedUp, SessionStartText.starting]
+        let titles = [SessionStartText.sent, SessionStartText.pickedUp, SessionStartText.starting(agentName)]
         steps = titles.enumerated().map { index, title in
             Step(title: title, state: index < reached ? .done : (index == reached ? .current : .todo))
         }
@@ -152,8 +163,10 @@ struct StartProgressModel: Equatable {
 
     /// A target's start progress; nil when nothing was sent.
     static func of(targetID: Int64, attempt: StartAttempt?, snapshot: WorkbenchReplicaSnapshot, now: Date) -> Self? {
-        StartStage.of(targetID: targetID, attempt: attempt, snapshot: snapshot).map {
-            Self(stage: $0, macOnline: MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline)
+        let workbenchID = snapshot.targets.first { $0.id == targetID }?.workbenchID
+        let agentName = SessionStartText.agentName(workbenchID.flatMap(snapshot.workbench))
+        return StartStage.of(targetID: targetID, attempt: attempt, snapshot: snapshot).map {
+            Self(stage: $0, macOnline: MacStatus(heartbeat: snapshot.heartbeat, now: now).isOnline, agentName: agentName)
         }
     }
 
@@ -243,7 +256,8 @@ struct StartSessionFormModel {
     let targetLabel: String?
     /// The live targets the header's New session can start, in board order.
     let targetOptions: [TargetOption]
-    let agent = SessionStartText.agent
+    /// The agent Start runs (`SessionStartText.agentName`).
+    let agent: String
     let grant: StartGrant
     /// Why the brief cannot be edited here; nil when it can.
     let briefCaption: String?
@@ -266,6 +280,7 @@ struct StartSessionFormModel {
         guard let workbench = snapshot.workbench(workbenchID) else { return nil }
         self.workbenchID = workbenchID
         workbenchName = workbench.name
+        agent = SessionStartText.agentName(workbench)
         let target = targetID.flatMap { id in snapshot.targets.first { $0.id == id && $0.workbenchID == workbenchID } }
         self.target = target
         targetLabel = target.map { "#\($0.id) \($0.text)" }

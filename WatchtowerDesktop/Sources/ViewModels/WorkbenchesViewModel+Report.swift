@@ -59,10 +59,10 @@ extension WorkbenchesViewModel {
 
     // MARK: - Session view
 
-    /// The `claude` session a Session view on `sessionID` reports on; nil
+    /// The agent session a Session view on `sessionID` reports on; nil
     /// when that row is gone or is a shell.
     func reportSession(_ sessionID: Int64, projectID: Int64) -> TerminalSession? {
-        session(sessionID, projectID: projectID).flatMap { $0.kind == .claude ? $0 : nil }
+        session(sessionID, projectID: projectID).flatMap { $0.kind.isAgent ? $0 : nil }
     }
 
     /// What the Session view on `sessionID` shows now.

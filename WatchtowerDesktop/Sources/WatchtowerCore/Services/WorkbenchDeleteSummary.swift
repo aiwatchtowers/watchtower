@@ -61,9 +61,11 @@ package struct WorkbenchDeleteSummary: Equatable {
 
         In \(folder) it removes what it installed: the \(vocabulary.skillName) skill, \
         the SessionStart hook in .claude/settings.local.json, the \(vocabulary.mcpServerName) \
-        MCP registration, and the .git/info/exclude lines it added. A skill you \
-        edited is kept, and so is an exclude line whose file still exists. Nothing \
-        else in the folder is touched.
+        MCP registration, Codex's copy of the skill in .agents/skills and the \
+        Watchtower hooks Codex imported into .codex, and the .git/info/exclude \
+        lines it added. A skill you edited is kept, and so is an exclude line \
+        whose file still exists. Nothing else in the folder is touched. Codex's \
+        hook trust in ~/.codex/config.toml stays: every workbench shares it.
 
         The workbench's terminal session is closed first.
         """

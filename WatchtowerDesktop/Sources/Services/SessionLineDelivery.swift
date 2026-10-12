@@ -207,7 +207,7 @@ final class SessionLineDelivery {
     /// going to it, held while it waits on a permission prompt (a Return
     /// could confirm the prompt's default) or while its state cannot be read
     /// right before the paste, otherwise pasted, and submitted after
-    /// `TerminalCenter.answerSubmitDelay` only when the state read after the
+    /// the agent's `AgentInputProfile.submitSettle` only when the state read after the
     /// pause succeeded too, the session's hooks
     /// reported this run (a state, or the run's mark) and still show no
     /// permission prompt after
@@ -255,7 +255,7 @@ final class SessionLineDelivery {
         let reread: () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
                                                keepingFormatCharacters: key.askID == nil,
-                                               delay: TerminalCenter.answerSubmitDelay,
+                                               delay: center.inputProfile(sessionID).submitSettle,
                                                refresh: reread) { [weak self] in
             self?.mayReturn(key: key, sessionID: sessionID) ?? false
         }

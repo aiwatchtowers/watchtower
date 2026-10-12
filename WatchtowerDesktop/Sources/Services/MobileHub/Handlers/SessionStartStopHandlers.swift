@@ -18,8 +18,10 @@ import WatchtowerSync
 /// in `.background`; on is Work on it's `.keeping(.board)` after the
 /// workbench window comes to the front. A start is `applied` with
 /// `{session_id, stage: starting}` once the process runs and did not exit
-/// 127 (no Claude Code on the login shell's PATH, `claude_not_found`)
-/// within `launchWatch`.
+/// 127 (the agent is not on the login shell's PATH: `claude_not_found`
+/// for Claude Code, `codex_not_found` for Codex) within `launchWatch`.
+/// The phone has no agent picker: `startForTarget` launches the
+/// workbench's default agent (D6, board #399).
 ///
 /// `session_stop` (entity: the session id) is `TerminalCenter.close`:
 /// SIGHUP, then SIGKILL after the grace. Idempotent: a session that is not
@@ -50,8 +52,8 @@ final class SessionStartStopHandlers {
     /// Ample for the start's reads, writes and launch watch, or a close's
     /// grace.
     nonisolated static let defaultTimeout: Duration = .seconds(30)
-    /// How long a new launch is watched for `exec claude` failing: a login
-    /// shell that finds no `claude` exits at once.
+    /// How long a new launch is watched for the agent's `exec` failing: a
+    /// login shell that finds no `claude` (or `codex`) exits at once.
     nonisolated static let defaultLaunchWatch: Duration = .seconds(3)
     nonisolated static let launchWatchStep: Duration = .milliseconds(100)
     static let timeoutMessage = "The Mac did not finish this in time — check the session on the Mac"
@@ -150,7 +152,7 @@ final class SessionStartStopHandlers {
         }
         // A session already running was not launched now: nothing to watch.
         if !liveBefore.contains(session.id), await exitedNotFound(session.id) {
-            return .failed(.claudeNotFound, message: TerminalLaunch.exitMessage(code: 127))
+            return .failed(Self.notFoundReason(session.kind), message: TerminalLaunch.exitMessage(code: 127, agent: session.kind.agent ?? .claude))
         }
         return .applied(["session_id": .integer(session.id), "stage": .string("starting")])
     }
@@ -167,6 +169,11 @@ final class SessionStartStopHandlers {
         return terminalCenter.states[sessionID] == .exited(127)
     }
 
+    /// The reason an exit 127 is reported with: the agent the session runs.
+    static func notFoundReason(_ kind: TerminalSession.Kind) -> ActionReason {
+        kind == .codex ? .codexNotFound : .claudeNotFound
+    }
+
     /// `.inProgress` refuses before anything is written; `.failed` covers a
     /// read or write error and a launch the terminal refused (or no
     /// terminal), never reported as started.
@@ -175,6 +182,9 @@ final class SessionStartStopHandlers {
         case .notOnBoard: .failed(.notOnBoard, message: "That target is not on a workbench board")
         case .inProgress: .failed(.conflict, message: "A session for this target is being started on the Mac")
         case let .failed(message): .failed(.writeFailed, message: message)
+        // A launch that found no agent binary (Codex's `launch-args`) started no process.
+        case let .agentNotFound(agent):
+            .failed(agent == .codex ? .codexNotFound : .claudeNotFound, message: TerminalLaunch.exitMessage(code: 127, agent: agent))
         }
     }
 
@@ -201,11 +211,11 @@ final class SessionStartStopHandlers {
         guard let sessionID = action.entityID.flatMap(Int64.init) else {
             return .failed(.invalidParams, message: "session_stop needs a session id")
         }
-        // A board session only: the phone sees `claude` sessions of a
+        // A board session only: the phone sees the agent sessions of a
         // workbench and nothing else.
         let onBoard = try await dbPool.read { db -> Bool in
             guard let row = try TerminalSessionQueries.fetch(db, id: sessionID),
-                  row.kind == .claude, let projectID = row.projectID else { return false }
+                  row.kind.isAgent, let projectID = row.projectID else { return false }
             return try WorkbenchQueries.fetch(db, id: projectID) != nil
         }
         guard onBoard else { return .failed(.notFound, message: "This session no longer exists on the Mac") }

@@ -255,15 +255,23 @@ struct WorkbenchTargetMenu: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
+        let sessions = appState.workbenchesViewModel
+        let otherAgents = WorkOnTargetButton.otherAgents(target, vm: sessions)
         if showsWorkOn {
-            let sessions = appState.workbenchesViewModel
             let existing = WorkOnTargetButton.hasSession(target, in: sessions)
             Button(WorkOnTargetButton.title(existing: existing)) {
                 WorkOnTargetButton.start(target, vm: sessions)
             }
             .disabled(sessions == nil)
-            Divider()
         }
+        // The other agents' Work on It, also in the side panel's ⋯ menu
+        // (the panel's own button runs the default agent).
+        ForEach(otherAgents) { choice in
+            Button(choice.title) { WorkOnTargetButton.start(target, vm: sessions, agent: choice.agent) }
+                .disabled(!choice.isAvailable)
+                .help(choice.hint ?? "")
+        }
+        if showsWorkOn || !otherAgents.isEmpty { Divider() }
         if let onOpenGroup, let node = WorkbenchBoardOutline.find(target.id, in: vm.roots), !node.children.isEmpty {
             Button("Open Group") { onOpenGroup(target.id) }
                 .disabled(vm.scopeNode?.target.id == target.id)

@@ -166,7 +166,7 @@ struct OwnerAskQuickNoticeRow: View {
             Image(systemName: notice.notice == .withdrawn ? "exclamationmark.triangle" : "checkmark.circle")
                 .foregroundStyle(notice.notice == .withdrawn ? .orange : .green)
                 .accessibilityHidden(true)
-            Text("\(Text.askNumber(notice.ask.id)) \(notice.notice.text)")
+            Text("\(Text.askNumber(notice.ask.id)) \(vm.asks.noticeText(notice.notice, ask: notice.ask))")
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)

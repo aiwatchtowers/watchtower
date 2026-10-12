@@ -75,8 +75,8 @@ struct WorkbenchHeaderControls: View {
                 .disabled(slot == .session(session.id))
             }
             Divider()
-            Button("New session") {
-                Task { await vm.newSession(inPane: slot, projectID: project.id) }
+            NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
+                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent) }
             }
         } label: {
             // The Terminal segment's right end: a hairline, then the chevron,
@@ -135,6 +135,15 @@ struct WorkbenchHeaderControls: View {
             }
             .disabled(installing || status?.needsRepair != true)
             .help(status?.repairHelp ?? "Re-install what is missing in the folder")
+            if status?.codexNeedsSetup == true {
+                Button {
+                    Task { await vm.setUpCodex(projectID: project.id) }
+                } label: {
+                    Label("Set up Codex", systemImage: "plus.circle")
+                }
+                .disabled(installing)
+                .help("Set this folder up for Codex sessions: the skill for Codex and the trust of Watchtower's hooks")
+            }
             Button {
                 Task { await vm.resync(projectID: project.id) }
             } label: {
@@ -298,12 +307,15 @@ private struct HeaderIconButtonStyle: ButtonStyle {
 
 extension WorkbenchInstallStatus {
     /// What is installed and what is missing, for the install icons' and
-    /// Repair install's help.
+    /// Repair install's help. The Codex line shows only once codex is found
+    /// (D5: without it Codex is skipped quietly) or when the CLI could not
+    /// tell which codex to use (a trust error).
     var repairHelp: String {
         "Skill \(skillDisplay) · hook \(hook ? "on" : "missing") · "
             + "drift hook \(stopHook ? "on" : "missing") · "
             + "state hooks \(stateHooks ? "on" : "missing") · "
             + "ask guard \(askGuard && askToolBlock ? "on" : "missing") · MCP \(mcp ? "on" : "missing")"
+            + (codex.flatMap { $0.found || $0.trustError != nil ? "\n" + $0.summary : nil } ?? "")
     }
 }
 
