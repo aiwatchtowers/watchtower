@@ -65,7 +65,7 @@ package struct SessionPanelSections: Equatable, Sendable {
         var groupSessions: [TerminalSession] = []
         for session in ordered {
             let state = SessionSwitcherPresentation.state(of: session.id, liveIDs: liveIDs, statuses: statuses)
-            if heldInGroup(session.id, state: state, sticky: sticky) { { groupSessions.append(session) } else { mainSessions.append(session) }
+            if heldInGroup(session.id, state: state, sticky: sticky) { groupSessions.append(session) } else { mainSessions.append(session) }
         }
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
