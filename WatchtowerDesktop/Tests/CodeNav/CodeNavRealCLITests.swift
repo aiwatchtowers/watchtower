@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import WatchtowerCore
 import XCTest
 @testable import WatchtowerDesktop
@@ -86,13 +87,18 @@ final class CodeNavRealCLITests: XCTestCase {
         try? FileManager.default.removeItem(at: rulesFile.deletingLastPathComponent())
     }
 
+    /// The main code root of workbench `id` at the test folder.
+    private func root(_ id: Int64) -> CodeRoot {
+        Workbench(row: Row(["id": id, "name": "acme", "folder_path": folder.path])).mainCodeRoot
+    }
+
     func testIndexUpdateDeleteAndSearchWithTheRealCLI() async throws {
         let cli = try Self.builtCLI().path
         let env = ProcessInfo.processInfo.environment
         let center = CodeIndexCenter(resolveExecutable: { cli }, environment: { env }, debounce: .milliseconds(50), rulesFile: rulesFile)
         self.center = center
-        center.markShown(workbenchID: 1, folder: folder)
-        let index = center.index(for: 1)
+        center.markShown(root: root(1))
+        let index = center.index(for: root(1))
         let ready = await eventually { index.state == .ready || { if case .failed = index.state { true } else { false } }() }
         XCTAssertTrue(ready)
         XCTAssertEqual(index.state, .ready)
@@ -106,7 +112,7 @@ final class CodeNavRealCLITests: XCTestCase {
 
         try "package pkg\n\nfunc Added() {}\n".write(to: folder.appendingPathComponent("pkg/added.go"), atomically: true, encoding: .utf8)
         try FileManager.default.removeItem(at: folder.appendingPathComponent("greet.py"))
-        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["pkg/added.go", "greet.py"]), workbenchID: 1)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["pkg/added.go", "greet.py"]), root: root(1))
         let updated = await eventually { !index.symbols(named: "Added").isEmpty && !index.files.contains("greet.py") }
         XCTAssertTrue(updated, "files now: \(index.files)")
         XCTAssertEqual(index.state, .ready)
@@ -141,8 +147,8 @@ final class CodeNavRealCLITests: XCTestCase {
             resolveExecutable: { cli }, environment: { env }, debounce: .milliseconds(50), rulesFile: rulesFile, rulesDebounce: .milliseconds(50)
         )
         self.center = center
-        center.markShown(workbenchID: 1, folder: folder)
-        let index = center.index(for: 1)
+        center.markShown(root: root(1))
+        let index = center.index(for: root(1))
         let ready = await eventually { index.state == .ready || { if case .failed = index.state { true } else { false } }() }
         XCTAssertTrue(ready)
         XCTAssertEqual(index.state, .ready)

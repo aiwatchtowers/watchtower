@@ -35,17 +35,17 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
     func testOpenPullsTheUnsentEditSoThePreviewTabIsKept() async {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         let project = Workbench(row: Row(["id": 3, "name": "acme", "folder_path": folder.path]))
-        await vm.openFile("a.go", project: project, preview: true)
-        let buffer = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        await vm.openFile("a.go", root: project.mainCodeRoot, preview: true)
+        let buffer = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "a.go")
         buffer.loadIfNeeded()
         let page = PendingPage(edits: [CodeEditorPendingEdit(id: buffer.id, text: "package typed\n", base: 0)])
-        vm.codeFiles.register(page, for: project)
+        vm.codeFiles.register(page, for: project.mainCodeRoot)
 
-        await vm.openFile("b.go", project: project, preview: true)
+        await vm.openFile("b.go", root: project.mainCodeRoot, preview: true)
 
-        XCTAssertEqual(vm.codeFiles.tabs(for: project).paths, ["a.go", "b.go"])
-        XCTAssertEqual(vm.codeFiles.tabs(for: project).tabs.first?.isPreview, false)
-        XCTAssertTrue(vm.codeFiles.existingBuffer(project, "a.go") === buffer)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["a.go", "b.go"])
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).tabs.first?.isPreview, false)
+        XCTAssertTrue(vm.codeFiles.existingBuffer(project.mainCodeRoot, "a.go") === buffer)
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
     }
 
@@ -67,12 +67,12 @@ final class WorkbenchesViewModelFilesTests: XCTestCase {
         let opened = await vm.openAskLink(OpenQuicklyTarget(path: "b.go", line: 1, col: nil), projectID: id)
         XCTAssertTrue(opened)
         XCTAssertTrue(vm.layout(projectID: id).isShowing(.files))
-        XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project)).paths, ["b.go"])
+        XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project).mainCodeRoot).paths, ["b.go"])
         XCTAssertFalse(vm.asks.drawerExpanded)
 
         let dotted = await vm.openAskLink(OpenQuicklyTarget(path: "./b.go", line: 2, col: nil), projectID: id)
         XCTAssertTrue(dotted)
-        XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project)).paths, ["b.go"],
+        XCTAssertEqual(vm.codeFiles.tabs(for: try XCTUnwrap(vm.summaries.first?.project).mainCodeRoot).paths, ["b.go"],
                        "the same file is the same tab, however the link spells it")
     }
 }

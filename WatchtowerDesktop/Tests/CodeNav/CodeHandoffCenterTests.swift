@@ -139,7 +139,7 @@ final class CodeHandoffCenterTests: XCTestCase {
             _ = try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: id, ownerText: "And then?", turnID: "t2",
                                                          provider: "claude", now: now + 1)
         }
-        return CodeQuestionRef(project: project, conversationID: id, origin: origin)
+        return CodeQuestionRef(project: project, root: project.mainCodeRoot, conversationID: id, origin: origin)
     }
 
     /// The Files pane alone on the page.
@@ -609,7 +609,7 @@ final class CodeHandoffCenterTests: XCTestCase {
             workbenchID: project.id, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil),
             choice: .init(provider: .claude, model: ""), dbPool: pool)
         await handoff.handConversation(CodeQuestionRef(
-            project: project, conversationID: empty, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil)))
+            project: project, root: project.mainCodeRoot, conversationID: empty, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil)))
         handoff.handQuery("   ", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
         XCTAssertNil(handoff.requests[project.id])
         XCTAssertEqual(beeps, 2)

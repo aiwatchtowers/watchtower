@@ -37,7 +37,7 @@ struct WorkbenchPageView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
-        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
+        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: project.mainCodeRoot))
         // Hand to Claude Code (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in
             HandToClaudeSheet(handoff: appState.codeHandoffCenter, request: request)
