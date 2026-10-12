@@ -429,6 +429,28 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertTrue(launch.environment.allSatisfy { !$0.hasPrefix("WATCHTOWER_FIRST_PROMPT=") }, "it resumes")
     }
 
+    /// A session the owner just deleted waits hidden in the Undo batch
+    /// (PROJ-17): the phone's "open existing" never resumes it — a new
+    /// session starts instead.
+    func testOpenExistingNeverPicksAPendingDelete() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let deleted = try await insertSession(p, targetID: t)
+        let vm = makeVM()
+        vm.deleteSleep = { _ in try? await Task.sleep(for: .seconds(60)) } // cancelled below, never waited out
+        defer { vm.deleteCommitTask?.cancel() }
+        await vm.reload()
+        await vm.delete(deleted)
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p, mode: "open_existing")))
+
+        let started = try XCTUnwrap(outcome.result?["session_id"])
+        XCTAssertNotEqual(started, .integer(deleted.id))
+        let stored = try await rows(p)
+        XCTAssertEqual(stored.count, 2, "a new row; the hidden one waits for its window")
+        XCTAssertFalse(center.liveIDs.contains(deleted.id))
+    }
+
     /// An already running session needs no launch watch.
     func testOpenExistingOnALiveSessionDoesNotWatchTheLaunch() async throws {
         let p = try await workbench()

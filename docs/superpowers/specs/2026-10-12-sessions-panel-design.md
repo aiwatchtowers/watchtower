@@ -270,8 +270,9 @@ Go never sees the hiding and needs none: every Go reader of `terminal_sessions` 
 process (hooks, `ask_owner`, `finish_session`, the drift check) — stopped by `close` — or on a Desktop request
 (`workbench session-report`, `session-probe`), which the VM no longer issues for a hidden row. A late async
 hook of the killed process may still write the row's state; Undo then shows it, which is truthful.
-MobileHub: the `terminal_session` slice reads the DB, so the phone may show the row until the commit (≤ 5 s +
-one tick) — v1 limit; `session_stop` on it is a no-op, `session_start` goes through `readTargetSessions` (above).
+MobileHub: the `terminal_session` slice leaves the pending ids out (`hiddenIDs`, copied from the VM on every
+change, which nudges the slice), so the phone drops the row and Undo publishes it again; `session_start` goes
+through `readTargetSessions` (above).
 
 ### 4.4 Panel keyboard (⌘⌫, ⌘Z, ↑ ↓, Return, Esc)
 

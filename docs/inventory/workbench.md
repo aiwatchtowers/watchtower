@@ -9,7 +9,8 @@
 > the targets readers, `internal/tools/workbench*.go`, `cmd/workbench*.go`,
 > `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`,
 > `internal/gitbin/`, `internal/workbenchgit/`, `internal/sessionreport/`, or
-> `WatchtowerDesktop/Sources/**/Workbench*`, read this file first. Any proposed change that would break a guard test or
+> `WatchtowerDesktop/Sources/**/Workbench*`,
+> `WatchtowerDesktop/Sources/WatchtowerCore/Services/{PendingSessionDeletes,SessionDeletePolicy}.swift`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
 A workbench is a folder with a board of targets, owner↔agent target
@@ -1303,6 +1304,42 @@ other direction.
 
 **Locked since:** 2026-10-04
 
+## PROJ-17 — a deleted session can be undone until it is gone, and then leaves nothing
+
+**Status:** Enforced (Desktop; owner approved 2026-10-12, ask #195, board #480, spec `docs/superpowers/specs/2026-10-12-sessions-panel-design.md` §8.2 — written there as "PROJ-16", renumbered because PROJ-16 was claimed by the session cleanup of board #535)
+
+**Observable:** Deleting a session in the Desktop (✕, ⌘⌫ or Delete…, all
+through `WorkbenchesViewModel.delete`) stops its process and hides its row
+from the panel, the session switchers, Go to…, ⌘1…⌘9, the target lookup of
+Work on It and the phone's start (`open_existing`), the phone's session
+list (`TerminalSessionSlice.hiddenIDs`), and the sessions' statuses; an ask's
+"go to session" says "That session no longer exists." — and writes nothing.
+Its row is deleted (`TerminalSessionQueries.delete`; its
+`terminal_session_targets` by cascade, its asks' `session_id` set NULL) only
+when the Undo window (`PendingSessionDeletes.window`, 5 s from the last
+delete of the batch, re-armed before the row's process is closed) ends and
+no row of the batch is still closing, or when the app quits
+(`commitPendingDeletesForQuit`: the same write, waited for together with a
+commit already in flight, bounded at 2 s in all); a workbench deleted
+meanwhile cascades it and the batch forgets it. Until then **Undo** (`undoPendingDeletes`) brings back every
+session of the batch with its row, links and asks byte-identical, not
+running (a click or Restart resumes it). A failed delete brings the row back
+with an error, never keeps it hidden. A live session that is working, at a
+permission prompt, running without a reported state, waiting on an ask or
+ready to check is deleted only after a confirmation
+(`SessionDeletePolicy.isQuick`); a standalone terminal always asks.
+
+**Why locked:** Owner decision (#480, variants 5 + 1 + 2): one-gesture delete
+is safe only because Undo is complete; an Undo that lost the report or the
+asks would be worse than the dialog it replaces.
+
+**Test guards:**
+- `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` — `testProj17_DeleteHidesAtOnceAndWritesNothingUntilTheWindowEnds`, `testProj17_UndoBringsBackTheRowWithItsLinksAndAsks`, `testProj17_CommitAfterTheWindowDeletesWithCascades`, `testProj17_QuitCommitsPendingDeletes`
+- `WatchtowerDesktop/Tests/Core/SessionDeletePolicyTests.swift::testProj17_QuickDeleteTable`
+- supporting: `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` (`testBatchUndoRestoresEverySessionOfTheBatch`, `testFailedCommitBringsTheRowBackWithAnError`, `testPendingRowIsInNoListGoToOrTargetLookup`, `testUndoStateSurvivesLeavingTheWorkbench`, `testAWorkbenchGoneElsewhereDropsItsPendingSessions`, `testADeleteDuringAnotherClosesGraceWaitsForThatClose`, `testUndoWhileTheCloseIsPendingCommitsNothing`, `testAskOfAPendingSessionSaysTheSessionIsGone`, `testQuitWaitsForTheWindowsCommitInFlight`, `testQuitIsBoundedWhenTheWriteHangs`, `testQuitWriteFailureKeepsTheRow`, `testHiddenIDsChangesAreReportedOnDeleteAndUndo`), `WatchtowerDesktop/Tests/MobileHub/TerminalSessionSliceTests.swift::testASessionInTheUndoBatchIsNotPublished`, `WatchtowerDesktop/Tests/WorkbenchesViewModelDeleteTests.swift::testWorkbenchDeleteDropsItsPendingSessions`, `WatchtowerDesktop/Tests/MobileHub/SessionStartHandlerTests.swift::testOpenExistingNeverPicksAPendingDelete`, `WatchtowerDesktop/Tests/Core/PendingSessionDeletesTests.swift`
+
+**Locked since:** 2026-10-12
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -1543,6 +1580,7 @@ other direction.
 
 ## Changelog
 
+- 2026-10-12 (board #480, sessions panel; spec `docs/superpowers/specs/2026-10-12-sessions-panel-design.md` §4.2–§4.3 and §8.2, plan `docs/superpowers/plans/2026-10-12-sessions-panel.md` Task 7; **PROJ-17 added, owner approved 2026-10-12, ask #195**): a session delete is deferred — the row is hidden and its process stopped at once, its DELETE runs when the 5 s Undo window of the batch ends or the app quits, and Undo restores the whole batch untouched. The spec's "PROJ-16" became PROJ-17 (PROJ-16 is the session cleanup of board #535). **PROJ-02** and **PROJ-14** unchanged: the same DELETE with the same cascades, only later; nothing writes report links. `testQuickDeleteTable` renamed to the guard `testProj17_QuickDeleteTable` (assertions unchanged). Known limits: a crash or `kill -9` inside the window leaves the row (it is listed again on the next launch); the phone's session slice reads the DB and may show the row until the commit; a late async hook of the killed process may still write the row's state, which Undo then shows.
 - 2026-10-12 (board #534, sessions panel; spec `docs/superpowers/specs/2026-10-12-sessions-panel-design.md` §8.1, plan `docs/superpowers/plans/2026-10-12-sessions-panel.md` Tasks 1–4; **PROJ-11 amended, owner approved 2026-10-12, ask #195**): a session whose open asks are all `check` or `review` asks (no `question`) shows **Ready to check** (purple, checklist glyph, "Ready for review" when every one is a review) instead of Finished or Waiting for you. It sits between Agents working and Finished in the order (ten kinds), is not run-scoped (a ring when not live), counts as at the prompt (`isAtPrompt`, PROJ-12's Return unchanged) and gets no state notice — the ask's own notice now reads "Ready to check: <title>" / "Ready for review: <title>". One open question keeps Waiting for you. `fetchAgentStates` adds `open_question_asks`/`open_review_asks`; no migration. The phone hub wires the kind `ready_to_check` and the tone `purple` (Kit known values appended, wire order unchanged). Guards extended, none relaxed or renamed: `testProj11_StateOrder` (ten kinds; the `row` helper's `questions` defaults to `openAsks`, so the earlier rows keep their expectation), `testProj11_OneNoticePerTransition`; new guards listed under PROJ-11.
 - 2026-10-12 (board #399, Codex as a Workbench agent; spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md` §13 and §15, business spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-business.md`, plan `docs/superpowers/plans/2026-10-12-codex-workbench-agent.md`; **owner approved the spec, which carries these amendments, in ask #189**): a workbench terminal session can run Codex CLI. No new PROJ number (no new principle): **PROJ-02** (delete also removes the Codex skill copy, never the shared trust), **PROJ-04** (`integrate codex`: only our skill copy and exclude line in the folder, only our entries removed from imported `.codex` hook files, only our `hooks.state` trust entries in `~/.codex/config.toml` through codex's API — narrower than the spec's §13 wording, since `--remove` never removes trust), **PROJ-11** (heading "never steer Claude Code" → "never steer the session's agent"; the codex mapping table and codex v1 limits), **PROJ-12** (the gates apply to codex rows; the input profile is per agent), **PROJ-13** (the ask guard for codex: `request_user_input`, `last_assistant_message`), **PROJ-14** (the report includes codex rows; the comment `agent_label` follows the row) amended. Migration `00109` rebuilds `terminal_sessions` (`kind` adds `codex`; a codex row may hold a NULL id until its first SessionStart; `agent_transcript_path`). Every existing `TestProj*`/`testProj*` guard is unchanged and green; new guards are listed under each contract. The v1 limits note (d) of "Owner asks" is updated.
 
