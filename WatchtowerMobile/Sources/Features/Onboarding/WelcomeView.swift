@@ -15,9 +15,9 @@ struct OnboardingView: View {
                 onCancel: { linking.dismiss() }
             )
         case .checking:
-            LinkProgressView(text: "Checking the code…")
+            LinkStepsScreen(macName: nil)
         case let .waiting(macName):
-            LinkProgressView(text: "Waiting for \(macName) to confirm…")
+            LinkStepsScreen(macName: macName)
         case .unlinking:
             LinkProgressView(text: "Unlinking…")
         case let .confirmSwitch(old, new):
@@ -26,6 +26,18 @@ struct OnboardingView: View {
             LinkFailureView(failure: failure)
         case let .linked(macName):
             LinkedView(macName: macName)
+        }
+    }
+}
+
+/// O2's steps, re-read every second so the 20 s hint appears on time.
+private struct LinkStepsScreen: View {
+    @Environment(LinkingViewModel.self) private var linking
+    let macName: String?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            LinkStepsView(model: LinkStepsModel(waitingFor: macName, startedAt: linking.phaseStartedAt, now: context.date))
         }
     }
 }
@@ -104,7 +116,7 @@ struct WelcomeView: View {
     }
 }
 
-/// Steps 1–5 running.
+/// Unlinking: a spinner and its line.
 struct LinkProgressView: View {
     let text: String
 

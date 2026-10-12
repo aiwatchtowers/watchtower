@@ -154,7 +154,14 @@ final class LinkingViewModel {
         "Switch from \(old) to \(new)?"
     }
 
-    private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .idle {
+        didSet {
+            if phase != oldValue { phaseStartedAt = clock.now() }
+        }
+    }
+    /// When `phase` last changed, on the flow's clock; nil before the first
+    /// change. The waiting screen's hint reads it (design pass O2).
+    private(set) var phaseStartedAt: Date?
     private(set) var notice: LinkNotice?
     /// The saved link; nil while unlinked (Welcome). A pending link is not
     /// a link.

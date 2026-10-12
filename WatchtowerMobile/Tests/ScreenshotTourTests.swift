@@ -245,11 +245,14 @@ final class ScreenshotTourTests: XCTestCase {
             Shot(number: "29", slug: "scan", source: source + "ScanView.swift", reached: .leaf, make: leaf { _ in
                 ScanView(onCode: { _ in }, onCancel: {})
             }),
-            Shot(number: "30", slug: "checking", source: source + "WelcomeView.swift", reached: .leaf, make: leaf { _ in
-                LinkProgressView(text: "Checking the code…")
+            Shot(number: "30", slug: "checking", source: source + "LinkSteps.swift", reached: .leaf, make: leaf { _ in
+                LinkStepsView(model: LinkStepsModel(waitingFor: nil, startedAt: nil, now: Date()))
             }),
-            Shot(number: "31", slug: "waiting", source: source + "WelcomeView.swift", reached: .leaf, make: leaf { _ in
-                LinkProgressView(text: "Waiting for \(mac) to confirm…")
+            Shot(number: "31", slug: "waiting", source: source + "LinkSteps.swift", reached: .leaf, make: leaf { _ in
+                LinkStepsView(model: LinkStepsModel(waitingFor: mac, startedAt: Date(), now: Date()))
+            }),
+            Shot(number: "31b", slug: "waiting-hint", source: source + "LinkSteps.swift", reached: .leaf, make: leaf { _ in
+                LinkStepsView(model: LinkStepsModel(waitingFor: mac, startedAt: Date().addingTimeInterval(-25), now: Date()))
             }),
             Shot(number: "32", slug: "switch-mac", source: source + "LinkedView.swift", reached: .leaf, make: leaf { _ in
                 SwitchMacView(old: mac, new: "Acme Studio")
