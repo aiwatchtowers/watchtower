@@ -24,9 +24,53 @@
 **Execution (owner requirement, same as the F1 plan):**
 - Subagents in a git worktree: superpowers:subagent-driven-development plus superpowers:using-git-worktrees. Branch `feature/mobile-e2e` off `feature/mobile-poc`.
 - A new worktree copies the main checkout's `WatchtowerDesktop/.build` into itself, then deletes the path-bound `ModuleCache` inside it (about 1 min rebuild instead of minutes cold). Never delete `.build` otherwise.
-- Each task runs only its task-scope checks (the commands in its steps plus `make lint-diff`). The controller runs `bash scripts/dev-health.sh` before each task and the full gate once at the phase end.
+- Each task runs only its task-scope checks (the commands in its steps plus the lint step below). The controller runs `bash scripts/dev-health.sh` before each task and the full gate once at the phase end.
 - No polling turns. Run a long command to a log with an explicit exit code: `cmd > /tmp/<name>.log 2>&1; echo "exit=$?"`. Never `run_in_background` for builds or tests.
 - Public repo hygiene: no real ids, Apple IDs, team ids, emails, names or local paths in code, tests, fixtures, logs or results. Use `acme`, `hub-acme`, `_owner-acme`, "colleague A", `<team-id>`. Crypto fixtures use the fixed synthetic byte patterns defined in Task 1, never a key read off a device.
+- **Lint step (F9).** `make lint-diff` is `golangci-lint` only, so it lints nothing in a Swift task. Wherever a step below says "lint step", run swiftlint on every tree the task touched, with the same commands `make lint-swift` uses: Kit `cd WatchtowerKit && swiftlint lint --strict`, Desktop `cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json`, phone `cd WatchtowerMobile && swiftlint lint --strict` (each to a log with `echo "exit=$?"`). Add `make lint-diff` only when the task changed Go (Task 6).
+- **Every task leaves every target it touches compiling (F6, F7).** A task that changes a public Kit signature updates every caller in the Kit sources and the Kit tests in the same task. The phone target is first rewired in Task 16 (after Kit Task 9 merged); between Task 8 and Task 16 no phone command runs, and the controller does not run `make mobile-build`/`mobile-test` in that window.
+
+## Preflight amendments (2026-10-12)
+
+Applied from `.superpowers/sdd/2026-10-12-mobile-e2e-encryption/preflight.md`; the controller accepted every proposed ruling.
+
+- F1 — `SecureTransport` also conforms to `CompactingTransport`/`SweepingTransport`: forwards when the inner one conforms, else a documented no-op (0); test in Task 7.
+- F2 — the hub opens its own h2p echoes; `SecureTransport` exposes unopenable relay records (`unopenableRelayRecords`) so relay hygiene deletes them by wire name after `actionMaxAge`; test in Task 12.
+- F3 — `RollbackGuard` is keyed by (wire name, sender id); `relay_seen(wire_name, sender_id, epoch, seq, at)` keyed on both, pruned by `at`; Task 14 deletes by `sender_id`.
+- F4 — `SecureTransport` passes `.hello` through sealed; `MobileLinkCenter.handleHello` tries each kept nonce from `sidecar.linkCodes()`; a hello that opens under none is logged and dropped (`unknown_code` is unanswerable, the phone times out).
+- F5 — Task 10 adds `link_refusals.agreement_key`; the refusal path stores the hello's key; `keyboxRecipient` includes refusals.
+- F6 — Task 16 depends on Task 9 and starts with the minimal phone compile wiring; Task 17 keeps locked-state handling, file protection and the demo; lane table updated.
+- F7 — Task 8 updates every `ReplicaStore` construction in `WatchtowerSyncTests` and adds the six broken suites to its filter; Task 9 adds `ActionStatusTests`.
+- F8 — frozen envelope vectors pin the header and body (ciphertext ‖ tag) bytes; the signature is excluded from equality and checked by verification (Swift and Go).
+- F9 — every Swift task's lint step runs swiftlint on each touched tree (commands above); `make lint-diff` only where Go changed.
+- F10 — Task 8 Step 4 filter fixed; `testOnRecordsApplied…` lives in a new `ReplicaHydratorTests` class.
+- F11 — `indexPending()` returns `[AppliedSliceRecord]` with `notifyLevel` from the opened frame; `IndexedRecord` dropped.
+- F12 — `WireKind.signal` records pass through `SecureTransport` unsealed on save/delete; the replica's `apply` skips them silently.
+- F13 — `apply` drops keyboxes whose id is not this phone's own.
+- F14 — non-secret `deviceid` Keychain item (`AfterFirstUnlockThisDeviceOnly`) and `PhoneKeyStore.deviceID() throws -> UUID?`.
+- F15 — `.locked` at apply aborts `apply` (throws, token kept); only signature, hub and format failures skip and count; a read-time `.locked` is skipped and not counted (covers F35).
+- F16 — the echo `CloudRecord` carries `sealed` copied from the opened record; h2p is sealed to `sealed.senderID`, else to the payload's `device_id`.
+- F17 — `closeLink(.used)` refuses the remaining pending requests with `used_code`; the race test asserts B's keybox reads `used_code` with `keys == nil` (no second confirm).
+- F18 — the Remove sentence lives in `Sources/ViewModels/MobileSettingsViewModel.swift`; Task 14 targets it and tests it in `MobileSettingsViewModelTests`.
+- F19 — `slice_state.wire_name` (schema in Task 10, written by Task 11) backs `plainName(forWire:)` (spec §2.7).
+- F20 — keychain access groups: a private group first, the alerts group second; non-alert items written with the explicit private group; group strings read from Info.plist.
+- F21 — `PhoneKeyStore.alertMaterial(_:) -> AlertMaterial?` (`epochs`, `hubSigningKey`) replaces `alertKeys(_:)`.
+- F22 — verified with Apple's docs: query subscriptions are private/public only; see D14 (private scope uses the `CKQuerySubscription`, shared scope uses the existing sync-engine database-subscription silent push with local filtering).
+- F23 — Global Constraint "File protection" now follows D8 (stash class C).
+- F24 — Task 5 factors a pure `SecItemKeychainBackend` attribute builder and asserts on it.
+- F25 — new `WatchtowerE2ETesting` library target in the Kit package (test support), linked only by test targets of the Kit, Desktop and phone.
+- F26 — Task 17 Step 4 adds `AskFormTests`, `ResilientObservationTests`, `RecorderTests`.
+- F27 — Task 10 creates every table it lists (`pending_devices`, `revoked_devices` included).
+- F28 — sealed wire records set `notifyLevel = nil`; asserted in `testHubSealsDataRecords…`.
+- F29 — the phone's `SeqAllocator` persists in `replica_meta.envelope_seq_ceiling`, which the format-2 wipe never drops.
+- F30 — device ids compare as `UUID` values and are emitted as `uuidString` everywhere.
+- F31 — the zone cut uses the existing pending-delete path, not `removeLegacyZones`: decision D13.
+- F32 — inventory grep wording fixed (here and in Task 19).
+- F33 — `ReplicaStore.maxAssetBytes = Int(…)`; `SlicePublisher.maxPayloadBytes` references `Envelope.maxBytes`.
+- F34 — Task 2's tamper test flips a byte at an offset ≥ 37 (past the asset header).
+- F35 — covered by F15.
+- F36 — the phone's "moved" check can no longer fire from a foreign heartbeat; Task 16 and Task 19 state the new behaviour.
+- F37 — Task 9's `ActionOutbox` init keeps its `now` clock parameter.
 
 ---
 
@@ -43,9 +87,9 @@ Values copied from the spec (§ in brackets); the deviations below the list are 
 - **Pairing (§2.3):** QR v3 adds `hub_kx_pub`, `hub_sig_pub`; old phones read "Update Watchtower on this iPhone". Phone writes its `device` record sealed to `hub_kx_pub` (HPKE). Hub checks the nonce as `handleDevice` does now, shows "Link <name>? Code 7342", owner confirms on the Mac; only then the keybox (`K_data[e]`, `K_meta`, epoch, grants), signed by `hub_sig`. Nonce single-use, 600 s.
 - **Envelope (§2.4):** `magic "WTE" | ver u8 | suite u8 | flags u8 (bit0 signed, bit1 has-asset, bit2 padded) | hub_id 16 B | sender_id 16 B | epoch u32 | seq u64 | nonce 12 B | kind u16 | ct_len u32 | ciphertext ‖ tag 16 B | [sig 64 B over header‖ciphertext]`. Everything before the ciphertext is AAD, plus the record name and the zone kind supplied out of band. Wire `kind` field becomes the constant `"wt"`; `modifiedAt` stays plaintext. Padding to the next of 256 B, 1 KiB, 4 KiB, 16 KiB, 64 KiB, then 64 KiB multiples; must stay under `SlicePublisher.maxPayloadBytes` (900 000) after header and padding. Over CloudKit the envelope is the `encryptedValues["payload"]` blob.
 - **Assets (§2.5):** `K_asset` random; header `{asset_id, suite, chunk_size = 1 MiB, total_len, chunk_count}`; chunk `c` = `ChaChaPoly.seal(plain_c, key: K_asset, nonce: u32 0 ‖ u64 c, aad: header ‖ c ‖ last_flag)`; the owning record's envelope carries `K_asset` + header. Assets padded to 1 MiB (§1 threat 8). `ReplicaStore.maxAssetBytes` must allow the chunk overhead.
-- **Keys at rest (§2.6):** phone Keychain `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, `kSecAttrSynchronizable` absent; the notification extension gets only `K_alert[e]` in a shared access group with `AfterFirstUnlockThisDeviceOnly`; Mac data protection keychain (`kSecUseDataProtectionKeychain`). Hub identity is deliberately not backed up: a new Mac is a new pairing.
+- **Keys at rest (§2.6):** phone Keychain `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, `kSecAttrSynchronizable` absent (the non-secret `deviceid` item and the public hub signing key copy are `AfterFirstUnlockThisDeviceOnly`, F14); the notification extension gets only `K_alert[e]` (plus the hub's public signing key, F21) in a shared access group with `AfterFirstUnlockThisDeviceOnly`; every other phone item is written to the app's private access group explicitly (F20); Mac data protection keychain (`kSecUseDataProtectionKeychain`). Hub identity is deliberately not backed up: a new Mac is a new pairing.
 - **Replica (§2.6):** ciphertext in `slice_records.payload` and `slice_assets.data`, decrypted on read; signature verified once at apply with `(epoch, seq)` stored; outbox encrypted at enqueue.
-- **File protection (§2.6):** `.completeUnlessOpen` for the recording in progress and the transport's incoming asset stash; DBs class C acceptable because they hold ciphertext (see D8).
+- **File protection (§2.6, as D8 applies it — F23):** `.completeUnlessOpen` for the recording in progress and for a finished recording still waiting to be sealed; the replica, the transport store and the transport's incoming asset stash hold ciphertext and take `completeUntilFirstUserAuthentication` (class C), the spec's allowed fallback.
 - **Names (§2.7):** record name = base32(HMAC-SHA256(`K_meta`, zone ‖ kind ‖ id)[0..<16]); the hub's `heartbeat` and each device's keybox keep fixed key-free names. Unknown `ver`/`suite` is refused loudly.
 - **Migration (§2.8):** hard cut, new record type, `LinkPayload.v = 3`, hub marker `e2e_v1` in `hub_meta`, the hub deletes its pre-E2E zones and recreates them, every phone re-pairs once, deploy the new record type to Production before the first Production run (`make cloudkit-check`).
 - **Keep `encryptedValues` as the outer layer (§3, §7).**
@@ -65,6 +109,8 @@ Values copied from the spec (§ in brackets); the deviations below the list are 
 - **D10 — relay keys per epoch.** The epoch is part of the relay HKDF info, so a rotation also rotates pairwise keys. The hub accepts relay envelopes of the previous epoch for 7 days (the action age window).
 - **D11 — replica metadata columns.** After the first unlocked open, the replica stores the plain `kind` and record name of each row (queries need them); payload and asset bytes stay ciphertext.
 - **D12 — padding never crosses the cap.** The padded length is clipped to the largest plaintext that fits under 900 000 bytes after header, tag and signature; a record that does not fit even unpadded is skipped as oversized, exactly like today.
+- **D13 — the zone cut uses the pending-delete path, not `removeLegacyZones` (F31).** Spec §2.8 says "extend `removeLegacyZones`". That function (`CloudKitTransport.swift:1391`) removes the single-hub build's fixed-name zones only; the pre-E2E records live in this hub's current `DataZone-<hub_id>`/`RelayZone-<hub_id>`, which `removeLegacyZones` must never touch. The existing `hub_zones_delete_pending` path (`HubIdentity.zonesDeletePendingKey`, run at `start()`) already deletes exactly these two zones with their shares, forgets phones through `hubZonesDeleted()`, and is crash-resumable (the marker survives a failure or timeout and the next start retries). Task 15 sets that marker plus `e2e_v1 = pending`. Same outcome as the spec, one deletion path instead of two. Called out to the owner.
+- **D14 — the ask-alert signal per scope (F22).** Apple's docs (checked 2026-10-12): "Only public and private databases support query subscriptions" (`CKQuerySubscription`), and "Only private and shared databases support database subscriptions" (`CKDatabaseSubscription`). So the `CKQuerySubscription` on `WatchtowerSignal` serves **private-scope** phones only. **Shared-scope** phones get no query subscription: the signal reaches them through the existing silent push of the sync engine's own database subscription (a `content-available` push already triggers a fetch, `mobile-companion.md` "Fetch loop"), and the app filters `sig-…` records locally after the fetch, opens the alert with `AlertOpener` (its material is `AfterFirstUnlock`, so this works while locked) and posts a local notification. A dedicated alerting `CKDatabaseSubscription` is rejected: it fires on every change in the shared database (every slice publish), which defeats the point of a signal record. Trade-off: silent pushes are best-effort and throttled by iOS, so shared-scope alerts can be late. Task 18 builds the private-scope subscription and exposes `AskAlertSubscription.subscription(for scope: CloudDatabaseScope, hubID:) -> CKQuerySubscription?` returning nil for shared; the local-notification half is A13's. The owner confirms this choice (and the shared-scope delay) in the A13 plan.
 
 ## Review Focus
 
@@ -78,14 +124,14 @@ Five failure modes the spec implies but its own tests would not reach, most like
 
 ## Guard tests and deliberate test changes
 
-- `docs/inventory/` holds **no** guard test for the mobile hub, the Kit or the phone (`grep -rln "MobileHub\|CloudKitTransport\|RelayProcessor\|LinkPayload" docs/inventory/` finds only the dated note in `workbench.md`, which states no contract changed). No owner ask is needed for a guard test. Task 19 re-checks this.
+- `docs/inventory/` holds **no** guard test for the mobile hub, the Kit or the phone: `grep -rln "MobileHub\|CloudKitTransport\|RelayProcessor\|LinkPayload\|device_grant" docs/inventory/` finds no file, and `grep -rlni "mobile" docs/inventory/` finds only `workbench.md`, whose mobile mention is a dated note stating no contract changed (F32). No owner ask is needed for a guard test. Task 19 re-checks this.
 - The creator-gate tests in `RelayProcessorTests`, `RelayProcessorRecordingUploadTests` and `MobileLinkCenterTests` stay (the creator check stays as defense in depth, spec §5 last bullet) and each gets a key-auth twin (Task 12, Task 13).
 - Tests that assert plaintext payloads on the wire (`CloudKitTransportMappingTests` payload field, `LinkPayloadTests` v2 fixtures, `DeviceGrantSlice` record names, phone tests that save plaintext records into the in-memory transport) are **rewritten on purpose** to seal through the test hub; each task lists them, and the commit message says so.
 
 ## Implementer self-review checklist (every task)
 
 Before hand-back, check the diff against:
-1. This plan's Global Constraints and Plan decisions (D1–D12), and the task's Interfaces block (names and types exactly as written).
+1. This plan's Global Constraints and Plan decisions (D1–D14), the Preflight amendments, and the task's Interfaces block (names and types exactly as written).
 2. `docs/review/review-rules.md` §7 (tests: no real CLI, processes reaped), §9 (no swallowed error without a log; public-repo hygiene; no absolute paths), and the whole **Swift / Desktop conventions** section (state survives navigation in `AppState`/centers; every new `@Observable` ViewModel or center ships its own test suite; absent vs undecodable is a third state).
 3. Crypto hygiene: no key, nonce, plaintext payload or SAS in a log line (`privacy: .public` only on record names, counts and error codes); every `try?` on a crypto call is a bug unless the line documents why the failure is the expected case; no `fatalError`/`preconditionFailure` on attacker-controlled input; secrets compared only through CryptoKit (`SymmetricKey ==` is constant-time) or by AEAD/signature verification.
 4. A fixture under `WatchtowerKit/Tests/Fixtures/e2e/` is generated only by the task that introduces it (`WT_E2E_REGENERATE=1`); any later change to one is a wire-format change and needs the owner's approval.
@@ -285,7 +331,7 @@ final class E2EKeyDerivationTests: XCTestCase {
 }
 ```
 
-  `E2EFixtureKeys` (in `Support/E2EFixtures.swift`) builds the keys from the fixed byte patterns and exposes `hubID`, `deviceID`, `linkNonce`, `hubKX`, `devKX`, `hubSig`, `devSig`, `metaKeyBytes` and `sas(nonce:deviceAgreement:)` with defaults. `KDFVectors` is a `Codable, Equatable` struct of hex strings. `E2EFixtures.check(_:file:)`: when the environment has `WT_E2E_REGENERATE=1` it writes `Fixtures/e2e/<file>.json` (sorted keys, pretty-printed, trailing newline) and fails the test with "regenerated, re-run without WT_E2E_REGENERATE"; otherwise it decodes the file and `XCTAssertEqual`s. The fixture directory is found the way `WorkbenchMirrorFixtureTests` finds `Fixtures/workbench` (relative to `#filePath`).
+  `E2EFixtureKeys` (in `Support/E2EFixtures.swift`) builds the keys from the fixed byte patterns and exposes `hubID`, `deviceID`, `linkNonce`, `hubKX`, `devKX`, `hubSig`, `devSig`, `metaKeyBytes` and `sas(nonce:deviceAgreement:)` with defaults. `KDFVectors` is a `Codable, Equatable` struct of hex strings. `E2EFixtures.check(_:file:)`: when the environment has `WT_E2E_REGENERATE=1` it writes `Fixtures/e2e/<file>.json` (sorted keys, pretty-printed, trailing newline) and fails the test with "regenerated, re-run without WT_E2E_REGENERATE"; otherwise it decodes the file and `XCTAssertEqual`s. The fixture directory is found the way `WorkbenchMirrorFixtureTests` finds `Fixtures/workbench` (relative to `#filePath`); note the extra hop: this file sits in `WatchtowerSyncTests/Support/`, so the path is `#filePath` → `../../Fixtures/e2e` (two directories up, then `Fixtures/e2e`), unlike the precedent in `WatchtowerKitTests/`.
 
 - [ ] **Step 3: Run to fail.** `make kit-test FILTER='E2EPrimitiveTests|E2EKeyDerivationTests' > /tmp/e2e1a.log 2>&1; echo "exit=$?"` → build failure (`WireBytes`, `KeyDerivation` missing).
 
@@ -327,7 +373,7 @@ public enum KeyDerivation {
 
   Kinds longer than 255 bytes do not exist (`SliceKind`/`RelayRecordKind` raw values are short); `recordName` clamps rather than traps.
 
-- [ ] **Step 5: Freeze the vectors.** `WT_E2E_REGENERATE=1 make kit-test FILTER=E2EKeyDerivationTests > /tmp/e2e1b.log 2>&1; echo "exit=$?"` (expected: the regeneration failure message), inspect `Fixtures/e2e/kdf.json` (hex only, no secrets beyond the synthetic patterns), then run Step 3's command again → `exit=0`. `make lint-diff`.
+- [ ] **Step 5: Freeze the vectors.** `WT_E2E_REGENERATE=1 make kit-test FILTER=E2EKeyDerivationTests > /tmp/e2e1b.log 2>&1; echo "exit=$?"` (expected: the regeneration failure message), inspect `Fixtures/e2e/kdf.json` (hex only, no secrets beyond the synthetic patterns), then run Step 3's command again → `exit=0`. Lint step (Kit).
 
 - [ ] **Step 6: Commit.**
 
@@ -456,13 +502,13 @@ final class ChunkedAssetCipherTests: XCTestCase {
 }
 ```
 
-  Add one more test in the same file, `testFileStreamingMatchesInMemoryAndLeavesNoTempFileOnFailure`: write 56 bytes (3.5 chunks of 16) to a file in `FileManager.default.temporaryDirectory/<UUID>/`, `encryptFile(at:to:chunkSize: 16)`, `decryptFile` into a third file, assert its bytes equal the input; then flip one byte of the sealed file, assert `decryptFile` throws `.chunkAuthenticationFailed`, that the destination does not exist, and that the directory holds only the input and the sealed file (no temp left). Remove the directory in `tearDown`.
+  Add one more test in the same file, `testFileStreamingMatchesInMemoryAndLeavesNoTempFileOnFailure`: write 56 bytes (3.5 chunks of 16) to a file in `FileManager.default.temporaryDirectory/<UUID>/`, `encryptFile(at:to:chunkSize: 16)`, `decryptFile` into a third file, assert its bytes equal the input; then flip one byte of the sealed file at an offset ≥ 37 (past the 37-byte asset header, e.g. offset `37 + 5`, inside chunk 0) (F34), assert `decryptFile` throws `.chunkAuthenticationFailed`, that the destination does not exist, and that the directory holds only the input and the sealed file (no temp left). Remove the directory in `tearDown`.
 
 - [ ] **Step 2: Run to fail.** `make kit-test FILTER=ChunkedAssetCipherTests > /tmp/e2e2a.log 2>&1; echo "exit=$?"`.
 
 - [ ] **Step 3: Implement.** Chunk nonce = 4 zero bytes ‖ `UInt64(c)` big-endian. AAD = `header.encoded() ‖ UInt64(c) BE ‖ (c == count − 1 ? 1 : 0)`. Each chunk's plaintext is exactly `chunkSize` bytes: the bytes of the input, then zeros. Decrypt: parse the header from the file and require `== descriptor.header` (`headerMismatch`); require the file length `== sealedLength(header.totalLength, header.chunkSize)` (`truncated` when shorter, `oversized` when longer); open each chunk (`chunkAuthenticationFailed(c)`); keep the first `totalLength` bytes; compare SHA-256 with `plaintextDigest` (`digestMismatch`). `decryptFile` writes into a temp file next to the destination and moves it only after the digest matched; on any throw the temp file is removed. `encryptFile` takes `totalLength` from the file size up front (`attributesOfItem`), so the header is final before the first chunk, then reads with `FileHandle.read(upToCount:)` one chunk at a time, digests incrementally (`var hasher = SHA256()`), and fails with `.truncated` if the file ends before `totalLength` bytes were read (it changed while being sealed).
 
-- [ ] **Step 4: Freeze, run to pass.** `WT_E2E_REGENERATE=1 make kit-test FILTER=ChunkedAssetCipherTests …` once, inspect `asset.json`, then the Step 2 command → `exit=0`. `make lint-diff`.
+- [ ] **Step 4: Freeze, run to pass.** `WT_E2E_REGENERATE=1 make kit-test FILTER=ChunkedAssetCipherTests …` once, inspect `asset.json`, then the Step 2 command → `exit=0`. Lint step (Kit).
 
 - [ ] **Step 5: Commit.** `git add WatchtowerKit && git commit -m "feat(mobile-e2e): chunked streaming asset cipher" …` (with the Co-Authored-By line).
 
@@ -527,7 +573,7 @@ public struct Envelope: Equatable, Sendable {
     /// Refuses wrong magic, unknown version or suite (loudly: `.unsupportedVersion`/`.unsupportedSuite`,
     /// the phone's "Update Watchtower" path), unknown class, and any length mismatch.
     public static func parse(_ data: Data) throws -> Envelope
-    public static let maxBytes = 900_000          // == SlicePublisher.maxPayloadBytes
+    public static let maxBytes = 900_000          // the single source: SlicePublisher.maxPayloadBytes references it (F33, Task 11)
 }
 
 public enum EnvelopeError: Error, Equatable {
@@ -697,10 +743,15 @@ final class EnvelopeTests: XCTestCase {
 
     func testVectorsMatchTheFrozenFile() throws {
         // EnvelopeVectors: for classes data (signed), relayToHub and relayToPhone (unsigned, relay keys from Task 1),
-        // fixed nonce, the context, the frame fields, the sealed hex. Signatures are checked by verification, not
-        // compared as bytes (CryptoKit's Ed25519 is randomized): the vector stores one signature produced once,
-        // and the test verifies it against the stored message.
-        try E2EFixtures.check(EnvelopeVectors(keys: k, dataKey: dataKey, nonce: fixedNonce), file: "envelope")
+        // fixed nonce, the context, the frame fields, and per case `header` hex (68 B) + `body` hex (ciphertext ‖ tag)
+        // + `signature` hex (signed cases only). F8: CryptoKit's Ed25519 is randomized, so the signature is NOT part
+        // of equality: `EnvelopeVectors.==` compares every field except `signature` (custom `==`, documented), and
+        // header + body are deterministic under the fixed nonce. The stored signature (produced once at regeneration)
+        // is checked by verification: `k.hubSig.publicKey.isValidSignature(stored, for: signatureMessage(header, body,
+        // context))` must be true. Go (Task 6) does the same.
+        let computed = try EnvelopeVectors(keys: k, dataKey: dataKey, nonce: fixedNonce)
+        try E2EFixtures.check(computed, file: "envelope")
+        try EnvelopeVectors.verifyStoredSignatures(file: "envelope", key: k.hubSig.publicKey)
     }
 }
 ```
@@ -709,7 +760,7 @@ final class EnvelopeTests: XCTestCase {
 
 - [ ] **Step 3: Implement.** Seal: `paddedLength(frame.encodedLength, cap: frameCap(signed:))` else `.oversized`; flags = `.padded` always, `.signed` with a signer, `.hasAsset` with `frame.asset`; header with `bodyLength = padded + 16`; `ChaChaPoly.seal(frameBytes, using: key, nonce: nonce, authenticating: context.aad(header:))`; body = `ciphertext ‖ tag`; signature = `signer.signature(for: signatureMessage(...))`. Open: parse (strict lengths: `68 + bodyLength + (signed ? 64 : 0) == data.count`), class in `accepting` else `.wrongClass`, verifier → require `.signed` (`.signatureMissing`) and verify (`.signatureInvalid`) **before** decrypting, then key(header), `ChaChaPoly.open` (`.authenticationFailed`), `InnerFrame.parse`. Header `nonce` must be 12 bytes; `EnvelopeHeader.encoded()` writes in the order of the Interfaces block.
 
-- [ ] **Step 4: Freeze, run to pass.** Regenerate `envelope.json` once with `WT_E2E_REGENERATE=1`, inspect, re-run → `exit=0`. `make lint-diff`.
+- [ ] **Step 4: Freeze, run to pass.** Regenerate `envelope.json` once with `WT_E2E_REGENERATE=1`, inspect, re-run → `exit=0`. Lint step (Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): versioned envelope with inner frame, padding and hub signatures`.
 
@@ -790,9 +841,9 @@ public let hubAgreementKey: String        // wire "hub_kx"
 
 - [ ] **Step 2: Run to fail.** `make kit-test FILTER='HPKEVectorTests|SealedBoxTests|KeyboxTests|LinkPayloadTests' > /tmp/e2e4a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement.** `SealedBox.seal`: build the header with zero nonce and `bodyLength = 32 + padded + 16`, `var sender = try HPKE.Sender(recipientKey:ciphersuite:info:)`, `sender.seal(frameBytes, authenticating: context.aad(header:))`, body = `sender.encapsulatedKey ‖ sealed`, sign. `open`: verify first when a verifier is given (for `.hello` the verifier is nil at the parse step; the hub verifies with `DeviceHello.signingKey` after opening, and checks `device_id == KeyDerivation.deviceID(signingKey)` — Task 13), then `HPKE.Recipient(...).open`. `LinkPayload.issue(...)` gains the two keys as parameters.
+- [ ] **Step 3: Implement.** (F4) The hub does not know which kept code a hello answers, so nothing below takes a nonce from a key provider: `SealedBox.open(.hello, info: helloInfo(hubID, linkNonce))` is called by `MobileLinkCenter.handleHello` (Task 13) once per kept nonce until one opens. `SealedBox.seal`: build the header with zero nonce and `bodyLength = 32 + padded + 16`, `var sender = try HPKE.Sender(recipientKey:ciphersuite:info:)`, `sender.seal(frameBytes, authenticating: context.aad(header:))`, body = `sender.encapsulatedKey ‖ sealed`, sign. `open`: verify first when a verifier is given (for `.hello` the verifier is nil at the parse step; the hub verifies with `DeviceHello.signingKey` after opening, and checks `device_id == KeyDerivation.deviceID(signingKey)` — Task 13), then `HPKE.Recipient(...).open`. `LinkPayload.issue(...)` gains the two keys as parameters.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; lint step (Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): HPKE hello and keybox, LinkPayload v3` (the message notes the rewritten v2 LinkPayload tests).
 
@@ -806,7 +857,7 @@ Self-review: the checklist above.
 
 **Files:**
 - Create `WatchtowerKit/Sources/WatchtowerSync/Secure/KeyStore.swift` (protocols, value types, errors), `Secure/KeychainBackend.swift` (`SecItem` wrapper), `Secure/KeychainKeyStore.swift` (`KeychainPhoneKeyStore`, `KeychainHubKeyStore`), `Secure/InMemoryKeyStore.swift`, `Secure/SeqAllocator.swift`.
-- Test: `WatchtowerKit/Tests/WatchtowerSyncTests/KeyStoreTests.swift`, `SeqAllocatorTests.swift` (over a fake backend; the real `SecItem` path is exercised by the phone suite in Task 16 and the device smoke).
+- Test: `WatchtowerKit/Tests/WatchtowerSyncTests/KeyStoreTests.swift`, `SeqAllocatorTests.swift` (over a fake backend, plus the pure attribute builder of `SecItemKeychainBackend` (F24); the real `SecItem` path is exercised by the phone suite in Task 16 where signing allows, and by the device smoke).
 
 **Interfaces (produces):**
 
@@ -822,7 +873,12 @@ public protocol KeychainBackend: Sendable {
 /// kSecClassGenericPassword, service "com.aiwatchtowers.watchtower.e2e", kSecAttrSynchronizable never set,
 /// kSecAttrAccessibleWhenUnlockedThisDeviceOnly / AfterFirstUnlockThisDeviceOnly, kSecUseDataProtectionKeychain
 /// on macOS. errSecInteractionNotAllowed → .locked, errSecMissingEntitlement → .missingEntitlement.
-public struct SecItemKeychainBackend: KeychainBackend { public init(service: String = "com.aiwatchtowers.watchtower.e2e") }
+public struct SecItemKeychainBackend: KeychainBackend {
+    public init(service: String = "com.aiwatchtowers.watchtower.e2e")
+    /// F24: the pure attribute builder `write` uses (no SecItem call), so the attributes are unit-tested even where
+    /// an unsigned simulator skips the real Keychain.
+    func addAttributes(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) -> [String: Any]
+}
 
 public struct DeviceIdentityKeys: Sendable {
     public let signing: Curve25519.Signing.PrivateKey
@@ -846,8 +902,17 @@ public protocol PhoneKeyStore: Sendable {
     func removeHubLink(_ hubID: String) throws
     /// afterFirstUnlock copy of the hub's public signing key: the replica verifies signatures while locked.
     func hubSigningKey(_ hubID: String) throws -> Curve25519.Signing.PublicKey?
-    /// afterFirstUnlock, shared access group: only K_alert epochs + the hub signing key, for the extension (Task 18).
-    func alertKeys(_ hubID: String) throws -> [EpochKeys]
+    /// afterFirstUnlock, shared access group: only K_alert epochs + the hub signing key, for the extension (Task 18, F21).
+    /// nil when absent; throws .locked/.corrupt (absent vs unavailable stay distinct).
+    func alertMaterial(_ hubID: String) throws -> AlertMaterial?
+    /// Non-secret copy of the device id (item `deviceid`, afterFirstUnlock, F14): readable while the phone is locked,
+    /// for background hydration, the uploader and `ActionOutbox.setDeviceID`. nil before `identity()` first ran.
+    func deviceID() throws -> UUID?
+}
+/// What the notification extension can read (F21): K_alert epochs (data keys emptied) and the hub's public signing key.
+public struct AlertMaterial: Codable, Equatable, Sendable {
+    public let epochs: [EpochKeys]
+    public let hubSigningKey: Data          // 32 bytes public
 }
 
 public struct HubIdentityKeys: Sendable {
@@ -862,9 +927,18 @@ public protocol HubKeyStore: Sendable {
     func deleteHubIdentity(hubID: String) throws
 }
 
-public final class KeychainPhoneKeyStore: PhoneKeyStore { public init(backend: any KeychainBackend, alertGroup: String?) }
+/// F20: `privateGroup` is the app's own access group (listed FIRST in `keychain-access-groups`); every non-alert item is
+/// written with it explicitly, so it never lands in the alerts group. Both strings come from Info.plist on the phone
+/// (team-prefixed; never hardcoded). nil in tests and on the Mac.
+public final class KeychainPhoneKeyStore: PhoneKeyStore {
+    public init(backend: any KeychainBackend, privateGroup: String?, alertGroup: String?)
+}
 public final class KeychainHubKeyStore: HubKeyStore { public init(backend: any KeychainBackend) }   // afterFirstUnlock (D2)
-public final class InMemoryPhoneKeyStore: PhoneKeyStore { public init(); public var isLocked: Bool }  // tests + demo
+public final class InMemoryPhoneKeyStore: PhoneKeyStore {   // tests + demo
+    public init()
+    public var isLocked: Bool              // whenUnlocked reads throw .locked
+    public var isBeforeFirstUnlock: Bool   // every read throws .locked, afterFirstUnlock items included (F15 tests)
+}
 public final class InMemoryHubKeyStore: HubKeyStore { public init() }
 
 /// Monotonic u64 counter with block reservation: persists `ceiling = next + blockSize` before handing out
@@ -883,13 +957,17 @@ public final class SeqAllocator: Sendable {
   - `testACorruptItemIsCorruptNotAbsent`.
   - `testHubIdentityIsCreatedAfterFirstUnlockWithDataProtectionAndReportsCreatedOnce`.
   - `testAtMostTwoEpochsAreKept`.
+  - `testTheDeviceIDIsReadableWhileLockedAndEqualsTheIdentitysID` (F14) — after `identity()`, the backend saw a `deviceid` write with `.afterFirstUnlock`; with whenUnlocked reads failing, `deviceID()` still returns the id.
+  - `testAlertMaterialHoldsOnlyAlertKeysAndTheHubSigningKeyInTheAlertGroup` (F21).
+  - `testEveryNonAlertItemIsWrittenToThePrivateGroupExplicitly` (F20) — `group == privateGroup` on every write except `alert.<hub_id>`, which goes to `alertGroup`.
+  - `testSecItemAttributesAreThisDeviceOnlyAndNeverSynchronizable` (F24) — over `SecItemKeychainBackend.addAttributes`: no `kSecAttrSynchronizable` key, `kSecAttrAccessible` is `WhenUnlockedThisDeviceOnly`/`AfterFirstUnlockThisDeviceOnly` per `KeyAccess`, `kSecUseDataProtectionKeychain == true` when `dataProtection`, `kSecAttrAccessGroup` present only when a group is given.
   - `SeqAllocatorTests`: `testValuesAreStrictlyIncreasingAcrossARestart` (a new allocator over the same stored ceiling starts at the ceiling), `testTheCeilingIsPersistedBeforeAValueOfTheBlockIsReturned` (a throwing `store` → `next()` throws and returns nothing), `testConcurrentCallersNeverGetTheSameValue` (200 tasks).
 
 - [ ] **Step 2: Run to fail.** `make kit-test FILTER='KeyStoreTests|SeqAllocatorTests' > /tmp/e2e5a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement.** Items: accounts `identity.sig`, `identity.kx` (raw 32-byte representations), `hub.<hub_id>` (`HubLinkKeys` JSON), `hubpub.<hub_id>` (32 bytes, `afterFirstUnlock`), `alert.<hub_id>` (`[EpochKeys]` with `dataKey` emptied, plus the hub signing key, `afterFirstUnlock`, `group: alertGroup`), `hubid.<hub_id>.sig|.kx|.wrap` (Mac). A write is delete-then-add (`SecItemAdd` after `SecItemDelete`) so the accessibility class is always the one asked for. `SecItemKeychainBackend` never sets `kSecAttrSynchronizable`. `InMemoryPhoneKeyStore.isLocked` makes every `whenUnlocked` read throw `.locked` (tests of Review Focus 1). No fallback to `UserDefaults` for any key.
+- [ ] **Step 3: Implement.** Items: accounts `identity.sig`, `identity.kx` (raw 32-byte representations), `hub.<hub_id>` (`HubLinkKeys` JSON), `hubpub.<hub_id>` (32 bytes, `afterFirstUnlock`), `alert.<hub_id>` (`AlertMaterial` JSON: `[EpochKeys]` with `dataKey` emptied, plus the hub signing key, `afterFirstUnlock`, `group: alertGroup`), `deviceid` (the UUID string, `afterFirstUnlock`, written by `identity()` when it creates or first loads the identity, F14), `hubid.<hub_id>.sig|.kx|.wrap` (Mac). Every phone item except `alert.<hub_id>` is written with `group: privateGroup` (F20). A write is delete-then-add (`SecItemAdd` after `SecItemDelete`) so the accessibility class is always the one asked for. `SecItemKeychainBackend` never sets `kSecAttrSynchronizable`. `InMemoryPhoneKeyStore.isLocked` makes every `whenUnlocked` read throw `.locked` (tests of Review Focus 1). No fallback to `UserDefaults` for any key.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; lint step (Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): Keychain key stores (ThisDeviceOnly, never synchronizable) and seq allocator`.
 
@@ -910,7 +988,7 @@ Self-review: the checklist above.
 
 - [ ] **Step 1: Write the test** (it fails until it matches the fixtures, which is the point):
   - `TestKDFVectorsMatchAGoDerivation`: X25519 via `crypto/ecdh.X25519()`, HKDF via `crypto/hkdf` (Go 1.24+: `hkdf.Key(sha256.New, secret, salt, info, 32)`), HMAC-SHA256, base32 via `base32.StdEncoding.WithPadding(base32.NoPadding)` lowercased, device id and SAS from the Task 1 definitions. Every value equals the fixture's hex.
-  - `TestEnvelopeVectorsOpenInGo`: parse the 68-byte header with `encoding/binary.BigEndian`, rebuild the AAD (`header ‖ zone ‖ u16 len ‖ name`), verify the stored signature with `crypto/ed25519.Verify` over `"wt/sig/v1" ‖ aad ‖ body`, open with `chacha20poly1305.New(key)` and parse the inner frame; compare kind, id, notify level, asset descriptor and payload with the fixture.
+  - `TestEnvelopeVectorsOpenInGo`: parse the 68-byte header with `encoding/binary.BigEndian`, rebuild the AAD (`header ‖ zone ‖ u16 len ‖ name`), compare the rebuilt header and the body (ciphertext ‖ tag) with the fixture's bytes, verify the stored signature with `crypto/ed25519.Verify` over `"wt/sig/v1" ‖ aad ‖ body` (verification only, never byte equality of the signature — F8), open with `chacha20poly1305.New(key)` and parse the inner frame; compare kind, id, notify level, asset descriptor and payload with the fixture.
   - `TestAssetVectorsDecryptInGo`: chunk loop with nonce `0x00000000 ‖ u64 c`, AAD `header ‖ c ‖ last`, digest check.
   - Fixture path: `filepath.Join("..", "..", "WatchtowerKit", "Tests", "Fixtures", "e2e", name)`.
 - [ ] **Step 2: Run.** `go test ./internal/mobilee2e > /tmp/e2e6.log 2>&1; echo "exit=$?"` → `exit=0`. A mismatch is a bug in the Swift implementation or in this transcription of the spec: fix the Swift side and regenerate its fixture only with the owner's approval if the Swift side is wrong, never "fix" the Go test toward the fixture. `make lint-diff`.
@@ -928,7 +1006,9 @@ Self-review: the checklist above (plus review-rules §7: no subprocess, no netwo
 - Create `WatchtowerKit/Sources/WatchtowerSync/Secure/SecureKeyProvider.swift`, `Secure/SecureTransport.swift`, `Secure/RollbackGuard.swift`, `Secure/PhoneKeyProvider.swift` (the phone's `SecureKeyProvider` over `PhoneKeyStore`).
 - Modify `WatchtowerKit/Sources/WatchtowerSync/Sync/CloudSyncTransport.swift` (`CloudRecord.asset`, `CloudRecord.sealed`, `WireKind`).
 - Modify `WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/CloudKitTransport.swift` (`recordType = "WatchtowerEnvelope"`, `signalRecordType = "WatchtowerSignal"`, the legacy type ignored on fetch).
-- Test: `WatchtowerKit/Tests/WatchtowerSyncTests/SecureTransportTests.swift`; modify `CloudKitTransportMappingTests.swift`; create `Support/TestE2E.swift` (a test hub and a test phone over in-memory key stores, shared by Tasks 8–9 and the phone suite's support copy).
+- Modify `WatchtowerKit/Package.swift`: a new library target and product `WatchtowerE2ETesting` (F25; depends on `WatchtowerSync`, no XCTest import, public API only), linked only by test targets: the Kit's `WatchtowerSyncTests`/`WatchtowerKitTests`, the Desktop test target (Task 11 adds it to `WatchtowerDesktop/Package.swift`) and the phone test target (Task 16 adds it to `project.yml`). No app or extension target links it.
+- Create `WatchtowerKit/Sources/WatchtowerE2ETesting/TestE2E.swift` (a test hub and a test phone over in-memory key stores sharing one pairing; used by Tasks 8–9, the Desktop tests and the phone tests — one copy, F25).
+- Test: `WatchtowerKit/Tests/WatchtowerSyncTests/SecureTransportTests.swift`; modify `CloudKitTransportMappingTests.swift`, `CloudKitTransportErrorTests.swift`.
 
 **Interfaces (produces):**
 
@@ -968,10 +1048,12 @@ public protocol SecureKeyProvider: Sendable {
     func linkNonce() throws -> Data
 }
 
+/// F3: keyed by (wire name, sender). One relay wire name carries the phone's p2h envelope (the phone's seq space)
+/// and later the hub's h2p echo (the hub's seq space); a guard keyed by the name alone would drop a valid echo.
 public protocol RollbackGuard: Sendable {
     /// .newer: store and use; .same: an identical re-delivery (idempotent); .older: ignore (rollback).
-    func check(wireName: String, epoch: UInt32, seq: UInt64) throws -> RollbackVerdict
-    func record(wireName: String, epoch: UInt32, seq: UInt64) throws
+    func check(wireName: String, senderID: UUID, epoch: UInt32, seq: UInt64) throws -> RollbackVerdict
+    func record(wireName: String, senderID: UUID, epoch: UInt32, seq: UInt64) throws
 }
 public enum RollbackVerdict: Equatable, Sendable { case newer, same, older }
 public final class InMemoryRollbackGuard: RollbackGuard { public init() }
@@ -980,15 +1062,31 @@ public enum SecureTransportError: Error, Equatable {
     case wrongRole, keysUnavailable, unknownKind(String), noKeyboxRecipient(String)
 }
 
+/// Persisted wire → plain name map (F19): the hub passes its sidecar (`slice_state.wire_name`, Task 10/11), so a
+/// rejection of a record CKSyncEngine queued in an earlier launch still maps back. nil on the phone.
+public protocol WireNameIndex: Sendable {
+    func plainName(forWire wireName: String) -> String?
+}
+
+/// A relay record this transport could not open (F2): another phone's, a removed phone's, a stranger's.
+public struct UnopenableRecord: Equatable, Sendable {
+    public let wireName: String
+    public let modifiedAt: Date      // plaintext on the wire (spec §2.4)
+}
+
 /// Seals what its role sends; opens what its role receives in RelayZone; DataZone reads pass through (the
 /// replica opens on read). Record naming: `heartbeat` stays `heartbeat`; `device_grant-<id>` → `keybox-<id>`;
 /// `hello-<id>` stays; signals keep their name; everything else → KeyDerivation.recordName(K_meta, zone, kind, id).
-public actor SecureTransport: CloudSyncTransport {
+/// F1: also `CompactingTransport` and `SweepingTransport`, so the hydrator (`ReplicaHydrator.swift:101`), `RelayFeed`
+/// (l.146) and the hub's `sweepBuffer` (`RelayProcessor.swift:533`) keep reaching the buffer through their casts.
+public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
     public init(inner: any CloudSyncTransport & Sendable, keys: any SecureKeyProvider, rollback: any RollbackGuard,
+                names: (any WireNameIndex)? = nil,
                 onRejected: (@Sendable (_ wireName: String, _ reason: String) -> Void)? = nil)
     public nonisolated func wireName(for record: CloudRecord) throws -> String
     public nonisolated func wireName(plain: String, zone: CloudZoneID) throws -> String
-    /// The plain name of a record this transport sealed in this process (the rejected-record callback, Task 11).
+    /// The plain name of a sealed record (the rejected-record callback, Task 11): `names` first (persisted, F19),
+    /// then the records sealed in this process.
     public func plainName(forWire wireName: String) -> String?
     /// Plain → sealed wire record (kind "wt", payload = envelope, asset descriptor inside the frame).
     public func seal(_ record: CloudRecord) throws -> CloudRecord
@@ -997,15 +1095,23 @@ public actor SecureTransport: CloudSyncTransport {
     public func save(_ records: [CloudRecord]) async throws            // seal + saveSealed
     public func delete(recordNames: [String], in zone: CloudZoneID) async throws   // plain names → wire names
     public func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch
-    public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws   // forwards (throws if inner can't)
+    /// F1: forwards when `inner` conforms to `CompactingTransport`; otherwise a documented no-op (today's skipped cast).
+    public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws
+    /// F1: forwards when `inner` conforms to `SweepingTransport`; otherwise a documented no-op returning 0.
+    @discardableResult
     public func sweepEvents(in zone: CloudZoneID, olderThan cutoff: Date, upTo token: CloudChangeToken) async throws -> Int
+    /// F2, hub relay hygiene: the full-scan view of RelayZone — the opened records (`changes` semantics, own h2p
+    /// echoes included) plus every record nobody here can open, by wire name and plaintext `modifiedAt`.
+    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord])
+    /// F2: deletes by wire name (records that never opened have no plain name).
+    public func deleteWire(wireNames: [String], in zone: CloudZoneID) async throws
 }
 ```
 
-Sealing rules (by role, plain kind → class): hub — `heartbeat` and every `SliceKind` → `.data` signed; `ask_alert` → `.alert` signed (Task 11); `device_grant` → `.keybox` (HPKE to `keyboxRecipient`, signed); relay echoes (`action`, `recording_upload`, `device`) → `.relayToPhone` under the sender's h2p key (the device id is the payload's `device_id`). Phone — `hello` → `.hello` (HPKE to the hub's agreement key, signed by the device); `action`, `recording_upload`, `device` → `.relayToHub`. Opening rules for `changes(.relay)`: hub opens `.hello` (Task 13 consumes it) and `.relayToHub` from a sender with a relay key and an accepted epoch; phone opens `.relayToPhone` addressed by the frame to itself and its own `.relayToHub` records; everything else in RelayZone is dropped and reported through `onRejected` (another phone's records in a shared zone are expected: reported once per wire name at debug level). The rollback guard runs on every opened relay record. Keys unavailable (`KeyStoreError.locked`) → `changes` throws `SecureTransportError.keysUnavailable`, so the consumer keeps its token and replays (Review Focus 1).
+Sealing rules (by role, plain kind → class): hub — `heartbeat` and every `SliceKind` → `.data` signed; `ask_alert` → `.alert` signed (Task 11); `device_grant` → `.keybox` (HPKE to `keyboxRecipient`, signed); relay echoes (`action`, `recording_upload`, `device`) → `.relayToPhone` (F16: sealed to `record.sealed.senderID` when the echo `CloudRecord` carries the `sealed` info copied from the opened record — the processor does that, Task 12 — else to the payload's `device_id`). Phone — `hello` → `.hello` (HPKE to the hub's agreement key, signed by the device); `action`, `recording_upload`, `device` → `.relayToHub`. **Signals (F12):** a record of kind `WireKind.signal` is passed through unsealed by `save` and `delete` (its name is already `sig-<wire name>`, it has no payload), and `changes` returns it as is. **Every sealed wire record sets `notifyLevel = nil` (F28)**: the level travels in the inner frame, and `CloudKitTransport.swift:1247` would otherwise still write it. Opening rules for `changes(.relay)`: **hub** passes `.hello` records through **sealed** (F4: the hub cannot know which kept code's nonce the hello's HPKE info uses; `MobileLinkCenter.handleHello`, Task 13, tries each), opens `.relayToHub` from a sender with a relay key and an accepted epoch, and opens its **own `.relayToPhone` echoes** (F2: it holds every current and previous-epoch h2p key; the processor's hygiene and ledger see them as today); **phone** opens `.relayToPhone` addressed by the frame to itself and its own `.relayToHub` records; everything else in RelayZone is dropped from `changed` and reported through `onRejected` (another phone's records in a shared zone are expected: reported once per wire name at debug level), and the hub sees it in `relayHygieneScan().unopenable`. The rollback guard runs on every opened relay record, keyed by (wire name, `sealed.senderID`) (F3). Keys unavailable (`KeyStoreError.locked`) → `changes` throws `SecureTransportError.keysUnavailable`, so the consumer keeps its token and replays (Review Focus 1). Device ids (F30): compared as `UUID` values; every string form written or emitted is `uuidString`.
 
 - [ ] **Step 1: Failing tests** (`SecureTransportTests`, over `InMemoryCloudTransport` and `TestE2E.hub()`/`TestE2E.phone()`, which share one pairing):
-  - `testHubSealsDataRecordsUnderOpaqueNamesWithAConstantWireKind` — after `hub.save([slice])` the inner transport holds a record whose name is 26 base32 chars, `kind == "wt"`, payload parses as an `Envelope` of class `.data`, `modifiedAt` unchanged (spec §5: kept plaintext).
+  - `testHubSealsDataRecordsUnderOpaqueNamesWithAConstantWireKind` — after `hub.save([slice])` (with `notifyLevel: "urgent"`) the inner transport holds a record whose name is 26 base32 chars, `kind == "wt"`, `notifyLevel == nil` (F28), payload parses as an `Envelope` of class `.data`, `modifiedAt` unchanged (spec §5: kept plaintext).
   - `testHeartbeatKeyboxAndHelloKeepKeyFreeNames`.
   - `testDataZoneReadsPassThroughUntouched`.
   - `testPhoneActionRoundTripsToTheHubAndTheEchoBack` — phone `save(action)`; hub `changes(.relay)` returns the plain `action-<id>` record, kind `action`, plaintext payload, `sealed.senderID == deviceID`; hub saves the echo; phone `changes(.relay)` returns it opened.
@@ -1015,15 +1121,24 @@ Sealing rules (by role, plain kind → class): hub — `heartbeat` and every `Sl
   - `testDeleteMapsPlainNamesToWireNames`.
   - `testSaveSealedSendsStoredBytesUnchanged` — `seal` then `saveSealed` twice: the inner transport holds byte-identical payloads.
   - `testThePreviousEpochIsAcceptedOnlyWhileTheProviderSaysSo` (D10).
+  - `testCompactionAndSweepReachTheInnerTransport` (F1) — `(secure as? any CompactingTransport)` and `SweepingTransport` casts succeed; a `ReplicaHydrator` over the secure transport compacts the inner `InMemoryCloudTransport`'s buffer; over an inner transport that conforms to neither, both calls are no-ops (sweep returns 0) and do not throw.
+  - `testTheHubPassesHellosThroughSealed` (F4) — the hub's `changes(.relay)` returns the `hello-<id>` record with its envelope payload unopened.
+  - `testTheHubOpensItsOwnEchoesAndTheRollbackGuardKeysOnTheSender` (F2, F3) — phone action at seq 900 (phone seq space), hub echo at seq 5 (hub seq space) under the same wire name: the phone's `changes` returns the echo (not `.older`); the hub's `changes` returns its own echo opened.
+  - `testUnopenableRelayRecordsAreListedForHygiene` (F2) — a stranger's record appears in `relayHygieneScan().unopenable` with its `modifiedAt`; `deleteWire` removes it from the inner transport.
+  - `testTheEchoIsSealedToTheAuthenticatedSender` (F16) — an echo whose `sealed.senderID` differs from its payload's `device_id` is sealed to `sealed.senderID`.
+  - `testSignalRecordsPassThroughUnsealed` (F12) — `save`/`delete` of a `WireKind.signal` record reach the inner transport unchanged; no `unknownKind` throw.
+  - `testPlainNameForWireConsultsThePersistedIndexFirst` (F19).
   - `testARelayRecordWhosePayloadDeviceIDIsNotItsSenderIsStillReturnedWithTheAuthenticatedSender` — the processor (Task 12) decides; the transport must not hide the mismatch.
   - `CloudKitTransportMappingTests`: `testEnvelopeRecordsUseTheWatchtowerEnvelopeType`, `testSignalRecordsUseTheWatchtowerSignalTypeAndCarryNoPayload`, `testARecordOfThePreE2ETypeIsIgnoredOnFetch` (`cloudRecord(from:)` returns nil for `WatchtowerRecord`), `testPayloadStaysAnEncryptedValueAndModifiedAtAPlainField`.
   - `testConflictReSaveKeepsTheSealedPayload` (Review Focus 2): in `CloudKitTransportErrorTests`' style, a `serverRecordChanged` failure on a pending envelope record re-saves the pending row's payload byte for byte (the conflict path is content-agnostic; this pins it).
 
+  - `testConflictReSaveKeepsTheSealedPayload` needs a harness the tests do not have yet (`serverRecordChanged` is only handled at `CloudKitTransport.swift:966`, which no test reaches): drive `fixSystemFieldsForFailedSaves` (or the smallest internal seam around it) directly with a synthetic failed save of a pending envelope record; if no seam can be reached without a production test hook, report it in the hand-back instead of adding one.
+
 - [ ] **Step 2: Run to fail.** `make kit-test FILTER='SecureTransportTests|CloudKitTransportMappingTests|CloudKitTransportErrorTests' > /tmp/e2e7a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement.** `ckRecord(from:)`: `recordType` = `signalRecordType` when `record.kind == WireKind.signal`, else `"WatchtowerEnvelope"`; a signal sets no `payload`. `cloudRecord(from:)`: accept only the two new types (a signal's payload is `Data()`); the old type `WatchtowerRecord` returns nil and is logged once per record type. The phone's `PhoneKeyProvider(store: any PhoneKeyStore, hubID: String, seq: SeqAllocator)` derives relay keys on demand from `identity().agreement`, the stored hub agreement key, link nonce and epoch, and caches them in memory.
+- [ ] **Step 3: Implement.** `ckRecord(from:)`: `recordType` = `signalRecordType` when `record.kind == WireKind.signal`, else `"WatchtowerEnvelope"`; a signal sets no `payload`. `cloudRecord(from:)`: accept only the two new types (a signal's payload is `Data()`); the old type `WatchtowerRecord` returns nil and is logged once per record type. `InMemoryRollbackGuard` keys on (wire name, sender id) (F3). The phone's `PhoneKeyProvider(store: any PhoneKeyStore, hubID: String, seq: SeqAllocator)` (the phone's `SeqAllocator` persists in `replica_meta.envelope_seq_ceiling`, Task 8, F29) derives relay keys on demand from `identity().agreement`, the stored hub agreement key, link nonce and epoch, and caches them in memory.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`. Then the whole Kit transport suites, because `CloudRecord` gained fields: `make kit-test FILTER='CloudKitTransport|TransportStore|TransportAsset|InMemoryCloudTransport|CloudRecordFactory' > /tmp/e2e7b.log 2>&1; echo "exit=$?"`. `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`. Then the whole Kit transport suites, because `CloudRecord` gained fields: `make kit-test FILTER='CloudKitTransport|TransportStore|TransportAsset|InMemoryCloudTransport|CloudRecordFactory' > /tmp/e2e7b.log 2>&1; echo "exit=$?"`. The Desktop and phone targets do not use the new fields or the new Kit target yet; the Desktop still compiles (its transport calls are unchanged until Task 10). Lint step (Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): SecureTransport above the transport seam; WatchtowerEnvelope and WatchtowerSignal record types`.
 
@@ -1038,7 +1153,7 @@ Self-review: the checklist above.
 **Files:**
 - Modify `WatchtowerKit/Sources/WatchtowerSync/Replica/ReplicaStore.swift`, `ReplicaStore+SliceAssets.swift`, `ReplicaHydrator.swift`.
 - Create `WatchtowerKit/Sources/WatchtowerSync/Replica/ReplicaOpener.swift`.
-- Test: create `WatchtowerKit/Tests/WatchtowerSyncTests/ReplicaEnvelopeTests.swift`; rewrite the record builders of `ReplicaTests`, `ReplicaResetTests`, `ReplicaSliceAssetTests` to seal through `TestE2E.hub()` (deliberate: the replica no longer accepts plaintext).
+- Test: create `WatchtowerKit/Tests/WatchtowerSyncTests/ReplicaEnvelopeTests.swift` and `ReplicaHydratorTests.swift` (F10); rewrite the record builders of `ReplicaTests`, `ReplicaResetTests`, `ReplicaSliceAssetTests` to seal through `TestE2E.hub()` (deliberate: the replica no longer accepts plaintext); **F7:** update every other `ReplicaStore` construction in `WatchtowerSyncTests` mechanically to `ReplicaStore.inMemory(opener:)`/`init(path:opener:)` with `TestE2E`'s opener — `ActionOutboxTests`, `ActionStatusTests`, `RecordingUploaderTests`, `RelayFeedTests`, `RelayFeedRecordingUploadTests`, `SliceKindTests` (construction only; their assertions change in Task 9 where they must). After this task `WatchtowerSyncTests` compiles as a whole. The phone target does not compile from here until Task 16's first step (F6); no phone command runs in between.
 
 **Interfaces (produces):**
 
@@ -1055,7 +1170,9 @@ public protocol ReplicaOpening: Sendable {
     func openOwnRelay(wireName: String, envelope: Data) throws -> InnerFrame
 }
 public final class EnvelopeReplicaOpener: ReplicaOpening {
-    public init(hubID: String, keys: any PhoneKeyStore)
+    /// `deviceID` (F13, F14): read from `PhoneKeyStore.deviceID()`, which works while locked; keyboxes for any
+    /// other device id are dropped at apply.
+    public init(hubID: String, deviceID: UUID, keys: any PhoneKeyStore)
 }
 
 // ReplicaStore
@@ -1064,18 +1181,23 @@ public static func inMemory(opener: any ReplicaOpening) throws -> ReplicaStore
 /// Verifies and stores each data-zone envelope; rows whose kind is unknown until opened are stored unindexed.
 @discardableResult public func apply(_ batch: CloudChangeBatch) throws -> Bool
 /// Opens every unindexed row it can and fills `kind`/`plain_name`; returns the indexed records (for
-/// `onRecordsApplied`). Rows that stay unopenable for `.locked` stay unindexed; others are counted corrupt.
-@discardableResult public func indexPending() throws -> [IndexedRecord]
-public struct IndexedRecord: Equatable, Sendable { public let kind: String; public let plainName: String; public let modifiedAt: Date }
-public static let maxAssetBytes: Int     // = ChunkedAssetCipher.sealedLength(forPlaintext: 20 MiB)
+/// `onRecordsApplied`; F11: the existing `AppliedSliceRecord` — `recordName` = plain name, typed `SliceKind`,
+/// `notifyLevel` from the opened frame, `modifiedAt`; rows of an unknown kind are indexed but not surfaced, as today).
+/// Rows that stay unopenable for `.locked` stay unindexed and are not counted (F15); others are counted corrupt.
+@discardableResult public func indexPending() throws -> [AppliedSliceRecord]
+public static let maxAssetBytes: Int     // = Int(ChunkedAssetCipher.sealedLength(forPlaintext: 20 MiB)) (F33: Int64 → Int)
 public func rejectedCount() -> Int       // signature failures, wrong hub, rollbacks ignored
 public func newerFormatCount() -> Int    // unsupportedVersion/unsupportedSuite: "Update Watchtower on this iPhone"
-/// The phone's relay rollback guard (Task 7's protocol), persisted in a `relay_seen(wire_name PK, epoch, seq)`
-/// table of the replica; rows older than 8 days are pruned with `sweepSilentPending`.
+/// The phone's relay rollback guard (Task 7's protocol, F3), persisted in a
+/// `relay_seen(wire_name, sender_id, epoch, seq, at, PRIMARY KEY (wire_name, sender_id))` table of the replica;
+/// rows whose `at` is older than 8 days are pruned with `sweepSilentPending`.
 extension ReplicaStore: RollbackGuard
+/// F29: the phone's `SeqAllocator` store — `replica_meta.envelope_seq_ceiling`, which the format-2 wipe never drops.
+public func envelopeSeqCeiling() throws -> UInt64
+public func setEnvelopeSeqCeiling(_ value: UInt64) throws
 ```
 
-Schema (replica format 2; `replica_meta.replica_format`): `slice_records(record_name TEXT PRIMARY KEY /* wire name */, plain_name TEXT, kind TEXT /* NULL until indexed */, epoch INTEGER NOT NULL, seq INTEGER NOT NULL, payload BLOB NOT NULL /* envelope */, modified_at REAL NOT NULL)`, indexes on `kind` and `plain_name`; `slice_assets.data` holds the sealed asset bytes. A store whose format is not 2 drops `slice_records`, `slice_assets` and the data/relay tokens on open (hard cut; `pending_actions`, `phone_recordings` and their marks are kept and handled by Task 9). Every read that used `record_name` as a plain name (`payload(forRecordName:)`, `heartbeatAge`, `sliceAsset(forRecordName:)`) now queries `plain_name`; `payloads(of:)` and `fetchAll` query `kind`, open each payload and return `frame.payload` (an unopenable row is skipped and counted like an undecodable one today). `sliceAsset(forRecordName:)` decrypts with the descriptor from the record's frame.
+Schema (replica format 2; `replica_meta.replica_format`): `slice_records(record_name TEXT PRIMARY KEY /* wire name */, plain_name TEXT, kind TEXT /* NULL until indexed */, epoch INTEGER NOT NULL, seq INTEGER NOT NULL, payload BLOB NOT NULL /* envelope */, modified_at REAL NOT NULL)`, indexes on `kind` and `plain_name`; `slice_assets.data` holds the sealed asset bytes. A store whose format is not 2 drops `slice_records`, `slice_assets` and the data/relay tokens on open (hard cut; `pending_actions`, `phone_recordings` and their marks are kept and handled by Task 9; `replica_meta.envelope_seq_ceiling` is never dropped, F29). Every read that used `record_name` as a plain name (`payload(forRecordName:)`, `heartbeatAge`, `sliceAsset(forRecordName:)`) now queries `plain_name`; `payloads(of:)` and `fetchAll` query `kind`, open each payload and return `frame.payload` (an unopenable row is skipped and counted like an undecodable one today — except a `.locked` failure, which is skipped and **not** counted, F15/F35). `sliceAsset(forRecordName:)` decrypts with the descriptor from the record's frame.
 
 - [ ] **Step 1: Failing tests** (`ReplicaEnvelopeTests`, with `TestE2E` and `InMemoryPhoneKeyStore`):
   - `testApplyWhileLockedStoresCiphertextAndIndexesAfterUnlock` (Review Focus 1): keys locked → `apply` returns true, the token advances, `payloads(of: .ownerAsk)` is empty; unlock → `indexPending()` returns the record; `payloads(of: .ownerAsk)` returns the plaintext; the stored `payload` column is the envelope (the plaintext title is not in the database file: read it with `Data(contentsOf:)` and search).
@@ -1087,14 +1209,19 @@ Schema (replica format 2; `replica_meta.replica_format`): `slice_records(record_
   - `testANewerFormatIsKeptUnindexedAndCounted`.
   - `testRowsOfThePreviousEpochStayReadableUntilRepublished`.
   - `testAnAssetIsStoredSealedAndDecryptedOnRead` and `testAnAssetOverTheSealedCapIsRefusedUnread`.
+  - `testApplyBeforeFirstUnlockThrowsAndKeepsTheToken` (F15) — `isBeforeFirstUnlock` (the hub signing key unreadable): `apply` throws, nothing stored, the token unchanged; after unlock the same batch applies.
+  - `testALockedReadIsSkippedButNotCountedCorrupt` (F15/F35).
+  - `testSignalRecordsAreSkippedSilently` (F12) — a `WireKind.signal` record in the batch is not stored and not counted.
+  - `testAnotherPhonesKeyboxIsDroppedAtApply` (F13) — `keybox-<other id>` is not stored and not counted; `keybox-<own id>` is.
+  - `testTheEnvelopeSeqCeilingSurvivesTheFormatWipe` (F29).
   - `testAFormatOneStoreIsWipedOnOpenButKeepsTheRecordingLedger`.
-  - `ReplicaHydrator`: `testOnRecordsAppliedReportsIndexedRecordsAndLockedOnesAfterUnlock`.
+  - `ReplicaHydratorTests` (new class, F10): `testOnRecordsAppliedReportsIndexedRecordsAndLockedOnesAfterUnlock` — the reported `AppliedSliceRecord`s carry the frame's `notifyLevel` (F11).
 
-- [ ] **Step 2: Run to fail.** `make kit-test FILTER='ReplicaEnvelopeTests|ReplicaTests|ReplicaResetTests|ReplicaSliceAssetTests' > /tmp/e2e8a.log 2>&1; echo "exit=$?"`.
+- [ ] **Step 2: Run to fail.** `make kit-test FILTER='ReplicaEnvelopeTests|ReplicaHydratorTests|ReplicaTests|ReplicaResetTests|ReplicaSliceAssetTests' > /tmp/e2e8a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement.** `apply`: for each changed data record, `opener.verify` (throwing records are skipped and counted, never stored), then the rollback check against the stored `(epoch, seq)` of that wire name (older → skip and count; same → no-op), upsert with `plain_name`/`kind` from `fixedName` or NULL; asset files are read before the write transaction (unchanged). `ReplicaHydrator.hydrateOnce()` calls `indexPending()` after `apply` and reports its records; `AppEnvironment` (Task 17) also calls it on unlock.
+- [ ] **Step 3: Implement.** `apply`: skip `WireKind.signal` records silently (F12) and keyboxes whose name is not `keybox-<own device id>` (F13); for each other changed data record, `opener.verify` — a `KeyStoreError.locked` **aborts the whole `apply`** (it throws, nothing of the batch is stored, the token is kept, F15); only signature, wrong-hub and format failures skip the record and count it (never stored) — then the rollback check against the stored `(epoch, seq)` of that wire name (older → skip and count; same → no-op), upsert with `plain_name`/`kind` from `fixedName` or NULL; asset files are read before the write transaction (unchanged). `ReplicaHydrator.hydrateOnce()` calls `indexPending()` after `apply` and reports its records; `AppEnvironment` (Task 17) also calls it on unlock.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make kit-test FILTER=ReplicaHydrator > /tmp/e2e8b.log 2>&1; echo "exit=$?"`. `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; then every suite whose construction changed (F7, F10): `make kit-test FILTER='ActionOutboxTests|ActionStatusTests|RecordingUploaderTests|RelayFeedTests|RelayFeedRecordingUploadTests|SliceKindTests' > /tmp/e2e8b.log 2>&1; echo "exit=$?"`. Lint step (Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): the phone replica keeps ciphertext, verifies at apply, decrypts on read` (message lists the rewritten replica test builders).
 
@@ -1108,13 +1235,18 @@ Self-review: the checklist above.
 
 **Files:**
 - Modify `WatchtowerKit/Sources/WatchtowerSync/Relay/ActionOutbox.swift`, `Replica/ReplicaStore+PendingActions.swift` (`wire_name`, sealed `payload`), `Relay/RelayFeed.swift`, `Relay/RecordingUploader.swift`, `Replica/ReplicaStore+PhoneRecordings.swift` (`envelope`, `sealed_path` columns).
-- Test: modify `ActionOutboxTests`, `RelayFeedTests`, `RelayFeedRecordingUploadTests`, `RecordingUploaderTests` (seal through `TestE2E`); add the tests below.
+- Test: modify `ActionOutboxTests`, `ActionStatusTests` (F7: it builds `ActionOutbox(transport: InMemoryCloudTransport(), …, now: { self.stamp })`; it now wraps the in-memory transport in `TestE2E`'s phone `SecureTransport`), `RelayFeedTests`, `RelayFeedRecordingUploadTests`, `RecordingUploaderTests` (seal through `TestE2E`); add the tests below.
 
 **Interfaces (produces):**
 
 ```swift
-// ActionOutbox / RecordingUploader take the secure transport (not the raw one):
-public init(transport: SecureTransport, store: ReplicaStore, deviceID: String?)
+// ActionOutbox / RecordingUploader take the secure transport (not the raw one); every other existing parameter
+// and default is kept (F37: the `now` clock that ActionStatusTests passes):
+public init(transport: SecureTransport, store: ReplicaStore, deviceID: String? = nil,
+            now: @escaping @Sendable () -> Date = { Date() })                                   // ActionOutbox
+public init(transport: SecureTransport, store: ReplicaStore, directory: URL? = nil, deviceID: String? = nil,
+            maxAssetBytes: Int64 = RecordingUploader.maximumAssetBytes,
+            now: @escaping @Sendable () -> Date = { Date() })                                   // RecordingUploader
 // pending_actions: + wire_name TEXT; payload = the sealed envelope (the overlay opens it on read through the
 // store's opener, which can open the phone's own p2h envelopes)
 // phone_recordings: + envelope BLOB (the sealed upload record, kept for every re-send), + sealed_path TEXT (.enc)
@@ -1132,11 +1264,11 @@ public func sealPending() async throws -> Int   // RecordingUploader: seals `wai
   - `testTheNinetyMBCapIsCheckedOnThePlainSizeBeforeSealing`.
   - `testReceivedDeletesTheSealedFile`.
 
-- [ ] **Step 2: Run to fail.** `make kit-test FILTER='ActionOutboxTests|RelayFeed|RecordingUploaderTests' > /tmp/e2e9a.log 2>&1; echo "exit=$?"`.
+- [ ] **Step 2: Run to fail.** `make kit-test FILTER='ActionOutboxTests|ActionStatusTests|RelayFeed|RecordingUploaderTests' > /tmp/e2e9a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement.** `ActionOutbox.enqueue`: `let wire = try await transport.seal(record)`; `try await transport.saveSealed([wire])`; then insert the overlay row with `wire_name` and the sealed payload (order unchanged: save first, no phantom chip). `RecordingUploader.sealPending()`: for each `waiting` row without `envelope`, `ChunkedAssetCipher.encryptFile` into `<id>.enc` (then `FileProtectionType` is the phone's job, Task 17), build the upload record with `asset: descriptor`, `transport.seal`, store `envelope` + `sealed_path` in one row update, then delete the `.m4a`; `send` uses `saveSealed` with the stored envelope and `assetFileURL = sealed_path`; `uploadPending()` calls `sealPending()` first. `RelayFeed` reads through `SecureTransport.changes(.relay)` and lets `keysUnavailable` propagate (token kept).
+- [ ] **Step 3: Implement.** `ActionOutbox.enqueue`: `let wire = try await transport.seal(record)`; `try await transport.saveSealed([wire])`; then insert the overlay row with `wire_name` and the sealed payload (order unchanged: save first, no phantom chip). `RecordingUploader.sealPending()`: for each `waiting` row without `envelope`, `ChunkedAssetCipher.encryptFile` into `<id>.enc` (then `FileProtectionType` is the phone's job, Task 17), build the upload record with `asset: descriptor`, `transport.seal`, store `envelope` + `sealed_path` in one row update, then delete the `.m4a`; `send` uses `saveSealed` with the stored envelope and `assetFileURL = sealed_path`; `uploadPending()` calls `sealPending()` first. `RelayFeed` reads through `SecureTransport.changes(.relay)` and lets `keysUnavailable` propagate (token kept); its compaction keeps working through `SecureTransport`'s `CompactingTransport` conformance (F1).
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; lint step (Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): outbox seals at enqueue, uploader seals at finalize and re-sends the stored envelope`.
 
@@ -1162,10 +1294,16 @@ Self-review: the checklist above.
 //              created_at REAL NOT NULL, first_seq INTEGER NOT NULL, retired_at REAL)
 //   hub_meta keys: "k_meta_sealed", "envelope_seq_ceiling", "e2e_v1" (Task 15)
 //   devices + columns: signing_key BLOB, agreement_key BLOB, link_nonce TEXT, last_seq INTEGER
+//   link_refusals + column: agreement_key BLOB (F5: the refused hello's key, so the refusal keybox can be sealed)
+//   slice_state + column: wire_name TEXT (F19, spec §2.7: the opaque name next to the plain one; written by Task 11)
+//   Every table below is created HERE (F27), though Tasks 13/14 are the writers:
 //   pending_devices(device_id TEXT PRIMARY KEY, name, model, scope, user_record_name, signing_key BLOB,
-//                   agreement_key BLOB, link_nonce TEXT, sas TEXT, received_at REAL)          (Task 13)
-//   revoked_devices(device_id TEXT PRIMARY KEY, agreement_key BLOB NOT NULL, removed_at REAL NOT NULL)  (Task 14)
-//   relay_seen(wire_name TEXT PRIMARY KEY, epoch INTEGER NOT NULL, seq INTEGER NOT NULL, at REAL NOT NULL)
+//                   agreement_key BLOB, link_nonce TEXT, sas TEXT, received_at REAL)          (written by Task 13)
+//   revoked_devices(device_id TEXT PRIMARY KEY, agreement_key BLOB NOT NULL, removed_at REAL NOT NULL)  (written by Task 14)
+//   relay_seen(wire_name TEXT NOT NULL, sender_id TEXT NOT NULL, epoch INTEGER NOT NULL, seq INTEGER NOT NULL,
+//              at REAL NOT NULL, PRIMARY KEY (wire_name, sender_id))                     (F3)
+// HubSyncState (F19): func plainName(forWire:) -> String? over slice_state.wire_name — HubSyncState conforms to
+// the Kit's WireNameIndex and is passed to the hub's SecureTransport (Task 11).
 final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
     init(hubID: String, sidecar: HubSyncState, store: any HubKeyStore, now: @escaping @Sendable () -> Date = Date.init) throws
     /// true when the Keychain identity was created now while the sidecar already had linked phones or epochs:
@@ -1191,14 +1329,17 @@ final class HubKeyring: SecureKeyProvider, RollbackGuard, @unchecked Sendable {
   - `testThePreviousEpochIsAcceptedForSevenDaysThenRefused`.
   - `testRotationIsDueAtNinetyDaysOrTheSeqCap`.
   - `testARecreatedIdentityWithLinkedPhonesIsReported`.
-  - `testRollbackGuardKeepsTheHighestSeqPerWireNameAndPrunesWithTheLedger` (`relay_seen` rows go when `pruneRelayProcessed` prunes their record).
+  - `testRollbackGuardKeepsTheHighestSeqPerWireNameAndSenderAndPrunesByAge` (F3) — the phone's p2h seq and the hub's own h2p seq on one wire name do not interfere; `relay_seen` rows whose `at` is older than the ledger's cutoff go when `pruneRelayProcessed` runs (same cutoff, no join between wire and plain names).
+  - `testTheKeyboxRecipientCoversLinkedPendingRevokedAndRefusedDevices` (F5).
+  - `testEveryKeyTableExistsAfterCreateSchema` (F27) — including `pending_devices`, `revoked_devices`, `link_refusals.agreement_key`, `slice_state.wire_name`.
+  - `testPlainNameForWireReadsSliceState` (F19).
   - `testResetGroupKeysForgetsEveryEpochAndKMeta`.
 
 - [ ] **Step 2: Run to fail.** `make test-swift FILTER=HubKeyringTests > /tmp/e2e10a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement.** Columns are added with the existing `ALTER TABLE … ADD COLUMN` pattern inside `createSchema`'s immediate transaction. `SeqAllocator` over `hub_meta.envelope_seq_ceiling`. Relay keys are derived from `agreement` + the device row's `agreement_key`/`link_nonce` and cached per `(device, epoch, direction)`; a removed device's cache entries are dropped by Task 14. `keyboxRecipient(deviceID:)` returns a linked, pending (Task 13) or revoked (Task 14) device's agreement key.
+- [ ] **Step 3: Implement.** Columns are added with the existing `ALTER TABLE … ADD COLUMN` pattern inside `createSchema`'s immediate transaction. `SeqAllocator` over `hub_meta.envelope_seq_ceiling`. Relay keys are derived from `agreement` + the device row's `agreement_key`/`link_nonce` and cached per `(device, epoch, direction)`; a removed device's cache entries are dropped by Task 14. `keyboxRecipient(deviceID:)` returns a linked, pending (Task 13), revoked (Task 14) or refused (`link_refusals.agreement_key`, F5) device's agreement key. `relay_seen` is pruned by `at` inside `pruneRelayProcessed` with the ledger's cutoff (F3).
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; plus `make test-swift FILTER='MobileHubServiceTests|MobileLinkCenterTests' > /tmp/e2e10b.log 2>&1; echo "exit=$?"` (schema change). `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; plus `make test-swift FILTER='MobileHubServiceTests|MobileLinkCenterTests' > /tmp/e2e10b.log 2>&1; echo "exit=$?"` (schema change). Lint step (Desktop).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): hub identity in the Keychain, sealed epoch keys in hubstate.db`.
 
@@ -1211,8 +1352,8 @@ Self-review: the checklist above.
 **Depends on:** Tasks 7, 10. **Lane:** Desktop.
 
 **Files:**
-- Modify `WatchtowerDesktop/Sources/Services/MobileHub/SlicePublisher.swift` (sealed-size guard, asset descriptor on the record), `SliceAssetStore.swift` (stage ciphertext + a `.desc` descriptor file; `stagedDigest` reads the descriptor's plaintext digest), `HubIdentity.swift` (heartbeat through the secure transport), `Slices/AskAlertSlice.swift` (title clipped as today; the record is sealed under `K_alert`), `Slices/DeviceGrantSlice.swift` (publishes `Keybox` plaintext; Task 13/14 fill keys and revocations), `MobileHubService.swift` (the hub's record I/O goes through `SecureTransport`; lifecycle calls stay on `HubTransport`; the rejected-record handler maps wire → plain via `plainName(forWire:)`), `WatchtowerDesktop/Sources/App/AppState+MobileHub.swift` (wiring).
-- Create `WatchtowerDesktop/Sources/Services/MobileHub/AskAlertSignal.swift` (writes `sig-<wire name of the alert>` records of kind `WireKind.signal` when an alert is published, deletes them with the alert).
+- Modify `WatchtowerDesktop/Sources/Services/MobileHub/SlicePublisher.swift` (sealed-size guard, asset descriptor on the record), `SliceAssetStore.swift` (stage ciphertext + a `.desc` descriptor file; `stagedDigest` reads the descriptor's plaintext digest), `HubIdentity.swift` (heartbeat through the secure transport), `Slices/AskAlertSlice.swift` (title clipped as today; the record is sealed under `K_alert`), `Slices/DeviceGrantSlice.swift` (publishes `Keybox` plaintext; Task 13/14 fill keys and revocations), `MobileHubService.swift` (the hub's record I/O goes through `SecureTransport(…, names: sidecar)`; lifecycle calls stay on `HubTransport`; the rejected-record handler (`MobileHubService.swift:338`) maps wire → plain via `plainName(forWire:)`, backed by `slice_state.wire_name`, F19), `SliceDiff`/`HubSyncState` writes (the publisher stores each record's wire name in `slice_state.wire_name` with its hash, F19), `WatchtowerDesktop/Sources/App/AppState+MobileHub.swift` (wiring), `WatchtowerDesktop/Package.swift` (the Desktop test target links the Kit's `WatchtowerE2ETesting`, F25; `MobileHubTestSupport` uses `TestE2E` instead of a copy).
+- Create `WatchtowerDesktop/Sources/Services/MobileHub/AskAlertSignal.swift` (writes `sig-<wire name of the alert>` records of kind `WireKind.signal` when an alert is published, deletes them with the alert; they pass through `SecureTransport` unsealed, F12).
 - Test: modify `SlicePublisherTests`, `MeetingTranscriptSliceTests`, `AskAlertSliceTests`, `HubHeartbeatTests`, `MobileHubServiceTests` (records read back through `TestE2E` on the Desktop side: `WatchtowerDesktop/Tests/MobileHub/MobileHubTestSupport.swift` gains `openedRecords(in:)`).
 
 **Interfaces (produces):**
@@ -1224,6 +1365,7 @@ func stagedDescriptor(recordName: String, fileName: String) -> AssetDescriptor? 
 func stagedDigest(recordName: String, fileName: String) -> Data?                  // = stagedDescriptor?.plaintextDigest
 // SlicePublisher
 static func isOversized(_ record: SliceRecord, signed: Bool) -> Bool   // EnvelopeSealer.sealedLength(frameLength:) == nil
+static let maxPayloadBytes = Envelope.maxBytes                          // F33: no duplicated 900_000
 // AskAlertSignal
 static func signalName(forAlertWireName: String) -> String              // "sig-" + wire name
 ```
@@ -1233,6 +1375,7 @@ static func signalName(forAlertWireName: String) -> String              // "sig-
   - `SlicePublisherTests.testARecordThatFitsOnlyUnpaddedStillPublishesAndOneThatDoesNotIsSkipped` (Review Focus 3): payload sized to `frameCap(signed: true) − frameOverhead` publishes (envelope exactly ≤ 900 000); one byte more is skipped, unhashed, warned once.
   - `SlicePublisherTests.testAnUnchangedTickSendsNothingDespiteRandomNonces` (the hash is of the plaintext; `SliceDiff` unchanged).
   - `SlicePublisherTests.testARejectedRecordClearsThePlainNamesHash` (the handler receives the wire name).
+  - `SlicePublisherTests.testARejectionAfterARelaunchStillMapsToThePlainName` (F19) — a new `SecureTransport` (empty in-process map) over the same sidecar maps the wire name through `slice_state.wire_name`.
   - `MeetingTranscriptSliceTests.testSegmentsAreStagedSealedAndTheDigestIndexIsOfThePlaintext` — the staged file is not the JSON; `stagedDigest == SHA256(json)`; a second tick reuses the staged file without restaging; a missing `.desc` restages.
   - `HubHeartbeatTests.testTheHeartbeatIsASignedEnvelopeNamedHeartbeat`.
   - `AskAlertSliceTests.testAnAlertIsSealedUnderTheAlertKeyAndHasASignal` — the alert opens with `K_alert` and not with `K_data`; a `sig-…` record of type signal exists with an empty payload; deleting the alert deletes the signal.
@@ -1242,7 +1385,7 @@ static func signalName(forAlertWireName: String) -> String              // "sig-
 
 - [ ] **Step 3: Implement.** In `SlicePublisher.stage`, an asset record is saved with `assetFileURL` = the sealed file and `asset` = its descriptor; `splitOversized` uses `isOversized(_:signed:)` on the frame length (kind, id, notify level, descriptor, payload). `SliceAssetStore.stage` encrypts with `ChunkedAssetCipher.encrypt(data)` (≤ 20 MB in memory, as today), writes the sealed file and `<fileName>.desc` (`AssetDescriptor.encoded()`) atomically; the Mac keeps `K_asset` next to the file (it holds the plaintext anyway; FileVault is the at-rest story, spec §2.6).
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; then every slice suite (they build records the publisher seals): `make test-swift FILTER='SliceTests|Slice' > /tmp/e2e11b.log 2>&1; echo "exit=$?"`. `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; then every slice suite (they build records the publisher seals): `make test-swift FILTER='SliceTests|Slice' > /tmp/e2e11b.log 2>&1; echo "exit=$?"`. Lint step (Desktop).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): the hub publishes signed envelopes, stages sealed assets, signals ask alerts`.
 
@@ -1260,7 +1403,8 @@ Self-review: the checklist above.
 
 **Behaviour:**
 - The processor reads `SecureTransport.changes(.relay)`: only records that opened with a linked device's key reach it (D4, D9). Gate order in `processAction`/`processUpload`: `begun` → `wrong_hub` → **sender check**: `record.sealed?.senderID` must equal the payload's `device_id` and name a linked device (else `failed`/`device_not_linked`, echoed under the sender's key) → **creator check** kept as defense in depth (`LinkedDevice.accepts(creator:)`) → age (`created_at` is now authenticated) → apply. `devices.last_seq = max(last_seq, seq)`.
-- Echoes: `transport.save` of the echo record seals it `.relayToPhone` for the payload's device.
+- Echoes (F16): the echo `CloudRecord` carries `sealed` copied from the opened record; `transport.save` seals it `.relayToPhone` to `sealed.senderID` (the authenticated sender; a `device_not_linked` echo for a payload naming another device therefore goes to the sender, not to the named device).
+- Relay hygiene (F2, `RelayProcessor.swift:500-516`): the full scan uses `SecureTransport.relayHygieneScan()`; opened records (the hub's own h2p echoes included) age out as today; `unopenable` records (removed phones, strangers, other hubs' leftovers) are deleted by wire name with `deleteWire` once their plaintext `modifiedAt` is older than `actionMaxAge`. `sweepBuffer` keeps working through `SecureTransport`'s `SweepingTransport` conformance (F1).
 - Upload ingest: decrypt the stashed sealed asset with `record.asset` into a temp file in the stash's directory (`ChunkedAssetCipher.decryptFile`), ingest that file, delete it after ingest whatever the outcome, and delete the sealed stash on `received` as today. A decrypt failure is `failed`/`not_found` with the existing "did not reach your Mac" message (nothing written).
 
 - [ ] **Step 1: Failing tests.**
@@ -1269,6 +1413,7 @@ Self-review: the checklist above.
   - `testAPayloadNamingAnotherDeviceThanItsSenderFailsDeviceNotLinked`.
   - `testAnActionOfThePreviousEpochIsAppliedDuringTheGrace`.
   - `testTheEchoIsSealedForThePhoneAndOpensOnlyWithItsKey`.
+  - `testHygieneAgesOutTheHubsOwnEchoesAndUnopenableRecordsByWireName` (F2) — an echo and a stranger's record, both older than `actionMaxAge`, are gone after the hygiene pass; a fresh unopenable record stays.
   - `testAnExpiredCreatedAtStillExpiresNowThatItIsAuthenticated`.
   - `testLastSeqIsAHighWaterMarkNotAGate` — seq 9 after seq 12 from the same phone (another record) is applied (D4).
   - `RelayProcessorRecordingUploadTests.testARetriedUploadWithTheSameEnvelopeIsIngestedOnce` (Review Focus 2): the same sealed record twice → one ingest, re-echo `received`.
@@ -1279,7 +1424,7 @@ Self-review: the checklist above.
 
 - [ ] **Step 3: Implement** the behaviour above; the handlers (`AskAnswerHandler`, `BoardHandlers`, `SessionStartStopHandlers`) are unchanged (they receive the decoded `ActionRequestPayload`).
 
-- [ ] **Step 4: Run to pass.** Step 2 command, then the handler suites (they drive actions through the relay): `make test-swift FILTER='AskAnswerHandlerTests|BoardHandlersTests|SessionStartHandlerTests' > /tmp/e2e12b.log 2>&1; echo "exit=$?"`. `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command, then the handler suites (they drive actions through the relay): `make test-swift FILTER='AskAnswerHandlerTests|BoardHandlersTests|SessionStartHandlerTests' > /tmp/e2e12b.log 2>&1; echo "exit=$?"`. Lint step (Desktop).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): relay actions authenticated by pairwise keys; sealed echoes and uploads`.
 
@@ -1302,20 +1447,22 @@ Self-review: the checklist above.
 // MobileLinkCenter (@MainActor, @Observable)
 struct PendingLink: Identifiable, Equatable { let id: String /* device id */; let name: String; let sas: String; let receivedAt: Date }
 private(set) var pendingLinks: [PendingLink]
-func handleHello(_ record: CloudRecord) async throws        // the relay hands it every opened hello
+func handleHello(_ record: CloudRecord) async throws        // the relay hands it every hello, still SEALED (F4)
 func confirmLink(deviceID: String) async throws             // owner clicked Link
 func refuseLink(deviceID: String) async throws              // owner clicked Refuse; also on sheet close and code expiry
 // uses LinkRefusal.notConfirmed (Kit, Task 4)
 ```
 
-**Behaviour:** `handleHello` opens the hello with `hub_kx` (SecureTransport already did), verifies the hello signature with the enclosed `signing_key`, requires `device_id == KeyDerivation.deviceID(signing_key)`, runs the creator check (unchanged rules), then the nonce decision **without consuming the code** (`LinkDecision.of`): a refused nonce publishes a refusal keybox sealed to the hello's agreement key, as today's `link_refused`; a valid one stores `pending_devices` (same device + nonce again → no-op), computes the SAS, nudges the publisher (the keybox reads `awaitingConfirmation: true`, no keys) and shows the pending row. `confirmLink` runs `linkDevice` (re-checking the code; it may have expired meanwhile → refusal `expired_code`), stores the keys, deletes the pending row, publishes the keybox with keys (epoch, `K_data`, `K_alert`, `K_meta`), then `closeAfterLink` as today. A second pending device on the same code stays pending until the owner decides (it cannot link once the first consumed the code: `used_code`). `refuseLink` publishes `not_confirmed`. `closeLink(reason:)` refuses every pending request first; the participant sweep runs after that, so a pending phone's participant is never swept before the owner decided.
+**Behaviour:** `handleHello` opens the sealed hello with `hub_kx` (F4: `SecureTransport` passes `.hello` through sealed): it tries `SealedBox.open(… info: SealedBox.helloInfo(hubID, nonce) …)` with each nonce of `sidecar.linkCodes()` (the kept codes, used and expired ones included, so those refusals stay answerable). A hello that opens under none is logged (wire name and count only) and dropped: `unknown_code` becomes unanswerable, and the phone ends on its wait timeout ("Your Mac didn't answer"; documented in Task 19). It then verifies the hello signature with the enclosed `signing_key`, requires `device_id == KeyDerivation.deviceID(signing_key)`, runs the creator check (unchanged rules), then the nonce decision **without consuming the code** (`LinkDecision.of`): a refused nonce stores the hello's agreement key in `link_refusals.agreement_key` (F5) and publishes a refusal keybox sealed to it, as today's `link_refused`; a valid one stores `pending_devices` (same device + nonce again → no-op), computes the SAS, nudges the publisher (the keybox reads `awaitingConfirmation: true`, no keys) and shows the pending row. `confirmLink` runs `linkDevice` (re-checking the code; it may have expired meanwhile → refusal `expired_code`), stores the keys, deletes the pending row, publishes the keybox with keys (epoch, `K_data`, `K_alert`, `K_meta`), then the existing post-link close runs as today (the stored `closeAfterLink` task, `MobileLinkCenter.swift:90`, which calls `closeLink`). F17: once one device consumed the code, no other pending request can link, so `closeLink(.used)` refuses every remaining pending request with **`used_code`** (not `not_confirmed`); other close reasons (sheet closed, expiry) refuse them with `not_confirmed`/`expired_code`. `refuseLink` publishes `not_confirmed`. `closeLink(reason:)` refuses every pending request first; the participant sweep runs after that, so a pending phone's participant is never swept before the owner decided. Refusals are sealed through the refused device's stored agreement key (F5).
 
 **Sheet:** while `pendingLinks` is non-empty, the QR is replaced by one row per request: "Link "<name>"?" over "Code 7342 — check that your iPhone shows the same code", buttons **Link** and **Refuse**. A refused or expired request disappears; a confirmed one shows "Linked <name>" as today.
 
 - [ ] **Step 1: Failing tests.**
   - `MobileLinkCenterTests.testAValidHelloWaitsForTheOwnerAndPublishesNoKeys` — the keybox (opened with the test phone's key) has `awaitingConfirmation == true`, `keys == nil`; `devices` is empty; the code is unused.
   - `testConfirmLinksAndPublishesASignedKeyboxWithTheCurrentEpoch`.
-  - `testTwoHellosForOneCodeShowTwoCodesAndOnlyTheConfirmedOneGetsKeys` (Review Focus 5) — two phones, two different SAS strings; confirm A → A linked with keys; B's confirm → refusal `used_code`, never keys.
+  - `testTwoHellosForOneCodeShowTwoCodesAndOnlyTheConfirmedOneGetsKeys` (Review Focus 5, F17) — two phones, two different SAS strings; confirm A → A linked with keys; the post-link close refuses B: B's keybox (opened with B's key) reads `used_code` with `keys == nil`, B's pending row is gone. There is no second confirm.
+  - `testAHelloIsOpenedWithTheMatchingKeptNonce` (F4) — two kept codes; a hello for the older one opens and is decided against that code; a hello sealed under an unknown nonce is dropped and logged, nothing published.
+  - `testARefusedHelloGetsARefusalKeyboxSealedToItsKey` (F5) — an expired code: `link_refusals.agreement_key` stored, the keybox opens with the phone's key and reads `expired_code`.
   - `testClosingTheSheetRefusesPendingRequestsBeforeTheSweep`.
   - `testAHelloWhoseDeviceIDIsNotItsKeyHashIsIgnored`.
   - `testAHelloSignedByAnotherKeyIsIgnored`.
@@ -1329,7 +1476,7 @@ func refuseLink(deviceID: String) async throws              // owner clicked Ref
 
 - [ ] **Step 3: Implement** as described.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make test-swift FILTER='MobileSettingsViewModelTests|RelayProcessorTests' > /tmp/e2e13b.log 2>&1; echo "exit=$?"`. `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make test-swift FILTER='MobileSettingsViewModelTests|RelayProcessorTests' > /tmp/e2e13b.log 2>&1; echo "exit=$?"`. Lint step (Desktop).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): QR v3 with hub keys, sealed hello, owner confirmation with a four-digit code`.
 
@@ -1343,14 +1490,14 @@ Self-review: the checklist above (Swift conventions: the pending state lives in 
 
 **Files:**
 - Modify `WatchtowerDesktop/Sources/Services/MobileHub/HubSyncState+Keys.swift` (`removeDeviceAndRotate`), `HubKeyring.swift` (`rotate(reason:)`, cache drop), `MobileLinkCenter.swift` (`remove(deviceID:)` and the phone's own `unlinked: true` use it; `hubZonesDeleted()` also resets group keys), `MobileHubService.swift` (cycle start: `rotationDue()` → rotate; a resume check), `Slices/DeviceGrantSlice.swift` (revoked keyboxes for 7 days).
-- Modify `WatchtowerDesktop/Sources/Views/Settings/MobileSettingsView.swift` (the same-Apple-ID Remove sentence; see below).
-- Test: modify `MobileLinkCenterTests.swift`, `MobileHubServiceTests.swift`, `HubKeyringTests.swift`, `MobileSettingsViewTests.swift`.
+- Modify `WatchtowerDesktop/Sources/ViewModels/MobileSettingsViewModel.swift` (F18: the same-Apple-ID Remove sentence lives there, l.29; see below).
+- Test: modify `MobileLinkCenterTests.swift`, `MobileHubServiceTests.swift`, `HubKeyringTests.swift`, `MobileSettingsViewModelTests.swift`.
 
 **Interfaces (produces):**
 
 ```swift
 // HubSyncState
-/// One immediate transaction: delete the device row (and its relay_seen rows), insert revoked_devices,
+/// One immediate transaction: delete the device row (and its relay_seen rows, `WHERE sender_id = ?`, F3), insert revoked_devices,
 /// retire the current epoch, insert the new sealed epoch, wipe slice hashes (keeping the relay token).
 func removeDeviceAndRotate(_ deviceID: String, newEpoch: (epoch: UInt32, sealedKeys: Data), at: Date) throws -> LinkedDevice?
 /// The same without a device (cap, suspected leak).
@@ -1363,20 +1510,20 @@ enum RotationReason: Equatable { case removed(String), cap, manual }
 **Behaviour:** rotation is one transaction (Review Focus 4); the publisher's next cycle sees no hashes and republishes the whole window under the new epoch, keyboxes included (remaining phones get the new keys and the previous epoch's keys). A crash before the commit leaves the old epoch and the device linked (Remove reports failure); after it, everything follows from the committed state. `revoked_devices` rows publish `Keybox(grant: linked false, revoked true, keys nil)` for 7 days, then are pruned. Removing a same-Apple-ID phone now says "Removed <name>. It can no longer read anything new from this Mac." (D9; the old "can still read synced data until you sign it out of iCloud" sentence goes — what the phone already holds stays, which the doc states).
 
 - [ ] **Step 1: Failing tests.**
-  - `HubKeyringTests.testRotationCommitsTheEpochAndTheHashWipeTogether` (Review Focus 4) — the test installs a SQLite trigger on the in-memory sidecar, `CREATE TRIGGER fail_wipe BEFORE DELETE ON slice_state BEGIN SELECT RAISE(ABORT, 'test'); END`, so the transaction fails after the epoch insert: `rotate` throws, the current epoch is still the old one, the hashes are intact, and the device is still linked. No production test hook.
+  - `HubKeyringTests.testRotationCommitsTheEpochAndTheHashWipeTogether` (Review Focus 4) — the test first seeds at least one `slice_state` row (a `BEFORE DELETE` trigger fires per row; on an empty table it never fires), then installs a SQLite trigger on the in-memory sidecar, `CREATE TRIGGER fail_wipe BEFORE DELETE ON slice_state BEGIN SELECT RAISE(ABORT, 'test'); END`, so the transaction fails after the epoch insert: `rotate` throws, the current epoch is still the old one, the hashes are intact, and the device is still linked. No production test hook.
   - `HubKeyringTests.testAKilledRotationResumesOnTheSameEpoch` — rotate, drop the keyring, build a new one over the same sidecar: current epoch is the new one, never a third.
   - `MobileLinkCenterTests.testRemoveRotatesAndTheRemovedPhoneCannotOpenNewRecords` — the removed phone's keys open epoch-1 records, not epoch-2 ones; the remaining phone opens epoch 2 after reading its keybox.
   - `testTheRemovedPhonesKeyboxReadsRevokedForSevenDays`.
   - `testAPhonesOwnUnlinkRotatesLikeRemove`.
   - `testRelayRecordsOfTheRemovedPhoneAreDroppedNotEchoed`.
   - `MobileHubServiceTests.testRotationRunsWhenDueAtCycleStart`, `testTurningTheHubOffResetsGroupKeys`.
-  - `MobileSettingsViewTests.testRemovingASameAppleIDPhoneShowsTheNewSentence`.
+  - `MobileSettingsViewModelTests.testRemovingASameAppleIDPhoneShowsTheNewSentence` (F18).
 
-- [ ] **Step 2: Run to fail.** `make test-swift FILTER='HubKeyringTests|MobileLinkCenterTests|MobileHubServiceTests|MobileSettingsViewTests' > /tmp/e2e14a.log 2>&1; echo "exit=$?"`.
+- [ ] **Step 2: Run to fail.** `make test-swift FILTER='HubKeyringTests|MobileLinkCenterTests|MobileHubServiceTests|MobileSettingsViewModelTests' > /tmp/e2e14a.log 2>&1; echo "exit=$?"`.
 
 - [ ] **Step 3: Implement** as described.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; lint step (Desktop).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): epoch rotation on remove and unlink, revoked keyboxes`.
 
@@ -1392,7 +1539,7 @@ Self-review: the checklist above.
 - Modify `WatchtowerDesktop/Sources/Services/MobileHub/MobileHubService.swift` (start path), `HubIdentity.swift` or a new `HubSyncState+Keys.swift` helper for the marker.
 - Test: modify `MobileHubServiceTests.swift`.
 
-**Behaviour:** at `start()`, before `transport.start()` and before the per-hub adoption (the place that today re-runs a pending zone delete): if `hub_meta.e2e_v1` is absent, or `HubKeyring.identityWasRecreated` is true, set `hub_zones_delete_pending` and `e2e_v1 = pending`. The existing pending-delete code then deletes the hub's two zones (with their shares), forgets phones (`hubZonesDeleted()`, which also resets group keys), wipes sync state and clears the marker; only when that succeeded is `e2e_v1 = 1` written and `ensureGroupKeys()` run. A failure or timeout keeps both markers (hub `.unavailable`, the reprobe loop retries), exactly like today's Settings-off path. Records of the old type that a phone still holds in a zone are never read by the new build (Task 7 ignores them).
+**Behaviour (D13: the cut runs through the existing pending-delete path, not `removeLegacyZones`):** at `start()`, before `transport.start()` and before the per-hub adoption (the place that today re-runs a pending zone delete): if `hub_meta.e2e_v1` is absent, or `HubKeyring.identityWasRecreated` is true, set `hub_zones_delete_pending` and `e2e_v1 = pending`. The existing pending-delete code then deletes the hub's two zones (with their shares), forgets phones (`hubZonesDeleted()`, which also resets group keys), wipes sync state and clears the marker; only when that succeeded is `e2e_v1 = 1` written and `ensureGroupKeys()` run. A failure or timeout keeps both markers (hub `.unavailable`, the reprobe loop retries), exactly like today's Settings-off path. Records of the old type that a phone still holds in a zone are never read by the new build (Task 7 ignores them).
 
 - [ ] **Step 1: Failing tests.**
   - `testFirstStartOnTheE2EBuildDeletesTheZonesForgetsPhonesAndSetsTheMarkerOnce`.
@@ -1402,7 +1549,7 @@ Self-review: the checklist above.
 
 - [ ] **Step 2: Run to fail.** `make test-swift FILTER=MobileHubServiceTests > /tmp/e2e15a.log 2>&1; echo "exit=$?"`.
 
-- [ ] **Step 3: Implement**; **Step 4:** run to pass + `make lint-diff`.
+- [ ] **Step 3: Implement**; **Step 4:** run to pass + lint step (Desktop).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): hard cut — the hub recreates its zones once and every phone re-pairs`.
 
@@ -1412,11 +1559,19 @@ Self-review: the checklist above.
 
 ## Task 16: Phone — device keys, pairing v3 with the code, keybox handling
 
-**Depends on:** Tasks 4, 5, 8 (and 13 for the end-to-end shape). **Lane:** phone (heavy; never beside a Desktop task).
+**Depends on:** Tasks 4, 5, 8, **9** (F6: the phone does not compile after Kit Tasks 8–9 until this task's Step 0; 9 must be merged first) (and 13 for the end-to-end shape). **Lane:** phone (heavy; never beside a Desktop task).
 
 **Files:**
 - Modify `WatchtowerMobile/Sources/App/LinkStore.swift` (`DeviceIdentity.deviceID` from `PhoneKeyStore.identity().deviceID`; `DeviceIDKeychain` removed; `LinkRecord` gains nothing secret — keys live in the Keychain; a stored v2 `LinkRecord` without a `HubLinkKeys` entry is "not linked"), `Sources/Features/Onboarding/LinkingViewModel.swift` (hello, SAS, wait), `Sources/Features/Onboarding/LinkSteps.swift` and the waiting view (the code), `Sources/App/AppRoot.swift` (revoked keybox → the removal flow; the v2 link drop at launch with "Watchtower now encrypts your data. Scan the code on your Mac again.").
-- Test: modify `WatchtowerMobile/Tests/LinkingViewModelTests.swift`, `AppRootWiringTests.swift`; create `WatchtowerMobile/Tests/KeychainKeyStoreDeviceTests.swift` (real `SecItemKeychainBackend` on the simulator; `XCTSkip` on `.missingEntitlement`).
+- Modify (Step 0, F6) `WatchtowerMobile/Sources/App/AppEnvironment.swift` (minimal compile wiring only: build `SecureTransport(inner:keys: PhoneKeyProvider, rollback: replica)`, `ReplicaStore(path:opener: EnvelopeReplicaOpener)`, pass the secure transport to `ActionOutbox`/`RecordingUploader`/`RelayFeed`), `WatchtowerMobile/project.yml` (the test target links the Kit's `WatchtowerE2ETesting`, F25; then `make mobile-gen`), `WatchtowerMobile/Tests/Support/MobileTestSupport.swift`, `Tests/Support/RecorderFakes.swift` (build replicas and transports through `TestE2E`; test records are sealed through the test hub), and every phone test that constructs `ReplicaStore`/`ActionOutbox`/`RecordingUploader` directly — `AskFormTests`, `BoardWriteWiringTests`, `CalendarWiringTests`, `OrangeToneTests`, `RecordingsWiringTests`, `ReplicaWiringTests`, `SessionDetailWiringTests`, `SettingsWiringTests`, `StartSheetWiringTests` (construction only; behaviour assertions stay). `DemoSeed*` gets the smallest change that compiles (it may seed through a demo hub already; the full demo rework stays in Task 17).
+- Modify `WatchtowerMobile/WatchtowerMobile.entitlements` (`keychain-access-groups` with the private group `$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile` as the first and, for now, only entry; Task 18 appends the alerts group second, F20) and `WatchtowerMobile/Info.plist` (keys `WTKeychainPrivateGroup` = `$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile`, read at runtime to build `KeychainPhoneKeyStore(privateGroup:alertGroup:)`; never a hardcoded team prefix).
+- Test: modify `WatchtowerMobile/Tests/LinkingViewModelTests.swift`, `AppRootWiringTests.swift`; create `WatchtowerMobile/Tests/KeychainKeyStoreDeviceTests.swift` (real `SecItemKeychainBackend` on the simulator; `XCTSkip` on `.missingEntitlement` — under `CODE_SIGNING_ALLOWED=NO` it always skips, so the attribute assertions that must run live in Task 5's pure-builder test, F24).
+
+**Step 0 first (F6):** the minimal compile wiring above, then `make mobile-build > /tmp/e2e16w.log 2>&1; echo "exit=$?"` and `make mobile-test > /tmp/e2e16t.log 2>&1; echo "exit=$?"` (the whole phone suite once: it is the first green phone run since Task 8). Commit it on its own (`build(mobile-e2e): the phone compiles against the E2E Kit`). Locked-state handling, file protection and the demo are Task 17's.
+
+**Device id (F14, F30):** `DeviceIdentity.deviceID` reads `PhoneKeyStore.deviceID()` (the `deviceid` item, readable while locked), creating the identity only in the foreground link flow; background launches (hydration, uploader, `ActionOutbox.setDeviceID`) never need `identity()`. Ids compare as `UUID` values; every string form is `uuidString`.
+
+**"Watchtower moved" (F36):** the phone's moved check (`LinkingViewModel.evaluate`: heartbeat `hubID` ≠ the link's) can no longer fire from DataZone, because the replica rejects a heartbeat signed by another hub at apply (counted in `rejectedCount()`). A Mac that lost its identity re-cuts its zones (Task 15), so the phone instead sees its link fail (zone gone → the existing unlinked path, or a revoked/absent keybox). Keep the check (it is harmless and covers a same-key `hub_id` mismatch), and state the new behaviour in the code comment and in Task 19's notes.
 
 **Behaviour:** scanning a v3 code saves `HubLinkKeys(hubSigningKey, hubAgreementKey, linkNonce, metaKey: nil, epochs: [])`, writes the `hello-<device_id>` record (sealed by `SecureTransport`), and shows "Check that your Mac shows **7342**, then click Link on the Mac." The wait polls the keybox (`device_grant-<device_id>` in the replica, opened through the keybox path) every 2 s until the code's `exp + expiryGrace` (not 60 s: the owner needs time): `awaitingConfirmation` → "Your Mac sees this iPhone"; `linked` with keys → `saveHubLink` with `metaKey` and epochs, the link is saved, "Linked to <Mac>"; any refusal (including `not_confirmed`) → the refusal screen; timeout → "Your Mac didn't answer". Later keyboxes with a new epoch update the stored epochs (after unlock, through `indexPending`'s callback). A keybox with `revoked == true` runs the existing "This Mac removed this phone" wipe (both scopes). Unlink and removal delete the hub's keys (`removeHubLink`).
 
@@ -1428,13 +1583,14 @@ Self-review: the checklist above.
   - `testAV2CodeReadsUpdateTheMac`.
   - `AppRootWiringTests.testARevokedKeyboxRemovesThePhoneInPrivateScope`.
   - `testAV2LinkIsDroppedAtLaunchWithTheReScanNotice`.
-  - `KeychainKeyStoreDeviceTests.testIdentityRoundTripsAndIsNotSynchronizable` (reads the item's attributes: `kSecAttrSynchronizable` false, accessibility `WhenUnlockedThisDeviceOnly`).
+  - `KeychainKeyStoreDeviceTests.testIdentityRoundTripsAndIsNotSynchronizable` (reads the item's attributes: `kSecAttrSynchronizable` false, accessibility `WhenUnlockedThisDeviceOnly`; skipped when unsigned, F24).
+  - `AppRootWiringTests.testABackgroundLaunchReadsTheDeviceIDWhileLocked` (F14).
 
 - [ ] **Step 2: Run to fail.** `make mobile-test MOBILE_FILTER='LinkingViewModelTests|AppRootWiringTests|KeychainKeyStoreDeviceTests' > /tmp/e2e16a.log 2>&1; echo "exit=$?"`.
 
 - [ ] **Step 3: Implement** as described; `make mobile-gen` only if a file was added to a new directory that `project.yml` does not already cover (`Sources` and `Tests` are globbed).
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; lint step (phone, plus Kit if the compile wiring touched it).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): phone pairing with device keys, the four-digit code and keyboxes`.
 
@@ -1447,9 +1603,9 @@ Self-review: the checklist above.
 **Depends on:** Tasks 9, 16. **Lane:** phone.
 
 **Files:**
-- Modify `WatchtowerMobile/Sources/App/AppEnvironment.swift` (build `SecureTransport(inner: CloudKitTransport/InMemory, keys: PhoneKeyProvider, rollback: replica-backed guard)`, `ReplicaStore(path:opener: EnvelopeReplicaOpener)`, pass the secure transport to the outbox, uploader, feed, `DeviceSettings`; call `store.indexPending()` and `uploader.sealPending()` on `UIApplication.protectedDataDidBecomeAvailableNotification`; set file protection), `Sources/App/DemoSeed*.swift` (seed through a demo hub `SecureTransport` with `InMemoryHubKeyStore` and a demo phone `InMemoryPhoneKeyStore` paired in code), `Sources/Features/Recording/PhoneRecorderController.swift` (`.completeUnlessOpen` on the capture file; `sealPending()` right after a finish), `Sources/Features/Settings/SettingsViewModel.swift` (`newerFormatCount() > 0` → "Update Watchtower on this iPhone: your Mac uses a newer format.").
+- Modify `WatchtowerMobile/Sources/App/AppEnvironment.swift` (on top of Task 16's compile wiring: pass the secure transport to `DeviceSettings` too; the phone's `SeqAllocator` over `replica_meta.envelope_seq_ceiling` (F29); call `store.indexPending()` and `uploader.sealPending()` on `UIApplication.protectedDataDidBecomeAvailableNotification`; set file protection), `Sources/App/DemoSeed*.swift` (seed through a demo hub `SecureTransport` with `InMemoryHubKeyStore` and a demo phone `InMemoryPhoneKeyStore` paired in code), `Sources/Features/Recording/PhoneRecorderController.swift` (`.completeUnlessOpen` on the capture file; `sealPending()` right after a finish), `Sources/Features/Settings/SettingsViewModel.swift` (`newerFormatCount() > 0` → "Update Watchtower on this iPhone: your Mac uses a newer format.").
 - Modify `WatchtowerKit/Sources/WatchtowerSync/CloudKitTransport/TransportStore.swift` only to expose the stash directory URL for the protection call (no behaviour change).
-- Test: modify `ReplicaWiringTests`, `RecordingUploadWiringTests`, `SettingsWiringTests`, `ScreenshotTourTests` (must still render every screen), and every phone test that saved plaintext records directly into the in-memory transport (seal through the demo hub; listed in the commit message).
+- Test: modify `ReplicaWiringTests`, `RecordingUploadWiringTests`, `SettingsWiringTests`, `ScreenshotTourTests` (must still render every screen), and every phone test that saved plaintext records directly into the in-memory transport beyond what Task 16's construction pass covered (seal through the demo hub / `TestE2E`; listed in the commit message).
 
 **File protection (D8):** `appGroupDirectory()/replica*`, the transport store and its `transport-assets/` stash → `FileProtectionType.completeUntilFirstUserAuthentication` set on the directory before the databases are created; `phone-recordings/` → `.completeUnlessOpen` for `.m4a` files (set on creation by the recorder), sealed `.enc` files inherit the directory's class C. A test reads the attributes back.
 
@@ -1465,7 +1621,7 @@ Self-review: the checklist above.
 
 - [ ] **Step 3: Implement** as described.
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`. This task touches the boot path of every screen, so it also runs the phone suites that build an environment, by name: `make mobile-test MOBILE_FILTER='AppRootWiringTests|NowWiringTests|WorkbenchWiringTests|CalendarWiringTests|RecordingsWiringTests|BoardWriteWiringTests|StartSheetWiringTests|SessionDetailWiringTests|OrangeToneTests' > /tmp/e2e17b.log 2>&1; echo "exit=$?"`. `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`. This task touches the boot path of every screen, so it also runs the phone suites that build an environment, by name: `make mobile-test MOBILE_FILTER='AppRootWiringTests|NowWiringTests|WorkbenchWiringTests|CalendarWiringTests|RecordingsWiringTests|BoardWriteWiringTests|StartSheetWiringTests|SessionDetailWiringTests|OrangeToneTests|AskFormTests|ResilientObservationTests|RecorderTests' > /tmp/e2e17b.log 2>&1; echo "exit=$?"` (F26: the last three build replicas too). Lint step (phone and Kit).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): the phone runs every read and write through E2E; file protection classes`.
 
@@ -1478,22 +1634,24 @@ Self-review: the checklist above.
 **Depends on:** Tasks 11, 17. **Lane:** phone.
 
 **Files:**
-- Create `WatchtowerKit/Sources/WatchtowerSync/Secure/AlertOpener.swift` (opens an `ask_alert` envelope with `K_alert[e]` and the hub signing key from `PhoneKeyStore.alertKeys`; returns the alert payload).
-- Create `WatchtowerKit/Sources/WatchtowerSync/Secure/AskAlertSubscription.swift` (the `CKQuerySubscription` on `WatchtowerSignal` with `NSPredicate(value: true)` in the hub's DataZone, `shouldSendContentAvailable = false`, an alert body placeholder "A session is waiting"; registering it is A13's job).
-- Modify `WatchtowerMobile/WatchtowerMobile.entitlements`, `WatchtowerMobile/NotifyService/NotifyService.entitlements` (`keychain-access-groups`: `$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts`), `WatchtowerMobile/NotifyService/NotificationService.swift` (on a CloudKit query notification for a `sig-…` record: fetch the alert record named by the suffix with a 20 s bound, open it, set the title and body; any failure delivers the content-free notification unchanged), `WatchtowerMobile/project.yml` (the extension links `WatchtowerSync`), then `make mobile-gen`.
+- Create `WatchtowerKit/Sources/WatchtowerSync/Secure/AlertOpener.swift` (opens an `ask_alert` envelope with `K_alert[e]` and the hub signing key, both from `PhoneKeyStore.alertMaterial(_:)` — F21: the extension cannot read the private `hubpub.<hub_id>` item; returns the alert payload).
+- Create `WatchtowerKit/Sources/WatchtowerSync/Secure/AskAlertSubscription.swift` (D14: `subscription(for scope: CloudDatabaseScope, hubID:) -> CKQuerySubscription?` — for `.private`, the `CKQuerySubscription` on `WatchtowerSignal` with `NSPredicate(value: true)` in the hub's DataZone, `shouldSendContentAvailable = false`, `shouldSendMutableContent = true`, an alert body placeholder "A session is waiting"; for `.shared`, nil, with a doc comment pointing at D14 (query subscriptions are not supported in the shared database; shared-scope phones rely on the sync engine's silent push plus local filtering of `sig-…` records). Registering it, and the shared-scope local notification, are A13's job).
+- Modify `WatchtowerMobile/WatchtowerMobile.entitlements` (`keychain-access-groups`: the private group `$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile` stays **first**, the alerts group `$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts` is appended **second**, F20 — the first entry is the default group, so the alerts group must never be first), `WatchtowerMobile/NotifyService/NotifyService.entitlements` (`keychain-access-groups`: the alerts group only), `WatchtowerMobile/Info.plist` and `NotifyService/Info.plist` (key `WTKeychainAlertGroup`; the app and the extension read the group strings from Info.plist, never hardcoded), `WatchtowerMobile/NotifyService/NotificationService.swift` (on a CloudKit query notification for a `sig-…` record: fetch the alert record named by the suffix with a 20 s bound, open it, set the title and body; any failure delivers the content-free notification unchanged), `WatchtowerMobile/project.yml` (the extension links `WatchtowerSync`), then `make mobile-gen`.
 - Test: create `WatchtowerKit/Tests/WatchtowerSyncTests/AlertOpenerTests.swift`, `AskAlertSubscriptionTests.swift`.
 
 - [ ] **Step 1: Failing tests.**
   - `AlertOpenerTests.testAnAlertOpensWithTheAlertKeyOnly` — the data key cannot open it; a record of class `.data` is refused by the opener.
   - `testTheAlertStoreHoldsNoDataOrMetaKey` (the shared-group item's bytes).
+  - `testTheOpenerNeedsOnlyAlertMaterial` (F21) — `AlertOpener(material: AlertMaterial)` takes nothing else (no `PhoneKeyStore`), so it cannot reach a private item by construction; an `AlertMaterial` built from `alertMaterial(_:)` opens the alert, a wrong hub signing key in it refuses it.
   - `testAnAlertOfAnUnknownEpochFailsQuietly` (returns nil; the extension then shows the generic text).
-  - `AskAlertSubscriptionTests.testTheSubscriptionTargetsTheSignalTypeInTheHubsDataZone`.
+  - `AskAlertSubscriptionTests.testTheSubscriptionTargetsTheSignalTypeInTheHubsDataZone` (private scope).
+  - `AskAlertSubscriptionTests.testSharedScopeGetsNoQuerySubscription` (D14).
 
 - [ ] **Step 2: Run to fail.** `make kit-test FILTER='AlertOpenerTests|AskAlertSubscriptionTests' > /tmp/e2e18a.log 2>&1; echo "exit=$?"`.
 
 - [ ] **Step 3: Implement**; the extension code is thin glue over `AlertOpener` (no logic beyond fetch → open → set fields).
 
-- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make mobile-build > /tmp/e2e18b.log 2>&1; echo "exit=$?"` (the extension compiles and links). `make lint-diff`.
+- [ ] **Step 4: Run to pass.** Step 2 command → `exit=0`; `make mobile-build > /tmp/e2e18b.log 2>&1; echo "exit=$?"` (the extension compiles and links). Lint step (Kit and phone).
 
 - [ ] **Step 5: Commit.** `feat(mobile-e2e): K_alert in a shared keychain group, the ask-alert signal subscription and opener`.
 
@@ -1506,9 +1664,9 @@ Self-review: the checklist above.
 **Depends on:** Tasks 1–18. **Lane:** any (no build).
 
 **Files:**
-- Modify `docs/features/mobile-companion.md`: a new top-level section **"End-to-end encryption (E2E1–E2E18)"** between Architecture and Building (keys and where they live, the envelope and its classes, record naming, pairing with the code, rotation and revocation, the locked-phone behaviour, file protection, the migration and "a new Mac is a new pairing", the Go cross-check, `WT_E2E_REGENERATE`); update **Architecture** (Kinds/record names are opaque on the wire; `SecureTransport` above the seam), **Linking, hub half** (hello, pending requests, confirmation, keyboxes replacing `device_grant`, the device gate is key-based with the creator check as defense in depth), **Settings → Mobile** (the pending row, the new Remove sentence), **Transport** (record types, legacy type ignored), **Replica, outbox and relay feed** (ciphertext, apply-time verify, rollback guard, indexing on unlock), **Link code and device grant** (`LinkPayload` v3, `Keybox`), **Onboarding and linking, phone half** (the code, the longer wait, v2 drop at launch), **Phone recorder and uploader** (seal at finalize, `.enc`, re-send the stored envelope), **Known limits** (replace "A same-Apple-ID phone removed on the Mac is not told" with what D9 does; add: metadata left per spec §4, `K_meta` not rotated (D5), relay ordering (D4), availability, the extension's low-value key, re-pair after restore to new hardware).
+- Modify `docs/features/mobile-companion.md`: a new top-level section **"End-to-end encryption (E2E1–E2E18)"** between Architecture and Building (keys and where they live, the envelope and its classes, record naming, pairing with the code, rotation and revocation, the locked-phone behaviour, file protection, the migration and "a new Mac is a new pairing", the Go cross-check, `WT_E2E_REGENERATE`); update **Architecture** (Kinds/record names are opaque on the wire; `SecureTransport` above the seam), **Linking, hub half** (hello, pending requests, confirmation, keyboxes replacing `device_grant`, the device gate is key-based with the creator check as defense in depth), **Settings → Mobile** (the pending row, the new Remove sentence), **Transport** (record types, legacy type ignored), **Replica, outbox and relay feed** (ciphertext, apply-time verify, rollback guard, indexing on unlock), **Link code and device grant** (`LinkPayload` v3, `Keybox`), **Onboarding and linking, phone half** (the code, the longer wait, v2 drop at launch, an unanswerable unknown-code hello ending on the wait timeout (F4), the "moved" check no longer firing from a foreign heartbeat (F36)), **Phone recorder and uploader** (seal at finalize, `.enc`, re-send the stored envelope), **Known limits** (replace "A same-Apple-ID phone removed on the Mac is not told" with what D9 does; add: metadata left per spec §4, `K_meta` not rotated (D5), relay ordering (D4), availability, the extension's low-value key, re-pair after restore to new hardware, shared-scope ask alerts ride the best-effort silent push (D14)).
 - Modify `CLAUDE.md`: the Mobile companion index line gains "; E2E (2026-10-12): `SecureTransport`, envelope + keybox + hub-signed DataZone, owner-confirmed pairing with a four-digit code, ciphertext replica" (one clause, keep the line's style).
-- Inventory: run `grep -rln "MobileHub\|CloudKitTransport\|RelayProcessor\|LinkPayload\|device_grant" docs/inventory/`. If it finds only the dated note in `workbench.md`, add nothing (no contract moved: the hub's owner-surface write paths are unchanged). If it finds anything else, stop and ask the owner before editing it.
+- Inventory (F32): run `grep -rln "MobileHub\|CloudKitTransport\|RelayProcessor\|LinkPayload\|device_grant" docs/inventory/` (expected: no file) and `grep -rlni "mobile" docs/inventory/` (expected: only `workbench.md`, its dated note). If both hold, add nothing (no contract moved: the hub's owner-surface write paths are unchanged). If either finds anything else, stop and ask the owner before editing it.
 - The base design spec's sentence "end-to-end encrypted when the user has Advanced Data Protection on" (`docs/superpowers/specs/2026-10-07-mobile-poc-design.md`) is history; add one line under it: "Superseded by app-level E2E, see docs/features/mobile-companion.md (2026-10-12)."
 
 - [ ] **Step 1:** write the sections; every name used (types, tables, columns, messages) must match the code on the branch (`grep` each before writing it).
@@ -1551,8 +1709,8 @@ Checklist (each an item of the ask):
 
 | Lane | Tasks | Notes |
 |---|---|---|
-| Kit (light) | 1 → {2 ∥ 5} → 3 → 4 → 7 → 8 → 9 | 2 and 5 in separate worktrees (distinct files and fixtures). Kit tasks may run beside one Desktop or phone task. |
+| Kit (light) | 1 → {2 ∥ 5} → 3 → 4 → 7 → 8 → 9 | 2 and 5 in separate worktrees (distinct files and fixtures). Kit tasks may run beside one Desktop or phone task. Kit 9 merges before phone 16 starts (F6). |
 | Go | 6 | After 1–3; beside anything. |
 | Desktop (heavy) | 10 → 11 → 12 → 13 → 14 → 15 | 10 may start once 4, 5, 7 are merged, beside Kit 8–9. |
-| Phone (heavy) | 16 → 17 → 18 | Never at the same time as a Desktop task (one heavy Swift build at a time). 16 needs 8 merged. |
+| Phone (heavy) | 16 → 17 → 18 | Never at the same time as a Desktop task (one heavy Swift build at a time). 16 needs Kit 8 **and 9** merged (F6); the phone target does not compile between Kit 8 and Task 16's Step 0, so no phone command runs in that window. |
 | Docs/owner | 19 → 20 | After everything. |
