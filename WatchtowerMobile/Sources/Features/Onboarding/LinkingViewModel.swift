@@ -67,6 +67,9 @@ enum LinkFailure: Equatable {
     /// The Mac refused the code, or it cannot be read.
     case refused
     case updateApp
+    /// The code is from an older Mac (a `LinkPayload` version below the
+    /// phone's): its zones are not the ones this phone syncs.
+    case updateMac
     /// iCloud failed under the flow (a reason from CloudKit).
     case iCloud(String)
 
@@ -78,6 +81,7 @@ enum LinkFailure: Equatable {
         case .noAnswer: "Your Mac didn't answer — keep Settings → Mobile open on the Mac and scan again"
         case .refused: "This code can't be used — Show a new code on the Mac"
         case .updateApp: "Update Watchtower on this iPhone"
+        case .updateMac: "Update Watchtower on this Mac"
         case let .iCloud(reason): "Couldn't reach iCloud: \(reason)"
         }
     }
@@ -238,6 +242,9 @@ final class LinkingViewModel {
             payload = parsed
         case .failure(.newerVersion):
             phase = .failed(.updateApp)
+            return
+        case .failure(.olderVersion):
+            phase = .failed(.updateMac)
             return
         case let .failure(error):
             Self.logger.warning("unusable link code: \(String(describing: error), privacy: .public)")
@@ -542,9 +549,10 @@ final class LinkingViewModel {
             } catch {
                 Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }
-            // Back to the phone's own database: nothing is left to count.
-            _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         }
+        // Both scopes end unlinked, on the phone's own database: the linked
+        // hub's zones are no longer synced. Nothing is left to count.
+        _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         return notSent
     }
 

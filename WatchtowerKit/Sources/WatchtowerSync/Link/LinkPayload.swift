@@ -11,6 +11,9 @@ public enum LinkPayloadError: Error, Equatable, Sendable {
     case missingField(String)
     /// Written by a newer Mac: "Update Watchtower on this iPhone".
     case newerVersion
+    /// Written by an older Mac (v1, the single-hub build's fixed-name
+    /// zones): "Update Watchtower on this Mac" (multi-hub spec §6.7).
+    case olderVersion
     /// A code for another CloudKit container.
     case wrongContainer
 }
@@ -23,7 +26,10 @@ public enum LinkPayloadError: Error, Equatable, Sendable {
 /// encodes and decodes: the expiry check (with the phone's clock-skew grace)
 /// and the single-use nonce check belong to the link flow and the hub.
 public struct LinkPayload: Codable, Equatable, Sendable {
-    public static let currentVersion = 1
+    /// 2 since the multi-hub build (spec §3.4): the shares are of the hub's
+    /// own `DataZone-<hub_id>`/`RelayZone-<hub_id>`, which a v1 phone does
+    /// not sync.
+    public static let currentVersion = 2
     /// `exp = iat + lifetime`, in seconds.
     public static let lifetime: Int64 = 600
     /// Cap on `macName`, in grapheme clusters.
@@ -153,7 +159,8 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     }
 
     /// Decodes a scanned URL. `v` is checked before any other key, so a
-    /// newer code reads as `.newerVersion` whatever its shape.
+    /// newer code reads as `.newerVersion` and an older one as
+    /// `.olderVersion` whatever its shape.
     public static func parse(_ url: URL) -> Result<Self, LinkPayloadError> {
         guard url.scheme?.lowercased() == scheme, url.host?.lowercased() == host,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
@@ -168,7 +175,7 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         }
         guard let version = probe.v else { return .failure(.missingField(CodingKeys.v.stringValue)) }
         if version > currentVersion { return .failure(.newerVersion) }
-        guard version == currentVersion else { return .failure(.badEncoding) }
+        if version < currentVersion { return .failure(.olderVersion) }
 
         let payload: Self
         do {

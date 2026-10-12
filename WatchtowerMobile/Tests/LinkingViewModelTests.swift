@@ -486,11 +486,15 @@ final class LinkingViewModelTests: XCTestCase {
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
-            Array(log.events.suffix(2)), ["wipe private", "prepare private"],
-            "the queue is wiped first, so the flush sends only the unlinked record"
+            Array(log.events.suffix(3)), ["wipe private", "prepare private", "wipe private"],
+            "the queue is wiped first, so the flush sends only the unlinked record; then the phone restarts unlinked"
         )
         XCTAssertEqual(host.flushes, 1)
-        XCTAssertEqual(host.wipes, 1)
+        XCTAssertEqual(host.wipes, 2)
+        XCTAssertEqual(
+            host.wipedHubIDs, ["hub-acme", AppEnvironment.unlinkedHubID],
+            "final review m3: a private unlink ends on the unlinked hub id too"
+        )
         XCTAssertNil(model.link)
         XCTAssertNil(LinkStore(defaults: defaults).link)
         XCTAssertNil(host.links.last?.device)
@@ -659,7 +663,7 @@ final class LinkingViewModelTests: XCTestCase {
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.map(\.unlinked), [nil, true, nil], "link, unlink the old Mac, link the new one")
         XCTAssertEqual(writes.last?.linkNonce, other.nonce)
-        XCTAssertEqual(host.wipes, 1)
+        XCTAssertEqual(host.wipes, 2, "the unlink wipes the old Mac's queue, then restarts unlinked")
         XCTAssertEqual(model.phase, .linked(macName: "Acme Studio"))
         XCTAssertEqual(model.link?.hubID, "hub-studio")
     }
@@ -669,10 +673,21 @@ final class LinkingViewModelTests: XCTestCase {
     func testANewerCodeVersionAsksToUpdateTheApp() async throws {
         let model = makeModel()
 
-        await model.open(code(version: 2).url())
+        await model.open(code(version: LinkPayload.currentVersion + 1).url())
 
         XCTAssertEqual(model.phase, .failed(.updateApp))
         XCTAssertEqual(LinkFailure.updateApp.message, "Update Watchtower on this iPhone")
+        XCTAssertTrue(host.prepared.isEmpty)
+    }
+
+    /// Multi-hub spec §6.7: a v1 code comes from a single-hub Mac.
+    func testAnOlderCodeVersionAsksToUpdateTheMac() async throws {
+        let model = makeModel()
+
+        await model.open(code(version: 1).url())
+
+        XCTAssertEqual(model.phase, .failed(.updateMac))
+        XCTAssertEqual(LinkFailure.updateMac.message, "Update Watchtower on this Mac")
         XCTAssertTrue(host.prepared.isEmpty)
     }
 

@@ -2,9 +2,9 @@ import XCTest
 @testable import WatchtowerSync
 
 final class LinkPayloadTests: XCTestCase {
-    // A frozen v1 code (spec §2.3): sorted keys, unescaped slashes, base64url
+    // A frozen v2 code (spec §2.3, multi-hub §3.4): sorted keys, unescaped slashes, base64url
     // without padding. Changing the encoder's output breaks this fixture.
-    private static let fixtureURL = "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmFpd2F0Y2h0b3dlcnMud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3d3dy5pY2xvdWQuY29tL3NoYXJlLzBhQmNEZUZnSGlKa0xtTm9QcVJzVHVWd1giLCJleHAiOjE3MDAwMDA2MDAsImh1Yl9pZCI6IjhGMEMyQTUxLTNCN0UtNEMxRC05QTZGLTJFNUI3RDlDMUEzNCIsImlhdCI6MTcwMDAwMDAwMCwibWFjX25hbWUiOiJBY21lIE1hY0Jvb2sgUHJvIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4Iiwib3duZXJfdXNlciI6Il8wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlbGF5X3NoYXJlIjoiaHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS8well4V3ZVdFNyUXBPbk1sS2pJaEdmRWRDIiwidiI6MX0"
+    private static let fixtureURL = "watchtower://link?d=eyJjb250YWluZXIiOiJpQ2xvdWQuY29tLmFpd2F0Y2h0b3dlcnMud2F0Y2h0b3dlciIsImRhdGFfc2hhcmUiOiJodHRwczovL3d3dy5pY2xvdWQuY29tL3NoYXJlLzBhQmNEZUZnSGlKa0xtTm9QcVJzVHVWd1giLCJleHAiOjE3MDAwMDA2MDAsImh1Yl9pZCI6IjhGMEMyQTUxLTNCN0UtNEMxRC05QTZGLTJFNUI3RDlDMUEzNCIsImlhdCI6MTcwMDAwMDAwMCwibWFjX25hbWUiOiJBY21lIE1hY0Jvb2sgUHJvIiwibm9uY2UiOiJBQUVDQXdRRkJnY0lDUW9MREEwT0R4QVJFaE1VRlJZWEdCa2FHeHdkSGg4Iiwib3duZXJfdXNlciI6Il8wMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZiIsInJlbGF5X3NoYXJlIjoiaHR0cHM6Ly93d3cuaWNsb3VkLmNvbS9zaGFyZS8well4V3ZVdFNyUXBPbk1sS2pJaEdmRWRDIiwidiI6Mn0"
 
     private static let fixturePayload = LinkPayload(
         hubID: "8F0C2A51-3B7E-4C1D-9A6F-2E5B7D9C1A34",
@@ -42,7 +42,7 @@ final class LinkPayloadTests: XCTestCase {
     func testFrozenFixtureRoundTripsByteForByte() throws {
         let parsed = try Self.parse(Self.fixtureURL).get()
         XCTAssertEqual(parsed, Self.fixturePayload)
-        XCTAssertEqual(parsed.v, 1)
+        XCTAssertEqual(parsed.v, 2)
         XCTAssertEqual(parsed.container, "iCloud.com.aiwatchtowers.watchtower")
         XCTAssertEqual(parsed.url().absoluteString, Self.fixtureURL)
         XCTAssertEqual(Self.fixturePayload.url().absoluteString, Self.fixtureURL)
@@ -70,13 +70,22 @@ final class LinkPayloadTests: XCTestCase {
 
     func testNewerVersionIsRejected() throws {
         var object = try Self.fixtureObject()
-        object["v"] = 2
+        object["v"] = 3
         XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.newerVersion))
     }
 
     func testNewerVersionWinsOverUnknownShape() throws {
-        // A v2 code may drop v1 keys; the phone must still say "update".
-        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 2])), .failure(.newerVersion))
+        // A v3 code may drop v2 keys; the phone must still say "update".
+        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 3])), .failure(.newerVersion))
+    }
+
+    /// Multi-hub spec §6.7: a v1 code is from a single-hub Mac, whose shares
+    /// are of zones this phone does not sync.
+    func testOlderVersionIsRejectedWhateverItsShape() throws {
+        var object = try Self.fixtureObject()
+        object["v"] = 1
+        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(object)), .failure(.olderVersion))
+        XCTAssertEqual(LinkPayload.parse(try Self.linkURL(["v": 1])), .failure(.olderVersion))
     }
 
     func testMissingNonceIsReported() throws {
