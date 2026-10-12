@@ -90,7 +90,7 @@ final class CodeFilesCenter {
     private(set) var cursors: [CodeRoot: CodeNavLocation] = [:]
     /// Worktree roots whose folder went away (spec §7): the page falls back
     /// to the main folder. A root leaves the set when it shows again with
-    /// its folder back.
+    /// its folder back, or its session's place resolves there again.
     private(set) var removedRoots: Set<CodeRoot> = []
     /// The unsaved edits of removed worktrees, oldest first — shown over the
     /// Files pane with Copy and Discard, kept for the app session.
@@ -105,9 +105,10 @@ final class CodeFilesCenter {
     @ObservationIgnored private var buffers: [BufferKey: CodeFileBuffer] = [:]
     /// `buffers`' keys by page id: an edit finds its buffer in O(1).
     @ObservationIgnored private var bufferKeys: [String: BufferKey] = [:]
-    /// Every buffer of a removed worktree by page id, clean ones included,
-    /// locked: text the page hands over late still lands (never on disk)
-    /// and, once it makes a buffer dirty, joins `orphanedEdits`.
+    /// The buffers of removed worktrees by page id, locked: the dirty ones
+    /// until Discard, the clean ones for `pendingTimeout` — text the page
+    /// hands over late still lands (never on disk) and, once it makes a
+    /// buffer dirty, joins `orphanedEdits`.
     @ObservationIgnored private var removedBuffers: [String: OrphanedEdit] = [:]
     @ObservationIgnored private var watchers: [CodeRoot: FolderWatcher] = [:]
     /// The roots shown at least once (their folder watched, git read).
@@ -636,6 +637,7 @@ final class CodeFilesCenter {
             removedBuffers[buffer.id] = record
             if buffer.isDirty { orphanedEdits.append(record) }
         }
+        freeCleanRemovedBuffersLater()
         tabsByRoot[root] = nil
         defaults.removeObject(forKey: CodeTabs.key(root: root))
         recents[root] = nil
@@ -645,6 +647,31 @@ final class CodeFilesCenter {
         navigation?.codeRootRemoved(root)
         usages?.codeRootRemoved(root)
         questions?.codeRootRemoved(root)
+    }
+
+    /// A removed worktree's clean buffers have nothing to Copy or Discard:
+    /// they are kept only as long as the page may still hand over its last
+    /// text (`pendingTimeout`), then freed. Dirty ones stay for the banner.
+    private func freeCleanRemovedBuffersLater() {
+        let grace = pendingTimeout
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: grace)
+            self?.freeCleanRemovedBuffers()
+        }
+    }
+
+    /// Internal for tests.
+    func freeCleanRemovedBuffers() {
+        let listed = Set(orphanedEdits.map(\.id))
+        removedBuffers = removedBuffers.filter { id, record in listed.contains(id) || record.buffer.isDirty }
+    }
+
+    /// The session's place resolves to a live worktree at the path of a
+    /// removed one: a worktree recreated there shows again. The old locked
+    /// buffers stay locked in the banner; the new root gets fresh ones.
+    func worktreeCameBack(_ root: CodeRoot) {
+        guard !root.isMain, removedRoots.contains(root), CodeRootPolicy.directoryExists(root.folder) else { return }
+        removedRoots.remove(root)
     }
 
     /// Whether `root`'s worktree was removed and has not come back.
@@ -701,7 +728,12 @@ final class CodeFilesCenter {
     /// The app lost focus: everything typed goes to disk now.
     func flushEverything() async {
         for entry in bridges.values {
-            guard let bridge = entry.bridge, let edits = await bridge.takePending() else { continue }
+            guard let bridge = entry.bridge else { continue }
+            // Bounded: a page that does not answer cannot hold the flush.
+            guard let edits = await takePending(bridge) else {
+                NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its unsent edits on a flush", entry.root.workbenchID)
+                continue
+            }
             // Through `apply`: the first edit keeps a preview tab here too.
             apply(edits, now: false)
         }

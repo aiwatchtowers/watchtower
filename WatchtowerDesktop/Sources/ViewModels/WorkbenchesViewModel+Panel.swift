@@ -305,15 +305,46 @@ extension WorkbenchesViewModel {
     /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
     /// False — and nothing opened — for a path that is not a file of the
     /// folder or a workbench no longer listed. The folder is the root of
-    /// the ask's session (its worktree when proven), else the page's.
+    /// the ask's session (its worktree when proven), else the page's; the
+    /// file always opens where the page shows it (`askLinkRoot`).
     @discardableResult
     func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64, sessionID: Int64? = nil) async -> Bool {
-        guard let project = summaries.first(where: { $0.id == projectID })?.project else { return false }
-        let root = sessionID.map { codeRoot(sessionID: $0, project: project) } ?? activeCodeRoot(project: project)
-        guard let path = WorkbenchFolderPath.resolve(target.path, folder: root.folder.path) else { return false }
+        guard let project = summaries.first(where: { $0.id == projectID })?.project,
+              let place = await askLinkRoot(target.path, project: project, sessionID: sessionID) else { return false }
         asks.drawerExpanded = false
-        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), root: root, beside: true)
+        let opened = OpenQuicklyTarget(path: place.path, line: target.line, col: target.col)
+        await openFile(at: opened, root: place.root, beside: true)
         return true
+    }
+
+    /// Where an ask's path opens, never in a root the page does not show:
+    /// the ask session's root — that session brought onto the page first
+    /// when the page shows another root; failing that, the page's root when
+    /// the same path is a file there. nil: nothing to open (the caller beeps).
+    private func askLinkRoot(
+        _ rawPath: String, project: Workbench, sessionID: Int64?
+    ) async -> (root: CodeRoot, path: String)? {
+        let pageRoot = activeCodeRoot(project: project)
+        let askRoot = sessionID.map { codeRoot(sessionID: $0, project: project) } ?? pageRoot
+        guard let path = WorkbenchFolderPath.resolve(rawPath, folder: askRoot.folder.path) else { return nil }
+        guard askRoot != pageRoot, let sessionID else { return (askRoot, path) }
+        if await bringSessionOnPage(sessionID, projectID: project.id), activeCodeRoot(project: project) == askRoot {
+            return (askRoot, path)
+        }
+        let shown = activeCodeRoot(project: project)
+        guard WorkbenchFolderPath.resolve(path, folder: shown.folder.path) == path else { return nil }
+        return (shown, path)
+    }
+
+    /// Puts a workbench session on its page the way a panel click does
+    /// (one not running resumes). False when its row is gone.
+    private func bringSessionOnPage(_ sessionID: Int64, projectID: Int64) async -> Bool {
+        if session(sessionID, projectID: projectID) == nil {
+            guard await loadSessions(projectID: projectID) else { return false }
+        }
+        guard let row = session(sessionID, projectID: projectID) else { return false }
+        await open(row)
+        return layout(projectID: projectID).sessionIDs.contains(sessionID)
     }
 
     /// Go to definition and back/forward (spec §8.2): `location` in the Files

@@ -80,11 +80,13 @@ extension WorkbenchesViewModel {
     /// `folder_root` spelling. Worked out again only when the place, the
     /// workbench folder or the removed worktrees change.
     func codeRoot(sessionID: Int64?, project: Workbench) -> CodeRoot {
+        let place = sessionID.map(sessionPlaces.currentPlace(sessionID:)) ?? .unknown
         let inputs = CodeRootMemo.Inputs(
-            place: sessionID.map(sessionPlaces.currentPlace(sessionID:)) ?? .unknown,
+            place: place,
             stale: sessionID.map(sessionPlaces.isPlaceStale(sessionID:)) ?? false,
             folderPath: project.folderPath,
-            removed: codeFiles.removedRoots
+            removed: codeFiles.removedRoots,
+            worktreeExists: Self.worktreeFolderExists(place)
         )
         let key = CodeRootMemoKey(projectID: project.id, sessionID: sessionID)
         if let memo = codeRootMemo[key], memo.inputs == inputs { return memo.root }
@@ -103,9 +105,22 @@ extension WorkbenchesViewModel {
             let files = codeFiles
             Task { @MainActor in files.sweepRemovedWorktrees(workbenchID: project.id) }
         }
-        // A worktree removed under FSEvents moves the page before its place
-        // is read again.
-        return codeFiles.isRemoved(root) ? project.mainCodeRoot : root
+        if !root.isMain, codeFiles.removedRoots.contains(root) {
+            // The place resolves to a live worktree at a removed one's path:
+            // it was recreated there and shows again (not while a view body
+            // reads this).
+            let files = codeFiles
+            Task { @MainActor in files.worktreeCameBack(root) }
+        }
+        return root
+    }
+
+    /// A cheap stat of a worktree place's folder, so a worktree removed
+    /// while nothing held it stops being the page's root (false for any
+    /// other place).
+    private static func worktreeFolderExists(_ place: SessionPlace) -> Bool {
+        guard case let .worktree(_, folder, _) = place else { return false }
+        return CodeRootPolicy.directoryExists(folder)
     }
 
     /// The session whose place sets the page's root (D6), nil without one.
@@ -134,6 +149,7 @@ struct CodeRootMemo {
         let stale: Bool
         let folderPath: String
         let removed: Set<CodeRoot>
+        let worktreeExists: Bool
     }
 
     let inputs: Inputs

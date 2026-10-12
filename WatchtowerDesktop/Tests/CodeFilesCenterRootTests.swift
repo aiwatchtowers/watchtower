@@ -345,6 +345,43 @@ final class CodeFilesCenterRootTests: XCTestCase {
         page.release()
     }
 
+    func testAFlushWaitsBoundedForASilentPage() async {
+        let center = makeCenter()
+        center.pendingTimeout = .milliseconds(50)
+        let page = SilentPage()
+        center.register(page, for: main)
+        center.open("Makefile", root: main, preview: false)
+        let dirty = center.buffer(for: main, relPath: "Makefile")
+        dirty.loadIfNeeded()
+        center.edited(dirty, text: "all: typed\n", base: 0)
+
+        await center.flushEverything()
+
+        XCTAssertEqual(try text(folder, "Makefile"), "all: typed\n", "the flush went on without the page")
+        page.release()
+    }
+
+    /// A removed worktree's clean buffers have nothing to Copy or Discard:
+    /// freed once the page's grace for late text is over; dirty ones stay.
+    func testCleanBuffersOfARemovedWorktreeAreFreedAfterTheGrace() async throws {
+        let center = makeCenter()
+        center.pendingTimeout = .milliseconds(50)
+        let clean = center.buffer(for: rootA, relPath: "main.go")
+        clean.loadIfNeeded()
+        let dirty = center.buffer(for: rootA, relPath: "Makefile")
+        dirty.loadIfNeeded()
+        center.edited(dirty, text: "all: kept\n", base: 0)
+        try FileManager.default.removeItem(at: worktreeA)
+
+        center.rootRemoved(rootA)
+        XCTAssertNotNil(center.buffer(id: clean.id), "kept for late text")
+        await eventually { center.buffer(id: clean.id) == nil }
+
+        XCTAssertNil(center.buffer(id: clean.id))
+        XCTAssertTrue(center.buffer(id: dirty.id) === dirty)
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [dirty.id])
+    }
+
     func testThePageGoingAwayUnregistersWhereverItsBridgeIs() async {
         let center = makeCenter()
         let page = PendingPage(edits: [])
@@ -520,6 +557,99 @@ final class CodeFilesActiveRootTests: XCTestCase {
         XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty, "not the main folder's tabs")
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
         XCTAssertEqual(vm.activeCodeRoot(project: project), root, "the Files pane shows the tab's root")
+    }
+
+    /// A worktree removed while nothing held it (no buffer, tab or watch)
+    /// stops being the page's root at once: the memo stats its folder.
+    func testAWorktreeRemovedWhileNothingHeldItStopsBeingTheRoot() async throws {
+        let vm = makeVM()
+        await placed(vm)
+        vm.setLayout(layout(.session(sessionID)), projectID: project.id)
+        XCTAssertFalse(vm.activeCodeRoot(project: project).isMain)
+
+        try FileManager.default.removeItem(at: worktree)
+
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot)
+    }
+
+    /// A worktree recreated at a removed one's path shows again once the
+    /// place resolves there; the old locked buffer never becomes writable.
+    func testARecreatedWorktreeShowsAgainAndTheOldBufferStaysLocked() async throws {
+        let vm = makeVM()
+        await placed(vm)
+        vm.setLayout(layout(.session(sessionID)), projectID: project.id)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+        try "all:\n".write(to: worktree.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        let old = vm.codeFiles.buffer(for: root, relPath: "Makefile")
+        old.loadIfNeeded()
+        vm.codeFiles.edited(old, text: "all: orphan\n", base: 0)
+        try FileManager.default.removeItem(at: worktree)
+        vm.codeFiles.rootRemoved(root)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot)
+
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        try "all:\n".write(to: worktree.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        await placed(vm)
+
+        XCTAssertEqual(vm.activeCodeRoot(project: project), root, "FILES shows the new worktree")
+        let deadline = ContinuousClock.now + .seconds(3)
+        while vm.codeFiles.removedRoots.contains(root), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(vm.codeFiles.removedRoots.contains(root))
+        XCTAssertTrue(old.writesLocked, "the old buffer stays locked")
+        XCTAssertEqual(vm.codeFiles.orphanedEdits(workbenchID: project.id).map(\.id), [old.id])
+        let fresh = vm.codeFiles.buffer(for: root, relPath: "Makefile")
+        XCTAssertFalse(fresh === old)
+        XCTAssertFalse(fresh.writesLocked)
+        XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("Makefile"), encoding: .utf8), "all:\n")
+    }
+
+    /// An ask from a session whose worktree the page does not show brings
+    /// that session onto the page, so the file opens where it is visible.
+    func testAnAskLinkBringsItsSessionOntoThePage() async throws {
+        let vm = makeVM()
+        await vm.reload()
+        await placed(vm)
+        vm.setLayout(layout(.board), projectID: project.id)
+        try "package wt\n".write(to: worktree.appendingPathComponent("only-here.go"), atomically: true, encoding: .utf8)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+
+        let opened = await vm.openAskLink(OpenQuicklyTarget(path: "only-here.go", line: 1, col: nil),
+                                          projectID: project.id, sessionID: sessionID)
+
+        XCTAssertTrue(opened)
+        XCTAssertTrue(vm.layout(projectID: project.id).sessionIDs.contains(sessionID), "the ask's session is on the page")
+        XCTAssertEqual(vm.activeCodeRoot(project: project), root)
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, ["only-here.go"])
+        XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
+    }
+
+    /// Its session gone, an ask's path opens in the page's root only when
+    /// the same path is a file there; otherwise nothing opens (a beep).
+    func testAnAskLinkWhoseSessionCannotShowOpensOnlyTheSamePathOnThePage() async throws {
+        let vm = makeVM()
+        await vm.reload()
+        await placed(vm)
+        vm.setLayout(layout(.board), projectID: project.id)
+        let folder = URL(fileURLWithPath: project.folderPath)
+        try "package wt\n".write(to: worktree.appendingPathComponent("only-here.go"), atomically: true, encoding: .utf8)
+        for dir in [try XCTUnwrap(worktree), folder] {
+            try "package both\n".write(to: dir.appendingPathComponent("both.go"), atomically: true, encoding: .utf8)
+        }
+        let id = sessionID
+        try await pool.write { try TerminalSessionQueries.delete($0, id: id) }
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+
+        let missing = await vm.openAskLink(OpenQuicklyTarget(path: "only-here.go", line: 1, col: nil),
+                                           projectID: project.id, sessionID: sessionID)
+        let same = await vm.openAskLink(OpenQuicklyTarget(path: "both.go", line: 1, col: nil),
+                                        projectID: project.id, sessionID: sessionID)
+
+        XCTAssertFalse(missing, "not visible anywhere: nothing opened")
+        XCTAssertTrue(same)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["both.go"])
+        XCTAssertTrue(vm.codeFiles.tabs(for: root).paths.isEmpty, "never an invisible tab")
     }
 
     /// A path in an ask resolves in its session's worktree: a file only the
