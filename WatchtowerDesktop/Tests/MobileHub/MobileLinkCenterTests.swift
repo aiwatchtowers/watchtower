@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import GRDB
 import XCTest
@@ -120,10 +121,8 @@ final class FakeShareService: ShareService, @unchecked Sendable {
         lock.withLock { shareByZone[zone]?.participants.removeAll(where: shouldRemove) }
     }
 
-    func deleteShares() async throws {
-        try await record("deleteShares")
-        lock.withLock { shareByZone = [:] }
-    }
+    /// A test helper, not a protocol member: the zones and their shares are gone.
+    func dropAll() { lock.withLock { shareByZone = [:] } }
 }
 
 /// The Mac side of linking (mobile POC spec §2.3, §4.13, §5.2 rule 4, §10)
@@ -537,16 +536,16 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertNil(center.openCode)
     }
 
-    // MARK: - Take over
+    // MARK: - Hub zones deleted (multi-hub spec §3.3)
 
-    func testTakeOverDeletesTheSharesClearsDevicesAndTheNextCodeMakesNewShares() async throws {
+    func testHubZonesDeletedForgetsCodesAndPhonesAndTheNextCodeMakesNewShares() async throws {
         let first = try await center.issueCode()
         try await handle(try deviceRecord("phone-a", nonce: first.nonce))
-        XCTAssertEqual(shares.created, 2)
+        shares.dropAll()
 
-        await center.takeOverReset()
+        try center.hubZonesDeleted()
 
-        XCTAssertTrue(shares.shares.isEmpty)
+        XCTAssertNil(center.openCode)
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
         XCTAssertTrue(try grants().isEmpty)
@@ -555,6 +554,34 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(shares.created, 4, "new shares")
         XCTAssertNotEqual(next.dataShare, first.dataShare)
         XCTAssertNotEqual(next.relayShare, first.relayShare)
+    }
+
+    /// Final review m2: phones that could not be forgotten are reported, so
+    /// the hub keeps its zone delete pending; the rest is still done.
+    func testHubZonesDeletedThrowsWhenThePhonesCannotBeForgotten() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        center = try makeCenter()
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        _ = try await center.issueCode()
+        try await disk.raw.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_forget BEFORE DELETE ON devices BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        }
+
+        XCTAssertThrowsError(try center.hubZonesDeleted())
+
+        XCTAssertNil(center.openCode, "the open code is still forgotten")
+        XCTAssertEqual(sharing.last, HubSharing.none)
+        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-a"], "the phone row stayed")
+    }
+
+    func testTheCloudKitShareServiceAddressesTheHubsOwnZones() {
+        let service = CloudKitShareService(hubID: "hub-acme") { false }
+        XCTAssertEqual(service.shareID(.data).zoneID.zoneName, "DataZone-hub-acme")
+        XCTAssertEqual(service.shareID(.relay).zoneID.zoneName, "RelayZone-hub-acme")
+        XCTAssertEqual(service.shareID(.relay).recordName, CKRecordNameZoneWideShare)
     }
 
     // MARK: - Pruning
@@ -676,17 +703,13 @@ final class MobileLinkCenterTests: XCTestCase {
 
     /// An unsigned dev build never reaches `CKContainer` (it would crash).
     func testWithoutTheEntitlementTheCloudKitShareServiceTouchesNoContainer() async throws {
-        let service = CloudKitShareService { false }
+        let service = CloudKitShareService(hubID: "hub-acme") { false }
 
         let account = await service.accountStatus()
         XCTAssertEqual(account, .unavailable("missing iCloud entitlement (unsigned dev build?)"))
         do {
             _ = try await service.ensureShares()
             XCTFail("ensureShares must refuse")
-        } catch ShareServiceError.noEntitlement {}
-        do {
-            try await service.deleteShares()
-            XCTFail("deleteShares must refuse")
         } catch ShareServiceError.noEntitlement {}
 
         let center = MobileLinkCenter(

@@ -259,7 +259,7 @@ final class TransportAssetTests: XCTestCase {
         let ck = CloudKitTransport.ckRecord(from: record, in: zoneID, systemFields: nil)
         let asset = ck["asset"] as? CKAsset
         XCTAssertEqual(asset?.fileURL, URL(fileURLWithPath: "/tmp/mapped.m4a"))
-        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck), record)
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck, zone: .relay), record)
     }
 
     func testCKRecordMappingNilAssetRemovesField() {
@@ -276,6 +276,6 @@ final class TransportAssetTests: XCTestCase {
             from: makeRecord(assetPath: nil), in: zoneID, systemFields: archiver.encodedData
         )
         XCTAssertNil(rewritten["asset"])
-        XCTAssertNil(CloudKitTransport.cloudRecord(from: rewritten)?.assetFileURL)
+        XCTAssertNil(CloudKitTransport.cloudRecord(from: rewritten, zone: .relay)?.assetFileURL)
     }
 }

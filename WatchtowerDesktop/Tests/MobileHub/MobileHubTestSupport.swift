@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import GRDB
 import XCTest
@@ -6,9 +7,7 @@ import WatchtowerSync
 
 /// HubTransport stub: InMemoryCloudTransport record I/O plus steerable
 /// availability, a log of every saved record (with the instant it was
-/// saved) and counters for the lifecycle calls. Two stubs over one `cloud`
-/// are two Macs on one iCloud account. `echoesOwnSaves: false` mirrors
-/// CloudKitTransport, whose buffer never holds the device's own saves.
+/// saved) and counters for the lifecycle calls.
 final class StubHubTransport: HubTransport, @unchecked Sendable {
     struct Saved {
         let record: CloudRecord
@@ -27,31 +26,37 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var resetHandler: (@Sendable () -> Void)?
     private var dataZoneResetHandler: (@Sendable () -> Void)?
     private var rejectedHandler: (@Sendable (String, CloudZoneID) -> Void)?
-    private var pullHangs = false
-    private var pullFails = false
-    private var dataChangesFail = false
     private var failingSaves = 0
     private var saveGate: (gate: SaveGate, matches: @Sendable (CloudRecord) -> Bool)?
     private var resetHandlerGate: SaveGate?
-    private let echoesOwnSaves: Bool
-    private var ownPayloads: Set<Data> = []
     private var throttleStart: Date?
+
+    /// The single-hub build's fixed-name zones, as `removeLegacyZones` sees them.
+    enum LegacyZones { case none, present(heartbeat: Data?) }
+    private var legacy: LegacyZones = .none
+    private var legacyChecks = 0
+    private var legacyFails = false
+    private var zoneDeleteError: (any Error)?
+    private var zoneDeletesPartial = false
+    private var zoneDeleteCount = 0
+    /// Like CloudKitTransport: a delete while one runs joins it, and
+    /// `start()` waits for the running one.
+    private let zoneDeleteSlot = ZoneDeleteSlot()
+    private var zoneDeleteDelay: Duration?
 
     init(
         availability: CloudAvailability = .available,
-        cloud: InMemoryCloudTransport = InMemoryCloudTransport(),
-        echoesOwnSaves: Bool = true
+        cloud: InMemoryCloudTransport = InMemoryCloudTransport()
     ) {
         currentAvailability = availability
         inner = cloud
-        self.echoesOwnSaves = echoesOwnSaves
     }
 
     var starts: Int { lock.withLock { startCount } }
     var stops: Int { lock.withLock { stopCount } }
     private var pullCount = 0
     var pulls: Int { lock.withLock { pullCount } }
-    /// "start" / "stop", in call order.
+    /// "start" / "stop" / "deleteZones", in call order.
     var lifecycle: [String] { lock.withLock { lifecycleLog } }
     /// Ids of every `applied` action echo saved, in order — counted here, on
     /// save, so a test polls an O(1) value instead of re-decoding the log.
@@ -59,16 +64,6 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     var saved: [Saved] { lock.withLock { savedLog } }
     /// How many times the hub asked for an immediate send.
     var sendNowCalls: Int { lock.withLock { sendNowCount } }
-
-    /// A pull that never returns until it is cancelled (a hung CloudKit fetch).
-    func setPullHangs(_ value: Bool) {
-        lock.withLock { pullHangs = value }
-    }
-
-    /// A pull that fails at once (CloudKit offline).
-    func setPullFails(_ value: Bool) {
-        lock.withLock { pullFails = value }
-    }
 
     /// The next `count` saves throw before writing anything (a transient
     /// CloudKit or network error).
@@ -88,11 +83,6 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
         lock.withLock { resetHandlerGate = gate }
     }
 
-    /// `changes(in: .data, …)` throws (a broken local buffer).
-    func setDataChangesFail(_ value: Bool) {
-        lock.withLock { dataChangesFail = value }
-    }
-
     func setAvailability(_ value: CloudAvailability) {
         lock.withLock { currentAvailability = value }
     }
@@ -103,6 +93,54 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     var throttledSince: Date? { lock.withLock { throttleStart } }
+
+    func setLegacyZones(_ value: LegacyZones) { lock.withLock { legacy = value } }
+    func setLegacyCheckFails(_ value: Bool) { lock.withLock { legacyFails = value } }
+    /// Deletes fail with a refusal CloudKit sends before applying anything.
+    func setZoneDeletesFail(_ value: Bool) { setZoneDeleteError(value ? CKError(.networkUnavailable) : nil) }
+    /// Deletes throw `error` without deleting anything (nil: they go through).
+    func setZoneDeleteError(_ error: (any Error)?) { lock.withLock { zoneDeleteError = error } }
+    /// Deletes throw `HubZoneError.partlyDeleted` (one zone gone, or the
+    /// store wipe failed after the server delete).
+    func setZoneDeletesPartial(_ value: Bool) { lock.withLock { zoneDeletesPartial = value } }
+    /// The next `deleteHubZones` sleeps this long (uncancellable, like a
+    /// CloudKit call that outlives its bound), then goes through.
+    func delayNextZoneDelete(_ value: Duration) { lock.withLock { zoneDeleteDelay = value } }
+    var legacyCheckCount: Int { lock.withLock { legacyChecks } }
+    var zoneDeletes: Int { lock.withLock { zoneDeleteCount } }
+    var legacyZonesPresent: Bool {
+        lock.withLock {
+            if case .present = legacy { return true }
+            return false
+        }
+    }
+
+    func deleteHubZones() async throws {
+        let failure = await zoneDeleteSlot.run { [self] () -> (any Error)? in
+            let (failure, partial, delay) = lock.withLock { () -> ((any Error)?, Bool, Duration?) in
+                lifecycleLog.append("deleteZones")
+                defer { zoneDeleteDelay = nil }
+                return (zoneDeleteError, zoneDeletesPartial, zoneDeleteDelay)
+            }
+            if let delay { try? await Task.sleep(for: delay) }
+            if let failure { return failure }
+            lock.withLock { zoneDeleteCount += 1 }
+            return partial ? HubZoneError.partlyDeleted : nil
+        }
+        if let failure { throw failure }
+    }
+
+    func removeLegacyZones(deleteIf: @Sendable (Data?) -> Bool) async throws -> LegacyZoneCleanup {
+        let (state, fails) = lock.withLock { () -> (LegacyZones, Bool) in
+            legacyChecks += 1
+            return (legacy, legacyFails)
+        }
+        if fails { throw URLError(.notConnectedToInternet) }
+        guard case .present(let heartbeat) = state else { return .noneFound }
+        guard deleteIf(heartbeat) else { return .kept }
+        lock.withLock { legacy = .none }
+        return .deleted
+    }
 
     func fireAccountReset() {
         let handler = lock.withLock { resetHandler }
@@ -120,6 +158,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func start() async {
+        await zoneDeleteSlot.settle()
         lock.withLock {
             startCount += 1
             lifecycleLog.append("start")
@@ -137,13 +176,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func pull() async throws {
-        let (hangs, fails) = lock.withLock { () -> (Bool, Bool) in
-            pullCount += 1
-            return (pullHangs, pullFails)
-        }
-        if fails { throw URLError(.notConnectedToInternet) }
-        guard hangs else { return }
-        try await Task.sleep(for: .seconds(3600))
+        lock.withLock { pullCount += 1 }
     }
     func availability() async -> CloudAvailability { lock.withLock { currentAvailability } }
 
@@ -185,7 +218,6 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
             return action.id
         }
         lock.withLock {
-            ownPayloads.formUnion(records.map(\.payload))
             savedLog.append(contentsOf: records.map { Saved(record: $0, at: now) })
             appliedIDs.append(contentsOf: applied)
         }
@@ -196,15 +228,48 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
-        let (fails, own) = lock.withLock { (dataChangesFail && zone == .data, echoesOwnSaves ? [] : ownPayloads) }
-        if fails { throw CocoaError(.fileReadCorruptFile) }
-        let batch = try await inner.changes(in: zone, since: token)
-        guard !own.isEmpty else { return batch }
-        return CloudChangeBatch(
-            changed: batch.changed.filter { !own.contains($0.payload) },
-            deletedRecordNames: batch.deletedRecordNames,
-            newToken: batch.newToken
-        )
+        try await inner.changes(in: zone, since: token)
+    }
+}
+
+/// One zone delete at a time: a call while one runs gets its outcome
+/// (CloudKitTransport's join); `settle()` waits for the running one.
+actor ZoneDeleteSlot {
+    private var running: Task<(any Error)?, Never>?
+
+    func run(_ operation: @escaping @Sendable () async -> (any Error)?) async -> (any Error)? {
+        if let running { return await running.value }
+        let work = Task { await operation() }
+        running = work
+        let failure = await work.value
+        running = nil
+        return failure
+    }
+
+    func settle() async {
+        _ = await running?.value
+    }
+}
+
+extension HubSyncState {
+    /// A per-hub sidecar on a temp file, plus a second handle on the file
+    /// through which a test installs a trigger that fails a write. The
+    /// caller removes `dir`.
+    static func onDiskPerHub() throws -> (state: HubSyncState, raw: DatabaseQueue, dir: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("hubstate.db").path
+        let state = try HubSyncState(path: path)
+        try state.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+        return (state, try DatabaseQueue(path: path), dir)
+    }
+
+    /// A sidecar the per-hub zone adoption already ran on (most tests seed
+    /// sync state before `start()` and must keep it).
+    static func inMemoryPerHub() throws -> HubSyncState {
+        let state = try inMemory()
+        try state.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+        return state
     }
 }
 
@@ -314,11 +379,12 @@ func pendingActionRecord(
     entityID: String? = nil,
     params: [String: JSONValue] = [:],
     age: TimeInterval = 0,
-    now: Date = Date()
+    now: Date = Date(),
+    hubID: String? = nil
 ) throws -> CloudRecord {
     let created = now.addingTimeInterval(-age)
     let action = ActionRequestPayload(
-        id: id, kind: kind, entityID: entityID, params: params, createdAt: created, deviceID: "device-a"
+        id: id, kind: kind, entityID: entityID, params: params, createdAt: created, deviceID: "device-a", hubID: hubID
     )
     return try CloudRecordFactory.record(for: action, modifiedAt: created)
 }

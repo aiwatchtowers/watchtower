@@ -23,7 +23,7 @@ final class CloudKitTransportResetTests: XCTestCase {
         try store.saveSystemFields(Data("f".utf8), recordName: "target-1", zone: .data)
         try store.saveEngineState(Data("s".utf8))
 
-        let transport = CloudKitTransport(store: store)
+        let transport = CloudKitTransport(store: store, scope: .private, hubID: HubZones.testHubID, role: .hub)
         let counter = Counter()
         await transport.setAccountResetHandler { counter.increment() }
 

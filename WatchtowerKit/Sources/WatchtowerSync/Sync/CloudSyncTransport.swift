@@ -136,7 +136,7 @@ public protocol SweepingTransport: CloudSyncTransport {
 /// (mobile POC spec §9). Delivered through
 /// `CloudKitTransport.setEventHandler`.
 public enum TransportEvent: Equatable, Sendable {
-    /// `shared` scope only: the Mac's zones are gone for this participant —
+    /// Phone role only: the linked Mac's zones are gone for this phone —
     /// a zone-deleted event, `.zoneNotFound`, or `.changeTokenExpired` on a
     /// zone that no longer exists. The phone shows "This Mac removed this
     /// phone", wipes its replica and returns to Welcome.

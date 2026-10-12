@@ -71,6 +71,10 @@ struct MobileSettingsView: View {
                 Text(MobileSettingsViewModel.needsSignedBuild)
                     .foregroundStyle(.secondary)
             }
+            if let problem = model.hubOffLine {
+                Text(problem)
+                    .foregroundStyle(.orange)
+            }
             if model.showsCorpNotice {
                 Text(MobileSettingsViewModel.corpNotice)
                     .foregroundStyle(.secondary)
@@ -92,9 +96,6 @@ struct MobileSettingsView: View {
             }
             if let line = model.statusLine {
                 Text(line)
-            }
-            if model.offersTakeOver {
-                Button("Take over") { Task { await model.takeOver() } }
             }
             if model.hub?.status == .running {
                 Text(lastPublishText)

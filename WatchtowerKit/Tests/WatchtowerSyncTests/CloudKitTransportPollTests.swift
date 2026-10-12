@@ -8,11 +8,12 @@ import XCTest
 final class CloudKitTransportPollTests: XCTestCase {
     private let owner = "_acme-owner-record"
     private var shared: CloudDatabaseScope { .shared(ownerName: owner) }
+    private var sharedZones: HubZones { .test(shared) }
 
     private func ckRecord(_ name: String, zone: CloudZoneID, scope: CloudDatabaseScope = .private) -> CKRecord {
         CloudKitTransport.ckRecord(
             from: CloudRecord(recordName: name, zone: zone, kind: "action", modifiedAt: Date(), payload: Data("{}".utf8)),
-            in: scope.zoneID(for: zone),
+            in: HubZones.test(scope).zoneID(for: zone),
             systemFields: nil
         )
     }
@@ -36,7 +37,7 @@ final class CloudKitTransportPollTests: XCTestCase {
 
         XCTAssertEqual(engine.fetchCount, 1, "the engine still fetches what it knows about")
         XCTAssertEqual(engine.zoneFetches, CloudZoneID.allCases.map {
-            FakeSyncEngine.ZoneFetch(zoneID: CloudDatabaseScope.private.zoneID(for: $0), token: nil)
+            FakeSyncEngine.ZoneFetch(zoneID: HubZones.test().zoneID(for: $0), token: nil)
         })
     }
 
@@ -46,7 +47,7 @@ final class CloudKitTransportPollTests: XCTestCase {
 
         try await transport.pull()
 
-        XCTAssertEqual(engine.zoneFetches.map(\.zoneID), CloudZoneID.allCases.map { shared.zoneID(for: $0) })
+        XCTAssertEqual(engine.zoneFetches.map(\.zoneID), CloudZoneID.allCases.map { sharedZones.zoneID(for: $0) })
         XCTAssertTrue(engine.zoneFetches.allSatisfy { $0.zoneID.ownerName == owner })
     }
 
@@ -59,22 +60,22 @@ final class CloudKitTransportPollTests: XCTestCase {
         try await transport.pull()
 
         let second = engine.zoneFetches.suffix(2)
-        XCTAssertEqual(second.map(\.token), [Data("DataZone-1".utf8), Data("RelayZone-1".utf8)])
-        XCTAssertEqual(try store.pollToken(zone: .relay), Data("RelayZone-2".utf8))
+        XCTAssertEqual(second.map(\.token), [Data("\(HubZones.testDataZoneName)-1".utf8), Data("\(HubZones.testRelayZoneName)-1".utf8)])
+        XCTAssertEqual(try store.pollToken(zone: .relay), Data("\(HubZones.testRelayZoneName)-2".utf8))
     }
 
     func testPolledRecordsAreBufferedForConsumers() async throws {
         let store = try TransportStore.inMemory()
         let engine = FakeSyncEngine()
-        engine.enqueueZonePage(page([ckRecord("device-1", zone: .relay)], token: "r1", moreComing: true), zoneName: "RelayZone")
-        engine.enqueueZonePage(page([ckRecord("action-2", zone: .relay)], token: "r2"), zoneName: "RelayZone")
+        engine.enqueueZonePage(page([ckRecord("device-1", zone: .relay)], token: "r1", moreComing: true), zoneName: HubZones.testRelayZoneName)
+        engine.enqueueZonePage(page([ckRecord("action-2", zone: .relay)], token: "r2"), zoneName: HubZones.testRelayZoneName)
         let transport = await CloudKitTransport.testing(store: store, engine: engine)
 
         try await transport.pull()
 
         let batch = try await transport.changes(in: .relay, since: nil)
         XCTAssertEqual(batch.changed.map(\.recordName), ["device-1", "action-2"])
-        XCTAssertEqual(engine.zoneFetches.filter { $0.zoneID.zoneName == "RelayZone" }.map(\.token), [nil, Data("r1".utf8)],
+        XCTAssertEqual(engine.zoneFetches.filter { $0.zoneID.zoneName == HubZones.testRelayZoneName }.map(\.token), [nil, Data("r1".utf8)],
                        "a page with more coming is followed at once")
         XCTAssertEqual(try store.pollToken(zone: .relay), Data("r2".utf8))
         XCTAssertNotNil(try store.systemFields(recordName: "device-1", zone: .relay))
@@ -85,11 +86,11 @@ final class CloudKitTransportPollTests: XCTestCase {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: store, engine: engine)
         await transport.bufferFetched(modifications: [ckRecord("known", zone: .relay)], deletions: [])
-        let relay = CloudDatabaseScope.private.zoneID(for: .relay)
+        let relay = HubZones.test().zoneID(for: .relay)
         engine.enqueueZonePage(page(deletions: [
             CKRecord.ID(recordName: "known", zoneID: relay),
             CKRecord.ID(recordName: "never-seen", zoneID: relay)
-        ], token: "r1"), zoneName: "RelayZone")
+        ], token: "r1"), zoneName: HubZones.testRelayZoneName)
 
         try await transport.pull()
 
@@ -102,31 +103,31 @@ final class CloudKitTransportPollTests: XCTestCase {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: store, engine: engine)
         try await transport.pull()
-        engine.enqueueZonePage(.failure(CKError(.changeTokenExpired)), zoneName: "RelayZone")
+        engine.enqueueZonePage(.failure(CKError(.changeTokenExpired)), zoneName: HubZones.testRelayZoneName)
 
         try await transport.pull()
         XCTAssertNil(try store.pollToken(zone: .relay))
         try await transport.pull()
 
         XCTAssertEqual(engine.zoneFetches.last, FakeSyncEngine.ZoneFetch(
-            zoneID: CloudDatabaseScope.private.zoneID(for: .relay), token: nil
+            zoneID: HubZones.test().zoneID(for: .relay), token: nil
         ))
     }
 
     func testPrivateScopeMissingZoneOnThePollIsQuiet() async throws {
         let engine = FakeSyncEngine()
-        engine.enqueueZonePage(.failure(CKError(.zoneNotFound)), zoneName: "DataZone")
+        engine.enqueueZonePage(.failure(CKError(.zoneNotFound)), zoneName: HubZones.testDataZoneName)
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
 
         try await transport.pull()
 
-        XCTAssertEqual(engine.zoneFetches.map(\.zoneID.zoneName), ["DataZone", "RelayZone"],
+        XCTAssertEqual(engine.zoneFetches.map(\.zoneID.zoneName), [HubZones.testDataZoneName, HubZones.testRelayZoneName],
                        "a zone the engine has not created yet does not stop the other zone's poll")
     }
 
     func testSharedScopeMissingZoneOnThePollUnlinks() async throws {
         let engine = FakeSyncEngine()
-        engine.enqueueZonePage(.failure(CKError(.zoneNotFound)), zoneName: "DataZone")
+        engine.enqueueZonePage(.failure(CKError(.zoneNotFound)), zoneName: HubZones.testDataZoneName)
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
         let collected = Collector<TransportEvent>()
         await transport.setEventHandler { collected.append($0) }
@@ -142,7 +143,7 @@ final class CloudKitTransportPollTests: XCTestCase {
         let clock = TestClock()
         let engine = FakeSyncEngine()
         engine.enqueueZonePage(
-            .failure(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])), zoneName: "DataZone"
+            .failure(CKError(.requestRateLimited, userInfo: [CKErrorRetryAfterKey: 30.0])), zoneName: HubZones.testDataZoneName
         )
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine, clock: clock) {
             try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000))
@@ -162,7 +163,7 @@ final class CloudKitTransportPollTests: XCTestCase {
 
     func testOtherPollErrorsAreThrown() async throws {
         let engine = FakeSyncEngine()
-        engine.enqueueZonePage(.failure(CKError(.serverRejectedRequest)), zoneName: "DataZone")
+        engine.enqueueZonePage(.failure(CKError(.serverRejectedRequest)), zoneName: HubZones.testDataZoneName)
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
 
         do {

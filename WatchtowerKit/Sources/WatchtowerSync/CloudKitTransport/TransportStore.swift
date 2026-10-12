@@ -105,6 +105,10 @@ public final class TransportStore: Sendable {
             if try !db.columns(in: "events").contains(where: { $0.name == "creator" }) {
                 try db.execute(sql: "ALTER TABLE events ADD COLUMN creator TEXT")
             }
+            // hub_id (multi-hub spec §4.4): the hub this store's state belongs to.
+            if try !db.columns(in: "scope").contains(where: { $0.name == "hub_id" }) {
+                try db.execute(sql: "ALTER TABLE scope ADD COLUMN hub_id TEXT")
+            }
         }
     }
 
@@ -469,41 +473,55 @@ public final class TransportStore: Sendable {
     /// The scope this store's state belongs to; nil for a store that never
     /// recorded one (every store created before scopes existed was private).
     public func storedScope() throws -> CloudDatabaseScope? {
-        try queue.read { db in try Self.readScope(db) }
+        try queue.read { db in try Self.readBinding(db)?.scope }
     }
 
-    func saveScope(_ scope: CloudDatabaseScope) throws {
-        try queue.write { db in try Self.writeScope(scope, db) }
+    /// The hub this store's state belongs to; nil for a store bound to no
+    /// hub (every store of the single-hub build).
+    func storedHubID() throws -> String? {
+        try queue.read { db in try Self.readBinding(db)?.hubID }
     }
 
-    /// Binds the store to `scope`. Engine state, system fields and buffered
-    /// events of one database mean nothing in the other, so a store that
-    /// recorded a DIFFERENT scope is wiped first. Returns whether it was.
-    /// A store with no recorded scope adopts this one and keeps its state.
+    func saveScope(_ scope: CloudDatabaseScope, hubID: String) throws {
+        try queue.write { db in try Self.writeScope(scope, hubID: hubID, db) }
+    }
+
+    /// Binds the store to `scope` and `hubID` (multi-hub spec §4.4). Engine
+    /// state, system fields and buffered events of another database or
+    /// another hub mean nothing here — archived system fields even name the
+    /// old zone — so a store bound to anything else, or to no hub (every
+    /// store of the single-hub build), is wiped first. Returns whether it
+    /// held state to wipe: a brand-new store with no binding and no state
+    /// returns false.
     @discardableResult
-    func adoptScope(_ scope: CloudDatabaseScope) throws -> Bool {
+    func adoptScope(_ scope: CloudDatabaseScope, hubID: String) throws -> Bool {
         let wiped = try queue.write { db in
-            let stored = try Self.readScope(db)
-            let wipe = stored != nil && stored != scope
+            let stored = try Self.readBinding(db)
+            var wipe = stored?.scope != scope || stored?.hubID != hubID
+            if stored == nil { wipe = try Self.holdsState(db) }
             if wipe { try Self.wipeState(db) }
-            try Self.writeScope(scope, db)
+            try Self.writeScope(scope, hubID: hubID, db)
             return wipe
         }
         if wiped { sweepUnreferencedStash() }
         return wiped
     }
 
-    private static func readScope(_ db: Database) throws -> CloudDatabaseScope? {
-        guard let row = try Row.fetchOne(db, sql: "SELECT kind, owner_name FROM scope WHERE id = 1") else { return nil }
+    private static func readBinding(_ db: Database) throws -> (scope: CloudDatabaseScope, hubID: String?)? {
+        guard let row = try Row.fetchOne(db, sql: "SELECT kind, owner_name, hub_id FROM scope WHERE id = 1") else {
+            return nil
+        }
+        let scope: CloudDatabaseScope
         switch row["kind"] as String {
         case "shared":
-            return .shared(ownerName: row["owner_name"] ?? "")
+            scope = .shared(ownerName: row["owner_name"] ?? "")
         default:
-            return .private
+            scope = .private
         }
+        return (scope, row["hub_id"])
     }
 
-    private static func writeScope(_ scope: CloudDatabaseScope, _ db: Database) throws {
+    private static func writeScope(_ scope: CloudDatabaseScope, hubID: String, _ db: Database) throws {
         let kind: String
         let ownerName: String?
         switch scope {
@@ -512,10 +530,11 @@ public final class TransportStore: Sendable {
         }
         try db.execute(
             sql: """
-                INSERT INTO scope (id, kind, owner_name) VALUES (1, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, owner_name = excluded.owner_name
+                INSERT INTO scope (id, kind, owner_name, hub_id) VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    kind = excluded.kind, owner_name = excluded.owner_name, hub_id = excluded.hub_id
                 """,
-            arguments: [kind, ownerName]
+            arguments: [kind, ownerName, hubID]
         )
     }
 
@@ -525,10 +544,17 @@ public final class TransportStore: Sendable {
     /// a CloudKit account change: leaving stale system_fields behind would
     /// re-introduce the stale-change-tag wedge (a re-save of an old-account
     /// record carrying a change tag the new account's server never issued).
-    /// The recorded scope stays: it is link configuration, not account state.
+    /// The recorded scope and hub stay: they are link configuration, not
+    /// account state.
     public func wipe() throws {
         try queue.write { db in try Self.wipeState(db) }
         sweepUnreferencedStash()
+    }
+
+    private static func holdsState(_ db: Database) throws -> Bool {
+        try ["events", "pending", "system_fields", "engine_state", "poll_tokens"].contains { table in
+            try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM \(table))") ?? false
+        }
     }
 
     private static func wipeState(_ db: Database) throws {

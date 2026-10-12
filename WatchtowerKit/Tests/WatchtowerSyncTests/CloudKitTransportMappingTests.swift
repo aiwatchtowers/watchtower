@@ -18,7 +18,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
         XCTAssertEqual(ck.recordID.recordName, "target-9")
         XCTAssertEqual(ck.recordType, "WatchtowerRecord")
 
-        let roundTripped = CloudKitTransport.cloudRecord(from: ck)
+        let roundTripped = CloudKitTransport.cloudRecord(from: ck, zone: .data)
         XCTAssertEqual(roundTripped, original)
     }
 
@@ -54,7 +54,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
         XCTAssertEqual(rebuilt["kind"] as? String, "target")
         XCTAssertEqual(rebuilt["modifiedAt"] as? Date, stamp.addingTimeInterval(60))
         // System-fields archives carry identity/metadata only — no payload keys.
-        XCTAssertEqual(CloudKitTransport.cloudRecord(from: rebuilt), updated)
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: rebuilt, zone: .data), updated)
     }
 
     func testUndecodableSystemFieldsBlobFallsBackToFreshRecord() {
@@ -76,7 +76,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
     func testCKRecordWithoutPayloadMapsToNil() {
         let zoneID = CKRecordZone.ID(zoneName: CloudZoneID.relay.rawValue, ownerName: CKCurrentUserDefaultName)
         let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "x", zoneID: zoneID))
-        XCTAssertNil(CloudKitTransport.cloudRecord(from: ck))
+        XCTAssertNil(CloudKitTransport.cloudRecord(from: ck, zone: .relay))
     }
 
     // MARK: - notifyLevel (Plan 6 Decision 3 — the isError discipline)
@@ -98,7 +98,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
         // allKeys() lists encrypted keys too; the plain accessor is the
         // discriminator — it must see nothing.
         XCTAssertNil(ck["notifyLevel"], "notifyLevel must never be a plain field")
-        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck), original)
+        XCTAssertEqual(CloudKitTransport.cloudRecord(from: ck, zone: .data), original)
     }
 
     func testNilNotifyLevelOmitsTheCKRecordField() {
@@ -115,7 +115,7 @@ final class CloudKitTransportMappingTests: XCTestCase {
         )
         let ck = CloudKitTransport.ckRecord(from: original, in: zoneID, systemFields: nil)
         XCTAssertFalse(ck.allKeys().contains("notifyLevel"), "nil notifyLevel must be ABSENT, not null")
-        XCTAssertNil(CloudKitTransport.cloudRecord(from: ck)?.notifyLevel)
+        XCTAssertNil(CloudKitTransport.cloudRecord(from: ck, zone: .data)?.notifyLevel)
     }
 
     func testLegacyCKRecordWithoutNotifyLevelDecodesToNil() {
@@ -125,17 +125,8 @@ final class CloudKitTransportMappingTests: XCTestCase {
         ck.encryptedValues["payload"] = Data("{}".utf8)
         ck["kind"] = "target"
         ck["modifiedAt"] = stamp
-        let decoded = CloudKitTransport.cloudRecord(from: ck)
+        let decoded = CloudKitTransport.cloudRecord(from: ck, zone: .data)
         XCTAssertNotNil(decoded)
         XCTAssertNil(decoded?.notifyLevel)
-    }
-
-    func testUnknownZoneNameMapsToNil() {
-        let zoneID = CKRecordZone.ID(zoneName: "SomeOtherZone", ownerName: CKCurrentUserDefaultName)
-        let ck = CKRecord(recordType: "WatchtowerRecord", recordID: CKRecord.ID(recordName: "x", zoneID: zoneID))
-        ck.encryptedValues["payload"] = Data("{}".utf8)
-        ck["kind"] = "target"
-        ck["modifiedAt"] = Date(timeIntervalSince1970: 0)
-        XCTAssertNil(CloudKitTransport.cloudRecord(from: ck))
     }
 }

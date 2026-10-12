@@ -13,8 +13,8 @@ protocol LinkContainer: Sendable {
     /// any metadata fetch or accept fails.
     func acceptShares(_ urls: [URL]) async throws
     /// Leaves the Mac's shares: deletes the accepted zone-wide share records
-    /// from this phone's shared database.
-    func leaveShares(ownerName: String) async throws
+    /// of `hubID`'s two zones from this phone's shared database.
+    func leaveShares(ownerName: String, hubID: String) async throws
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.
@@ -36,9 +36,9 @@ struct SystemLinkClock: LinkClock {
 /// lands.
 @MainActor
 protocol LinkHost: AnyObject {
-    /// The transport of `scope`'s database. A scope other than the running
-    /// one restarts the sync stack on it with an empty replica.
-    func prepare(scope: CloudDatabaseScope) async throws -> any CloudSyncTransport
+    /// The transport of `scope`'s database for `hubID`'s zones. Another
+    /// scope or hub restarts the sync stack with an empty replica.
+    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport
     /// One fetch, then this phone's `device_grant` as the replica holds it.
     func fetchGrant(deviceID: String) async -> DeviceGrant?
     /// `AppEnvironment.setLinkedDevice`: nil unlinks; `writesAllowed: false`
@@ -50,9 +50,9 @@ protocol LinkHost: AnyObject {
     func flushSends() async
     /// Stops sync, wipes the replica, the outbox and the transport's store
     /// (buffer, send queue, engine state), and restarts unlinked on
-    /// `scope`'s database. Returns how many outbox items and recordings were
-    /// still waiting for the Mac (reported "Not sent").
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope) async -> Int
+    /// `hubID`'s zones in `scope`'s database. Returns how many outbox items
+    /// and recordings were still waiting for the Mac (reported "Not sent").
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int
     func requestNotificationPermission() async
     /// Selects the Now tab.
     func openNow()
@@ -67,6 +67,9 @@ enum LinkFailure: Equatable {
     /// The Mac refused the code, or it cannot be read.
     case refused
     case updateApp
+    /// The code is from an older Mac (a `LinkPayload` version below the
+    /// phone's): its zones are not the ones this phone syncs.
+    case updateMac
     /// iCloud failed under the flow (a reason from CloudKit).
     case iCloud(String)
 
@@ -78,6 +81,7 @@ enum LinkFailure: Equatable {
         case .noAnswer: "Your Mac didn't answer — keep Settings → Mobile open on the Mac and scan again"
         case .refused: "This code can't be used — Show a new code on the Mac"
         case .updateApp: "Update Watchtower on this iPhone"
+        case .updateMac: "Update Watchtower on this Mac"
         case let .iCloud(reason): "Couldn't reach iCloud: \(reason)"
         }
     }
@@ -239,6 +243,9 @@ final class LinkingViewModel {
         case .failure(.newerVersion):
             phase = .failed(.updateApp)
             return
+        case .failure(.olderVersion):
+            phase = .failed(.updateMac)
+            return
         case let .failure(error):
             Self.logger.warning("unusable link code: \(String(describing: error), privacy: .public)")
             phase = .failed(.refused)
@@ -343,7 +350,7 @@ final class LinkingViewModel {
         // database.
         let transport: any CloudSyncTransport
         do {
-            transport = try await host.prepare(scope: scope)
+            transport = try await host.prepare(scope: scope, hubID: record.hubID)
         } catch is CancellationError {
             // Torn down mid-restart: the pending link stays for the relaunch.
             return
@@ -378,7 +385,7 @@ final class LinkingViewModel {
         }
         phase = .checking
         do {
-            _ = try await host?.prepare(scope: pending.link.databaseScope)
+            _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID)
         } catch {
             store.pending = nil
             phase = .failed(.iCloud(error.localizedDescription))
@@ -525,12 +532,12 @@ final class LinkingViewModel {
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)
         guard writeUnlinked, let device else {
-            return await host.wipeLocalData(restartingOn: .private)
+            return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         }
         let scope = current.databaseScope
-        let notSent = await host.wipeLocalData(restartingOn: scope)
+        let notSent = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID)
         do {
-            let transport = try await host.prepare(scope: scope)
+            let transport = try await host.prepare(scope: scope, hubID: current.hubID)
             try await transport.save([try deviceRecord(for: device, linkNonce: nil, unlinked: true)])
             await host.flushSends()
         } catch {
@@ -538,13 +545,14 @@ final class LinkingViewModel {
         }
         if case let .shared(ownerName) = scope {
             do {
-                try await container.leaveShares(ownerName: ownerName)
+                try await container.leaveShares(ownerName: ownerName, hubID: current.hubID)
             } catch {
                 Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }
-            // Back to the phone's own database: nothing is left to count.
-            _ = await host.wipeLocalData(restartingOn: .private)
         }
+        // Both scopes end unlinked, on the phone's own database: the linked
+        // hub's zones are no longer synced. Nothing is left to count.
+        _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         return notSent
     }
 

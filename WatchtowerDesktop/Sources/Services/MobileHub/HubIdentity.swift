@@ -5,25 +5,23 @@ import os
 import WatchtowerCore
 import WatchtowerSync
 
-/// Who this hub is, and what it last read of the DataZone `heartbeat`
-/// record (mobile POC spec §4.1, §8 I-1). Everything lives in the sidecar's
-/// `hub_meta`: `hub_id` and `enabled_at` for good, the heartbeat cursor and
-/// the last heartbeat seen until an account reset.
+/// Who this hub is (multi-hub spec §3.2): `hub_id` and `enabled_at` in the
+/// sidecar's `hub_meta`, kept for good. Since phase F each Mac publishes into
+/// its own zones; no other hub's heartbeat is read.
 struct HubIdentity: Sendable {
     static let enabledAtKey = "enabled_at"
-    static let heartbeatCursorKey = "heartbeat_cursor"
-    static let heartbeatSeenKey = "heartbeat_seen"
-    /// Wiped on an account reset: the new account's DataZone is another zone.
-    static let heartbeatReadKeys = [heartbeatCursorKey, heartbeatSeenKey]
-    /// A heartbeat under this age is a live hub (spec §3: 720 s).
-    static let liveWindow = TimeInterval(RelayFeed.heartbeatStaleAfter.components.seconds)
+    /// Set once the sidecar forgot the single-hub zones' publish state
+    /// (multi-hub spec §3.6, first start on the per-hub build).
+    static let perHubZonesKey = "per_hub_zones"
+    /// The legacy zone check's outcome (`LegacyZoneCleanup.rawValue`); set
+    /// once the check completed, so it runs at one start only.
+    static let legacyZonesCheckedKey = "legacy_zones_checked"
+    /// Set while turning the hub off has not settled its zone delete (it
+    /// timed out, or the sync state wipe after it failed): the next start
+    /// deletes again before the engine runs (multi-hub spec §3.3).
+    static let zonesDeletePendingKey = "hub_zones_delete_pending"
 
     let sidecar: HubSyncState
-    private let logger = Logger(subsystem: Constants.bundleID, category: "HubIdentity")
-
-    init(sidecar: HubSyncState) {
-        self.sidecar = sidecar
-    }
 
     func hubID() throws -> String {
         try sidecar.ensureHubID()
@@ -38,55 +36,16 @@ struct HubIdentity: Sendable {
         return Date(timeIntervalSince1970: seconds)
     }
 
-    /// Reads DataZone changes since the stored cursor and returns the
-    /// newest heartbeat this hub knows of, its own included (by
-    /// `updated_at`: a heartbeat older than the one remembered never
-    /// replaces it, so a late-arriving write loses to a later one). An
-    /// undecodable heartbeat (a newer Mac's format) is logged and leaves
-    /// the remembered one in place.
-    func readHeartbeat(from transport: any CloudSyncTransport) async throws -> HeartbeatPayload? {
-        let cursor = try sidecar.metaValue(forKey: Self.heartbeatCursorKey)
-            .flatMap(Int.init)
-            .map(CloudChangeToken.init(value:))
-        let batch = try await transport.changes(in: .data, since: cursor)
-        var latest = try storedHeartbeat()
-        if let record = batch.changed.first(where: { $0.recordName == HeartbeatPayload.recordName }) {
-            do {
-                let heartbeat = try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: record.payload)
-                if latest.map({ heartbeat.updatedAt > $0.updatedAt }) ?? true {
-                    try remember(record.payload)
-                    latest = heartbeat
-                }
-            } catch {
-                logger.warning("undecodable heartbeat skipped: \(error.localizedDescription, privacy: .public)")
-            }
-        } else if batch.deletedRecordNames.contains(HeartbeatPayload.recordName) {
-            try sidecar.setMetaValue("", forKey: Self.heartbeatSeenKey)
-            latest = nil
+    /// The single-hub build's zones go only when they hold this hub's
+    /// heartbeat or none (multi-hub spec §3.6). Another Mac's — or one this
+    /// build cannot read, so possibly a newer Mac's — is left alone.
+    static func legacyZonesAreOurs(heartbeat payload: Data?, hubID: String) -> Bool {
+        guard let payload else { return true }
+        do {
+            return try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: payload).hubID == hubID
+        } catch {
+            return false
         }
-        try sidecar.setMetaValue(String(batch.newToken.value), forKey: Self.heartbeatCursorKey)
-        return latest
-    }
-
-    /// Stores `payload` (RelayCoder JSON) as the newest heartbeat known.
-    /// The hub calls it with each heartbeat it writes: CloudKit never
-    /// fetches a device's own saves back into its buffer, so the read
-    /// alone would keep the previous hub's heartbeat as the newest.
-    func remember(_ payload: Data) throws {
-        guard let raw = String(bytes: payload, encoding: .utf8) else {
-            throw HubIdentityError.corruptValue(Self.heartbeatSeenKey)
-        }
-        try sidecar.setMetaValue(raw, forKey: Self.heartbeatSeenKey)
-    }
-
-    private func storedHeartbeat() throws -> HeartbeatPayload? {
-        guard let raw = try sidecar.metaValue(forKey: Self.heartbeatSeenKey), !raw.isEmpty else { return nil }
-        return try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: Data(raw.utf8))
-    }
-
-    /// Another hub's heartbeat, under 720 s old: that Mac is the hub.
-    static func isLiveForeign(_ heartbeat: HeartbeatPayload, hubID: String, now: Date) -> Bool {
-        heartbeat.hubID != hubID && now.timeIntervalSince(heartbeat.updatedAt) < liveWindow
     }
 
     /// At most 60 characters, cut at a grapheme-cluster boundary (a
