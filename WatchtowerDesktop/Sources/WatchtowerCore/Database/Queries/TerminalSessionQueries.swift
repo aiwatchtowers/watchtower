@@ -4,11 +4,13 @@ import GRDB
 package enum TerminalSessionQueryError: LocalizedError, Equatable {
     case emptyTitle
     case notFound(Int64)
+    case missingSessionID
 
     package var errorDescription: String? {
         switch self {
         case .emptyTitle: "A session needs a name."
         case let .notFound(id): "Terminal session \(id) no longer exists."
+        case .missingSessionID: "A Claude Code session needs a session id."
         }
     }
 }
@@ -25,6 +27,8 @@ package enum TerminalSessionQueries {
         package var title: String
         package var targetID: Int64?
         package var folderPath: String
+        /// The agent's own session id. Required (non-empty) for `.claude`;
+        /// nil for a shell, and for a new codex row (Codex mints its id).
         package var claudeSessionID: String?
 
         package init(
@@ -44,7 +48,12 @@ package enum TerminalSessionQueries {
         }
     }
 
+    /// Throws `missingSessionID` for a `.claude` row without a session id
+    /// (the schema's CHECK would reject a NULL one; an empty one too, here).
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
+        if new.kind == .claude, new.claudeSessionID?.isEmpty ?? true {
+            throw TerminalSessionQueryError.missingSessionID
+        }
         try db.execute(
             sql: """
                 INSERT INTO terminal_sessions
@@ -94,8 +103,8 @@ package enum TerminalSessionQueries {
         )
     }
 
-    /// The stored state of every workbench `claude` session, live or not,
-    /// plus `liveIDs` (a live standalone `claude` terminal): the hook state,
+    /// The stored state of every workbench agent session (`claude` or
+    /// `codex`), live or not, plus `liveIDs` (a live standalone agent terminal): the hook state,
     /// finished, the error, the background agent count and its report, the
     /// recorded Chat question and its stamp, the open-ask count and the
     /// oldest open ask, with the workbench name a notice names. Read-only:
@@ -113,7 +122,7 @@ package enum TerminalSessionQueries {
                            AS oldest_open_ask_id
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
-                WHERE (s.kind = 'claude' AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
+                WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
                 ORDER BY s.id
                 """,
             arguments: StatementArguments(liveIDs)
@@ -143,6 +152,24 @@ package enum TerminalSessionQueries {
             arguments: [uuid, id]
         )
         try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
+    }
+
+    /// "Start fresh" on a codex row: NULLs the stored session id and
+    /// transcript path, so the next launch starts a new Codex session whose
+    /// first SessionStart reports the new id. Any other kind is left
+    /// untouched (a claude row keeps its id: see `replaceClaudeSessionID`).
+    /// Throws `notFound` when the row is gone.
+    package static func resetAgentSession(_ db: Database, id: Int64) throws {
+        try db.execute(
+            sql: """
+                UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL
+                WHERE id = ? AND kind = 'codex'
+                """,
+            arguments: [id]
+        )
+        if db.changesCount == 0, try fetch(db, id: id) == nil {
+            throw TerminalSessionQueryError.notFound(id)
+        }
     }
 
     package static func delete(_ db: Database, id: Int64) throws {

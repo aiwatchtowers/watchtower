@@ -108,11 +108,11 @@ final class CodeHandoffCenter {
 
     // MARK: The sheet
 
-    /// The workbench's running Claude Code sessions, in the panel's order.
+    /// The workbench's running agent sessions (Claude Code or Codex), in the panel's order.
     func choices(workbenchID: Int64) -> [CodeHandoffSessionChoice] {
         guard let vm = workbenches, let live = terminalCenter?.liveIDs else { return [] }
         return vm.orderedSessions(projectID: workbenchID)
-            .filter { $0.kind == .claude && live.contains($0.id) }
+            .filter { $0.kind.isAgent && live.contains($0.id) }
             .map { CodeHandoffSessionChoice(session: $0, state: vm.sessionState($0)) }
     }
 

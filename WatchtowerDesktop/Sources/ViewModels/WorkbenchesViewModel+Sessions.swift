@@ -190,7 +190,7 @@ extension WorkbenchesViewModel {
     /// mechanically and never gets an AI title.
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
         let title = switch kind {
-        case .claude: TerminalSessionNaming.provisional(now: now())
+        case .claude, .codex: TerminalSessionNaming.provisional(now: now())
         case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
         }
         let row = await createAndStart(

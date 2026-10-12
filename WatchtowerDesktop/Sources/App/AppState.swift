@@ -1928,7 +1928,7 @@ final class AppState {
         let terminals = terminalCenter
         escalator.sessions = { [weak agentStates] in
             ChatQuestionEscalator.Sessions(
-                rows: agentStates?.rows ?? [], liveIDs: terminals.liveClaudeIDs, startedAt: terminals.startedAt
+                rows: agentStates?.rows ?? [], liveIDs: terminals.liveAgentIDs, startedAt: terminals.startedAt
             )
         }
         escalator.hasOwnerDraft = { terminals.promptDrafts.contains($0) }
