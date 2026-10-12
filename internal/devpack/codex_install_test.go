@@ -538,6 +538,14 @@ func TestProj04_DedupeRefusesATOMLShapeItCannotEdit(t *testing.T) {
 	assert.Equal(t, inline, readTestFile(t, file))
 	assert.True(t, hasImportedDuplicates(folder, 7))
 
+	// A line edit that would cut a value in half is caught by the re-decode
+	// and nothing is written: here a multi-line array line opens with "[".
+	split := "[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"" + ourClaudeStart + "\"\nx = [\n[1]]\n"
+	writeTestFile(t, file, split)
+	_, err = dedupeImportedHooks(folder, 7)
+	assert.ErrorIs(t, err, ErrCodexHooksNotEditable)
+	assert.Equal(t, split, readTestFile(t, file))
+
 	// A [[…]] header inside a multi-line string is not a table.
 	tricky := "note = \"\"\"\n[[hooks.Stop]]\n\"\"\"\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = \"" + ourClaudeStart + "\"\n"
 	writeTestFile(t, file, tricky)
