@@ -1,4 +1,5 @@
 import AppKit
+import CloudKit
 import Foundation
 import os
 import WatchtowerCore
@@ -398,14 +399,18 @@ final class MobileHubService {
 
     // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
 
-    /// `partlyDeleted`: something was deleted (one zone, or both without the
-    /// store wipe), so the delete has to be finished like a timed-out one.
-    private enum ZoneDeleteOutcome { case deleted, failed, partlyDeleted, timedOut }
+    /// `failed`: refused before anything was sent or applied (see
+    /// `isDefinitelyRefused`), so nothing changed. `partlyDeleted`: something
+    /// was deleted (one zone, or both without the store wipe). `unconfirmed`:
+    /// the bound ran out, or an error left it open whether the server
+    /// applied the delete. The last two have to be finished at the next start.
+    private enum ZoneDeleteOutcome { case deleted, failed, partlyDeleted, unconfirmed }
 
-    /// Turning the hub off: records the delete as pending first, so a
-    /// timeout (outcome unknown), a partial delete or a crash leaves the
-    /// next start to finish it. Only a delete that removed nothing clears
-    /// the marker. What did not go through shows in `hubOffProblem`.
+    /// Turning the hub off: records the delete as pending first, so an
+    /// unconfirmed outcome (a timeout, or an error after the request may have
+    /// reached the server), a partial delete or a crash leaves the next start
+    /// to finish it. Only a delete that was definitely refused clears the
+    /// marker. What did not go through shows in `hubOffProblem`.
     private func deleteZonesForHubOff() async {
         hubOffProblem = nil
         do {
@@ -432,8 +437,8 @@ final class MobileHubService {
         case .partlyDeleted:
             logger.warning("hub off: zones partly deleted; the next start finishes it")
             hubOffProblem = "This Mac's iCloud zones were only partly deleted. That finishes when the hub is turned on."
-        case .timedOut:
-            logger.warning("hub off: zone delete timed out; the next start finishes it")
+        case .unconfirmed:
+            logger.warning("hub off: zone delete unconfirmed; the next start finishes it")
             hubOffProblem = "iCloud didn't confirm deleting this Mac's zones. That finishes when the hub is turned on."
         }
     }
@@ -469,10 +474,27 @@ final class MobileHubService {
                 return .partlyDeleted
             } catch {
                 logger.error("zones not deleted: \(error.localizedDescription, privacy: .public)")
-                return .failed
+                return Self.isDefinitelyRefused(error) ? .failed : .unconfirmed
             }
         }
-        return await Self.bounded(cloudTimeout) { await work.value } ?? .timedOut
+        return await Self.bounded(cloudTimeout) { await work.value } ?? .unconfirmed
+    }
+
+    /// Errors that mean the delete was never sent or never applied: the
+    /// transport refused it, or CloudKit rejected the request up front.
+    /// Anything else (a lost response, a network failure mid-request,
+    /// throttling, a server rejection, a non-CloudKit error) may have landed.
+    nonisolated static func isDefinitelyRefused(_ error: any Error) -> Bool {
+        if let hub = error as? HubZoneError {
+            return [.notHub, .engineRunning, .noEntitlement].contains(hub)
+        }
+        guard let ck = error as? CKError else { return false }
+        let refused: Set<CKError.Code> = [
+            .networkUnavailable, .notAuthenticated, .permissionFailure, .quotaExceeded, .missingEntitlement,
+            .badContainer, .managedAccountRestricted, .incompatibleVersion, .accountTemporarilyUnavailable,
+            .invalidArguments
+        ]
+        return refused.contains(ck.code)
     }
 
     /// The zones are gone: the link center forgets the phones, then the sync

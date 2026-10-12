@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import GRDB
 import XCTest
@@ -35,7 +36,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var legacy: LegacyZones = .none
     private var legacyChecks = 0
     private var legacyFails = false
-    private var zoneDeletesFail = false
+    private var zoneDeleteError: (any Error)?
     private var zoneDeletesPartial = false
     private var zoneDeleteCount = 0
     /// Like CloudKitTransport: a delete while one runs joins it, and
@@ -95,7 +96,10 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
 
     func setLegacyZones(_ value: LegacyZones) { lock.withLock { legacy = value } }
     func setLegacyCheckFails(_ value: Bool) { lock.withLock { legacyFails = value } }
-    func setZoneDeletesFail(_ value: Bool) { lock.withLock { zoneDeletesFail = value } }
+    /// Deletes fail with a refusal CloudKit sends before applying anything.
+    func setZoneDeletesFail(_ value: Bool) { setZoneDeleteError(value ? CKError(.networkUnavailable) : nil) }
+    /// Deletes throw `error` without deleting anything (nil: they go through).
+    func setZoneDeleteError(_ error: (any Error)?) { lock.withLock { zoneDeleteError = error } }
     /// Deletes throw `HubZoneError.partlyDeleted` (one zone gone, or the
     /// store wipe failed after the server delete).
     func setZoneDeletesPartial(_ value: Bool) { lock.withLock { zoneDeletesPartial = value } }
@@ -113,13 +117,13 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
 
     func deleteHubZones() async throws {
         let failure = await zoneDeleteSlot.run { [self] () -> (any Error)? in
-            let (fails, partial, delay) = lock.withLock { () -> (Bool, Bool, Duration?) in
+            let (failure, partial, delay) = lock.withLock { () -> ((any Error)?, Bool, Duration?) in
                 lifecycleLog.append("deleteZones")
                 defer { zoneDeleteDelay = nil }
-                return (zoneDeletesFail, zoneDeletesPartial, zoneDeleteDelay)
+                return (zoneDeleteError, zoneDeletesPartial, zoneDeleteDelay)
             }
             if let delay { try? await Task.sleep(for: delay) }
-            if fails { return URLError(.notConnectedToInternet) }
+            if let failure { return failure }
             lock.withLock { zoneDeleteCount += 1 }
             return partial ? HubZoneError.partlyDeleted : nil
         }

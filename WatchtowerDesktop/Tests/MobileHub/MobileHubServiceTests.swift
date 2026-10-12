@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import GRDB
 import XCTest
@@ -615,6 +616,63 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertTrue(center.devices.isEmpty)
         XCTAssertEqual(service.sharing, HubSharing.none)
         XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+    }
+
+    /// Round 2: `.networkUnavailable` is refused before anything is sent.
+    func testADefinitelyRefusedHubOffDeleteClearsTheMarkerAndKeepsThePhones() async throws {
+        let transport = StubHubTransport()
+        transport.setZoneDeleteError(CKError(.networkUnavailable))
+        let service = makeService(transport: transport)
+        var forgotten = 0
+        service.onZonesDeleted = { forgotten += 1 }
+        await service.start()
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertEqual(forgotten, 0)
+        XCTAssertFalse(try sidecar.linkedDevices().isEmpty, "the phones stay")
+    }
+
+    /// Round 2: a lost response may hide a delete that landed: like a
+    /// timeout, the marker stays and the next start finishes it.
+    func testALostResponseKeepsTheMarkerAndTheNextStartFinishesTheDelete() async throws {
+        let transport = StubHubTransport()
+        transport.setZoneDeleteError(CKError(.serverResponseLost))
+        let service = makeService(transport: transport)
+        var forgotten = 0
+        service.onZonesDeleted = { forgotten += 1 }
+        await service.start()
+
+        service.disable()
+        await service.waitUntilStopped()
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1")
+        XCTAssertEqual(forgotten, 0)
+        XCTAssertEqual(
+            service.hubOffProblem,
+            "iCloud didn't confirm deleting this Mac's zones. That finishes when the hub is turned on."
+        )
+
+        transport.setZoneDeleteError(nil)
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(forgotten, 1)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        service.stop()
+    }
+
+    func testOnlyRefusalsBeforeTheRequestCountAsNothingDeleted() {
+        for refused in [CKError.Code.networkUnavailable, .notAuthenticated, .quotaExceeded, .invalidArguments] {
+            XCTAssertTrue(MobileHubService.isDefinitelyRefused(CKError(refused)), "\(refused)")
+        }
+        XCTAssertTrue(MobileHubService.isDefinitelyRefused(HubZoneError.engineRunning))
+        for open in [CKError.Code.networkFailure, .serverResponseLost, .serviceUnavailable, .requestRateLimited,
+                     .zoneBusy, .serverRejectedRequest] {
+            XCTAssertFalse(MobileHubService.isDefinitelyRefused(CKError(open)), "\(open)")
+        }
+        XCTAssertFalse(MobileHubService.isDefinitelyRefused(URLError(.notConnectedToInternet)))
+        XCTAssertFalse(MobileHubService.isDefinitelyRefused(HubZoneError.partlyDeleted))
     }
 
     // MARK: - AppState wiring
