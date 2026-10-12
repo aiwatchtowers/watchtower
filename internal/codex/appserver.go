@@ -126,9 +126,12 @@ type appServer struct {
 	cancel context.CancelFunc
 	stdin  *os.File
 	stdout *os.File
-	lines  chan []byte   // one JSON message per line, closed at EOF
-	exited chan struct{} // closed once the process has been waited for
-	stderr *tailBuffer
+	lines  chan []byte // one JSON message per line, closed at EOF
+	// readErr is why the output stopped short of EOF (a line over the
+	// buffer, a read error); set by readLines before it closes lines.
+	readErr error
+	exited  chan struct{} // closed once the process has been waited for
+	stderr  *tailBuffer
 
 	writeMu   sync.Mutex
 	nextID    int
@@ -194,6 +197,7 @@ func (s *appServer) killGroup() {
 func (s *appServer) readLines() {
 	defer close(s.lines)
 	sc := bufio.NewScanner(s.stdout)
+	defer func() { s.readErr = sc.Err() }() // runs before the close
 	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for sc.Scan() {
 		line := bytes.TrimSpace(sc.Bytes())
@@ -248,6 +252,9 @@ func (s *appServer) call(ctx context.Context, method string, params any, result 
 		select {
 		case line, ok := <-s.lines:
 			if !ok {
+				if s.readErr != nil {
+					return s.unavailable(method, fmt.Errorf("the app-server output stopped: %w", s.readErr))
+				}
 				return s.unavailable(method, errors.New("the app-server closed its output"))
 			}
 			done, err := decodeResponse(line, id, method, result)

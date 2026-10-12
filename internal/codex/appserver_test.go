@@ -60,6 +60,10 @@ func runFakeAppServer(mode string) int {
 		if json.Unmarshal(sc.Bytes(), &req) != nil || req.ID == nil || mode == "hang" {
 			continue
 		}
+		if mode == "huge" { // one line over the client's 16 MiB buffer
+			_, _ = os.Stdout.Write(append([]byte(strings.Repeat("x", 17<<20)), '\n'))
+			continue
+		}
 		// A notification first, as the real server sends them unasked.
 		_ = out.Encode(map[string]any{"method": "remoteControl/status/changed", "params": map[string]any{}})
 		_ = out.Encode(fakeAnswer(strings.TrimSuffix(mode, "-child"), *req.ID, req.Method))
@@ -351,6 +355,16 @@ func TestAppServer_UnknownMethodErrorIsUnavailable(t *testing.T) {
 func TestAppServer_MissingBinaryIsUnavailable(t *testing.T) {
 	_, err := StartAppServer(context.Background(), filepath.Join(t.TempDir(), "codex"), nil, os.Environ())
 	if !errors.Is(err, ErrCodexTrustUnavailable) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// An output line over the buffer stops the reader: the error names why,
+// not only that the output closed.
+func TestAppServer_OversizedLineSaysWhy(t *testing.T) {
+	f := newFakeServer(t, "huge", nil)
+	_, err := StartAppServer(context.Background(), os.Args[0], nil, f.env)
+	if !errors.Is(err, ErrCodexTrustUnavailable) || !strings.Contains(err.Error(), "token too long") {
 		t.Fatalf("err = %v", err)
 	}
 }

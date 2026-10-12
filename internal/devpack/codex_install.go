@@ -540,7 +540,10 @@ func dedupeCodexConfigTOML(file string, workbenchID int64) (bool, error) {
 	expectHooks, _ := expect["hooks"].(map[string]any)
 	withoutOurImportedHooks(expectHooks, workbenchID)
 	got, err := decodeTOML(file, []byte(edited))
-	if err != nil || !reflect.DeepEqual(normalizeHooksDoc(got), normalizeHooksDoc(expect)) {
+	if err != nil {
+		return false, fmt.Errorf("%w (%s): the edit does not parse: %w", ErrCodexHooksNotEditable, file, err)
+	}
+	if !reflect.DeepEqual(normalizeHooksDoc(got), normalizeHooksDoc(expect)) {
 		return false, fmt.Errorf("%w (%s)", ErrCodexHooksNotEditable, file)
 	}
 	if onlyEmptyHooksTable(edited) {
