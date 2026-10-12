@@ -680,6 +680,7 @@ final class MobileHubServiceTests: XCTestCase {
     /// An AppState whose hub storage is a stub; counts how often it is built.
     private func makeAppState(
         transport: StubHubTransport,
+        shares: (any ShareService)? = nil,
         pushRegistrations: (@MainActor () -> Void)? = nil,
         storageBuilds: @escaping () -> Void
     ) throws -> AppState {
@@ -691,6 +692,8 @@ final class MobileHubServiceTests: XCTestCase {
             storageBuilds()
             var storage = MobileHubStorage(transport: transport, sidecar: sidecar)
             storage.registerForPushes = pushRegistrations
+            storage.shares = shares
+            storage.ownerUser = { "_owner-acme" }
             return storage
         }
         return appState
@@ -802,6 +805,51 @@ final class MobileHubServiceTests: XCTestCase {
         service.wakeRelay()
 
         await awaitHubCondition("a push wakes the relay loop") { transport.pulls == 2 }
+    }
+
+    /// #66.7: a new QR wakes the relay loop instead of waiting the idle interval.
+    func testIssuingACodeWakesTheRelayLoop() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport, relayInterval: .seconds(3600))
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) }
+        )
+        center.attach(to: service)
+        await service.start()
+        defer { service.stop() }
+        await awaitHubCondition("the first relay cycle pulled") { transport.pulls == 1 }
+
+        _ = try await center.issueCode()
+
+        await awaitHubCondition("the open code wakes the relay loop") { transport.pulls == 2 }
+        await center.closeLink(reason: .sheetClosed)
+    }
+
+    /// #66.1: a hub rebuilt while the QR is on screen keeps the run's link
+    /// center: the code stays open and its link is not closed.
+    func testAHubRebuiltWithTheQROpenKeepsTheCodeAndItsLink() async throws {
+        let transport = StubHubTransport()
+        let shares = FakeShareService()
+        let appState = try makeAppState(transport: transport, shares: shares) {}
+        defaults.set(true, forKey: Constants.mobileSyncEnabledKey)
+        defer { stopAll(appState) }
+        runInitWorkbenches(appState)
+        let first = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the first hub runs") { first.status == .running }
+        let center = try XCTUnwrap(first.linkCenter)
+        let code = try await center.issueCode()
+        shares.clearCalls()
+
+        runInitWorkbenches(appState)
+        let rebuilt = try XCTUnwrap(appState.mobileHub)
+        await awaitHubCondition("the rebuilt hub runs") { rebuilt.status == .running }
+
+        XCTAssertTrue(rebuilt.linkCenter === center)
+        XCTAssertEqual(center.openCode?.nonce, code.nonce)
+        XCTAssertTrue(shares.isLinkOpen)
+        XCTAssertFalse(shares.calls.contains("setPublicLink:false"), "\(shares.calls)")
+        await center.closeLink(reason: .sheetClosed)
     }
 
     func testWakeRelayWhileStoppedDoesNothing() async throws {

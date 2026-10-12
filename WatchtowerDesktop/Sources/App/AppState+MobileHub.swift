@@ -115,9 +115,9 @@ extension AppState {
         )
     }
 
-    /// The last step of `buildMobileHub`: the link center (when the storage
-    /// has a share service), the relay processor that hands it the phones'
-    /// `device` records, and the hub it hangs on.
+    /// The last step of `buildMobileHub`: the run's link center (when the
+    /// storage has a share service), the relay processor that hands it the
+    /// phones' `device` records, and the hub it hangs on.
     func assembleMobileHub(
         storage: MobileHubStorage,
         dbPool: DatabasePool,
@@ -127,7 +127,8 @@ extension AppState {
         recordingUploads: RelayProcessor.RecordingUploads
     ) throws -> MobileHubService {
         let hostInfo = HubHostInfo.live(dbPool: dbPool, ownerUser: storage.ownerUser)
-        let linkCenter = MobileLinkCenter.forHub(storage: storage, macName: hostInfo.macName, publisher: publisher)
+        let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
+        mobileLinkCenter = linkCenter
         let processor = RelayProcessor(
             transport: storage.transport, sidecar: storage.sidecar, dispatcher: dispatcher,
             hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,

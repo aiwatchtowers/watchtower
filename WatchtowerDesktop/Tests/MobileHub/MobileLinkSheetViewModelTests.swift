@@ -88,6 +88,23 @@ final class MobileLinkSheetViewModelTests: XCTestCase {
         await sheet.close()
     }
 
+    /// #66.2: a double click on New code issues one code, not two.
+    func testADoubleClickOnNewCodeIssuesOneCode() async throws {
+        let sheet = makeSheet()
+        await sheet.start()
+        fixture.shares.clearCalls()
+
+        let first = Task { await sheet.newCode() }
+        let second = Task { await sheet.newCode() }
+        await first.value
+        await second.value
+
+        XCTAssertEqual(fixture.shares.calls.filter { $0 == "ensureShares" }.count, 1)
+        guard case .showing(let code) = sheet.phase else { return XCTFail("phase \(sheet.phase)") }
+        XCTAssertEqual(code, fixture.center.openCode)
+        await sheet.close()
+    }
+
     func testCloseClosesTheLink() async throws {
         let sheet = makeSheet()
         await sheet.start()

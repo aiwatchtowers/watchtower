@@ -37,6 +37,8 @@ final class MobileLinkSheetViewModel: Identifiable {
     /// The phones linked before the code was shown: a new one used it.
     @ObservationIgnored private var knownDevices: Set<String> = []
     @ObservationIgnored private var started = false
+    /// A code is being issued: a second New code click is dropped.
+    @ObservationIgnored private var issuing = false
     @ObservationIgnored private var closed = false
 
     init(
@@ -75,6 +77,9 @@ final class MobileLinkSheetViewModel: Identifiable {
     }
 
     private func issue() async {
+        guard !issuing else { return }
+        issuing = true
+        defer { issuing = false }
         countdownTask?.cancel()
         countdownTask = nil
         await expiryClose?.value
@@ -99,6 +104,7 @@ final class MobileLinkSheetViewModel: Identifiable {
     }
 
     private func startCountdown() {
+        countdownTask?.cancel()
         countdownTask = Task { [weak self, sleep] in
             while !Task.isCancelled {
                 guard let self, await self.tick() else { return }
