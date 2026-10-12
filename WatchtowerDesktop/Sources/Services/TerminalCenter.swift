@@ -410,6 +410,16 @@ final class TerminalCenter {
         return .pasted
     }
 
+    /// Whether the session's prompt holds text not submitted right now: the
+    /// owner's draft, a line left without its Return, or a line in its pause
+    /// before its Return — what `submitPrompt` only pastes over. The phone's
+    /// lines are held instead of pasted then (PROJ-16).
+    func promptHoldsText(_ sessionID: Int64) -> Bool {
+        if promptDrafts.contains(sessionID) { return true }
+        guard let run = runs[sessionID] else { return false }
+        return pendingReturns.contains(run)
+    }
+
     /// Why the prompt held text before the paste, for the log: a bar still
     /// asking for a Return means a line of ours is what it holds.
     private func heldBackBeforePause(_ sessionID: Int64, run: Int) -> String {

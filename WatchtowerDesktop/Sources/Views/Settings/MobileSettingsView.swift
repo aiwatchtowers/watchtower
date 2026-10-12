@@ -47,7 +47,7 @@ struct MobileSettingsView: View {
             MobileLinkSheet(model: sheet) { Task { await model.linkSheetDismissed() } }
         }
         .confirmationDialog(
-            "Allow \(model.pendingAllow?.name ?? "this phone") to type into your sessions?",
+            MobileSettingsViewModel.allowQuestion(name: model.pendingAllow?.name ?? "this phone"),
             isPresented: Binding(
                 get: { model.pendingAllow != nil },
                 set: { if !$0 { model.pendingAllow = nil } }
@@ -155,7 +155,8 @@ private struct MobilePhoneRow: View {
                 HStack(spacing: 6) {
                     Text(MobileSettingsViewModel.scopeLabel(device.scope))
                     Text("Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))")
-                    Text(device.typingAllowed ? "Typing allowed" : "Typing off")
+                    Text(MobileSettingsViewModel.typingLabel(device))
+                        .foregroundStyle(device.typingRequested && !device.typingAllowed ? Color.accentColor : Color.secondary)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)

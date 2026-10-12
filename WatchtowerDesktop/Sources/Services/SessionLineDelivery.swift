@@ -55,6 +55,12 @@ final class SessionLineDelivery {
         case tried(Delivery)
     }
 
+    /// A line's own condition on top of PROJ-12's — the phone's (PROJ-16:
+    /// the agent idle, no draft in the prompt, the device still allowed):
+    /// asked right before the paste, after the fresh state read and the
+    /// permission-prompt hold; true holds the line (`.held`), nothing typed.
+    typealias Gate = @MainActor (_ sessionID: Int64) -> Bool
+
     /// Whether a session's agent waits on a permission prompt (its
     /// `SessionAgentStatus` is `needsApproval`): a line is held, never
     /// typed into the prompt.
@@ -84,17 +90,21 @@ final class SessionLineDelivery {
     /// Sends `line` to the session now, or holds it (`.held`/`.queued`):
     /// a held line goes later, and `onHeldEvent` hears each try. It is
     /// called only for a held line, never for the result returned here.
+    /// `gate`, when given, is asked before every paste of the line (its
+    /// first and each held retry).
     func deliverLine(
         _ line: String,
         key: LineKey,
         sessionID: Int64,
+        gate: Gate? = nil,
         onHeldEvent: @escaping (HeldEvent) -> Void
     ) async -> Delivery {
-        let delivery = await deliver(line, key: key, sessionID: sessionID)
+        let delivery = await deliver(line, key: key, sessionID: sessionID, gate: gate)
         if delivery == .held || delivery == .queued {
             heldCount += 1
             queueHeldLine(HeldLine(order: heldCount, key: key, sessionID: sessionID, line: line,
-                                   run: terminalCenter?.runs[sessionID], onEvent: onHeldEvent))
+                                   run: terminalCenter?.runs[sessionID], gate: gate,
+                                   behindAnother: delivery == .queued, onEvent: onHeldEvent))
         }
         return delivery
     }
@@ -138,8 +148,13 @@ final class SessionLineDelivery {
         // Taken before any wait, so an overlapping call never sends it twice.
         removeHeldLine(held)
         let sameRun = terminalCenter?.runs[held.sessionID] == held.run
-        let delivery = sameRun ? await deliver(held.line, key: held.key, sessionID: held.sessionID) : .noSession
-        if delivery == .held || delivery == .queued { queueHeldLine(held) }
+        let delivery = sameRun
+            ? await deliver(held.line, key: held.key, sessionID: held.sessionID, gate: held.gate) : .noSession
+        if delivery == .held || delivery == .queued {
+            var again = held
+            again.behindAnother = delivery == .queued
+            queueHeldLine(again)
+        }
         held.onEvent(.tried(delivery))
     }
 
@@ -154,16 +169,19 @@ final class SessionLineDelivery {
     /// the pause, and its prompt held no text not submitted; else the paste
     /// waits for the owner's Return. While the agent works, Claude Code
     /// queues the submitted line for its next turn. Without bracketed paste
-    /// the line is copied, never typed.
-    private func deliver(_ line: String, key: LineKey, sessionID: Int64) async -> Delivery {
+    /// the line is copied, never typed. A line's `gate` that holds it holds
+    /// it before the paste.
+    private func deliver(_ line: String, key: LineKey, sessionID: Int64, gate: Gate?) async -> Delivery {
         guard let center = terminalCenter, center.liveIDs.contains(sessionID),
               let run = center.runs[sessionID] else { return .noSession }
         guard !delivering.contains(sessionID) else { return .queued }
         delivering.insert(sessionID)
         defer {
             delivering.remove(sessionID)
-            // The lines held behind this one go next.
-            if queues[sessionID]?.isEmpty == false {
+            // The lines queued behind this one go next. Lines held for a
+            // reason of their own wait for the next state read: retrying
+            // them here would only hold them again, and again after that.
+            if queues[sessionID]?.contains(where: \.behindAnother) == true {
                 Task { [weak self] in await self?.deliverHeld() }
             }
         }
@@ -177,6 +195,10 @@ final class SessionLineDelivery {
         if !fresh || needsApproval(sessionID) {
             NSLog("%@: session %lld: %@ held — %@", key.logSource, sessionID, key.logNoun,
                   fresh ? "permission prompt (needsApproval)" : "state read failed")
+            return .held
+        }
+        if let gate, gate(sessionID) {
+            NSLog("%@: session %lld: %@ held — its own condition", key.logSource, sessionID, key.logNoun)
             return .held
         }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
@@ -258,5 +280,9 @@ private struct HeldLine {
     /// The session's process run (`TerminalCenter.runs`) when the line was
     /// held; it never goes into a later run (that run's brief has it).
     let run: Int?
+    let gate: SessionLineDelivery.Gate?
+    /// Its last try found another line going to the session (`.queued`):
+    /// that line's end tries it again.
+    var behindAnother: Bool
     let onEvent: (SessionLineDelivery.HeldEvent) -> Void
 }

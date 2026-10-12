@@ -879,8 +879,9 @@ final class MobileLinkCenterTests: XCTestCase {
     }
 
     /// #3: the phone's start-sessions toggle (a nonce-less rewrite) reaches
-    /// the grant; `typing_requested` is not stored (R6).
-    func testALinkedPhonesStartSessionsToggleIsMirroredAndTypingRequestIsNot() async throws {
+    /// the grant; its typing request is stored (PROJ-16) and is never a
+    /// grant.
+    func testALinkedPhonesStartSessionsToggleIsMirroredAndATypingRequestIsStoredNotGranted() async throws {
         let code = try await center.issueCode()
         try await handle(try deviceRecord("phone-a", nonce: code.nonce))
         clock.advance(10)
@@ -889,6 +890,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         let device = try XCTUnwrap(center.devices.first)
         XCTAssertFalse(device.startSessionsAllowed)
+        XCTAssertTrue(device.typingRequested, "the request is kept for Settings → Mobile")
         XCTAssertFalse(device.typingAllowed, "a typing request is never a grant")
         XCTAssertEqual(device.decidedAt, clock.now)
         let grant = try XCTUnwrap(try grants()["phone-a"])
@@ -899,7 +901,57 @@ final class MobileLinkCenterTests: XCTestCase {
         clock.advance(10)
         try await handle(try deviceRecord("phone-a", nonce: nil, startSessions: true))
         XCTAssertEqual(center.devices.first?.startSessionsAllowed, true)
+        XCTAssertEqual(center.devices.first?.typingRequested, false)
         XCTAssertEqual(center.devices.first?.decidedAt, clock.now)
+    }
+
+    /// Spec §10 (OD-2): a phone turning typing on asks the owner once; the
+    /// same request again does not ask twice, and an allowed phone is not
+    /// asked.
+    func testATypingRequestAsksTheOwnerOnce() async throws {
+        var asked: [String] = []
+        center.onTypingRequested = { asked.append($0.name) }
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce, name: "Colleague A's iPhone"))
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, name: "Colleague A's iPhone", typingRequested: true))
+        try await handle(try deviceRecord("phone-a", nonce: nil, name: "Colleague A's iPhone", typingRequested: true))
+
+        XCTAssertEqual(asked, ["Colleague A's iPhone"])
+        try center.setTypingAllowed(true, deviceID: "phone-a")
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: false))
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: true))
+        XCTAssertEqual(asked.count, 2, "turned off and on again, it asks again")
+    }
+
+    /// A phone linking with typing already on asks at once.
+    func testAPhoneLinkingWithTypingOnAsks() async throws {
+        var asked: [String] = []
+        center.onTypingRequested = { asked.append($0.deviceID) }
+        let code = try await center.issueCode()
+
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce, typingRequested: true))
+
+        XCTAssertEqual(asked, ["phone-a"])
+        XCTAssertEqual(center.devices.first?.typingRequested, true)
+    }
+
+    /// Spec §10: the phone's toggle off revokes the grant, and Revoke and
+    /// Remove tell `onTypingRevoked` (the held lines fail, PROJ-16).
+    func testThePhonesToggleOffRevokesAndRevokeAndRemoveAreReported() async throws {
+        var revoked: [String] = []
+        center.onTypingRevoked = { revoked.append($0) }
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce, typingRequested: true))
+        try center.setTypingAllowed(true, deviceID: "phone-a")
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: false))
+
+        XCTAssertEqual(center.devices.first?.typingAllowed, false)
+        XCTAssertEqual(MobileLinkCenter.sessionGrant(sidecar, deviceID: "phone-a").typingAllowed, false)
+        XCTAssertEqual(revoked, ["phone-a"])
+        try await center.remove(deviceID: "phone-a")
+        XCTAssertEqual(revoked, ["phone-a", "phone-a"])
     }
 
     /// #3: an unchanged choice stamps nothing new.
