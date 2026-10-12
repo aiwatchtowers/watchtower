@@ -14,8 +14,8 @@ final class TerminalSessionSliceTests: XCTestCase {
     private var dbPath: String!
     private var dbPool: DatabasePool!
     /// The slice's clock: the background agent count (#411) is judged at it.
-    private let now = Date()
-    private var started: Date { now.addingTimeInterval(-600) }
+    private let fixedNow = Date()
+    private var started: Date { fixedNow.addingTimeInterval(-600) }
 
     override func setUpWithError() throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
@@ -32,8 +32,8 @@ final class TerminalSessionSliceTests: XCTestCase {
         summary: @escaping @Sendable (Int64, Int64) -> SessionReportSummary? = { _, _ in nil }
     ) -> TerminalSessionSlice {
         let liveness = SessionLiveness(liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }))
-        let now = clock ?? self.now
-        let sliceClock: @Sendable () -> Date = { now }
+        let sliceNow = clock ?? fixedNow
+        let sliceClock: @Sendable () -> Date = { sliceNow }
         return TerminalSessionSlice(liveness: { liveness }, reportSummary: summary, now: sliceClock)
     }
 
@@ -157,7 +157,7 @@ final class TerminalSessionSliceTests: XCTestCase {
         let published = try payloads(slice(live: live))
         let rows = try dbPool.read { try TerminalSessionQueries.fetchAgentStates($0, liveIDs: []) }
         let statuses = SessionAgentStatus.resolve(
-            rows, liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }), now: now
+            rows, liveIDs: live, startedAt: Dictionary(uniqueKeysWithValues: live.map { ($0, started) }), now: fixedNow
         )
 
         for (item, id) in seeded {
@@ -200,6 +200,27 @@ final class TerminalSessionSliceTests: XCTestCase {
         let after = SessionBackgroundPolicy.grace + 1
         let over = try XCTUnwrap(try payloads(slice(live: [session], at: reported.addingTimeInterval(after)))[session])
         XCTAssertEqual(over["state_kind"] as? String, "stopped")
+    }
+
+    /// #411 §10 (board #73): a count the Mac shows over after two failed
+    /// probes (`SessionLiveness.displayOver`) goes out as Stopped, the same
+    /// row without it as Agents working.
+    func testACountShownOverOnTheMacIsPublishedAsStopped() throws {
+        let session = try dbPool.write { db -> Int64 in
+            let project = try TestDatabase.insertWorkbench(db)
+            let id = try SliceSeed.insertSession(db, projectID: project)
+            try self.setState(db, id, state: "waiting", background: 2)
+            return id
+        }
+        let fixedNow = self.fixedNow
+        let shown = { (over: Set<Int64>) -> TerminalSessionSlice in
+            let liveness = SessionLiveness(liveIDs: [session], startedAt: [session: self.started], displayOver: over)
+            return TerminalSessionSlice(liveness: { liveness }, reportSummary: { _, _ in nil }, now: { fixedNow })
+        }
+        XCTAssertEqual(try payloads(shown([]))[session]?["state_kind"] as? String, "working")
+        let over = try XCTUnwrap(try payloads(shown([session]))[session])
+        XCTAssertEqual(over["state_kind"] as? String, "stopped")
+        XCTAssertEqual(over["state_caption"] as? String, "Stopped")
     }
 
     private static func wire(_ tone: SessionStatePresentation.Tone) -> String {

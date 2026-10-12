@@ -4,13 +4,17 @@ import os
 import WatchtowerCore
 import WatchtowerSync
 
-/// What the projection needs of the Mac's terminals: the sessions whose
-/// process runs and when each run started (`TerminalCenter.liveIDs` and
-/// `startedAt`, main-actor state). The fast lane copies it here, so the
-/// slice can resolve states inside the publisher's off-main DB read.
+/// What the projection needs of the Mac's terminals and state center: the
+/// sessions whose process runs and when each run started
+/// (`TerminalCenter.liveIDs` and `startedAt`), and the sessions whose
+/// background agent count the center shows as over after two failed
+/// staleness probes (`SessionAgentStateCenter.displayOver`, #411) — all
+/// main-actor state. The fast lane copies it here, so the slice can resolve
+/// states inside the publisher's off-main DB read the way the Mac does.
 struct SessionLiveness: Equatable, Sendable {
     var liveIDs: Set<Int64> = []
     var startedAt: [Int64: Date] = [:]
+    var displayOver: Set<Int64> = []
 }
 
 /// The lock-guarded `SessionLiveness` the fast lane writes and the slice
@@ -171,7 +175,9 @@ struct TerminalSessionSlice: SliceSource {
         guard !windowed.isEmpty else { return [] }
         // Only workbench `claude` rows: no standalone live ids are passed.
         let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
-        let statuses = SessionAgentStatus.resolve(rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now())
+        let statuses = SessionAgentStatus.resolve(
+            rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now(), displayOver: live.displayOver
+        )
         let rowsByID = Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
         return windowed.compactMap { session in
             guard let workbenchID = session.projectID else { return nil }

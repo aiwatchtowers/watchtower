@@ -77,6 +77,10 @@ final class SessionAgentStateCenter {
     @ObservationIgnored private var following = false
     /// The last good read, resolved again whenever liveness changes.
     @ObservationIgnored private(set) var rows: [SessionAgentStateRow] = []
+    /// The sessions whose background count the last resolve showed as over
+    /// after two failed staleness probes (#411); set before `onChange`, so
+    /// the mobile hub's fast lane copies it with the statuses.
+    @ObservationIgnored private(set) var displayOver: Set<Int64> = []
     /// Reads overlap (the poll, a refresh): only one started after the last
     /// applied read is applied, so a slow older read never undoes a newer one.
     @ObservationIgnored private var readsStarted = 0
@@ -185,6 +189,7 @@ final class SessionAgentStateCenter {
         let live = terminalCenter.liveClaudeIDs
         let startedAt = terminalCenter.startedAt
         let over = prober?.displayOver(rows, liveIDs: live, startedAt: startedAt) ?? []
+        displayOver = over
         let next = SessionAgentStatus.resolve(rows, liveIDs: live, startedAt: startedAt, now: now, displayOver: over)
         publish(next)
         prober?.probeDue(rows, statuses: next, startedAt: startedAt, now: now)
