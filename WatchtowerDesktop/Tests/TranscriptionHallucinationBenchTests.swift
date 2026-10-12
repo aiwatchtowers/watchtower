@@ -20,7 +20,8 @@ import WatchtowerTestSupport
 /// Other env: `WATCHTOWER_TX_BENCH_PROVIDERS` (comma-separated ids, default
 /// all), `WATCHTOWER_TX_BENCH_PATHS` (`batch`, `live` or both, the default),
 /// `WATCHTOWER_TX_BENCH_LANGUAGES` (subset of en,ru,uk — splits a long run),
-/// `WATCHTOWER_TX_BENCH_DOWNLOAD=1` (let providers download missing
+/// `WATCHTOWER_TX_BENCH_GATE=0` (run with the speech gate off — the
+/// "before" baseline), `WATCHTOWER_TX_BENCH_DOWNLOAD=1` (let providers download missing
 /// models), `WATCHTOWER_BENCH_CACHE` (corpus root, as for the fetch script).
 final class TranscriptionHallucinationBenchTests: XCTestCase {
     private static let languages = ["en", "ru", "uk"]
@@ -86,6 +87,77 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         print(Self.summary(results))
         print("[bench] wrote \(url.path)")
         XCTAssertFalse(results.isEmpty, "no provider ran — every one was skipped")
+    }
+
+    /// Tunes the speech detectors (spec D1) on the same clips, windowed as
+    /// production windows them: per detector setting, the speech-bearing
+    /// windows it would skip (must be 0), the filler-only windows it would
+    /// open, and how much of the speech and filler its ranges cover.
+    func testSpeechDetectorsOnCorpus() async throws {
+        let env = ProcessInfo.processInfo.environment
+        try XCTSkipUnless(env["WATCHTOWER_TX_BENCH"] == "1", "bench only: set WATCHTOWER_TX_BENCH=1")
+        let clips = Self.buildClips(corpus: try loadCorpus(env: env))
+        var detectors: [(String, WatchtowerDesktop.SpeechDetector)] = []
+        if env["WATCHTOWER_TX_BENCH_VAD"] != "energy" {
+            for threshold: Float in [0.35, 0.5, 0.65] {
+                for (minSpeech, padding) in [(0.25, 0.25), (0.3, 0.3)] {
+                    detectors.append(("silero t\(threshold) min\(minSpeech) pad\(padding)",
+                                      SileroSpeechDetector(threshold: threshold, minSpeechSec: minSpeech,
+                                                           minSilenceSec: 0.5, paddingSec: padding)))
+                }
+            }
+        }
+        for floor in [-50.0, -60.0, -70.0, -80.0] {
+            for margin in [6.0, 8.0, 10.0] {
+                var energy = EnergySpeechDetector()
+                energy.floorDBFS = floor
+                energy.marginDB = margin
+                detectors.append(("energy floor\(Int(floor)) margin\(Int(margin))", energy))
+            }
+        }
+        let rate = TranscriptionConfig.sampleRate
+        let planner = WindowPlanner(config: TranscriptionConfig())
+        for (name, detector) in detectors {
+            var missed: [String] = []
+            var opened: [String: Int] = [:]
+            var speechSamples = 0, speechCovered = 0, fillerSamples = 0, fillerCovered = 0
+            var seconds = 0.0
+            for clip in clips {
+                let samples = clip.composition.samples
+                for window in planner.planWindows(total: samples.count, sample: { samples[$0] }) {
+                    let started = Date()
+                    let ranges = try await detector.speechRanges(in: Array(samples[window]))
+                        .map { (window.lowerBound + $0.lowerBound)..<(window.lowerBound + $0.upperBound) }
+                    seconds += Date().timeIntervalSince(started)
+                    let silent = SpeechGate.isSilent(ranges, sampleRate: rate)
+                    var windowSpeech = 0
+                    for entry in clip.composition.timeline {
+                        let overlap = window.clamped(to: entry.range)
+                        let covered = ranges.reduce(0) { $0 + $1.clamped(to: overlap).count }
+                        if entry.kind == .speech {
+                            windowSpeech += overlap.count
+                            speechSamples += overlap.count
+                            speechCovered += covered
+                        } else {
+                            // Filler more than 1 s away from speech: covering it is a false positive.
+                            let innerStart = entry.range.lowerBound + rate
+                            let inner = innerStart..<max(innerStart, entry.range.upperBound - rate)
+                            let clampedInner = window.clamped(to: inner)
+                            fillerSamples += clampedInner.count
+                            fillerCovered += ranges.reduce(0) { $0 + $1.clamped(to: clampedInner).count }
+                        }
+                    }
+                    if silent, windowSpeech >= rate { missed.append("\(clip.id)@\(window.lowerBound / rate)s") }
+                    if !silent, windowSpeech == 0 { opened[clip.filler ?? "speech", default: 0] += 1 }
+                }
+            }
+            let speechShare = Double(speechCovered) / Double(max(speechSamples, 1))
+            let fillerShare = Double(fillerCovered) / Double(max(fillerSamples, 1))
+            print("[vad] \(name): speech windows skipped \(missed.count) \(missed.prefix(5)), "
+                + "filler-only windows opened \(opened.values.reduce(0, +)) \(opened.sorted { $0.key < $1.key }), "
+                + "speech covered \(String(format: "%.3f", speechShare)), filler covered \(String(format: "%.4f", fillerShare)), "
+                + "detect \(String(format: "%.1f", seconds)) s")
+        }
     }
 
     // MARK: - Corpus and clips
@@ -233,6 +305,7 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         transcriber: Transcriber
     ) async -> ClipResult {
         var config = TranscriptionConfig()
+        config.speechGate = ProcessInfo.processInfo.environment["WATCHTOWER_TX_BENCH_GATE"] != "0"
         // Apple decodes one locale per session, picked from the langset.
         if provider == AppleProvider.id { config.langset = [clip.language] }
         let samples = clip.composition.samples
@@ -255,7 +328,7 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         let result = ClipResult(clip: clip, provider: provider, model: model, path: path, output: output,
                                 decodeSec: Date().timeIntervalSince(started))
         print("[bench] \(provider) \(path) \(clip.id): filler words \(result.wordsInFiller.map(String.init) ?? "-")"
-            + " inserted \(result.insertedWords) WER \(String(format: "%.3f", result.wer))")
+            + " inserted \(result.insertedWords) deleted \(result.deletedWords) WER \(String(format: "%.3f", result.wer))")
         return result
     }
 
@@ -294,6 +367,8 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         /// Hypothesis words the alignment against the speech reference can
         /// only explain as insertions — comparable across every engine.
         let insertedWords: Int
+        /// Reference words the transcript lost.
+        let deletedWords: Int
         let wer: Double
         /// Text of the timed segments centred in filler (untrimmed ranges).
         let fillerText: String
@@ -329,6 +404,7 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
             let timed = TranscriptionHallucinationBenchTests.timedSegmentProviders.contains(provider)
             wordsInFiller = timed ? TranscriptBenchMetrics.wordsInFiller(segments: segments, fillers: fillers) : nil
             insertedWords = TranscriptBenchMetrics.insertedWords(reference: reference, hypothesis: output.text)
+            deletedWords = TranscriptBenchMetrics.deletedWords(reference: reference, hypothesis: output.text)
             wer = TranscriptBenchMetrics.wordErrorRate(reference: reference, hypothesis: output.text)
             let centredInFiller = segments.filter { segment in
                 let mid = (segment.startSec + segment.endSec) / 2

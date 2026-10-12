@@ -50,6 +50,12 @@ package enum TranscriptBenchMetrics {
         alignment(words(reference), words(hypothesis)).insertions
     }
 
+    /// Reference words the alignment can only explain as deletions — real
+    /// speech the transcript lost.
+    package static func deletedWords(reference: String, hypothesis: String) -> Int {
+        alignment(words(reference), words(hypothesis)).deletions
+    }
+
     /// Words of the segments whose midpoint lies in a filler range shrunk by
     /// `toleranceSec` at both ends. A segment's words all count together —
     /// engines time segments, not words.
@@ -68,20 +74,23 @@ package enum TranscriptBenchMetrics {
     }
 
     /// Levenshtein over words, tracking how many edits on one cheapest path
-    /// are insertions (ties prefer substitution, then deletion).
-    private static func alignment(_ ref: [String], _ hyp: [String]) -> (distance: Int, insertions: Int) {
-        typealias Cell = (distance: Int, insertions: Int)
+    /// are insertions and deletions (ties prefer substitution, then deletion).
+    private static func alignment(_ ref: [String], _ hyp: [String]) -> (distance: Int, insertions: Int, deletions: Int) {
+        typealias Cell = (distance: Int, insertions: Int, deletions: Int)
         // Row over hypothesis positions: the cell for ref[0..<i] vs hyp[0..<j].
-        var previous: [Cell] = (0...hyp.count).map { ($0, $0) }
+        var previous: [Cell] = (0...hyp.count).map { ($0, $0, 0) }
         for (i, refWord) in ref.enumerated() {
-            var current: [Cell] = [(i + 1, 0)]
+            var current: [Cell] = [(i + 1, 0, i + 1)]
             for (j, hypWord) in hyp.enumerated() {
-                var best: Cell = (previous[j].distance + (refWord == hypWord ? 0 : 1), previous[j].insertions)
-                if previous[j + 1].distance + 1 < best.distance {
-                    best = (previous[j + 1].distance + 1, previous[j + 1].insertions)
+                let diagonal = previous[j]
+                var best: Cell = (diagonal.distance + (refWord == hypWord ? 0 : 1), diagonal.insertions, diagonal.deletions)
+                let up = previous[j + 1]
+                if up.distance + 1 < best.distance {
+                    best = (up.distance + 1, up.insertions, up.deletions + 1)
                 }
-                if current[j].distance + 1 < best.distance {
-                    best = (current[j].distance + 1, current[j].insertions + 1)
+                let left = current[j]
+                if left.distance + 1 < best.distance {
+                    best = (left.distance + 1, left.insertions + 1, left.deletions)
                 }
                 current.append(best)
             }

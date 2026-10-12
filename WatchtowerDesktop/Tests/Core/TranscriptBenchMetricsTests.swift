@@ -33,6 +33,13 @@ final class TranscriptBenchMetricsTests: XCTestCase {
         XCTAssertEqual(Metrics.insertedWords(reference: "one two", hypothesis: ""), 0)
     }
 
+    func testDeletedWordsCountsOnlyLostWords() {
+        XCTAssertEqual(Metrics.deletedWords(reference: "one two three four", hypothesis: "one four"), 2)
+        XCTAssertEqual(Metrics.deletedWords(reference: "one two", hypothesis: "one three"), 0)
+        XCTAssertEqual(Metrics.deletedWords(reference: "one two", hypothesis: ""), 2)
+        XCTAssertEqual(Metrics.deletedWords(reference: "one two", hypothesis: "one two thanks"), 0)
+    }
+
     func testWordsInFillerCountsByMidpointWithTolerance() {
         let filler = [10.0...70.0]
         let segments = [
