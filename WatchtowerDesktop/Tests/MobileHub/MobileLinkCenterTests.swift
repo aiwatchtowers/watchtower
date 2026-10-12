@@ -543,7 +543,7 @@ final class MobileLinkCenterTests: XCTestCase {
         try await handle(try deviceRecord("phone-a", nonce: first.nonce))
         shares.dropAll()
 
-        center.hubZonesDeleted()
+        try center.hubZonesDeleted()
 
         XCTAssertNil(center.openCode)
         XCTAssertTrue(center.devices.isEmpty)
@@ -553,6 +553,28 @@ final class MobileLinkCenterTests: XCTestCase {
         let next = try await center.issueCode()
         XCTAssertEqual(shares.created, 4, "new shares")
         XCTAssertNotEqual(next.dataShare, first.dataShare)
+        XCTAssertNotEqual(next.relayShare, first.relayShare)
+    }
+
+    /// Final review m2: phones that could not be forgotten are reported, so
+    /// the hub keeps its zone delete pending; the rest is still done.
+    func testHubZonesDeletedThrowsWhenThePhonesCannotBeForgotten() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        center = try makeCenter()
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        _ = try await center.issueCode()
+        try await disk.raw.write { db in
+            try db.execute(sql: "CREATE TRIGGER fail_forget BEFORE DELETE ON devices BEGIN SELECT RAISE(ABORT, 'disk full'); END")
+        }
+
+        XCTAssertThrowsError(try center.hubZonesDeleted())
+
+        XCTAssertNil(center.openCode, "the open code is still forgotten")
+        XCTAssertEqual(sharing.last, HubSharing.none)
+        XCTAssertEqual(center.devices.map(\.deviceID), ["phone-a"], "the phone row stayed")
     }
 
     func testTheCloudKitShareServiceAddressesTheHubsOwnZones() {

@@ -28,7 +28,10 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     /// "iCloud is slowing sync down" after 60 s of it (spec §9).
     var throttledSince: Date? { get async }
     /// Hub zones deleted when Settings turns the hub off (multi-hub spec
-    /// §3.3); call after `stop()`.
+    /// §3.3); call after `stop()`. Throws `HubZoneError.partlyDeleted` when
+    /// something was deleted but the delete did not finish. Serialized on
+    /// the transport: a second delete joins a running one and `start()`
+    /// waits for it, whichever hub object calls them.
     func deleteHubZones() async throws
     /// The single-hub build's fixed-name zones (multi-hub spec §3.6).
     func removeLegacyZones(deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool) async throws -> LegacyZoneCleanup
@@ -127,12 +130,16 @@ final class MobileHubService {
     nonisolated static let maxTickFailures = 3
 
     private(set) var status: HubStatus = .off
+    /// Why the last hub-off zone delete did not go through, for Settings →
+    /// Mobile while the toggle is off; nil once it went through or started.
+    private(set) var hubOffProblem: String?
     /// The heartbeat's `sharing` field; the link center sets it once the
     /// zone shares exist.
     @ObservationIgnored var sharing: HubSharing = .none
     /// Runs after Settings turned the hub off and its zones were deleted
-    /// (multi-hub spec §3.3): the link center forgets codes and phones.
-    @ObservationIgnored var onZonesDeleted: (@MainActor () -> Void)?
+    /// (multi-hub spec §3.3): the link center forgets codes and phones. A
+    /// throw keeps the delete pending, so the next start redoes it.
+    @ObservationIgnored var onZonesDeleted: (@MainActor () throws -> Void)?
     /// Phone linking (Settings → Mobile); nil when the storage has no share
     /// service.
     @ObservationIgnored var linkCenter: MobileLinkCenter?
@@ -174,10 +181,6 @@ final class MobileHubService {
     /// pass ends between two records) and the transport stop. start()
     /// awaits it, so two relay passes never overlap.
     @ObservationIgnored private var teardown: Task<Void, Never>?
-    /// The last hub zone delete, kept past its `cloudTimeout` bound: a delete
-    /// that timed out may still land and wipe the transport store, so the
-    /// next one waits for it.
-    @ObservationIgnored private var zoneDelete: Task<Bool, Never>?
     /// Set by dispose(): a replaced hub never starts again, even from a
     /// start() queued before it was replaced.
     @ObservationIgnored private var disposed = false
@@ -297,6 +300,7 @@ final class MobileHubService {
         companions.forEach { $0.start() }
         startRelayLoop()
         startHeartbeatLoop()
+        hubOffProblem = nil
         status = .running
     }
 
@@ -394,29 +398,43 @@ final class MobileHubService {
 
     // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
 
-    private enum ZoneDeleteOutcome { case deleted, failed, timedOut }
+    /// `partlyDeleted`: something was deleted (one zone, or both without the
+    /// store wipe), so the delete has to be finished like a timed-out one.
+    private enum ZoneDeleteOutcome { case deleted, failed, partlyDeleted, timedOut }
 
     /// Turning the hub off: records the delete as pending first, so a
-    /// timeout (outcome unknown) or a crash leaves the next start to finish
-    /// it. A delete CloudKit refused deleted nothing: the marker clears.
+    /// timeout (outcome unknown), a partial delete or a crash leaves the
+    /// next start to finish it. Only a delete that removed nothing clears
+    /// the marker. What did not go through shows in `hubOffProblem`.
     private func deleteZonesForHubOff() async {
+        hubOffProblem = nil
         do {
             try sidecar.setMetaValue("1", forKey: HubIdentity.zonesDeletePendingKey)
         } catch {
             logger.error("hub off: zones kept, sidecar unwritable: \(error.localizedDescription, privacy: .public)")
+            hubOffProblem = "This Mac's iCloud zones were kept: its sync state couldn't be written "
+                + "(\(error.localizedDescription))"
             return
         }
         switch await deleteHubZonesBounded() {
         case .deleted:
-            _ = zonesDeleted()
+            if !zonesDeleted() {
+                hubOffProblem = "This Mac's iCloud zones were deleted, but its phones and sync state "
+                    + "weren't cleared. That finishes when the hub is turned on."
+            }
         case .failed:
+            hubOffProblem = "Couldn't delete this Mac's iCloud zones; they and the linked phones are kept"
             do {
                 try sidecar.removeMetaValue(forKey: HubIdentity.zonesDeletePendingKey)
             } catch {
                 logger.error("hub off: pending marker not cleared: \(error.localizedDescription, privacy: .public)")
             }
+        case .partlyDeleted:
+            logger.warning("hub off: zones partly deleted; the next start finishes it")
+            hubOffProblem = "This Mac's iCloud zones were only partly deleted. That finishes when the hub is turned on."
         case .timedOut:
             logger.warning("hub off: zone delete timed out; the next start finishes it")
+            hubOffProblem = "iCloud didn't confirm deleting this Mac's zones. That finishes when the hub is turned on."
         }
     }
 
@@ -435,46 +453,39 @@ final class MobileHubService {
         return zonesDeleted()
     }
 
-    /// Runs `deleteHubZones()` once any earlier delete has ended, each wait
-    /// bounded by `cloudTimeout`. The delete is not cancelled on timeout: it
-    /// stays in `zoneDelete`, so the next call waits for it rather than
-    /// racing its late store wipe; while it is still running no second one
-    /// is queued.
+    /// Runs `deleteHubZones()`, bounded by `cloudTimeout`. The delete is not
+    /// cancelled on timeout and may still land; the transport, which lives
+    /// for the app run with its store, serializes it: a later delete joins
+    /// it and `transport.start()` waits for it — from this hub object or one
+    /// built after it — so its late store wipe never races either.
     private func deleteHubZonesBounded() async -> ZoneDeleteOutcome {
-        if let previous = zoneDelete, await Self.bounded(cloudTimeout, { await previous.value }) == nil {
-            return .timedOut
-        }
         let transport = self.transport
         let logger = self.logger
-        let work = Task<Bool, Never> {
+        let work = Task<ZoneDeleteOutcome, Never> {
             do {
                 try await transport.deleteHubZones()
-                return true
+                return .deleted
+            } catch HubZoneError.partlyDeleted {
+                return .partlyDeleted
             } catch {
                 logger.error("zones not deleted: \(error.localizedDescription, privacy: .public)")
-                return false
+                return .failed
             }
         }
-        zoneDelete = work
-        let outcome = await Self.bounded(cloudTimeout) { await work.value }
-        switch outcome {
-        case true?: return .deleted
-        case false?: return .failed
-        case nil: return .timedOut
-        }
+        return await Self.bounded(cloudTimeout) { await work.value } ?? .timedOut
     }
 
     /// The zones are gone: the link center forgets the phones, then the sync
-    /// state is wiped. The pending marker clears only once the wipe landed,
-    /// so a failed wipe is redone at the next start. True when it cleared.
+    /// state is wiped. The pending marker clears only once both landed, so
+    /// a failure is redone at the next start. True when it cleared.
     private func zonesDeleted() -> Bool {
-        onZonesDeleted?()
         do {
+            try onZonesDeleted?()
             try sidecar.wipeSyncState(now: now())
             try sidecar.removeMetaValue(forKey: HubIdentity.zonesDeletePendingKey)
             return true
         } catch {
-            logger.error("zones deleted: sync state not wiped: \(error.localizedDescription, privacy: .public)")
+            logger.error("zones deleted: phones or sync state not cleared: \(error.localizedDescription, privacy: .public)")
             return false
         }
     }

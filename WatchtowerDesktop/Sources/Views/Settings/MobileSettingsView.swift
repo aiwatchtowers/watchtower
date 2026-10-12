@@ -71,6 +71,10 @@ struct MobileSettingsView: View {
                 Text(MobileSettingsViewModel.needsSignedBuild)
                     .foregroundStyle(.secondary)
             }
+            if let problem = model.hubOffLine {
+                Text(problem)
+                    .foregroundStyle(.orange)
+            }
             if model.showsCorpNotice {
                 Text(MobileSettingsViewModel.corpNotice)
                     .foregroundStyle(.secondary)

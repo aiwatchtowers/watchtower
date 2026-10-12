@@ -137,7 +137,7 @@ final class MobileLinkCenter {
     /// closed now.
     func attach(to hub: MobileHubService) {
         hub.linkCenter = self
-        hub.onZonesDeleted = { [weak self] in self?.hubZonesDeleted() }
+        hub.onZonesDeleted = { [weak self] in try self?.hubZonesDeleted() }
         onSharingChanged = { [weak hub] in hub?.sharing = $0 }
         Task { await closeLink(reason: .restart) }
     }
@@ -434,8 +434,10 @@ final class MobileLinkCenter {
 
     /// Settings turned the hub off and its zones were deleted: their shares
     /// and every participant went with them. Forgets every code and phone,
-    /// so the next QR creates new shares and every phone scans again.
-    func hubZonesDeleted() {
+    /// so the next QR creates new shares and every phone scans again. Throws
+    /// when the phones could not be forgotten, after doing the rest: the hub
+    /// keeps the delete pending and redoes it at the next start.
+    func hubZonesDeleted() throws {
         expiryTask?.cancel()
         expiryTask = nil
         openCode = nil
@@ -444,14 +446,17 @@ final class MobileLinkCenter {
         } catch {
             logger.error("hub zones deleted: share sweep flag not reset: \(error.localizedDescription, privacy: .public)")
         }
+        var clearFailure: (any Error)?
         do {
             try sidecar.clearLinkState()
         } catch {
             logger.error("hub zones deleted: linked phones not cleared: \(error.localizedDescription, privacy: .public)")
+            clearFailure = error
         }
         reloadDevices()
         nudge([.deviceGrant])
         onSharingChanged?(.none)
+        if let clearFailure { throw clearFailure }
     }
 
     // MARK: - Helpers

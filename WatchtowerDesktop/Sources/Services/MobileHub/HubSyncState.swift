@@ -887,7 +887,8 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Take over (spec §2.3): forgets every code, linked phone and refusal.
+    /// The hub's zones were deleted (multi-hub spec §3.3): forgets every
+    /// code, linked phone and refusal.
     func clearLinkState() throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM link_refusals")

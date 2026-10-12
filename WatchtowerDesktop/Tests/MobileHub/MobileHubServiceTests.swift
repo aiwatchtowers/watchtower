@@ -470,7 +470,9 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(transport.starts, startsBefore, "no engine while the first delete may still land")
 
         await awaitHubCondition("the reprobe finishes the delete and starts") { service.status == .running }
-        XCTAssertEqual(transport.zoneDeletes, 2, "the late delete landed, then the start deleted again")
+        // A start within the late delete joins it; one after it ended (its
+        // outcome reached no one) deletes again. Never two at once.
+        XCTAssertTrue((1...2).contains(transport.zoneDeletes), "\(transport.zoneDeletes) server deletes")
         XCTAssertEqual(forgotten, 1)
         XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
         XCTAssertGreaterThan(try sidecar.generation(), generation, "the sync state was wiped")
@@ -496,6 +498,123 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "a refused delete deleted nothing")
         XCTAssertEqual(service.status, .running, "the hub comes back on its existing zones")
         service.stop()
+    }
+
+    /// Final review m1: a delete that removed something (one zone, or both
+    /// without the store wipe) keeps the marker like a timeout; the next
+    /// start finishes it.
+    func testAPartlyDeletedHubOffKeepsTheMarkerAndTheNextStartFinishesIt() async throws {
+        let transport = StubHubTransport()
+        transport.setZoneDeletesPartial(true)
+        let service = makeService(transport: transport)
+        var forgotten = 0
+        service.onZonesDeleted = { forgotten += 1 }
+        await service.start()
+        try sidecar.setMetaValue("42", forKey: RelayProcessor.relayTokenKey)
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1", "something was deleted")
+        XCTAssertEqual(forgotten, 0)
+        XCTAssertEqual(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "42")
+        XCTAssertNotNil(service.hubOffProblem)
+
+        transport.setZoneDeletesPartial(false)
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertEqual(forgotten, 1)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey))
+        XCTAssertNil(service.hubOffProblem)
+        service.stop()
+    }
+
+    /// Final review m2: phones that could not be forgotten keep the delete
+    /// pending, so the next start redoes it.
+    func testPhonesNotForgottenKeepTheZoneDeletePending() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+        service.onZonesDeleted = { throw URLError(.cannotWriteToFile) }
+        await service.start()
+        try sidecar.setMetaValue("42", forKey: RelayProcessor.relayTokenKey)
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1")
+        XCTAssertNotNil(service.hubOffProblem)
+    }
+
+    /// Final review nit: a sidecar that can't record the pending delete
+    /// keeps the zones, and Settings can say so.
+    func testAnUnwritableSidecarAtHubOffKeepsTheZonesAndSaysSo() async throws {
+        let disk = try HubSyncState.onDiskPerHub()
+        defer { try? FileManager.default.removeItem(at: disk.dir) }
+        sidecar = disk.state
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+        await service.start()
+        try await disk.raw.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_pending BEFORE INSERT ON hub_meta
+                WHEN NEW.key = 'hub_zones_delete_pending'
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertEqual(transport.zoneDeletes, 0, "no delete without its marker")
+        XCTAssertTrue(service.hubOffProblem?.contains("disk full") == true, service.hubOffProblem ?? "")
+    }
+
+    /// Final review M1: the delete is serialized on the transport, which
+    /// outlives the hub object. A hub built after the one that turned off
+    /// does not run the engine while that delete may still land.
+    func testAReplacementHubWaitsForTheReplacedHubsZoneDelete() async throws {
+        let transport = StubHubTransport()
+        transport.delayNextZoneDelete(.milliseconds(400))
+        let first = makeService(transport: transport, cloudTimeout: .milliseconds(50))
+        await first.start()
+        first.disable()
+        await first.waitUntilStopped()
+        first.dispose()
+
+        let second = makeService(transport: transport, cloudTimeout: .milliseconds(50))
+        let startsBefore = transport.starts
+        await second.start()
+        XCTAssertEqual(second.status, .unavailable("Couldn't finish deleting this Mac's iCloud zones"))
+        XCTAssertEqual(transport.starts, startsBefore, "no engine while the replaced hub's delete may land")
+
+        await awaitHubCondition("the replacement finishes the delete and starts") { second.status == .running }
+        XCTAssertTrue((1...2).contains(transport.zoneDeletes), "\(transport.zoneDeletes) server deletes")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        second.stop()
+    }
+
+    /// Final review m4: the real link center, attached to the hub, forgets
+    /// the phones once a hub-off delete went through.
+    func testAHubOffDeleteForgetsThePhonesThroughTheAttachedLinkCenter() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+        let center = MobileLinkCenter(
+            sidecar: sidecar, shares: FakeShareService(), macName: "Mac acme", ownerUser: { "_owner-acme" },
+            nudge: { _ in }
+        )
+        center.attach(to: service)
+        await service.start()
+        XCTAssertFalse(try sidecar.linkedDevices().isEmpty)
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertTrue(try sidecar.linkedDevices().isEmpty)
+        XCTAssertTrue(center.devices.isEmpty)
+        XCTAssertEqual(service.sharing, HubSharing.none)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
     }
 
     // MARK: - AppState wiring

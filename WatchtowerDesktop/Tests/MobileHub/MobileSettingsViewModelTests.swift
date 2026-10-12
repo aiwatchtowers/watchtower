@@ -63,6 +63,22 @@ final class MobileSettingsViewModelTests: XCTestCase {
         XCTAssertFalse(model.isOn)
     }
 
+    /// A hub-off delete that did not go through says so under the toggle,
+    /// while it is off.
+    func testAFailedHubOffDeleteShowsUnderTheOffToggle() async throws {
+        await fixture.startHub()
+        fixture.transport.setZoneDeletesFail(true)
+        let model = fixture.makeModel()
+        XCTAssertNil(model.hubOffLine)
+
+        fixture.host.isMobileSyncEnabled = false
+        fixture.hub.disable()
+        await fixture.hub.waitUntilStopped()
+        await model.refresh()
+
+        XCTAssertEqual(model.hubOffLine, "Couldn't delete this Mac's iCloud zones; they and the linked phones are kept")
+    }
+
     func testTheCorpNoticeShowsOnlyInTheCorpFlavor() {
         XCTAssertTrue(fixture.makeModel(flavor: .corp).showsCorpNotice)
         XCTAssertFalse(fixture.makeModel(flavor: .default).showsCorpNotice)

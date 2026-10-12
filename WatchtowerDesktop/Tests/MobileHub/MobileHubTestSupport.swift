@@ -36,7 +36,11 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var legacyChecks = 0
     private var legacyFails = false
     private var zoneDeletesFail = false
+    private var zoneDeletesPartial = false
     private var zoneDeleteCount = 0
+    /// Like CloudKitTransport: a delete while one runs joins it, and
+    /// `start()` waits for the running one.
+    private let zoneDeleteSlot = ZoneDeleteSlot()
     private var zoneDeleteDelay: Duration?
 
     init(
@@ -92,6 +96,9 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func setLegacyZones(_ value: LegacyZones) { lock.withLock { legacy = value } }
     func setLegacyCheckFails(_ value: Bool) { lock.withLock { legacyFails = value } }
     func setZoneDeletesFail(_ value: Bool) { lock.withLock { zoneDeletesFail = value } }
+    /// Deletes throw `HubZoneError.partlyDeleted` (one zone gone, or the
+    /// store wipe failed after the server delete).
+    func setZoneDeletesPartial(_ value: Bool) { lock.withLock { zoneDeletesPartial = value } }
     /// The next `deleteHubZones` sleeps this long (uncancellable, like a
     /// CloudKit call that outlives its bound), then goes through.
     func delayNextZoneDelete(_ value: Duration) { lock.withLock { zoneDeleteDelay = value } }
@@ -105,14 +112,18 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func deleteHubZones() async throws {
-        let (fails, delay) = lock.withLock { () -> (Bool, Duration?) in
-            lifecycleLog.append("deleteZones")
-            defer { zoneDeleteDelay = nil }
-            return (zoneDeletesFail, zoneDeleteDelay)
+        let failure = await zoneDeleteSlot.run { [self] () -> (any Error)? in
+            let (fails, partial, delay) = lock.withLock { () -> (Bool, Bool, Duration?) in
+                lifecycleLog.append("deleteZones")
+                defer { zoneDeleteDelay = nil }
+                return (zoneDeletesFail, zoneDeletesPartial, zoneDeleteDelay)
+            }
+            if let delay { try? await Task.sleep(for: delay) }
+            if fails { return URLError(.notConnectedToInternet) }
+            lock.withLock { zoneDeleteCount += 1 }
+            return partial ? HubZoneError.partlyDeleted : nil
         }
-        if let delay { await Task.detached { try? await Task.sleep(for: delay) }.value }
-        if fails { throw URLError(.notConnectedToInternet) }
-        lock.withLock { zoneDeleteCount += 1 }
+        if let failure { throw failure }
     }
 
     func removeLegacyZones(deleteIf: @Sendable (Data?) -> Bool) async throws -> LegacyZoneCleanup {
@@ -143,6 +154,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func start() async {
+        await zoneDeleteSlot.settle()
         lock.withLock {
             startCount += 1
             lifecycleLog.append("start")
@@ -216,7 +228,38 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 }
 
+/// One zone delete at a time: a call while one runs gets its outcome
+/// (CloudKitTransport's join); `settle()` waits for the running one.
+actor ZoneDeleteSlot {
+    private var running: Task<(any Error)?, Never>?
+
+    func run(_ operation: @escaping @Sendable () async -> (any Error)?) async -> (any Error)? {
+        if let running { return await running.value }
+        let work = Task { await operation() }
+        running = work
+        let failure = await work.value
+        running = nil
+        return failure
+    }
+
+    func settle() async {
+        _ = await running?.value
+    }
+}
+
 extension HubSyncState {
+    /// A per-hub sidecar on a temp file, plus a second handle on the file
+    /// through which a test installs a trigger that fails a write. The
+    /// caller removes `dir`.
+    static func onDiskPerHub() throws -> (state: HubSyncState, raw: DatabaseQueue, dir: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("hubstate.db").path
+        let state = try HubSyncState(path: path)
+        try state.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+        return (state, try DatabaseQueue(path: path), dir)
+    }
+
     /// A sidecar the per-hub zone adoption already ran on (most tests seed
     /// sync state before `start()` and must keep it).
     static func inMemoryPerHub() throws -> HubSyncState {

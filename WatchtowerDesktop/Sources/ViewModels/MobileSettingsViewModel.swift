@@ -93,6 +93,13 @@ final class MobileSettingsViewModel {
         return Self.statusLine(hub.status)
     }
 
+    /// Why turning the hub off did not fully go through (the zones kept or
+    /// partly deleted); shown while the toggle is off.
+    var hubOffLine: String? {
+        guard !isOn else { return nil }
+        return hub?.hubOffProblem
+    }
+
     var showsSlowingLine: Bool {
         guard isOn, let throttledSince else { return false }
         return checkedAt.timeIntervalSince(throttledSince) >= Self.slowingAfter
@@ -164,7 +171,7 @@ final class MobileSettingsViewModel {
         checkedAt = now()
     }
 
-    // MARK: - The toggle and Take over
+    // MARK: - The toggle
 
     /// The opt-in toggle; turning on needs a signed build. Turning off
     /// closes an open QR sheet and its link first.
