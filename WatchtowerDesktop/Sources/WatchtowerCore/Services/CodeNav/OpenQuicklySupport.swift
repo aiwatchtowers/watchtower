@@ -68,6 +68,9 @@ package struct CodeRecentFiles: Equatable, Sendable {
     }
 
     package static func key(workbenchID: Int64) -> String { "workbench.files.recent.\(workbenchID)" }
+
+    /// Per root, the same scheme as `CodeTabs.key(root:)`.
+    package static func key(root: CodeRoot) -> String { key(workbenchID: root.workbenchID) + root.defaultsKeySuffix }
 }
 
 // MARK: - Theme colours

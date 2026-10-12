@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import WatchtowerCore
 
@@ -125,5 +126,33 @@ final class CodeTabsTests: XCTestCase {
         tabs.open("b.go", preview: true)
         let decoded = try JSONDecoder().decode(CodeTabs.self, from: JSONEncoder().encode(tabs))
         XCTAssertEqual(decoded, tabs)
+    }
+
+    // MARK: - Keys per code root (board #565, owner decision: one tab set per worktree)
+
+    func testMainKeysAreUnchanged() {
+        let main = Workbench(row: Row(["id": 7, "name": "acme", "folder_path": "/tmp/acme"])).mainCodeRoot
+        XCTAssertEqual(CodeTabs.key(root: main), "workbench.files.tabs.7")
+        XCTAssertEqual(CodeTabs.key(root: main), CodeTabs.key(workbenchID: 7))
+        XCTAssertEqual(CodeRecentFiles.key(root: main), "workbench.files.recent.7")
+        XCTAssertEqual(CodeRecentFiles.key(root: main), CodeRecentFiles.key(workbenchID: 7))
+    }
+
+    func testWorktreeKeysDifferPerRoot() throws {
+        let rootA = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/tmp/acme-wt/mobile-a"))
+        let rootB = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/tmp/acme-wt/mobile-b"))
+        let otherWorkbench = CodeRoot(workbenchID: 8, worktree: URL(fileURLWithPath: "/tmp/acme-wt/mobile-a"))
+
+        let keyA = CodeTabs.key(root: rootA)
+        let suffix = try XCTUnwrap(keyA.components(separatedBy: "workbench.files.tabs.7.wt.").last)
+        XCTAssertTrue(keyA.hasPrefix("workbench.files.tabs.7.wt."))
+        XCTAssertEqual(suffix.count, 16)
+        XCTAssertTrue(suffix.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+        XCTAssertEqual(keyA, CodeTabs.key(root: CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/tmp/acme-wt/mobile-a/"))))
+
+        let keys: Set = [CodeTabs.key(workbenchID: 7), keyA, CodeTabs.key(root: rootB), CodeTabs.key(root: otherWorkbench)]
+        XCTAssertEqual(keys.count, 4)
+        XCTAssertEqual(CodeRecentFiles.key(root: rootA), "workbench.files.recent.7.wt.\(suffix)")
+        XCTAssertNotEqual(CodeRecentFiles.key(root: rootA), CodeRecentFiles.key(root: rootB))
     }
 }
