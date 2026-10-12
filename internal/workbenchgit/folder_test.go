@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -149,8 +152,24 @@ func TestResolveFolderNoGitRunsNothing(t *testing.T) {
 	assert.Equal(t, ScopeMain, got.Scope, "no folder asked: the workbench folder")
 	assert.Equal(t, repo, got.Root)
 
+	assert.Empty(t, rec.argv())
+}
+
+// Without git the folder is not refused as outside the worktrees: the scope
+// is unresolved and the caller's git call says git is unavailable.
+func TestResolveFolderGitUnavailableIsUnresolved(t *testing.T) {
+	repo, wtB := subfolderRepo(t)
+	rec := &recorder{}
 	noGit := Options{Folder: repo, Run: rec.run, Locate: func() (string, bool) { return "", false }}
-	assert.Equal(t, ScopeOutside, resolve(t, noGit, repo).Scope, "git unavailable")
+	got := resolve(t, noGit, wtB)
+	assert.Equal(t, ScopeUnresolved, got.Scope)
+	assert.False(t, got.OutsideTheRepository())
+	assert.Equal(t, repo, got.Root)
+
+	noGit.Folder = got.Root
+	res := Switch(context.Background(), noGit, SwitchRequest{Branch: "feature"})
+	assert.Equal(t, RefusedGitUnavailable, res.Refused)
+	assert.False(t, ListBranches(context.Background(), noGit).GitAvailable)
 	assert.Empty(t, rec.argv())
 }
 
@@ -160,7 +179,74 @@ func TestResolveFolderGitFailureIsAnError(t *testing.T) {
 	got, err := ResolveFolder(context.Background(), options(repo, rec), wtB)
 	require.Error(t, err)
 	assert.Equal(t, repo, got.Root)
+	assert.Equal(t, ScopeUnresolved, got.Scope)
 	assert.False(t, got.OutsideTheRepository(), "a failed listing is not a verdict")
+}
+
+// A workbench folder that no longer resolves gives no verdict either.
+func TestResolveFolderUnresolvableWorkbenchIsAnError(t *testing.T) {
+	repo, wtB := subfolderRepo(t)
+	gone := filepath.Join(repo, "gone")
+	got, err := ResolveFolder(context.Background(), Options{Folder: gone}, wtB)
+	require.Error(t, err)
+	assert.Equal(t, ScopeUnresolved, got.Scope)
+	assert.Equal(t, gone, got.Root)
+}
+
+// A listing that leaves out the workbench's own worktree still places the
+// workbench folder (and what is inside it) in main; anything else is
+// outside.
+func TestResolveFolderListingWithoutTheWorkbenchWorktree(t *testing.T) {
+	repo, wtB := subfolderRepo(t)
+	stale := func(context.Context, string, []byte, string, ...string) ([]byte, int, error) {
+		return []byte("worktree " + filepath.Join(repo, "no-such-worktree") + "\x00\x00"), 0, nil
+	}
+	o := Options{Folder: repo, Run: stale}
+	for _, req := range []string{repo, filepath.Join(repo, "app")} {
+		got := resolve(t, o, req)
+		assert.Equal(t, ScopeMain, got.Scope, req)
+		assert.Equal(t, repo, got.Root, req)
+	}
+	assert.Equal(t, ScopeOutside, resolve(t, o, wtB).Scope)
+}
+
+// caseFlipped is path with the case of its letters swapped, or the test is
+// skipped when the file system tells the two apart.
+func caseFlipped(t *testing.T, path string) string {
+	t.Helper()
+	if runtime.GOOS != "darwin" {
+		t.Skip("case-insensitive paths are a macOS rule")
+	}
+	flipped := strings.Map(func(r rune) rune {
+		if unicode.IsUpper(r) {
+			return unicode.ToLower(r)
+		}
+		return unicode.ToUpper(r)
+	}, path)
+	if _, err := os.Stat(flipped); err != nil {
+		t.Skip("this volume is case-sensitive")
+	}
+	return flipped
+}
+
+// On macOS a folder spelt in another case than git lists it is that folder:
+// neither refused as outside nor mistaken for another worktree.
+func TestResolveFolderIgnoresCaseOnMacOS(t *testing.T) {
+	repo, wtB := subfolderRepo(t)
+	app := filepath.Join(repo, "app")
+
+	got := resolve(t, Options{Folder: repo}, caseFlipped(t, filepath.Join(wtB, "app")))
+	assert.Equal(t, ScopeWorktree, got.Scope)
+	assert.Equal(t, wtB, got.Root)
+
+	flippedRepo := Options{Folder: caseFlipped(t, repo)}
+	got = resolve(t, flippedRepo, repo)
+	assert.Equal(t, ScopeMain, got.Scope, "the workbench folder in another case is still main")
+	assert.Equal(t, flippedRepo.Folder, got.Root)
+
+	got = resolve(t, Options{Folder: caseFlipped(t, app)}, wtB)
+	assert.Equal(t, ScopeWorktree, got.Scope)
+	assert.True(t, samePath(filepath.Join(wtB, "app"), got.Root), "the subfolder maps across a case difference: %s", got.Root)
 }
 
 func TestResolveFolderSkipsPrunableAndBareEntries(t *testing.T) {
@@ -174,4 +260,11 @@ func TestWithinIsAPathPrefix(t *testing.T) {
 	assert.True(t, within("/a/b/c", "/a/b"))
 	assert.False(t, within("/a/bc", "/a/b"))
 	assert.True(t, within("/a", "/"))
+	assert.False(t, within("/a", "/a/b"))
+	if runtime.GOOS == "darwin" {
+		assert.True(t, within("/A/b/c", "/a/B"))
+		assert.False(t, within("/A/bc", "/a/b"))
+	} else {
+		assert.False(t, within("/A/b/c", "/a/B"))
+	}
 }

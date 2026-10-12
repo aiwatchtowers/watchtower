@@ -7,7 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"watchtower/internal/gitbin"
 )
 
 // FolderScope is where a requested folder sits relative to the workbench's
@@ -21,10 +24,14 @@ const (
 	// ScopeWorktree: inside another (linked) worktree of the repository.
 	ScopeWorktree FolderScope = "worktree"
 	// ScopeOutside: under no listed worktree, or the workbench folder is
-	// not in a repository (or git is unavailable).
+	// not in a repository.
 	ScopeOutside FolderScope = "outside"
 	// ScopeMissing: the requested folder does not exist.
 	ScopeMissing FolderScope = "missing"
+	// ScopeUnresolved: the worktrees could not be listed — git is
+	// unavailable, the listing failed or the workbench folder did not
+	// resolve. No verdict: a caller keeps the last known place.
+	ScopeUnresolved FolderScope = ""
 )
 
 // ResolvedFolder is a requested folder resolved against the workbench
@@ -55,9 +62,12 @@ func (f ResolvedFolder) OutsideTheRepository() bool {
 // ResolveFolder resolves requested against the worktrees of the repository
 // holding o.Folder (the workbench folder). "" is the workbench folder
 // itself. git runs only in o.Folder (`git worktree list`), never in
-// requested, and not at all when requested is missing or not absolute, or
-// o.Folder is outside a repository. The error is git itself failing;
-// the result's Root is then the workbench folder.
+// requested, and not at all when requested is missing or not absolute, git
+// is unavailable, or o.Folder is outside a repository. Without git the
+// scope is unresolved and Root the workbench folder, so the caller's own
+// git call reports git as unavailable. The error is git (or resolving
+// o.Folder) failing; the scope is then unresolved and Root the workbench
+// folder.
 func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFolder, error) {
 	res := ResolvedFolder{Requested: requested, Scope: ScopeOutside, Root: o.Folder}
 	if requested == "" {
@@ -69,30 +79,46 @@ func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFo
 		res.Scope = scope
 		return res, nil
 	}
-	r, _ := open(o)
-	if r == nil { // git unavailable or no repository: no git runs
+	r, err := open(o)
+	if r == nil { // no git or no repository: no git runs
+		res.Scope = scopeWithoutRepo(err)
 		return res, nil
 	}
 	wbReal, err := filepath.EvalSymlinks(o.Folder)
 	if err != nil {
+		res.Scope = ScopeUnresolved
 		return res, err
 	}
 	out, err := r.git(ctx, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
-		res.Scope = ""
+		res.Scope = ScopeUnresolved
 		return res, err
 	}
 	tops := worktreeTops(out)
 	reqTop, wbTop := longestContaining(tops, reqReal), longestContaining(tops, wbReal)
 	res.MainTopLevel = wbTop
 	switch {
-	case reqTop != "" && reqTop != wbTop:
+	case reqTop != "" && !samePath(reqTop, wbTop):
 		res.Scope, res.WorktreeName = ScopeWorktree, filepath.Base(reqTop)
 		res.Root = mappedRoot(reqTop, wbTop, wbReal)
-	case reqTop != "" || within(reqReal, wbReal):
+	case reqTop != "":
+		res.Scope = ScopeMain
+	case within(reqReal, wbReal):
+		// The listing left out the workbench's own worktree (its entry no
+		// longer resolves): the workbench folder is still main.
 		res.Scope = ScopeMain
 	}
 	return res, nil
+}
+
+// scopeWithoutRepo is the scope when open refused: unresolved without git
+// (no verdict; the caller's own git call says git is unavailable), outside
+// for a workbench folder outside a repository.
+func scopeWithoutRepo(openErr error) FolderScope {
+	if errors.Is(openErr, gitbin.ErrUnavailable) {
+		return ScopeUnresolved
+	}
+	return ScopeOutside
 }
 
 // realRequested is requested with its symlinks resolved, or "" and the
@@ -153,28 +179,37 @@ func longestContaining(tops []string, path string) string {
 }
 
 // within reports whether path is base or below it; both are clean
-// absolute paths.
+// absolute paths, compared as the file system does (samePath).
 func within(path, base string) bool {
-	if path == base {
+	if samePath(path, base) {
 		return true
 	}
 	if !strings.HasSuffix(base, string(filepath.Separator)) {
 		base += string(filepath.Separator)
 	}
-	return strings.HasPrefix(path, base)
+	return len(path) > len(base) && samePath(path[:len(base)], base)
+}
+
+// samePath compares two paths the way the file system does: ignoring case
+// on macOS, whose default volumes are case-insensitive (a folder given in
+// another case than git lists it is still that folder).
+func samePath(a, b string) bool {
+	if runtime.GOOS == "darwin" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // mappedRoot maps a workbench in a repository subfolder into the worktree
 // at top: top joined with the workbench's path below its own top level
 // when that directory exists there, else top.
 func mappedRoot(top, wbTop, wbReal string) string {
-	if wbTop == "" {
+	if wbTop == "" || samePath(wbTop, wbReal) {
 		return top
 	}
-	rel, err := filepath.Rel(wbTop, wbReal)
-	if err != nil || rel == "." {
-		return top
-	}
+	// within(wbReal, wbTop) holds: the rest of wbReal is the path below it,
+	// whatever case either is spelt in.
+	rel := strings.TrimPrefix(wbReal[len(wbTop):], string(filepath.Separator))
 	if fi, err := os.Stat(filepath.Join(top, rel)); err == nil && fi.IsDir() {
 		return filepath.Join(top, rel)
 	}

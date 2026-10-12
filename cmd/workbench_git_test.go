@@ -88,8 +88,8 @@ var (
 		"status_ok", "status_error", "folder_requested", "folder_scope", "folder_root", "worktree_name")
 	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "note", "current", "branches", "branches_ok", "branches_error",
 		"refused", "refused_detail")
-	gitBranchKeys   = sorted("name", "current", "head", "committed_at", "upstream", "upstream_gone", "ahead", "behind", "worktree", "worktree_name")
-	gitSwitchKeys   = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
+	gitBranchKeys = sorted("name", "current", "head", "committed_at", "upstream", "upstream_gone", "ahead", "behind", "worktree", "worktree_name")
+	gitSwitchKeys = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
 		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "warning", "status")
 )
 
@@ -295,4 +295,36 @@ func TestProj10_FolderFlagEnvelopeAndRefusal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "refused: folder_not_a_worktree missing")
 	assert.NotContains(t, out, "git: false", "a refused folder read no status")
+}
+
+// A workbench folder whose worktrees git cannot list (a .git file pointing
+// nowhere) places no folder: status is a failed read with an empty
+// folder_scope, and branches, switch and create refuse with git_failed.
+func TestWorkbenchGit_FolderListingFailure(t *testing.T) {
+	gitBranchRepo(t) // git present, owner config kept out
+	database := writeActionsConfig(t)
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+filepath.Join(dir, "nowhere")+"\n"), 0o644))
+	id, err := database.CreateWorkbench("acme", dir)
+	require.NoError(t, err)
+	other, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	st := gitJSON(t, id, "status", "--folder", other)
+	assert.Equal(t, false, st["status_ok"])
+	assert.Contains(t, st["status_error"], "listing the worktrees")
+	assert.Equal(t, "", st["folder_scope"], "no verdict: the caller keeps the last place")
+	assert.Equal(t, dir, st["folder_root"])
+
+	br := gitJSON(t, id, "branches", "--folder", other)
+	assert.Equal(t, "git_failed", br["refused"])
+	assert.Contains(t, br["refused_detail"], "listing the worktrees")
+	assert.Equal(t, []any{}, br["branches"])
+	sw := gitJSON(t, id, "switch", "--folder", other, "--branch", "feature")
+	assert.Equal(t, "git_failed", sw["refused"])
+	assert.Equal(t, false, sw["switched"])
+	cr := gitJSON(t, id, "create", "--folder", other, "--name", "topic")
+	assert.Equal(t, "git_failed", cr["refused"])
+	assert.Equal(t, false, cr["created"])
 }
