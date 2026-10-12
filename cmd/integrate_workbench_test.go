@@ -606,3 +606,44 @@ func TestWorkbenchResync_RefreshesTheCodexPart(t *testing.T) {
 		t.Fatalf("resync JSON: %s", b)
 	}
 }
+
+// A config that does not load still lets resync find codex on PATH, but
+// the codex part reports the config error, also in the text report
+// (#399 B2).
+func TestWorkbenchResync_CodexReportsAConfigThatDidNotLoad(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	database := writeActionsConfig(t)
+	pid, err := database.CreateWorkbench("acme", resyncFolder(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := database.GetWorkbench(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := workbenchExecutable
+	workbenchExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
+	t.Cleanup(func() { workbenchExecutable = prev })
+	useFakeCmdCodex(t)
+	bad := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(bad, []byte("workbench: [unclosed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prevCfg := flagConfig
+	flagConfig = bad
+	t.Cleanup(func() { flagConfig = prevCfg })
+
+	res, _ := resyncWorkbench(context.Background(), database, p, false)
+	if res.Codex == nil || res.Codex.OK || !res.Codex.Found ||
+		!strings.Contains(res.Codex.Error, "loading config (codex_path ignored") {
+		t.Fatalf("codex part: %+v", res.Codex)
+	}
+	if res.Codex.HooksTrusted == nil || !*res.Codex.HooksTrusted {
+		t.Fatalf("the PATH codex is still set up: %+v", res.Codex)
+	}
+	var out bytes.Buffer
+	printResyncReport(&out, p, res)
+	if !strings.Contains(out.String(), "codex_path ignored") {
+		t.Fatalf("text report:\n%s", out.String())
+	}
+}

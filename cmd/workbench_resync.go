@@ -200,7 +200,10 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 	}
 	cfg, cfgErr := config.Load(flagConfig)
 	if cfgErr != nil {
-		cfg = &config.Config{} // the lookup still finds codex on PATH
+		// The lookup still finds codex on PATH, but codex_path is ignored,
+		// so the run reports the config error too.
+		cfg = &config.Config{}
+		cfgErr = fmt.Errorf("loading config (codex_path ignored, codex looked up on PATH): %w", cfgErr)
 	}
 	if !devpack.CodexFound(cfg, codexFindBinary) && !devpack.CodexSkillInstalled(p.FolderPath) {
 		return nil
@@ -208,6 +211,7 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 	ctx, cancel := codexShutdownContext(ctx)
 	defer cancel()
 	st, err := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))
+	err = errors.Join(cfgErr, err)
 	res.codex, res.codexErr = st, err
 	res.Codex = &resyncCodexJSON{OK: err == nil, Found: st.Found, Skill: string(st.SkillState),
 		HooksTrusted: st.HooksTrusted, DuplicatesRemoved: st.DuplicatesRemoved}
