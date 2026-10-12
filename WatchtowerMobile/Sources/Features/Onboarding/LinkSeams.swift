@@ -1,0 +1,63 @@
+import Foundation
+import WatchtowerSync
+
+/// The phone's iCloud identity and the zone shares the link flow accepts
+/// (spec §2.3 steps 2–3). `CloudKitLinkContainer` is the live one.
+protocol LinkContainer: Sendable {
+    func accountStatus() async -> CloudAvailability
+    /// `CKContainer.userRecordID().recordName`.
+    func userRecordName() async throws -> String
+    /// Fetches every URL's share metadata, then accepts them all; throws if
+    /// any metadata fetch or accept fails.
+    func acceptShares(_ urls: [URL]) async throws
+    /// Leaves the Mac's shares: deletes the accepted zone-wide share records
+    /// of `hubID`'s two zones from this phone's shared database.
+    func leaveShares(ownerName: String, hubID: String) async throws
+}
+
+/// The link flow's clock: the grant wait and the expiry check run on it.
+protocol LinkClock: Sendable {
+    func now() -> Date
+    /// Seconds on a monotonic source that a wall-clock jump cannot move.
+    func uptime() -> TimeInterval
+    func sleep(for duration: Duration) async throws
+}
+
+extension LinkClock {
+    func uptime() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
+}
+
+struct SystemLinkClock: LinkClock {
+    func now() -> Date { Date() }
+
+    func sleep(for duration: Duration) async throws {
+        try await Task.sleep(for: duration)
+    }
+}
+
+/// The app side of the link flow (`AppRoot`): the sync stack per database,
+/// the replica's view of this phone's grant, and the one place the link
+/// lands.
+@MainActor
+protocol LinkHost: AnyObject {
+    /// The transport of `scope`'s database for `hubID`'s zones. Another
+    /// scope or hub restarts the sync stack with an empty replica.
+    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport
+    /// One fetch, then this phone's `device_grant` as the replica holds it.
+    func fetchGrant(deviceID: String) async -> DeviceGrant?
+    /// `AppEnvironment.setLinkedDevice`: nil unlinks; `writesAllowed: false`
+    /// keeps the link but sends nothing (the hub moved).
+    func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async
+    /// This phone's `device` record with the current Settings choices.
+    func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
+    /// Asks the transport to send what is queued now (before a stop).
+    func flushSends() async
+    /// Stops sync, wipes the replica, the outbox and the transport's store
+    /// (buffer, send queue, engine state), and restarts unlinked on
+    /// `hubID`'s zones in `scope`'s database. Returns how many outbox items
+    /// and recordings were still waiting for the Mac (reported "Not sent").
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int
+    func requestNotificationPermission() async
+    /// Selects the Now tab.
+    func openNow()
+}

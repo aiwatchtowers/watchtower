@@ -1,7 +1,5 @@
 import Foundation
 import os
-import Security
-import UIKit
 import WatchtowerSync
 
 /// The Mac this phone is linked to (mobile POC spec §2.3): the hub, the
@@ -104,84 +102,5 @@ final class LinkStore {
         } catch {
             Self.logger.error("could not save \(key, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
-    }
-}
-
-/// What this phone's `device` record says about the phone itself (spec
-/// §5.1).
-struct DeviceIdentity: Equatable, Sendable {
-    /// A UUID kept in the Keychain, so it survives a reinstall.
-    let deviceID: String
-    let name: String
-    let model: String
-    let appVersion: String
-
-    func linkedDevice(scope: DeviceScope, userRecordName: String) -> LinkedDevice {
-        LinkedDevice(
-            deviceID: deviceID,
-            name: name,
-            model: model,
-            appVersion: appVersion,
-            scope: scope,
-            userRecordName: userRecordName
-        )
-    }
-
-    func linkedDevice(for link: LinkRecord) -> LinkedDevice {
-        linkedDevice(scope: link.scope, userRecordName: link.userRecordName)
-    }
-
-    /// This phone: the Keychain device id, the device's name (at most 60
-    /// grapheme clusters) and model, the app's marketing version.
-    @MainActor
-    static func current(defaults: UserDefaults = .standard) -> Self {
-        Self(
-            deviceID: DeviceIDKeychain.deviceID(fallback: defaults),
-            name: String(UIDevice.current.name.prefix(DevicePayload.maxNameLength)),
-            model: UIDevice.current.model,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-        )
-    }
-}
-
-/// The device id in the Keychain (`kSecClassGenericPassword`, this device
-/// only), created on first use.
-enum DeviceIDKeychain {
-    private static let service = "com.aiwatchtowers.watchtower.mobile.device"
-    private static let account = "device_id"
-    private static let fallbackKey = "device.id"
-    private static let logger = Logger(subsystem: "WatchtowerMobile", category: "DeviceIDKeychain")
-
-    /// The stored id, or a new one saved now. A Keychain that refuses the
-    /// write keeps the id in `fallback` (lost on reinstall) instead.
-    static func deviceID(fallback: UserDefaults) -> String {
-        if let stored = read() { return stored }
-        if let kept = fallback.string(forKey: fallbackKey) { return kept }
-        let created = UUID().uuidString
-        let status = SecItemAdd([
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData: Data(created.utf8)
-        ] as CFDictionary, nil)
-        if status != errSecSuccess {
-            logger.error("keychain refused the device id (\(status, privacy: .public)); keeping it in defaults")
-            fallback.set(created, forKey: fallbackKey)
-        }
-        return created
-    }
-
-    private static func read() -> String? {
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching([
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne
-        ] as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return String(bytes: data, encoding: .utf8)
     }
 }
