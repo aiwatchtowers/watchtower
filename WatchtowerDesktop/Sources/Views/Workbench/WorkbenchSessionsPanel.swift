@@ -59,15 +59,15 @@ struct WorkbenchSessionsPanel: View {
                 }
                 .clearPlainList()
                 .onChange(of: selectedSessionID, initial: true) { _, id in
-                    proxy.followSelection(scroll.selectionChanged(to: id, rows: rowIDs))
+                    proxy.followSelection(scroll.panelScrollTarget(selecting: id, rows: rowIDs))
                 }
                 .onChange(of: rowIDs) { _, ids in
-                    proxy.followSelection(scroll.rowsChanged(ids))
+                    proxy.followSelection(scroll.panelScrollTarget(rows: ids))
                 }
                 // Same view, another workbench: start the policy afresh.
                 .onChange(of: project.id) {
                     scroll = PanelSelectionScrollPolicy()
-                    proxy.followSelection(scroll.selectionChanged(to: selectedSessionID, rows: rowIDs))
+                    proxy.followSelection(scroll.panelScrollTarget(selecting: selectedSessionID, rows: rowIDs))
                 }
             }
             WorkbenchFilesSection(vm: vm, project: project)

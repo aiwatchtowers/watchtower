@@ -17,7 +17,7 @@ package struct PanelSelectionScrollPolicy<ID: Hashable & Sendable>: Sendable {
 
     /// A new selection; returns the id to scroll to now, or nil (cleared,
     /// unchanged, or not listed yet — then it waits as `pending`).
-    package mutating func selectionChanged(to id: ID?, rows: [ID]) -> ID? {
+    package mutating func panelScrollTarget(selecting id: ID?, rows: [ID]) -> ID? {
         guard id != selected else { return nil }
         selected = id
         pending = nil
@@ -29,7 +29,7 @@ package struct PanelSelectionScrollPolicy<ID: Hashable & Sendable>: Sendable {
 
     /// The listed rows changed; returns the pending id (and clears it) once
     /// its row is listed, else nil.
-    package mutating func rowsChanged(_ rows: [ID]) -> ID? {
+    package mutating func panelScrollTarget(rows: [ID]) -> ID? {
         guard let id = pending, rows.contains(id) else { return nil }
         pending = nil
         return id

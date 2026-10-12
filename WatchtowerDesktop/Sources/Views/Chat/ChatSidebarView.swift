@@ -65,11 +65,11 @@ struct ChatSidebarView: View {
                 .onKeyPress(.upArrow) { historyVM.selectAdjacent(by: -1) ? .handled : .ignored }
                 .onKeyPress(.downArrow) { historyVM.selectAdjacent(by: 1) ? .handled : .ignored }
                 .onChange(of: historyVM.selectedConversationID, initial: true) { _, id in
-                    proxy.followSelection(scroll.selectionChanged(to: id, rows: conversationIDs))
+                    proxy.followSelection(scroll.panelScrollTarget(selecting: id, rows: conversationIDs))
                 }
                 // Project rows are keyed by `sidebarRowKey` strings, never a chat id.
                 .onChange(of: conversationIDs) { _, ids in
-                    proxy.followSelection(scroll.rowsChanged(ids))
+                    proxy.followSelection(scroll.panelScrollTarget(rows: ids))
                 }
             }
             if let error = historyVM.lastError {
