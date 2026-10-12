@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
@@ -32,13 +34,6 @@ const askGuardReadBudget = 1400 * time.Millisecond
 
 // askGuardTool is the one tool the guard denies.
 const askGuardTool = "AskUserQuestion"
-
-// askGuardInput is the part of Claude Code's PreToolUse input the guard
-// reads.
-type askGuardInput struct {
-	SessionID string `json:"session_id"`
-	ToolName  string `json:"tool_name"`
-}
 
 // What the agent is told instead of its AskUserQuestion, by the owner's
 // presence (spec 2026-10-10-owner-asks-v2 Part 6): present, the question
@@ -84,6 +79,15 @@ var workbenchAskGuardCmd = &cobra.Command{
 		if workbenchAskGuardFlagPreToolUse == workbenchAskGuardFlagStop {
 			return errors.New("ask-guard runs as one Claude Code hook: --pre-tool-use or --stop")
 		}
+		agent, err := hookAgentFor(cmd, workbenchAskGuardFlagAgent)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: ask guard skipped: %v\n", err)
+			return nil // never refuse the tool or block the turn over our own flags
+		}
+		if agent == agentkind.Codex {
+			readCodexHook(cmd.InOrStdin(), cmd.ErrOrStderr(), "ask guard skipped", askGuardInputWait, sessionStateStdinLimit, openAskGuardDB)
+			return nil
+		}
 		if checkWorkbenchIDFlags(cmd) != nil {
 			return nil // never refuse the tool or block the turn over our own flags
 		}
@@ -102,12 +106,14 @@ var workbenchAskGuardCmd = &cobra.Command{
 
 var (
 	workbenchAskGuardFlagWorkbench  string
+	workbenchAskGuardFlagAgent      string
 	workbenchAskGuardFlagPreToolUse bool
 	workbenchAskGuardFlagStop       bool
 )
 
 func init() {
 	addWorkbenchIDFlag(workbenchAskGuardCmd, &workbenchAskGuardFlagWorkbench, "workbench id")
+	addHookAgentFlag(workbenchAskGuardCmd, &workbenchAskGuardFlagAgent)
 	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagPreToolUse, "pre-tool-use", false,
 		"run as the Claude Code PreToolUse hook (always exit 0)")
 	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagStop, "stop", false,
@@ -126,7 +132,7 @@ func init() {
 func runAskGuardHook(stdin io.Reader, stdout io.Writer, rawID string) {
 	defer func() { _ = recover() }()
 	ctx, cancel := context.WithTimeout(context.Background(), askGuardInputWait)
-	in, err := readHookInput[askGuardInput](ctx, stdin)
+	in, err := readHookEvent(ctx, stdin, hookStdinLimit, agentkind.Claude)
 	cancel()
 	if err != nil || in.ToolName != askGuardTool {
 		return
@@ -169,6 +175,16 @@ var askGuardToolReason = func(rawID, claudeID string) string {
 		return askToolDenialReasonPresent
 	}
 	return askToolDenialReasonAway
+}
+
+// openAskGuardDB opens the database the way the guard reads it: never
+// creating or migrating it, reads under askGuardBusyTimeout (query_only).
+func openAskGuardDB() (*db.DB, error) {
+	cfg, err := loadWorkbenchCLIConfig()
+	if err != nil {
+		return nil, err
+	}
+	return db.OpenExisting(cfg.DBPath(), askGuardBusyTimeout)
 }
 
 // askGuardOwnerHereBy is askGuardOwnerPresence answered by deadline: reads

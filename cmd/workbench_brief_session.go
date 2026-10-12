@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/terminal"
 	"watchtower/internal/tools"
@@ -26,13 +27,6 @@ const sessionRecordBusyTimeout = time.Second
 // sessionStartInputWait bounds the wait for the hook input: Claude Code
 // writes it and closes stdin at once. A var for tests.
 var sessionStartInputWait = time.Second
-
-// sessionStartInput is the part of Claude Code's SessionStart hook input the
-// brief reads.
-type sessionStartInput struct {
-	SessionID string `json:"session_id"`
-	Source    string `json:"source"`
-}
 
 // sessionSwitchSources are the SessionStart sources that may put the
 // terminal on another conversation than the stored one: /clear starts a new
@@ -73,7 +67,7 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionStartInputWait)
-	hook, err := readHookInput[sessionStartInput](ctx, stdin)
+	hook, err := readHookEvent(ctx, stdin, hookStdinLimit, agentkind.Claude)
 	cancel()
 	if errors.Is(err, io.EOF) {
 		return nil // a manual run with stdin closed
