@@ -68,6 +68,16 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         store = KeychainPhoneKeyStore(backend: backend, privateGroup: nil, alertGroup: nil)
     }
 
+    /// A store whose device identity is `identity` (a fixed test pairing) instead of a fresh one.
+    public convenience init(identity: DeviceIdentityKeys) throws {
+        self.init()
+        _ = try backend.add(
+            identity.signing.rawRepresentation, account: "identity.sig", access: .whenUnlocked, group: nil, dataProtection: true)
+        _ = try backend.add(
+            identity.agreement.rawRepresentation, account: "identity.kx", access: .whenUnlocked, group: nil, dataProtection: true)
+        _ = try store.identity()
+    }
+
     public var isLocked: Bool {
         get { backend.isLocked }
         set { backend.isLocked = newValue }

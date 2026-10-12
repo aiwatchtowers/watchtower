@@ -1,4 +1,5 @@
 import CloudKit
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -389,5 +390,34 @@ final class CloudKitTransportErrorTests: XCTestCase {
         XCTAssertEqual(engine.sendCount, 1)
         let afterResume = await transport.nextEngineBatch()
         XCTAssertEqual(afterResume?.recordsToSave.count, 2, "the failed records are still pending")
+    }
+
+    // MARK: - Conflict re-save (mobile E2E Review Focus 2)
+
+    func testConflictReSaveKeepsTheSealedPayload() async throws {
+        let store = try TransportStore.inMemory()
+        let transport = await CloudKitTransport.testing(store: store)
+        let secure = SecureTransport(inner: InMemoryCloudTransport(), keys: TestE2E.hub(), rollback: InMemoryRollbackGuard())
+        let sealed = try await secure.seal(CloudRecord(
+            recordName: "target-1", zone: .data, kind: SliceKind.target.rawValue, modifiedAt: Date(),
+            payload: Data("{\"id\":1}".utf8)))
+        try await transport.save([sealed])
+        let firstBatch = await transport.nextEngineBatch()
+        let first = try XCTUnwrap(firstBatch?.recordsToSave.first)
+        XCTAssertEqual(first.encryptedValues["payload"] as? Data, sealed.payload)
+
+        // Another writer saved the same record name: the server answers with its own copy.
+        let server = CKRecord(recordType: CloudKitTransport.recordType, recordID: first.recordID)
+        server.encryptedValues["payload"] = Data("server bytes".utf8)
+        let conflict = CKError(.serverRecordChanged, userInfo: [CKRecordChangedErrorServerRecordKey: server])
+        await transport.handleSentChanges(saved: [], deleted: [], failedSaves: [(first, conflict)], failedDeletes: [:])
+
+        let retryBatch = await transport.nextEngineBatch()
+        let retry = try XCTUnwrap(retryBatch?.recordsToSave.first)
+        XCTAssertEqual(retry.recordID, first.recordID)
+        XCTAssertEqual(retry.recordType, CloudKitTransport.recordType)
+        XCTAssertEqual(retry.encryptedValues["payload"] as? Data, sealed.payload,
+                       "the retry re-sends the pending envelope byte for byte, never the server's or a re-seal")
+        XCTAssertNil(retry["notifyLevel"])
     }
 }

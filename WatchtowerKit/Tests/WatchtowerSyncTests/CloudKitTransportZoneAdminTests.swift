@@ -10,7 +10,7 @@ final class CloudKitTransportZoneAdminTests: XCTestCase {
 
     private func heartbeatRecord(hubID: String) throws -> CKRecord {
         let id = CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: legacyData)
-        let ck = CKRecord(recordType: "WatchtowerRecord", recordID: id)
+        let ck = CKRecord(recordType: "WatchtowerEnvelope", recordID: id)
         var heartbeat = HeartbeatFixtures.minimal(updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
         heartbeat = HeartbeatPayload(
             updatedAt: heartbeat.updatedAt, appVersion: heartbeat.appVersion, hubID: hubID, macName: heartbeat.macName,
@@ -177,7 +177,7 @@ final class CloudKitTransportZoneAdminTests: XCTestCase {
     /// Spec §3.6: a heartbeat it cannot read keeps the zones.
     func testLegacyZonesWithAnUnreadableHeartbeatAreKept() async throws {
         let id = CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: legacyData)
-        let bare = CKRecord(recordType: "WatchtowerRecord", recordID: id)
+        let bare = CKRecord(recordType: "WatchtowerEnvelope", recordID: id)
         let admin = FakeZoneAdmin(zones: [legacyData, legacyRelay], records: [bare])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), zoneAdmin: admin)
         let outcome = try await transport.removeLegacyZones { _ in true }
