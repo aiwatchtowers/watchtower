@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -57,13 +58,116 @@ func workbenchInstallOptions(p *db.Workbench) (devpack.WorkbenchInstallOptions, 
 }
 
 // removeWorkbenchInstall is `workbench delete`'s folder cleanup (PROJ-02),
-// assigned to workbenchRemoveInstall in integrate.go's init.
+// assigned to workbenchRemoveInstall in integrate.go's init: the Claude Code
+// install, then the codex part (the hook trust in ~/.codex is shared by
+// every folder and stays).
 func removeWorkbenchInstall(ctx context.Context, _ *config.Config, p *db.Workbench) error {
 	o, err := workbenchInstallOptions(p)
 	if err != nil {
 		return err
 	}
-	return devpack.RemoveWorkbench(ctx, o)
+	err = devpack.RemoveWorkbench(ctx, o)
+	if !isExistingDir(p.FolderPath) { // the Claude removal already said so
+		return err
+	}
+	_, codexErr := devpack.RemoveCodex(ctx, o)
+	return errors.Join(err, codexErr)
+}
+
+func isExistingDir(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
+// codexShutdownContext is ctx cancelled by SIGINT/SIGTERM too, for every
+// path that may start codex's app-server: a cancelled run (the Desktop
+// dropping a status call) then still closes the server and kills its
+// process group, so nothing it spawned is orphaned.
+func codexShutdownContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return notifyShutdownContext(ctx, silentShutdownLogf)
+}
+
+// codexAppServerStart starts codex's app-server for the hook trust step. A
+// seam: cmd's TestMain stubs it out so no test runs a real codex.
+var codexAppServerStart devpack.StartCodexAppServer = codex.StartAppServer
+
+// codexAppServerFor is the app-server factory for o's trust step, with cfg's
+// codex_path (nil: loaded from --config) or else codexFindBinary.
+func codexAppServerFor(ctx context.Context, cfg *config.Config, o devpack.WorkbenchInstallOptions) func() (codex.AppServer, error) {
+	if cfg == nil {
+		var err error
+		if cfg, err = config.Load(flagConfig); err != nil {
+			return func() (codex.AppServer, error) { return nil, fmt.Errorf("loading config: %w", err) }
+		}
+	}
+	return devpack.CodexAppServer(ctx, cfg, o.Bin, codexFindBinary, codexAppServerStart)
+}
+
+// runCodexInstall is `integrate codex --workbench N`: the skill copy, the
+// exclude line, the imported duplicates out, and the hook trust. No codex
+// binary is reported, not an error (D5).
+func runCodexInstall(ctx context.Context, w io.Writer, p *db.Workbench) error {
+	o, err := workbenchInstallOptions(p)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := codexShutdownContext(ctx)
+	defer cancel()
+	st, err := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, nil, o))
+	fmt.Fprintf(w, "Workbench %d (%s), codex:\n", p.ID, p.FolderPath)
+	printCodexInstallBody(w, st, err)
+	if err != nil {
+		fmt.Fprintf(w, "\nProblems:\n  %v\n", err)
+	}
+	return err
+}
+
+// printCodexInstallBody is the per-piece part of a codex install report
+// (also `workbench resync`'s).
+func printCodexInstallBody(w io.Writer, st devpack.CodexStatus, err error) {
+	if st.SkillState != "" {
+		fmt.Fprintf(w, "  skill    %s%s (.agents/skills/%s)\n", st.SkillState, skillStateNote(st.SkillState), devpack.WorkbenchSkillName)
+	}
+	switch {
+	case st.DuplicatesRemoved:
+		fmt.Fprintln(w, "  imported removed the Watchtower hooks codex had imported into .codex")
+	case st.ImportedDuplicates:
+		fmt.Fprintln(w, "  imported Watchtower hooks codex imported into .codex are still there (see problems)")
+	}
+	fmt.Fprintf(w, "  trust    %s\n", codexTrustLine(st, err))
+}
+
+func codexTrustLine(st devpack.CodexStatus, err error) string {
+	switch {
+	case !st.Found:
+		return "skipped — codex not found; install codex and run this again"
+	case st.HooksTrusted == nil && errors.Is(err, codex.ErrCodexTrustUnavailable):
+		return "unknown — codex could not be asked (see problems)"
+	case st.HooksTrusted == nil:
+		return "not changed (see problems)"
+	case *st.HooksTrusted:
+		return "hooks trusted"
+	default:
+		return "NOT all hooks trusted (see problems)"
+	}
+}
+
+// runCodexRemove is `integrate codex --workbench N --remove`.
+func runCodexRemove(ctx context.Context, w io.Writer, p *db.Workbench) error {
+	o, err := workbenchInstallOptions(p)
+	if err != nil {
+		return err
+	}
+	sk, rmErr := devpack.RemoveCodex(ctx, o)
+	fmt.Fprintf(w, "Workbench %d (%s): codex removal ran.\n", p.ID, p.FolderPath)
+	if sk.State == devpack.StateDrifted || sk.State == devpack.StateForeign {
+		fmt.Fprintf(w, "  kept: skill %s %s%s (%s)\n", sk.Name, sk.State, skillStateNote(sk.State), sk.Path)
+	}
+	fmt.Fprintln(w, "  The hook trust in ~/.codex/config.toml is shared by every workbench and was left in place.")
+	if rmErr != nil {
+		fmt.Fprintf(w, "\nProblems:\n  %v\n", rmErr)
+	}
+	return rmErr
 }
 
 // checkWorkbenchFlags refuses the global-pack flags next to --workbench (flag
@@ -297,6 +401,16 @@ type workbenchStatusJSON struct {
 	// workbench missing either is offered Repair.
 	AskGuard     bool `json:"ask_guard"`
 	AskToolBlock bool `json:"ask_tool_block"`
+	// Codex is the codex part (spec §4.5). hooks_trusted is null when codex
+	// could not be asked (not found, no answer, an unknown protocol).
+	Codex codexStatusJSON `json:"codex"`
+}
+
+type codexStatusJSON struct {
+	Found              bool  `json:"found"`
+	Skill              bool  `json:"skill"`
+	HooksTrusted       *bool `json:"hooks_trusted"`
+	ImportedDuplicates bool  `json:"imported_duplicates"`
 }
 
 // legacySkillState is a legacy skill's state on the wire: "" when there is
@@ -317,6 +431,12 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 	if err != nil {
 		return err
 	}
+	codexCtx, cancel := codexShutdownContext(ctx)
+	defer cancel()
+	cs, err := devpack.StatusCodex(codexCtx, o, codexAppServerFor(codexCtx, nil, o))
+	if err != nil {
+		return err
+	}
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -327,6 +447,9 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			Legacy: st.Legacy, LegacySkill: legacySkillState(st.LegacySkill),
 			CurrentMCP: st.CurrentMCP, StateHooks: st.StateHooks,
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
+			Codex: codexStatusJSON{
+				Found: cs.Found, Skill: cs.Skill, HooksTrusted: cs.HooksTrusted, ImportedDuplicates: cs.ImportedDuplicates,
+			},
 		})
 	}
 	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)
@@ -347,5 +470,22 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 	if s := legacySkillState(st.LegacySkill); s != "" {
 		fmt.Fprintf(w, "  old skill %s %s%s (%s)\n", devpack.LegacySkillName, s, skillStateNote(st.LegacySkill.State), st.LegacySkill.Path)
 	}
+	fmt.Fprintf(w, "  codex    %s\n", codexStatusLine(cs))
 	return nil
+}
+
+func codexStatusLine(cs devpack.CodexStatus) string {
+	trust := "unknown"
+	if cs.HooksTrusted != nil {
+		trust = fmt.Sprint(*cs.HooksTrusted)
+	}
+	found := "found"
+	if !cs.Found {
+		found = "not found"
+	}
+	line := fmt.Sprintf("%s, skill %s, hooks trusted %s", found, cs.SkillState, trust)
+	if cs.ImportedDuplicates {
+		line += ", imported Watchtower hooks in .codex (run 'watchtower integrate codex' to clean up)"
+	}
+	return line
 }
