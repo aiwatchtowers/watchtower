@@ -690,8 +690,9 @@ extension WorkbenchesViewModel {
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        if let center = terminalCenter, let row = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
-            let mode = await center.launch(row, fresh: fresh, prompt: prompt)
+        if let center = terminalCenter, let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
+            let row = plan.row
+            let mode = await center.launch(row, fresh: fresh, prompt: prompt, codexResume: plan.codexResume)
             // Keyed by the mode, whatever the agent (spec 2026-10-12 §7).
             switch mode {
             case .resumeAgent?:
@@ -706,9 +707,6 @@ extension WorkbenchesViewModel {
             default:
                 resumeStarts[row.id] = nil
             }
-            // `rowToLaunch` dropped the id already; this catches a rollout
-            // that vanished between its check and the launch.
-            if case .newAgent(.codex, _, _)? = mode { await dropCodexSessionID(row) }
             if isLatest { center.focus(row.id) }
         }
         if isLatest, let projectID = row.projectID {
@@ -718,18 +716,20 @@ extension WorkbenchesViewModel {
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
     }
 
-    /// The row `activate` launches. A Codex relaunch whose stored id has no
-    /// rollout forgets the id and rollout path BEFORE the launch (spec
-    /// 2026-10-12 §5, §7), so the new session's SessionStart stores its own
-    /// id. nil — nothing launches, the failure reported — when Codex's
-    /// sessions folder could not be listed (the id stays) or the reset did
-    /// not go in.
+    /// The row `activate` launches and, for a Codex row, whether it resumes
+    /// (decided here once; the center does not look for the rollout again).
+    /// A Codex relaunch whose stored id has no rollout forgets the id and
+    /// rollout path BEFORE the launch (spec 2026-10-12 §5, §7), so the new
+    /// session's SessionStart stores its own id. nil — nothing launches, the
+    /// failure reported — when Codex's sessions folder could not be listed
+    /// (the id stays) or the reset did not go in.
     private func rowToLaunch(
         _ row: TerminalSession, fresh: Bool, center: TerminalCenter, ticket: Int?
-    ) async -> TerminalSession? {
-        guard row.kind == .codex, !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return row }
+    ) async -> (row: TerminalSession, codexResume: Bool?)? {
+        guard row.kind == .codex else { return (row, nil) }
+        guard !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return (row, false) }
         do {
-            if try center.codexResumes(row) { return row }
+            if try center.codexResumes(row) { return (row, true) }
         } catch {
             await failed(row, "Could not check Codex's saved sessions", error, ticket: ticket, background: ticket == nil)
             return nil
@@ -737,27 +737,14 @@ extension WorkbenchesViewModel {
         NSLog("WorkbenchesViewModel: Codex session %lld starts anew: no rollout for id %@ (stored path %@) under %@",
               row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", CodexRollout.home().path)
         do {
-            return try await dbPool.write { db in
+            let reset = try await dbPool.write { db in
                 try TerminalSessionQueries.resetAgentSession(db, id: row.id)
                 return try TerminalSessionQueries.fetch(db, id: row.id) ?? row
             }
+            return (reset, false)
         } catch {
             await failed(row, "Could not reset the Codex session", error, ticket: ticket, background: ticket == nil)
             return nil
-        }
-    }
-
-    /// A Codex row that started a new session (no rollout to resume) forgets
-    /// its stored id and rollout path, so the new session's SessionStart
-    /// stores its own id (spec 2026-10-12 §5, §7). A row without either is
-    /// left alone.
-    private func dropCodexSessionID(_ row: TerminalSession) async {
-        guard row.claudeSessionID != nil || row.transcriptPath != nil else { return }
-        do {
-            try await dbPool.write { try TerminalSessionQueries.resetAgentSession($0, id: row.id) }
-        } catch {
-            NSLog("WorkbenchesViewModel: could not drop the Codex session id of session %lld: %@",
-                  row.id, error.localizedDescription)
         }
     }
 

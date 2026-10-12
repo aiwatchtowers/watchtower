@@ -353,8 +353,8 @@ final class TerminalCenter {
 
     /// Whether the agent has a transcript for the row's stored session id:
     /// Claude Code's under `~/.claude`, Codex's rollout. No id, no transcript.
-    /// A Codex lookup that failed reads as none here: the one caller that
-    /// acts on "none" for Codex, a relaunch, asks `codexResumes` first.
+    /// A Codex lookup that failed reads as none here: a relaunch from the
+    /// view model decides with `codexResumes` instead and passes the answer.
     func hasTranscript(_ session: TerminalSession) -> Bool {
         guard let id = session.claudeSessionID else { return false }
         switch session.kind {
@@ -691,7 +691,9 @@ final class TerminalCenter {
     /// the pane (`.unavailable`). A second call while one waits, or a close
     /// meanwhile, launches nothing. Returns the mode it launched.
     @discardableResult
-    func launch(_ session: TerminalSession, fresh: Bool, prompt: String? = nil) async -> TerminalLaunch.Mode? {
+    func launch(
+        _ session: TerminalSession, fresh: Bool, prompt: String? = nil, codexResume: Bool? = nil
+    ) async -> TerminalLaunch.Mode? {
         guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt) }
         let id = session.id
         guard states[id] != .running, pendingLaunches[id] == nil else { return nil }
@@ -721,7 +723,7 @@ final class TerminalCenter {
         }
         guard pendingLaunches[id] == token else { return nil }
         pendingLaunches[id] = nil
-        return start(session, fresh: fresh, prompt: prompt, codex: args)
+        return start(session, fresh: fresh, prompt: prompt, codex: args, codexResume: codexResume)
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
@@ -735,7 +737,7 @@ final class TerminalCenter {
     /// the project hook can store the id `/clear` moves Claude Code to. A
     /// `codex` row runs `codex` as `launch` resolved it (`codex`): it resumes
     /// a stored id whose rollout exists, and otherwise starts a new Codex
-    /// session (`newAgent` with no id; the caller drops the stored id). A
+    /// session (`newAgent` with no id; the caller drops the stored id first). A
     /// `shell` row runs the login shell alone. After an exit it relaunches in
     /// the same process view (scrollback kept). A missing folder or a stored
     /// Claude id that is not a canonical UUID (it goes into a shell command)
@@ -743,7 +745,8 @@ final class TerminalCenter {
     /// nothing.
     @discardableResult
     func start(
-        _ session: TerminalSession, fresh: Bool, prompt: String? = nil, codex: CodexLaunchArgs? = nil
+        _ session: TerminalSession, fresh: Bool, prompt: String? = nil, codex: CodexLaunchArgs? = nil,
+        codexResume: Bool? = nil
     ) -> TerminalLaunch.Mode? {
         let id = session.id
         if states[id] == .running { return nil }
@@ -756,7 +759,7 @@ final class TerminalCenter {
             states[id] = .unavailable("The folder \(session.folderPath) no longer exists.")
             return nil
         }
-        guard let mode = mode(for: session, fresh: fresh, prompt: prompt) else { return nil }
+        guard let mode = mode(for: session, fresh: fresh, prompt: prompt, codexResume: codexResume) else { return nil }
         if mode.agent == .codex, codex == nil {
             states[id] = .unavailable("Codex cannot be launched without its launch arguments.")
             return nil
@@ -766,8 +769,12 @@ final class TerminalCenter {
     }
 
     /// The launch `start` makes for the row; nil (the row `.unavailable`)
-    /// for a `claude` row without a valid id.
-    private func mode(for session: TerminalSession, fresh: Bool, prompt: String?) -> TerminalLaunch.Mode? {
+    /// for a `claude` row without a valid id. A Codex row resumes as
+    /// `codexResume` says when the caller decided it (`codexResumes`, one
+    /// walk of the rollout tree); else it looks for the rollout here.
+    private func mode(
+        for session: TerminalSession, fresh: Bool, prompt: String?, codexResume: Bool?
+    ) -> TerminalLaunch.Mode? {
         switch session.kind {
         case .shell:
             return .shell
@@ -779,7 +786,8 @@ final class TerminalCenter {
             if fresh { return .newClaude(uuid: uuid, prompt: prompt) }
             return hasTranscript(session) ? .resumeClaude(uuid: uuid) : .newClaude(uuid: uuid, prompt: nil)
         case .codex:
-            if !fresh, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id), hasTranscript(session) {
+            if !fresh, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id),
+               codexResume ?? hasTranscript(session) {
                 return .resumeAgent(.codex, sessionID: id)
             }
             return .newAgent(.codex, sessionID: nil, prompt: fresh ? prompt : nil)

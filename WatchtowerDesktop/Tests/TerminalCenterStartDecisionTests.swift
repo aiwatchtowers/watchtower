@@ -223,6 +223,39 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         XCTAssertTrue(error.hasPrefix("Could not check Codex's saved sessions"), error)
     }
 
+    /// A relaunch walks Codex's rollout tree once: the view model decides
+    /// and passes the answer, the center does not look again (#399 N2/N3).
+    func testCodexRelaunchLooksForTheRolloutOnce() async throws {
+        var lookups: [String] = [] // the title refresh of the session left also looks: count per id
+        center.codexRolloutExists = { [weak self] id, _ in
+            lookups.append(id)
+            return self?.rollouts.contains(id) ?? false
+        }
+        let vm = makeVM()
+        let resumed = try await codexRow(try await workbench(), id: storedID)
+        rollouts = [storedID]
+        await vm.open(resumed)
+        XCTAssertEqual(lookups, [storedID])
+        XCTAssertTrue(lastScript.hasSuffix(" resume '\(storedID)'"), lastScript)
+
+        lookups = []
+        let other = "0199d1c2-7a3b-7c4d-8e5f-0a1b2c3d4e60"
+        let anew = try await codexRow(resumed.projectID, id: other)
+        await vm.open(anew)
+        XCTAssertEqual(lookups.filter { $0 == other }.count, 1)
+        XCTAssertFalse(lastScript.contains(" resume "), lastScript)
+        let after = try await stored(anew.id)
+        XCTAssertNil(after?.claudeSessionID)
+    }
+
+    /// A center told not to resume starts anew whatever it would find.
+    func testCodexResumeDecisionPassedInWins() async throws {
+        let row = try await codexRow(try await workbench(), id: storedID)
+        rollouts = [storedID]
+        let mode = await center.launch(row, fresh: false, codexResume: false)
+        XCTAssertEqual(mode, .newAgent(.codex, sessionID: nil, prompt: nil))
+    }
+
     /// A resume keeps the id; a new start of a row with nothing stored writes nothing.
     func testCodexResumeKeepsTheStoredID() async throws {
         let row = try await codexRow(try await workbench(), id: storedID)
