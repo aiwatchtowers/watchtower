@@ -61,3 +61,12 @@ A wider Desktop audit (2026-10-13) also found non-hub background pollers: `Calen
 
 ## Order and verification
 Task 1 ships first (alone or with Task 2) so the owner gets a baseline day. Then Tasks 2–6 in one PR (`fix/724-mobile-battery`), Kit/Swift tests per task, `make kit-test`, `make mobile-test`, `make test-swift` filters, the gate before the PR. Final check by the owner: a day of normal use, the Diagnostics numbers and iOS Battery compared with the baseline.
+
+## Owner decisions (ask #221, 2026-10-13)
+
+- **Q1 — phone foreground:** pushes + a 60 s safety poll (replaces the 5 s / 30 s loop).
+- **Q2 — heartbeat:** every 15 min; the phone shows the Mac offline after 35 min (was 300 s / 720 s).
+- **Q3 — Mac fast lane:** immediate send only for asks (`owner_ask`, `ask_alert`, answer echoes); every other kind rides a coalesced send at most every 30 s.
+- **Q4 — Task 6:** in this PR, the hub's own cost only; the other Mac pollers go to a separate target.
+- **Q5 — paused capture:** finished and saved automatically after 60 min of pause (the default in the review, not objected to).
+- **Owner's rule:** while the app is open it may fetch actively — a push in the foreground is fetched at once, pull-to-refresh and returning to the foreground fetch at once; closed or in the background it is frugal — pushes coalesce, no bootstrap-time uploads on a push launch, observations suspended. None of the owner-facing behaviour above may get worse.
