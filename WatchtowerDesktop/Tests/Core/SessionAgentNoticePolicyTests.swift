@@ -61,6 +61,26 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
                                                       canPost: true)).count, 1)
         XCTAssertEqual(withdrawn.update(statusMap(agentStatus(4, .live(.background), at: "t2")), canPost: true),
                        [.withdraw(identifier: "workbench-session-4")], "background withdraws the stopped banner")
+
+        // Ready to check (#534): never announced — the ask's own notice
+        // did — and it withdraws a delivered stopped banner.
+        let ready = SessionSwitcherPresentation.State.live(.readyToCheck, openAsks: 1, openQuestionAsks: 0)
+        var checked = SessionAgentNoticePolicy()
+        XCTAssertEqual(postedNotices(checked.update(statusMap(agentStatus(5, .live(.stopped), at: "t1")),
+                                                    canPost: true)).count, 1)
+        XCTAssertEqual(checked.update(statusMap(agentStatus(5, ready, at: "t2")), canPost: true),
+                       [.withdraw(identifier: "workbench-session-5")], "stopped → ready withdraws, posts nothing")
+        XCTAssertEqual(checked.update(statusMap(agentStatus(5, ready, at: "t2")), canPost: true), [])
+        XCTAssertEqual(postedNotices(checked.update(statusMap(agentStatus(5, .live(.stopped), at: "t3")),
+                                                    canPost: true)).map(\.title),
+                       ["Release work stopped"], "ready → stopped (asks answered, turn over): one notice")
+
+        // A check filed, then `finish_session`: the row reads ready to
+        // check, not finished — one notice per hand-off (the ask's), not two.
+        var finishing = SessionAgentNoticePolicy()
+        _ = finishing.update(statusMap(agentStatus(6, .live(.working), at: "t1")), canPost: true)
+        XCTAssertEqual(finishing.update(statusMap(agentStatus(6, ready, at: "t2")), canPost: true), [],
+                       "a check filed then finish: no finished notice")
     }
 
     /// The background Stop's stamp is never announced while agents run; when

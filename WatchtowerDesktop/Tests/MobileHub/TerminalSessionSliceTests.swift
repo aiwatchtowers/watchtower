@@ -208,6 +208,7 @@ final class TerminalSessionSliceTests: XCTestCase {
         case .orange: "orange"
         case .blue: "blue"
         case .red: "red"
+        case .purple: "purple"
         case .secondary: "secondary"
         }
     }

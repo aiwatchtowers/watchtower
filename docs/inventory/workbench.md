@@ -732,7 +732,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer the session's agent and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
@@ -773,7 +773,8 @@ dialog (`approval`, **Needs approval**). A StopFailure stores `waiting` with
 `agent_failed_at` (= that write's `agent_state_at`) and `agent_error` (the
 payload's top-level `error`, one line, ≤ 60 runes; `''` when missing) and
 shows **Error** (red). `finish_session` stores `finished_at`/`finish_summary`
-and shows **Finished** (blue, orange while the session has open asks)
+and shows **Finished** (blue; orange while the session has an open `question` ask; Ready to check below while
+every open ask is a check or a review)
 whether or not the session runs. A write that changes the state into
 `working` (a UserPromptSubmit, or a PostToolUse out of waiting or approval:
 a turn the agent started itself is a new turn) clears `finished_at` and the
@@ -784,15 +785,15 @@ a PostToolUse (that is `finish_session`'s own turn); an
 error, while a plain `waiting` (the `idle_prompt` notice, the Stop hook)
 over a failed one writes nothing, so the error stays until the owner acts;
 a StopFailure with another error replaces the stored one and its time.
-The order is: approval > error > working > agents working (since
-2026-10-10, below) > finished > open ask > stopped > running > not started,
+The order is: approval > error > working > agents working (since 2026-10-10, below) > ready to check (since
+2026-10-12, below) > finished > open ask > stopped > running > not started,
 the first match winning. The hook states (approval,
 error, working, stopped) stay run-scoped; finished and the open asks are
 not, so a session that is not live shows them as a ring in their colour.
 `SessionAgentNoticePolicy` announces each transition of a live session into
 needs approval, error, stopped or finished at most once, only while the app
-is inactive; waiting on an ask, or working with asks, gets no state notice
-(the ask's own notice announced it).
+is inactive; waiting on an ask, ready to check, or working with asks, gets no state notice (the ask's own notice announced
+it).
 
 Since 2026-10-10 (board #411, owner approved, ask #139): the Stop hook also
 stores the count of in-flight background subagents its input reports
@@ -830,6 +831,15 @@ came once no teammate is listed, does not count). Only the Stop's write
 still sets a count; a teammate starting a turn over Stopped shows from the
 main agent's next Stop. A new run and a conversation switch clear
 `agent_turns`; a main turn does not.
+
+Since 2026-10-12 (board #534, owner approved 2026-10-12, ask #195): a session with open asks none of which is a
+`question` — every one a `check` or a `review` — shows **Ready to check · ask #N** (**Ready for review** when
+every one is a review; "· M asks" with more than one), purple with a checklist glyph, instead of Finished or
+Waiting for you; one open `question` keeps Waiting for you, or Finished in orange. Like the open asks it is not
+run-scoped: a session that is not live shows it as a ring. Working and Agents working keep their kind with only
+checks or reviews open and show the ask count beside a checklist glyph instead of `?`. Ready to check counts as
+at the prompt (`isAtPrompt`) like Waiting for you, and an ask answer's Return into it follows PROJ-12 unchanged.
+An ask notice of a check or review reads "Ready to check: <title>" / "Ready for review: <title>".
 
 A count with no report for 30 minutes is probed, never ended on the clock
 alone. The probe (Go, no model turn) reads Claude Code's session registry
@@ -898,9 +908,10 @@ it again once it was cleared; only Go writes it.
 - `cmd/workbench_session_state_test.go::TestProj11_NestedSessionNeverMovesTheRow`
 - `internal/db/terminal_sessions_test.go::TestProj11_OlderEventNeverOverwritesANewerState`
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateFromAnEarlierRunIsIgnored` (since 2026-10-10 also an earlier run's background count)
-- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped"; since 2026-10-10: working → agents working posts nothing, agents working → stopped posts once, agents working withdraws a stopped banner)
-- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the nine kinds in the order above, live and not live)
+- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped"; since 2026-10-10: working → agents working posts nothing, agents working → stopped posts once, agents working withdraws a stopped banner; since 2026-10-12, board #534: ready to check posts nothing and withdraws a stopped banner, a check filed then `finish_session` posts no finished notice, ready to check → stopped posts once)
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the ten kinds in the order above, live and not live; since 2026-10-12, board #534, the rows before Ready to check keep their expectation because the fixture's asks are questions — the `row` helper's `questions` defaults to `openAsks`, stated in the test)
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_TurnEndWithoutAskIsStoppedNotWaiting`
+- Board #534, Ready to check (2026-10-12, ask #195) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_ReadyToCheckNeedsOnlyCheckOrReviewAsks` (checks only, reviews only, both → ready; no open ask → not), `testProj11_OneQuestionKeepsWaitingForYou` (two checks and a question → Waiting for you, `openQuestionAsks == 1`), `testProj11_ReadyToCheckIsAtPrompt` (live over this run's turn end → at the prompt; not live → a ring, never at the prompt); supporting: `TerminalSessionQueriesTests.testAgentStatesCountQuestionAndReviewAsks`, `SessionStatePresentationTests` (`testReadyToCheckIsPurpleWithChecklist`, `testWorkingWithOnlyChecksShowsChecklistGlyph`), `OwnerAsksViewModelTests.testProj12_AnAnswerIntoAReadyToCheckSessionGetsTheReturn`; every existing PROJ-11 guard above unchanged
 - `internal/db/session_report_test.go::TestProj11_WorkingClearsFinishedAndError`
 - `internal/db/session_report_test.go::TestProj11_WorkingOverWorkingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_WorkingOverWorkingClearsFinished` (finish, an Esc interrupt and a new prompt: the UserPromptSubmit's `working` over `working` clears `finished_at`; a plain `working` repeat stays a no-op)
 - `internal/db/session_report_test.go::TestProj11_ToolRunWorkingOverWorkingKeepsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseOverWorkingKeepsFinished` (finish, then a PostToolUse `working` over `working`: still finished)

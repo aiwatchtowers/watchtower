@@ -7,15 +7,17 @@ import Foundation
 package enum SessionStatePresentation {
     package typealias State = SessionSwitcherPresentation.State
 
-    /// The dot's colour: system green, orange, blue, red, or `.secondary`.
+    /// The dot's colour: system green, orange, blue, red, purple (Ready
+    /// to check, #534), or `.secondary`.
     package enum Tone: Equatable, Sendable {
-        case green, orange, blue, red, secondary
+        case green, orange, blue, red, purple, secondary
     }
 
     package static func color(for state: State) -> Tone {
         switch state.kind {
         case .working, .running, .background: .green
-        case .waitingOnAsk, .readyToCheck, .needsApproval: .orange
+        case .waitingOnAsk, .needsApproval: .orange
+        case .readyToCheck: .purple
         case .finished: state.openAsks > 0 ? .orange : .blue
         case .failed: .red
         case .stopped, .notStarted: .secondary
@@ -23,18 +25,24 @@ package enum SessionStatePresentation {
     }
 
     /// The SF Symbol beside the dot; nil for none. A working or background
-    /// session's `questionmark` comes with the open-ask count.
+    /// session's ask glyph comes with the open-ask count: `checklist` while
+    /// every open ask is a check or a review (#534), else `questionmark`.
     package static func glyph(for state: State) -> String? {
         switch state.kind {
-        case .working: state.openAsks > 0 ? "questionmark" : nil
-        case .background: state.openAsks > 0 ? "questionmark" : "person.2.fill"
-        case .waitingOnAsk, .readyToCheck: "questionmark"
+        case .working: state.openAsks > 0 ? askGlyph(state) : nil
+        case .background: state.openAsks > 0 ? askGlyph(state) : "person.2.fill"
+        case .waitingOnAsk: "questionmark"
+        case .readyToCheck: "checklist"
         case .needsApproval: "hand.raised.fill"
         case .finished: "checkmark"
         case .stopped: "pause.fill"
         case .failed: "exclamationmark"
         case .running, .notStarted: nil
         }
+    }
+
+    private static func askGlyph(_ state: State) -> String {
+        state.asksAreOnlyChecks ? "checklist" : "questionmark"
     }
 
     /// A session that is not live draws a ring in its kind's colour.
@@ -48,16 +56,18 @@ package enum SessionStatePresentation {
         caption(for: state, oldestAskID: state.oldestAskID)
     }
 
-    /// `oldestAskID` names the ask a waiting session points at ("ask #12");
-    /// without it the caption reads "Waiting for you".
+    /// `oldestAskID` names the ask a waiting or ready session points at
+    /// ("ask #12"); without it the caption reads "Waiting for you" /
+    /// "Ready to check".
     package static func caption(for state: State, oldestAskID: Int64?) -> String {
         switch state.kind {
         case .working:
             state.openAsks > 0 ? "Working · \(asksOpen(state.openAsks))" : "Working"
-        case .waitingOnAsk, .readyToCheck:
-            "Waiting for you"
-                + (oldestAskID.map { " · ask #\($0)" } ?? "")
-                + (state.openAsks > 1 ? " · \(state.openAsks) asks" : "")
+        case .waitingOnAsk:
+            "Waiting for you" + askSuffix(state, oldestAskID: oldestAskID)
+        case .readyToCheck:
+            (state.asksAreOnlyReviews ? "Ready for review" : "Ready to check")
+                + askSuffix(state, oldestAskID: oldestAskID)
         case .needsApproval:
             "Needs approval"
         case .finished:
@@ -91,6 +101,11 @@ package enum SessionStatePresentation {
         default: "\(state.backgroundAgents) agents working"
         }
         return state.openAsks > 0 ? "\(agents) · \(asksOpen(state.openAsks))" : agents
+    }
+
+    /// " · ask #12 · 3 asks": the ask named, the count when more than one.
+    private static func askSuffix(_ state: State, oldestAskID: Int64?) -> String {
+        (oldestAskID.map { " · ask #\($0)" } ?? "") + (state.openAsks > 1 ? " · \(state.openAsks) asks" : "")
     }
 
     private static func asksOpen(_ count: Int) -> String {

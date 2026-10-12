@@ -7,9 +7,9 @@ import Foundation
 /// approval, failed, stopped or finished — one `(session, kind,
 /// agent_state_at)` — is announced at most once; a transition seen while
 /// notices may not be posted (the app is active, notifications are off,
-/// quiet hours) is consumed, never replayed. Waiting on an ask, or working
-/// with asks, gets no state notice: `WorkbenchNotificationPolicy.askOpened`
-/// already announced the ask.
+/// quiet hours) is consumed, never replayed. Waiting on an ask, ready to
+/// check (#534), or working with asks, gets no state notice:
+/// `WorkbenchNotificationPolicy.askOpened` already announced the ask.
 package struct SessionAgentNoticePolicy: Sendable {
     package struct Notice: Equatable, Sendable {
         package let sessionID: Int64
