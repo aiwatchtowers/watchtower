@@ -14,7 +14,7 @@ import (
 // like the block's "[project_id=N]" lines, keeps its pre-rename wording: a
 // customized v8 template (which names both) is rendered with this same data
 // (spec 2026-10-02 A8), and v9 names them as they are.
-const noWorkbenchActivity = "(no project activity)"
+const noWorkbenchActivity = "(no workbench activity)"
 
 // maxBriefingWorkbenches and maxWorkbenchItems keep the block short: the briefing
 // points at the board, it does not reproduce it.
@@ -40,7 +40,7 @@ func (a workbenchActivity) empty() bool {
 // progress, blocked, done since `since` (the previous briefing), open owner
 // asks and unread agent comments. A project that fails to load is logged and skipped; the rest still render.
 func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
-	projects, err := p.db.ListWorkbenches()
+	workbenches, err := p.db.ListWorkbenches()
 	if err != nil {
 		p.logger.Printf("briefing: error loading workbenches: %v", err)
 		return noWorkbenchActivity, false
@@ -48,20 +48,20 @@ func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
 	sinceTS := since.UTC().Format("2006-01-02T15:04:05Z")
 	var sb strings.Builder
 	shown := 0
-	for i := range projects {
+	for i := range workbenches {
 		if shown >= maxBriefingWorkbenches {
 			break
 		}
-		a, err := p.workbenchActivity(projects[i].ID, sinceTS)
+		a, err := p.workbenchActivity(workbenches[i].ID, sinceTS)
 		if err != nil {
-			p.logger.Printf("briefing: workbench %d: %v", projects[i].ID, err)
+			p.logger.Printf("briefing: workbench %d: %v", workbenches[i].ID, err)
 			continue
 		}
 		if a.empty() {
 			continue
 		}
-		p.shown.addWorkbench(projects[i].ID)
-		sb.WriteString(renderWorkbenchActivity(projects[i], a))
+		p.shown.addWorkbench(workbenches[i].ID)
+		sb.WriteString(renderWorkbenchActivity(workbenches[i], a))
 		shown++
 	}
 	if shown == 0 {
@@ -70,17 +70,17 @@ func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
 	return sb.String(), true
 }
 
-func (p *Pipeline) workbenchActivity(projectID int64, sinceTS string) (workbenchActivity, error) {
+func (p *Pipeline) workbenchActivity(workbenchID int64, sinceTS string) (workbenchActivity, error) {
 	var a workbenchActivity
-	board, err := p.db.GetWorkbenchBoard(projectID)
+	board, err := p.db.GetWorkbenchBoard(workbenchID)
 	if err != nil {
 		return a, fmt.Errorf("board: %w", err)
 	}
-	comments, err := p.db.ListWorkbenchComments(db.WorkbenchCommentFilter{WorkbenchID: projectID})
+	comments, err := p.db.ListWorkbenchComments(db.WorkbenchCommentFilter{WorkbenchID: workbenchID})
 	if err != nil {
 		return a, fmt.Errorf("comments: %w", err)
 	}
-	open, err := p.db.ListOwnerAsks(projectID, db.OwnerAskFilter{Statuses: []string{"open"}})
+	open, err := p.db.ListOwnerAsks(workbenchID, db.OwnerAskFilter{Statuses: []string{"open"}})
 	if err != nil {
 		return a, fmt.Errorf("asks: %w", err)
 	}
