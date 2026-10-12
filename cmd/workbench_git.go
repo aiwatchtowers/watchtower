@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -100,8 +101,9 @@ func init() {
 // then --folder against the repository's worktrees (git runs only in the
 // workbench folder for that); Options.Folder is the resolved root. An error
 // (bad id, no such workbench, a missing workbench folder) exits non-zero;
-// resolveErr is git failing to list the worktrees, which the caller turns
-// into its envelope.
+// resolveErr is git failing to list the worktrees or the requested folder
+// failing to resolve (workbenchgit.ErrFolderUnreadable), which the caller
+// turns into its envelope.
 func workbenchGitTarget(ctx context.Context, cmd *cobra.Command) (
 	id int64, o workbenchgit.Options, folder workbenchgit.ResolvedFolder, resolveErr, err error,
 ) {
@@ -127,16 +129,27 @@ func workbenchGitTarget(ctx context.Context, cmd *cobra.Command) (
 }
 
 // folderRefusal is why a branches, switch or create call may not use the
-// folder asked for: a failed worktree listing or a folder outside the
-// repository's worktrees. "" = go ahead.
+// folder asked for: a folder that could not be read, a failed worktree
+// listing or a folder outside the repository's worktrees. "" = go ahead.
 func folderRefusal(folder workbenchgit.ResolvedFolder, resolveErr error) (refused, detail string) {
 	switch {
+	case errors.Is(resolveErr, workbenchgit.ErrFolderUnreadable):
+		return workbenchgit.RefusedFolderUnreadable, resolveErr.Error()
 	case resolveErr != nil:
 		return workbenchgit.RefusedGitFailed, "listing the worktrees: " + resolveErr.Error()
 	case folder.OutsideTheRepository():
 		return workbenchgit.RefusedFolderNotAWorktree, string(folder.Scope)
 	}
 	return "", ""
+}
+
+// resolveErrText is resolveErr as the envelope reports it: the folder's
+// own "reading the folder: …" error (no git ran), or the failed listing.
+func resolveErrText(resolveErr error) string {
+	if errors.Is(resolveErr, workbenchgit.ErrFolderUnreadable) {
+		return resolveErr.Error()
+	}
+	return "listing the worktrees: " + resolveErr.Error()
 }
 
 func workbenchGitContext(cmd *cobra.Command, budget time.Duration) (context.Context, context.CancelFunc) {
@@ -157,7 +170,7 @@ func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
 	st := workbenchgit.ReadStatus(ctx, o)
 	st.WorkbenchID, st.ResolvedFolder = id, folder
 	if resolveErr != nil { // the folder could not be placed: a failed read
-		st.StatusOK, st.StatusError = false, "listing the worktrees: "+resolveErr.Error()
+		st.StatusOK, st.StatusError = false, resolveErrText(resolveErr)
 	}
 	if workbenchGitFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), st)

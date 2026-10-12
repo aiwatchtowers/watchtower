@@ -32,6 +32,10 @@ const (
 	// repository's worktrees or missing (RefusedDetail names the scope); no
 	// git ran in it.
 	RefusedFolderNotAWorktree = "folder_not_a_worktree"
+	// RefusedFolderUnreadable: the folder asked for could not be resolved
+	// for a reason other than not existing (a parent that cannot be read);
+	// RefusedDetail is "reading the folder: <OS error>"; no git ran.
+	RefusedFolderUnreadable = "folder_unreadable"
 )
 
 // restoreBudget bounds what runs after a git write even when the caller's
