@@ -323,13 +323,28 @@ final class TerminalCenter {
         }
     }
 
-    /// The pause between a hand-off's paste and its Return, so the TUI has
-    /// taken the paste in before the key arrives.
-    nonisolated static let submitDelay: Duration = .milliseconds(150)
-    /// The same pause for an ask's answer (board #379): longer, since an
-    /// answer is not urgent and the re-read after it then also sees a
-    /// permission prompt whose async hook landed a little late.
-    nonisolated static let answerSubmitDelay: Duration = .milliseconds(500)
+    /// The pause between a hand-off's paste and its Return in a Claude Code
+    /// session (`AgentInputProfile.pasteSettle`).
+    nonisolated static let submitDelay: Duration = AgentInputProfile.claude.pasteSettle
+    /// The same pause for an ask's answer (`AgentInputProfile.submitSettle`).
+    nonisolated static let answerSubmitDelay: Duration = AgentInputProfile.claude.submitSettle
+
+    /// Overrides the agent a session's row names (`agent(of:)`). A seam for
+    /// tests: a `codex` row launches nothing until its launch builder (#399).
+    @ObservationIgnored var agentOverride: ((_ sessionID: Int64) -> AgentKind?)?
+
+    /// The agent a session runs, from its row; nil for a shell or a session
+    /// this center never started.
+    func agent(of sessionID: Int64) -> AgentKind? {
+        if let agentOverride { return agentOverride(sessionID) }
+        return rows[sessionID]?.kind.agent
+    }
+
+    /// How lines are typed into the session (spec 2026-10-12 §8): its
+    /// agent's profile; Claude Code's when it runs none.
+    func inputProfile(_ sessionID: Int64) -> AgentInputProfile {
+        agent(of: sessionID).map(AgentInputProfile.for) ?? .claude
+    }
 
     /// How a hand-off reached the session.
     enum HandoffDelivery: Equatable {
@@ -354,7 +369,9 @@ final class TerminalCenter {
     /// idle at its prompt; an answer only into a session whose hooks
     /// reported this run and show no permission prompt; a Return
     /// could answer a prompt that appeared meanwhile) — and only into the
-    /// same process run (`runs`), as a write of its own after `delay`: a CR read
+    /// same process run (`runs`), as a write of its own (the agent's
+    /// `AgentInputProfile.submit`) after `delay` (nil: the profile's
+    /// `pasteSettle`): a CR read
     /// in one chunk with the paste could be taken as part of it (a line
     /// break, not Enter). `refresh` runs after the pause, before the second
     /// check (the caller re-reads the agent state, which its poll may hold
@@ -371,7 +388,7 @@ final class TerminalCenter {
         _ text: String,
         sessionID: Int64,
         keepingLineBreaks: Bool = true,
-        delay: Duration = submitDelay,
+        delay: Duration? = nil,
         refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
     ) async -> HandoffDelivery {
@@ -395,7 +412,8 @@ final class TerminalCenter {
         } else if !canSubmit() {
             logWithheld(sessionID, "the session's state, before the pause")
         } else {
-            if let delivery = await returnAfterPause(process, sessionID: sessionID, run: run, delay: delay,
+            let pause = delay ?? inputProfile(sessionID).pasteSettle
+            if let delivery = await returnAfterPause(process, sessionID: sessionID, run: run, delay: pause,
                                                      refresh: refresh, canSubmit: canSubmit) {
                 return delivery
             }
@@ -443,7 +461,7 @@ final class TerminalCenter {
         }
         switch afterPause(sessionID, run: run, fresh: fresh, canSubmit: canSubmit) {
         case .pressReturn:
-            process.sendInput([0x0D])
+            process.sendInput(inputProfile(sessionID).submit)
             return .submitted
         case .ownerSent:
             logWithheld(sessionID, "the owner pressed Return during the pause")
@@ -545,7 +563,7 @@ final class TerminalCenter {
     private func ownerInput(_ sessionID: Int64, _ bytes: [UInt8]) {
         guard !bytes.isEmpty, !inputAnswersDialog(sessionID) else { return }
         let backslashBefore = ownerBackslashPending.contains(sessionID)
-        if Self.isSubmit(bytes, backslashBefore: backslashBefore) {
+        if Self.isSubmit(bytes, backslashBefore: backslashBefore, profile: inputProfile(sessionID)) {
             clearPromptDraft(sessionID)
             if let run = runs[sessionID], pendingReturns.contains(run) { ownerReturnsInPause.insert(run) }
         } else {
@@ -563,20 +581,28 @@ final class TerminalCenter {
         }
     }
 
-    /// Whether the owner's input submits Claude Code's prompt: it ends in a
-    /// plain Return (CR) that does not follow ESC (Option+Return) and whose
+    /// Whether the owner's input submits the agent's prompt: it ends in the
+    /// profile's `submit` (a plain Return, CR) that does not follow ESC
+    /// (Option+Return), does not end in the profile's `newline`, and whose
     /// last printable input before it — in this chunk or earlier ones
     /// (`backslashBefore`), escape sequences such as cursor keys and paste
     /// brackets skipped — is not `\` (`\` then Return is a line break).
     /// Anything else is a draft: Ctrl+J (LF), Shift+Return under an extended
     /// keyboard protocol (an escape sequence ending in `u` or `~`), any
     /// other key. When unsure the input counts as a draft, which costs the
-    /// owner a Return of their own, never a line submitted with theirs.
-    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool) -> Bool {
-        guard bytes.last == 0x0D else { return false }
-        let body = bytes.dropLast()
+    /// owner a Return of their own, never a line submitted with theirs —
+    /// so the `\` rule holds for every agent, Codex too.
+    static func isSubmit(_ bytes: [UInt8], backslashBefore: Bool, profile: AgentInputProfile = .claude) -> Bool {
+        if let newline = profile.newline, endsIn(bytes, newline) { return false }
+        guard endsIn(bytes, profile.submit) else { return false }
+        let body = bytes.dropLast(profile.submit.count)
         if body.last == 0x1B { return false }
         return !endsAfterBackslash(body, backslashBefore: backslashBefore)
+    }
+
+    /// Whether `bytes` ends in the non-empty key sequence `key`.
+    private static func endsIn(_ bytes: [UInt8], _ key: [UInt8]) -> Bool {
+        !key.isEmpty && bytes.suffix(key.count).elementsEqual(key)
     }
 
     /// Whether, after `bytes`, the last printable input is `\` with only
