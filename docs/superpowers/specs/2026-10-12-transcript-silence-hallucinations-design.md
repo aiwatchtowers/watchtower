@@ -112,3 +112,26 @@ behaviour is unchanged.
 
 Per-channel (mic vs system) detection — the transcriber sees a mono mix. UI marking of doubtful text.
 Speaker-level changes. Dictation.
+
+## Implementation notes (2026-10-12, measured on the bench corpus)
+
+Deviations accepted during implementation; the constants carry the numbers in their comments.
+
+- D1 energy fallback: the level is adaptive — max(−70 dBFS, the window's quietest tenth of frames + 10 dB).
+  Half the FLEURS utterances sit at −60…−66 dBFS RMS, so a fixed −50 dBFS floor skipped 14 speech windows,
+  and a fixed floor of any value opens steady −45 dBFS noise and −40 dBFS hum.
+- D1 Silero: minimum speech 0.3 s (not 0.25) — FluidAudio asserts padding ≤ minimum speech; padding stays 0.3 s.
+  A detector error switches the rest of that recording to the fallback (no per-window retry); the next recording
+  tries the model again.
+- D2 L2 rule unchanged (≥ 0.2 s or ≥ 30 %): it dropped no real segment on the corpus. Two short-segment
+  tightenings were evaluated and rejected — "≤ 3 words need ≥ 50 % overlap" dropped a real phrase whose start
+  Whisper stretched 16 s into the pause; "drop a short segment ending outside speech" is fitted to a tiny sample and
+  would drop short real replies whose end Whisper stretches to the window edge.
+- D3: the logprob judged is the segment's own text-token mean (WhisperKit's segment `avgLogprob` is per decode pass).
+  The −1.6 cut-off stays: a real sentence at 0 dB SNR scored −1.48, so −1.2 lost speech. WhisperKit 0.18 never
+  computes `noSpeechProb`, so the first rule is dormant.
+- D5: no engine wrote over zeros on the corpus, so Parakeet and Apple keep whole-buffer decoding (muted); a
+  recording with no detected speech is not decoded. The kill switch also covers the new phrase-filter uses.
+- Known leftovers after all layers: short phrases at speech edges («Звучить.», «Играет музыка.», «Спасибо.»,
+  «Дякую.») — reported, not filtered.
+
