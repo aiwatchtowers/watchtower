@@ -42,6 +42,14 @@ struct WorkbenchBranchCrumb: View {
                 .foregroundStyle(.orange)
                 .help(error)
                 .accessibilityLabel("Git status unavailable")
+        } else if let note = vm.gitScopeNotes[root] {
+            // Go did not place the session's folder in its worktree: no
+            // menu there, and no error either (board #565).
+            Image(systemName: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help(note)
+                .accessibilityLabel("Branch menu unavailable")
         }
     }
 }

@@ -291,6 +291,11 @@ final class WorkbenchesViewModel {
     var gitErrors: [GitRootKey: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     var gitStatusErrors: [GitRootKey: String] = [:]
+    /// A worktree root Go did not place in that worktree (board #565:
+    /// `outside`/`missing`/unresolved — the envelope was the main folder's):
+    /// why its branch menu is off. A neutral note, not a failed read; the
+    /// next read that places the folder in its worktree clears it.
+    var gitScopeNotes: [GitRootKey: String] = [:]
     /// What the last branch action left to note (git's warning).
     var gitNotices: [GitRootKey: String] = [:]
     /// The stash entry the latest stashing switch left, with its sha (Go

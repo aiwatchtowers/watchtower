@@ -156,7 +156,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         await vm.switchBranch("feature/x", project: project)
-        vm.cancelPendingSwitch(projectID: project.id)
+        vm.cancelPendingSwitch(key: .mainFolder(project.id))
         XCTAssertNil(vm.pendingBranchConfirmation[project.id])
         XCTAssertEqual(runner.invocations.count, 1, "cancelling sends nothing")
     }
@@ -173,7 +173,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         let vm = makeVM(runner)
         await vm.switchBranch("feature/x", project: project)
         let shown = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
-        vm.cancelPendingSwitch(projectID: project.id)
+        vm.cancelPendingSwitch(key: .mainFolder(project.id))
         await vm.confirmPendingSwitch(project: project, confirming: shown)
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
     }
@@ -535,7 +535,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(vm.gitStashNotes[project.id]?.entry, "watchtower: n", "a newer stash replaces it")
         XCTAssertEqual(vm.gitStashNotes[project.id]?.isError, false)
 
-        vm.dismissStashNote(projectID: project.id)
+        vm.dismissStashNote(key: .mainFolder(project.id))
         XCTAssertNil(vm.gitStashNotes[project.id])
     }
 
@@ -804,12 +804,12 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         let vm = makeVM(ScriptedCLIRunner(results: [.success(status(branch: "feature/x"))]))
         var copied: [String] = []
         vm.copyToPasteboard = { copied.append($0) }
-        vm.copyBranchName(projectID: project.id)
+        vm.copyBranchName(key: .mainFolder(project.id))
         XCTAssertEqual(copied, [], "nothing known yet")
         await vm.refreshGitStatus(projectID: project.id)
-        vm.copyBranchName(projectID: project.id)
+        vm.copyBranchName(key: .mainFolder(project.id))
         vm.gitStatus[project.id]?.detached = true
-        vm.copyBranchName(projectID: project.id)
+        vm.copyBranchName(key: .mainFolder(project.id))
         XCTAssertEqual(copied, ["feature/x", "a1b2c3d"])
     }
 
@@ -965,12 +965,15 @@ private final class EditorPage: CodeEditorBridge {
     var edits: [CodeEditorPendingEdit]
     /// The page could not be asked (`takePending` answers nil).
     var fails = false
+    /// How often the center asked for the unsent edits.
+    private(set) var asked = 0
 
     init(edits: [CodeEditorPendingEdit]) {
         self.edits = edits
     }
 
     func takePending() async -> [CodeEditorPendingEdit]? {
+        asked += 1
         guard !fails else { return nil }
         defer { edits = [] }
         return edits
@@ -1247,6 +1250,134 @@ extension WorkbenchesViewModelGitTests {
         vm.stopGitWatching(projectID: project.id)
         XCTAssertTrue(vm.gitWatchers.isEmpty)
     }
+
+    /// Go answering a worktree root's status with the main folder's
+    /// envelope (`outside`/`missing`): not that root's status, so the menu
+    /// is off there with a neutral note — no switch, no create, and the
+    /// main folder's edits are never saved for it.
+    func testAWorktreeStatusGoDoesNotPlaceThereTurnsTheMenuOff() async throws {
+        try await assertMenuOff(scope: "outside", note: WorkbenchBranchPresentation.folderOutsideTheRepositoryText)
+        try await assertMenuOff(scope: "missing", note: WorkbenchBranchPresentation.folderNotAWorktreeText)
+        try await assertMenuOff(scope: "", note: WorkbenchBranchPresentation.folderUnreadableText(""))
+    }
+
+    private func assertMenuOff(scope: String, note: String, line: UInt = #line) async throws {
+        let worktree = try makeWorktree("mobile-\(scope.isEmpty ? "unresolved" : scope)")
+        try writeFile("m.go", "package m\n")
+        let shown = try await agentRow(cwd: worktree.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let vm = worktreeVM(runner)
+        let root = await showWorktreeSession(shown.id, in: vm)
+        XCTAssertTrue(vm.gitRootIsPlaced(GitRootKey(root)), line: line)
+        let inMain = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "m.go")
+        inMain.loadIfNeeded()
+        vm.codeFiles.edited(inMain, text: "package m // main's\n", base: 0)
+        let mainPage = EditorPage(edits: [])
+        vm.codeFiles.register(mainPage, for: project.mainCodeRoot)
+
+        runner.placeFolders(scope)
+        await vm.refreshGitStatus(root: root)
+        XCTAssertNil(vm.gitStatus[root], "the main folder's envelope is not the worktree's status", line: line)
+        XCTAssertNil(vm.gitStatusErrors[root], "not a failed read", line: line)
+        XCTAssertEqual(vm.gitScopeNotes[root], note, line: line)
+        XCTAssertNil(vm.gitWatchers[root], line: line)
+        XCTAssertFalse(vm.gitRootIsPlaced(GitRootKey(root)), line: line)
+
+        await vm.switchBranch("feature/x", project: project, root: root)
+        let created = await vm.createBranch("topic", project: project, root: root)
+        XCTAssertFalse(created, line: line)
+        XCTAssertTrue(runner.switches.isEmpty, "no switch call", line: line)
+        XCTAssertTrue(runner.folders("create").isEmpty, "no create call", line: line)
+        XCTAssertEqual(mainPage.asked, 0, "the main folder's page is not asked", line: line)
+        XCTAssertEqual(try readFile("m.go"), "package m\n", "the main folder's edit is not saved", line: line)
+        XCTAssertTrue(inMain.isDirty, line: line)
+
+        runner.placeFolders(nil)
+        await vm.refreshGitStatus(root: root)
+        XCTAssertNil(vm.gitScopeNotes[root], line: line)
+        XCTAssertEqual(vm.gitStatus[root]?.branch, "feature/wt", line: line)
+        inMain.cancelAutosave()
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// A switch in the main folder leaves a worktree nested in it alone:
+    /// neither that worktree's buffers and page nor a main-root buffer of
+    /// a file inside it — asked directly and through the switch.
+    func testASwitchInTheMainFolderDoesNotSaveANestedWorktreesEdits() async throws {
+        let worktree = try makeWorktree("mobile-a")
+        try writeFile("a.go", "package a\n", in: worktree)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let vm = worktreeVM(runner)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+        let inA = vm.codeFiles.buffer(for: root, relPath: "a.go")
+        inA.loadIfNeeded()
+        vm.codeFiles.edited(inA, text: "package a // A's\n", base: 0)
+        let pageA = EditorPage(edits: [CodeEditorPendingEdit(id: inA.id, text: "package a // unsent\n", base: 0)])
+        vm.codeFiles.register(pageA, for: root)
+        let viaMain = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: ".claude/worktrees/mobile-a/a.go")
+        viaMain.loadIfNeeded()
+        vm.codeFiles.edited(viaMain, text: "package a // via main\n", base: 0)
+
+        let direct = await vm.codeFiles.saveEdits(root: project.mainCodeRoot, workTree: folder.path)
+        await vm.switchBranch("feature/x", project: project, root: project.mainCodeRoot)
+
+        XCTAssertEqual(direct, .saved)
+        XCTAssertEqual(runner.switches.count, 1)
+        XCTAssertEqual(pageA.asked, 0, "the worktree's page is not asked")
+        XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("a.go"), encoding: .utf8), "package a\n")
+        XCTAssertTrue(inA.isDirty)
+        XCTAssertTrue(viaMain.isDirty)
+        inA.cancelAutosave()
+        viaMain.cancelAutosave()
+    }
+
+    /// A workbench whose folder holds this work tree: its page's unsent
+    /// edit to a file in the tree is pulled before that file is saved — the
+    /// same rule picks the pages asked and the buffers saved.
+    func testAnOuterWorkbenchsUnsentEditIsPulledBeforeItsFileIsSaved() async throws {
+        try writeFile("c.go", "package c\n")
+        let outer = Workbench(row: Row(["id": 9_999, "name": "outer", "folder_path": folder.deletingLastPathComponent().path]))
+        let vm = makeVM(ScriptedCLIRunner(results: []))
+        let buffer = vm.codeFiles.buffer(for: outer.mainCodeRoot, relPath: folder.lastPathComponent + "/c.go")
+        buffer.loadIfNeeded()
+        vm.codeFiles.edited(buffer, text: "package c // typed\n", base: 0)
+        let page = EditorPage(edits: [CodeEditorPendingEdit(id: buffer.id, text: "package c // unsent\n", base: 0)])
+        vm.codeFiles.register(page, for: outer.mainCodeRoot)
+
+        let saved = await vm.codeFiles.saveEdits(root: project.mainCodeRoot, workTree: folder.path)
+
+        XCTAssertEqual(saved, .saved)
+        XCTAssertEqual(page.asked, 1)
+        XCTAssertEqual(try readFile("c.go"), "package c // unsent\n", "the pulled edit is what went to disk")
+        XCTAssertFalse(buffer.isDirty)
+    }
+
+    /// End to end: the session shown in worktree A runs in the
+    /// TerminalCenter, its place is proven there, and a switch in A says an
+    /// agent is running.
+    func testALiveSessionProvenInTheWorktreeIsReportedForItsSwitch() async throws {
+        let worktree = try makeWorktree("mobile-a")
+        let shown = try await agentRow(cwd: worktree.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let center = terminalCenter()
+        center.start(shown, fresh: true)
+        let vm = worktreeVM(runner, terminals: center)
+        let root = await showWorktreeSession(shown.id, in: vm)
+        await waitUntil {
+            if case .worktree = vm.agentPlace(sessionID: shown.id) { return true }
+            return false
+        }
+        guard case let .worktree(_, placeRoot, _) = vm.agentPlace(sessionID: shown.id) else {
+            return XCTFail("the session's place is proven in its worktree")
+        }
+        XCTAssertEqual(placeRoot.path, worktree.path)
+
+        await vm.switchBranch("feature/x", project: project, root: root)
+
+        XCTAssertEqual(runner.folders("switch").last, worktree.path)
+        XCTAssertEqual(runner.switches.last?.contains("--agent-running"), true)
+        vm.stopGitWatching(projectID: project.id)
+    }
 }
 
 /// Answers `workbench git` by subcommand: a `--folder` status is that
@@ -1257,6 +1388,7 @@ private final class WorktreeRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var recorded: [[String]] = []
     private var branchRefusal: (String, String)?
     private var folderReadsFail = false
+    private var folderScope: String?
     let workbenchID: Int64
     let mainFolder: String
 
@@ -1277,6 +1409,11 @@ private final class WorktreeRunner: CLIRunnerProtocol, @unchecked Sendable {
     func clearRecorded() { lock.withLock { recorded = [] } }
 
     func refuseBranches(_ refused: String, detail: String) { lock.withLock { branchRefusal = (refused, detail) } }
+
+    /// From now on every `--folder` status read is Go's answer for a folder
+    /// it does not place in a worktree: the main folder's envelope with
+    /// `folder_scope` `scope` (nil: the worktree's own status again).
+    func placeFolders(_ scope: String?) { lock.withLock { folderScope = scope } }
 
     /// From now on every `--folder` status read fails (exit non-zero).
     func failFolderReads() { lock.withLock { folderReadsFail = true } }
@@ -1313,6 +1450,13 @@ private final class WorktreeRunner: CLIRunnerProtocol, @unchecked Sendable {
                 {"workbench_id":\#(workbenchID),"git":true,"branch":"main","top_level":"\#(mainFolder)",
                  "git_dir":"\#(mainFolder)/.git","common_dir":"\#(mainFolder)/.git","status_ok":true,
                  "folder_scope":"main","folder_root":"\#(mainFolder)"}
+                """#.utf8)
+        }
+        if let scope = lock.withLock({ folderScope }) {
+            return Data(#"""
+                {"workbench_id":\#(workbenchID),"git":true,"branch":"main","top_level":"\#(mainFolder)",
+                 "git_dir":"\#(mainFolder)/.git","common_dir":"\#(mainFolder)/.git","status_ok":true,
+                 "folder_requested":"\#(folder)","folder_scope":"\#(scope)","folder_root":"\#(mainFolder)"}
                 """#.utf8)
         }
         let name = (folder as NSString).lastPathComponent

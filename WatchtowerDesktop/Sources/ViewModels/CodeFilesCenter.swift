@@ -747,25 +747,19 @@ final class CodeFilesCenter {
     @ObservationIgnored var pendingTimeout: Duration = .seconds(2)
 
     /// A branch switch is about to rewrite `workTree` (the work tree of
-    /// `root`): the unsent edits of `root` and of any workbench's main root
-    /// inside the work tree are pulled and every buffer there saved, so the
-    /// switch's dirty check sees them on disk. Another worktree's root is
-    /// not this switch's (board #565) — not even one nested in the main
-    /// folder (`.claude/worktrees/<name>`), which git keeps apart. Unlike a
-    /// close or a rename, a page that does not answer stops the switch: the
-    /// files would be swapped under edits nobody has.
+    /// `root`): the unsent edits of every root the switch covers are pulled
+    /// and its buffers in the work tree saved, so the switch's dirty check
+    /// sees them on disk. One rule for both (`BranchSwitchScope`): a buffer
+    /// saved here always had its page's unsent edits pulled first. Another
+    /// worktree's root is not this switch's (board #565) — not even one
+    /// nested in the main folder (`.claude/worktrees/<name>`), which git
+    /// keeps apart. Unlike a close or a rename, a page that does not answer
+    /// stops the switch: the files would be swapped under edits nobody has.
     func saveEdits(root: CodeRoot, workTree: String) async -> WorkTreeSave {
-        let tree = TerminalCenter.resolvedPath(workTree)
-        let prefix = tree.hasSuffix("/") ? tree : tree + "/"
-        func inside(_ path: String) -> Bool {
-            let resolved = TerminalCenter.resolvedPath(path)
-            return resolved == tree || resolved.hasPrefix(prefix)
-        }
+        let others = Set(buffers.keys.map(\.root)).union(bridges.keys).filter { !$0.isMain && $0 != root }
+        let scope = BranchSwitchScope(root: root, workTree: workTree, otherWorktrees: others.map(\.folder.path))
         var silent = false
-        func affects(_ other: CodeRoot, path: String) -> Bool {
-            other == root || (other.isMain && inside(path))
-        }
-        for entry in bridges.values where affects(entry.root, path: entry.root.folder.path) {
+        for entry in bridges.values where scope.pullsEdits(of: entry.root) {
             guard let bridge = entry.bridge else { continue }
             guard let edits = await takePending(bridge) else {
                 NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its edits before a branch switch", entry.root.workbenchID)
@@ -776,7 +770,7 @@ final class CodeFilesCenter {
         }
         if silent { return .editorSilent }
         let affected = buffers
-            .filter { key, buffer in affects(key.root, path: buffer.url.path) }
+            .filter { key, buffer in scope.savesBuffer(of: key.root, at: buffer.url.path) }
             .sorted { $0.key.path < $1.key.path }
         var unsaved: String?
         for (_, buffer) in affected where buffer.isDirty && !buffer.saveNow() {

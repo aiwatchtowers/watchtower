@@ -301,8 +301,8 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
                        "That session's folder could not be read — the branch menu cannot work there.")
     }
 
-    /// A worktree root Go no longer places in a worktree gets the main
-    /// folder's status, with a note saying so.
+    /// A worktree root Go does not place in a worktree gets a note instead
+    /// of the main folder's status; an unresolved place gets one too.
     func testWorktreeScopeNote() {
         func status(_ scope: String) -> WorkbenchGitStatus {
             // swiftlint:disable:next force_try
@@ -310,6 +310,8 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         }
         XCTAssertEqual(Pres.worktreeScopeNote(status("missing")), Pres.folderNotAWorktreeText)
         XCTAssertEqual(Pres.worktreeScopeNote(status("outside")), Pres.folderOutsideTheRepositoryText)
+        XCTAssertEqual(Pres.worktreeScopeNote(status("")), Pres.folderUnreadableText(""))
+        XCTAssertEqual(Pres.worktreeScopeNote(status("bogus")), Pres.folderUnreadableText(""))
         XCTAssertNil(Pres.worktreeScopeNote(status("worktree")))
         XCTAssertNil(Pres.worktreeScopeNote(status("main")))
     }

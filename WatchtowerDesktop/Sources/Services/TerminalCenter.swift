@@ -1119,9 +1119,12 @@ final class PalettedTerminalView: LocalProcessTerminalView {
             return
         }
         guard !openedLinkThisClick, event.modifierFlags.contains(.command), event.clickCount == 1, !selectionActive,
-              let openPathLink, let folder = pathLinkFolder(), let cell = cell(at: event),
+              let openPathLink, let cell = cell(at: event),
               let hit = TerminalPathLinks.logicalLine(rows: screenRows(), row: cell.row, column: cell.col),
               let candidate = TerminalPathLinks.candidate(inLine: hit.line, at: hit.column),
+              // Asked only for a path under the cursor: the root lookup
+              // (and its realpath) is not every ⌘-click's cost.
+              let folder = pathLinkFolder(),
               let location = TerminalPathLinks.resolve(candidate, folder: folder.folder, folderRealPath: folder.realPath)
         else { return }
         openPathLink(location)

@@ -107,19 +107,11 @@ extension WorkbenchesViewModel {
                         stash: confirmation.stash, confirmAgent: confirmation.confirmAgent)
     }
 
-    func cancelPendingSwitch(projectID: Int64) {
-        cancelPendingSwitch(key: .mainFolder(projectID))
-    }
-
     func cancelPendingSwitch(key: GitRootKey) {
         pendingBranchConfirmation[key] = nil
     }
 
     /// The owner read the stash note: the entry itself stays on the stack.
-    func dismissStashNote(projectID: Int64) {
-        dismissStashNote(key: .mainFolder(projectID))
-    }
-
     func dismissStashNote(key: GitRootKey) {
         gitStashNotes[key] = nil
     }
@@ -131,7 +123,7 @@ extension WorkbenchesViewModel {
     func createBranch(_ name: String, project: Workbench, root: CodeRoot? = nil) async -> Bool {
         let root = root ?? activeCodeRoot(project: project)
         let key = GitRootKey(root)
-        guard switchingBranch[key] == nil else { return false }
+        guard switchingBranch[key] == nil, gitRootIsPlaced(key) else { return false }
         guard let cli else {
             gitErrors[key] = Self.cliMissingMessage
             return false
@@ -165,10 +157,6 @@ extension WorkbenchesViewModel {
     }
 
     /// "Copy branch name": the branch, or the hash on a detached HEAD.
-    func copyBranchName(projectID: Int64) {
-        copyBranchName(key: .mainFolder(projectID))
-    }
-
     func copyBranchName(key: GitRootKey) {
         guard let status = gitStatus[key] else { return }
         let text = WorkbenchBranchPresentation.label(status).text
@@ -242,11 +230,28 @@ extension WorkbenchesViewModel {
         sessionPlaces.isPlaceStale(sessionID: sessionID) ? .unknown : sessionPlaces.currentPlace(sessionID: sessionID)
     }
 
+    /// Whether the branch menu may write in `key` (board #565): the main
+    /// folder always; a worktree root only with a status Go read in that
+    /// very worktree (`folder_scope` `worktree`, `folder_root` the root).
+    func gitRootIsPlaced(_ key: GitRootKey) -> Bool {
+        guard let folder = key.worktreeFolder else { return true }
+        return gitStatus[key].map { Self.status($0, placesWorktree: folder) } ?? false
+    }
+
     // MARK: - Private
+
+    private static func status(_ status: WorkbenchGitStatus, placesWorktree folder: String) -> Bool {
+        status.folderScope == .worktree && !status.folderRoot.isEmpty
+            && TerminalCenter.resolvedPath(status.folderRoot) == TerminalCenter.resolvedPath(folder)
+    }
 
     private func runSwitch(_ branch: String, project: Workbench, root: CodeRoot, stash: Bool, confirmAgent: Bool) async {
         let id = project.id
         let key = GitRootKey(root)
+        // A worktree root without its own status (Go answered with the main
+        // folder's, or nothing read yet) neither saves nor switches: a
+        // switch there must never touch the main folder's buffers.
+        guard gitRootIsPlaced(key) else { return }
         guard let cli else {
             gitErrors[key] = Self.cliMissingMessage
             return
@@ -367,15 +372,27 @@ extension WorkbenchesViewModel {
 
     /// A status git could not read inside the repository is a failed read:
     /// the last good status stays and the error says why. A worktree root
-    /// Go no longer places in a worktree gets the main folder's status and
-    /// says so until the session's place falls back.
+    /// Go does not place in that worktree got the main folder's envelope:
+    /// it is not stored as that root's status (any old one goes, with its
+    /// question and watcher) and a scope note says why the menu is off,
+    /// until the session's place falls back.
     private func applyGitStatus(_ status: WorkbenchGitStatus, key: GitRootKey) {
         if status.git, !status.statusOK {
             gitStatusErrors[key] = "Could not read the git status: \(status.statusError)"
             return
         }
+        if let folder = key.worktreeFolder, !Self.status(status, placesWorktree: folder) {
+            gitStatus[key] = nil
+            gitStatusErrors[key] = nil
+            gitScopeNotes[key] = WorkbenchBranchPresentation.worktreeScopeNote(status)
+                ?? WorkbenchBranchPresentation.folderNotAWorktreeText
+            pendingBranchConfirmation[key] = nil
+            stopGitWatcher(key: key)
+            return
+        }
         gitStatus[key] = status
-        gitStatusErrors[key] = key.worktreeFolder == nil ? nil : WorkbenchBranchPresentation.worktreeScopeNote(status)
+        gitStatusErrors[key] = nil
+        gitScopeNotes[key] = nil
         dropOutdatedConfirmation(status, key: key)
         armGitWatcher(status, key: key)
     }

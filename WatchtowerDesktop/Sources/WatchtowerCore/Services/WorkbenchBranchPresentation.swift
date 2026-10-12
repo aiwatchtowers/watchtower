@@ -273,20 +273,23 @@ package enum WorkbenchBranchPresentation {
         return detail.isEmpty ? base + "." : base + " (\(detail))."
     }
 
-    /// The note beside a worktree root's status that Go no longer places in
-    /// a worktree (`outside`/`missing`: the envelope is the main folder's
-    /// status, board #565); nil while it is one.
+    /// The note a worktree root gets instead of a status when Go does not
+    /// place the folder in a worktree (board #565): `outside`/`missing`
+    /// envelopes are the main folder's status, `unresolved` is no place at
+    /// all — none is that root's, so its branch menu is off. nil for
+    /// `main`/`worktree` (the caller checks the root those name).
     package static func worktreeScopeNote(_ status: WorkbenchGitStatus) -> String? {
         switch status.folderScope {
         case .outside: folderOutsideTheRepositoryText
         case .missing: folderNotAWorktreeText
-        case .main, .worktree, .unresolved: nil
+        case .unresolved: folderUnreadableText("")
+        case .main, .worktree: nil
         }
     }
 
     /// `folder_not_a_worktree` (board #565) for a session folder that no
     /// longer exists (`missing`, or a detail this app does not know): the
-    /// menu falls back to the main folder.
+    /// session's place falls back and the menu with it to the main folder.
     package static let folderNotAWorktreeText =
         "That session's worktree is gone — the branch menu shows the main folder."
 

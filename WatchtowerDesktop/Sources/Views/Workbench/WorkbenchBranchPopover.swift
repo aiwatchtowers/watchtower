@@ -110,7 +110,7 @@ struct WorkbenchBranchPopover: View {
                 }
                 .frame(maxHeight: 260)
                 .fixedSize(horizontal: false, vertical: true)
-                .disabled(failed != nil)
+                .disabled(failed != nil || !vm.gitRootIsPlaced(key))
             }
         } else if failed == nil {
             ProgressView().controlSize(.small)
@@ -141,7 +141,7 @@ struct WorkbenchBranchPopover: View {
                 Label("New branch from current…", systemImage: "plus")
             }
             .buttonStyle(.borderless)
-            .disabled(vm.switchingBranch[root] != nil)
+            .disabled(vm.switchingBranch[root] != nil || !vm.gitRootIsPlaced(GitRootKey(root)))
         }
     }
 
@@ -150,6 +150,7 @@ struct WorkbenchBranchPopover: View {
         let key = GitRootKey(root)
         if let error = vm.gitErrors[key] { caption(error, color: .red) }
         if let status = vm.gitStatusErrors[key] { caption(status, color: .red) }
+        if let note = vm.gitScopeNotes[key] { caption(note, color: .secondary) }
         if let notice = vm.gitNotices[key] { caption(notice, color: .secondary) }
         // Selectable: it names the stash entry and how to apply it. Stays
         // until dismissed — reopening the popover does not clear it.
