@@ -190,7 +190,8 @@ final class RowNotFoundWritersTests: XCTestCase {
 
         let writers: [(String, (Database) throws -> Void)] = [
             ("rename", { try TerminalSessionQueries.rename($0, id: id, title: "new") }),
-            ("replaceClaudeSessionID", { try TerminalSessionQueries.replaceClaudeSessionID($0, id: id, uuid: "u2") })
+            ("replaceClaudeSessionID", { try TerminalSessionQueries.replaceClaudeSessionID($0, id: id, uuid: "u2") }),
+            ("resetAgentSession", { try TerminalSessionQueries.resetAgentSession($0, id: id) })
         ]
         for (name, run) in writers {
             XCTAssertThrowsError(try queue.write(run), name) {

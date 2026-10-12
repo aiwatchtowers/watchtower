@@ -3,6 +3,7 @@
   "blocked_targets": 1,
   "branch": "feature/acme-export",
   "changes": 3,
+  "default_agent": "codex_cli",
   "description": "The acme exporter, rebuilt from scratch. A long description cut at the cap…",
   "description_clipped": true,
   "detached": false,

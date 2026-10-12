@@ -428,8 +428,11 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         vm.drill(into: a)
         let project = try XCTUnwrap(vm.selectedWorkbench)
         let popover = SessionSwitcherPopover(
-            vm: vm, project: project, currentID: nil, onSelect: { _ in }, onNewSession: {}, onShowPanel: {}
+            vm: vm, project: project, currentID: nil, onSelect: { _ in }, onNewSession: { _ in }, onShowPanel: {}
         )
+        // Board #399: a new session of each agent, ⌘T on the default one.
+        XCTAssertNoThrow(try popover.inspect().find(text: "New Claude Code session"))
+        XCTAssertNoThrow(try popover.inspect().find(text: "New Codex session"))
 
         vm.terminalSessions[a] = nil
         XCTAssertThrowsError(try popover.inspect().find(text: "No sessions yet."), "the first read is in flight")

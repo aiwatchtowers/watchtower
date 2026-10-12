@@ -215,7 +215,7 @@ struct WorkbenchesView: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "folder.badge.gearshape").font(.largeTitle).foregroundStyle(.secondary)
-            Text("Pick a folder to start a workbench. Claude Code sets it up from there.")
+            Text("Pick a folder to start a workbench. \(vm.defaultAgent.displayName) sets it up from there.")
                 .foregroundStyle(.secondary)
         }
     }

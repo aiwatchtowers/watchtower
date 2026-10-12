@@ -182,7 +182,7 @@ struct WorkbenchBoardView: View {
                 ContentUnavailableView(
                     "No targets yet",
                     systemImage: "square.stack.3d.up",
-                    description: Text("Claude Code creates the board through the watchtower-workbench tools.")
+                    description: Text("The agent session creates the board through the watchtower-workbench tools.")
                 )
                 .frame(maxHeight: .infinity)
             } else if let kanban {
