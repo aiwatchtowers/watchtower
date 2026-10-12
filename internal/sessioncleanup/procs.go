@@ -209,7 +209,9 @@ func lsofLine(files map[int]procFiles, line string, pid int, fd string) (int, st
 		if err != nil || n <= 0 {
 			return 0, "", fmt.Errorf("unexpected lsof line %q", line)
 		}
-		files[n] = files[n]
+		if _, seen := files[n]; !seen {
+			files[n] = procFiles{} // listed, even with no cwd or txt entry
+		}
 		return n, "", nil
 	case pid == 0:
 		return 0, "", fmt.Errorf("unexpected lsof line %q before a process", line)
