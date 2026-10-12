@@ -159,6 +159,7 @@ final class CodeFilesCenter {
     /// (once per root) and its git status read. Balanced by
     /// `stopShowing` when that view goes.
     func startWatching(_ root: CodeRoot) {
+        if root.isMain { dropStaleMainRoots(of: root) }
         showing[root, default: 0] += 1
         codeIndex?.markShown(root: root)
         let isNew = watched.insert(root).inserted
@@ -175,6 +176,20 @@ final class CodeFilesCenter {
             }
         }
         refreshGit(root)
+    }
+
+    /// The workbench moved to another folder: the old main root's stream
+    /// and tree go (as `CodeIndexCenter.markShown` drops its index). Its
+    /// buffers stay — one may still hold an edit to save.
+    private func dropStaleMainRoots(of root: CodeRoot) {
+        for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale != root {
+            watched.remove(stale)
+            watchers[stale] = nil
+            watchErrors[stale] = nil
+            trees[stale] = nil
+            gitByRoot[stale] = nil
+            gitErrors[stale] = nil
+        }
     }
 
     func stopShowing(_ root: CodeRoot) {

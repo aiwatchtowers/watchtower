@@ -69,8 +69,9 @@ private struct QuestionListView: View {
                 presenting: pendingDelete
             ) { item in
                 Button("Delete", role: .destructive) {
-                    questions.deleteQuestion(CodeQuestionRef(project: project, root: root, conversationID: item.conversationID,
-                                                             origin: item.origin))
+                    questions.deleteQuestion(
+                        CodeQuestionRef(project: project, root: root, conversationID: item.conversationID, origin: item.origin)
+                    )
                 }
             } message: { _ in
                 Text("The conversation and its answers are removed.")

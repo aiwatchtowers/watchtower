@@ -246,8 +246,9 @@ final class CodeQuestionCenter {
             session.draft = ""
             session.notice = nil
             sessions[workbenchID] = session
-            questionRefs[conversationID] = CodeQuestionRef(project: session.project, root: session.root, conversationID: conversationID,
-                                                           origin: session.anchor.origin)
+            questionRefs[conversationID] = CodeQuestionRef(
+                project: session.project, root: session.root, conversationID: conversationID, origin: session.anchor.origin
+            )
             questionContexts[conversationID] = session.context
             modelChoices[conversationID] = session.choice
         }

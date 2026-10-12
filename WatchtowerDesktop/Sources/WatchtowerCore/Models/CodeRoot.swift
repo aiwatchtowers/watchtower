@@ -9,8 +9,10 @@ import Foundation
 /// for one root never writes into another (PROJ-03).
 package struct CodeRoot: Hashable, Sendable {
     package let workbenchID: Int64
-    /// Standardized lexically only (`.`/`..` removed, always a directory
-    /// URL, so a trailing slash does not matter), never symlink-resolved. The
+    /// Normalized lexically only (`.`/`..`, duplicate and trailing slashes
+    /// collapsed, always a directory URL), never touching the filesystem: no
+    /// symlink resolution and no `/private` stripping, so the main root's
+    /// folder is the stored workbench folder byte for byte. The
     /// identity, the hash and `defaultsKeySuffix` derive from it, so they
     /// depend only on the spelling passed in, not on whether the directory
     /// exists when the root is built: a worktree deleted and recreated keeps
@@ -43,8 +45,18 @@ package struct CodeRoot: Hashable, Sendable {
         return ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Pure path arithmetic. `standardizedFileURL` is not used: it strips a
+    /// leading `/private` when the shorter spelling exists on disk.
     private static func lexicalFolder(_ url: URL) -> URL {
-        URL(fileURLWithPath: url.standardizedFileURL.path, isDirectory: true)
+        var parts: [Substring] = []
+        for part in url.absoluteURL.path.split(separator: "/", omittingEmptySubsequences: true) {
+            switch part {
+            case ".": continue
+            case "..": _ = parts.popLast()
+            default: parts.append(part)
+            }
+        }
+        return URL(fileURLWithPath: "/" + parts.joined(separator: "/"), isDirectory: true)
     }
 }
 

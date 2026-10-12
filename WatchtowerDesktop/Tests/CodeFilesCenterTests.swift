@@ -245,7 +245,10 @@ final class CodeFilesCenterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: worktreeFolder) }
         try "all: worktree\n".write(to: worktreeFolder.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
         let worktree = CodeRoot(workbenchID: project.id, worktree: worktreeFolder)
-        let center = makeCenter()
+        let worktreePath = worktree.folder.path
+        let center = makeCenter { url in
+            url.path == worktreePath ? .failed("worktree index broken") : .snapshot(GitStatusSnapshot(files: ["Makefile": .modified]))
+        }
         center.open("cmd/main.go", root: root, preview: false)
         center.open("Makefile", root: worktree, preview: false)
 
@@ -258,6 +261,25 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertTrue(theirs.saveNow())
         XCTAssertEqual(try text("Makefile"), "all:\n", "the main folder's file is untouched")
         XCTAssertEqual(try String(contentsOf: worktreeFolder.appendingPathComponent("Makefile"), encoding: .utf8), "all: worktree edited\n")
+
+        mine.loadIfNeeded()
+        mine.edited("all: main edited\n", base: 0)
+        XCTAssertTrue(mine.saveNow())
+        XCTAssertEqual(try text("Makefile"), "all: main edited\n")
+        XCTAssertEqual(
+            try String(contentsOf: worktreeFolder.appendingPathComponent("Makefile"), encoding: .utf8),
+            "all: worktree edited\n", "the worktree's file is untouched"
+        )
+
+        center.editorErrors[worktree] = "worktree only"
+        XCTAssertNil(center.editorErrors[root], "editor errors are kept per root")
+        center.startWatching(root)
+        center.startWatching(worktree)
+        await eventually { center.git(for: root).files["Makefile"] != nil && center.gitErrors[worktree] != nil }
+        XCTAssertEqual(center.git(for: root).files["Makefile"], .modified)
+        XCTAssertNil(center.gitErrors[root])
+        XCTAssertTrue(center.git(for: worktree).files.isEmpty, "the main folder's marks stay off the worktree")
+        XCTAssertEqual(center.gitErrors[worktree], "worktree index broken")
 
         let relaunched = makeCenter()
         XCTAssertEqual(relaunched.tabs(for: root).paths, ["cmd/main.go"])
@@ -420,6 +442,29 @@ final class CodeFilesCenterTests: XCTestCase {
         center.handle(FolderWatcher.Batch(paths: ["Makefile", "new.txt"]), root: root)
         XCTAssertEqual(buffer.text, "all: agent\n")
         XCTAssertTrue(tree.rows.contains { $0.entry.relPath == "new.txt" })
+    }
+
+    func testAMovedWorkbenchFolderDropsTheOldMainRootsWatchAndTree() throws {
+        let moved = FileManager.default.temporaryDirectory.appendingPathComponent("center-moved-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: moved) }
+        let newRoot = Workbench(row: Row(["id": project.id, "name": "acme", "folder_path": moved.path])).mainCodeRoot
+        let worktree = CodeRoot(workbenchID: project.id, worktree: moved.appendingPathComponent("wt"))
+        let center = makeCenter()
+        center.startWatching(root)
+        let oldTree = center.tree(for: root)
+        let oldBuffer = center.buffer(for: root, relPath: "Makefile")
+        oldBuffer.loadIfNeeded()
+
+        center.startWatching(worktree)
+        XCTAssertTrue(center.tree(for: root) === oldTree, "a worktree root never drops the main root")
+        center.startWatching(newRoot)
+
+        XCTAssertFalse(center.tree(for: root) === oldTree, "the stale main root's tree is gone")
+        try "all: moved\n".write(to: folder.appendingPathComponent("Makefile"), atomically: false, encoding: .utf8)
+        center.handle(FolderWatcher.Batch(paths: ["Makefile"]), root: root)
+        XCTAssertEqual(oldBuffer.text, "all:\n", "the stale root is no longer watched")
+        XCTAssertTrue(center.buffer(for: root, relPath: "Makefile") === oldBuffer, "its buffers stay for a pending save")
     }
 
     func testARescanReloadsEveryOpenBuffer() throws {

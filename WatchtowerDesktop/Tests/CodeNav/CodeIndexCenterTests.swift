@@ -105,6 +105,27 @@ final class CodeIndexCenterTests: XCTestCase {
         await stub.assertAllGroupsReaped()
     }
 
+    func testAMovedMainFolderReleasesTheStaleMainIndexAndAWorktreeNeverDoes() throws {
+        let moved = stub.directory.appendingPathComponent("moved")
+        try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
+        let movedRoot = Workbench(row: Row(["id": 7, "name": "acme", "folder_path": moved.path])).mainCodeRoot
+        let worktree = CodeRoot(workbenchID: 7, worktree: moved.appendingPathComponent("wt"))
+        let center = makeCenter()
+        center.markShown(root: root(7))
+        let mainIndex = center.index(for: root(7))
+
+        center.markShown(root: worktree)
+        let worktreeIndex = center.index(for: worktree)
+        XCTAssertTrue(center.index(for: root(7)) === mainIndex, "a worktree root never releases the main index")
+        let otherWorkbench = root(8)
+        center.markShown(root: otherWorkbench)
+        XCTAssertTrue(center.index(for: root(7)) === mainIndex, "another workbench's main root leaves it alone")
+
+        center.markShown(root: movedRoot)
+        XCTAssertFalse(center.index(for: root(7)) === mainIndex, "the stale main index is released")
+        XCTAssertTrue(center.index(for: worktree) === worktreeIndex, "the worktree's index stays")
+    }
+
     // MARK: Updates
 
     func testBatchesDebounceIntoOneServeRequestAndABatchDuringARunWaitsAndMerges() async throws {
