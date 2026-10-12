@@ -37,6 +37,7 @@ final class AppRootWiringTests: XCTestCase {
     /// flow's grant wait.
     private func makeRoot(
         linked: LinkedDevice?,
+        hubID initialHub: String = AppEnvironment.unlinkedHubID,
         link: LinkRecord? = nil,
         linkClock: any LinkClock = SystemLinkClock(),
         transportStorePath: String? = nil
@@ -66,6 +67,7 @@ final class AppRootWiringTests: XCTestCase {
                 transport: transport,
                 replicaPath: path,
                 transportKind: .cloudKit,
+                hubID: hubID,
                 linkedDevice: device,
                 defaults: defaults,
                 recordingsDirectory: recordings
@@ -80,9 +82,9 @@ final class AppRootWiringTests: XCTestCase {
         }
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
         return AppRoot(
-            env: try make(.private, AppEnvironment.unlinkedHubID, linked),
+            env: try make(.private, initialHub, linked),
             scope: .private,
-            hubID: AppEnvironment.unlinkedHubID,
+            hubID: initialHub,
             linking: LinkingViewModel(container: container, store: store, identity: identity, clock: linkClock),
             restarter: AppRoot.Restarter(replicaPath: path, transportStorePath: transportStorePath, make: make)
         )
@@ -105,7 +107,7 @@ final class AppRootWiringTests: XCTestCase {
         }
         XCTAssertEqual(try first.store.pendingActions().count, 3)
 
-        let notSent = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        let notSent = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
         XCTAssertEqual(notSent, LocalWipe(notSent: 3), "the three pending items are reported Not sent")
         XCTAssertFalse(root.env === first, "a new environment on the same files")
@@ -143,7 +145,7 @@ final class AppRootWiringTests: XCTestCase {
         let before = try await transportCounts(raw)
         XCTAssertEqual(before.pending, 3, "the outbox's sends wait in the transport queue")
 
-        let notSent = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        let notSent = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
         XCTAssertEqual(notSent, LocalWipe(notSent: 3))
         let after = try await transportCounts(raw)
@@ -170,8 +172,8 @@ final class AppRootWiringTests: XCTestCase {
     func testConcurrentWipesRestartOneAfterTheOther() async throws {
         let root = try makeRoot(linked: device)
 
-        async let first = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
-        async let second = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        async let first = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+        async let second = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
         _ = await (first, second)
 
         XCTAssertEqual(built.count, 3, "the initial environment and one per wipe")
@@ -220,16 +222,33 @@ final class AppRootWiringTests: XCTestCase {
 
         await root.setLink(device, writesAllowed: true)
         XCTAssertEqual(root.env.deviceSettings.linkedDevice, device)
+        let resent = try await transports[0].changes(in: .relay, since: nil).changed
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+        XCTAssertEqual(resent.map(\.startSessions), [false], "review F10: the kept toggle reaches the Mac when writes return")
         try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
     }
 
     // MARK: - Recordings across a wipe (board #63)
 
-    /// An unlink, a removal or an account change during a meeting capture:
-    /// the capture is stopped and saved, the wipe keeps it, and it goes to
-    /// the Mac once a link is back.
-    func testAWipeDuringACaptureStopsItKeepsItAndSendsItAfterTheNextLink() async throws {
-        let root = try makeRoot(linked: device)
+    private var hold: RecordingHold {
+        RecordingHold(recordingsDirectory: recordingsDirectory ?? URL(fileURLWithPath: "/nonexistent"))
+    }
+
+    /// A voice note of `seconds`, saved (`waiting`) in the running
+    /// environment; returns its ledger id.
+    private func saveVoiceNote(_ root: AppRoot, seconds: TimeInterval = 12) async throws -> String {
+        await root.env.recorder.recordVoiceNote()
+        clock.advance(seconds)
+        await root.env.recorder.stop()
+        return try XCTUnwrap(root.env.recorder.savedRecording?.id)
+    }
+
+    /// An unlink or a removal during a meeting capture: the capture is
+    /// stopped and saved, held for its hub, listed as waiting for that Mac,
+    /// and sent only once this phone is on that hub again.
+    func testAWipeDuringACaptureHoldsItForItsHubAndSendsItAfterRelinkingThatHub() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
         let first = root.env
         try await poll { first.isBootstrapped }
         let event = MeetingEvent(id: "event-1", title: "Design sync", start: clock.now, end: clock.now.addingTimeInterval(1_800))
@@ -239,70 +258,181 @@ final class AppRootWiringTests: XCTestCase {
         first.recorder.markMoment()
         await root.setLink(nil, writesAllowed: true)
 
-        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
-        XCTAssertEqual(wipe, LocalWipe(notSent: 0, stoppedRecording: true), "kept, so not reported Not sent")
+        XCTAssertEqual(wipe, LocalWipe(notSent: 0, stoppedRecording: true), "held, so not reported Not sent")
         XCTAssertEqual(engine.finishCount, 1, "the file was finalised, not cut off")
-        XCTAssertFalse(root.env === first)
         try await poll { root.env.isBootstrapped }
-        let rows = try root.env.store.phoneRecordings()
-        XCTAssertEqual(rows.count, 1, "the new replica holds the recording")
-        let row = try XCTUnwrap(rows.first)
-        XCTAssertEqual(row.state, .waiting)
+        XCTAssertTrue(try root.env.store.phoneRecordings().isEmpty, "the unlinked hub does not adopt it")
+        let held = try XCTUnwrap(root.env.heldRecordings.first, "listed as waiting for its Mac")
+        XCTAssertEqual(held.hubID, "hub-acme")
+        XCTAssertEqual(held.marks, [30])
+        XCTAssertNotNil(hold.audioURL(of: held), "the launch sweep left the audio alone")
+        let list = RecordingsListModel(
+            recordings: PhoneRecordingsSnapshot(), replica: CalendarReplicaSnapshot(),
+            seen: RecordingsSeen(baseline: .distantPast, opened: []), now: clock.now, calendar: .current,
+            held: root.env.heldRecordings
+        )
+        XCTAssertEqual(list.inProgress.map(\.state), [.heldForMac(nil)])
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+        await root.setLink(device, writesAllowed: true)
+
+        let row = try XCTUnwrap(try root.env.store.phoneRecordings().first)
+        XCTAssertEqual(row.id, held.id)
         XCTAssertEqual(row.durationSec, 30)
         XCTAssertEqual(row.eventID, "event-1")
         XCTAssertEqual(try root.env.store.phoneRecordingMarks(id: row.id), [30])
-        let file = row.fileURL(in: recordingsDirectory)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "the launch sweep left the audio alone")
+        XCTAssertTrue(root.env.heldRecordings.isEmpty)
+        XCTAssertTrue(try hold.load().isEmpty, "adopted, out of the hold")
+        let uploads = try await relayUploads(in: try XCTUnwrap(transports.last))
+        XCTAssertEqual(uploads.map(\.id), [row.id], "sent after relinking its Mac")
+    }
 
+    /// Review F6: a recording held for one Mac never goes to another.
+    func testAnotherHubNeverReceivesAHeldRecording() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let id = try await saveVoiceNote(root)
+        await root.setLink(nil, writesAllowed: true)
+        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-studio")
         await root.setLink(device, writesAllowed: true)
 
         let uploads = try await relayUploads(in: try XCTUnwrap(transports.last))
-        XCTAssertEqual(uploads.map(\.id), [row.id], "sent after the next link")
+        XCTAssertTrue(uploads.isEmpty, "the other Mac gets nothing")
+        XCTAssertTrue(try root.env.store.phoneRecordings().isEmpty)
+        XCTAssertEqual(root.env.heldRecordings.map(\.id), [id], "still waiting for its own Mac")
     }
 
-    /// An unlink restarts twice in a row (the queue wipe, then the
-    /// unlinked hub): a recording still waiting survives both, even when
-    /// the second starts before the first environment adopted it.
-    func testAWaitingRecordingSurvivesBackToBackWipes() async throws {
-        let root = try makeRoot(linked: device)
-        let first = root.env
-        try await poll { first.isBootstrapped }
-        await first.recorder.recordVoiceNote()
-        clock.advance(12)
-        await first.recorder.stop()
-        let id = try XCTUnwrap(first.recorder.savedRecording?.id)
+    /// Review F6: an iCloud account change carries nothing: the recordings
+    /// were made for the old account's Mac, and are reported Not sent.
+    func testAnAccountChangeWipeCarriesNoRecording() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let id = try await saveVoiceNote(root)
+        let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: recordingsDirectory)
         await root.setLink(nil, writesAllowed: true)
 
-        async let one = root.wipeLocalData(restartingOn: .private, hubID: "hub-acme")
-        async let two = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: false)
+
+        XCTAssertEqual(wipe, LocalWipe(notSent: 1))
+        try await poll { root.env.isBootstrapped }
+        XCTAssertTrue(root.env.heldRecordings.isEmpty)
+        XCTAssertTrue(try hold.load().isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "swept, as before")
+    }
+
+    /// An unlink restarts twice in a row (the queue wipe on the linked hub,
+    /// then the unlinked hub): a recording survives both, still held for
+    /// its hub.
+    func testAWaitingRecordingSurvivesBackToBackWipes() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let id = try await saveVoiceNote(root)
+        await root.setLink(nil, writesAllowed: true)
+
+        async let one = root.wipeLocalData(restartingOn: .private, hubID: "hub-acme", keepRecordings: true)
+        async let two = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
         let wipes = await [one, two]
 
         XCTAssertEqual(wipes, [LocalWipe(), LocalWipe()], "nothing lost, no capture running")
         try await poll { root.env.isBootstrapped }
-        let rows = try root.env.store.phoneRecordings()
-        XCTAssertEqual(rows.map(\.id), [id])
-        XCTAssertEqual(rows.first?.state, .waiting)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(rows.first).fileURL(in: recordingsDirectory).path))
+        let held = try XCTUnwrap(root.env.heldRecordings.first)
+        XCTAssertEqual(held.id, id)
+        XCTAssertEqual(held.hubID, "hub-acme")
+        XCTAssertNotNil(hold.audioURL(of: held))
     }
 
-    /// A recording whose audio is already gone cannot be kept: it is
-    /// reported Not sent, as before.
-    func testARecordingWithoutItsFileIsReportedNotSent() async throws {
-        let root = try makeRoot(linked: device)
+    /// Review F1: a capture cut short by an earlier kill, still `recording`
+    /// because no launch recovery reached it, keeps its audio: the
+    /// hand-over finalizes it from its file and holds it.
+    func testACaptureLeftForLaunchRecoveryIsFinalizedAndHeld() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let directory = try XCTUnwrap(recordingsDirectory)
+        // Another process's uploader: the capture is not live in this one.
+        let earlier = RecordingUploader(transport: InMemoryCloudTransport(), store: root.env.store, directory: directory)
+        let file = directory.appendingPathComponent("cut-short.m4a")
+        try Data(repeating: 0x5A, count: 256).write(to: file)
+        let stranded = try await earlier.beginCapture(fileURL: file, startedAt: clock.now, titleHint: "Cut short", eventID: nil)
+        engine.fileDuration = 20
+        await root.setLink(nil, writesAllowed: true)
+
+        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+
+        XCTAssertEqual(wipe, LocalWipe(), "not lost")
+        let held = try XCTUnwrap(root.env.heldRecordings.first)
+        XCTAssertEqual(held.id, stranded.id)
+        XCTAssertEqual(held.durationSec, 20, "finalized from its file")
+        XCTAssertNotNil(hold.audioURL(of: held))
+    }
+
+    /// Review F2: a stop already saving (the owner's tap, the 3-hour cap)
+    /// is waited for, then its recording is held; the wipe did not stop it.
+    func testAWipeDuringASaveWaitsForItAndHoldsTheRecording() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
         let first = root.env
         try await poll { first.isBootstrapped }
         await first.recorder.recordVoiceNote()
-        clock.advance(12)
-        await first.recorder.stop()
-        let row = try XCTUnwrap(try first.store.phoneRecordings().first)
-        try FileManager.default.removeItem(at: row.fileURL(in: recordingsDirectory))
+        clock.advance(15)
+        engine.holdFinish = true
+        let ownerStop = Task { await first.recorder.stop() }
+        try await poll { first.recorder.phase == .saving && self.engine.finishCount == 1 }
+        await root.setLink(nil, writesAllowed: true)
 
-        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        let wipeTask = Task { await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true) }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(root.env === first, "the wipe waits for the save")
+        engine.releaseFinish()
+        let wipe = await wipeTask.value
+        await ownerStop.value
+
+        XCTAssertEqual(wipe, LocalWipe(), "the owner stopped it: kept, not the wipe's news")
+        XCTAssertEqual(root.env.heldRecordings.map(\.durationSec), [15])
+    }
+
+    /// Review F3: a ledger the hand-over cannot read never sends the audio
+    /// into the sweep: it moves to the hold's `unreadable` folder, and the
+    /// wipe says so.
+    func testAnUnreadableHandOverKeepsTheAudioAndSaysSo() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let id = try await saveVoiceNote(root)
+        let file = try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: recordingsDirectory)
+        // A manifest that cannot be read: holding fails.
+        try FileManager.default.createDirectory(
+            at: hold.directory.appendingPathComponent("manifest.json"), withIntermediateDirectories: true
+        )
+        await root.setLink(nil, writesAllowed: true)
+
+        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
+
+        let problem = try XCTUnwrap(wipe.problem)
+        XCTAssertTrue(problem.hasPrefix("Some recordings couldn't be read"), problem)
+        try await poll { root.env.isBootstrapped }
+        let kept = hold.directory.appendingPathComponent("unreadable").appendingPathComponent(file.lastPathComponent)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path), "the audio is kept")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+        if case .recordingsProblem = LinkNotice.after(wipe, otherwise: .removed) {} else {
+            XCTFail("the notice reports the problem")
+        }
+    }
+
+    /// A recording whose audio is already gone cannot be held: it is
+    /// reported Not sent, as before.
+    func testARecordingWithoutItsFileIsReportedNotSent() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let id = try await saveVoiceNote(root)
+        try FileManager.default.removeItem(at: try XCTUnwrap(try root.env.store.phoneRecording(id: id)).fileURL(in: recordingsDirectory))
+
+        let wipe = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
         XCTAssertEqual(wipe, LocalWipe(notSent: 1))
         try await poll { root.env.isBootstrapped }
-        XCTAssertTrue(try root.env.store.phoneRecordings().isEmpty)
+        XCTAssertTrue(root.env.heldRecordings.isEmpty)
     }
 
     /// Board #70: a replica file the wipe cannot remove fails the restart
@@ -315,7 +445,7 @@ final class AppRootWiringTests: XCTestCase {
             try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory)
         }
 
-        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: true)
 
         XCTAssertNotNil(root.failure, "the restart fails visibly")
         XCTAssertEqual(built.count, 1, "no environment opens on the old replica")

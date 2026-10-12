@@ -13,10 +13,17 @@ enum LinkNotice: Equatable {
     /// to the Mac after the next link. Carries the wipe's "Not sent" count.
     case recordingKept(notSent: Int)
 
-    /// What a wipe reports, or nil when it lost nothing and stopped no
-    /// capture.
-    static func after(_ wipe: LocalWipe) -> Self? {
+    /// Recordings could not be handed over or restored (`LocalWipe.problem`),
+    /// with the wipe's "Not sent" count.
+    case recordingsProblem(String, notSent: Int)
+
+    /// What a wipe reports: a recording problem first, then a capture it
+    /// stopped and kept, else `otherwise` (by default the "Not sent" count,
+    /// or nil when nothing was lost).
+    static func after(_ wipe: LocalWipe, otherwise: Self? = nil) -> Self? {
+        if let problem = wipe.problem { return .recordingsProblem(problem, notSent: wipe.notSent) }
         if wipe.stoppedRecording { return .recordingKept(notSent: wipe.notSent) }
+        if let otherwise { return otherwise }
         return wipe.notSent > 0 ? .notSent(wipe.notSent) : nil
     }
 
@@ -28,8 +35,10 @@ enum LinkNotice: Equatable {
         case let .notSent(count):
             Self.notSentText(count)
         case let .recordingKept(notSent):
-            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link again"
+            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again"
                 + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
+        case let .recordingsProblem(problem, notSent):
+            problem + (notSent > 0 ? ". \(Self.notSentText(notSent))" : "")
         }
     }
 

@@ -59,7 +59,7 @@ struct LinkNoticeBanner: View {
                 Button("Scan") { linking.startScan() }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
-            case .removed, .notSent, .recordingKept:
+            case .removed, .notSent, .recordingKept, .recordingsProblem:
                 Button {
                     linking.dismissNotice()
                 } label: {

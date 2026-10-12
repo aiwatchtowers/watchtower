@@ -107,7 +107,7 @@ final class LinkingViewModel {
         // A report about the last link is read by now; moved and stale stay
         // until the heartbeat clears them.
         switch notice {
-        case .removed, .notSent, .recordingKept: notice = nil
+        case .removed, .notSent, .recordingKept, .recordingsProblem: notice = nil
         case .moved, .stale, nil: break
         }
         phase = .scanning
@@ -341,7 +341,7 @@ final class LinkingViewModel {
         // A notice about an old link no longer applies; the report of a
         // switch's unlink ("Not sent", a recording kept) stays.
         switch notice {
-        case .notSent, .recordingKept: break
+        case .notSent, .recordingKept, .recordingsProblem: break
         default: notice = nil
         }
         await host?.setLink(identity.linkedDevice(for: record), writesAllowed: true)
@@ -371,9 +371,9 @@ final class LinkingViewModel {
         let wipe = await unlinkCurrent(writeUnlinked: false)
         pendingSwitch = nil
         if !isBusy { phase = .idle }
-        // A recording the removal cut short is the news that matters: it
-        // also says the link ended.
-        notice = wipe.stoppedRecording ? .recordingKept(notSent: 0) : .removed
+        // A recording problem, or a capture the removal cut short, is the
+        // news that matters: it also says the link ended.
+        notice = LinkNotice.after(wipe, otherwise: .removed)
     }
 
     /// The transport saw an iCloud account change. Another account ends the
@@ -393,10 +393,12 @@ final class LinkingViewModel {
         guard current != link.userRecordName, self.link == link else { return }
         Self.logger.notice("iCloud account changed while linked: unlinking")
         store.pending = nil
-        let wipe = await unlinkCurrent(writeUnlinked: false)
+        // The recordings were made for the old account's Mac: not carried
+        // to whatever the new account links, reported "Not sent".
+        let wipe = await unlinkCurrent(writeUnlinked: false, keepRecordings: false)
         pendingSwitch = nil
         phase = .idle
-        notice = wipe.stoppedRecording ? .recordingKept(notSent: 0) : nil
+        notice = LinkNotice.after(wipe)
     }
 
     /// After each fetch: the heartbeat names another hub (moved: writes
@@ -421,7 +423,7 @@ final class LinkingViewModel {
         switch notice {
         case .moved, .stale, nil:
             notice = stale ? .stale : nil
-        case .removed, .notSent, .recordingKept:
+        case .removed, .notSent, .recordingKept, .recordingsProblem:
             break
         }
     }
@@ -442,7 +444,7 @@ final class LinkingViewModel {
     /// environment is retired (replaced by the next launch or link) and the
     /// `unlinked` record keeps its chance to go out until then (its
     /// delivery guarantee is #143's).
-    private func unlinkCurrent(writeUnlinked: Bool) async -> LocalWipe {
+    private func unlinkCurrent(writeUnlinked: Bool, keepRecordings: Bool = true) async -> LocalWipe {
         guard let current = link, let host else { return LocalWipe() }
         let device = linkedDevice
         store.link = nil
@@ -450,10 +452,10 @@ final class LinkingViewModel {
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)
         guard writeUnlinked, let device else {
-            return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+            return await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: keepRecordings)
         }
         let scope = current.databaseScope
-        let wipe = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID)
+        var wipe = await host.wipeLocalData(restartingOn: scope, hubID: current.hubID, keepRecordings: keepRecordings)
         do {
             let transport = try await host.prepare(scope: scope, hubID: current.hubID)
             try await transport.save([try deviceRecord(for: device, linkNonce: nil, unlinked: true)])
@@ -472,8 +474,10 @@ final class LinkingViewModel {
         }
         // The linked hub's zones are still reachable (a private link, or
         // shares not left): end on the phone's own database, unlinked.
-        // Nothing is left to count or to stop.
-        _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        // Nothing is left to stop; what this wipe could not hand over adds.
+        let final = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID, keepRecordings: keepRecordings)
+        wipe.notSent += final.notSent
+        wipe.problem = wipe.problem ?? final.problem
         return wipe
     }
 

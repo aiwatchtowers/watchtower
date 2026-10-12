@@ -147,7 +147,7 @@ final class FakeLinkHost: LinkHost {
     private(set) var flushes = 0
     private(set) var permissionRequests = 0
     private(set) var openedNow = 0
-    /// What the wipe reports as not sent.
+    /// What the next wipe reports as not sent (once).
     var notSentCount = 0
     /// The Mac: answers from every device record written so far, both
     /// databases, in write order. nil = no grant in the replica.
@@ -212,15 +212,27 @@ final class FakeLinkHost: LinkHost {
     /// The hub of each wipe's restart, in call order.
     private(set) var wipedHubIDs: [String] = []
 
-    /// The next wipe reports a capture it stopped (once).
+    /// The next wipe reports a capture it stopped and kept (once; as the
+    /// real host, never when the recordings are not kept).
     var stopsRecording = false
+    /// The next wipe reports a recording problem (once).
+    var recordingProblem: String?
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> LocalWipe {
+    /// `keepRecordings` of each wipe, in call order.
+    private(set) var wipesKeptRecordings: [Bool] = []
+
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String, keepRecordings: Bool) async -> LocalWipe {
         wipedHubIDs.append(hubID)
+        wipesKeptRecordings.append(keepRecordings)
         log.append("wipe \(Self.describe(scope))")
         wipes += 1
-        defer { stopsRecording = false }
-        return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording)
+        // A second wipe finds nothing left: what the first lost was counted.
+        defer {
+            stopsRecording = false
+            recordingProblem = nil
+            notSentCount = 0
+        }
+        return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem)
     }
 
     func requestNotificationPermission() async {

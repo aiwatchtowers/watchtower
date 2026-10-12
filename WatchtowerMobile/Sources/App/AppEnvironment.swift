@@ -84,6 +84,15 @@ final class AppEnvironment {
     let recordingsSeen: RecordingsSeenStore
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
+    /// The hub whose zones this environment syncs (`unlinkedHubID` while
+    /// unlinked): held recordings of this hub are adopted here.
+    let hubID: String
+    /// Recordings a wipe carried over (board #63), outside the replica; nil
+    /// when the uploader has no recordings folder.
+    @ObservationIgnored let hold: RecordingHold?
+    /// Held recordings waiting for another hub than this one (the
+    /// Recordings list shows them).
+    var heldRecordings: [HeldRecording] = []
 
     /// This phone's link, nil until the link flow sets one. The demo
     /// transport is linked to `DemoSeed.device`.
@@ -113,7 +122,7 @@ final class AppEnvironment {
     @ObservationIgnored private let transport: any CloudSyncTransport
     @ObservationIgnored private let hydrator: ReplicaHydrator
     @ObservationIgnored private let feed: RelayFeed
-    @ObservationIgnored private let uploader: RecordingUploader
+    @ObservationIgnored let uploader: RecordingUploader
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     /// The loop's wait between cycles; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
@@ -121,9 +130,9 @@ final class AppEnvironment {
     /// The boot's first part: the applied observer set and the CloudKit
     /// engine started (the demo seeded), before the first fetch.
     @ObservationIgnored private var transportStartTask: Task<Void, Never>?
-    /// Registers the recordings a wipe carried over from the previous
-    /// environment (`adoptRecordings`); the launch sweep waits for it.
-    @ObservationIgnored private var adoptionTask: Task<Void, Never>?
+    /// Adopts the held recordings of this environment's hub
+    /// (`adoptHeld`), started by the init; the launch sweep waits for it.
+    @ObservationIgnored private(set) var adoption: Task<HeldAdoption, Never>?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
     @ObservationIgnored private var stopped = false
@@ -152,6 +161,7 @@ final class AppEnvironment {
                 ),
                 replicaPath: Self.liveReplicaPath(in: directory),
                 transportKind: .cloudKit,
+                hubID: hubID,
                 linkedDevice: linkedDevice,
                 recordingsDirectory: recordingsDirectory
             )
@@ -176,6 +186,7 @@ final class AppEnvironment {
         transport: any CloudSyncTransport,
         replicaPath: String,
         transportKind: TransportKind = .inMemoryDemo,
+        hubID: String = AppEnvironment.unlinkedHubID,
         linkedDevice: LinkedDevice? = nil,
         defaults: UserDefaults = .standard,
         recordingsDirectory: URL? = nil,
@@ -190,6 +201,7 @@ final class AppEnvironment {
         self.sleep = sleep
         self.transport = transport
         self.transportKind = transportKind
+        self.hubID = hubID
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
 
@@ -222,6 +234,7 @@ final class AppEnvironment {
             deviceID: device?.deviceID
         )
         self.uploader = uploader
+        hold = uploader.directory.map(RecordingHold.init(recordingsDirectory:))
         recorder = try (makeRecorder ?? Self.liveRecorder)(uploader)
         feed = RelayFeed(
             transport: transport,
@@ -238,6 +251,7 @@ final class AppEnvironment {
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
+        adoption = Task { await adoptHeld() }
         let transportStart = Task { await startTransport() }
         transportStartTask = transportStart
         bootstrapTask = Task {
@@ -292,9 +306,9 @@ final class AppEnvironment {
         } catch {
             Self.logger.warning("silent-pending sweep failed: \(error.localizedDescription, privacy: .public)")
         }
-        // Recordings a wipe carried over get their rows first, so the
-        // sweep below never takes their files.
-        await adoptionTask?.value
+        // Held recordings of this hub get their rows first; the rest sit in
+        // the hidden hold folder, which the sweep below never reaches.
+        _ = await adoption?.value
         // A capture cut short by a kill is finalized from its file, and
         // files without a ledger row are deleted. Then the relaunch retry:
         // recordings saved but not yet acknowledged go out again (the hub's
@@ -379,11 +393,22 @@ final class AppEnvironment {
     /// `writesAllowed: false` the link stands (Settings still shows it) but
     /// the outbox, the uploader and the Settings toggles get no device, so
     /// nothing is sent: a toggle meanwhile is only kept, like one made
-    /// before linking, and reaches the Mac with the next device record.
+    /// before linking.
+    /// When writes come back for the same link (the moved hub returned),
+    /// the current device record is written once, so a toggle kept
+    /// meanwhile reaches the Mac.
     func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
+        let writesReturn = writesAllowed && !self.writesAllowed && device != nil && device == linkedDevice
         linkedDevice = device
         self.writesAllowed = writesAllowed
         deviceSettings.linkedDevice = writesAllowed ? device : nil
+        if writesReturn, let payload = deviceSettings.devicePayload() {
+            do {
+                try await transport.save([try CloudRecordFactory.record(for: payload, modifiedAt: payload.updatedAt)])
+            } catch {
+                Self.logger.error("device record not rewritten: \(error.localizedDescription, privacy: .public)")
+            }
+        }
         let sendingID = writesAllowed ? device?.deviceID : nil
         await outbox.setDeviceID(sendingID)
         await uploader.setDeviceID(sendingID)
@@ -400,83 +425,6 @@ final class AppEnvironment {
     func sendNow() async {
         await transportStartTask?.value
         await (transport as? CloudKitTransport)?.sendNow()
-    }
-
-    // MARK: - Recordings across a wipe
-
-    /// A recording a wipe carries into the next replica: its ledger row and
-    /// marks. The audio file stays where it is (the recordings folder is
-    /// shared by every environment).
-    struct KeptRecording: Sendable {
-        let row: PhoneRecording
-        let marks: [Int]
-    }
-
-    /// What a wipe does with this environment's recordings.
-    struct RecordingHandover: Sendable {
-        var kept: [KeptRecording] = []
-        /// Recordings still on their way to the Mac that cannot be kept
-        /// (their audio is gone): reported "Not sent".
-        var lost = 0
-        /// A capture was running and was stopped and saved.
-        var stoppedCapture = false
-    }
-
-    /// Before a wipe: a running capture is stopped and saved (never cut
-    /// off under the recorder), then every recording whose audio is on
-    /// this phone and that the Mac has not acknowledged (`waiting`,
-    /// `uploading`, or a failure that offers Retry) is handed over, to be
-    /// registered `waiting` in the next replica (`adoptRecordings`) and
-    /// sent once a Mac is linked again.
-    func handOverRecordings() async -> RecordingHandover {
-        var handover = RecordingHandover()
-        if recorder.isCapturing {
-            handover.stoppedCapture = true
-            await recorder.stop()
-        }
-        // Rows this environment adopted itself are handed on too.
-        await adoptionTask?.value
-        do {
-            let rows = try store.phoneRecordings()
-            for row in rows where [.recording, .waiting, .uploading].contains(row.state) || row.offersRetry {
-                let file = row.fileURL(in: uploader.directory)
-                guard row.state != .recording, FileManager.default.fileExists(atPath: file.path) else {
-                    handover.lost += 1
-                    continue
-                }
-                handover.kept.append(KeptRecording(row: row, marks: try store.phoneRecordingMarks(id: row.id)))
-            }
-        } catch {
-            Self.logger.error("recordings not handed over: \(error.localizedDescription, privacy: .public)")
-        }
-        return handover
-    }
-
-    /// After a wipe, before this environment's boot reaches its launch
-    /// sweep (call it right after init, in the same main-actor turn): the
-    /// previous environment's recordings, `waiting` again.
-    func adoptRecordings(_ kept: [KeptRecording]) {
-        guard !kept.isEmpty else { return }
-        let uploader = uploader
-        adoptionTask = Task {
-            for recording in kept {
-                let row = recording.row
-                do {
-                    try await uploader.register(
-                        id: row.id,
-                        fileURL: row.fileURL(in: uploader.directory),
-                        startedAt: row.startedAt,
-                        endedAt: row.endedAt,
-                        activeDuration: TimeInterval(row.durationSec),
-                        titleHint: row.titleHint,
-                        eventID: row.eventID,
-                        marks: recording.marks
-                    )
-                } catch {
-                    Self.logger.error("recording \(row.id, privacy: .public) not carried over: \(error.localizedDescription, privacy: .public)")
-                }
-            }
-        }
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).

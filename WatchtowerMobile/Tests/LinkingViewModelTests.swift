@@ -505,6 +505,7 @@ final class LinkingViewModelTests: XCTestCase {
         await model.accountChanged()
 
         XCTAssertEqual(host.wipes, 1, "the replica is wiped")
+        XCTAssertEqual(host.wipesKeptRecordings, [false], "review F6: nothing is carried to another account")
         XCTAssertNil(model.link, "Welcome is shown")
         XCTAssertNil(LinkStore(defaults: defaults).link)
         XCTAssertNil(host.links.last?.device)
@@ -572,12 +573,12 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.notice, .recordingKept(notSent: 2))
         XCTAssertEqual(
             LinkNotice.recordingKept(notSent: 2).message,
-            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link again. "
+            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again. "
                 + "Not sent: 2 items were still waiting for your Mac"
         )
         XCTAssertEqual(
             LinkNotice.recordingKept(notSent: 0).message,
-            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link again"
+            "The link ended during a recording. It's saved on this iPhone and goes to your Mac after you link it again"
         )
         model.startScan()
         XCTAssertNil(model.notice, "read by the next scan")
@@ -594,12 +595,31 @@ final class LinkingViewModelTests: XCTestCase {
 
         let switched = try await linkedModel(code())
         host.stopsRecording = true
+        host.notSentCount = 1
         container.userRecordNameValue = "_colleague-b"
 
         await switched.accountChanged()
 
         XCTAssertNil(switched.link)
-        XCTAssertEqual(switched.notice, .recordingKept(notSent: 0))
+        XCTAssertEqual(switched.notice, .notSent(1), "another account: the stopped capture is not kept, it is counted")
+    }
+
+    /// Review F3/F8: a recording problem of the wipe wins over every other
+    /// notice, with the Not sent count.
+    func testARecordingProblemOfTheWipeIsTheNotice() async throws {
+        let model = try await linkedModel(code())
+        host.recordingProblem = "Some recordings couldn't be read (disk full)"
+        host.notSentCount = 2
+
+        await model.unlink()
+
+        XCTAssertEqual(model.notice, .recordingsProblem("Some recordings couldn't be read (disk full)", notSent: 2))
+        XCTAssertEqual(
+            model.notice?.message,
+            "Some recordings couldn't be read (disk full). Not sent: 2 items were still waiting for your Mac"
+        )
+        model.startScan()
+        XCTAssertNil(model.notice)
     }
 
     func testUnlinkInSharedScopeLeavesTheShares() async throws {

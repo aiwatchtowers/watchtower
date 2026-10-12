@@ -162,17 +162,28 @@ final class AppRoot {
     /// queue). Restarts queue behind each other, so two teardowns never
     /// share an environment. No-op for a root without a restarter.
     ///
-    /// A wipe never takes the owner's audio: a running capture is stopped
-    /// and saved first, and every recording still on its way to the Mac is
-    /// carried into the next replica (`AppEnvironment.handOverRecordings`)
-    /// and sent after the next link. Returns what the wipe lost.
+    /// A wipe never takes the owner's audio silently: a running capture
+    /// is stopped and saved first, and every recording still on its way to
+    /// the Mac is held for the hub it was recorded for
+    /// (`AppEnvironment.handOverRecordings`), unless `keepRecordings` is
+    /// false (an iCloud account change), when it is reported "Not sent".
+    /// Returns what the wipe lost, counted after the next environment
+    /// adopted its hub's held recordings.
     @discardableResult
-    private func restart(scope: CloudDatabaseScope, hubID: String, device: LinkedDevice?, wipe: Bool) async throws -> LocalWipe {
+    private func restart(
+        scope: CloudDatabaseScope,
+        hubID: String,
+        device: LinkedDevice?,
+        wipe: Bool,
+        keepRecordings: Bool = true
+    ) async throws -> LocalWipe {
         guard let restarter else { return LocalWipe() }
         let previous = restartTask
         let task = Task {
             _ = await previous?.result
-            return try await self.performRestart(scope: scope, hubID: hubID, device: device, wipe: wipe, restarter: restarter)
+            return try await self.performRestart(
+                scope: scope, hubID: hubID, device: device, wipe: wipe, keepRecordings: keepRecordings, restarter: restarter
+            )
         }
         restartTask = task
         return try await task.value
@@ -183,18 +194,25 @@ final class AppRoot {
         hubID: String,
         device: LinkedDevice?,
         wipe: Bool,
+        keepRecordings: Bool,
         restarter: Restarter
     ) async throws -> LocalWipe {
         let old = env
         old.onLinkSignal = nil
         old.onFetched = nil
-        var outcome = LocalWipe()
-        var handover = AppEnvironment.RecordingHandover()
-        if wipe {
-            handover = await old.handOverRecordings()
-            outcome = LocalWipe(notSent: Self.pendingActionCount(old) + handover.lost, stoppedRecording: handover.stoppedCapture)
-        }
+        let stoppedCapture = wipe ? await old.recorder.stopForWipe() : nil
+        // After the shutdown the old boot (and its launch recovery) has
+        // ended: the hand-over never races it.
         await old.shutDown()
+        var outcome = LocalWipe()
+        if wipe {
+            let handover = await old.handOverRecordings(stoppedCapture: stoppedCapture, keep: keepRecordings)
+            outcome = LocalWipe(
+                notSent: Self.pendingActionCount(old) + handover.lost,
+                stoppedRecording: handover.stoppedCaptureKept,
+                problem: handover.problem
+            )
+        }
         do {
             if wipe {
                 try Self.removeReplica(at: restarter.replicaPath)
@@ -203,15 +221,17 @@ final class AppRoot {
                 }
             }
             let next = try restarter.make(scope, hubID, device)
-            // In the same main-actor turn as the init: before the boot's
-            // launch sweep can run.
-            next.adoptRecordings(handover.kept)
             wire(next)
             env = next
             self.scope = scope
             self.hubID = hubID
             retired = false
+            if let adoption = await next.adoption?.value {
+                outcome.notSent += adoption.lost
+                outcome.problem = outcome.problem ?? adoption.problem
+            }
         } catch {
+            // The held recordings stay in the hold: the next boot adopts them.
             Self.logger.critical("environment restart failed: \(error.localizedDescription, privacy: .public)")
             failure = error.localizedDescription
             throw error
@@ -253,7 +273,12 @@ extension AppRoot: LinkHost {
         // A queued restart decides the running scope and hub.
         _ = await restartTask?.result
         if retired || scope != self.scope || hubID != self.hubID {
-            try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
+            // The environment replaced here is an unlinked or retired one:
+            // a recording problem is only logged (a scan shows no notice).
+            let wipe = try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
+            if let problem = wipe.problem {
+                Self.logger.error("recordings at the link restart: \(problem, privacy: .public)")
+            }
         }
         return env.linkTransport
     }
@@ -292,9 +317,9 @@ extension AppRoot: LinkHost {
         retired = true
     }
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> LocalWipe {
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String, keepRecordings: Bool) async -> LocalWipe {
         do {
-            return try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
+            return try await restart(scope: scope, hubID: hubID, device: nil, wipe: true, keepRecordings: keepRecordings)
         } catch {
             // `failure` is set: the app shows BootFailureView.
             return LocalWipe()
