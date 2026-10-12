@@ -1,4 +1,6 @@
 import GRDB
+import SwiftUI
+import UIKit
 import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
@@ -73,6 +75,45 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(never.tone, .secondary)
         XCTAssertEqual(MacStatusRow(status: .online(macName: ""), now: now).label, "Mac", "an empty name reads Mac")
         XCTAssertEqual(online.toneUse.role, .mac)
+    }
+
+    /// Phases 1–2 review: a Mac name too long to share its row with
+    /// "Offline · seen …" puts the status on a second line under it instead
+    /// of truncating either.
+    func testALongMacNameWrapsTheStatusUnderTheName() {
+        let now = Date()
+        func height(_ name: String) -> CGFloat {
+            let row = MacStatusRow(status: .offline(macName: name, lastSeen: now.addingTimeInterval(-180)), now: now)
+            return UIHostingController(rootView: MacStatusRowView(row: row))
+                .sizeThatFits(in: CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)).height
+        }
+        XCTAssertGreaterThan(height("Acme Mac in the second-floor meeting room"), height("Acme Mac") + 10)
+    }
+
+    /// Design pass SET2: "3 min. ago", not a ticking "2 min, 39 sec".
+    func testLastSyncSaysHowLongAgoInWords() {
+        let english = Locale(identifier: "en_US")
+        XCTAssertEqual(LastSyncText.string(Date().addingTimeInterval(-159), locale: english), "3 min. ago")
+        XCTAssertEqual(LastSyncText.string(nil), "Never")
+    }
+
+    /// Design pass SET3: "ok" a green dot and OK, "error" a red mark and a
+    /// red Error, anything else (a newer Mac's status) its own text in
+    /// secondary. Role info; never orange.
+    func testAnAccountStatusIsADotAMarkOrItsText() {
+        let ok = AccountStatusStyle(status: "ok")
+        XCTAssertEqual(ok.mark, .dot)
+        XCTAssertEqual(ok.text, "OK")
+        XCTAssertEqual([ok.tone, ok.textTone], [.green, .secondary])
+        let error = AccountStatusStyle(status: "error")
+        XCTAssertEqual(error.mark, .symbol("exclamationmark.circle.fill"))
+        XCTAssertEqual(error.text, "Error")
+        XCTAssertEqual([error.tone, error.textTone], [.red, .red])
+        let newer = AccountStatusStyle(status: "expired")
+        XCTAssertEqual(newer.mark, .textOnly)
+        XCTAssertEqual(newer.text, "expired")
+        XCTAssertEqual([newer.tone, newer.textTone], [.secondary, .secondary])
+        XCTAssertTrue(error.toneUses.allSatisfy { $0.role == .info })
     }
 
     /// The snapshot reads the DataZone heartbeat the hydrator stored, with

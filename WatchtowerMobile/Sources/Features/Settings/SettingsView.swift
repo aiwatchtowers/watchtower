@@ -40,14 +40,7 @@ struct SettingsView: View {
             // lays a TimelineView's views out in one cell.
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 let row = MacStatusRow(status: MacStatus(heartbeat: model.snapshot.heartbeat, now: context.date), now: context.date)
-                LabeledContent {
-                    HStack(spacing: Spacing.compact) {
-                        Circle().fill(row.tone.color).frame(width: 8, height: 8)
-                        Text(row.value)
-                    }
-                } label: {
-                    Text(row.label)
-                }
+                MacStatusRowView(row: row)
                 // Nothing at all while every observation is healthy.
                 ForEach(model.diagnostics(now: context.date)) { row in
                     Text(row.text)
@@ -55,12 +48,10 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent("Last sync") {
-                if let last = env.lastSyncAt {
-                    Text(last, style: .relative)
-                } else {
-                    Text("Never")
-                }
+            // Its own TimelineView: a Form lays one TimelineView's views out
+            // in one cell, and "3 min. ago" moves with the clock alone.
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                LabeledContent("Last sync", value: LastSyncText.string(env.lastSyncAt))
             }
             LabeledContent("Queued", value: "\(model.snapshot.queuedCount)")
             if env.transportKind == .inMemoryDemo {
@@ -77,7 +68,7 @@ struct SettingsView: View {
             Section {
                 ForEach(Array(accounts.enumerated()), id: \.offset) { _, account in
                     LabeledContent {
-                        Text(account.status)
+                        AccountStatusLabel(style: AccountStatusStyle(status: account.status))
                     } label: {
                         Label(account.label, systemImage: Self.symbol(for: account.kind))
                     }
@@ -165,6 +156,25 @@ struct SettingsView: View {
         @Bindable var settings = env.deviceSettings
         return Section("Notifications") {
             Toggle("New asks", isOn: $settings.newAskAlerts)
+        }
+    }
+}
+
+/// SET3's mark and text, in the style's tones.
+private struct AccountStatusLabel: View {
+    let style: AccountStatusStyle
+
+    var body: some View {
+        HStack(spacing: Spacing.compact) {
+            switch style.mark {
+            case .dot:
+                Circle().fill(style.tone.color).frame(width: 8, height: 8)
+            case let .symbol(name):
+                Image(systemName: name).foregroundStyle(style.tone.color)
+            case .textOnly:
+                EmptyView()
+            }
+            Text(style.text).foregroundStyle(style.textTone.color)
         }
     }
 }
