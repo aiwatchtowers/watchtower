@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/workbenchcheck"
@@ -65,6 +67,7 @@ var (
 	workbenchCheckFlagStaleDays int
 	workbenchCheckFlagNoNetwork bool
 	workbenchCheckFlagStopHook  bool
+	workbenchCheckFlagAgent     string
 )
 
 func init() {
@@ -74,6 +77,7 @@ func init() {
 		"days without movement before an in-progress target counts as stale")
 	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagNoNetwork, "no-network", false, "skip pull request states (no gh call)")
 	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagStopHook, "stop-hook", false, "run as the Claude Code Stop hook (stdin input, always exit 0)")
+	addHookAgentFlag(workbenchCheckCmd, &workbenchCheckFlagAgent)
 	workbenchCmd.AddCommand(workbenchCheckCmd)
 }
 
@@ -82,9 +86,16 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	flagErr := checkWorkbenchIDFlags(cmd)
+	agent, flagErr := hookAgentFor(cmd, workbenchCheckFlagAgent)
+	if flagErr == nil {
+		flagErr = checkWorkbenchIDFlags(cmd)
+	}
 	legacy := workbenchCheckLegacy()
 	if workbenchCheckFlagStopHook {
+		if flagErr == nil && agent == agentkind.Codex {
+			runCodexStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return nil
+		}
 		if flagErr != nil {
 			// The hook still exits 0; the reason goes to its log only.
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: board drift check skipped: %v\n", flagErr)
@@ -95,6 +106,9 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	}
 	if flagErr != nil {
 		return flagErr
+	}
+	if agent == agentkind.Codex {
+		return errors.New("--agent codex runs only with --stop-hook")
 	}
 	id, err := parseWorkbenchID(strings.TrimSpace(workbenchCheckFlagWorkbench))
 	if err != nil {
@@ -173,16 +187,6 @@ func printCheckReport(w io.Writer, rep workbenchcheck.Report) {
 	}
 }
 
-// stopHookInput is the part of Claude Code's Stop hook input we read.
-type stopHookInput struct {
-	SessionID      string `json:"session_id"`
-	TranscriptPath string `json:"transcript_path"`
-	StopHookActive bool   `json:"stop_hook_active"`
-	// BackgroundTasks lists what the session runs in the background as the
-	// turn ends (board #411).
-	BackgroundTasks backgroundTasks `json:"background_tasks"`
-}
-
 // backgroundTask is one entry of a hook input's background_tasks; every
 // other field is ignored.
 type backgroundTask struct{ ID, Type string }
@@ -255,6 +259,20 @@ func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string)
 	return n + min(open, teammates), true
 }
 
+// codexBackgroundCount is a Codex Stop's count of background agents: the
+// subagent turns still open (spec 2026-10-12 §6.3). Codex sends no
+// background_tasks; its SubagentStart and SubagentStop fire on the parent
+// session with the child's agent_id (capture note, answer 1).
+func codexBackgroundCount(turns db.AgentTurns) int64 {
+	var n int64
+	for id := range turns {
+		if turns.Open(id) {
+			n++
+		}
+	}
+	return n
+}
+
 // stopHookOutput blocks the stop and hands reason back to the agent.
 type stopHookOutput struct {
 	Decision string `json:"decision"`
@@ -289,7 +307,7 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	inCtx, cancelIn := context.WithTimeout(ctx, stopHookStdinWait)
 	// The session state's cap: Stop carries last_assistant_message, and a
 	// cut-off input would lose the "waiting" write.
-	in, err := readHookInputLimit[stopHookInput](inCtx, stdin, sessionStateStdinLimit)
+	in, err := readHookEvent(inCtx, stdin, sessionStateStdinLimit, agentkind.Claude)
 	cancelIn()
 	if err != nil {
 		if _, inTerminal := os.LookupEnv(terminalSessionEnv); inTerminal && !errors.Is(err, io.EOF) {
@@ -327,6 +345,60 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 		}
 	}
 	recordStopAgentState(stderr, database, id, in, at)
+}
+
+// runCodexStopHook is `workbench check --agent codex --stop-hook`, the Codex
+// Stop hook with runStopHook's contract: the drift check of the row's
+// workbench (once per stop: stop_hook_active skips it), then "waiting" on the
+// Codex row the hook runs in when the turn ends. No turn end is recorded
+// (Codex state hooks are synchronous, spec §4.3), and the state hooks are
+// there by construction: the whole hook set arrives in one launch and is
+// trusted in one batch, so this hook running proves they run (§6.3).
+func runCodexStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(stderr, "watchtower: board drift check failed: %v\n", r)
+		}
+	}()
+	at := hookNow()
+	row, in, ok := readCodexHook(stdin, stderr, "board drift check skipped", stopHookStdinWait,
+		sessionStateStdinLimit, openHookDB)
+	if !ok {
+		return
+	}
+	noteForeignCodexSession(stderr, row, in.SessionID, "Stop state")
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", stopStateLost(in.SessionID), err)
+		return
+	}
+	defer database.Close()
+	if !in.StopHookActive && stopHookDrift(ctx, stdout, stderr, database, row.WorkbenchID.Int64, vocabularyFor(false)) {
+		return
+	}
+	if err := recordCodexStopState(database, row, in, at); err != nil {
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
+	}
+}
+
+// recordCodexStopState records the Stop's "waiting" on row with the open
+// subagent turns as its background count (recordAgentState keeps it: a Codex
+// event has no background_tasks to count); a Stop of another session (or of
+// a row with no id yet) writes nothing.
+func recordCodexStopState(database *db.DB, row db.TerminalSession, in hookEvent, at time.Time) error {
+	if in.SessionID == "" || in.SessionID != row.ClaudeSessionID.String {
+		return nil
+	}
+	turns, err := database.TerminalAgentTurns(row.ID)
+	if err != nil {
+		return err
+	}
+	turn := hookTurn{stop: true}
+	if n := codexBackgroundCount(turns); n > 0 {
+		turn.background = sql.NullInt64{Int64: n, Valid: true}
+	}
+	state, onlyFrom, _ := agentStateFor("Stop", "")
+	return recordAgentState(database, row.ID, row.WorkbenchID.Int64, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 
 // markStopTurnEnd records the turn end before the drift check, which can

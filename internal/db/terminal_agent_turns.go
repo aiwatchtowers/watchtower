@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"watchtower/internal/agentkind"
 )
 
 // ErrAgentTurnsUnreadable says RecordTerminalAgentTurn found a stored
@@ -128,7 +130,7 @@ func (db *DB) TerminalAgentTurns(id int64) (AgentTurns, error) {
 
 // RecordTerminalAgentTurn records that subagent or teammate agentID started
 // (start) or ended a turn at at, reported by a hook of conversation
-// sessionID on workbench workbenchID's claude row id (board #543). Each stamp
+// sessionID on workbench workbenchID's agent row id (board #543). Each stamp
 // only moves forward, so two async hooks landing out of order never reopen a
 // turn, and a stamp earlier than the run's mark (a late hook of the previous
 // run, which MarkTerminalAgentRun already cleared) writes nothing. One write
@@ -149,7 +151,7 @@ func (db *DB) RecordTerminalAgentTurn(id, workbenchID int64, sessionID, agentID 
 	defer func() { _ = tx.Rollback() }()
 	var raw sql.NullString
 	err = tx.QueryRow(`SELECT agent_turns FROM terminal_sessions
-		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?`,
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?`,
 		id, workbenchID, sessionID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil

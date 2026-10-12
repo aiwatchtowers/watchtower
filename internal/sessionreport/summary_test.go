@@ -93,3 +93,27 @@ func TestPRLine_Texts(t *testing.T) {
 		assert.Equal(t, tc.want, sc.prLine(tc.prs), name)
 	}
 }
+
+// A codex session is an agent session: --summary lists it like a claude one
+// — even before its first SessionStart stored the agent's own id — and its
+// report builds; a shell session still has no row.
+func TestSessionReport_IncludesCodexSessions(t *testing.T) {
+	d := loadFixture(t, "scope.sql")
+	_, err := d.Exec(`INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
+		(8, 1, 'codex', 'Codex session', 430, '/tmp/acme', NULL),
+		(9, 1, 'shell', 'Shell', 430, '/tmp/acme', NULL)`)
+	require.NoError(t, err)
+
+	list, err := Summaries(context.Background(), d, 1)
+	require.NoError(t, err)
+	require.Equal(t, []int64{3, 4, 6, 8}, ids(list, func(s Summary) int64 { return s.SessionID }),
+		"claude and codex sessions in id order; the shell has no row")
+	codex, claude := list[3], list[1]
+	claude.SessionID = codex.SessionID
+	assert.Equal(t, claude, codex, "a codex session on the same target reads exactly like the claude one")
+
+	r := build(t, d, 8)
+	assert.Equal(t, "codex", r.Session.Kind)
+	require.NotNil(t, r.Session.TargetID)
+	assert.EqualValues(t, 430, *r.Session.TargetID)
+}

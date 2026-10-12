@@ -11,11 +11,34 @@ import (
 	"path/filepath"
 	"strings"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
-// workbenchAgentLabel is the agent_label every agent comment carries.
-const workbenchAgentLabel = "claude-code"
+// agentLabelFor is the agent_label of an agent comment (spec 2026-10-12
+// §6.5): the kind of the terminal session row the comment comes from, else
+// the MCP's --agent flag, else claude-code — the label before Codex existed.
+func agentLabelFor(row *db.TerminalSession, flag agentkind.Kind) string {
+	if row != nil {
+		if k, ok := agentkind.Parse(row.Kind); ok {
+			return k.Label()
+		}
+	}
+	if label := flag.Label(); label != "" {
+		return label
+	}
+	return agentkind.Claude.Label()
+}
+
+// commentAgentLabel is agentLabelFor for a write bound by b, the session row
+// read through sessionEnv (TerminalSessionEnv).
+func commentAgentLabel(d *db.DB, b Binding, sessionEnv func() string) (string, error) {
+	row, err := terminalSessionRow(d, b.WorkbenchID, sessionEnv)
+	if err != nil {
+		return "", err
+	}
+	return agentLabelFor(row, b.Agent), nil
+}
 
 // ResolveWorkbenchDocumentPath checks a document path of the workbench folder:
 // path may be absolute or relative to the folder, and the result is the
@@ -217,7 +240,11 @@ func NewAddComment(sessionEnv func() string) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding add_comment args: %w", err)
 			}
-			id, err := addAgentComment(d, call.Binding.WorkbenchID, a.TargetID, a.ParentID, a.Body)
+			label, err := commentAgentLabel(d, call.Binding, sessionEnv)
+			if err != nil {
+				return nil, err
+			}
+			id, err := addAgentComment(d, agentComment(call.Binding.WorkbenchID, a.TargetID, a.ParentID, label, a.Body))
 			if err != nil {
 				return nil, err
 			}
@@ -252,16 +279,16 @@ func linkCommentTarget(d *db.DB, b Binding, sessionEnv func() string, out map[st
 	}
 }
 
-func addAgentComment(d *db.DB, projectID, targetID, parentID int64, body string) (int64, error) {
-	id, err := d.AddWorkbenchComment(agentComment(projectID, targetID, parentID, body))
+func addAgentComment(d *db.DB, c db.WorkbenchComment) (int64, error) {
+	id, err := d.AddWorkbenchComment(c)
 	if err != nil {
 		return 0, fmt.Errorf("adding comment: %w", err)
 	}
 	return id, nil
 }
 
-func agentComment(projectID, targetID, parentID int64, body string) db.WorkbenchComment {
-	c := db.WorkbenchComment{WorkbenchID: projectID, Author: "agent", AgentLabel: workbenchAgentLabel, Body: strings.TrimSpace(body)}
+func agentComment(projectID, targetID, parentID int64, label, body string) db.WorkbenchComment {
+	c := db.WorkbenchComment{WorkbenchID: projectID, Author: "agent", AgentLabel: label, Body: strings.TrimSpace(body)}
 	if targetID != 0 {
 		c.TargetID = sql.NullInt64{Int64: targetID, Valid: true}
 	}
@@ -279,8 +306,9 @@ type resolveCommentArgs struct {
 	Reason    string `json:"reason" jsonschema:"one sentence: why it is resolved"`
 }
 
-// NewResolveComment resolves a comment thread, optionally with a reply.
-func NewResolveComment() *Tool {
+// NewResolveComment resolves a comment thread, optionally with a reply; the
+// reply's agent_label comes from the terminal session sessionEnv names.
+func NewResolveComment(sessionEnv func() string) *Tool {
 	return &Tool{
 		Name: "resolve_comment",
 		Description: "Resolve a comment thread (its root comment id) after addressing it, optionally with a " +
@@ -310,7 +338,14 @@ func NewResolveComment() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding resolve_comment args: %w", err)
 			}
-			return resolveComment(d, call.Binding.WorkbenchID, a)
+			label := ""
+			if strings.TrimSpace(a.Reply) != "" {
+				var err error
+				if label, err = commentAgentLabel(d, call.Binding, sessionEnv); err != nil {
+					return nil, err
+				}
+			}
+			return resolveComment(d, call.Binding.WorkbenchID, label, a)
 		},
 	}
 }
@@ -331,11 +366,11 @@ func scopeResolve(ctx context.Context, d *db.DB, b Binding, commentID int64) err
 
 // resolveComment posts the optional reply and resolves the root in one
 // transaction: a failure leaves neither, so a Retry cannot duplicate the reply.
-func resolveComment(d *db.DB, projectID int64, a resolveCommentArgs) (any, error) {
+func resolveComment(d *db.DB, projectID int64, label string, a resolveCommentArgs) (any, error) {
 	out := map[string]any{"comment_id": a.CommentID}
 	err := d.WithTx(func(tx *sql.Tx) error {
 		if strings.TrimSpace(a.Reply) != "" {
-			id, err := d.AddWorkbenchCommentTx(tx, agentComment(projectID, 0, a.CommentID, a.Reply))
+			id, err := d.AddWorkbenchCommentTx(tx, agentComment(projectID, 0, a.CommentID, label, a.Reply))
 			if err != nil {
 				return fmt.Errorf("adding comment: %w", err)
 			}

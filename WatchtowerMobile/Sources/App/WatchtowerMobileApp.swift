@@ -41,6 +41,11 @@ struct WatchtowerMobileApp: App {
     enum Boot {
         case ready(AppRoot)
         case failed(String)
+        /// The Keychain is locked (a push launched the app before the first
+        /// unlock since a restart): the device id cannot be read, and a new
+        /// one would unlink the phone from its Mac. The boot runs again once
+        /// protected data is available.
+        case waitingForUnlock
         case hostingTests
 
         /// XCTest sets `XCTestConfigurationFilePath` in the process it
@@ -67,9 +72,13 @@ struct WatchtowerMobileApp: App {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
                 return .ready(root)
+            } catch let locked as DeviceIDKeychain.Unavailable where locked.isLocked {
+                Logger(subsystem: "WatchtowerMobile", category: "Boot")
+                    .notice("keychain locked before the first unlock: the boot waits for it")
+                return .waitingForUnlock
             } catch {
                 Logger(subsystem: "WatchtowerMobile", category: "Boot")
-                    .critical("replica failed to open: \(error.localizedDescription, privacy: .public)")
+                    .critical("boot failed: \(error.localizedDescription, privacy: .public)")
                 return .failed(error.localizedDescription)
             }
         }
@@ -84,6 +93,8 @@ struct WatchtowerMobileApp: App {
                 AppRootView(root: root)
             case let .failed(message):
                 BootFailureView(message: message)
+            case .waitingForUnlock:
+                WaitingForUnlockView { boot = Boot.make() }
             case .hostingTests:
                 Color.clear
             }
@@ -100,6 +111,37 @@ struct BootFailureView: View {
             Label("Watchtower can't start", systemImage: "externaldrive.badge.xmark")
         } description: {
             Text("The on-device database could not be opened.\n\(message)")
+        }
+    }
+}
+
+/// The boot while the Keychain is locked (`Boot.waitingForUnlock`): asks
+/// for the unlock and retries the boot until it gets past the lock. It
+/// retries on `protectedDataDidBecomeAvailable`, and every
+/// `retryInterval` while protected data is available: a background launch
+/// may draw nothing until the owner opens the app, by when the
+/// notification has passed, and a retry that is still locked out leaves
+/// this view up, so the loop tries again.
+struct WaitingForUnlockView: View {
+    static let retryInterval: Duration = .seconds(2)
+    let retry: @MainActor () -> Void
+
+    var body: some View {
+        ContentUnavailableView {
+            Label("Unlock your iPhone to continue", systemImage: "lock")
+        } description: {
+            Text("Watchtower starts once this iPhone is unlocked.")
+        }
+        .task {
+            while !Task.isCancelled {
+                if UIApplication.shared.isProtectedDataAvailable {
+                    retry()
+                }
+                try? await Task.sleep(for: Self.retryInterval)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in
+            retry()
         }
     }
 }

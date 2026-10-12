@@ -1768,6 +1768,8 @@ final class AppState {
             agentStates: agentStates, lineDelivery: lineDelivery
         )
         vm.codeFiles.codeIndex = codeIndexCenter
+        // Settings → Workbench → Default agent (board #399, D1), read at each launch.
+        vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
         openQuicklyCenter.workbenches = vm
         codeNavigationCenter.workbenches = vm
         vm.codeFiles.navigation = codeNavigationCenter
@@ -1931,7 +1933,7 @@ final class AppState {
         let terminals = terminalCenter
         escalator.sessions = { [weak agentStates] in
             ChatQuestionEscalator.Sessions(
-                rows: agentStates?.rows ?? [], liveIDs: terminals.liveClaudeIDs, startedAt: terminals.startedAt
+                rows: agentStates?.rows ?? [], liveIDs: terminals.liveAgentIDs, startedAt: terminals.startedAt
             )
         }
         escalator.hasOwnerDraft = { terminals.promptDrafts.contains($0) }

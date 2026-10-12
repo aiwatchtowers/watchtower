@@ -1,0 +1,40 @@
+# Owner's own note: this comment must survive.
+model = "gpt-example"
+
+[hooks.state]
+
+[hooks.state."/Users/example/other-project/.codex/config.toml:pre_tool_use:0:0"]
+trusted_hash = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+[hooks.state."/<session-flags>/config.toml:user_prompt_submit:7:0"]
+trusted_hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+[hooks.state."/<session-flags>/config.toml:permission_request:0:0"]
+trusted_hash = "sha256:c548e5d8ad126778640fd17263d33b07cacc9e92842e7939b8b2138d17517cf4"
+
+[hooks.state."/<session-flags>/config.toml:post_tool_use:0:0"]
+trusted_hash = "sha256:83387573a2f500e8809a8c3a50feec424309bd4b76fc9407fc547637a0f25709"
+
+[hooks.state."/<session-flags>/config.toml:pre_tool_use:0:0"]
+trusted_hash = "sha256:7aa8eeefcaf7c7bfa79b3a0d797534ad58a352b08ccbec373230fb407c869188"
+
+[hooks.state."/<session-flags>/config.toml:session_start:0:0"]
+trusted_hash = "sha256:92c451fe56f2895da8abf862592e22538f54f67611258a08ac1d900458071f22"
+
+[hooks.state."/<session-flags>/config.toml:stop:0:0"]
+trusted_hash = "sha256:8b2a6e37ee8f8859dea14035ad6e4f9765bec01ea507b55bc241c800fc7dfa50"
+
+[hooks.state."/<session-flags>/config.toml:stop:1:0"]
+trusted_hash = "sha256:5bb65652879ab0fe862909ae6f9724d62634235ac6c75d3a09b481b6c1b7fbbf"
+
+[hooks.state."/<session-flags>/config.toml:subagent_start:0:0"]
+trusted_hash = "sha256:8a6e37aaacc8a0797318cabb86f69de1d42c0f6214d9a161c823bb0c313f2f7d"
+
+[hooks.state."/<session-flags>/config.toml:subagent_stop:0:0"]
+trusted_hash = "sha256:3074a8398b6f60a018fe9065732af776f1d1b0fb61139b86ad78a8b53cbdaab4"
+
+[hooks.state."/<session-flags>/config.toml:user_prompt_submit:0:0"]
+trusted_hash = "sha256:1128c3d663d4b795a7bdd8ce081e0617aa9dc9724f35587ce2e2a771738b5e54"
+
+[tui]
+notifications = false

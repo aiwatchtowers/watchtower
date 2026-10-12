@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -45,6 +46,7 @@ var (
 	mcpFlagContextID    string
 	mcpFlagChatProject  int64
 	mcpFlagWorkbench    int64
+	mcpFlagAgent        string
 	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
 	// registration a pre-rename install wrote, whose session lists the
 	// renamed workbench tools under their old names (spec 2026-10-02 §5.2).
@@ -62,6 +64,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
 	mcpCmd.Flags().Int64Var(&mcpFlagChatProject, "chat-project", 0, "chat project for --chat: search_knowledge prefers its pinned sources")
+	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session (claude|codex); labels its comments when no terminal session names it")
 	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
@@ -86,6 +89,9 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChatProject != 0 && !mcpFlagChat {
 		return nil, errors.New("--chat-project requires --chat")
+	}
+	if mcpFlagAgent != "" && mcpFlagWorkbench == 0 {
+		return nil, errors.New("--agent requires --workbench")
 	}
 	if mcpFlagChatProject < 0 {
 		return nil, fmt.Errorf("--chat-project must be a chat project id, got %d", mcpFlagChatProject)
@@ -136,12 +142,30 @@ func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64,
 	if workbenchID < 0 {
 		return nil, fmt.Errorf("%s must be a workbench id, got %d", flag, workbenchID)
 	}
+	agent, err := mcpAgent(mcpFlagAgent)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := database.GetWorkbench(workbenchID); err != nil {
 		return nil, fmt.Errorf("workbench %d: %w", workbenchID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
 		Surface: tools.WorkbenchSurface, WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy,
+		Agent: agent,
 	})}, nil
+}
+
+// mcpAgent reads --agent: empty is "not given" (the comment label falls back
+// to claude-code), anything but an agent kind is refused.
+func mcpAgent(raw string) (agentkind.Kind, error) {
+	if raw == "" {
+		return "", nil
+	}
+	k, ok := agentkind.Parse(raw)
+	if !ok {
+		return "", fmt.Errorf("--agent must be claude or codex, got %q", raw)
+	}
+	return k, nil
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {

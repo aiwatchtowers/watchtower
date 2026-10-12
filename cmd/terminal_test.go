@@ -175,6 +175,110 @@ func TestTerminalTitle_UnknownClaudeDirIsAnError(t *testing.T) {
 	assert.Zero(t, gen.calls)
 }
 
+const terminalTestCodexUUID = "01a10000-0000-7000-8000-000000000101"
+
+// seedCodexTerminalSession inserts a codex session row and, when rollout is
+// non-nil, its rollout file. With storePath the file lives outside the temp
+// CODEX_HOME wired into the seam and only the row's stored path finds it;
+// without it only the CODEX_HOME glob does.
+func seedCodexTerminalSession(t *testing.T, rollout []byte, storePath bool) int64 {
+	t.Helper()
+	d, err := db.Open(filepath.Join(os.Getenv("HOME"), ".local", "share", "watchtower", "test-ws", "watchtower.db"))
+	require.NoError(t, err)
+	defer d.Close()
+
+	codexHome := t.TempDir()
+	old := terminalCodexHome
+	t.Cleanup(func() { terminalCodexHome = old })
+	terminalCodexHome = func() string { return codexHome }
+	var stored any
+	if rollout != nil {
+		base := codexHome
+		if storePath {
+			base = t.TempDir()
+		}
+		dir := filepath.Join(base, "sessions", "2026", "10", "12")
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		path := filepath.Join(dir, "rollout-2026-10-12T12-57-00-"+terminalTestCodexUUID+".jsonl")
+		require.NoError(t, os.WriteFile(path, rollout, 0o600))
+		if storePath {
+			stored = path
+		}
+	}
+	res, err := d.Exec(`INSERT INTO terminal_sessions (kind, title, title_source, folder_path, claude_session_id, agent_transcript_path)
+		VALUES ('codex', 'Session', 'auto', '/tmp/acme', ?, ?)`, terminalTestCodexUUID, stored)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+func codexFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "internal", "terminal", "testdata", "codex", name))
+	require.NoError(t, err)
+	return b
+}
+
+func TestTerminalTitle_CodexRowUsesRollout(t *testing.T) {
+	for name, storePath := range map[string]bool{"stored path": true, "glob": false} {
+		t.Run(name, func(t *testing.T) {
+			defer setupWatchTestEnv(t)()
+			gen := &chatTitleMockGen{reply: "Example title"}
+			stubTerminalTitleGenerator(t, gen)
+			id := seedCodexTerminalSession(t, codexFixture(t, "paginated.jsonl"), storePath)
+
+			out, err := runTerminalTitleCmd(t, id)
+			require.NoError(t, err)
+			assert.Equal(t, "Example title", out["title"])
+			assert.Equal(t, true, out["written"])
+			assert.Equal(t, "example 1\nexample 2\nexample 2b\nexample 3", gen.lastMsg)
+		})
+	}
+}
+
+func TestTerminalTitle_CodexUnsupportedLeavesTitle(t *testing.T) {
+	for name, rollout := range map[string][]byte{
+		"zstd":           codexFixture(t, "zstd_header.jsonl"),
+		"unknown format": []byte("example 1\n"),
+		"empty":          {},
+		"meta only":      codexFixture(t, "meta_only.jsonl"),
+		"missing":        nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			defer setupWatchTestEnv(t)()
+			gen := &chatTitleMockGen{reply: "Example title"}
+			stubTerminalTitleGenerator(t, gen)
+			id := seedCodexTerminalSession(t, rollout, true)
+
+			out, err := runTerminalTitleCmd(t, id)
+			require.NoError(t, err)
+			assert.Equal(t, "", out["title"])
+			assert.Equal(t, false, out["written"])
+			assert.Zero(t, gen.calls)
+
+			d, err := db.Open(filepath.Join(os.Getenv("HOME"), ".local", "share", "watchtower", "test-ws", "watchtower.db"))
+			require.NoError(t, err)
+			defer d.Close()
+			s, err := d.GetTerminalSession(id)
+			require.NoError(t, err)
+			assert.Equal(t, "Session", s.Title)
+			assert.Equal(t, "auto", s.TitleSource)
+		})
+	}
+}
+
+func TestTerminalCodexHome_HonoursAbsoluteCodexHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	t.Setenv("CODEX_HOME", "/tmp/acme-codex")
+	assert.Equal(t, "/tmp/acme-codex", defaultTerminalCodexHome())
+	for _, v := range []string{"", "relative/codex"} {
+		t.Setenv("CODEX_HOME", v)
+		assert.Equal(t, filepath.Join(home, ".codex"), defaultTerminalCodexHome(), "CODEX_HOME=%q", v)
+	}
+}
+
 // Both sides read transcripts from ~/.claude only (ClaudeTranscript.defaultConfigDir).
 func TestTerminalClaudeDir_IgnoresClaudeConfigDir(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/acme-claude")

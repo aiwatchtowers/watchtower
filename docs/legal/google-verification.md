@@ -89,7 +89,7 @@ Google Cloud Console → **APIs & Services → OAuth consent screen** (project
 
 - **User type:** External
 - **App name:** Watchtower
-- **User support email:** tv88dn@gmail.com
+- **User support email:** info@aiwatchtowers.com
 - **App logo:** skip it (adding a logo triggers extra brand verification scrutiny).
   Tried removing an already-uploaded logo mid-review on 2026-07-11 to see if it
   unblocked anything — it didn't move the needle on its own, but leave it off
@@ -100,7 +100,7 @@ Google Cloud Console → **APIs & Services → OAuth consent screen** (project
     what's actually configured as of 2026-07-11 — not the old `/privacy-policy.html`)
   - Terms of service: optional
 - **Authorized domains:** `aiwatchtowers.com`
-- **Developer contact:** tv88dn@gmail.com
+- **Developer contact:** info@aiwatchtowers.com
 
 ---
 

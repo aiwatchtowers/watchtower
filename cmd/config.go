@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/auth"
 	"watchtower/internal/config"
 
@@ -251,6 +252,7 @@ var knownConfigKeys = map[string]bool{
 	"memory.semantic.preferences":          true,
 	"memory.focus.enabled":                 true,
 	"claude_path":                          true,
+	"workbench.default_agent":              true,
 	"tracks.enabled":                       true,
 	"people.enabled":                       true,
 	"targets.next_step.enabled":            true,
@@ -292,6 +294,12 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 
 	if retiredConfigKeys[strings.ToLower(key)] {
 		return fmt.Errorf("%q is retired and has no effect; nothing was written", key)
+	}
+	// An unknown agent would read as Claude Code without a word (viper keys
+	// are case-insensitive).
+	if strings.ToLower(key) == "workbench.default_agent" && !agentkind.IsAgent(value) {
+		return fmt.Errorf("workbench.default_agent must be %s or %s, got %q; nothing was written",
+			agentkind.Claude, agentkind.Codex, value)
 	}
 
 	// Warn on unrecognized keys (allow workspace-level keys like workspaces.*.slack_token)

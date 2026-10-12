@@ -232,6 +232,83 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127))
     }
 
+    /// A Codex session whose `launch-args` finds no `codex` (exit 3) starts
+    /// no process: the phone gets `codexNotFound` from the typed error.
+    func testCodexLaunchArgsNotFoundFailsCodexNotFound() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let codex = try await insertSession(p, targetID: t, kind: .codex)
+        let vm = makeVM()
+        center.codexLaunchArgs = { _ in throw WorkbenchCLIError.agentNotFound(.codex) }
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p, mode: "open_existing")))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .codexNotFound)
+        XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127, agent: .codex))
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        XCTAssertEqual(center.missingAgent[codex.id], .codex)
+    }
+
+    /// D6 (board #399): a start from the phone runs the Mac's default agent
+    /// — the phone has no picker. Claude Code stays the default.
+    func testPhoneStartUsesDefaultAgent() async throws {
+        let p = try await workbench()
+        let first = try await target(p)
+        let vm = makeVM()
+        let claudeOutcome = try await makeHandlers(vm).handle(start(first, startParams(p)))
+        XCTAssertEqual(claudeOutcome.status, .applied)
+        let claudeRows = try await rows(p)
+        XCTAssertEqual(claudeRows.map(\.kind), [.claude])
+
+        let second = try await target(p, "Ship that")
+        vm.readDefaultAgent = { .codex }
+        center.codexLaunchArgs = { _ in CodexLaunchArgs(binary: "/Users/example/bin/codex", pathPrepend: "", args: []) }
+        let codexOutcome = try await makeHandlers(vm).handle(start(second, startParams(p)))
+        XCTAssertEqual(codexOutcome.status, .applied)
+        let all = try await rows(p)
+        let codex = try XCTUnwrap(all.first { $0.targetID == second })
+        XCTAssertEqual(codex.kind, .codex)
+        XCTAssertNil(codex.claudeSessionID, "Codex mints its own id")
+        XCTAssertTrue(launches.last?.environment.contains { $0.hasPrefix("WATCHTOWER_CODEX_COMMAND=") } == true,
+                      "the Codex launch ran")
+    }
+
+    /// End to end: the default agent is Codex and `launch-args` finds no
+    /// `codex` — a new session from the phone fails `codexNotFound`, with
+    /// Codex's message and no process.
+    func testPhoneStartCodexMissingReturnsCodexNotFound() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let vm = makeVM()
+        vm.readDefaultAgent = { .codex }
+        center.codexLaunchArgs = { _ in throw WorkbenchCLIError.agentNotFound(.codex) }
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p)))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .codexNotFound)
+        XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127, agent: .codex))
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        let created = try await rows(p)
+        XCTAssertEqual(created.map(\.kind), [.codex])
+    }
+
+    /// Any other launch-args failure is no not-found: a plain write failure.
+    func testCodexLaunchArgsOtherFailureIsNoNotFound() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        _ = try await insertSession(p, targetID: t, kind: .codex)
+        let vm = makeVM()
+        center.codexLaunchArgs = { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "broken config") }
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p, mode: "open_existing")))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .writeFailed)
+        XCTAssertTrue(processes.isEmpty)
+    }
+
     /// Any other early exit is the session's own end: the start itself ran.
     func testAnotherEarlyExitIsStillAStart() async throws {
         let p = try await workbench()
@@ -478,6 +555,27 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertEqual(signals.map(\.0), [pid])
         XCTAssertEqual(signals.map(\.1), [SIGHUP])
         XCTAssertFalse(center.liveIDs.contains(session.id))
+    }
+
+    /// The phone sees codex board sessions, so it may stop one (board #399);
+    /// a shell on the board stays out of reach.
+    func testStopOnACodexBoardSessionIsAppliedAndOnAShellFailsNotFound() async throws {
+        let p = try await workbench()
+        let codex = try await insertSession(p, kind: .codex)
+        let shell = try await insertSession(p, kind: .shell)
+        let handlers = makeHandlers(makeVM())
+
+        let codexOutcome = try await handlers.handle(stop(codex.id))
+        let shellOutcome = try await handlers.handle(stop(shell.id))
+
+        XCTAssertEqual(codexOutcome, .applied())
+        XCTAssertEqual(shellOutcome.reason, .notFound)
+    }
+
+    /// Exit 127 names the agent that was not found.
+    func testExit127ReasonFollowsTheSessionsAgent() {
+        XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.claude), .claudeNotFound)
+        XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.codex), .codexNotFound)
     }
 
     func testStopOnAnUnknownOrNonBoardSessionFailsNotFound() async throws {

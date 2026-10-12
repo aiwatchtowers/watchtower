@@ -195,10 +195,10 @@ struct CodeQuestionPopover: View {
             }
             if CodeQuestionActionsFeature.handToClaudeCode {
                 // From the stored messages: not while an answer streams.
-                Button("Hand to Claude Code", systemImage: "terminal") { questions.handToClaude(workbenchID: workbenchID) }
+                Button("Hand to Session", systemImage: "terminal") { questions.handToClaude(workbenchID: workbenchID) }
                     .keyboardShortcut(.return, modifiers: [.command, .option])
                     .disabled(engine == nil || engine?.isBusy == true)
-                    .help("Continue this in a Claude Code session of the workbench (⌥⌘↩)")
+                    .help("Continue this in an agent session of the workbench (⌥⌘↩)")
             }
             Spacer()
             Text("esc to close").font(.caption2).foregroundStyle(.tertiary)
