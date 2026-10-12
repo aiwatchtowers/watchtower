@@ -1,0 +1,25 @@
+--no-daemon
+-c
+mcp_servers.watchtower-workbench.command="/Users/example/Library/Application Support/Watchtower/bin/watchtower"
+-c
+mcp_servers.watchtower-workbench.args=["mcp","--workbench","7","--agent","codex"]
+-c
+mcp_servers.watchtower-workbench.default_tools_approval_mode="approve"
+-c
+mcp_servers.watchtower-workbench.env_vars=["WATCHTOWER_TERMINAL_SESSION_ID"]
+-c
+hooks.SessionStart=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench brief --agent codex",timeout=10}]}]
+-c
+hooks.UserPromptSubmit=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
+-c
+hooks.PermissionRequest=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
+-c
+hooks.PostToolUse=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
+-c
+hooks.SubagentStart=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
+-c
+hooks.SubagentStop=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
+-c
+hooks.PreToolUse=[{matcher="request_user_input",hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench ask-guard --agent codex --pre-tool-use",timeout=5}]}]
+-c
+hooks.Stop=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench check --agent codex --stop-hook",timeout=15}]},{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench ask-guard --agent codex --stop",timeout=30}]}]
