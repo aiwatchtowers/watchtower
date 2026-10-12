@@ -31,16 +31,19 @@ func (g gitCmd) output(ctx context.Context, dir string, args ...string) ([]byte,
 	return out, err
 }
 
-// exitCode runs git in dir and returns its exit code; an error only when
-// git could not run or exited with a code other than 0 or 1.
-func (g gitCmd) exitCode(ctx context.Context, dir string, args ...string) (int, error) {
+// exitCode runs git in dir and returns its stdout and exit code; an error
+// only when git could not run or exited with a code other than 0 or 1.
+func (g gitCmd) exitCode(ctx context.Context, dir string, args ...string) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	_, code, err := g.run.RunGit(ctx, dir, g.bin, args...)
+	out, code, err := g.run.RunGit(ctx, dir, g.bin, args...)
 	if code == 0 || code == 1 {
-		return code, nil
+		return out, code, nil
 	}
-	return code, err
+	if err == nil {
+		err = fmt.Errorf("git %s: exit %d", strings.Join(args, " "), code)
+	}
+	return nil, code, err
 }
 
 // worktree is one entry of `git worktree list --porcelain`.
@@ -58,7 +61,8 @@ type repoState struct {
 	git           gitCmd
 	folder        string // the workbench folder, symlink-resolved
 	commonDir     string
-	defaultBranch string // "" = none found
+	defaultBranch string // "" = unknown: every branch is kept
+	defaultErr    error  // why the default branch is unknown, when git failed
 	worktrees     []worktree
 	branches      []branchRef
 	adminDirs     map[string]string // worktree root -> <common>/worktrees/<name>
@@ -83,7 +87,7 @@ func readRepo(ctx context.Context, g gitCmd, folder string) (*repoState, error) 
 	if r.branches, err = readBranches(ctx, g, folder); err != nil {
 		return nil, err
 	}
-	r.defaultBranch = r.findDefaultBranch(ctx)
+	r.defaultBranch, r.defaultErr = r.findDefaultBranch(ctx)
 	if r.adminDirs, err = readAdminDirs(r.commonDir); err != nil {
 		return nil, err
 	}
@@ -157,19 +161,29 @@ func readBranches(ctx context.Context, g gitCmd, folder string) ([]branchRef, er
 	return list, nil
 }
 
-// findDefaultBranch: origin/HEAD's target, else main, else master, else "".
-func (r *repoState) findDefaultBranch(ctx context.Context) string {
-	if out, err := r.git.output(ctx, r.folder, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil {
-		if name := strings.TrimPrefix(strings.TrimSpace(string(out)), "refs/remotes/origin/"); name != "" {
-			return name
+// findDefaultBranch: origin/HEAD's target, else main, else master, else
+// "" (unknown). Only "not a symbolic ref" (exit 1) falls through to main and
+// master; any other symbolic-ref failure is returned with "".
+func (r *repoState) findDefaultBranch(ctx context.Context) (string, error) {
+	const originHead = "refs/remotes/origin/HEAD"
+	out, code, err := r.git.exitCode(ctx, r.folder, "symbolic-ref", "--quiet", originHead)
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", originHead, err)
+	}
+	if code == 0 {
+		target := strings.TrimSpace(string(out))
+		name, ok := strings.CutPrefix(target, "refs/remotes/origin/")
+		if !ok || name == "" {
+			return "", fmt.Errorf("%s points to %q", originHead, target)
 		}
+		return name, nil
 	}
 	for _, name := range []string{"main", "master"} {
 		if _, ok := r.branchTip(name); ok {
-			return name
+			return name, nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
 func (r *repoState) branchTip(name string) (string, bool) {
@@ -223,10 +237,13 @@ func (r *repoState) isContained(ctx context.Context, sha string) (bool, error) {
 }
 
 func (r *repoState) inDefault(ctx context.Context, sha string) (bool, error) {
+	if r.defaultBranch == "" {
+		return false, nil
+	}
 	if _, ok := r.branchTip(r.defaultBranch); !ok {
 		return false, nil
 	}
-	code, err := r.git.exitCode(ctx, r.folder, "merge-base", "--is-ancestor", sha, "refs/heads/"+r.defaultBranch)
+	_, code, err := r.git.exitCode(ctx, r.folder, "merge-base", "--is-ancestor", sha, "refs/heads/"+r.defaultBranch)
 	if err != nil {
 		return false, fmt.Errorf("checking %s against %s: %w", short(sha), r.defaultBranch, err)
 	}

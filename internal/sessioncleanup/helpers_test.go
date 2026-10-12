@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,7 @@ type fixture struct {
 	store          *fakeStore
 	procs          *fakeProcs
 	sessionCreated time.Time
+	git            GitRunner // nil = SystemGit
 }
 
 const testSession, testWorkbench = int64(7), int64(3)
@@ -106,7 +108,11 @@ func (f *fixture) record(root, branch string) {
 
 func (f *fixture) deps() Deps {
 	f.store.session.CreatedAt = f.sessionCreated
-	return Deps{Git: SystemGit{}, DB: f.store, Procs: f.procs}
+	var g GitRunner = SystemGit{}
+	if f.git != nil {
+		g = f.git
+	}
+	return Deps{Git: g, DB: f.store, Procs: f.procs}
 }
 
 func (f *fixture) plan(r Request) Plan {
@@ -224,4 +230,20 @@ func (noGit) GitBinary() (string, bool) { return "", false }
 func (g noGit) RunGit(context.Context, string, string, ...string) ([]byte, int, error) {
 	g.t.Error("git ran although none was found")
 	return nil, -1, nil
+}
+
+// failingGit is the real git except for the runs whose arguments start with
+// prefix, which exit 128 as a broken repository would.
+type failingGit struct {
+	SystemGit
+	prefix []string
+}
+
+func failGitOn(prefix ...string) failingGit { return failingGit{prefix: prefix} }
+
+func (g failingGit) RunGit(ctx context.Context, dir, bin string, args ...string) ([]byte, int, error) {
+	if len(args) >= len(g.prefix) && slices.Equal(args[:len(g.prefix)], g.prefix) {
+		return nil, 128, &GitError{Args: args, Code: 128, Stderr: "fatal: injected failure"}
+	}
+	return g.SystemGit.RunGit(ctx, dir, bin, args...)
 }

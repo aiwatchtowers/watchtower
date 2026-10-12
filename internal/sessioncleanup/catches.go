@@ -19,10 +19,13 @@ const (
 	ReasonUnpushedCommits     = "unpushed_commits"
 	ReasonOperationInProgress = "operation_in_progress"
 	ReasonDefaultBranch       = "default_branch"
-	ReasonCheckedOut          = "checked_out"
-	ReasonNotAWorktree        = "not_a_worktree"
-	ReasonNotABranch          = "not_a_branch"
-	ReasonSessionRecent       = "session_recent"
+	// ReasonDefaultBranchUnknown: no origin/HEAD, main or master (or git
+	// failed reading origin/HEAD); every branch is kept.
+	ReasonDefaultBranchUnknown = "default_branch_unknown"
+	ReasonCheckedOut           = "checked_out"
+	ReasonNotAWorktree         = "not_a_worktree"
+	ReasonNotABranch           = "not_a_branch"
+	ReasonSessionRecent        = "session_recent"
 	// ReasonCheckFailed: a catch could not be evaluated (git or a file read
 	// failed); the item is kept with the error in detail.
 	ReasonCheckFailed = "check_failed"
@@ -183,8 +186,14 @@ func (b *builder) branchCatches() []branchCatch {
 	return []branchCatch{catchDefaultBranch, catchCheckedOut, own, catchBranchUnpushed}
 }
 
-// catchDefaultBranch is B1.
+// catchDefaultBranch is B1; an unknown default branch keeps every branch.
 func catchDefaultBranch(_ context.Context, b *builder, br branchRef) (string, string, error) {
+	if b.repo.defaultBranch == "" {
+		if b.repo.defaultErr != nil {
+			return ReasonDefaultBranchUnknown, b.repo.defaultErr.Error(), nil
+		}
+		return ReasonDefaultBranchUnknown, "", nil
+	}
 	if br.Name == b.repo.defaultBranch {
 		return ReasonDefaultBranch, "", nil
 	}
