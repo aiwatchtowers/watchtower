@@ -249,7 +249,8 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .failed(.noAnswer))
         XCTAssertEqual(
             LinkFailure.noAnswer.message,
-            "Your Mac didn't answer — keep Settings → Mobile open on the Mac and scan again"
+            "Your Mac didn't answer — Keep Settings → Mobile open on the Mac and scan again",
+            "title — hint (design pass O3)"
         )
         XCTAssertGreaterThanOrEqual(clock.slept, 60)
         XCTAssertLessThan(clock.slept, 62, "the wait ends at 60 s")
@@ -711,6 +712,32 @@ final class LinkingViewModelTests: XCTestCase {
         await flow.value
         let writes = try await host.deviceWrites()
         XCTAssertEqual(writes.count, 1)
+    }
+
+    /// Design pass O3: every failure is a title over a hint; `message` stays
+    /// "title — hint" for every other reader, and signIn and updateApp keep
+    /// today's exact text. An iCloud failure without a reason has no hint.
+    func testEveryFailureIsATitleOverAHint() {
+        let expected: [(LinkFailure, String, String?)] = [
+            (.expired, "This code expired", "Show a new code on the Mac"),
+            (.signIn, "Sign in to iCloud on this iPhone", "Watchtower uses iCloud to reach your Mac"),
+            (.cannotShare, "This Mac can't share with another Apple ID right now", "Show a new code on the Mac"),
+            (.noAnswer, "Your Mac didn't answer", "Keep Settings → Mobile open on the Mac and scan again"),
+            (.refused, "This code can't be used", "Show a new code on the Mac"),
+            (.updateApp, "Update Watchtower on this iPhone", nil),
+            (.iCloud("The network is offline"), "Couldn't reach iCloud", "The network is offline")
+        ]
+        for (failure, title, hint) in expected {
+            XCTAssertEqual(failure.title, title, "\(failure)")
+            XCTAssertEqual(failure.hint, hint, "\(failure)")
+        }
+        XCTAssertEqual(LinkFailure.signIn.message, "Sign in to iCloud on this iPhone to use Watchtower", "today's exact text")
+        XCTAssertEqual(LinkFailure.updateApp.message, "Update Watchtower on this iPhone")
+        for (failure, title, hint) in expected where failure != .signIn && failure != .updateApp {
+            XCTAssertEqual(failure.message, "\(title) — \(hint ?? "")", "\(failure)")
+        }
+        XCTAssertNil(LinkFailure.iCloud("").hint, "an empty reason is no hint")
+        XCTAssertEqual(LinkFailure.iCloud("").message, "Couldn't reach iCloud")
     }
 
     /// Design pass O2: every phase change stamps when it started, on the

@@ -7,7 +7,7 @@ struct LinkedView: View {
     let macName: String
 
     var body: some View {
-        LinkOutcomeLayout(systemImage: "checkmark.circle", title: "Linked to \(macName)") {
+        LinkOutcomeLayout(systemImage: "checkmark.circle.fill", tone: .green, title: "Linked to \(macName)") {
             Button {
                 Task { await linking.finish() }
             } label: {
@@ -54,7 +54,7 @@ struct LinkFailureView: View {
     let failure: LinkFailure
 
     var body: some View {
-        LinkOutcomeLayout(systemImage: "exclamationmark.triangle", title: failure.message) {
+        LinkOutcomeLayout(systemImage: "exclamationmark.triangle", title: failure.title, detail: failure.hint) {
             if failure.offersScan {
                 Button {
                     linking.startScan()
@@ -74,33 +74,37 @@ struct LinkFailureView: View {
     }
 }
 
-/// An icon, a title, an optional detail line, and the actions at the
-/// bottom.
+/// An icon in its tone, a title, an optional detail line under it, and the
+/// actions at the bottom.
 private struct LinkOutcomeLayout<Actions: View>: View {
     let systemImage: String
+    var tone: PhoneTone = .secondary
     let title: String
     var detail: String?
     @ViewBuilder let actions: Actions
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: Spacing.page) {
             Spacer()
             Image(systemName: systemImage)
                 .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-            Text(title)
-                .font(.title3.weight(.semibold))
-                .multilineTextAlignment(.center)
-            if let detail {
-                Text(detail)
+                .foregroundStyle(tone.color)
+            VStack(spacing: Spacing.regular) {
+                Text(title)
+                    .font(TypeScale.screenTitle)
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
+                if let detail {
+                    Text(detail)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
-            VStack(spacing: 12) {
+            VStack(spacing: Spacing.medium) {
                 actions
             }
         }
-        .padding()
+        .padding(.horizontal, Spacing.page)
+        .padding(.vertical, Spacing.large)
     }
 }

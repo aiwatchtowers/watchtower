@@ -70,15 +70,37 @@ enum LinkFailure: Equatable {
     /// iCloud failed under the flow (a reason from CloudKit).
     case iCloud(String)
 
+    /// What went wrong, as the failure screen's title (design pass O3).
+    var title: String {
+        switch self {
+        case .expired: "This code expired"
+        case .signIn: "Sign in to iCloud on this iPhone"
+        case .cannotShare: "This Mac can't share with another Apple ID right now"
+        case .noAnswer: "Your Mac didn't answer"
+        case .refused: "This code can't be used"
+        case .updateApp: "Update Watchtower on this iPhone"
+        case .iCloud: "Couldn't reach iCloud"
+        }
+    }
+
+    /// What to do about it, under the title; nil when the title says it all.
+    var hint: String? {
+        switch self {
+        case .expired, .cannotShare, .refused: "Show a new code on the Mac"
+        case .signIn: "Watchtower uses iCloud to reach your Mac"
+        case .noAnswer: "Keep Settings → Mobile open on the Mac and scan again"
+        case .updateApp: nil
+        case let .iCloud(reason): reason.isEmpty ? nil : reason
+        }
+    }
+
+    /// One line, "title — hint", for any reader other than the failure
+    /// screen; signIn and updateApp keep their earlier text.
     var message: String {
         switch self {
-        case .expired: "This code expired — Show a new code on the Mac"
         case .signIn: "Sign in to iCloud on this iPhone to use Watchtower"
-        case .cannotShare: "This Mac can't share with another Apple ID right now — Show a new code on the Mac"
-        case .noAnswer: "Your Mac didn't answer — keep Settings → Mobile open on the Mac and scan again"
-        case .refused: "This code can't be used — Show a new code on the Mac"
-        case .updateApp: "Update Watchtower on this iPhone"
-        case let .iCloud(reason): "Couldn't reach iCloud: \(reason)"
+        case .updateApp: title
+        default: hint.map { "\(title) — \($0)" } ?? title
         }
     }
 
