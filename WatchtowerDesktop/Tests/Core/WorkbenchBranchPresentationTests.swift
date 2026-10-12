@@ -266,12 +266,16 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
     }
 
     /// Go's detail for this refusal is only the scope word; the owner reads
-    /// what happened instead.
+    /// what happened instead — a gone worktree and a folder outside the
+    /// repository are told apart.
     func testFolderNotAWorktreeRefusalText() {
-        for scope in ["missing", "outside", ""] {
+        for scope in ["missing", ""] {
             let result = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: scope)
             XCTAssertEqual(Pres.outcome(result).error,
-                           "That session's worktree is gone — the branch menu shows the main folder.")
+                           "That session's worktree is gone — the branch menu shows the main folder.", scope)
         }
+        let outside = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: "outside")
+        XCTAssertEqual(Pres.outcome(outside).error,
+                       "That session is outside this repository — the branch menu shows the main folder.")
     }
 }
