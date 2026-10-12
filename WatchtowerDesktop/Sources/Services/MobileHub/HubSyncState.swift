@@ -918,8 +918,8 @@ final class HubSyncState: Sendable {
 
     /// Clears the sync state derived from the CloudKit account so the next
     /// publish/relay cycle starts clean against the new account: slice
-    /// hashes, the relay change token and the heartbeat read state (the new
-    /// account's DataZone is another zone). The exactly-once ledger is KEPT:
+    /// hashes and the relay change token (the new account's DataZone is
+    /// another zone). The exactly-once ledger is KEPT:
     /// relay record names carry phone-generated UUIDs, so they cannot
     /// collide across accounts, and on a same-Apple-ID sign-out/sign-in the
     /// re-fetched zone still holds actions whose echo never reached the
@@ -958,7 +958,7 @@ final class HubSyncState: Sendable {
             )
             try db.execute(sql: "DELETE FROM slice_state")
             let relayKeys = keepingRelayToken ? [] : [RelayProcessor.relayTokenKey]
-            for key in relayKeys + HubIdentity.heartbeatReadKeys {
+            for key in relayKeys {
                 try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
             }
             try db.execute(

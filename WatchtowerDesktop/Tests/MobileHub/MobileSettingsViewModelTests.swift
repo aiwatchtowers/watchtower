@@ -111,11 +111,6 @@ final class MobileSettingsViewModelTests: XCTestCase {
     func testTheHubStatusLines() {
         XCTAssertEqual(MobileSettingsViewModel.statusLine(.off), "Off")
         XCTAssertEqual(MobileSettingsViewModel.statusLine(.running), "On")
-        XCTAssertEqual(
-            MobileSettingsViewModel.statusLine(.otherHub("Mac B")),
-            "Mac B is your hub. Turn it off there, or Take over"
-        )
-        XCTAssertEqual(MobileSettingsViewModel.statusLine(.tookOver("Mac B")), "Another Mac took over")
         XCTAssertEqual(MobileSettingsViewModel.statusLine(.unavailable("offline")), "Unavailable: offline")
     }
 

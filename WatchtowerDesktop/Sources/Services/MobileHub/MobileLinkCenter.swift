@@ -131,12 +131,13 @@ final class MobileLinkCenter {
         RelayProcessor.DeviceRecords { [weak self] in try await self?.handleDevice($0) }
     }
 
-    /// Hangs the center on `hub`: Settings reaches it there, a take over
-    /// tears the shares down, the heartbeat carries `sharing`. A public link
-    /// an earlier run left open (a crash with the QR shown) is closed now.
+    /// Hangs the center on `hub`: Settings reaches it there, the hub's
+    /// zones deleted forget every phone, the heartbeat carries `sharing`. A
+    /// public link an earlier run left open (a crash with the QR shown) is
+    /// closed now.
     func attach(to hub: MobileHubService) {
         hub.linkCenter = self
-        hub.onTakeOver = { [weak self] in await self?.takeOverReset() }
+        hub.onZonesDeleted = { [weak self] in self?.hubZonesDeleted() }
         onSharingChanged = { [weak hub] in hub?.sharing = $0 }
         Task { await closeLink(reason: .restart) }
     }
@@ -429,26 +430,20 @@ final class MobileLinkCenter {
         }
     }
 
-    // MARK: - Take over (spec §2.3, §8 I-1)
+    // MARK: - Hub zones deleted (multi-hub spec §3.3)
 
-    /// The new hub of a take over: deletes both zone shares (every
-    /// participant goes with them) and forgets every code and phone, so the
-    /// next QR creates new shares and every phone scans again.
-    func takeOverReset() async {
+    /// Settings turned the hub off and its zones were deleted: their shares
+    /// and every participant went with them. Forgets every code and phone,
+    /// so the next QR creates new shares and every phone scans again.
+    func hubZonesDeleted() {
         expiryTask?.cancel()
         expiryTask = nil
         openCode = nil
         do {
-            let shares = self.shares
-            try await share { try await shares.deleteShares() }
             try sidecar.setMetaValue("0", forKey: Self.sweepPendingKey)
-        } catch {
-            logger.error("take over: zone shares not deleted: \(error.localizedDescription, privacy: .public)")
-        }
-        do {
             try sidecar.clearLinkState()
         } catch {
-            logger.error("take over: linked phones not cleared: \(error.localizedDescription, privacy: .public)")
+            logger.error("hub zones deleted: link state not cleared: \(error.localizedDescription, privacy: .public)")
         }
         reloadDevices()
         nudge([.deviceGrant])

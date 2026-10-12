@@ -17,8 +17,8 @@ struct ShareURLs: Equatable, Sendable {
     let relay: String
 }
 
-/// The hub's zone-wide shares of DataZone and RelayZone (mobile POC spec
-/// §2.3): the seam between `MobileLinkCenter` and CloudKit. Tests use a fake.
+/// The hub's zone-wide shares of its own `DataZone-<hub_id>` and
+/// `RelayZone-<hub_id>` (mobile POC spec §2.3, multi-hub spec §3.4): the seam between `MobileLinkCenter` and CloudKit. Tests use a fake.
 protocol ShareService: Sendable {
     /// `CKContainer.accountStatus()`, as the transport reports it.
     func accountStatus() async -> CloudAvailability
@@ -32,8 +32,6 @@ protocol ShareService: Sendable {
     func participants(in zone: CloudZoneID) async throws -> [ShareParticipant]
     /// Removes every non-owner participant `shouldRemove` picks.
     func removeParticipants(in zone: CloudZoneID, where shouldRemove: @escaping @Sendable (ShareParticipant) -> Bool) async throws
-    /// Deletes both shares, which drops every participant (take over).
-    func deleteShares() async throws
 }
 
 /// The CloudKit implementation over the Mac user's private database.
@@ -43,13 +41,17 @@ protocol ShareService: Sendable {
 /// calls themselves are not unit-tested: they need a signed build and a real
 /// account (the A14 device smoke).
 struct CloudKitShareService: ShareService {
+    /// Names the zones whose shares this service manages.
+    let hubID: String
     let containerID: String
     private let entitlementPresent: @Sendable () -> Bool
 
     init(
+        hubID: String,
         containerID: String = WatchtowerCloud.containerID,
         entitlementPresent: (@Sendable () -> Bool)? = nil
     ) {
+        self.hubID = hubID
         self.containerID = containerID
         self.entitlementPresent = entitlementPresent ?? { CloudKitTransport.entitlementPresent(containerID: containerID) }
     }
@@ -60,10 +62,11 @@ struct CloudKitShareService: ShareService {
 
     private var database: CKDatabase { CKContainer(identifier: containerID).privateCloudDatabase }
 
-    private static func shareID(_ zone: CloudZoneID) -> CKRecord.ID {
+    /// The zone-wide share of one of this hub's zones (multi-hub spec §3.4).
+    func shareID(_ zone: CloudZoneID) -> CKRecord.ID {
         CKRecord.ID(
             recordName: CKRecordNameZoneWideShare,
-            zoneID: CKRecordZone.ID(zoneName: zone.rawValue, ownerName: CKCurrentUserDefaultName)
+            zoneID: HubZones(scope: .private, hubID: hubID).zoneID(for: zone)
         )
     }
 
@@ -95,7 +98,7 @@ struct CloudKitShareService: ShareService {
             if let existing = try await fetchShare(zone) {
                 share = existing
             } else {
-                let created = CKShare(recordZoneID: Self.shareID(zone).zoneID)
+                let created = CKShare(recordZoneID: shareID(zone).zoneID)
                 created[CKShare.SystemFieldKey.title] = "Watchtower"
                 created.publicPermission = .none
                 share = try await save(created)
@@ -130,15 +133,6 @@ struct CloudKitShareService: ShareService {
         _ = try await save(share)
     }
 
-    func deleteShares() async throws {
-        try requireEntitlement()
-        let ids = [CloudZoneID.data, .relay].map(Self.shareID)
-        let (_, results) = try await database.modifyRecords(saving: [], deleting: ids)
-        for (_, result) in results {
-            if case .failure(let error) = result, (error as? CKError)?.code != .unknownItem { throw error }
-        }
-    }
-
     private static func participant(_ participant: CKShare.Participant) -> ShareParticipant {
         ShareParticipant(
             userRecordName: participant.userIdentity.userRecordID?.recordName,
@@ -149,7 +143,7 @@ struct CloudKitShareService: ShareService {
     /// nil when the zone has no share (or no zone yet).
     private func fetchShare(_ zone: CloudZoneID) async throws -> CKShare? {
         do {
-            return try await database.record(for: Self.shareID(zone)) as? CKShare
+            return try await database.record(for: shareID(zone)) as? CKShare
         } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
             return nil
         }

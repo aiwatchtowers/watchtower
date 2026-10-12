@@ -6,9 +6,7 @@ import WatchtowerSync
 
 /// HubTransport stub: InMemoryCloudTransport record I/O plus steerable
 /// availability, a log of every saved record (with the instant it was
-/// saved) and counters for the lifecycle calls. Two stubs over one `cloud`
-/// are two Macs on one iCloud account. `echoesOwnSaves: false` mirrors
-/// CloudKitTransport, whose buffer never holds the device's own saves.
+/// saved) and counters for the lifecycle calls.
 final class StubHubTransport: HubTransport, @unchecked Sendable {
     struct Saved {
         let record: CloudRecord
@@ -27,24 +25,17 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var resetHandler: (@Sendable () -> Void)?
     private var dataZoneResetHandler: (@Sendable () -> Void)?
     private var rejectedHandler: (@Sendable (String, CloudZoneID) -> Void)?
-    private var pullHangs = false
-    private var pullFails = false
-    private var dataChangesFail = false
     private var failingSaves = 0
     private var saveGate: (gate: SaveGate, matches: @Sendable (CloudRecord) -> Bool)?
     private var resetHandlerGate: SaveGate?
-    private let echoesOwnSaves: Bool
-    private var ownPayloads: Set<Data> = []
     private var throttleStart: Date?
 
     init(
         availability: CloudAvailability = .available,
-        cloud: InMemoryCloudTransport = InMemoryCloudTransport(),
-        echoesOwnSaves: Bool = true
+        cloud: InMemoryCloudTransport = InMemoryCloudTransport()
     ) {
         currentAvailability = availability
         inner = cloud
-        self.echoesOwnSaves = echoesOwnSaves
     }
 
     var starts: Int { lock.withLock { startCount } }
@@ -59,16 +50,6 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     var saved: [Saved] { lock.withLock { savedLog } }
     /// How many times the hub asked for an immediate send.
     var sendNowCalls: Int { lock.withLock { sendNowCount } }
-
-    /// A pull that never returns until it is cancelled (a hung CloudKit fetch).
-    func setPullHangs(_ value: Bool) {
-        lock.withLock { pullHangs = value }
-    }
-
-    /// A pull that fails at once (CloudKit offline).
-    func setPullFails(_ value: Bool) {
-        lock.withLock { pullFails = value }
-    }
 
     /// The next `count` saves throw before writing anything (a transient
     /// CloudKit or network error).
@@ -86,11 +67,6 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     /// anything (a slow transport actor hop during start).
     func gateNextResetHandlerInstall(on gate: SaveGate) {
         lock.withLock { resetHandlerGate = gate }
-    }
-
-    /// `changes(in: .data, …)` throws (a broken local buffer).
-    func setDataChangesFail(_ value: Bool) {
-        lock.withLock { dataChangesFail = value }
     }
 
     func setAvailability(_ value: CloudAvailability) {
@@ -137,13 +113,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func pull() async throws {
-        let (hangs, fails) = lock.withLock { () -> (Bool, Bool) in
-            pullCount += 1
-            return (pullHangs, pullFails)
-        }
-        if fails { throw URLError(.notConnectedToInternet) }
-        guard hangs else { return }
-        try await Task.sleep(for: .seconds(3600))
+        lock.withLock { pullCount += 1 }
     }
     func availability() async -> CloudAvailability { lock.withLock { currentAvailability } }
 
@@ -185,7 +155,6 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
             return action.id
         }
         lock.withLock {
-            ownPayloads.formUnion(records.map(\.payload))
             savedLog.append(contentsOf: records.map { Saved(record: $0, at: now) })
             appliedIDs.append(contentsOf: applied)
         }
@@ -196,15 +165,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
-        let (fails, own) = lock.withLock { (dataChangesFail && zone == .data, echoesOwnSaves ? [] : ownPayloads) }
-        if fails { throw CocoaError(.fileReadCorruptFile) }
-        let batch = try await inner.changes(in: zone, since: token)
-        guard !own.isEmpty else { return batch }
-        return CloudChangeBatch(
-            changed: batch.changed.filter { !own.contains($0.payload) },
-            deletedRecordNames: batch.deletedRecordNames,
-            newToken: batch.newToken
-        )
+        try await inner.changes(in: zone, since: token)
     }
 }
 

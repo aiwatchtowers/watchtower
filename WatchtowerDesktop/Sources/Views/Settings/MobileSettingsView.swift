@@ -93,9 +93,6 @@ struct MobileSettingsView: View {
             if let line = model.statusLine {
                 Text(line)
             }
-            if model.offersTakeOver {
-                Button("Take over") { Task { await model.takeOver() } }
-            }
             if model.hub?.status == .running {
                 Text(lastPublishText)
                     .foregroundStyle(.secondary)

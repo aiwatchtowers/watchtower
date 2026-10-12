@@ -466,14 +466,14 @@ final class MobileHubServiceTests: XCTestCase {
         let service = makeService(transport: transport, relayInterval: .seconds(3600))
         await service.start()
         defer { service.stop() }
-        // The single-hub check pulls once, then the first relay cycle.
-        await awaitHubCondition("the first relay cycle pulled") { transport.pulls == 2 }
+        // Only the relay cycle pulls: the start reads no other hub's heartbeat.
+        await awaitHubCondition("the first relay cycle pulled") { transport.pulls == 1 }
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(transport.pulls, 2, "the next cycle waits the interval")
+        XCTAssertEqual(transport.pulls, 1, "the next cycle waits the interval")
 
         service.wakeRelay()
 
-        await awaitHubCondition("a push wakes the relay loop") { transport.pulls == 3 }
+        await awaitHubCondition("a push wakes the relay loop") { transport.pulls == 2 }
     }
 
     func testWakeRelayWhileStoppedDoesNothing() async throws {

@@ -93,14 +93,6 @@ final class MobileSettingsViewModel {
         return Self.statusLine(hub.status)
     }
 
-    /// Take over is offered while another Mac holds the hub.
-    var offersTakeOver: Bool {
-        switch hub?.status {
-        case .otherHub, .tookOver: return isOn
-        default: return false
-        }
-    }
-
     var showsSlowingLine: Bool {
         guard isOn, let throttledSince else { return false }
         return checkedAt.timeIntervalSince(throttledSince) >= Self.slowingAfter
@@ -118,8 +110,6 @@ final class MobileSettingsViewModel {
         case .starting: return "Starting…"
         case .running: return "On"
         case .unavailable(let reason): return "Unavailable: \(reason)"
-        case .otherHub(let macName): return "\(macName) is your hub. Turn it off there, or Take over"
-        case .tookOver: return "Another Mac took over"
         }
     }
 
@@ -183,12 +173,6 @@ final class MobileSettingsViewModel {
         if !enabled { await linkSheetDismissed() }
         host.setMobileSyncEnabled(enabled)
         isOn = enabled
-        await refresh()
-    }
-
-    func takeOver() async {
-        guard let hub else { return }
-        await hub.takeOver()
         await refresh()
     }
 
