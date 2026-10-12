@@ -438,4 +438,49 @@ final class TransportStoreTests: XCTestCase {
         XCTAssertEqual(try store.changes(in: .data, since: nil).changed.last?.notifyLevel, "briefing")
         XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.notifyLevel), ["briefing"])
     }
+
+    /// Final review m5: a pre-F1 store's `scope` table has no `hub_id`.
+    /// Opening it adds the column, the store counts as bound to no hub (so
+    /// adopting a hub wipes it), and opening it again does not fail.
+    func testPreMultiHubStoreFileGainsHubIDColumn() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let path = dir.appendingPathComponent("transport.sqlite").path
+
+        do {
+            let legacy = try DatabaseQueue(path: path)
+            try legacy.write { db in
+                try db.execute(sql: """
+                    CREATE TABLE scope (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        kind TEXT NOT NULL CHECK (kind IN ('private', 'shared')),
+                        owner_name TEXT
+                    );
+                    INSERT INTO scope (id, kind, owner_name) VALUES (1, 'private', NULL);
+                    """)
+            }
+        }
+
+        let store = try TransportStore(path: path)
+        try store.enqueueSave([record("target-1")])
+        XCTAssertEqual(try store.storedScope(), .private)
+        XCTAssertNil(try store.storedHubID(), "a pre-F1 store is bound to no hub")
+        XCTAssertTrue(try store.adoptScope(.private, hubID: "hub-a"), "an unbound store is wiped on adopt")
+        XCTAssertTrue(try store.pendingBatch(limit: 10).saves.isEmpty)
+
+        let reopened = try TransportStore(path: path)
+        XCTAssertEqual(try reopened.storedHubID(), "hub-a")
+        XCTAssertFalse(try reopened.adoptScope(.private, hubID: "hub-a"))
+    }
+
+    func testAdoptingABrandNewStoreReportsNoWipe() throws {
+        let store = try TransportStore.inMemory()
+        XCTAssertFalse(try store.adoptScope(.private, hubID: "hub-a"), "nothing to wipe")
+        XCTAssertEqual(try store.storedHubID(), "hub-a")
+
+        let unbound = try TransportStore.inMemory()
+        try unbound.enqueueSave([record("target-1")])
+        XCTAssertTrue(try unbound.adoptScope(.private, hubID: "hub-a"), "an unbound store with state is wiped")
+    }
 }

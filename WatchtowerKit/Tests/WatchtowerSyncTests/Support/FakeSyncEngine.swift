@@ -202,20 +202,37 @@ extension CloudKitTransport {
 }
 
 /// Zones and records on a fake server, for the hub's zone deletions.
+/// `failure` fails every call; `deleteFailure` only `deleteZones` (the
+/// zones stay); `deleteGate` runs at the start of each `deleteZones`, so a
+/// test can hold a delete in flight.
 final class FakeZoneAdmin: CloudZoneAdministering, @unchecked Sendable {
     private let lock = NSLock()
     private var zones: [CKRecordZone.ID]
     private var records: [CKRecord.ID: CKRecord]
     private var _deleted: [[CKRecordZone.ID]] = []
     private var failure: Error?
+    private var deleteFailure: Error?
+    private let deleteGate: (@Sendable () async -> Void)?
 
-    init(zones: [CKRecordZone.ID] = [], records: [CKRecord] = [], failure: Error? = nil) {
+    init(
+        zones: [CKRecordZone.ID] = [],
+        records: [CKRecord] = [],
+        failure: Error? = nil,
+        deleteFailure: Error? = nil,
+        deleteGate: (@Sendable () async -> Void)? = nil
+    ) {
         self.zones = zones
         self.records = Dictionary(uniqueKeysWithValues: records.map { ($0.recordID, $0) })
         self.failure = failure
+        self.deleteFailure = deleteFailure
+        self.deleteGate = deleteGate
     }
 
     var deleted: [[CKRecordZone.ID]] { lock.withLock { _deleted } }
+
+    func setDeleteFailure(_ error: Error?) {
+        lock.withLock { deleteFailure = error }
+    }
 
     func zoneIDs() async throws -> [CKRecordZone.ID] {
         try lock.withLock { if let failure { throw failure }; return zones }
@@ -226,8 +243,9 @@ final class FakeZoneAdmin: CloudZoneAdministering, @unchecked Sendable {
     }
 
     func deleteZones(_ ids: [CKRecordZone.ID]) async throws {
+        await deleteGate?()
         try lock.withLock {
-            if let failure { throw failure }
+            if let error = failure ?? deleteFailure { throw error }
             _deleted.append(ids)
             zones.removeAll(where: ids.contains)
         }

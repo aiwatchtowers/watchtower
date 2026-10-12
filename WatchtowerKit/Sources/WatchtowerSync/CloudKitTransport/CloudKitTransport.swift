@@ -27,6 +27,12 @@ public enum HubZoneError: Error, Equatable {
     case notHub
     case noEntitlement
     case engineRunning
+    /// The server step of `deleteHubZones` landed or may have landed (one
+    /// zone is gone while the other's delete failed, or both are gone and
+    /// the local store wipe did not land). Unlike a delete that removed
+    /// nothing, this one has to be finished: the caller keeps its retry
+    /// marker (multi-hub spec §3.3).
+    case partlyDeleted
 }
 
 /// CloudKit adapter for the CloudSyncTransport seam, built on CKSyncEngine.
@@ -133,6 +139,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// server failure is handled once.
     private var manualFetchInFlight = false
     private var parkedEventErrors: [(error: CKError, zoneID: CKRecordZone.ID)] = []
+    /// The running `deleteHubZones` (server delete, then store wipe). It
+    /// lives here, with the store it wipes, rather than on any one owner:
+    /// `start()` and a second delete wait for it, so a late wipe never lands
+    /// under an engine some other owner of this transport started.
+    private var hubZoneDelete: Task<Void, Error>?
 
     public init(
         store: TransportStore,
@@ -252,13 +263,16 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// never fatal: unsigned dev builds routinely lack the iCloud entitlement
     /// and must degrade to store-only operation (records wait in the pending
     /// queue).
+    /// A `deleteHubZones` still running is awaited first: the engine is
+    /// built only on the store its wipe left.
     public func start() async {
         isStopped = false
+        await settleHubZoneDelete()
         await startEngine()
     }
 
     private func startEngine() async {
-        guard engine == nil, !isStopped else { return }
+        guard engine == nil, !isStopped, hubZoneDelete == nil else { return }
         guard entitlementCheck() else {
             lastError = "missing iCloud entitlement (unsigned dev build?)"
             return
@@ -1317,13 +1331,54 @@ extension CloudKitTransport {
     /// Hub role, after `stop()`: deletes this hub's two zones on the server
     /// (the owner turned the hub off; their shares and every participant go
     /// with them) and wipes the store, whose engine state and system fields
-    /// describe zones that no longer exist. A failure leaves both in place.
+    /// describe zones that no longer exist. A delete that removed nothing
+    /// throws CloudKit's error and leaves both in place; one that removed
+    /// something but did not finish throws `HubZoneError.partlyDeleted`.
+    /// A call while a delete runs joins it (its outcome, no second server
+    /// delete), and `start()` waits for it.
     public func deleteHubZones() async throws {
         guard role == .hub else { throw HubZoneError.notHub }
+        if let running = hubZoneDelete {
+            try await running.value
+            return
+        }
         guard engine == nil else { throw HubZoneError.engineRunning }
         guard entitlementCheck() else { throw HubZoneError.noEntitlement }
-        try await zoneAdmin.deleteZones(zones.allZoneIDs)
-        try store.wipe()
+        let work = Task { try await self.deleteZonesThenWipe() }
+        hubZoneDelete = work
+        let outcome = await work.result
+        if hubZoneDelete == work { hubZoneDelete = nil }
+        try outcome.get()
+    }
+
+    /// Returns once no `deleteHubZones` is running.
+    private func settleHubZoneDelete() async {
+        while let running = hubZoneDelete {
+            _ = await running.result
+            if hubZoneDelete == running { hubZoneDelete = nil }
+        }
+    }
+
+    private func deleteZonesThenWipe() async throws {
+        do {
+            try await zoneAdmin.deleteZones(zones.allZoneIDs)
+        } catch let partial as PartialZoneDeleteError {
+            logger.error("hub zones partly deleted: \(partial.underlying.localizedDescription, privacy: .public)")
+            throw HubZoneError.partlyDeleted
+        }
+        // Re-checked after the await: the zones are gone, so a store this
+        // engine drives must not be wiped under it (`start()` waits for this
+        // delete, so this holds unless that contract breaks).
+        guard engine == nil else {
+            logger.error("hub zones deleted while an engine runs; the store is not wiped")
+            throw HubZoneError.partlyDeleted
+        }
+        do {
+            try store.wipe()
+        } catch {
+            logger.error("hub zones deleted, store not wiped: \(error.localizedDescription, privacy: .public)")
+            throw HubZoneError.partlyDeleted
+        }
     }
 
     /// Hub role: the single-hub build's fixed-name `DataZone`/`RelayZone`.
@@ -1338,15 +1393,15 @@ extension CloudKitTransport {
     ) async throws -> LegacyZoneCleanup {
         guard role == .hub else { throw HubZoneError.notHub }
         guard entitlementCheck() else { throw HubZoneError.noEntitlement }
-        let legacy = HubZones.legacyZoneIDs
-        let present = try await zoneAdmin.zoneIDs().filter(legacy.contains)
+        let present = try await zoneAdmin.zoneIDs().filter(HubZones.legacyZoneIDs.contains)
         guard !present.isEmpty else { return .noneFound }
         var payload: Data?
-        if let data = legacy.first, present.contains(data) {
-            let heartbeat = try await zoneAdmin.record(CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: data))
+        let legacyData = HubZones.legacyZoneID(.data)
+        if present.contains(legacyData) {
+            let heartbeat = try await zoneAdmin.record(CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: legacyData))
             if let heartbeat {
-                guard let data = heartbeat.encryptedValues["payload"] as? Data else { return .kept }
-                payload = data
+                guard let bytes = heartbeat.encryptedValues["payload"] as? Data else { return .kept }
+                payload = bytes
             }
         }
         guard deleteIf(payload) else { return .kept }

@@ -7,8 +7,16 @@ protocol CloudZoneAdministering: Sendable {
     func zoneIDs() async throws -> [CKRecordZone.ID]
     /// nil when the record (or its zone) does not exist.
     func record(_ id: CKRecord.ID) async throws -> CKRecord?
-    /// A zone that is already gone counts as deleted.
+    /// A zone that is already gone counts as deleted. Throws
+    /// `PartialZoneDeleteError` when some zone failed while another is gone,
+    /// any other error when nothing was deleted.
     func deleteZones(_ ids: [CKRecordZone.ID]) async throws
+}
+
+/// Some zones of a `deleteZones` call are gone (deleted now, or already
+/// missing) while another's delete failed with `underlying`.
+struct PartialZoneDeleteError: Error {
+    let underlying: any Error
 }
 
 /// The CloudKit implementation. It reaches `CKContainer` only per call, and
@@ -33,8 +41,26 @@ struct CKDatabaseZoneAdmin: CloudZoneAdministering {
 
     func deleteZones(_ ids: [CKRecordZone.ID]) async throws {
         let (_, results) = try await database.modifyRecordZones(saving: [], deleting: ids)
-        for (_, result) in results {
-            if case .failure(let error) = result, (error as? CKError)?.code != .zoneNotFound { throw error }
+        try Self.checkDeleteResults(Array(results.values))
+    }
+
+    /// Per-zone delete results: nothing when every zone is gone, a
+    /// `PartialZoneDeleteError` when one failed while another is gone, the
+    /// failure itself when none is.
+    static func checkDeleteResults(_ results: [Result<Void, any Error>]) throws {
+        var failure: (any Error)?
+        var anyGone = false
+        for result in results {
+            switch result {
+            case .success:
+                anyGone = true
+            case .failure(let error) where (error as? CKError)?.code == .zoneNotFound:
+                anyGone = true
+            case .failure(let error):
+                failure = failure ?? error
+            }
         }
+        guard let failure else { return }
+        throw anyGone ? PartialZoneDeleteError(underlying: failure) : failure
     }
 }

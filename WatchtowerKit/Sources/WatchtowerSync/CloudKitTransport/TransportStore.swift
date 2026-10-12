@@ -478,7 +478,7 @@ public final class TransportStore: Sendable {
 
     /// The hub this store's state belongs to; nil for a store bound to no
     /// hub (every store of the single-hub build).
-    public func storedHubID() throws -> String? {
+    func storedHubID() throws -> String? {
         try queue.read { db in try Self.readBinding(db)?.hubID }
     }
 
@@ -490,12 +490,15 @@ public final class TransportStore: Sendable {
     /// state, system fields and buffered events of another database or
     /// another hub mean nothing here — archived system fields even name the
     /// old zone — so a store bound to anything else, or to no hub (every
-    /// store of the single-hub build), is wiped first. Returns whether it was.
+    /// store of the single-hub build), is wiped first. Returns whether it
+    /// held state to wipe: a brand-new store with no binding and no state
+    /// returns false.
     @discardableResult
     func adoptScope(_ scope: CloudDatabaseScope, hubID: String) throws -> Bool {
         let wiped = try queue.write { db in
             let stored = try Self.readBinding(db)
-            let wipe = stored?.scope != scope || stored?.hubID != hubID
+            var wipe = stored?.scope != scope || stored?.hubID != hubID
+            if stored == nil { wipe = try Self.holdsState(db) }
             if wipe { try Self.wipeState(db) }
             try Self.writeScope(scope, hubID: hubID, db)
             return wipe
@@ -546,6 +549,12 @@ public final class TransportStore: Sendable {
     public func wipe() throws {
         try queue.write { db in try Self.wipeState(db) }
         sweepUnreferencedStash()
+    }
+
+    private static func holdsState(_ db: Database) throws -> Bool {
+        try ["events", "pending", "system_fields", "engine_state", "poll_tokens"].contains { table in
+            try Bool.fetchOne(db, sql: "SELECT EXISTS (SELECT 1 FROM \(table))") ?? false
+        }
     }
 
     private static func wipeState(_ db: Database) throws {

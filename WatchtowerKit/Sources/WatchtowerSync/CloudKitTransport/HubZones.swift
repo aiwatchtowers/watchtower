@@ -44,7 +44,12 @@ public struct HubZones: Equatable, Sendable {
     /// The single-hub build's fixed-name zones in the private database
     /// (multi-hub spec §3.6).
     static var legacyZoneIDs: [CKRecordZone.ID] {
-        CloudZoneID.allCases.map { CKRecordZone.ID(zoneName: $0.rawValue, ownerName: CKCurrentUserDefaultName) }
+        CloudZoneID.allCases.map(legacyZoneID)
+    }
+
+    /// One of the single-hub build's fixed-name zones.
+    static func legacyZoneID(_ zone: CloudZoneID) -> CKRecordZone.ID {
+        CKRecordZone.ID(zoneName: zone.rawValue, ownerName: CKCurrentUserDefaultName)
     }
 
     private var ownerName: String {
