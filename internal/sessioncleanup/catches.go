@@ -93,7 +93,11 @@ func catchOwnWorktree(_ context.Context, b *builder, w worktree) (string, string
 	if !b.seen.sawWorktree(w) {
 		return ReasonNotThisSession, "", nil
 	}
-	birth, known := b.repo.worktreeBirth(w.Root)
+	birthOf := birthTime
+	if b.deps.WorktreeBirth != nil {
+		birthOf = b.deps.WorktreeBirth
+	}
+	birth, known := b.repo.worktreeBirth(w.Root, birthOf)
 	return bornReason(birth, known, b.session.CreatedAt), "", nil
 }
 

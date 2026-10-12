@@ -3,6 +3,7 @@ package sessioncleanup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -255,4 +256,40 @@ func TestProj16_GitFailureInACatchKeepsTheItem(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An unknown worktree birth keeps a worktree that would otherwise go, on
+// every platform: the fallback off darwin.
+func TestPlan_UnknownWorktreeBirthKeepsTheWorktree(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.birth = func(string) (time.Time, bool) { return time.Time{}, false }
+
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCreatedUnknown)
+}
+
+// The real birth time: darwin reads the admin dir's birth, so a worktree
+// added after the session goes; elsewhere it is unknown and the worktree is
+// kept (created_unknown, never mtime or ctime).
+func TestPlan_PlatformWorktreeBirth(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	f.birth = birthTime
+
+	at, known := birthTime(filepath.Join(f.repo, ".git", "worktrees", "wt"))
+	if runtime.GOOS == "darwin" {
+		if !known || time.Since(at) > time.Minute || time.Until(at) > time.Minute {
+			t.Fatalf("darwin birth = %v, %v; want a known time about now", at, known)
+		}
+		wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
+		return
+	}
+	if known {
+		t.Fatalf("birth on %s = %v, want unknown", runtime.GOOS, at)
+	}
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCreatedUnknown)
 }

@@ -323,13 +323,13 @@ func (r *repoState) recordedHead(w worktree) (string, error) {
 }
 
 // worktreeBirth is the birth time of the worktree's admin dir, set by
-// `git worktree add` (spec §2).
-func (r *repoState) worktreeBirth(root string) (time.Time, bool) {
+// `git worktree add` (spec §2), read by birth.
+func (r *repoState) worktreeBirth(root string, birth func(string) (time.Time, bool)) (time.Time, bool) {
 	admin, ok := r.adminDirs[root]
 	if !ok {
 		return time.Time{}, false
 	}
-	return birthTime(admin)
+	return birth(admin)
 }
 
 // branchBirth is the time of the first entry of the branch's reflog when

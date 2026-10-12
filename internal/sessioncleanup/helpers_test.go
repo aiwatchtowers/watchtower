@@ -25,6 +25,19 @@ type fixture struct {
 	sessionCreated time.Time
 	git            GitRunner // nil = SystemGit
 	home           func() (string, error)
+	// birth reads a worktree's birth; nil = stampBirth, so the catches
+	// after ownership run on every platform (the real birth is darwin-only).
+	birth func(adminDir string) (time.Time, bool)
+}
+
+// stampBirth stands in for the filesystem birth time: a fixture's admin dir
+// is fresh, so its mtime is when `git worktree add` made it.
+func stampBirth(adminDir string) (time.Time, bool) {
+	fi, err := os.Stat(adminDir)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return fi.ModTime(), true
 }
 
 const testSession, testWorkbench = int64(7), int64(3)
@@ -113,7 +126,11 @@ func (f *fixture) deps() Deps {
 	if f.git != nil {
 		g = f.git
 	}
-	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home}
+	birth := f.birth
+	if birth == nil {
+		birth = stampBirth
+	}
+	return Deps{Git: g, DB: f.store, Procs: f.procs, Home: f.home, WorktreeBirth: birth}
 }
 
 func (f *fixture) plan(r Request) Plan {
