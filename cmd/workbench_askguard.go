@@ -32,8 +32,12 @@ var askGuardInputWait = 500 * time.Millisecond
 // hook finishes in under 2 s (PROJ-13).
 const askGuardReadBudget = 1400 * time.Millisecond
 
-// askGuardTool is the one tool the guard denies.
-const askGuardTool = "AskUserQuestion"
+// askGuardTool is the one tool the guard denies; codexAskGuardTool is
+// Codex's ask-the-user tool (spec 2026-10-12 §6.4, C9).
+const (
+	askGuardTool      = "AskUserQuestion"
+	codexAskGuardTool = "request_user_input"
+)
 
 // What the agent is told instead of its AskUserQuestion, by the owner's
 // presence (spec 2026-10-10-owner-asks-v2 Part 6): present, the question
@@ -85,7 +89,7 @@ var workbenchAskGuardCmd = &cobra.Command{
 			return nil // never refuse the tool or block the turn over our own flags
 		}
 		if agent == agentkind.Codex {
-			readCodexHook(cmd.InOrStdin(), cmd.ErrOrStderr(), "ask guard skipped", askGuardInputWait, sessionStateStdinLimit, openAskGuardDB)
+			runCodexAskGuard(cmd)
 			return nil
 		}
 		if checkWorkbenchIDFlags(cmd) != nil {
@@ -141,11 +145,55 @@ func runAskGuardHook(stdin io.Reader, stdout io.Writer, rawID string) {
 	if reason == "" {
 		return
 	}
+	writeToolDenial(stdout, reason)
+}
+
+// writeToolDenial prints the PreToolUse output denying the tool with reason
+// (the same JSON for Claude Code and Codex, C7).
+func writeToolDenial(stdout io.Writer, reason string) {
 	var out preToolUseDenial
 	out.HookSpecificOutput.HookEventName = "PreToolUse"
 	out.HookSpecificOutput.PermissionDecision = "deny"
 	out.HookSpecificOutput.PermissionDecisionReason = reason
 	_ = json.NewEncoder(stdout).Encode(out)
+}
+
+// runCodexAskGuard is `workbench ask-guard --agent codex`, the --stop or
+// --pre-tool-use hook on the Codex row it runs in.
+func runCodexAskGuard(cmd *cobra.Command) {
+	if workbenchAskGuardFlagStop {
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		runCodexAskGuardStop(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return
+	}
+	runCodexAskGuardHook(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+// runCodexAskGuardHook is runAskGuardHook for Codex: on its row, a
+// request_user_input is always denied, with the present or the away reason
+// by the owner's presence in this session (read within
+// askGuardReadBudget). Another tool, no row, or a failure before the denial
+// prints nothing on stdout, so the tool runs (PROJ-13).
+func runCodexAskGuardHook(stdin io.Reader, stdout, stderr io.Writer) {
+	defer func() { _ = recover() }()
+	row, in, ok := readCodexHook(stdin, stderr, "ask guard skipped", askGuardInputWait, hookStdinLimit, openAskGuardDB)
+	if !ok || in.ToolName != codexAskGuardTool {
+		return
+	}
+	reason := askToolDenialReasonAway
+	deadline := time.Now().Add(askGuardReadBudget)
+	if database, err := openAskGuardDB(); err == nil {
+		here := askGuardAnswerBy(database, deadline, func(d *db.DB) bool {
+			return askGuardOwnerHereIn(d, row.WorkbenchID.Int64, row.ID, in.SessionID, agentkind.Codex)
+		})
+		if here {
+			reason = askToolDenialReasonPresent
+		}
+	}
+	writeToolDenial(stdout, reason)
 }
 
 // askGuardToolReason is the denial reason for an AskUserQuestion of
@@ -192,10 +240,16 @@ func openAskGuardDB() (*db.DB, error) {
 // end (sql.DB.Close waits for a running query, so the hook does not).
 func askGuardOwnerHereBy(database *db.DB, workbenchID int64, claudeID string, deadline time.Time) bool {
 	presence := askGuardOwnerPresence
+	return askGuardAnswerBy(database, deadline, func(d *db.DB) bool { return presence(d, workbenchID, claudeID) })
+}
+
+// askGuardAnswerBy is presence's answer on database by deadline: false when
+// it is still running then. The database is closed once it ends.
+func askGuardAnswerBy(database *db.DB, deadline time.Time, presence func(*db.DB) bool) bool {
 	here := make(chan bool, 1)
 	go func() {
 		defer func() { _ = database.Close() }()
-		here <- presence(database, workbenchID, claudeID)
+		here <- presence(database)
 	}()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
@@ -218,17 +272,27 @@ var askGuardOwnerPresence = askGuardOwnerHere
 // naming the row. Outside such a row, or on any read failure, the owner is
 // away; nothing is printed, on stderr either. A panic here, after the
 // workbench was found, also reads as away: the tool stays denied.
-func askGuardOwnerHere(database *db.DB, workbenchID int64, claudeID string) (here bool) {
+func askGuardOwnerHere(database *db.DB, workbenchID int64, claudeID string) bool {
+	rowID, ok, err := terminalSessionRowID()
+	if err != nil || !ok {
+		return false
+	}
+	return askGuardOwnerHereIn(database, workbenchID, rowID, claudeID, agentkind.Claude)
+}
+
+// askGuardOwnerHereIn is askGuardOwnerHere on row rowID, an agent row of
+// kind: the owner is here when the row runs conversation claudeID, can
+// record a plain-text question, and has a fresh presence write.
+func askGuardOwnerHereIn(database *db.DB, workbenchID, rowID int64, claudeID string, kind agentkind.Kind) (here bool) {
 	defer func() {
 		if recover() != nil {
 			here = false
 		}
 	}()
-	rowID, ok, err := terminalSessionRowID()
-	if err != nil || !ok || claudeID == "" {
+	if claudeID == "" {
 		return false
 	}
-	g := &askGuardSession{database: database, workbenchID: workbenchID, claudeID: claudeID, rowID: rowID}
+	g := &askGuardSession{database: database, workbenchID: workbenchID, claudeID: claudeID, rowID: rowID, kind: kind}
 	r, err := g.resolve(hookNow())
 	return err == nil && r.Present && r.Recordable
 }

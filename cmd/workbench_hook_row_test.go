@@ -179,12 +179,14 @@ func TestCodexHook_WithoutItsRowWritesNothing(t *testing.T) {
 	}
 }
 
-// Task 5 resolves a codex row and decodes its events; every state, Stop and
-// ask-guard hook still writes nothing on it, and only the brief prints.
-func TestCodexHook_OnItsRowDecodesAndWritesNothingYet(t *testing.T) {
+// A codex row decodes its events; on a row with no session id yet (spec
+// I6) every state, Stop and ask-guard hook writes nothing, and only the
+// brief prints.
+func TestCodexHook_OnItsRowWithoutAnIDWritesNothing(t *testing.T) {
 	database, pid, _ := briefSessionFixture(t)
 	codex := insertHookRow(t, database, pid, "codex")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(codex, 10))
+	useAskGuardGen(t, &stubAskGuardGen{reply: verdictJSON("none")})
 	before := rowSnapshot(t, database, codex)
 	inputs := []string{"", "not json", string(codexHookFixture(t, "stop")), string(codexHookFixture(t, "user_prompt_submit"))}
 	for _, hook := range codexHookCommands[1:] {
@@ -213,7 +215,8 @@ func TestCodexHook_BriefIsTheRowsWorkbench(t *testing.T) {
 	assert.Contains(t, out, "Watchtower workbench #"+strconv.FormatInt(pid, 10))
 	assert.Contains(t, out, "watchtower-workbench", "the current vocabulary")
 	assert.Empty(t, errOut)
-	assert.Equal(t, before, rowSnapshot(t, database, codex), "the re-key is not wired yet")
+	assert.NotEqual(t, before, rowSnapshot(t, database, codex), "the startup stores the session id")
+	assert.Equal(t, codexTUISession, storedClaudeSessionID(t, database, codex))
 }
 
 // Exactly one of --workbench N and --agent codex: a hook given both, or an

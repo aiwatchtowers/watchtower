@@ -100,7 +100,7 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 		return nil //nolint:nilerr // a hook never fails: the reason is one stderr line
 	}
 	if agent == agentkind.Codex {
-		runCodexBrief(cmd.OutOrStdout(), cmd.ErrOrStderr())
+		runCodexBrief(cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 		return nil
 	}
 	if err := checkWorkbenchIDFlags(cmd); err != nil {
@@ -121,14 +121,19 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 }
 
 // runCodexBrief is `workbench brief --agent codex`, the Codex SessionStart
-// hook: the brief of the workbench of the Desktop terminal row the session
-// runs in. Without such a row (no env var, a deleted row, a row of another
-// kind) it prints nothing: a Codex hook outside a Desktop codex row has no
-// workbench to brief.
-func runCodexBrief(stdout, stderr io.Writer) {
+// hook: it records the session on the Desktop terminal row it runs in
+// (recordCodexSessionStart), then prints the brief of that row's workbench.
+// Without such a row (no env var, a deleted row, a row of another kind) it
+// prints nothing: a Codex hook outside a Desktop codex row has no workbench
+// to brief.
+func runCodexBrief(stdin io.Reader, stdout, stderr io.Writer) {
 	database, row, ok := codexHookRow(stderr, "workbench brief", openHookDB)
 	if !ok {
 		return
+	}
+	if err := recordCodexSessionStart(stdin, database, row); err != nil {
+		// Best effort, as the Claude Code hook: the brief is printed.
+		fmt.Fprintf(stderr, "watchtower: workbench %d brief: terminal session not recorded: %v\n", row.WorkbenchID.Int64, err)
 	}
 	_ = database.Close()
 	fmt.Fprintln(stdout, loadWorkbenchBrief(row.WorkbenchID.Int64, vocabularyFor(false)))
