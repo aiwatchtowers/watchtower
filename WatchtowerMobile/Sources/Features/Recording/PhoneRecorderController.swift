@@ -28,7 +28,7 @@ protocol AudioCaptureEngine: AnyObject {
     func recordedDuration(of url: URL) async -> TimeInterval?
 }
 
-/// The calendar event a "Record this meeting" capture belongs to. The
+/// The calendar event an event's Record capture belongs to. The
 /// Calendar (Task 7) builds it from a `calendar_event` record.
 struct MeetingEvent: Equatable, Sendable {
     let id: String
@@ -266,7 +266,7 @@ final class PhoneRecorderController {
 
     // MARK: - Entry points
 
-    /// "Record this meeting" (the Calendar's entry): opens the recorder and
+    /// An event's Record (Now, the agenda, event detail): opens the recorder and
     /// starts a capture tied to `event`. A capture already running is shown
     /// instead and keeps its own context.
     func recordMeeting(_ event: MeetingEvent) async {

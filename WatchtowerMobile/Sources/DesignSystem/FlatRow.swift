@@ -60,7 +60,6 @@ struct MetaLine: View {
 enum FlatRowIcon: Equatable {
     case symbol(String, tone: PhoneTone)
     case session(tone: PhoneTone, isRing: Bool)
-    case none
 }
 
 /// The Mac's target row (`TargetsListView.swift:395-430`) at phone size
@@ -106,8 +105,6 @@ struct FlatRow<Meta: View, Trailing: View>: View {
             Image(systemName: name).font(.body).foregroundStyle(tone.color)
         case let .session(tone, isRing):
             SessionDot(tone: tone, isRing: isRing, size: 10)
-        case .none:
-            Color.clear.frame(width: 0, height: 0)
         }
     }
 }

@@ -48,21 +48,20 @@ private struct ProminentActionLabel: View {
 /// The red Record button: the symbol forced monochrome white, so it draws
 /// no accent ring inside the red capsule (shots 01 and 03). `fillsWidth`
 /// for a bar's pair, where it takes its half.
+/// Always "Record" at the 44 pt large size (Now, the agenda, event detail).
 struct RecordButton: View {
-    var title = "Record"
-    var size: ControlSize = .large
     var fillsWidth = false
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            Label(title, systemImage: "record.circle")
+            Label("Record", systemImage: "record.circle")
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(.white)
                 .frame(maxWidth: fillsWidth ? .infinity : nil)
         }
         .buttonStyle(.borderedProminent)
         .tint(PhoneTone.red.color)
-        .controlSize(size)
+        .controlSize(.large)
     }
 }
