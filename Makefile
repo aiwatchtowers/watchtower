@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-archive
+.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-archive mobile-testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -126,9 +126,16 @@ mobile-run: mobile-build
 
 # TestFlight archive: a Release archive for generic iOS plus an .ipa export
 # through the committed ExportOptions.plist. Needs the gitignored
-# WatchtowerMobile/Signing.xcconfig (a real DEVELOPMENT_TEAM). The upload
-# itself is manual (Xcode Organizer or Transporter).
+# WatchtowerMobile/Signing.xcconfig (a real DEVELOPMENT_TEAM). The build
+# number is the Unix time of the archive, so every upload is unique and newer
+# than the last one (App Store Connect refuses a reused or lower number); the
+# command line overrides it for the app and both extensions alike. Pin it with
+# make mobile-archive MOBILE_BUILD_NUMBER=N.
 MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
+MOBILE_EXPORT := build/WatchtowerMobile-export
+ifndef MOBILE_BUILD_NUMBER
+MOBILE_BUILD_NUMBER := $(shell date -u +%s)
+endif
 mobile-archive:
 	@if [ ! -f WatchtowerMobile/Signing.xcconfig ]; then \
 		echo "error: WatchtowerMobile/Signing.xcconfig not found; archiving needs a real signing identity."; \
@@ -144,10 +151,55 @@ mobile-archive:
 	fi
 	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-configuration Release -destination 'generic/platform=iOS' \
-		-archivePath $(MOBILE_ARCHIVE)
+		-archivePath $(MOBILE_ARCHIVE) $(MOBILE_ARCHIVE_AUTH) \
+		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER)
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
-		-exportPath build/WatchtowerMobile-export
+		-exportPath $(MOBILE_EXPORT) $(MOBILE_ARCHIVE_AUTH)
+	@echo "Archived build $(MOBILE_BUILD_NUMBER): $(MOBILE_EXPORT)"
+
+# Archive and upload to App Store Connect; the build then shows up in
+# TestFlight once Apple has processed it. Authenticates with an App Store
+# Connect API key that lives outside the repo (the repo is public):
+#   ~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8
+#   ~/.appstoreconnect/watchtower.mk with ASC_KEY_ID := ... and ASC_ISSUER_ID := ...
+# (or the two as environment variables). It first runs cloudkit-check
+# (SKIP_CLOUDKIT_CHECK=1 skips it). The upload re-exports the archive
+# with destination=upload; the key (Admin role) also lets xcodebuild mint the
+# certificates and profiles the archive and the App Store export need.
+# Fails when CloudKit Production lacks record types or fields Development has
+# (deployed only by hand in the CloudKit Console; cktool cannot). Needs a
+# management token saved once: xcrun cktool save-token --type management.
+cloudkit-check:
+	bash scripts/cloudkit-schema-check.sh
+
+-include $(HOME)/.appstoreconnect/watchtower.mk
+ASC_KEY_ID ?=
+ASC_ISSUER_ID ?=
+ASC_KEY_PATH ?= $(HOME)/.appstoreconnect/private_keys/AuthKey_$(ASC_KEY_ID).p8
+ASC_AUTH = -allowProvisioningUpdates -authenticationKeyPath "$(ASC_KEY_PATH)" \
+	-authenticationKeyID "$(ASC_KEY_ID)" -authenticationKeyIssuerID "$(ASC_ISSUER_ID)"
+mobile-testflight:
+	@if [ -z "$(ASC_KEY_ID)" ] || [ -z "$(ASC_ISSUER_ID)" ]; then \
+		echo "error: ASC_KEY_ID and ASC_ISSUER_ID are not set."; \
+		echo "  Put them in ~/.appstoreconnect/watchtower.mk:"; \
+		echo "    ASC_KEY_ID := <key id>"; \
+		echo "    ASC_ISSUER_ID := <issuer id>"; \
+		echo "  (App Store Connect > Users and Access > Integrations > App Store Connect API)"; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(ASC_KEY_PATH)" ]; then \
+		echo "error: API key not found at $(ASC_KEY_PATH)"; \
+		exit 1; \
+	fi
+	@if [ -z "$(SKIP_CLOUDKIT_CHECK)" ]; then bash scripts/cloudkit-schema-check.sh; fi
+	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
+	cp WatchtowerMobile/ExportOptions.plist build/ExportOptions-upload.plist
+	plutil -replace destination -string upload build/ExportOptions-upload.plist
+	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
+		-exportOptionsPlist build/ExportOptions-upload.plist \
+		-exportPath $(MOBILE_EXPORT)-upload $(ASC_AUTH)
+	@echo "Uploaded build $(MOBILE_BUILD_NUMBER); it appears in TestFlight after processing."
 	@echo "The .ipa is in build/WatchtowerMobile-export: upload it with Xcode Organizer or Transporter."
 
 # The suites that spawn child processes, on a one-thread Swift concurrency

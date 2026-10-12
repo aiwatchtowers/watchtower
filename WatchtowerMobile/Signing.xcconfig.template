@@ -21,3 +21,8 @@ CODE_SIGN_STYLE = Automatic
 // so `make mobile-build`/`mobile-test` stay unsigned even with this file.
 CODE_SIGNING_ALLOWED = YES
 CODE_SIGNING_REQUIRED = YES
+
+// Base.xcconfig clears the identity; an empty one archives unsigned ("No Team
+// Found in Archive" at export). Automatic signing picks the development
+// certificate for the archive and re-signs with distribution at export.
+CODE_SIGN_IDENTITY = Apple Development
