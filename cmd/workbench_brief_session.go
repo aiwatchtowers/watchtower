@@ -32,6 +32,9 @@ var sessionStartInputWait = time.Second
 type sessionStartInput struct {
 	SessionID string `json:"session_id"`
 	Source    string `json:"source"`
+	// Cwd is the new run's working directory, stored with the run mark
+	// (board #566).
+	Cwd string `json:"cwd"`
 }
 
 // sessionSwitchSources are the SessionStart sources that may put the
@@ -93,15 +96,17 @@ func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 		return err
 	}
 	defer database.Close()
-	return applySessionStart(database, rowID, workbenchID, hook.SessionID, switches, newRun)
+	return applySessionStart(database, rowID, workbenchID, hook.SessionID, hookCwd("SessionStart", "", hook.Cwd),
+		switches, newRun)
 }
 
 // applySessionStart moves row rowID to conversation sessionID when the
 // source switched conversations, and on a new run marks it when the
 // workbench's folder has the session state hooks (MarkTerminalAgentRun: the
 // hooks run, no turn yet — PROJ-12's Return, board #396), else clears the
-// previous run's state without a stamp.
-func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID string, switches, newRun bool) error {
+// previous run's state without a stamp. cwd is the run's working directory
+// (hookCwd), stored with the mark.
+func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID, cwd string, switches, newRun bool) error {
 	// Read first: a relaunch without the state hooks and with nothing to
 	// clear must not wait for the write lock.
 	row, err := database.GetTerminalSession(rowID)
@@ -112,6 +117,7 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 		return err
 	}
 	writes, hooksErr := planSessionStart(database, row, workbenchID, sessionID, switches, newRun)
+	writes.cwd = cwd
 	if err := writes.apply(database, rowID, workbenchID, sessionID); err != nil {
 		return errors.Join(err, hooksErr)
 	}
@@ -121,6 +127,7 @@ func applySessionStart(database *db.DB, rowID, workbenchID int64, sessionID stri
 // sessionStartWrites is what a SessionStart hook writes on its row.
 type sessionStartWrites struct {
 	moveID, markRun, clearState bool
+	cwd                         string // the run's working directory the mark stores; "" = none
 }
 
 // planSessionStart decides the writes for row. A nested `claude -p`
@@ -141,10 +148,10 @@ func planSessionStart(database *db.DB, row *db.TerminalSession, workbenchID int6
 	return sessionStartWrites{moveID: moveID, markRun: hooks, clearState: !hooks && hasRunState(row)}, nil
 }
 
-// hasRunState says the row keeps anything of a run: a state, its stamp or
-// a turn order.
+// hasRunState says the row keeps anything of a run: a state, its stamp, a
+// turn order or a working directory.
 func hasRunState(row *db.TerminalSession) bool {
-	return row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun
+	return row.AgentState.Valid || !row.AgentStateAt.IsZero() || row.TurnEnd.Valid || row.ToolRun || row.Cwd != ""
 }
 
 // apply makes the writes, the id move first so the mark's or the clear's
@@ -162,7 +169,7 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 		}
 	}
 	if w.markRun {
-		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow(), ""); err != nil {
+		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow(), w.cwd); err != nil {
 			return fmt.Errorf("marking the new run: %w", err)
 		}
 	}

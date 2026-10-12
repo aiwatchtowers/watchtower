@@ -194,7 +194,7 @@ func TestApplySessionStart_HooksReadErrorStillMovesTheID(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _, _ = database.Exec(`ALTER TABLE projects_gone RENAME TO projects`) })
 
-	err = applySessionStart(database, row, pid, briefClearedID, true, true)
+	err = applySessionStart(database, row, pid, briefClearedID, "", true, true)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "state hooks")
@@ -367,4 +367,44 @@ func TestProjectBrief_HookNeverStallsOnAnOpenStdin(t *testing.T) {
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, errOut, "reading the hook input")
 	assert.Equal(t, briefLaunchID, storedClaudeSessionID(t, database, row))
+}
+
+// Board #566: a new run's SessionStart stores the run's cwd with its mark;
+// /clear (the same run) keeps it; without the state hooks a row holding
+// only a cwd is cleared on a new run.
+func TestSessionStartRecordsTheRunsCwd(t *testing.T) {
+	const wt = "/tmp/acme/.claude/worktrees/mobile-a"
+	t.Run("marked run", func(t *testing.T) {
+		database, pid, row := briefSessionFixture(t)
+		installBriefStateHooks(t, database, pid)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+		_, errOut := runBriefHook(t, pid, withCwd(t, hookPayload("startup", briefLaunchID), wt))
+		assert.Empty(t, errOut)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.Equal(t, wt, s.Cwd)
+		assert.True(t, s.CwdAt.Equal(s.AgentStateAt), "stamped with the run mark")
+
+		_, errOut = runBriefHook(t, pid, withCwd(t, hookPayload("clear", briefClearedID), "/tmp/elsewhere"))
+		assert.Empty(t, errOut)
+		s, err = database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.Equal(t, briefClearedID, s.ClaudeSessionID.String)
+		assert.Equal(t, wt, s.Cwd, "/clear keeps the run's cwd")
+	})
+	t.Run("no state hooks", func(t *testing.T) {
+		database, pid, row := briefSessionFixture(t)
+		_, err := database.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = ? WHERE id = ?`,
+			wt, db.AgentStateStamp(time.Now().Add(-time.Minute)), row)
+		require.NoError(t, err)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+		_, errOut := runBriefHook(t, pid, hookPayload("startup", briefLaunchID))
+		assert.Empty(t, errOut)
+		s, err := database.GetTerminalSession(row)
+		require.NoError(t, err)
+		assert.Empty(t, s.Cwd, "no hook of this run will report a cwd")
+		assert.True(t, s.CwdAt.IsZero())
+	})
 }

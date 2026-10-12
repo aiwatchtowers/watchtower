@@ -363,3 +363,25 @@ func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
 		assert.Equal(t, tc.want, n, tc.file)
 	}
 }
+
+// Board #566: the Stop hook's state write records the main agent's cwd; a
+// Stop repeating `waiting` from another folder records it alone, and a
+// relative one is ignored.
+func TestStopHookRecordsTheCwd(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	const wt = "/tmp/acme/.claude/worktrees/mobile-a"
+
+	s := hookStep(t, database, pid, row, at, 1, withCwd(t, stopPayload("/tmp/x.jsonl"), wt))
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, wt, s.Cwd)
+	assert.True(t, s.CwdAt.Equal(s.AgentStateAt), "the cwd rides in the state write")
+
+	s = hookStep(t, database, pid, row, at, 2, stopPayload("/tmp/x.jsonl"))
+	assert.Equal(t, "/tmp/acme", s.Cwd, "a repeated waiting records the cwd alone")
+	assert.True(t, s.CwdAt.After(s.AgentStateAt), "the state's time kept")
+
+	s = hookStep(t, database, pid, row, at, 3, withCwd(t, stopPayload("/tmp/x.jsonl"), "acme"))
+	assert.Equal(t, "/tmp/acme", s.Cwd, "a relative cwd is ignored")
+}

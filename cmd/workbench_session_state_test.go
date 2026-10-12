@@ -262,15 +262,19 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 		args       []string
 		wantState  string
 		wantStderr string
+		wantCwd    string
 	}{
-		{name: "valid write", wantState: "working"},
-		{name: "repeat is a no-op", wantState: "working", setup: func(t *testing.T, database *db.DB, row int64) {
+		{name: "valid write", wantState: "working", wantCwd: "/tmp/acme"},
+		{name: "relative cwd", stdin: func(t *testing.T) io.Reader {
+			return strings.NewReader(withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), "acme"))
+		}, wantState: "working"},
+		{name: "repeat is a no-op", wantState: "working", wantCwd: "/tmp/acme", setup: func(t *testing.T, database *db.DB, row int64) {
 			s, err := database.GetTerminalSession(row)
 			require.NoError(t, err)
 			_, err = database.SetTerminalAgentState(row, s.WorkbenchID.Int64, briefLaunchID, "working", time.Now().Add(-time.Hour), "", nil, false, db.AgentOrder{})
 			require.NoError(t, err)
 		}},
-		{name: "unknown flag", args: []string{"--future-flag"}, wantState: "working"},
+		{name: "unknown flag", args: []string{"--future-flag"}, wantState: "working", wantCwd: "/tmp/acme"},
 		{name: "bad env", env: func(row int64) string { return "row-" + strconv.FormatInt(row, 10) }, wantStderr: "invalid " + terminalSessionEnv},
 		{name: "bad json", stdin: func(*testing.T) io.Reader { return strings.NewReader(`{"session_id":`) }, wantStderr: "reading the hook input"},
 		{name: "empty stdin", stdin: func(*testing.T) io.Reader { return strings.NewReader(``) }},
@@ -278,7 +282,7 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 			return strings.NewReader(statePayload("UserPromptSubmit", "../../etc", ""))
 		}, wantStderr: "carries no session id"},
 		{name: "no session id", stdin: func(*testing.T) io.Reader {
-			return strings.NewReader(`{"hook_event_name":"UserPromptSubmit"}`)
+			return strings.NewReader(`{"hook_event_name":"UserPromptSubmit","cwd":"/tmp/acme"}`)
 		}},
 		{name: "stdin never closed", stdin: func(t *testing.T) io.Reader {
 			r, w := io.Pipe()
@@ -352,6 +356,9 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 			}
 			if tc.name != "deleted row" {
 				assert.Equal(t, tc.wantState, storedAgentState(t, database, row))
+				s, err := database.GetTerminalSession(row)
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantCwd, s.Cwd, "the recorded cwd")
 			}
 			if tc.name == "repeat is a no-op" {
 				s, err := database.GetTerminalSession(row)
@@ -371,22 +378,29 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "working", storedAgentState(t, database, row))
 
+	// Board #566: the nested run works in another folder; its cwd moves
+	// nothing either.
+	const nestedCwd = "/tmp/elsewhere"
 	for _, p := range []string{
 		statePayload("Notification", nestedSessionID, "permission_prompt"),
 		statePayload("Notification", nestedSessionID, "idle_prompt"),
 		statePayload("StopFailure", nestedSessionID, ""),
+		statePayload("PostToolUse", nestedSessionID, ""),
 	} {
-		out, errOut, err := runSessionState(t, pid, strings.NewReader(p))
+		out, errOut, err := runSessionState(t, pid, strings.NewReader(withCwd(t, p, nestedCwd)))
 		require.NoError(t, err)
 		assert.Empty(t, out)
 		assert.Empty(t, errOut)
 	}
 	// The nested run's Stop hook too.
-	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), statePayload("Stop", nestedSessionID, ""))
+	out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10), withCwd(t, statePayload("Stop", nestedSessionID, ""), nestedCwd))
 	assert.Empty(t, out)
 	assert.Empty(t, errOut)
 
 	assert.Equal(t, "working", storedAgentState(t, database, row))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/acme", s.Cwd, "the nested run moved the cwd")
 
 	// Board #411: over a counted `waiting`, the nested run's SubagentStop and
 	// its subagent's tool result neither lower nor stamp the count.
@@ -400,7 +414,7 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 		strings.ReplaceAll(subagentStart("aalpha-1", "alpha"), briefLaunchID, nestedSessionID),
 		subagentToolResult(nestedSessionID),
 	} {
-		out, errOut, err := runSessionState(t, pid, strings.NewReader(p))
+		out, errOut, err := runSessionState(t, pid, strings.NewReader(withCwd(t, p, nestedCwd)))
 		require.NoError(t, err)
 		assert.Empty(t, out)
 		assert.Empty(t, errOut)
@@ -857,7 +871,7 @@ func rowSnapshot(t *testing.T, database *db.DB, rowID int64) map[string]any {
 // subagentToolResult is a PostToolUse a background subagent of session
 // sessionID fired.
 func subagentToolResult(sessionID string) string {
-	return `{"session_id":"` + sessionID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3","agent_type":"general-purpose"}`
+	return `{"session_id":"` + sessionID + `","cwd":"/tmp/acme","hook_event_name":"PostToolUse","agent_id":"a1b2c3","agent_type":"general-purpose"}`
 }
 
 // PROJ-11: a tool run that moves the state into `working` is a new turn and
@@ -931,12 +945,12 @@ func TestProj11_PostToolUseIntoWorkingClearsFinished(t *testing.T) {
 // toolResultPayload is a main-thread PostToolUse of call id, its transcript
 // at path.
 func toolResultPayload(id, path string) string {
-	return `{"session_id":"` + briefLaunchID + `","transcript_path":"` + path + `","hook_event_name":"PostToolUse",` +
+	return `{"session_id":"` + briefLaunchID + `","transcript_path":"` + path + `","cwd":"/tmp/acme","hook_event_name":"PostToolUse",` +
 		`"tool_name":"Bash","tool_use_id":"` + id + `","tool_response":{"stdout":"a.txt"}}`
 }
 
 func stopPayload(path string) string {
-	return `{"session_id":"` + briefLaunchID + `","transcript_path":"` + path + `","hook_event_name":"Stop","stop_hook_active":false}`
+	return `{"session_id":"` + briefLaunchID + `","transcript_path":"` + path + `","cwd":"/tmp/acme","hook_event_name":"Stop","stop_hook_active":false}`
 }
 
 // PROJ-11, board #368: events are ordered by the turn they belong to, not by
@@ -1180,7 +1194,7 @@ func TestSessionState_ConversationSwitchDropsTheTurnEnd(t *testing.T) {
 // stopWithBackground is the Stop hook input of briefLaunchID with field as
 // its raw background_tasks value ("" leaves the key out).
 func stopWithBackground(field string) string {
-	s := `{"session_id":"` + briefLaunchID + `","transcript_path":"/tmp/x.jsonl","hook_event_name":"Stop","stop_hook_active":false`
+	s := `{"session_id":"` + briefLaunchID + `","transcript_path":"/tmp/x.jsonl","cwd":"/tmp/acme","hook_event_name":"Stop","stop_hook_active":false`
 	if field != "" {
 		s += `,"background_tasks":` + field
 	}
@@ -1319,7 +1333,7 @@ func TestProj11_StopWithTheSameCountRefreshesTheReportTime(t *testing.T) {
 // subagentStop is a SubagentStop of briefLaunchID's subagent agentID of type
 // agentType, field its raw background_tasks value ("" leaves the key out).
 func subagentStop(agentID, agentType, field string) string {
-	s := `{"session_id":"` + briefLaunchID + `","hook_event_name":"SubagentStop","stop_hook_active":false,` +
+	s := `{"session_id":"` + briefLaunchID + `","cwd":"/tmp/acme","hook_event_name":"SubagentStop","stop_hook_active":false,` +
 		`"agent_id":"` + agentID + `","agent_type":"` + agentType + `"`
 	if field != "" {
 		s += `,"background_tasks":` + field
@@ -1330,7 +1344,7 @@ func subagentStop(agentID, agentType, field string) string {
 // subagentStart is a SubagentStart of briefLaunchID's subagent or teammate
 // agentID of type agentType (a teammate's name).
 func subagentStart(agentID, agentType string) string {
-	return `{"session_id":"` + briefLaunchID + `","hook_event_name":"SubagentStart",` +
+	return `{"session_id":"` + briefLaunchID + `","cwd":"/tmp/acme","hook_event_name":"SubagentStart",` +
 		`"agent_id":"` + agentID + `","agent_type":"` + agentType + `"}`
 }
 
@@ -1935,7 +1949,9 @@ func TestChatQuestionClearedByARefusedPromptTouchesNothingElse(t *testing.T) {
 	require.NoError(t, err)
 	before := stateColumns(t, database, row)
 
-	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	// No cwd: a refused prompt records its cwd alone (board #566), which is
+	// not the clear this test is about.
+	sessionStateStep(t, pid, withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), ""))
 
 	assert.Empty(t, chatQuestionAt(t, database, row), "the refused prompt still cleared the question")
 	assert.Equal(t, before, stateColumns(t, database, row), "the clear touched another column")
@@ -1980,4 +1996,166 @@ func TestChatQuestionFailedClearStillRecordsThePrompt(t *testing.T) {
 	assert.Contains(t, errOut, "refused")
 	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write ran despite the failed clear")
 	assert.NotEmpty(t, chatQuestionAt(t, database, row))
+}
+
+// withCwd is payload with its "cwd" field set to cwd, or removed when cwd
+// is empty.
+func withCwd(t *testing.T, payload, cwd string) string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(payload), &m))
+	delete(m, "cwd")
+	if cwd != "" {
+		raw, err := json.Marshal(cwd)
+		require.NoError(t, err)
+		m["cwd"] = raw
+	}
+	out, err := json.Marshal(m)
+	require.NoError(t, err)
+	return string(out)
+}
+
+func TestHookCwdTable(t *testing.T) {
+	long := "/" + strings.Repeat("a", hookCwdMaxBytes)
+	for _, tc := range []struct {
+		name, event, agentID, cwd, want string
+	}{
+		{"main prompt", "UserPromptSubmit", "", "/tmp/acme", "/tmp/acme"},
+		{"cleaned", "PostToolUse", "", "/a/../b", "/b"},
+		{"trailing slash", "Stop", "", "/tmp/acme/", "/tmp/acme"},
+		{"at the cap", "Stop", "", long[:hookCwdMaxBytes], long[:hookCwdMaxBytes]},
+		{"relative", "PostToolUse", "", "acme", ""},
+		{"empty", "PostToolUse", "", "", ""},
+		{"over the cap", "PostToolUse", "", long, ""},
+		{"NUL", "PostToolUse", "", "/tmp/a\x00b", ""},
+		{"newline", "PostToolUse", "", "/tmp/a\nb", ""},
+		{"a subagent's event", "PostToolUse", "a1", "/tmp/acme", ""},
+		{"SubagentStart", "SubagentStart", "", "/tmp/acme", ""},
+		{"SubagentStop", "SubagentStop", "", "/tmp/acme", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hookCwd(tc.event, tc.agentID, tc.cwd))
+		})
+	}
+}
+
+// cwdTwinStep is one hook input of a cwd twin run and the cwd it records.
+type cwdTwinStep struct {
+	name, input, wantCwd string
+}
+
+// twinCwdRow inserts a second claude row of workbench pid running
+// briefLaunchID, the twin that gets every input without its cwd.
+func twinCwdRow(t *testing.T, database *db.DB, pid int64) int64 {
+	t.Helper()
+	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, 'claude', 's', '/tmp/acme', ?)`, pid, briefLaunchID)
+	require.NoError(t, err)
+	row, err := res.LastInsertId()
+	require.NoError(t, err)
+	return row
+}
+
+// withoutCwdColumns is row's snapshot without what a cwd may change and
+// without the id that tells twins apart.
+func withoutCwdColumns(t *testing.T, database *db.DB, row int64) map[string]any {
+	t.Helper()
+	snap := rowSnapshot(t, database, row)
+	for _, c := range []string{"id", "agent_cwd", "agent_cwd_at"} {
+		delete(snap, c)
+	}
+	return snap
+}
+
+// PROJ-11, board #566: a cwd never changes the state. Each input lands on a
+// row with its cwd and on a twin row without it, at the same hook time: the
+// two rows stay identical but for the cwd columns. A `cd` mid-turn (a
+// main-thread tool result repeating `working`) writes only the cwd; the
+// Stop, the idle notice, a StopFailure and a prompt write their state as
+// before with the cwd riding along.
+func TestProj11_CwdNeverChangesTheState(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	twin := twinCwdRow(t, database, pid)
+	transcript := filepath.Join(t.TempDir(), "t.jsonl")
+	require.NoError(t, os.WriteFile(transcript, []byte(`{"type":"user"}`+"\n"), 0o600))
+	_, at := hookClock(t)
+	const wt = "/tmp/acme/.claude/worktrees/mobile-a"
+	steps := []cwdTwinStep{
+		{"prompt", statePayload("UserPromptSubmit", briefLaunchID, ""), "/tmp/acme"},
+		{"cd mid-turn", withCwd(t, toolResultPayload("toolu_1", transcript), wt), wt},
+		{"stop", withCwd(t, stopPayload(transcript), wt+"/sub"), wt + "/sub"},
+		{"idle notice", withCwd(t, statePayload("Notification", briefLaunchID, "idle_prompt"), wt), wt},
+		{"stop failure", withCwd(t, stopFailureWith(t, `"rate_limit"`), "/tmp/acme"), "/tmp/acme"},
+		{"next prompt", withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), wt), wt},
+	}
+	for i, step := range steps {
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		s := hookStep(t, database, pid, row, at, i+1, step.input)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(twin, 10))
+		hookStep(t, database, pid, twin, at, i+1, withCwd(t, step.input, ""))
+
+		assert.Equal(t, withoutCwdColumns(t, database, twin), withoutCwdColumns(t, database, row),
+			"%s: the cwd changed the state write", step.name)
+		assert.Equal(t, step.wantCwd, s.Cwd, step.name)
+	}
+}
+
+// PROJ-11, board #566: a stream of tool results in one folder never calls
+// the cwd write (no write lock in the common case) and leaves the row as
+// the first event wrote it; a tool result in another folder does write it.
+func TestProj11_UnchangedCwdWritesNothing(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	calls := 0
+	orig := setTerminalAgentCwd
+	setTerminalAgentCwd = func(d *db.DB, id, workbenchID int64, sessionID, cwd string, at time.Time) (bool, error) {
+		calls++
+		return orig(d, id, workbenchID, sessionID, cwd, at)
+	}
+	t.Cleanup(func() { setTerminalAgentCwd = orig })
+
+	sessionStateStep(t, pid, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	sessionStateStep(t, pid, toolResultPayload("toolu_0", "/tmp/x.jsonl"))
+	after := rowSnapshot(t, database, row)
+	for i := 1; i < 50; i++ {
+		sessionStateStep(t, pid, toolResultPayload("toolu_"+strconv.Itoa(i), "/tmp/x.jsonl"))
+	}
+	assert.Zero(t, calls, "an unchanged cwd called the cwd write")
+	assert.Equal(t, after, rowSnapshot(t, database, row), "an unchanged cwd changed the row")
+
+	sessionStateStep(t, pid, withCwd(t, toolResultPayload("toolu_x", "/tmp/x.jsonl"), "/tmp/acme/sub"))
+	assert.Equal(t, 1, calls, "a changed cwd is written alone")
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/acme/sub", s.Cwd)
+}
+
+// PROJ-11, board #566: a subagent or teammate may work in its own worktree;
+// its events never record a cwd — a tool result over `approval` (which it
+// clears) and over the Stop's count (a heartbeat), a SubagentStart and a
+// SubagentStop.
+func TestProj11_SubagentCwdIsNeverRecorded(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	const other = "/tmp/acme/.claude/worktrees/agent-x"
+	hookStep(t, database, pid, row, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	hookStep(t, database, pid, row, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
+	require.Equal(t, "approval", storedAgentState(t, database, row))
+
+	s := hookStep(t, database, pid, row, at, 3, withCwd(t, subagentToolResult(briefLaunchID), other))
+	assert.Equal(t, "working", s.AgentState.String, "the subagent's tool result clears approval")
+	assert.Equal(t, "/tmp/acme", s.Cwd, "over approval")
+
+	countedWaiting(t, database, pid, row, at, 4, subagents("a1b2c3"))
+	for i, input := range []string{
+		subagentToolResult(briefLaunchID),
+		subagentStart("aalpha-1", "alpha"),
+		subagentStop("aalpha-1", "alpha", subagents("a1b2c3")),
+		subagentStop("a1b2c3", "general-purpose", "[]"),
+	} {
+		s = hookStep(t, database, pid, row, at, 5+i, withCwd(t, input, other))
+		assert.Equal(t, "/tmp/acme", s.Cwd, "input %d", i)
+	}
 }
