@@ -2028,8 +2028,17 @@ func TestProj11_LateHookOfThePreviousRunWritesNoCwd(t *testing.T) {
 	if w(d.SetTerminalAgentCwd(id, pid, agentStateUUID, "/old", early)) {
 		t.Fatal("a cwd from before the run mark wrote")
 	}
+	// The state write's only path past the row's time guard with an older
+	// stamp is a Stop over a tool run's `working`: it lands, so only the run
+	// mark keeps its cwd out.
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0.Add(time.Second), "", nil, false,
+		AgentOrder{ToolRun: true})) {
+		t.Fatal("the new run's tool run did not write")
+	}
 	order := AgentOrder{Stop: true, Cwd: "/old"}
-	_, _ = d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", early, "", nil, false, order)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", early, "", nil, false, order)) {
+		t.Fatal("the Stop over a tool run's working did not write")
+	}
 	if s := storedCwd(t, d, id); s.Path != "" || !s.At.IsZero() {
 		t.Fatalf("the previous run's cwd landed: %q at %v", s.Path, s.At)
 	}
