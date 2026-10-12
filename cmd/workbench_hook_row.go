@@ -60,8 +60,8 @@ func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession,
 	if raw == "" {
 		return db.TerminalSession{}, false, nil
 	}
-	rowID, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || rowID <= 0 {
+	rowID, ok := positiveRowID(raw)
+	if !ok { // not a row id of ours: no row to act on
 		return db.TerminalSession{}, false, nil
 	}
 	row, err := d.GetTerminalSession(rowID)
@@ -75,6 +75,13 @@ func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession,
 		return db.TerminalSession{}, false, nil
 	}
 	return *row, true, nil
+}
+
+// positiveRowID is raw as a terminal row id; false when it is not a
+// positive integer.
+func positiveRowID(raw string) (int64, bool) {
+	id, err := strconv.ParseInt(raw, 10, 64)
+	return id, err == nil && id > 0
 }
 
 // noteForeignCodexSession writes one stderr line when a Codex hook on row
