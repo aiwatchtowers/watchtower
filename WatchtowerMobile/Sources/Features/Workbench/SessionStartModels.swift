@@ -15,6 +15,7 @@ enum SessionStartText {
     static let clippedBrief = "The brief is shortened on the phone. Editing it replaces the Mac's full prompt."
     static let leaveHint = "If the Mac is asleep the request waits and starts when it wakes. You can leave this screen."
     static let notAllowed = "This phone is not allowed to start sessions on the Mac"
+    static let chooseTarget = "Choose a target to start"
     static let briefReadOnly = "The Mac uses this brief. To edit it here, allow typing for this phone on the Mac."
     static let stopConfirm = "Stop this session on the Mac?"
     static let stopping = "Stopping…"
@@ -264,7 +265,7 @@ struct StartSessionFormModel {
     let progress: StartProgressModel?
     /// Start (and Open it, Start a new one) can send.
     let canStart: Bool
-    /// Why starting is off; nil when it is on or no target is picked yet.
+    /// Why starting is off: the grant first, then a missing target; nil when it is on.
     let startCaption: String?
 
     init?(
@@ -296,7 +297,13 @@ struct StartSessionFormModel {
         progress = target.flatMap { StartProgressModel.of(targetID: $0.id, attempt: attempt, snapshot: snapshot, now: now) }
         let sending = target.map { inFlight.contains(SessionStarter.startKey($0.id)) } ?? false
         canStart = target.map { !$0.archived } == true && grant.startSessionsAllowed && !sending
-        startCaption = grant.startSessionsAllowed ? nil : SessionStartText.notAllowed
+        startCaption = if !grant.startSessionsAllowed {
+            SessionStartText.notAllowed
+        } else if target == nil {
+            SessionStartText.chooseTarget
+        } else {
+            nil
+        }
     }
 
     /// The target's session: a live one first, then the latest active.

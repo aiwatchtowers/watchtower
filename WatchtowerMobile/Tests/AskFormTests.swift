@@ -92,7 +92,11 @@ final class AskFormTests: XCTestCase {
         let model = AskViewModel(askID: 120, drafts: fixture.drafts, answerer: fixture.answerer)
 
         var page = try XCTUnwrap(try formOf(model, snapshot).question)
-        XCTAssertEqual(try formOf(model, snapshot).header, "ASK #120 · QUESTION · 1 OF 2")
+        let first = try formOf(model, snapshot)
+        XCTAssertEqual(first.kindIcon, "questionmark.bubble")
+        XCTAssertEqual(first.kindName, "Question")
+        XCTAssertEqual(first.idText, "#120")
+        XCTAssertEqual(first.pageText, "1 of 2", "words, not codes (design pass A1)")
         XCTAssertEqual(page.options.map(\.recommended), [true, false])
         model.pick("Yes", in: page)
         model.next(of: page.count)
@@ -115,6 +119,32 @@ final class AskFormTests: XCTestCase {
         let reopened = AskViewModel(askID: 120, drafts: fixture.drafts, answerer: fixture.answerer)
         XCTAssertEqual(try XCTUnwrap(try formOf(reopened, snapshot).question).options.filter(\.isPicked).map(\.label), ["Yes"])
         XCTAssertTrue(try formOf(reopened, snapshot).canSend)
+    }
+
+    /// Design pass A1: the header is the kind's icon and word, "#id" and the
+    /// page; orange while open, secondary once closed. A single question has
+    /// no page text.
+    func testTheHeaderNamesTheKindTheIDAndThePage() async throws {
+        let fixture = try await makeFixture()
+        let demo = try demoSnapshot(now: now)
+        func form(_ id: Int64) throws -> AskFormModel {
+            try XCTUnwrap(AskViewModel(askID: id, drafts: fixture.drafts, answerer: fixture.answerer).form(snapshot: demo, now: now))
+        }
+        let review = try form(110)
+        XCTAssertEqual([review.kindIcon, review.kindName, review.idText], ["doc.text.magnifyingglass", "Review", "#110"])
+        XCTAssertNil(review.pageText)
+        XCTAssertEqual(review.headerTone, .waitingForYou)
+        let check = try form(111)
+        XCTAssertEqual([check.kindIcon, check.kindName], ["checklist", "Check"])
+        let closed = try form(105)
+        XCTAssertEqual(closed.headerTone, .secondary, "a closed ask's header is not waiting for you")
+        XCTAssertNil(closed.pageText, "a closed ask shows no question pages")
+
+        let single = try makeAsk(121, [
+            "kind": "question", "payload": ["questions": [["id": "q", "question": "Keep it?", "options": [["label": "Yes"], ["label": "No"]]]]]
+        ])
+        let model = AskViewModel(askID: 121, drafts: fixture.drafts, answerer: fixture.answerer)
+        XCTAssertNil(try formOf(model, try replica([single])).pageText, "one question has no page text")
     }
 
     func testAPickOnASingleSelectQuestionReplacesTheOtherAndTogglesOff() async throws {
@@ -258,6 +288,55 @@ final class AskFormTests: XCTestCase {
         XCTAssertNil(answer.verdict)
     }
 
+    /// Design pass A5: three icon buttons, one tap marks a step, the marked
+    /// state draws filled in its tone, and tapping it again clears it, as
+    /// on the Mac (`OwnerAskChecklistBody.swift:44-57`).
+    func testOneTapMarksAStepAndASecondTapClearsIt() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open the menu"]]]])
+        let snapshot = try replica([ask])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        func row() throws -> AskFormModel.CheckRow {
+            try XCTUnwrap(try formOf(model, snapshot).checks.first)
+        }
+
+        XCTAssertEqual(try row().choices.map(\.label), ["OK", "Broken", "Skipped"])
+        XCTAssertEqual(try row().choices.map(\.symbol), ["checkmark.circle", "xmark.circle", "minus.circle"])
+        XCTAssertTrue(try row().choices.allSatisfy { $0.tone == .secondary && !$0.isSelected }, "unmarked: outlines in secondary")
+
+        model.toggleCheck(.ok, for: "1")
+        XCTAssertEqual(try row().state, .ok)
+        XCTAssertEqual(try row().choices.map(\.symbol), ["checkmark.circle.fill", "xmark.circle", "minus.circle"])
+        XCTAssertEqual(try row().choices.map(\.tone), [.green, .secondary, .secondary])
+
+        model.toggleCheck(.broken, for: "1")
+        XCTAssertEqual(try row().state, .broken, "another state replaces the mark")
+        XCTAssertEqual(try row().choices.map(\.tone), [.secondary, .red, .secondary])
+        XCTAssertTrue(try row().needsNote)
+
+        model.toggleCheck(.broken, for: "1")
+        XCTAssertNil(try row().state, "tapping the marked state again clears it")
+
+        model.toggleCheck(.skipped, for: "1")
+        XCTAssertEqual(try row().choices.map(\.isSelected), [false, false, true])
+        XCTAssertEqual(try row().choices.map(\.tone), [.secondary, .secondary, .secondary], "skipped stays secondary")
+    }
+
+    /// The check states are status tones in the form's `toneUses`, so the
+    /// orange sweep sees them; none is orange.
+    func testTheCheckStatesAreStatusTonesAndNeverOrange() async throws {
+        let fixture = try await makeFixture()
+        let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"], ["id": "2", "text": "Archive"]]]])
+        let snapshot = try replica([ask])
+        let model = AskViewModel(askID: 140, drafts: fixture.drafts, answerer: fixture.answerer)
+        model.toggleCheck(.ok, for: "1")
+        model.toggleCheck(.broken, for: "2")
+        let steps = try formOf(model, snapshot).toneUses.filter { $0.element.contains(" step ") }
+        XCTAssertEqual(steps.count, 6, "three choices per step")
+        XCTAssertTrue(steps.allSatisfy { $0.role == .status })
+        XCTAssertEqual(Set(steps.map(\.tone)), [.green, .red, .secondary])
+    }
+
     func testANoteOverTheBoundSaysWhySendIsOff() async throws {
         let fixture = try await makeFixture()
         let ask = try makeAsk(140, ["kind": "check", "payload": ["checklist": [["id": "1", "text": "Open"]]]])
@@ -299,10 +378,37 @@ final class AskFormTests: XCTestCase {
         let form = try formOf(model, snapshot)
 
         XCTAssertEqual(form.closedStatus, "Answered and delivered")
-        XCTAssertEqual(form.closedLines, ["Keep the counter?: No", "Note: Not needed"])
+        XCTAssertEqual(form.closedLines, [
+            AskFormModel.ClosedLine(label: "Keep the counter?", value: "No"),
+            AskFormModel.ClosedLine(label: "Note", value: "Not needed")
+        ], "the question over its answer: no \"?:\" (design pass A6)")
         XCTAssertNil(form.question)
         XCTAssertFalse(form.isEditable)
         XCTAssertNil(form.openOnMac, "a closed ask is shown, not sent to the Mac")
+    }
+
+    /// Design pass A6 and review focus 1: each stored part is a label over a
+    /// value; a question answered with nothing reads "No answer", never an
+    /// empty line.
+    func testAClosedAnswerIsLabelAndValuePairs() async throws {
+        let fixture = try await makeFixture()
+        let snapshot = try replica([try makeAsk(161, [
+            "kind": "check", "status": "answered",
+            "payload": [
+                "questions": [["id": "q", "question": "Keep it?", "options": [["label": "Yes"], ["label": "No"]]]],
+                "checklist": [["id": "1", "text": "Open the menu"]]
+            ],
+            "answer": [
+                "verdict": "approved", "answers": [["id": "q", "labels": [String](), "other": ""]],
+                "checklist": [["id": "1", "state": "broken", "note": "The menu is empty"]], "comments": [[String: Any]](), "note": ""
+            ]
+        ])])
+        let form = try formOf(AskViewModel(askID: 161, drafts: fixture.drafts, answerer: fixture.answerer), snapshot)
+        XCTAssertEqual(form.closedLines, [
+            AskFormModel.ClosedLine(label: "Verdict", value: "Approved"),
+            AskFormModel.ClosedLine(label: "Keep it?", value: "No answer"),
+            AskFormModel.ClosedLine(label: "Open the menu", value: "Broken — The menu is empty")
+        ])
     }
 
     // MARK: - On its way and back
@@ -451,7 +557,10 @@ final class AskFormTests: XCTestCase {
         XCTAssertNil(AskFormModel.successor(of: 110, in: demo), "110 is the open round of the superseded #107")
         XCTAssertEqual(AskFormModel.successor(of: 107, in: demo)?.id, 110)
         XCTAssertEqual(try form(111).checks.count, 2)
-        XCTAssertEqual(try form(105).closedLines, ["Keep the archived counter?: Drop it", "Note: Not needed on the board."])
+        XCTAssertEqual(try form(105).closedLines, [
+            AskFormModel.ClosedLine(label: "Keep the archived counter?", value: "Drop it"),
+            AskFormModel.ClosedLine(label: "Note", value: "Not needed on the board.")
+        ])
     }
 
     // MARK: - One answer per ask in flight

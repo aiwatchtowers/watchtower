@@ -30,7 +30,7 @@ final class WorkbenchWiringTests: XCTestCase {
             "1 working", "1 waiting for you", "1 needs approval", "2 finished", "1 failed", "1 stopped"
         ])
         XCTAssertEqual(try XCTUnwrap(acme.progress), 1.0 / 8.0, accuracy: 0.0001)
-        XCTAssertEqual(acme.countsLine, "3 in progress · 3 todo · 1 blocked · 1 done")
+        XCTAssertEqual(acme.doneLine, "1/8 done")
         XCTAssertEqual(acme.pills.map(\.text), ["3 waiting", "1 error"])
         XCTAssertEqual(try card(DemoSeed.websiteID).pills.map(\.text), [], "a working workbench is not idle")
     }
@@ -38,7 +38,7 @@ final class WorkbenchWiringTests: XCTestCase {
     func testAZeroOfZeroBoardHasNoProgressBar() throws {
         let notes = try card(DemoSeed.notesID)
         XCTAssertNil(notes.progress)
-        XCTAssertEqual(notes.countsLine, "0 in progress · 0 todo · 0 done")
+        XCTAssertEqual(notes.doneLine, "No targets", "0 of 0 draws no bar and says so")
         XCTAssertTrue(notes.stateCounts.isEmpty)
         XCTAssertEqual(notes.pills.map(\.text), ["idle"])
     }
@@ -68,14 +68,18 @@ final class WorkbenchWiringTests: XCTestCase {
     func testTheMenuSublineAndWaitingStack() throws {
         let menu = try XCTUnwrap(WorkbenchMenuModel(workbenchID: DemoSeed.acmeID, snapshot: try demoSnapshot(now: now), now: now))
         XCTAssertEqual(menu.title, "Acme")
-        XCTAssertEqual(menu.subline, "main · 3 in progress · 3 todo · 1 blocked")
+        XCTAssertEqual(menu.branch, "main")
+        XCTAssertEqual(menu.boardCounts.map(\.text), ["3 in progress", "3 todo", "1 blocked"])
+        XCTAssertEqual(menu.boardCounts.map(\.tone), [.blue, .secondary, .red])
+        XCTAssertTrue(menu.boardCounts.allSatisfy { $0.role == .status })
         XCTAssertNil(menu.sessionsEmptyText)
         XCTAssertEqual(menu.waitingHeader, "Waiting for you · 3")
         // Newest first.
         XCTAssertEqual(menu.waiting.map(\.id), [111, 109, 110])
-        XCTAssertEqual(menu.waiting.map(\.kindLabel), ["CHECK", "ASK", "REVIEW"])
+        XCTAssertEqual(menu.waiting.map(\.kindLabel), ["Check", "Question", "Review"], "words, not codes (design pass N4)")
+        XCTAssertEqual(menu.waiting.map(\.kindIcon), ["checklist", "questionmark.bubble", "doc.text.magnifyingglass"])
         XCTAssertEqual(menu.waiting.first?.subline, "Archive closed targets · #415 · 5m")
-        XCTAssertEqual(menu.closedLabel, "▸ 3 closed")
+        XCTAssertEqual(menu.closedLabel, "3 closed", "the DisclosureGroup draws the only disclosure mark")
         XCTAssertEqual(menu.closedAsks.map(\.id), [107, 106, 105])
     }
 

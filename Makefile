@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-archive mobile-testflight cloudkit-check
+.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -124,17 +124,38 @@ mobile-run: mobile-build
 	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{d=$$3} / FULL_PRODUCT_NAME/{n=$$3} END{print d "/" n}')"
 	xcrun simctl launch "$(SIM)" $(MOBILE_BUNDLE_ID)
 
+# The design pass's screenshot tour (WatchtowerMobile/Tests/ScreenshotTourTests.swift):
+# every demo screen in light and dark mode as PNGs plus an INDEX.md, written
+# to SHOTS_DIR (under the gitignored build/). Compare a before and an after
+# set by eye; nothing asserts pixels. xcodebuild hands TEST_RUNNER_-prefixed
+# variables to the test process with the prefix stripped.
+SHOTS_DIR ?= build/mobile-shots
+mobile-shots:
+	xcrun simctl boot "$(SIM)" 2>/dev/null || true
+	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
+	mkdir -p "$(SHOTS_DIR)"
+	TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
+		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests
+
 # TestFlight archive: a Release archive for generic iOS plus an .ipa export
 # through the committed ExportOptions.plist. Needs the gitignored
 # WatchtowerMobile/Signing.xcconfig (a real DEVELOPMENT_TEAM). The build
 # number is the Unix time of the archive, so every upload is unique and newer
 # than the last one (App Store Connect refuses a reused or lower number); the
 # command line overrides it for the app and both extensions alike. Pin it with
-# make mobile-archive MOBILE_BUILD_NUMBER=N.
+# make mobile-archive MOBILE_BUILD_NUMBER=N. The version (MARKETING_VERSION)
+# is the Mac's VERSION without the v, cut to x.y.z because iOS takes at most
+# three numbers: git describe's v0.15.0-12-g<sha>-dirty gives 0.15.0, and a
+# release's make testflight VERSION=0.16.0 gives 0.16.0, the same number its
+# make app VERSION=0.16.0 stamps on the Mac. Override with MOBILE_VERSION=x.y.z.
 MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
 MOBILE_EXPORT := build/WatchtowerMobile-export
 ifndef MOBILE_BUILD_NUMBER
 MOBILE_BUILD_NUMBER := $(shell date -u +%s)
+endif
+ifndef MOBILE_VERSION
+MOBILE_VERSION := $(shell echo '$(VERSION)' | sed -E 's/^v//; s/^([0-9]+(\.[0-9]+){0,2}).*/\1/')
 endif
 mobile-archive:
 	@if [ ! -f WatchtowerMobile/Signing.xcconfig ]; then \
@@ -149,14 +170,18 @@ mobile-archive:
 		echo "Signing.xcconfig is gitignored on purpose: never commit a team ID."; \
 		exit 1; \
 	fi
+	@if ! echo "$(MOBILE_VERSION)" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$$'; then \
+		echo "error: version '$(MOBILE_VERSION)' is not x.y.z (VERSION=$(VERSION)); pass VERSION=x.y.z or MOBILE_VERSION=x.y.z"; \
+		exit 1; \
+	fi
 	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-configuration Release -destination 'generic/platform=iOS' \
 		-archivePath $(MOBILE_ARCHIVE) $(MOBILE_ARCHIVE_AUTH) \
-		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER)
+		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER) MARKETING_VERSION=$(MOBILE_VERSION)
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
 		-exportPath $(MOBILE_EXPORT) $(MOBILE_ARCHIVE_AUTH)
-	@echo "Archived build $(MOBILE_BUILD_NUMBER): $(MOBILE_EXPORT)"
+	@echo "Archived $(MOBILE_VERSION) ($(MOBILE_BUILD_NUMBER)): $(MOBILE_EXPORT)"
 
 # Archive and upload to App Store Connect; the build then shows up in
 # TestFlight once Apple has processed it. Authenticates with an App Store
@@ -179,6 +204,7 @@ ASC_ISSUER_ID ?=
 ASC_KEY_PATH ?= $(HOME)/.appstoreconnect/private_keys/AuthKey_$(ASC_KEY_ID).p8
 ASC_AUTH = -allowProvisioningUpdates -authenticationKeyPath "$(ASC_KEY_PATH)" \
 	-authenticationKeyID "$(ASC_KEY_ID)" -authenticationKeyIssuerID "$(ASC_ISSUER_ID)"
+testflight: mobile-testflight
 mobile-testflight:
 	@if [ -z "$(ASC_KEY_ID)" ] || [ -z "$(ASC_ISSUER_ID)" ]; then \
 		echo "error: ASC_KEY_ID and ASC_ISSUER_ID are not set."; \
@@ -193,13 +219,13 @@ mobile-testflight:
 		exit 1; \
 	fi
 	@if [ -z "$(SKIP_CLOUDKIT_CHECK)" ]; then bash scripts/cloudkit-schema-check.sh; fi
-	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
+	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_VERSION=$(MOBILE_VERSION) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
 	cp WatchtowerMobile/ExportOptions.plist build/ExportOptions-upload.plist
 	plutil -replace destination -string upload build/ExportOptions-upload.plist
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist build/ExportOptions-upload.plist \
 		-exportPath $(MOBILE_EXPORT)-upload $(ASC_AUTH)
-	@echo "Uploaded build $(MOBILE_BUILD_NUMBER); it appears in TestFlight after processing."
+	@echo "Uploaded $(MOBILE_VERSION) ($(MOBILE_BUILD_NUMBER)); it appears in TestFlight after processing."
 	@echo "The .ipa is in build/WatchtowerMobile-export: upload it with Xcode Organizer or Transporter."
 
 # The suites that spawn child processes, on a one-thread Swift concurrency

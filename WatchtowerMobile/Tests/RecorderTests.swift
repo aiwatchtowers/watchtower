@@ -471,4 +471,53 @@ final class RecorderTests: XCTestCase {
         let uploads = try await relayUploads(in: rig.transport)
         XCTAssertTrue(uploads.isEmpty)
     }
+
+    // MARK: - Bug 9: the chrome by phase
+
+    /// Design pass spec §3 bug 9: idle (waiting for microphone permission)
+    /// says Starting… with Pause disabled, never PAUSED and Resume.
+    func testTheCaptureChromeFollowsThePhase() {
+        struct Row {
+            let phase: PhoneRecorderController.Phase
+            let mark: RecorderChrome.Mark
+            let text: String
+            let left: String
+            let leftEnabled: Bool
+            let controlsEnabled: Bool
+        }
+        let expected = [
+            Row(phase: .idle, mark: .starting, text: "Starting…", left: "Pause", leftEnabled: false, controlsEnabled: false),
+            Row(phase: .recording, mark: .recording, text: "REC", left: "Pause", leftEnabled: true, controlsEnabled: true),
+            Row(phase: .paused(.user), mark: .paused, text: "PAUSED", left: "Resume", leftEnabled: true, controlsEnabled: true),
+            Row(phase: .paused(.interruption), mark: .paused, text: "PAUSED", left: "Resume", leftEnabled: true, controlsEnabled: true),
+            Row(phase: .saving, mark: .saving, text: "Saving…", left: "Pause", leftEnabled: false, controlsEnabled: false)
+        ]
+        for row in expected {
+            let chrome = RecorderChrome(phase: row.phase)
+            XCTAssertEqual(chrome?.mark, row.mark, "\(row.phase)")
+            XCTAssertEqual(chrome?.markText, row.text, "\(row.phase)")
+            XCTAssertEqual(chrome?.leftTitle, row.left, "\(row.phase)")
+            XCTAssertEqual(chrome?.isLeftEnabled, row.leftEnabled, "\(row.phase)")
+            XCTAssertEqual(chrome?.areCaptureControlsEnabled, row.controlsEnabled, "\(row.phase)")
+            XCTAssertEqual(chrome?.resumes, row.mark == .paused, "\(row.phase)")
+        }
+        XCTAssertEqual(RecorderChrome(phase: .recording)?.markTone, .red)
+        XCTAssertEqual(RecorderChrome(phase: .idle)?.markTone, .secondary)
+        for phase: PhoneRecorderController.Phase in [.tooShort, .denied, .failed("boom")] {
+            XCTAssertNil(RecorderChrome(phase: phase), "\(phase) is not a capture phase")
+        }
+    }
+
+    /// Design pass C7: a level under 0.05 is silence and draws a grey bar,
+    /// so silence reads as a line, not a red dashed one; every bar is at
+    /// least 4 pt and never taller than the waveform.
+    func testSilenceDrawsAGreyLineAndLevelsDrawRedBars() {
+        XCTAssertTrue(WaveformStyle.isSilent(0))
+        XCTAssertTrue(WaveformStyle.isSilent(0.049))
+        XCTAssertFalse(WaveformStyle.isSilent(0.05))
+        XCTAssertEqual(WaveformStyle.height(0, in: 64), 4, "silence keeps a 4 pt line")
+        XCTAssertEqual(WaveformStyle.height(0.5, in: 64), 32)
+        XCTAssertEqual(WaveformStyle.height(1.5, in: 64), 64, "a level over 1 never overflows")
+        XCTAssertEqual(WaveformStyle.height(-1, in: 64), 4)
+    }
 }

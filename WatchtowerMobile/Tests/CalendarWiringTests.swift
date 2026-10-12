@@ -78,7 +78,7 @@ final class CalendarWiringTests: XCTestCase {
             eventID: "ad", snapshot: snapshot([allDay]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertFalse(detail.showsRecord)
-        XCTAssertFalse(detail.actionTitles.contains("Record this meeting"))
+        XCTAssertFalse(detail.actions.contains(.record))
     }
 
     /// Review focus 2: west of UTC the stored UTC midnight is the previous
@@ -173,6 +173,48 @@ final class CalendarWiringTests: XCTestCase {
             eventID: recorded.id, snapshot: snapshot([recorded]), recordings: recordings, now: now, calendar: calendar
         ))
         XCTAssertEqual(detail.recordingText, "Transcribing on Mac · 37%")
+        XCTAssertEqual(detail.transcribingPercent, 37, "design pass C4: one row with a bar and 37%")
+        XCTAssertTrue(detail.toneUses.contains { $0.tone == .purple && $0.role == .progress })
+    }
+
+    /// Review focus 4: a percent from a newer Mac or a glitch clamps to
+    /// 0…100 on the row.
+    func testTheTranscribingRowClampsThePercent() async throws {
+        for (sent, shown) in [(140, 100), (-5, 0)] {
+            let store = try makePoolStore()
+            let transport = InMemoryCloudTransport()
+            let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
+            try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: sent)
+            _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+            let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
+            let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
+            let detail = try XCTUnwrap(EventDetailModel(
+                eventID: recorded.id, snapshot: snapshot([recorded]), recordings: recordings, now: now, calendar: calendar
+            ))
+            XCTAssertEqual(detail.transcribingPercent, shown, "sent \(sent)")
+        }
+        XCTAssertNil(EventDetailModel(
+            eventID: "plain", snapshot: snapshot([event("plain", start: now)]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )?.transcribingPercent, "no phone recording: no row")
+    }
+
+    /// Design pass C4: each attendee's initials get a tone from a stable
+    /// hash of the name (the email without one), from blue, green, teal and
+    /// purple; listed as info tones.
+    func testAttendeesGetAStableToneFromTheirName() throws {
+        let names = ["Colleague A", "Colleague B", "Colleague C", "Colleague D", "Colleague E"]
+        XCTAssertEqual(names.map(EventDetailModel.attendeeTone), [.blue, .green, .teal, .purple, .blue])
+        XCTAssertEqual(EventDetailModel.attendeeTone(""), .blue, "an empty name still gets a tone")
+
+        let attendees = (1...3).map { EventAttendee(email: "colleague-\($0)@example.com", displayName: "", responseStatus: "accepted") }
+        let detail = try XCTUnwrap(EventDetailModel(
+            eventID: "e", snapshot: snapshot([event("e", start: now, attendees: attendees)]),
+            recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        ))
+        XCTAssertEqual(detail.attendees.map(\.tone), attendees.map { EventDetailModel.attendeeTone($0.email) }, "no name: the email")
+        let uses = detail.toneUses.filter { $0.element.hasPrefix("attendee ") }
+        XCTAssertEqual(uses.count, 3)
+        XCTAssertTrue(uses.allSatisfy { $0.role == .info })
     }
 
     /// The demo phone recording of `DemoSeed.recordedEventID` (received by
@@ -280,6 +322,46 @@ final class CalendarWiringTests: XCTestCase {
         XCTAssertEqual(highlighted.first?.actionTitles, ["Record", "Prep"])
         XCTAssertNotNil(highlighted.first?.meetingEvent)
         XCTAssertFalse(agenda.cards.first { $0.id == "ended" }?.showsRecord ?? true)
+        // Design pass C3: the highlighted card is the accent card, the others plain.
+        XCTAssertEqual(agenda.cards.map(\.cardStyle), agenda.cards.map { $0.id == "next" ? CardStyle.highlighted : .plain })
+    }
+
+    /// Bug 2 and review focus 5 (design pass spec §9.2): the agenda scrolls
+    /// to today's current or next meeting; with none it stays at the top.
+    /// Task 9 review: the scroll runs once per day and highlighted row, so
+    /// coming back from an event does not snap the list over the user's
+    /// scroll; a later snapshot that highlights a row still scrolls.
+    /// Task 9 review and final review M3 (spec §9.2): the agenda scrolls
+    /// once per day, the first time the day has a highlighted row: not on a
+    /// return from a pushed screen, and not when the next meeting takes over
+    /// while the user reads; a snapshot that arrives later still scrolls.
+    func testTheAgendaScrollsOncePerDay() {
+        let today = day(0)
+        let key = AgendaScrollKey(day: today, rowID: "event-next")
+        XCTAssertEqual(AgendaScroll.target(for: key, scrolledDay: nil), "event-next")
+        XCTAssertNil(AgendaScroll.target(for: key, scrolledDay: today), "a return to the screen keeps the user's scroll")
+        XCTAssertNil(
+            AgendaScroll.target(for: AgendaScrollKey(day: today, rowID: "event-after"), scrolledDay: today),
+            "the next meeting taking over does not jump the list"
+        )
+        XCTAssertNil(AgendaScroll.target(for: AgendaScrollKey(day: today, rowID: nil), scrolledDay: nil), "nothing highlighted")
+        XCTAssertEqual(AgendaScroll.target(for: AgendaScrollKey(day: day(1), rowID: "event-x"), scrolledDay: today), "event-x")
+    }
+
+    func testOnlyTodaysCurrentOrNextMeetingIsScrolledTo() throws {
+        let ended = event("ended", start: now.addingTimeInterval(-7_200), minutes: 30)
+        let next = event("next", start: now.addingTimeInterval(1_500))
+        let today = AgendaDayModel(
+            day: now, snapshot: snapshot([next, ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )
+        XCTAssertEqual(today.highlightedRowID, "event-next")
+        let over = AgendaDayModel(day: now, snapshot: snapshot([ended]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar)
+        XCTAssertNil(over.highlightedRowID, "every meeting is over")
+        let later = event("later", start: day(1).addingTimeInterval(12 * 3_600))
+        let tomorrow = AgendaDayModel(
+            day: day(1), snapshot: snapshot([later]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )
+        XCTAssertNil(tomorrow.highlightedRowID, "only today highlights a meeting")
     }
 
     // MARK: - Join
@@ -291,15 +373,49 @@ final class CalendarWiringTests: XCTestCase {
             eventID: "e1", snapshot: snapshot([withLink]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertEqual(detail.joinURL, URL(string: url))
-        XCTAssertTrue(detail.actionTitles.contains("Join"))
+        XCTAssertTrue(detail.actions.contains(.join))
 
         let without = event("e2", start: now)
         let bare = try XCTUnwrap(EventDetailModel(
             eventID: "e2", snapshot: snapshot([without]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
         ))
         XCTAssertNil(bare.joinURL)
-        XCTAssertFalse(bare.actionTitles.contains("Join"))
-        XCTAssertEqual(bare.actionTitles, ["Record this meeting"])
+        XCTAssertFalse(bare.actions.contains(.join))
+        XCTAssertEqual(bare.actions, [.record])
+    }
+
+    /// Design pass C4 and review focus 3: a finished event (end <= now) with
+    /// a recap has one button, Open recap; a running one keeps Join and
+    /// Record even with a recap, and a finished one without a recap keeps
+    /// them too.
+    func testAPastEventWithARecapOffersOnlyOpenRecap() throws {
+        let url = "https://meet.example.com/abc"
+        let past = event("past", start: now.addingTimeInterval(-7_200), minutes: 30, conference: url)
+        let endsNow = event("ends-now", start: now.addingTimeInterval(-1_800), minutes: 30, conference: url)
+        let running = event("running", start: now.addingTimeInterval(-600), minutes: 30, conference: url)
+        let bare = event("bare", start: now.addingTimeInterval(-7_200), minutes: 30, conference: url)
+        func recap(_ id: Int, of eventID: String) -> MeetingTranscript {
+            MeetingTranscript(
+                id: id, eventID: eventID, title: "Recap", durationSec: 600,
+                createdAt: Self.iso.string(from: now.addingTimeInterval(-3_600)),
+                updatedAt: Self.iso.string(from: now.addingTimeInterval(-3_600)), speakers: [], summary: "Done.",
+                keyDecisions: [], actionItems: [], openQuestions: []
+            )
+        }
+        let replica = snapshot(
+            [past, endsNow, running, bare],
+            transcripts: [recap(9, of: "past"), recap(10, of: "ends-now"), recap(11, of: "running")]
+        )
+        func actions(_ id: String) throws -> [EventAction] {
+            try XCTUnwrap(EventDetailModel(
+                eventID: id, snapshot: replica, recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+            )).actions
+        }
+        XCTAssertEqual(try actions("past"), [.openRecap(9)])
+        XCTAssertEqual(try actions("ends-now"), [.openRecap(10)], "an event that ends now is over")
+        XCTAssertEqual(try actions("running"), [.join, .record], "a running meeting still records")
+        XCTAssertEqual(try actions("bare"), [.join, .record], "no recap: Join and Record stay")
+        XCTAssertEqual([EventAction.join, .record, .openRecap(9)].map(\.title), ["Join", "Record", "Open recap"])
     }
 
     // MARK: - Now tab

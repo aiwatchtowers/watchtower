@@ -50,18 +50,13 @@ private struct OptionLabel: View {
             Image(systemName: symbol)
                 .foregroundStyle(option.isPicked ? Color.accentColor : Color.secondary)
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(option.label).font(.body.weight(.medium))
-                    if option.recommended {
-                        Text("RECOMMENDED")
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(Color.accentColor)
-                            .padding(.horizontal, 5)
-                            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Color.accentColor, lineWidth: 1))
-                    }
+                Text(option.label).font(.body.weight(.medium))
+                // A word on its own line, not an outlined code badge (A2).
+                if option.recommended {
+                    Text("Recommended").font(TypeScale.meta).foregroundStyle(PhoneTone.accent.color)
                 }
                 if !option.description.isEmpty {
-                    Text(option.description).font(.caption).foregroundStyle(.secondary)
+                    Text(option.description).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
             }
             Spacer(minLength: 0)

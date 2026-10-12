@@ -82,7 +82,7 @@ struct StartSessionSheet: View {
                 LabeledContent("Workbench", value: model.workbenchName)
                 if fixedTargetID != nil {
                     LabeledContent("Target") {
-                        Text(model.targetLabel ?? "").font(.callout.monospaced()).lineLimit(2)
+                        Text(model.targetLabel ?? "").font(.callout).lineLimit(2)
                     }
                 } else {
                     Picker("Target", selection: targetBinding(model)) {
@@ -124,7 +124,7 @@ struct StartSessionSheet: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) { formButtons(model) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { formButtons(model) }
     }
 
     private func targetBinding(_ model: StartSessionFormModel) -> Binding<Int64?> {
@@ -141,39 +141,36 @@ struct StartSessionSheet: View {
     }
 
     private func formButtons(_ model: StartSessionFormModel) -> some View {
-        VStack(spacing: 8) {
-            if let caption = model.startCaption {
-                Text(caption).font(.caption).foregroundStyle(.secondary)
-            }
-            if let existing = model.existing {
-                Button {
-                    openIt(model)
-                } label: {
-                    Text("Open it").frame(maxWidth: .infinity, minHeight: 50)
+        BottomActionBar {
+            VStack(spacing: Spacing.regular) {
+                if let caption = model.startCaption {
+                    Text(caption).font(TypeScale.meta).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(!existing.isLive && !model.canStart)
-                .accessibilityHint(existing.isLive ? "Opens the running session" : "Resumes the session on the Mac")
-                Button {
-                    start(.new, model)
-                } label: {
-                    Text("Start a new one").frame(maxWidth: .infinity, minHeight: 44)
+                if let existing = model.existing {
+                    Button("Open it") { openIt(model) }
+                        .buttonStyle(ProminentActionStyle())
+                        .disabled(!existing.isLive && !model.canStart)
+                        .accessibilityHint(existing.isLive ? "Opens the running session" : "Resumes the session on the Mac")
+                    secondaryButton("Start a new one") { start(.new, model) }
+                        .disabled(!model.canStart)
+                } else {
+                    Button { start(.new, model) } label: {
+                        Label("Start session", systemImage: "play.fill")
+                    }
+                    .buttonStyle(ProminentActionStyle())
+                    .disabled(!model.canStart)
                 }
-                .buttonStyle(.bordered)
-                .disabled(!model.canStart)
-            } else {
-                Button {
-                    start(.new, model)
-                } label: {
-                    Label("Start session", systemImage: "play.fill").frame(maxWidth: .infinity, minHeight: 50)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canStart)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
+    }
+
+    /// The secondary button of a bar's pair.
+    private func secondaryButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
     }
 
     // MARK: - Progress
@@ -182,13 +179,9 @@ struct StartSessionSheet: View {
         List {
             Section {
                 ForEach(progress.steps) { step in
-                    HStack(spacing: 12) {
-                        StepDot(state: step.state)
-                        Text(step.title).foregroundStyle(step.state == .todo ? .secondary : .primary)
-                    }
-                    .frame(minHeight: 44)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityValue(Self.stepValue(step.state))
+                    StepRow(state: Self.stepState(step.state), text: step.title)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityValue(Self.stepValue(step.state))
                 }
                 if let waiting = progress.waitingLine {
                     Label(waiting, systemImage: "clock").font(.caption).foregroundStyle(.secondary)
@@ -205,7 +198,7 @@ struct StartSessionSheet: View {
                 if progress.failure == nil && !progress.isEnded { Text(SessionStartText.leaveHint) }
             }
         }
-        .safeAreaInset(edge: .bottom) { progressButtons(progress, model) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { progressButtons(progress, model) }
     }
 
     private static func stepValue(_ state: StartProgressModel.Step.State) -> String {
@@ -216,63 +209,49 @@ struct StartSessionSheet: View {
         }
     }
 
+    private static func stepState(_ state: StartProgressModel.Step.State) -> StepRow.State {
+        switch state {
+        case .done: .done
+        case .current: .current
+        case .todo: .todo
+        }
+    }
+
     private func progressButtons(_ progress: StartProgressModel, _ model: StartSessionFormModel) -> some View {
-        VStack(spacing: 8) {
-            if let row = progress.failedRow {
-                Button {
-                    retry(row)
-                } label: {
-                    Text("Try again").frame(maxWidth: .infinity, minHeight: 50)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canStart)
-                Button {
-                    clear(model)
-                } label: {
-                    Text("Dismiss").frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.bordered)
-            } else if progress.isEnded {
-                Button {
-                    clear(model)
-                    start(.new, model)
-                } label: {
-                    Text("Start a new one").frame(maxWidth: .infinity, minHeight: 50)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canStart)
-                Button {
-                    clear(model)
-                } label: {
-                    Text("Dismiss").frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.bordered)
-            } else {
-                Button {
-                    if let id = progress.openSessionID {
+        BottomActionBar {
+            VStack(spacing: Spacing.regular) {
+                if let row = progress.failedRow {
+                    Button("Try again") { retry(row) }
+                        .buttonStyle(ProminentActionStyle())
+                        .disabled(!model.canStart)
+                    secondaryButton("Dismiss") { clear(model) }
+                } else if progress.isEnded {
+                    Button("Start a new one") {
+                        clear(model)
+                        start(.new, model)
+                    }
+                    .buttonStyle(ProminentActionStyle())
+                    .disabled(!model.canStart)
+                    secondaryButton("Dismiss") { clear(model) }
+                } else {
+                    Button(SessionStartText.openSession) {
+                        if let id = progress.openSessionID {
+                            clear(model)
+                            dismiss()
+                            onOpenSession(id)
+                        }
+                    }
+                    .buttonStyle(ProminentActionStyle())
+                    .disabled(progress.openSessionID == nil)
+                    // Done always ends the sheet's hold on the start; a save the
+                    // Mac has not answered yet still shows from its overlay row.
+                    secondaryButton("Done") {
                         clear(model)
                         dismiss()
-                        onOpenSession(id)
                     }
-                } label: {
-                    Text(SessionStartText.openSession).frame(maxWidth: .infinity, minHeight: 50)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(progress.openSessionID == nil)
-                // Done always ends the sheet's hold on the start; a save the
-                // Mac has not answered yet still shows from its overlay row.
-                Button {
-                    clear(model)
-                    dismiss()
-                } label: {
-                    Text("Done").frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.bordered)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
     }
 
     // MARK: - Actions
@@ -316,23 +295,5 @@ struct StartSessionSheet: View {
                 sendError = BoardWriteText.sendError(error)
             }
         }
-    }
-}
-
-/// One progress step's dot: filled when done, a ring while current, faint
-/// before.
-private struct StepDot: View {
-    let state: StartProgressModel.Step.State
-
-    var body: some View {
-        Group {
-            switch state {
-            case .done: Circle().fill(PhoneTone.green.color)
-            case .current: Circle().strokeBorder(PhoneTone.green.color, lineWidth: 2)
-            case .todo: Circle().strokeBorder(PhoneTone.secondary.color, lineWidth: 1.5)
-            }
-        }
-        .frame(width: 12, height: 12)
-        .accessibilityHidden(true)
     }
 }

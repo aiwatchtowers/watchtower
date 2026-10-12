@@ -53,7 +53,13 @@ struct AskView: View {
                     if form.closedLines.isEmpty {
                         Text("No answer was stored").foregroundStyle(.secondary)
                     }
-                    ForEach(form.closedLines, id: \.self) { Text($0) }
+                    ForEach(Array(form.closedLines.enumerated()), id: \.offset) { _, line in
+                        VStack(alignment: .leading, spacing: Spacing.tight) {
+                            Text(line.label).font(TypeScale.meta).foregroundStyle(.secondary)
+                            Text(line.value).font(.callout)
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
                 }
             } else {
                 if let page = form.question {
@@ -87,7 +93,7 @@ struct AskView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if form.openOnMac == nil, form.closedStatus == nil {
                 AskSendBar(form: form, ask: ask, model: model)
             }
@@ -104,26 +110,34 @@ struct AskView: View {
     }
 }
 
-/// "ASK #109 · QUESTION · 1 OF 2", the title, where it came from, the
-/// summary, what changed since the last round and what to look at.
+/// The kind's icon and word, "#109" and "1 of 2"; the title, where it came
+/// from, the summary, what changed since the last round and what to look
+/// at (design pass A1).
 private struct AskHeaderView: View {
     let form: AskFormModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(form.header)
-                .font(.caption2.monospaced().weight(.semibold))
-                .foregroundStyle(form.headerTone.color)
-            Text(form.title).font(.title3.weight(.semibold))
-            Text(form.subline).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Label(form.kindName, systemImage: form.kindIcon)
+                    .font(TypeScale.kind)
+                    .foregroundStyle(form.headerTone.color)
+                Text(form.idText).font(TypeScale.time).foregroundStyle(.secondary)
+                Spacer(minLength: Spacing.regular)
+                if let page = form.pageText {
+                    Text(page).font(TypeScale.meta).foregroundStyle(.secondary)
+                }
+            }
+            Text(form.title).font(TypeScale.screenTitle)
+            Text(form.subline).font(TypeScale.meta).foregroundStyle(.secondary)
             if !form.summary.isEmpty {
                 Text(form.summary).font(.callout)
             }
             if !form.changes.isEmpty {
                 Text("Changed since the last round: \(form.changes)").font(.callout).foregroundStyle(.secondary)
             }
-            ForEach(Array(form.focus.enumerated()), id: \.offset) { index, focus in
-                Text("\(index + 1) · \(focus)").font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(form.focus.enumerated()), id: \.offset) { _, focus in
+                Label(focus, systemImage: "scope").font(TypeScale.meta).foregroundStyle(.secondary)
             }
         }
         .accessibilityElement(children: .combine)
@@ -173,40 +187,38 @@ private struct AskSendBar: View {
     let model: AskViewModel
 
     var body: some View {
-        VStack(spacing: 8) {
-            if form.review != nil {
-                HStack(spacing: 8) {
-                    Button(AskText.requestChanges) { verdict(.changes) }
+        BottomActionBar {
+            VStack(spacing: Spacing.regular) {
+                if form.review != nil {
+                    // Equal widths: both labels fill their half.
+                    HStack(spacing: Spacing.regular) {
+                        Button { verdict(.changes) } label: {
+                            Text(AskText.requestChanges).frame(maxWidth: .infinity)
+                        }
                         .buttonStyle(.bordered)
+                        .controlSize(.large)
                         .accessibilityHint("Sends the answer with changes requested")
-                    Button(AskText.approve) { verdict(.approved) }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityHint("Sends the answer approved")
+                        Button(AskText.approve) { verdict(.approved) }
+                            .buttonStyle(ProminentActionStyle())
+                            .accessibilityHint("Sends the answer approved")
+                    }
+                    .disabled(!form.canSendVerdict)
+                } else if let page = form.question, !page.isLast {
+                    Button(AskText.next) { model.next(of: page.count) }
+                        .buttonStyle(ProminentActionStyle())
+                } else {
+                    Button(AskText.send) { Task { await model.send(ask) } }
+                        .buttonStyle(ProminentActionStyle())
+                        .disabled(!form.canSend)
+                        .accessibilityLabel(AskText.send)
                 }
-                .controlSize(.large)
-                .disabled(!form.canSendVerdict)
-            } else if let page = form.question, !page.isLast {
-                Button(AskText.next) { model.next(of: page.count) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .frame(maxWidth: .infinity)
-            } else {
-                Button(AskText.send) { Task { await model.send(ask) } }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(!form.canSend)
-                    .accessibilityLabel(AskText.send)
+                if let page = form.question, page.index > 0 {
+                    Button(AskText.previous) { model.previous() }
+                        .frame(minHeight: 44)
+                }
+                Text(form.footer).font(.caption).foregroundStyle(.secondary)
             }
-            if let page = form.question, page.index > 0 {
-                Button(AskText.previous) { model.previous() }
-                    .frame(minHeight: 44)
-            }
-            Text(form.footer).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.bar)
     }
 
     private func verdict(_ verdict: OwnerAskAnswer.Verdict) {

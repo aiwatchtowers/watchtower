@@ -2,8 +2,8 @@ import SwiftUI
 import WatchtowerKit
 
 /// One event: the time line, attendees, the Prep card, linked targets
-/// (read-only), the Recording section, and the bottom bar with Join and the
-/// red Record this meeting.
+/// (read-only), the Recording section, and the bottom bar: Join and the red
+/// Record, or Open recap once the event is over and has one.
 struct EventDetailView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(\.openURL) private var openURL
@@ -34,7 +34,7 @@ struct EventDetailView: View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(model.title).font(.title3.weight(.semibold))
+                    Text(model.title).font(TypeScale.screenTitle)
                     Text(model.whenLine).font(.subheadline).foregroundStyle(.secondary)
                 }
                 if let line = model.attendeesLine {
@@ -43,9 +43,10 @@ struct EventDetailView: View {
                         HStack(spacing: -6) {
                             ForEach(model.attendees) { attendee in
                                 Text(attendee.initials)
-                                    .font(.caption2.weight(.semibold))
-                                    .frame(width: 28, height: 28)
-                                    .background(Color.secondary.opacity(0.2), in: Circle())
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(attendee.tone.color)
+                                    .frame(width: 32, height: 32)
+                                    .background(attendee.tone.color.opacity(0.2), in: Circle())
                                     .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
                             }
                         }
@@ -84,11 +85,22 @@ struct EventDetailView: View {
                 }
             }
             Section("Recording") {
-                if model.recordingPills.isEmpty {
+                if let percent = model.transcribingPercent {
+                    HStack(spacing: Spacing.regular) {
+                        Image(systemName: "waveform").foregroundStyle(PhoneTone.purple.color)
+                        Text(EventDetailModel.transcribingTitle).font(.callout)
+                        Spacer(minLength: Spacing.regular)
+                        ThinProgressBar(value: Double(percent) / 100, tone: .purple)
+                            .frame(width: 80)
+                            .accessibilityHidden(true)
+                        Text("\(percent)%").font(TypeScale.time)
+                    }
+                    .accessibilityElement(children: .combine)
+                } else if model.recordingPills.isEmpty {
                     Text(model.recordingText).foregroundStyle(.secondary)
                 } else {
-                    HStack(spacing: 6) {
-                        ForEach(model.recordingPills) { EventPillView(pill: $0) }
+                    FlowRow {
+                        ForEach(model.recordingPills) { Pill(text: $0.text, tone: $0.tone) }
                     }
                     if model.recordingText != model.recordingPills.first?.text {
                         Text(model.recordingText).font(.callout)
@@ -96,35 +108,48 @@ struct EventDetailView: View {
                 }
             }
         }
-        .safeAreaInset(edge: .bottom) { bottomBar(model) }
+        .safeAreaInset(edge: .bottom, spacing: 0) { bottomBar(model) }
     }
 
     @ViewBuilder
     private func bottomBar(_ model: EventDetailModel) -> some View {
-        if !model.actionTitles.isEmpty {
-            HStack(spacing: 10) {
-                if let url = model.joinURL {
-                    Button {
-                        openURL(url)
-                    } label: {
-                        Label("Join", systemImage: "video").frame(maxWidth: .infinity)
+        if !model.actions.isEmpty {
+            BottomActionBar {
+                HStack(spacing: Spacing.regular) {
+                    ForEach(model.actions, id: \.self) { action in
+                        actionButton(action, model)
                     }
-                    .buttonStyle(.bordered)
-                }
-                if let meeting = model.meetingEvent {
-                    Button {
-                        Task { await env.recorder.recordMeeting(meeting) }
-                    } label: {
-                        Label("Record this meeting", systemImage: "record.circle").frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(PhoneTone.red.color)
                 }
             }
-            .controlSize(.large)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .background(.bar)
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(_ action: EventAction, _ model: EventDetailModel) -> some View {
+        switch action {
+        case .join:
+            if let url = model.joinURL {
+                Button {
+                    openURL(url)
+                } label: {
+                    Label(action.title, systemImage: "video").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
+        case .record:
+            if let meeting = model.meetingEvent {
+                RecordButton(fillsWidth: true) {
+                    Task { await env.recorder.recordMeeting(meeting) }
+                }
+            }
+        case let .openRecap(id):
+            // A link, not a calendarPath append: the event detail is also
+            // pushed on Now's stack, and the recap opens on the stack it is on.
+            NavigationLink(value: CalendarRoute.recap(id)) {
+                Text(action.title)
+            }
+            .buttonStyle(ProminentActionStyle())
         }
     }
 }

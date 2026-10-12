@@ -496,6 +496,15 @@ final class StartSheetWiringTests: XCTestCase {
         XCTAssertEqual(model.startCaption, "This phone is not allowed to start sessions on the Mac")
     }
 
+    /// Bug 5 (design pass spec §3): with no target and a refused grant, the
+    /// grant caption wins; a picked target on an allowed phone has none.
+    func testTheGrantCaptionWinsOverTheMissingTarget() throws {
+        let refused = try form(nil, try snapshot(try ReplicaStore.inMemory(), grant: grant(typing: false, start: false)))
+        XCTAssertFalse(refused.canStart)
+        XCTAssertEqual(refused.startCaption, "This phone is not allowed to start sessions on the Mac")
+        XCTAssertNil(try form(415, try snapshot(try ReplicaStore.inMemory())).startCaption)
+    }
+
     /// From the Workbench header no target is set: Start waits for one, and
     /// picking one fills the brief from its work-on prompt. Archived
     /// targets are not offered.
@@ -503,6 +512,7 @@ final class StartSheetWiringTests: XCTestCase {
         let model = try form(nil, try snapshot(try ReplicaStore.inMemory()))
         XCTAssertNil(model.target)
         XCTAssertFalse(model.canStart)
+        XCTAssertEqual(model.startCaption, "Choose a target to start", "Start says why it is off")
         XCTAssertNil(model.progress)
         XCTAssertTrue(model.targetOptions.contains { $0.id == 415 })
         XCTAssertFalse(model.targetOptions.contains { $0.id == 417 || $0.id == 390 }, "archived targets stay off")
