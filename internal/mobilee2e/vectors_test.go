@@ -252,6 +252,9 @@ func TestAssetVectorsDecryptInGo(t *testing.T) {
 			}
 			out = append(out, p...)
 		}
+		if total > uint64(len(out)) {
+			t.Fatalf("asset %s: total_len %d exceeds %d decrypted bytes", name, total, len(out))
+		}
 		out = out[:total]
 		if !bytes.Equal(out, plain) {
 			t.Errorf("asset %s: plaintext mismatch", name)
@@ -336,6 +339,18 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 	}
 	senders := map[string][]byte{"data": hubID, "relayToHub": k.deviceID, "relayToPhone": hubID}
 	zoneByte := map[string]byte{"DataZone": 1, "RelayZone": 2}
+	// Spec-pinned expectations, independent of the fixture's own fields (class codes: Envelope.swift).
+	type want struct {
+		class                  int
+		signed                 bool
+		zone, kind, id, notify string
+		payload                string
+	}
+	wants := map[string]want{
+		"data":         {1, true, "DataZone", "meeting_transcript", "9", "urgent", `{"title":"Acme sync"}`},
+		"relayToHub":   {5, false, "RelayZone", "action", "a1", "", `{"op":"close"}`},
+		"relayToPhone": {6, false, "RelayZone", "echo", "a1", "", `{"ok":true}`},
+	}
 	nonce := seq(0x50, 0x5B)
 	if len(fx.Cases) != 3 {
 		t.Fatalf("fixture holds %d cases, want 3", len(fx.Cases))
@@ -348,7 +363,18 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 			if len(header) != 68 || string(header[:3]) != "WTE" || header[3] != 1 || header[4] != 1 {
 				t.Fatalf("bad header %x", header)
 			}
+			w, ok := wants[name]
+			if !ok {
+				t.Fatalf("unexpected case %q", name)
+			}
+			zb, ok := zoneByte[c.Zone]
+			if !ok || c.Zone != w.zone {
+				t.Fatalf("zone %q, want %q", c.Zone, w.zone)
+			}
 			signed := header[5]&1 != 0
+			if signed != w.signed {
+				t.Errorf("signed flag %v, want %v", signed, w.signed)
+			}
 			hasAsset := header[5]&2 != 0
 			if header[5]&4 == 0 {
 				t.Error("padded flag not set")
@@ -365,16 +391,16 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 			if !bytes.Equal(header[50:62], nonce) {
 				t.Error("nonce")
 			}
-			if int(binary.BigEndian.Uint16(header[62:64])) != c.EnvelopeClass {
+			if int(binary.BigEndian.Uint16(header[62:64])) != w.class {
 				t.Error("class")
 			}
 			if int(binary.BigEndian.Uint32(header[64:68])) != len(body) {
 				t.Errorf("body_len %d, body %d", binary.BigEndian.Uint32(header[64:68]), len(body))
 			}
 
-			aad := cat(header, []byte{zoneByte[c.Zone]}, be16(len(c.WireName)), []byte(c.WireName))
+			aad := cat(header, []byte{zb}, be16(len(c.WireName)), []byte(c.WireName))
 			if signed != (c.Signature != "") {
-				t.Fatalf("signed flag %v but signature %q", signed, c.Signature)
+				t.Fatalf("fixture signature presence %q disagrees with the signed flag", c.Signature)
 			}
 			if signed {
 				sig := mustHex(t, c.Signature)
@@ -401,11 +427,14 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 				t.Errorf("padded frame %d bytes, want 256", len(plain))
 			}
 			f := parseFrame(t, plain)
-			if f.kind != c.Kind || f.id != c.ID || f.notify != c.NotifyLevel {
-				t.Errorf("frame %q/%q/%q, fixture %q/%q/%q", f.kind, f.id, f.notify, c.Kind, c.ID, c.NotifyLevel)
+			if f.kind != w.kind || f.id != w.id || f.notify != w.notify {
+				t.Errorf("frame %q/%q/%q, want %q/%q/%q", f.kind, f.id, f.notify, w.kind, w.id, w.notify)
 			}
-			if hex.EncodeToString(f.payload) != c.Payload {
-				t.Errorf("payload %x, fixture %s", f.payload, c.Payload)
+			if string(f.payload) != w.payload {
+				t.Errorf("payload %q, want %q", f.payload, w.payload)
+			}
+			if c.Kind != w.kind || c.ID != w.id || c.NotifyLevel != w.notify || c.Payload != hex.EncodeToString([]byte(w.payload)) {
+				t.Error("fixture metadata disagrees with the pinned expectations")
 			}
 			if hasAsset != (f.asset != nil) {
 				t.Error("has-asset flag disagrees with the frame")
@@ -420,7 +449,7 @@ func TestEnvelopeVectorsOpenInGo(t *testing.T) {
 				}
 			}
 			// The wrong zone byte must not open (AAD binds the zone).
-			bad := cat(header, []byte{3 - zoneByte[c.Zone]}, be16(len(c.WireName)), []byte(c.WireName))
+			bad := cat(header, []byte{3 - zb}, be16(len(c.WireName)), []byte(c.WireName))
 			if _, err := aead.Open(nil, header[50:62], body, bad); err == nil {
 				t.Error("opened under the wrong zone")
 			}
