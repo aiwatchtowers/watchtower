@@ -694,6 +694,93 @@ final class CodeFilesActiveRootTests: XCTestCase {
         XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty)
         XCTAssertEqual(vm.activeCodeRoot(project: project), root, "the Files pane shows the tab's root")
     }
+
+    /// The session's agent never reported a cwd: its place stays unproven.
+    private func unplaceSession() async throws {
+        let id = sessionID
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET agent_cwd = NULL, agent_cwd_at = NULL WHERE id = ?",
+                           arguments: [id])
+        }
+    }
+
+    /// Still unproven after the wait, an ask's path opens only where the
+    /// page shows it: a file of the shown root opens there; a file only the
+    /// worktree has opens nowhere (never a tab in a root not on screen).
+    func testAnAskLinkWhosePlaceStaysUnprovenOpensOnlyInTheShownRoot() async throws {
+        try await unplaceSession()
+        let vm = makeVM()
+        vm.askPlaceTimeout = .milliseconds(100)
+        await vm.reload()
+        vm.setLayout(layout(.board), projectID: project.id)
+        let folder = URL(fileURLWithPath: project.folderPath)
+        try "package wt\n".write(to: worktree.appendingPathComponent("only-here.go"), atomically: true, encoding: .utf8)
+        try "package main\n".write(to: folder.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+
+        let missing = await vm.openAskLink(OpenQuicklyTarget(path: "only-here.go", line: 1, col: nil),
+                                           projectID: project.id, sessionID: sessionID)
+        let shown = await vm.openAskLink(OpenQuicklyTarget(path: "main.go", line: 1, col: nil),
+                                         projectID: project.id, sessionID: sessionID)
+
+        XCTAssertFalse(vm.sessionPlaces.isPlaceProven(sessionID: sessionID))
+        XCTAssertFalse(missing, "not in the shown root: nothing opened")
+        XCTAssertTrue(shown)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["main.go"])
+        XCTAssertTrue(vm.codeFiles.tabs(for: root).paths.isEmpty, "never an invisible tab")
+    }
+
+    /// A second click cancels the link still waiting for its session's
+    /// place: the first opens nothing and does not beep; the second opens.
+    func testASecondAskLinkClickCancelsTheOneStillWaiting() async throws {
+        try await unplaceSession()
+        let vm = makeVM()
+        vm.askPlaceTimeout = .seconds(30)
+        await vm.reload()
+        vm.setLayout(layout(.board), projectID: project.id)
+        let folder = URL(fileURLWithPath: project.folderPath)
+        try "package main\n".write(to: folder.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
+        var beeps = 0
+
+        let waiting = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 1, col: nil),
+                                      projectID: project.id, sessionID: sessionID) { beeps += 1 }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !vm.layout(projectID: project.id).sessionIDs.contains(sessionID), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(vm.layout(projectID: project.id).sessionIDs.contains(sessionID), "the first is waiting")
+        let second = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 2, col: nil),
+                                     projectID: project.id, sessionID: nil) { beeps += 1 }
+        let started = ContinuousClock.now
+        await waiting.value
+        await second.value
+
+        XCTAssertLessThan(ContinuousClock.now - started, .seconds(10), "the first stopped waiting")
+        XCTAssertEqual(beeps, 0)
+        XCTAssertEqual(vm.codeFiles.tabs(for: project.mainCodeRoot).paths, ["main.go"])
+        XCTAssertNil(vm.askLinkTasks[project.id], "the finished click lets go")
+    }
+
+    /// The drawer went away: its link still waiting opens nothing, silently.
+    func testAnAskLinkIsCancelledWhenItsViewGoesAway() async throws {
+        try await unplaceSession()
+        let vm = makeVM()
+        vm.askPlaceTimeout = .seconds(30)
+        await vm.reload()
+        vm.setLayout(layout(.board), projectID: project.id)
+        let folder = URL(fileURLWithPath: project.folderPath)
+        try "package main\n".write(to: folder.appendingPathComponent("main.go"), atomically: true, encoding: .utf8)
+        var beeps = 0
+
+        let waiting = vm.clickAskLink(OpenQuicklyTarget(path: "main.go", line: 1, col: nil),
+                                      projectID: project.id, sessionID: sessionID) { beeps += 1 }
+        vm.cancelAskLink(projectID: project.id)
+        await waiting.value
+
+        XCTAssertEqual(beeps, 0)
+        XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty)
+    }
 }
 
 /// An editor page that does not answer until released.

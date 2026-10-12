@@ -92,7 +92,6 @@ extension WorkbenchesViewModel {
         if let memo = codeRootMemo[key], memo.inputs == inputs { return memo.root }
         let root = provenCodeRoot(inputs, project: project)
         codeRootMemo[key] = CodeRootMemo(inputs: inputs, root: root)
-        if !root.isMain, sessionID != nil { lastWorktreeRoots[key] = root }
         return root
     }
 

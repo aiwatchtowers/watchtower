@@ -12,23 +12,53 @@ extension WorkbenchesViewModel {
     /// folder or a workbench no longer listed. The folder is the root of
     /// the ask's session (its worktree when proven), else the page's; the
     /// file always opens where the page shows it (`askLinkRoot`).
+    /// A click superseded by a newer one (`clickAskLink`) opens nothing.
     @discardableResult
     func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64, sessionID: Int64? = nil) async -> Bool {
         guard let project = summaries.first(where: { $0.id == projectID })?.project,
-              let place = await askLinkRoot(target.path, project: project, sessionID: sessionID) else { return false }
-        asks.drawerExpanded = false
+              let place = await askLinkRoot(target.path, project: project, sessionID: sessionID),
+              !Task.isCancelled else { return false }
         let opened = OpenQuicklyTarget(path: place.path, line: target.line, col: target.col)
         await openFile(at: opened, root: place.root, beside: true)
+        // After the open: collapsing the drawer may take the clicked view
+        // (and its link task) away.
+        asks.drawerExpanded = false
         return true
+    }
+
+    /// A path clicked in an ask's text (`OwnerAskLinks`): one link in
+    /// flight per workbench — a newer click cancels the one still waiting
+    /// for its session's place, and so does the drawer going away
+    /// (`cancelAskLink`). `beep` when it opened nothing and was not
+    /// cancelled.
+    @discardableResult
+    func clickAskLink(
+        _ target: OpenQuicklyTarget, projectID: Int64, sessionID: Int64?, beep: @escaping @MainActor () -> Void
+    ) -> Task<Void, Never> {
+        askLinkTasks[projectID]?.task.cancel()
+        let token = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let opened = await self.openAskLink(target, projectID: projectID, sessionID: sessionID)
+            if askLinkTasks[projectID]?.token == token { askLinkTasks[projectID] = nil }
+            if !opened, !Task.isCancelled { beep() }
+        }
+        askLinkTasks[projectID] = (token, task)
+        return task
+    }
+
+    /// The ask's view went away: its link still waiting opens nothing.
+    func cancelAskLink(projectID: Int64) {
+        askLinkTasks.removeValue(forKey: projectID)?.task.cancel()
     }
 
     /// Where an ask's path opens: the ask session's root when its place is
     /// proven and the page shows it. Otherwise that session is brought onto
     /// the page first and its place awaited (a session just resumed has
-    /// none until its hook reports, `askPlaceTimeout`); still unproven, its
-    /// last proven worktree when the file is there. A session that cannot
-    /// come onto the page leaves the page's root, when the same path is a
-    /// file there. nil: nothing to open (the caller beeps).
+    /// none until its hook reports, `askPlaceTimeout`). Still unproven, or
+    /// a session that cannot come onto the page: the root the page shows,
+    /// when the path is a file there — never a tab in a root not on
+    /// screen. nil: nothing to open (the caller beeps).
     private func askLinkRoot(
         _ rawPath: String, project: Workbench, sessionID: Int64?
     ) async -> (root: CodeRoot, path: String)? {
@@ -45,7 +75,8 @@ extension WorkbenchesViewModel {
         let proven = await sessionPlaces.awaitProvenPlace(
             sessionID: sessionID, workbenchID: project.id, folder: project.folderPath, timeout: askPlaceTimeout
         )
-        guard proven else { return lastWorktreeFile(rawPath, sessionID: sessionID, project: project) }
+        guard !Task.isCancelled else { return nil }
+        guard proven else { return Self.fileOf(rawPath, in: activeCodeRoot(project: project)) }
         return provenAskFile(rawPath, sessionID: sessionID, project: project)
     }
 
@@ -59,15 +90,6 @@ extension WorkbenchesViewModel {
         let shown = activeCodeRoot(project: project)
         guard root != shown else { return found }
         return Self.fileOf(found.path, in: shown).flatMap { $0.path == found.path ? $0 : nil }
-    }
-
-    /// The session's last proven worktree, when it still holds the file.
-    private func lastWorktreeFile(
-        _ rawPath: String, sessionID: Int64, project: Workbench
-    ) -> (root: CodeRoot, path: String)? {
-        guard let last = lastWorktreeRoots[CodeRootMemoKey(projectID: project.id, sessionID: sessionID)],
-              !codeFiles.isRemoved(last) else { return nil }
-        return Self.fileOf(rawPath, in: last)
     }
 
     private static func fileOf(_ rawPath: String, in root: CodeRoot) -> (root: CodeRoot, path: String)? {

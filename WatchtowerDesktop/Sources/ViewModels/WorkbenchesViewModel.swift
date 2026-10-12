@@ -109,10 +109,9 @@ final class WorkbenchesViewModel {
     /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
     /// read it without touching the disk again.
     @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
-    /// Each session's last proven worktree root (`codeRoot(sessionID:project:)`):
-    /// where an ask's path still opens while a resumed session's place is
-    /// unproven (`openAskLink`).
-    @ObservationIgnored var lastWorktreeRoots: [CodeRootMemoKey: CodeRoot] = [:]
+    /// The ask link clicked last per workbench, while it runs
+    /// (`clickAskLink`): a newer click cancels it.
+    @ObservationIgnored var askLinkTasks: [Int64: (token: UUID, task: Task<Void, Never>)] = [:]
     /// How long an ask link waits for a session brought onto the page to
     /// prove its place. Internal for tests.
     @ObservationIgnored var askPlaceTimeout: Duration = .seconds(3)
@@ -468,7 +467,7 @@ final class WorkbenchesViewModel {
             terminalSessions[id] = nil
             sessionPlaces.forgetWorkbench(id)
             codeFiles.forgetRemovedBuffers(workbenchID: id)
-            lastWorktreeRoots = lastWorktreeRoots.filter { $0.key.projectID != id }
+            askLinkTasks.removeValue(forKey: id)?.task.cancel()
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }

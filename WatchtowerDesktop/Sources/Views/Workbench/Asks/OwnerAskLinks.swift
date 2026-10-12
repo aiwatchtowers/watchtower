@@ -49,11 +49,11 @@ struct OwnerAskLinks: ViewModifier {
             .environment(\.markdownCodeLinks, true)
             .environment(\.openURL, OpenURLAction { [vm, projectID, sessionID] url in
                 Self.handleAskLink(url, openFile: { target in
-                    // A beep when it names no file of the folder.
-                    Task {
-                        if !(await vm.openAskLink(target, projectID: projectID, sessionID: sessionID)) { NSSound.beep() }
-                    }
+                    // A beep when it names no file of the folder; one link
+                    // in flight, a newer click cancels it.
+                    vm.clickAskLink(target, projectID: projectID, sessionID: sessionID) { NSSound.beep() }
                 }, beep: NSSound.beep)
             })
+            .onDisappear { vm.cancelAskLink(projectID: projectID) }
     }
 }
