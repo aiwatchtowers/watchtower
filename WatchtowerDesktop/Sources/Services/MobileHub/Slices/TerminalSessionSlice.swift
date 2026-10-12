@@ -14,7 +14,34 @@ import WatchtowerSync
 struct SessionLiveness: Equatable, Sendable {
     var liveIDs: Set<Int64> = []
     var startedAt: [Int64: Date] = [:]
-    var displayOver: Set<Int64> = []
+    var displayOver: [Int64: ShownOverCount] = [:]
+
+    /// The sessions of `rows` shown over: only where the row still holds
+    /// the count the center judged (the same run and report stamp), so a
+    /// newer background report read here is never published as Stopped.
+    func shownOver(_ rows: [SessionAgentStateRow]) -> Set<Int64> {
+        var over: Set<Int64> = []
+        for row in rows where displayOver[row.id] == ShownOverCount(run: startedAt[row.id], reportedAt: row.agentBackgroundAt) {
+            over.insert(row.id)
+        }
+        return over
+    }
+}
+
+/// A background agent count the state center shows as over: the session's
+/// run and the count's `agent_background_at` it was judged for.
+struct ShownOverCount: Equatable, Sendable {
+    let run: Date?
+    let reportedAt: String?
+
+    /// `over`'s sessions with the run and report stamp of `rows`.
+    static func of(_ over: Set<Int64>, rows: [SessionAgentStateRow], startedAt: [Int64: Date]) -> [Int64: Self] {
+        var counts: [Int64: Self] = [:]
+        for row in rows where over.contains(row.id) {
+            counts[row.id] = Self(run: startedAt[row.id], reportedAt: row.agentBackgroundAt)
+        }
+        return counts
+    }
 }
 
 /// The lock-guarded `SessionLiveness` the fast lane writes and the slice
@@ -176,7 +203,7 @@ struct TerminalSessionSlice: SliceSource {
         // Only workbench `claude` rows: no standalone live ids are passed.
         let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
         let statuses = SessionAgentStatus.resolve(
-            rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now(), displayOver: live.displayOver
+            rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now(), displayOver: live.shownOver(rows)
         )
         let rowsByID = Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
         return windowed.compactMap { session in

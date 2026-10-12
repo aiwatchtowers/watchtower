@@ -215,6 +215,31 @@ final class MobileLinkCenterTests: XCTestCase {
         return try DatabaseQueue().read { try slice.records($0) }
     }
 
+    /// #64 review F3: the phone reads a deleted grant as its removal, so no
+    /// linked phone's grant is ever capped; refusals fill only the room left
+    /// under 20, the latest first.
+    func testEveryLinkedPhonesGrantIsPublishedAndOnlyRefusalsAreCapped() throws {
+        let now = try XCTUnwrap(clock).now
+        // Inside the refusals' lifetime on the test clock.
+        let refuse = { (id: String, ago: TimeInterval) in
+            try self.sidecar.saveLinkRefusal(HubSyncState.LinkRefusalRecord(
+                deviceID: id, name: "iPhone", scope: .private, reason: .expiredCode, at: now.addingTimeInterval(-ago)
+            ))
+        }
+        for index in 0..<18 { try sidecar.linkTestDevice("phone-\(index)") }
+        try refuse("refused-old", 300)
+        try refuse("refused-mid", 200)
+        try refuse("refused-new", 100)
+        var published = try grants()
+        XCTAssertEqual(published.values.filter(\.linked).count, 18)
+        XCTAssertEqual(Set(published.values.filter { !$0.linked }.map(\.deviceID)), ["refused-new", "refused-mid"])
+
+        for index in 18..<21 { try sidecar.linkTestDevice("phone-\(index)") }
+        published = try grants()
+        XCTAssertEqual(published.count, 21, "21 linked phones, every grant published")
+        XCTAssertTrue(published.values.allSatisfy(\.linked), "no room left for a refusal")
+    }
+
     // MARK: - One link, idempotent
 
     func testAValidCodeLinksOnceAndTheSameQRScannedTwiceStaysOneLink() async throws {

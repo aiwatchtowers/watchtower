@@ -270,17 +270,17 @@ final class MobileSettingsViewModelTests: XCTestCase {
         model.requestRemove(phone)
         await model.confirmRemove()
         XCTAssertNil(model.pendingRemove)
+        XCTAssertEqual(model.removeSubject?.deviceID, "phone-b", "the dialog keeps its phone while it dismisses")
         XCTAssertNil(try fixture.sidecar.linkedDevice("phone-b"))
         XCTAssertEqual(model.notice, "Removed iPhone.")
     }
 
     // MARK: - Polling
 
-    /// Board #67: the polled parts refresh every 30 s, and only while the
-    /// polling task runs; its cancellation (the view's `.task` ending with
-    /// the tab or the window) stops it.
-    func testPollingRefreshesEvery30SecondsUntilItsTaskIsCancelled() async throws {
-        XCTAssertEqual(MobileSettingsViewModel.refreshInterval, .seconds(30))
+    /// Board #67: the polled parts refresh while the window is on screen,
+    /// and only while that task runs; its cancellation (the view's `.task`
+    /// ending with the tab or the window) stops it.
+    func testPollingRunsUntilItsTaskIsCancelled() async throws {
         await fixture.startHub()
         let sleeps = SleepLog()
         let model = MobileSettingsViewModel(
@@ -290,7 +290,7 @@ final class MobileSettingsViewModelTests: XCTestCase {
                 try? await Task.sleep(for: .milliseconds(5))
             }
         )
-        let poll = Task { await model.pollWhileVisible() }
+        let poll = Task { await model.windowVisibility(true) }
         await awaitHubCondition("the poll refreshed and slept a few times") { sleeps.count >= 3 }
         XCTAssertEqual(model.account, .available, "a refresh ran")
         poll.cancel()
@@ -298,7 +298,37 @@ final class MobileSettingsViewModelTests: XCTestCase {
         let atCancel = sleeps.count
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(sleeps.count, atCancel, "a cancelled poll stops")
-        XCTAssertTrue(sleeps.all.allSatisfy { $0 == .seconds(30) })
+    }
+
+    /// Board #67 (review F10): 30 s normally; 5 s while the hub starts and
+    /// until its first publish, so turning Sync with iPhone on does not look
+    /// stalled; an unavailable or off hub waits the long one.
+    func testTheRefreshIsFastOnlyUntilTheHubsFirstPublish() {
+        let next = MobileSettingsViewModel.nextRefresh
+        XCTAssertEqual(MobileSettingsViewModel.refreshInterval, .seconds(30))
+        XCTAssertEqual(next(true, .starting, nil), .seconds(5))
+        XCTAssertEqual(next(true, .running, nil), .seconds(5))
+        XCTAssertEqual(next(true, .running, Date()), .seconds(30))
+        XCTAssertEqual(next(true, .unavailable("iCloud is off"), nil), .seconds(30))
+        XCTAssertEqual(next(false, .starting, nil), .seconds(30))
+        XCTAssertEqual(next(true, nil, nil), .seconds(30))
+    }
+
+    /// Board #67 (codex P2): a window that hides or closes closes an open QR
+    /// and its link, as leaving the tab does.
+    func testAHiddenWindowClosesAnOpenSheetsLink() async throws {
+        await fixture.startHub()
+        let model = fixture.makeModel()
+        await model.refresh()
+        model.showCode()
+        await model.linkSheet?.start()
+        XCTAssertTrue(fixture.shares.isLinkOpen)
+
+        await model.windowVisibility(false)
+
+        XCTAssertNil(model.linkSheet)
+        XCTAssertFalse(fixture.shares.isLinkOpen)
+        XCTAssertEqual(fixture.center.lastCloseReason, .sheetClosed)
     }
 
     private final class SleepLog: @unchecked Sendable {

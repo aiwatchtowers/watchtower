@@ -204,23 +204,33 @@ final class TerminalSessionSliceTests: XCTestCase {
 
     /// #411 §10 (board #73): a count the Mac shows over after two failed
     /// probes (`SessionLiveness.displayOver`) goes out as Stopped, the same
-    /// row without it as Agents working.
-    func testACountShownOverOnTheMacIsPublishedAsStopped() throws {
+    /// row without it as Agents working. Review F8: only for the count it
+    /// was judged for — a newer report or another run is Agents working.
+    func testACountShownOverOnTheMacIsPublishedAsStoppedOnlyForThatCount() throws {
         let session = try dbPool.write { db -> Int64 in
             let project = try TestDatabase.insertWorkbench(db)
             let id = try SliceSeed.insertSession(db, projectID: project)
-            try self.setState(db, id, state: "waiting", background: 2)
+            try self.setState(db, id, state: "waiting", background: 2, backgroundAt: 2)
             return id
         }
         let fixedNow = self.fixedNow
-        let shown = { (over: Set<Int64>) -> TerminalSessionSlice in
-            let liveness = SessionLiveness(liveIDs: [session], startedAt: [session: self.started], displayOver: over)
+        let started = self.started
+        let shown = { (over: [Int64: ShownOverCount]) -> TerminalSessionSlice in
+            let liveness = SessionLiveness(liveIDs: [session], startedAt: [session: started], displayOver: over)
             return TerminalSessionSlice(liveness: { liveness }, reportSummary: { _, _ in nil }, now: { fixedNow })
         }
-        XCTAssertEqual(try payloads(shown([]))[session]?["state_kind"] as? String, "working")
-        let over = try XCTUnwrap(try payloads(shown([session]))[session])
+        let judged = ShownOverCount(run: started, reportedAt: stamp(2))
+        XCTAssertEqual(try payloads(shown([:]))[session]?["state_kind"] as? String, "working")
+        let over = try XCTUnwrap(try payloads(shown([session: judged]))[session])
         XCTAssertEqual(over["state_kind"] as? String, "stopped")
         XCTAssertEqual(over["state_caption"] as? String, "Stopped")
+
+        let olderReport = ShownOverCount(run: started, reportedAt: stamp(1))
+        XCTAssertEqual(try payloads(shown([session: olderReport]))[session]?["state_kind"] as? String, "working",
+                       "the row holds a newer report than the one judged over")
+        let otherRun = ShownOverCount(run: started.addingTimeInterval(-60), reportedAt: stamp(2))
+        XCTAssertEqual(try payloads(shown([session: otherRun]))[session]?["state_kind"] as? String, "working",
+                       "judged over for another run")
     }
 
     private static func wire(_ tone: SessionStatePresentation.Tone) -> String {

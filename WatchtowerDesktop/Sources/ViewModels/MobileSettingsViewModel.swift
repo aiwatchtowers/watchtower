@@ -18,7 +18,7 @@ protocol MobileSettingsHost: AnyObject {
 /// The hub and its link center are the app's (`AppState.mobileHub`); this
 /// model reads them and refreshes the polled parts (iCloud account, last
 /// publish, backlog, throttling) every `refreshInterval` while the tab is
-/// on screen (`pollWhileVisible`, run by the view's `.task`).
+/// on screen (`windowVisibility`, run by the view's `.task`).
 @MainActor
 @Observable
 final class MobileSettingsViewModel {
@@ -30,6 +30,21 @@ final class MobileSettingsViewModel {
     /// Throttling this long shows `slowingLine` (spec §9).
     nonisolated static let slowingAfter: TimeInterval = 60
     nonisolated static let refreshInterval: Duration = .seconds(30)
+    /// While the hub starts and until its first publish, so the tab does not
+    /// look stalled right after Sync with iPhone is turned on.
+    nonisolated static let startingRefreshInterval: Duration = .seconds(5)
+
+    /// The wait before the next refresh: `startingRefreshInterval` while
+    /// the hub is starting or running with no publish yet, else
+    /// `refreshInterval` (an unavailable hub waits the long one).
+    nonisolated static func nextRefresh(isOn: Bool, status: HubStatus?, lastPublishAt: Date?) -> Duration {
+        guard isOn else { return refreshInterval }
+        switch status {
+        case .starting: return startingRefreshInterval
+        case .running: return lastPublishAt == nil ? startingRefreshInterval : refreshInterval
+        default: return refreshInterval
+        }
+    }
 
     /// The one-time confirmation of a phone's typing request (spec §10),
     /// the dialog's and the macOS notice's.
@@ -78,8 +93,12 @@ final class MobileSettingsViewModel {
     private(set) var notice: String?
     /// The phone whose Allow… waits for confirmation.
     var pendingAllow: HubSyncState.LinkedDevice?
-    /// The phone whose Remove waits for confirmation.
+    /// The phone whose Remove waits for confirmation; drives the dialog.
     var pendingRemove: HubSyncState.LinkedDevice?
+    /// The phone the Remove dialog is about, kept while it dismisses (when
+    /// `pendingRemove` is already nil), so its title and message never fall
+    /// back to another phone's or a generic text.
+    private(set) var removeSubject: HubSyncState.LinkedDevice?
     /// The QR sheet while it is up.
     private(set) var linkSheet: MobileLinkSheetViewModel?
 
@@ -160,15 +179,21 @@ final class MobileSettingsViewModel {
 
     // MARK: - Lifecycle
 
-    /// Refreshes now and every `refreshInterval` until the calling task is
-    /// cancelled: the view's `.task`, keyed on its window being on screen,
-    /// so the polling ends when the tab goes away or its window closes or
-    /// hides, even where SwiftUI sends no `onDisappear`.
-    func pollWhileVisible() async {
+    /// The view's `.task`, keyed on its window being on screen: while it
+    /// is, refreshes now and then every `nextRefresh` until the task is
+    /// cancelled, so the polling ends when the tab goes away or its window
+    /// closes or hides, even where SwiftUI sends no `onDisappear`. A hidden
+    /// or closed window also closes an open QR and its link, as leaving the
+    /// tab does, instead of leaving the link open until it expires.
+    func windowVisibility(_ visible: Bool) async {
+        guard visible else {
+            await linkSheetDismissed()
+            return
+        }
         while !Task.isCancelled {
             await refresh()
             guard !Task.isCancelled else { return }
-            await sleep(Self.refreshInterval)
+            await sleep(Self.nextRefresh(isOn: isOn, status: hub?.status, lastPublishAt: lastPublishAt))
         }
     }
 
@@ -252,6 +277,7 @@ final class MobileSettingsViewModel {
     }
 
     func requestRemove(_ device: HubSyncState.LinkedDevice) {
+        removeSubject = device
         pendingRemove = device
     }
 

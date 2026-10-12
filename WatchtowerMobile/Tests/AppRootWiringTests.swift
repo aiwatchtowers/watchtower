@@ -28,7 +28,9 @@ final class AppRootWiringTests: XCTestCase {
     /// `CloudKitTransport` over the persistent store at that path (the app's
     /// shape: one transport file across restarts; no engine starts in the
     /// unsigned test host). `link` is the saved link the flow starts with.
-    private func makeRoot(linked: LinkedDevice?, transportStorePath: String? = nil, link: LinkRecord? = nil) throws -> AppRoot {
+    private func makeRoot(
+        linked: LinkedDevice?, transportStorePath: String? = nil, link: LinkRecord? = nil, clock: any LinkClock = SystemLinkClock()
+    ) throws -> AppRoot {
         let path = try makeReplicaPath()
         replicaPath = path
         let defaults = try makeDefaults()
@@ -62,7 +64,9 @@ final class AppRootWiringTests: XCTestCase {
             env: try make(.private, AppEnvironment.unlinkedHubID, linked),
             scope: .private,
             hubID: AppEnvironment.unlinkedHubID,
-            linking: LinkingViewModel(container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity),
+            linking: LinkingViewModel(
+                container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity, clock: clock
+            ),
             restarter: AppRoot.Restarter(replicaPath: path, transportStorePath: transportStorePath, make: make)
         )
     }
@@ -247,42 +251,55 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNil(other)
     }
 
-    /// #64: a same-Apple-ID phone gets no `unlinked` event. After a fetch,
-    /// the linked hub's heartbeat without this phone's grant is the Mac's
-    /// Remove; a grant this build cannot decode is not.
-    func testAFetchWithoutThisPhonesGrantIsTheMacsRemoveAndAnUndecodableOneIsNot() async throws {
-        let link = LinkRecord(
+    /// #64: a same-Apple-ID phone gets no `unlinked` event. After each
+    /// fetch the root judges the grant of the device id the link was made
+    /// with: one this build cannot decode is never judged, and a grant gone
+    /// on two fetches 30 s apart is the Mac's Remove.
+    func testTheLinkedDevicesGrantGoneOnTwoFetchesIsTheMacsRemoveAndAnUndecodableOneIsNot() async throws {
+        let linkedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = FakeLinkClock(now: linkedAt)
+        var link = LinkRecord(
             hubID: "hub-acme", macName: "Acme Mac", scope: .private, ownerName: "_owner-acme",
             userRecordName: "_owner-acme", nonce: LinkPayload.makeNonce(), dataShareURL: nil, relayShareURL: nil
         )
-        let root = try makeRoot(linked: device, link: link)
+        link.deviceID = "device-linked"
+        link.linkedAt = linkedAt
+        let root = try makeRoot(linked: device, link: link, clock: clock)
         let transport = transports[0]
-        let now = Date()
+        let later = linkedAt.addingTimeInterval(60)
         let grant = DeviceGrant(
-            deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
-            linked: true, linkedAt: now, typingAllowed: false, startSessionsAllowed: true
+            deviceID: "device-linked", hubID: "hub-acme", name: device.name, scope: .private,
+            linked: true, linkedAt: linkedAt, typingAllowed: false, startSessionsAllowed: true
         )
         try await transport.save([
-            try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now),
-            try CloudRecordFactory.record(for: grant, modifiedAt: now)
+            try CloudRecordFactory.record(for: heartbeat(updatedAt: later), modifiedAt: later),
+            try CloudRecordFactory.record(for: grant, modifiedAt: later)
         ])
-        await root.env.refresh()
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertNotNil(root.linking.link, "granted")
+        // Each fetch's link check, awaited.
+        let fetch = {
+            await root.env.refresh()
+            await root.linkCheck?.value
+        }
+        await fetch()
+        XCTAssertNotNil(root.linking.link, "granted under the id it linked with (not the Keychain's \(self.device.deviceID))")
 
         let reshaped = CloudRecord(
             recordName: grant.recordName, zone: .data, kind: SliceKind.deviceGrant.rawValue,
-            modifiedAt: now.addingTimeInterval(1), payload: Data(#"{"linked":"maybe"}"#.utf8)
+            modifiedAt: later.addingTimeInterval(1), payload: Data(#"{"linked":"maybe"}"#.utf8)
         )
         try await transport.save([reshaped])
-        await root.env.refresh()
-        try await Task.sleep(for: .milliseconds(50))
+        await fetch()
+        clock.advance(by: LinkingViewModel.removalConfirmAfter)
+        await fetch()
         XCTAssertNotNil(root.linking.link, "an unreadable grant is not a removed one")
 
         try await transport.delete(recordNames: [grant.recordName], in: .data)
-        await root.env.refresh()
-        try await poll({ root.linking.link == nil }, "the Mac's Remove ends the link")
-        XCTAssertEqual(root.linking.notice, .removed)
+        await fetch()
+        XCTAssertNotNil(root.linking.link, "one look is not enough")
+        clock.advance(by: LinkingViewModel.removalConfirmAfter)
+        await fetch()
+        XCTAssertNil(root.linking.link, "the Mac's Remove ends the link")
+        XCTAssertEqual(root.linking.notice, .removed())
     }
 
     func testALiveRootWithoutALinkOnboardsAndTheDemoNever() throws {

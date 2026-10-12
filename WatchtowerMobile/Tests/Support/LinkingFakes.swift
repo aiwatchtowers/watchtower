@@ -156,8 +156,15 @@ final class FakeLinkHost: LinkHost {
         return transport(for: scope)
     }
 
+    /// When true, `fetchGrant` waits until it is set false again (a link
+    /// flow held mid-check).
+    var parksFetchGrant = false
+
     func fetchGrant(deviceID: String) async -> DeviceGrant? {
-        mac((try? await deviceWrites()) ?? [])
+        while parksFetchGrant {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return mac((try? await deviceWrites()) ?? [])
     }
 
     func setLink(_ device: LinkedDevice?, writesAllowed: Bool) async {

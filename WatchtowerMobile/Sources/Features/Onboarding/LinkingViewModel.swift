@@ -120,8 +120,10 @@ enum LinkFailure: Equatable {
 
 /// What the phone tells the owner about its link outside a scan (spec §9).
 enum LinkNotice: Equatable {
-    /// `TransportEvent.unlinked`: the Mac removed this phone.
-    case removed
+    /// `TransportEvent.unlinked` or the Mac's deleted grant: the Mac
+    /// removed this phone. `notSent`: the outbox items and recordings the
+    /// wipe dropped before the Mac got them.
+    case removed(notSent: Int = 0)
     /// The heartbeat's `hub_id` is another hub's.
     case moved(macName: String)
     /// No heartbeat for a day.
@@ -131,7 +133,10 @@ enum LinkNotice: Equatable {
 
     var message: String {
         switch self {
-        case .removed: "This Mac removed this phone"
+        case let .removed(notSent):
+            notSent == 0
+                ? "This Mac removed this phone"
+                : "This Mac removed this phone — " + Self.notSent(notSent).message
         case let .moved(macName): "Watchtower moved to \(macName) — scan the code on that Mac"
         case .stale: "Your Mac hasn't synced for a day — if it changed iCloud account, link again"
         case let .notSent(count):
@@ -368,7 +373,8 @@ final class LinkingViewModel {
             userRecordName: userRecordName,
             nonce: payload.nonce,
             dataShareURL: shared ? payload.dataShare : nil,
-            relayShareURL: shared ? payload.relayShare : nil
+            relayShareURL: shared ? payload.relayShare : nil,
+            deviceID: identity.deviceID
         )
         guard let host else { return }
         // From the accept on, a kill is resumed (the scope's database, the
@@ -438,7 +444,9 @@ final class LinkingViewModel {
                     return
                 }
                 if grant.linked {
-                    await complete(pending.link)
+                    var linked = pending.link
+                    linked.linkedAt = grant.linkedAt
+                    await complete(linked)
                     return
                 }
             }
@@ -457,6 +465,7 @@ final class LinkingViewModel {
     private func complete(_ record: LinkRecord) async {
         store.link = record
         store.pending = nil
+        store.grantMissingSince = nil
         link = record
         writesBlocked = false
         // A notice about an old link no longer applies; the "Not sent"
@@ -488,10 +497,10 @@ final class LinkingViewModel {
     /// (`evaluate(grant:heartbeat:)`).
     func removedByMac() async {
         guard link != nil else { return }
-        _ = await unlinkCurrent(writeUnlinked: false)
+        let notSent = await unlinkCurrent(writeUnlinked: false)
         pendingSwitch = nil
         if !isBusy { phase = .idle }
-        notice = .removed
+        notice = .removed(notSent: notSent)
     }
 
     /// The transport saw an iCloud account change. Another account ends the
@@ -517,20 +526,44 @@ final class LinkingViewModel {
         notice = nil
     }
 
+    /// How long the linked hub must go on without this phone's grant,
+    /// across two fetches, before the phone reads it as removed (#64).
+    static let removalConfirmAfter: TimeInterval = 30
+
     /// After each fetch: this phone's own `device_grant` in the linked hub's
     /// replica. The Mac's Remove deletes it (`DeviceGrantSlice` publishes no
     /// record for a removed phone), and for a same-Apple-ID phone that is
     /// the only sign: its zones are the Mac's own and never vanish, so no
-    /// `unlinked` event comes (#64). With the linked hub's heartbeat in the
-    /// replica and no linked grant there, the Mac removed this phone: the
-    /// same path as that event. A link is saved only once its linked grant
-    /// reached the replica, and a linked replica is never wiped, so a
-    /// missing grant is a deletion the fetch applied, not one still to come.
-    /// A shared phone whose participant removal failed is told the same way.
+    /// `unlinked` event comes (#64). A wrongful wipe loses data, so the
+    /// removal needs all of:
+    /// - a link that kept the device id it linked with and its grant's
+    ///   `linked_at` (an older link never reads a removal);
+    /// - no scan, unlink or pending link running;
+    /// - the linked hub's heartbeat, newer than the link's `linked_at` (the
+    ///   replica holds that hub's zone as the Mac wrote it after the link);
+    /// - no linked grant for that device id (absent, or `linked: false`)
+    ///   on two looks at least `removalConfirmAfter` apart, with none in
+    ///   between: the first look is kept in `LinkStore.grantMissingSince`
+    ///   (across a relaunch) and a linked grant clears it.
+    /// Then it is the same removal as that event. A shared phone whose
+    /// participant removal failed is told the same way.
     func evaluate(grant: DeviceGrant?, heartbeat: HeartbeatPayload?) async {
-        guard let link, !isBusy, store.pending == nil,
+        guard let link, let deviceID = link.deviceID, let linkedAt = link.linkedAt,
+              !isBusy, store.pending == nil,
               let heartbeat, heartbeat.hubID == link.hubID else { return }
-        if let grant, grant.hubID != link.hubID || grant.linked { return }
+        // Another device's or hub's grant says nothing about this link.
+        if let grant, grant.deviceID != deviceID || grant.hubID != link.hubID { return }
+        if grant?.linked == true {
+            store.grantMissingSince = nil
+            return
+        }
+        guard heartbeat.updatedAt > linkedAt else { return }
+        let now = clock.now()
+        guard let since = store.grantMissingSince else {
+            store.grantMissingSince = now
+            return
+        }
+        guard now.timeIntervalSince(since) >= Self.removalConfirmAfter else { return }
         Self.logger.notice("the linked Mac no longer grants this phone: removed")
         await removedByMac()
     }
@@ -576,6 +609,7 @@ final class LinkingViewModel {
         guard let current = link, let host else { return 0 }
         let device = linkedDevice
         store.link = nil
+        store.grantMissingSince = nil
         link = nil
         writesBlocked = false
         await host.setLink(nil, writesAllowed: true)

@@ -42,10 +42,7 @@ struct MobileSettingsView: View {
         .padding(.horizontal)
         .padding(.top, 4)
         .background(WindowVisibilityReader(isVisible: $windowVisible))
-        .task(id: windowVisible) {
-            guard windowVisible else { return }
-            await model.pollWhileVisible()
-        }
+        .task(id: windowVisible) { await model.windowVisibility(windowVisible) }
         .onDisappear { Task { await model.disappeared() } }
         .sheet(item: Binding(
             get: { model.linkSheet },
@@ -145,7 +142,7 @@ struct MobileSettingsView: View {
             }
         }
         .confirmationDialog(
-            MobileSettingsViewModel.removeQuestion(name: model.pendingRemove?.name ?? "this phone"),
+            MobileSettingsViewModel.removeQuestion(name: model.removeSubject?.name ?? "this phone"),
             isPresented: Binding(
                 get: { model.pendingRemove != nil },
                 set: { if !$0 { model.pendingRemove = nil } }
@@ -154,7 +151,7 @@ struct MobileSettingsView: View {
             Button("Remove", role: .destructive) { Task { await model.confirmRemove() } }
             Button("Cancel", role: .cancel) { model.pendingRemove = nil }
         } message: {
-            Text(MobileSettingsViewModel.removeConsequence(model.pendingRemove?.scope ?? .shared))
+            Text(MobileSettingsViewModel.removeConsequence(model.removeSubject?.scope ?? .shared))
         }
     }
 }
@@ -207,17 +204,31 @@ private struct WindowVisibilityReader: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WindowVisibilityView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: WindowVisibilityView, coordinator: ()) {
+        nsView.stopObserving()
+    }
 }
 
 private final class WindowVisibilityView: NSView {
     var onChange: ((Bool) -> Void)?
-    private var observer: NSObjectProtocol?
+    /// Written on the main actor only; read by `deinit` after every other
+    /// reference is gone.
+    nonisolated(unsafe) private var observer: NSObjectProtocol?
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    func stopObserving() {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+        observer = nil
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         // Leaving the window (the view going away) ends the observation.
-        if let observer { NotificationCenter.default.removeObserver(observer) }
-        observer = nil
+        stopObserving()
         guard let window else {
             onChange?(false)
             return

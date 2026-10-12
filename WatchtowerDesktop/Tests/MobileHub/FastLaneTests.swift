@@ -321,11 +321,16 @@ final class FastLaneTests: XCTestCase {
         await awaitHubCondition("two failed probes show the count over") {
             center.statuses[row.id]?.state == .live(.stopped)
         }
-        XCTAssertEqual(liveness.current.displayOver, [row.id], "the lane copied the center's over set")
+        XCTAssertEqual(Set(liveness.current.displayOver.keys), [row.id], "the lane copied the center's over set")
         try await publisher.publishOnce(kinds: [.terminalSession])
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
         XCTAssertEqual(published["state_kind"] as? String, "stopped")
         XCTAssertEqual(published["state_caption"] as? String, "Stopped")
+
+        // Review F8: a stopped center forgets what it showed over.
+        lane.stop()
+        center.stop()
+        XCTAssertTrue(center.displayOver.isEmpty)
     }
 
     /// #411 (board #73): a count lowered to zero ages out on the clock alone,
