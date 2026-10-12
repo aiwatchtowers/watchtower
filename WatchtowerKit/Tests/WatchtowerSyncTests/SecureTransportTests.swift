@@ -595,4 +595,41 @@ final class SecureTransportTests: XCTestCase {
         XCTAssertEqual(rejections.values.map(\.reason), ["noRelayKey"])
         XCTAssertEqual(scan.unopenable, [UnopenableRecord(wireName: wire, modifiedAt: stamp, reason: "noRelayKey")])
     }
+
+    // MARK: - Fix round 2
+
+    func testADataZoneSignalWithoutTheSigPrefixNeverReachesTheConsumer() async throws {
+        let inner = InMemoryCloudTransport()
+        let rejections = Rejections()
+        let phone = try phoneTransport(inner: inner, rejections: rejections)
+        let wellShaped = CloudRecord(
+            recordName: "sig-abcdefghijklmnopqrstuvwxyz", zone: .data, kind: WireKind.signal, modifiedAt: stamp, payload: Data())
+        let misnamed = CloudRecord(
+            recordName: "target-7", zone: .data, kind: WireKind.signal, modifiedAt: stamp, payload: Data())
+        try await inner.save([wellShaped, misnamed])
+
+        let read = try await phone.changes(in: .data, since: nil).changed
+
+        XCTAssertEqual(read, [wellShaped], "only the signal shape passes")
+        XCTAssertEqual(rejections.values.map(\.wireName), ["target-7"])
+        XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
+    }
+
+    func testADataZoneSignalWithAPayloadNeverReachesTheConsumer() async throws {
+        let inner = InMemoryCloudTransport()
+        let rejections = Rejections()
+        let phone = try phoneTransport(inner: inner, rejections: rejections)
+        let wellShaped = CloudRecord(
+            recordName: "sig-abcdefghijklmnopqrstuvwxyz", zone: .data, kind: WireKind.signal, modifiedAt: stamp, payload: Data())
+        let carrying = CloudRecord(
+            recordName: "sig-bcdefghijklmnopqrstuvwxyz2", zone: .data, kind: WireKind.signal, modifiedAt: stamp,
+            payload: Data("{\"title\":\"plaintext\"}".utf8))
+        try await inner.save([wellShaped, carrying])
+
+        let read = try await phone.changes(in: .data, since: nil).changed
+
+        XCTAssertEqual(read, [wellShaped])
+        XCTAssertEqual(rejections.values.map(\.wireName), [carrying.recordName])
+        XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
+    }
 }

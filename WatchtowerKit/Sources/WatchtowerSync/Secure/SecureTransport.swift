@@ -202,7 +202,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
 
     public func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         let batch = try await inner.changes(in: zone, since: token)
-        guard zone == .relay else { return batch }
+        guard zone == .relay else { return filterDataSignals(batch) }
         var changed: [CloudRecord] = []
         for record in batch.changed {
             switch try open(record) {
@@ -210,6 +210,21 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             case .unopenable(let reason): report(record.recordName, reason: reason)
             case .rolledBack: break
             }
+        }
+        return CloudChangeBatch(changed: changed, deletedRecordNames: batch.deletedRecordNames, newToken: batch.newToken)
+    }
+
+    /// DataZone envelopes pass through untouched (the replica verifies and opens them). A plaintext `sig` record
+    /// passes only in the signal shape (F12): a `sig-` name and an empty payload; anything else is dropped and
+    /// reported as `malformedSignal`, never handed to the consumer.
+    private func filterDataSignals(_ batch: CloudChangeBatch) -> CloudChangeBatch {
+        let changed = batch.changed.filter { record in
+            guard record.kind == WireKind.signal else { return true }
+            guard record.recordName.hasPrefix(Self.signalPrefix), record.payload.isEmpty else {
+                report(record.recordName, reason: "malformedSignal")
+                return false
+            }
+            return true
         }
         return CloudChangeBatch(changed: changed, deletedRecordNames: batch.deletedRecordNames, newToken: batch.newToken)
     }
