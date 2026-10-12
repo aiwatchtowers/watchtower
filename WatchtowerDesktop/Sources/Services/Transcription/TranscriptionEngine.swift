@@ -244,11 +244,13 @@ func contextPromptTail(
 /// live cannot drift on WHEN context is dropped (`contextPromptTail` decides
 /// whether it is USED for a given window).
 struct ContextPromptState {
-    /// Consecutive silent windows that expire the context. Bounds the
-    /// prompt+retry tax over a long pause and stops minutes-old context from
-    /// conditioning speech it has nothing to do with; language stickiness is
+    /// Consecutive silent windows that expire the context: one (spec D4,
+    /// board #554). With the speech gate a silent window is the pause itself,
+    /// a detector verdict rather than an empty decode, and context carried
+    /// across a pause conditions speech it has nothing to do with — and can
+    /// resurface as text the speaker never said. Language stickiness is
     /// separate and deliberately unbounded.
-    static let silenceLimit = 3
+    static let silenceLimit = 1
 
     private(set) var text: String?
     private var silentStreak = 0
@@ -259,7 +261,8 @@ struct ContextPromptState {
         silentStreak = 0
     }
 
-    /// A silent window keeps the context until the streak reaches the limit.
+    /// A silent window expires the context once the streak reaches the limit
+    /// (with the limit at one, the first silent window does).
     /// A FAILED window records neither: an error surfacing from the engine
     /// means the window yielded no usable speech even without the prompt (see
     /// `decodeWithPromptFallback`), so the carried context is not implicated
@@ -311,7 +314,8 @@ func whisperPromptTokens(
 /// and every prompt token costs a decoder pass. The retry doubles the decode
 /// on any prompted window that comes back empty — a collapse OR genuine
 /// silence, indistinguishable here, so each pause after speech pays it up to
-/// `ContextPromptState.silenceLimit` times before expiry kicks in. Once the
+/// `ContextPromptState.silenceLimit` times before expiry kicks in (a window
+/// the speech gate calls silent is not decoded at all). Once the
 /// task is cancelled nothing is retried — the engine-slot residency bound is
 /// one window.
 ///

@@ -184,8 +184,9 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.prompts, [nil, "one", "two"])
     }
 
-    func testSilentWindowKeepsPreviousPrompt() async throws {
-        // Context survives a non-speech window, mirroring sticky language.
+    func testSilentWindowExpiresPrompt() async throws {
+        // Unlike sticky language, context does not survive a pause: one silent
+        // window expires it (spec D4), so speech after it decodes blind.
         var config = tinyConfig()
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -193,7 +194,7 @@ final class WindowedTranscriberTests: XCTestCase {
 
         _ = try await run(engine, config, windows: 3)
 
-        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
+        XCTAssertEqual(engine.prompts, [nil, "one", nil])
     }
 
     func testLanguageFlipDropsPrompt() async throws {
@@ -237,10 +238,10 @@ final class WindowedTranscriberTests: XCTestCase {
         XCTAssertEqual(engine.prompts, [nil, "one", "one"])
     }
 
-    func testPromptExpiresAfterThreeSilentWindows() async throws {
-        // Two silent windows still prompt; the third clears the context so a
-        // long pause cannot condition distant speech (and stops paying the
-        // prompt+retry tax on every window of that pause).
+    func testPromptStaysExpiredAcrossALongPause() async throws {
+        // The first silent window clears the context, so a long pause cannot
+        // condition distant speech (and stops paying the prompt+retry tax on
+        // every window of that pause).
         var config = tinyConfig()
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -252,14 +253,12 @@ final class WindowedTranscriberTests: XCTestCase {
 
         _ = try await run(engine, config, windows: 5)
 
-        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
+        XCTAssertEqual(engine.prompts, [nil, "one", nil, nil, nil])
     }
 
     func testSilenceStreakResetsOnSpeech() async throws {
-        // The expiry counts CONSECUTIVE silences: speech in between resets the
-        // streak, so scattered pauses never sum to an expiry. A cumulative
-        // counter would silently turn the feature off for the rest of any
-        // recording with a few pauses.
+        // Speech after a pause refreshes the context and resets the streak, so
+        // an expiry never turns the feature off for the rest of a recording.
         var config = tinyConfig()
         config.forcedLanguage = "en"
         let engine = MockEngine()
@@ -271,7 +270,7 @@ final class WindowedTranscriberTests: XCTestCase {
 
         _ = try await run(engine, config, windows: 7)
 
-        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", "two", "two", "two"])
+        XCTAssertEqual(engine.prompts, [nil, "one", nil, nil, "two", nil, nil])
     }
 
     func testPromptIsCappedAtTwoHundredCharacters() async throws {
