@@ -57,14 +57,6 @@ extension WorkbenchesViewModel {
         return hidden.isEmpty ? statuses : statuses.filter { !hidden.contains($0.key) }
     }
 
-    /// `sessions` (in the panel's order) as the panel and the switchers
-    /// show them: state, caption, `#id` badge.
-    func sessionRows(_ sessions: [TerminalSession]) -> [SessionSwitcherPresentation.Row] {
-        SessionSwitcherPresentation.rows(
-            sessions, liveIDs: terminalCenter?.liveIDs ?? [], statuses: sessionStatuses, now: now()
-        )
-    }
-
     /// A session's dot: not started unless live, then what its workbench
     /// hooks report (board #312).
     func sessionState(_ session: TerminalSession) -> SessionSwitcherPresentation.State {

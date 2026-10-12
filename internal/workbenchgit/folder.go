@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,10 +29,17 @@ const (
 	// ScopeMissing: the requested folder does not exist.
 	ScopeMissing FolderScope = "missing"
 	// ScopeUnresolved: the worktrees could not be listed — git is
-	// unavailable, the listing failed or the workbench folder did not
-	// resolve. No verdict: a caller keeps the last known place.
+	// unavailable, the listing failed, the workbench folder did not
+	// resolve, or the requested folder failed to resolve for a reason
+	// other than not existing (permission denied, ErrFolderUnreadable). No
+	// verdict: a caller keeps the last known place.
 	ScopeUnresolved FolderScope = ""
 )
+
+// ErrFolderUnreadable wraps the OS error of a requested folder that failed
+// to resolve for a reason other than not existing (a parent that cannot be
+// read); no git ran. Its text reads "reading the folder: <OS error>".
+var ErrFolderUnreadable = errors.New("reading the folder")
 
 // ResolvedFolder is a requested folder resolved against the workbench
 // repository's worktrees. Its fields are the folder keys of the status
@@ -64,19 +72,20 @@ func (f ResolvedFolder) OutsideTheRepository() bool {
 // requested, and not at all when requested is missing or not absolute, git
 // is unavailable, or o.Folder is outside a repository. Without git the
 // scope is unresolved and Root the workbench folder, so the caller's own
-// git call reports git as unavailable. The error is git (or resolving
-// o.Folder) failing; the scope is then unresolved and Root the workbench
-// folder.
+// git call reports git as unavailable. The error is git, resolving
+// o.Folder, or resolving requested for a reason other than not existing
+// (an unreadable parent) failing; the scope is then unresolved and Root
+// the workbench folder.
 func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFolder, error) {
 	res := ResolvedFolder{Requested: requested, Scope: ScopeOutside, Root: o.Folder}
 	if requested == "" {
 		res.Scope = ScopeMain
 		return res, nil
 	}
-	reqReal, scope := realRequested(requested)
+	reqReal, scope, err := realRequested(requested)
 	if reqReal == "" {
 		res.Scope = scope
-		return res, nil
+		return res, err
 	}
 	r, err := open(o)
 	if r == nil { // no git or no repository: no git runs
@@ -121,20 +130,22 @@ func scopeWithoutRepo(openErr error) FolderScope {
 }
 
 // realRequested is requested with its symlinks resolved, or "" and the
-// scope that refuses it: missing when it does not exist, outside when it is
-// not absolute or cannot be resolved.
-func realRequested(requested string) (string, FolderScope) {
+// scope that refuses it: outside when it is not absolute, missing when it
+// does not exist. Any other resolution failure (a parent that cannot be
+// read) is unresolved with the error: no verdict, since a caller maps
+// outside to the main folder.
+func realRequested(requested string) (string, FolderScope, error) {
 	if !filepath.IsAbs(requested) {
-		return "", ScopeOutside
+		return "", ScopeOutside, nil
 	}
 	resolved, err := filepath.EvalSymlinks(requested)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return "", ScopeMissing
+		return "", ScopeMissing, nil
 	case err != nil:
-		return "", ScopeOutside
+		return "", ScopeUnresolved, fmt.Errorf("%w: %w", ErrFolderUnreadable, err)
 	}
-	return resolved, ""
+	return resolved, "", nil
 }
 
 // worktreeTops reads `git worktree list --porcelain -z` and returns the

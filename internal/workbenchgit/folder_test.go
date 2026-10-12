@@ -2,6 +2,7 @@ package workbenchgit
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -311,4 +312,28 @@ func TestResolveFolderCaseOnlyMatchOfAnotherDirectoryIsOutside(t *testing.T) {
 	got = resolve(t, Options{Folder: repo}, other)
 	assert.Equal(t, ScopeWorktree, got.Scope, "the same directory in another case is that worktree")
 	assert.Equal(t, base, got.WorktreeName)
+}
+
+// A requested folder that cannot be resolved for a reason other than not
+// existing (a parent the user cannot read) gives no verdict: not outside,
+// which a caller would map to the main folder.
+func TestResolveFolderUnreadableRequestedIsUnresolved(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any directory")
+	}
+	repo, wtB := subfolderRepo(t)
+	locked := filepath.Join(wtB, "locked")
+	inner := filepath.Join(locked, "inner")
+	require.NoError(t, os.MkdirAll(inner, 0o755))
+	require.NoError(t, os.Chmod(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	rec := &recorder{}
+	got, err := ResolveFolder(context.Background(), options(repo, rec), inner)
+	require.ErrorIs(t, err, ErrFolderUnreadable)
+	require.ErrorIs(t, err, fs.ErrPermission)
+	assert.Equal(t, ScopeUnresolved, got.Scope)
+	assert.False(t, got.OutsideTheRepository(), "an unreadable folder is not a verdict")
+	assert.Equal(t, repo, got.Root)
+	assert.Empty(t, rec.argv(), "no git runs")
 }
