@@ -334,15 +334,15 @@ func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 // workbenchScope is the PROJ-01 clause of GetTargets: 0 keeps project targets
 // out, N selects only project N's board (docs/inventory/workbench.md), less
 // its archived targets unless includeArchived (PROJ-15).
-func workbenchScope(projectID int64, includeArchived bool) (string, []any) {
+func workbenchScope(workbenchID int64, includeArchived bool) (string, []any) {
 	switch {
-	case projectID <= 0:
+	case workbenchID <= 0:
 		return "project_id IS NULL", nil
 	case includeArchived:
-		return "project_id = ?", []any{projectID}
+		return "project_id = ?", []any{workbenchID}
 	}
 	return `project_id = ? AND id NOT IN (SELECT target_id FROM workbench_target_archive
-		WHERE project_id = ? AND archived = 1)`, []any{projectID, projectID}
+		WHERE project_id = ? AND archived = 1)`, []any{workbenchID, workbenchID}
 }
 
 // GetTargets returns targets matching the filter.

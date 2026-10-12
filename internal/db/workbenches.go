@@ -200,46 +200,46 @@ func (db *DB) UpdateWorkbenchDescription(id int64, description string) error {
 }
 
 // SetWorkbenchArchiveDays sets after how many days closed targets of
-// workbench projectID are archived (0 = never). It is the Go writer for
+// workbench workbenchID are archived (0 = never). It is the Go writer for
 // tests and tooling; the only production writer is the Desktop's
 // WorkbenchQueries.setArchiveAfterDays (WatchtowerCore, via GRDB). The
 // column's CHECK (0...365) is the rule both share.
-func (db *DB) SetWorkbenchArchiveDays(projectID int64, days int) error {
+func (db *DB) SetWorkbenchArchiveDays(workbenchID int64, days int) error {
 	res, err := db.Exec(`UPDATE projects SET archive_after_days = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, days, projectID)
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, days, workbenchID)
 	if err != nil {
-		return fmt.Errorf("setting workbench %d archive days to %d: %w", projectID, days, err)
+		return fmt.Errorf("setting workbench %d archive days to %d: %w", workbenchID, days, err)
 	}
-	return requireAffected(res, fmt.Errorf("workbench %d: %w", projectID, ErrWorkbenchNotFound))
+	return requireAffected(res, fmt.Errorf("workbench %d: %w", workbenchID, ErrWorkbenchNotFound))
 }
 
-// ArchiveWorkbenchClosedNow sets workbench projectID's archived_through to
+// ArchiveWorkbenchClosedNow sets workbench workbenchID's archived_through to
 // now, so every closed subtree whose newest close is not after it leaves the
 // board ("Archive Closed Targets Now", PROJ-15). Nothing is written per
 // target. It is the Go writer for tests and tooling; the only production
 // writer is the Desktop's WorkbenchQueries.archiveClosedTargetsNow
 // (WatchtowerCore, via GRDB). Both stamp with SQL strftime, never a client
 // clock.
-func (db *DB) ArchiveWorkbenchClosedNow(projectID int64) error {
+func (db *DB) ArchiveWorkbenchClosedNow(workbenchID int64) error {
 	res, err := db.Exec(`UPDATE projects SET archived_through = strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, projectID)
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, workbenchID)
 	if err != nil {
-		return fmt.Errorf("archiving workbench %d's closed targets: %w", projectID, err)
+		return fmt.Errorf("archiving workbench %d's closed targets: %w", workbenchID, err)
 	}
-	return requireAffected(res, fmt.Errorf("workbench %d: %w", projectID, ErrWorkbenchNotFound))
+	return requireAffected(res, fmt.Errorf("workbench %d: %w", workbenchID, ErrWorkbenchNotFound))
 }
 
-// ClearWorkbenchArchivedThrough forgets workbench projectID's Archive Now
+// ClearWorkbenchArchivedThrough forgets workbench workbenchID's Archive Now
 // moment ("Undo Archive Now"): what only the moment archived is back, what
 // the age rule archives stays archived. The Desktop's dual path is
 // WorkbenchQueries.clearArchivedThrough (WatchtowerCore).
-func (db *DB) ClearWorkbenchArchivedThrough(projectID int64) error {
+func (db *DB) ClearWorkbenchArchivedThrough(workbenchID int64) error {
 	res, err := db.Exec(`UPDATE projects SET archived_through = NULL,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, projectID)
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, workbenchID)
 	if err != nil {
-		return fmt.Errorf("clearing workbench %d's archive moment: %w", projectID, err)
+		return fmt.Errorf("clearing workbench %d's archive moment: %w", workbenchID, err)
 	}
-	return requireAffected(res, fmt.Errorf("workbench %d: %w", projectID, ErrWorkbenchNotFound))
+	return requireAffected(res, fmt.Errorf("workbench %d: %w", workbenchID, ErrWorkbenchNotFound))
 }
 
 // DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
@@ -270,26 +270,26 @@ func (db *DB) DeleteWorkbench(id int64) error {
 // rows go by cascade and the FTS triggers; the questions quote the folder's
 // code, so none may outlive the workbench (migration 00104 removed the ones
 // earlier deletes left behind).
-func deleteWorkbenchCodeQuestions(tx *sql.Tx, projectID int64) error {
-	prefix := strconv.FormatInt(projectID, 10) + ":"
+func deleteWorkbenchCodeQuestions(tx *sql.Tx, workbenchID int64) error {
+	prefix := strconv.FormatInt(workbenchID, 10) + ":"
 	if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE context_type = 'code_question'
 		AND substr(context_id, 1, length(?)) = ?`, prefix, prefix); err != nil {
-		return fmt.Errorf("deleting workbench %d code questions: %w", projectID, err)
+		return fmt.Errorf("deleting workbench %d code questions: %w", workbenchID, err)
 	}
 	return nil
 }
 
 // deleteWorkbenchDocIndex drops a workbench's folder files from the knowledge index
 // (kb_chunks first: the FTS triggers hang off it).
-func deleteWorkbenchDocIndex(tx *sql.Tx, projectID int64) error {
+func deleteWorkbenchDocIndex(tx *sql.Tx, workbenchID int64) error {
 	const docs = `SELECT id FROM kb_documents WHERE source = 'project_doc'
 		AND json_extract(anchor_json, '$.project_id') = ?`
-	pid := strconv.FormatInt(projectID, 10)
+	pid := strconv.FormatInt(workbenchID, 10)
 	if _, err := tx.Exec(`DELETE FROM kb_chunks WHERE doc_id IN (`+docs+`)`, pid); err != nil {
-		return fmt.Errorf("deleting workbench %d search index: %w", projectID, err)
+		return fmt.Errorf("deleting workbench %d search index: %w", workbenchID, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM kb_documents WHERE id IN (`+docs+`)`, pid); err != nil {
-		return fmt.Errorf("deleting workbench %d search index: %w", projectID, err)
+		return fmt.Errorf("deleting workbench %d search index: %w", workbenchID, err)
 	}
 	return nil
 }
@@ -321,12 +321,12 @@ func requireWorkbench(q targetsQuerier, id int64) error {
 const targetWorkbenchQuery = `SELECT project_id FROM targets WHERE id = ?`
 
 // checkTargetInWorkbench fails with ErrNotInWorkbench unless target id is on
-// workbench projectID's board.
-func checkTargetInWorkbench(q targetsQuerier, projectID, id int64) error {
-	return checkOwnedBy(q, targetWorkbenchQuery, "target", projectID, id)
+// workbench workbenchID's board.
+func checkTargetInWorkbench(q targetsQuerier, workbenchID, id int64) error {
+	return checkOwnedBy(q, targetWorkbenchQuery, "target", workbenchID, id)
 }
 
-func checkOwnedBy(q targetsQuerier, query, noun string, projectID, id int64) error {
+func checkOwnedBy(q targetsQuerier, query, noun string, workbenchID, id int64) error {
 	var owner sql.NullInt64
 	err := q.QueryRow(query, id).Scan(&owner)
 	switch {
@@ -334,7 +334,7 @@ func checkOwnedBy(q targetsQuerier, query, noun string, projectID, id int64) err
 		return fmt.Errorf("%s %d does not exist: %w", noun, id, ErrNotInWorkbench)
 	case err != nil:
 		return fmt.Errorf("checking %s %d: %w", noun, id, err)
-	case !owner.Valid || owner.Int64 != projectID:
+	case !owner.Valid || owner.Int64 != workbenchID:
 		return fmt.Errorf("%s %d: %w", noun, id, ErrNotInWorkbench)
 	}
 	return nil
@@ -362,8 +362,8 @@ func (db *DB) AddWorkbenchSource(s WorkbenchSource) (int64, error) {
 }
 
 // RemoveWorkbenchSource deletes one source of the workbench.
-func (db *DB) RemoveWorkbenchSource(projectID, sourceID int64) error {
-	res, err := db.Exec(`DELETE FROM project_sources WHERE id = ? AND project_id = ?`, sourceID, projectID)
+func (db *DB) RemoveWorkbenchSource(workbenchID, sourceID int64) error {
+	res, err := db.Exec(`DELETE FROM project_sources WHERE id = ? AND project_id = ?`, sourceID, workbenchID)
 	if err != nil {
 		return fmt.Errorf("removing workbench source %d: %w", sourceID, err)
 	}
@@ -371,9 +371,9 @@ func (db *DB) RemoveWorkbenchSource(projectID, sourceID int64) error {
 }
 
 // ListWorkbenchSources returns the workbench's sources by kind, then id.
-func (db *DB) ListWorkbenchSources(projectID int64) ([]WorkbenchSource, error) {
+func (db *DB) ListWorkbenchSources(workbenchID int64) ([]WorkbenchSource, error) {
 	rows, err := db.Query(`SELECT id, project_id, kind, ref, label FROM project_sources
-		WHERE project_id = ? ORDER BY kind, id`, projectID)
+		WHERE project_id = ? ORDER BY kind, id`, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("listing workbench sources: %w", err)
 	}

@@ -64,13 +64,13 @@ func AddWorkbenchTargetImageTx(tx *sql.Tx, img WorkbenchTargetImage) (int64, err
 }
 
 // RemoveWorkbenchTargetImageTx detaches image id from target targetID of
-// workbench projectID and returns its stored path, which the caller discards
+// workbench workbenchID and returns its stored path, which the caller discards
 // once no row names it (workbenchfiles.Store.Discard). An image of another
 // target or workbench reads as ErrNotInWorkbench.
-func RemoveWorkbenchTargetImageTx(tx *sql.Tx, projectID, targetID, id int64) (string, error) {
+func RemoveWorkbenchTargetImageTx(tx *sql.Tx, workbenchID, targetID, id int64) (string, error) {
 	var path string
 	err := tx.QueryRow(`DELETE FROM project_target_images WHERE id = ? AND target_id = ? AND project_id = ?
-		RETURNING path`, id, targetID, projectID).Scan(&path)
+		RETURNING path`, id, targetID, workbenchID).Scan(&path)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("image %d of target %d: %w", id, targetID, ErrNotInWorkbench)
 	}
@@ -100,12 +100,12 @@ func (db *DB) ListWorkbenchTargetImages(targetID int64) ([]WorkbenchTargetImage,
 	return out, rows.Err()
 }
 
-// WorkbenchImagePaths returns the set of stored paths workbench projectID's rows
+// WorkbenchImagePaths returns the set of stored paths workbench workbenchID's rows
 // still name — what a sweep of its file directory must keep.
-func (db *DB) WorkbenchImagePaths(projectID int64) (map[string]bool, error) {
-	rows, err := db.Query(`SELECT DISTINCT path FROM project_target_images WHERE project_id = ?`, projectID)
+func (db *DB) WorkbenchImagePaths(workbenchID int64) (map[string]bool, error) {
+	rows, err := db.Query(`SELECT DISTINCT path FROM project_target_images WHERE project_id = ?`, workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("listing image paths of workbench %d: %w", projectID, err)
+		return nil, fmt.Errorf("listing image paths of workbench %d: %w", workbenchID, err)
 	}
 	defer rows.Close()
 	keep := map[string]bool{}

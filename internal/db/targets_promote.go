@@ -80,7 +80,7 @@ func (db *DB) PromoteSubItemToChild(parentID int64, idx int, overrides PromoteOv
 		parentDueDate     string
 		parentTags        string
 		parentSubItems    string
-		parentProjectID   sql.NullInt64
+		parentWorkbenchID sql.NullInt64
 	)
 	err = tx.QueryRow(`SELECT intent, level, custom_label, period_start, period_end,
 		priority, ownership, ball_on, due_date, tags, sub_items, project_id
@@ -88,7 +88,7 @@ func (db *DB) PromoteSubItemToChild(parentID int64, idx int, overrides PromoteOv
 		&parentIntent, &parentLevel, &parentCustomLabel,
 		&parentPeriodStart, &parentPeriodEnd,
 		&parentPriority, &parentOwnership, &parentBallOn, &parentDueDate,
-		&parentTags, &parentSubItems, &parentProjectID,
+		&parentTags, &parentSubItems, &parentWorkbenchID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -178,7 +178,7 @@ func (db *DB) PromoteSubItemToChild(parentID int64, idx int, overrides PromoteOv
 		childText, childIntent, childLevel, childCustomLabel,
 		childPeriodStart, childPeriodEnd, parentID,
 		childStatus, childPriority, childOwnership, parentBallOn, childDueDate,
-		childTags, childProgress, sourceID, parentProjectID,
+		childTags, childProgress, sourceID, parentWorkbenchID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting promoted child: %w", err)

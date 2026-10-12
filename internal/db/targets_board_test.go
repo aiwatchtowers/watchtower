@@ -14,7 +14,7 @@ func TestTargetParent_MustShareTheChildsBoard(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
 	otherPID := newTestWorkbench(t, d)
-	projectParent := insertWorkbenchTargetRow(t, d, pid, "project parent")
+	workbenchParent := insertWorkbenchTargetRow(t, d, pid, "project parent")
 	personalParent, err := d.CreateTarget(makeTarget("personal parent", "todo", "medium"))
 	require.NoError(t, err)
 
@@ -25,31 +25,31 @@ func TestTargetParent_MustShareTheChildsBoard(t *testing.T) {
 		return tg
 	}
 
-	_, err = d.CreateTarget(withParent("personal child", projectParent, sql.NullInt64{}))
+	_, err = d.CreateTarget(withParent("personal child", workbenchParent, sql.NullInt64{}))
 	assert.ErrorIs(t, err, ErrParentOtherBoard, "personal child under a project parent")
 	_, err = d.CreateTarget(withParent("project child", personalParent, nullID(pid)))
 	assert.ErrorIs(t, err, ErrParentOtherBoard, "project child under a personal parent")
-	_, err = d.CreateTarget(withParent("wrong project", projectParent, nullID(otherPID)))
+	_, err = d.CreateTarget(withParent("wrong project", workbenchParent, nullID(otherPID)))
 	assert.ErrorIs(t, err, ErrParentOtherBoard, "child of another project")
 
-	sameProject, err := d.CreateTarget(withParent("same project", projectParent, nullID(pid)))
+	sameWorkbench, err := d.CreateTarget(withParent("same project", workbenchParent, nullID(pid)))
 	require.NoError(t, err)
 	_, err = d.CreateTarget(withParent("same personal", personalParent, sql.NullInt64{}))
 	require.NoError(t, err)
 
 	// Re-parenting through UpdateTarget obeys the same rule.
-	child, err := d.GetTargetByID(int(sameProject))
+	child, err := d.GetTargetByID(int(sameWorkbench))
 	require.NoError(t, err)
 	child.ParentID = nullID(personalParent)
 	assert.ErrorIs(t, d.UpdateTarget(*child), ErrParentOtherBoard)
 
 	// So does moving a parent off its children's board.
-	parent, err := d.GetTargetByID(int(projectParent))
+	parent, err := d.GetTargetByID(int(workbenchParent))
 	require.NoError(t, err)
 	parent.WorkbenchID = sql.NullInt64{}
 	assert.ErrorIs(t, d.UpdateTarget(*parent), ErrParentOtherBoard, "a parent cannot leave its children's board")
 
 	var n int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM targets WHERE parent_id = ? AND project_id = ?`, projectParent, pid).Scan(&n))
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM targets WHERE parent_id = ? AND project_id = ?`, workbenchParent, pid).Scan(&n))
 	assert.Equal(t, 1, n, "a refused update leaves the tree unchanged")
 }
