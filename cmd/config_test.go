@@ -93,6 +93,8 @@ func TestConfigSet_DefaultAgentIsValidated(t *testing.T) {
 	for _, bad := range []string{"gemini", "Codex", "shell", ""} {
 		err := configSetCmd.RunE(configSetCmd, []string{"workbench.default_agent", bad})
 		require.Error(t, err, "%q", bad)
+		err = configSetCmd.RunE(configSetCmd, []string{"Workbench.Default_Agent", bad})
+		require.Error(t, err, "%q", bad)
 		assert.Contains(t, err.Error(), "must be claude or codex")
 	}
 	data, err := os.ReadFile(configPath)
