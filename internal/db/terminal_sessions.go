@@ -599,6 +599,7 @@ func (db *DB) TakeChatQuestion(tx *sql.Tx, id, workbenchID int64, at string) (*C
 	if err := json.Unmarshal([]byte(body.String), &q); err != nil {
 		return nil, fmt.Errorf("decoding terminal session %d chat question: %w", id, err)
 	}
+	//nolint:gosec // G202: agentkind.SQLKinds() is a constant list; every value is a bound arg.
 	res, err := tx.Exec(`UPDATE terminal_sessions SET chat_question = NULL, chat_question_at = NULL
 		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND chat_question_at = ?`, id, workbenchID, at)
 	if err != nil {
