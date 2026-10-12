@@ -402,6 +402,8 @@ What shipped differs from the text above in these points. The inline text is upd
   question and old transcript path are cleared, and `agent_state` is kept until the next prompt. A same-id `compact`
   writes no mark. A NULL stored id is filled only through `SetTerminalAgentSessionID`; moving a set id uses
   `SetTerminalClaudeSessionID`. A nested `claude` in a codex row's shell never writes into the codex row.
+- **§3.1, transcript path.** Only the codex SessionStart stores `agent_transcript_path`. The Claude Code hook
+  leaves it NULL, since no Claude reader uses it in v1 (Claude's resume and titles still look in `~/.claude`).
 - **§3.1, Down.** The Down migration keeps the codex rows' asks with `session_id` NULL (the FK is `ON DELETE SET
   NULL`); links and the rows go.
 - **§9, transcript API.** `Transcript.OwnerText(capChars int) (string, error)`, shared with Claude's reader. A stored
@@ -414,6 +416,6 @@ What shipped differs from the text above in these points. The inline text is upd
   `launch-args` needs `--workbench`. A standalone codex row shows "Codex sessions run in a workbench."
 - **§4.5/§11, setup state.** New workbenches install the codex part automatically when codex is found (D5). Existing
   workbenches are not changed without a click: a never-installed codex part shows a neutral "Codex: not set up" with
-  **Set up Codex**; the orange Repair state is only for a real failure (skill present but hooks untrusted or imported
-  duplicates) or a failed setup. A failed codex step never fails the Claude setup.
+  **Set up Codex**; the orange Repair state is only for a real failure (skill present but hooks untrusted, imported
+  duplicates, or the skill copy an older shipped version) or a failed setup. A failed codex step never fails the Claude setup.
 
