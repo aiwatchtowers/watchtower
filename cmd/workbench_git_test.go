@@ -328,3 +328,46 @@ func TestWorkbenchGit_FolderListingFailure(t *testing.T) {
 	assert.Equal(t, "git_failed", cr["refused"])
 	assert.Equal(t, false, cr["created"])
 }
+
+// A requested folder that cannot be read (a parent without permissions)
+// places nothing and runs no git in it: status is a failed read saying so,
+// and branches, switch and create refuse with folder_unreadable, not
+// git_failed (no worktree listing failed).
+func TestWorkbenchGit_FolderUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any directory")
+	}
+	database := writeActionsConfig(t)
+	dir := gitBranchRepo(t)
+	id, err := database.CreateWorkbench("acme", dir)
+	require.NoError(t, err)
+	wt := gitWorktree(t, dir, "mobile-a")
+	locked := filepath.Join(wt, "locked")
+	inner := filepath.Join(locked, "inner")
+	require.NoError(t, os.MkdirAll(inner, 0o755))
+	require.NoError(t, os.Chmod(locked, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	st := gitJSON(t, id, "status", "--folder", inner)
+	assert.Equal(t, false, st["status_ok"])
+	assert.Contains(t, st["status_error"], "reading the folder: ")
+	assert.NotContains(t, st["status_error"], "listing the worktrees")
+	assert.Equal(t, "", st["folder_scope"], "no verdict: the caller keeps the last place")
+	assert.Equal(t, dir, st["folder_root"])
+
+	sw := gitJSON(t, id, "switch", "--folder", inner, "--branch", "feature", "--stash", "--confirm-agent")
+	assert.Equal(t, gitSwitchKeys, keysOf(sw))
+	assert.Equal(t, "folder_unreadable", sw["refused"])
+	assert.Contains(t, sw["refused_detail"], "reading the folder: ")
+	assert.Contains(t, sw["refused_detail"], "permission denied")
+	assert.Equal(t, false, sw["switched"])
+	br := gitJSON(t, id, "branches", "--folder", inner)
+	assert.Equal(t, "folder_unreadable", br["refused"])
+	assert.Equal(t, []any{}, br["branches"])
+	cr := gitJSON(t, id, "create", "--folder", inner, "--name", "topic")
+	assert.Equal(t, "folder_unreadable", cr["refused"])
+	assert.Equal(t, false, cr["created"])
+
+	assert.Equal(t, "mobile-a", gitJSON(t, id, "status", "--folder", wt)["branch"], "the worktree was not switched")
+	assert.Len(t, gitJSON(t, id, "branches")["branches"], 3, "no branch topic was created")
+}

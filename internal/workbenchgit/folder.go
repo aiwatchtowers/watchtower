@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,9 +31,15 @@ const (
 	// ScopeUnresolved: the worktrees could not be listed — git is
 	// unavailable, the listing failed, the workbench folder did not
 	// resolve, or the requested folder failed to resolve for a reason
-	// other than not existing (permission denied). No verdict: a caller keeps the last known place.
+	// other than not existing (permission denied, ErrFolderUnreadable). No
+	// verdict: a caller keeps the last known place.
 	ScopeUnresolved FolderScope = ""
 )
+
+// ErrFolderUnreadable wraps the OS error of a requested folder that failed
+// to resolve for a reason other than not existing (a parent that cannot be
+// read); no git ran. Its text reads "reading the folder: <OS error>".
+var ErrFolderUnreadable = errors.New("reading the folder")
 
 // ResolvedFolder is a requested folder resolved against the workbench
 // repository's worktrees. Its fields are the folder keys of the status
@@ -136,7 +143,7 @@ func realRequested(requested string) (string, FolderScope, error) {
 	case errors.Is(err, fs.ErrNotExist):
 		return "", ScopeMissing, nil
 	case err != nil:
-		return "", ScopeUnresolved, err
+		return "", ScopeUnresolved, fmt.Errorf("%w: %w", ErrFolderUnreadable, err)
 	}
 	return resolved, "", nil
 }

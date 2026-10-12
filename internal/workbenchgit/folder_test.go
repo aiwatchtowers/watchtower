@@ -2,6 +2,7 @@ package workbenchgit
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -329,7 +330,8 @@ func TestResolveFolderUnreadableRequestedIsUnresolved(t *testing.T) {
 
 	rec := &recorder{}
 	got, err := ResolveFolder(context.Background(), options(repo, rec), inner)
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrFolderUnreadable)
+	require.ErrorIs(t, err, fs.ErrPermission)
 	assert.Equal(t, ScopeUnresolved, got.Scope)
 	assert.False(t, got.OutsideTheRepository(), "an unreadable folder is not a verdict")
 	assert.Equal(t, repo, got.Root)
