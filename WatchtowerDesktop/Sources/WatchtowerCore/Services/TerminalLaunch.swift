@@ -86,6 +86,9 @@ package struct TerminalLaunch: Equatable, Sendable {
         case let .resumeAgent(.claude, uuid):
             args = ["-l", "-c", "exec claude --resume \(uuid)"]
         case .newAgent(.codex, _, _), .resumeAgent(.codex, _):
+            // `TerminalCenter.start` refuses a Codex launch without its args
+            // before it gets here; `make` stays total for any other caller,
+            // and 127 reads as "Codex was not found" (`exitMessage`).
             args = ["-l", "-c", codex == nil ? "exit 127" : codexLoginCommand]
         case .shell:
             args = ["-l"]
