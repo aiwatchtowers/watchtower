@@ -49,7 +49,8 @@ package struct SessionPanelSections: Equatable, Sendable {
 
     /// The split of a workbench's `sessions` (pending deletes already
     /// dropped). `savedOrder` is the panel's saved drag order; `sticky` the
-    /// on-screen session's kept section, if any.
+    /// on-screen session's kept section, if any. Only rows that are really
+    /// finished fold, so `finishedCount` counts finished sessions only.
     package static func grouping(
         sessions: [TerminalSession],
         savedOrder: [Int64],
@@ -64,8 +65,7 @@ package struct SessionPanelSections: Equatable, Sendable {
         var groupSessions: [TerminalSession] = []
         for session in ordered {
             let state = SessionSwitcherPresentation.state(of: session.id, liveIDs: liveIDs, statuses: statuses)
-            let section = sticky?.sessionID == session.id ? sticky?.section : panelSection(of: state)
-            if section == .finished { groupSessions.append(session) } else { mainSessions.append(session) }
+            if heldInGroup(session.id, state: state, sticky: sticky) { { groupSessions.append(session) } else { mainSessions.append(session) }
         }
         groupSessions.sort { finishedFirst($0, $1, statuses: statuses) }
         let numbered = mainSessions.map(\.id) + (expanded ? groupSessions.map(\.id) : [])
@@ -79,6 +79,19 @@ package struct SessionPanelSections: Equatable, Sendable {
             main: mainRows, finished: expanded ? groupRows : [], finishedCount: groupRows.count,
             pinned: pinned, expanded: expanded
         )
+    }
+
+    /// Whether a row folds into the group. Its real section decides, except
+    /// that the on-screen session which finished in front of the owner keeps
+    /// its main-list slot (sticky `.main`). A session resumed from the group
+    /// (a new prompt, no longer finished) always returns to the main list:
+    /// the sticky section never holds a row that is not finished (owner
+    /// brief #480 §1).
+    private static func heldInGroup(
+        _ id: Int64, state: SessionSwitcherPresentation.State, sticky: Sticky?
+    ) -> Bool {
+        guard panelSection(of: state) == .finished else { return false }
+        return !(sticky?.sessionID == id && sticky?.section == .main)
     }
 
     /// A row's real section: finished with no open ask → the group;

@@ -41,7 +41,7 @@ final class SessionPanelSectionsTests: XCTestCase {
         let live = status(2, .live(.finished), finishedAt: "2026-10-12T10:00:00.000Z")
         let result = sections([1, 2, 3], saved: [1, 2, 3], statuses: [finished(1), live], live: [2], expanded: true)
         XCTAssertEqual(result.main.map(\.id), [3])
-        XCTAssertEqual(result.finished.map(\.id).sorted(), [1, 2], "live or not")
+        XCTAssertEqual(result.finished.map(\.id), [2, 1], "live or not; a finish-time tie: newest id first")
         XCTAssertEqual(result.finishedCount, 2)
     }
 
@@ -97,10 +97,22 @@ final class SessionPanelSectionsTests: XCTestCase {
         XCTAssertEqual(folded.visibleOrder, [3, 1])
         let open = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses, expanded: true, sticky: sticky)
         XCTAssertNil(open.pinned, "an open group lists the row itself")
-        // A session that is still running but opened from the group stays there.
-        let running = sections([1, 3], saved: [1, 3], statuses: [], sticky: sticky)
-        XCTAssertEqual(running.pinned?.id, 1)
-        XCTAssertEqual(running.main.map(\.id), [3])
+    }
+
+    /// Owner brief #480 §1: a new prompt lifts `finished` and the session
+    /// returns to its place in the main list, even while it is on screen
+    /// with a sticky `.finished` section.
+    func testSessionResumedFromTheGroupReturnsToMain() {
+        let sticky = SessionPanelSections.Sticky(sessionID: 1, section: .finished)
+        let statuses = [status(1, .live(.working)), finished(2)]
+        for expanded in [false, true] {
+            let result = sections([1, 2, 3], saved: [1, 2, 3], statuses: statuses, live: [1],
+                                  expanded: expanded, sticky: sticky)
+            XCTAssertEqual(result.main.map(\.id), [1, 3], "back in its saved slot (expanded: \(expanded))")
+            XCTAssertNil(result.pinned, "not pinned under the header (expanded: \(expanded))")
+            XCTAssertEqual(result.finished.map(\.id), expanded ? [2] : [])
+            XCTAssertEqual(result.finishedCount, 1, "only the really finished row counts (expanded: \(expanded))")
+        }
     }
 
     func testShortcutsNumberMainFirstGroupOnlyWhenOpen() {

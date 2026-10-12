@@ -8,7 +8,7 @@ package enum SessionSwitcherPresentation {
     /// decided by `SessionAgentStatus.effective`; `SessionStatePresentation`
     /// maps it to the dot's colour, glyph, fill and caption.
     package struct State: Equatable, Sendable {
-        package enum Kind: Equatable, Sendable {
+        package enum Kind: Equatable, Sendable, CaseIterable {
             case notStarted
             /// Live, with no state reported during this run.
             case running
