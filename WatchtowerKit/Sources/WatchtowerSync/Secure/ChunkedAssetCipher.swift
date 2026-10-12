@@ -1,8 +1,11 @@
 import CryptoKit
 import Foundation
+import os
 
 public enum AssetCipherError: Error, Equatable {
     case badHeader, headerMismatch, truncated, oversized, chunkAuthenticationFailed(UInt32), digestMismatch
+    /// The source file grew or shrank (or reported no size) while it was being sealed.
+    case sourceChanged
 }
 
 /// 37 bytes on the wire: "WTA" | ver u8 (1) | suite u8 (1) | asset_id 16 | chunk_size u32 | total_len u64 | chunk_count u32.
@@ -19,13 +22,16 @@ public struct AssetHeader: Equatable, Sendable {
     /// A sanity bound that keeps every length computation far from overflow (1 TiB).
     private static let maxTotalLength: UInt64 = 1 << 40
 
-    public init(assetID: UUID, suite: UInt8 = 1, chunkSize: UInt32, totalLength: UInt64) {
+    /// Suite 1 only; throws `badHeader` for a zero chunk size, a total above 1 TiB or a chunk count beyond u32.
+    public init(assetID: UUID, chunkSize: UInt32, totalLength: UInt64) throws {
+        guard chunkSize > 0, totalLength <= Self.maxTotalLength else { throw AssetCipherError.badHeader }
+        let chunks = max(1, (totalLength + UInt64(chunkSize) - 1) / UInt64(chunkSize))
+        guard chunks <= UInt64(UInt32.max) else { throw AssetCipherError.badHeader }
         self.assetID = assetID
-        self.suite = suite
+        self.suite = 1
         self.chunkSize = chunkSize
         self.totalLength = totalLength
-        let chunks = chunkSize == 0 ? 0 : max(1, (totalLength + UInt64(chunkSize) - 1) / UInt64(chunkSize))
-        self.chunkCount = UInt32(truncatingIfNeeded: chunks)
+        self.chunkCount = UInt32(chunks)
     }
 
     public func encoded() -> Data {
@@ -47,9 +53,9 @@ public struct AssetHeader: Equatable, Sendable {
               let size = WireBytes.readUInt32(data, at: 21),
               let total = WireBytes.readUInt64(data, at: 25),
               let count = WireBytes.readUInt32(data, at: 33),
-              size > 0, total <= maxTotalLength
+              size > 0
         else { throw AssetCipherError.badHeader }
-        let header = Self(assetID: id, suite: 1, chunkSize: size, totalLength: total)
+        let header = try Self(assetID: id, chunkSize: size, totalLength: total)
         guard header.chunkCount == count else { throw AssetCipherError.badHeader }
         return header
     }
@@ -86,22 +92,29 @@ public enum ChunkedAssetCipher {
     public static let chunkSize: UInt32 = 1 << 20
     private static let tagLength = 16
 
-    /// File layout: header (37) ‖ chunk_0 … chunk_{n-1}; each chunk = chunkSize plaintext bytes (the last
-    /// zero-padded) sealed with nonce u32 0 ‖ u64 c, AAD header ‖ u64 c ‖ u8 last, plus a 16-byte tag.
+    /// File layout: chunk_0 … chunk_{n-1} and nothing else (no plaintext header: the exact length and the
+    /// asset id would cancel the padding, spec threat 8; the header travels in the encrypted descriptor).
+    /// Each chunk = chunkSize plaintext bytes (the last zero-padded) sealed with nonce u32 0 ‖ u64 c,
+    /// AAD header ‖ u64 c ‖ u8 last, plus a 16-byte tag. Returns 0 for a zero chunk size.
     public static func sealedLength(forPlaintext length: Int64, chunkSize: UInt32 = chunkSize) -> Int64 {
+        guard chunkSize > 0 else { return 0 }
         let size = Int64(chunkSize)
         let chunks = max(1, (length + size - 1) / size)
-        return Int64(AssetHeader.encodedLength) + chunks * (size + Int64(tagLength))
+        return chunks * (size + Int64(tagLength))
     }
 
+    private static let logger = Logger(subsystem: "WatchtowerKit", category: "ChunkedAssetCipher")
+
+    /// `key` MUST be fresh per asset: the nonce sequence is fixed (0, 1, 2, ...), so reusing a key across
+    /// assets repeats (key, nonce) pairs, which breaks ChaCha20-Poly1305. The default is the production use.
     public static func encrypt(
         _ plaintext: Data,
         assetID: UUID = UUID(),
         key: SymmetricKey = SymmetricKey(size: .bits256),
         chunkSize: UInt32 = chunkSize
     ) throws -> (sealed: Data, descriptor: AssetDescriptor) {
-        let header = AssetHeader(assetID: assetID, chunkSize: chunkSize, totalLength: UInt64(plaintext.count))
-        var out = header.encoded()
+        let header = try AssetHeader(assetID: assetID, chunkSize: chunkSize, totalLength: UInt64(plaintext.count))
+        var out = Data()
         var hasher = SHA256()
         hasher.update(data: plaintext)
         let size = Int(chunkSize)
@@ -129,6 +142,8 @@ public enum ChunkedAssetCipher {
     }
 
     /// Streaming, one chunk resident: reads `source`, writes `destination` atomically (temp file + move).
+    /// `key` MUST be fresh per asset (see `encrypt`). Fails with `.truncated` / `.sourceChanged` when the
+    /// source shrinks or grows while it is being sealed.
     public static func encryptFile(
         at source: URL,
         to destination: URL,
@@ -137,13 +152,24 @@ public enum ChunkedAssetCipher {
         chunkSize: UInt32 = chunkSize
     ) throws -> AssetDescriptor {
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        let length = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
-        let header = AssetHeader(assetID: assetID, chunkSize: chunkSize, totalLength: length)
+        guard let length = (attributes[.size] as? NSNumber)?.uint64Value else { throw AssetCipherError.sourceChanged }
+        return try encryptFile(at: source, to: destination, declaredLength: length, assetID: assetID, key: key, chunkSize: chunkSize)
+    }
+
+    /// Seam for tests: `declaredLength` is what the header promises; the file must hold exactly that many bytes.
+    static func encryptFile(
+        at source: URL,
+        to destination: URL,
+        declaredLength length: UInt64,
+        assetID: UUID,
+        key: SymmetricKey,
+        chunkSize: UInt32
+    ) throws -> AssetDescriptor {
+        let header = try AssetHeader(assetID: assetID, chunkSize: chunkSize, totalLength: length)
         let reader = try FileHandle(forReadingFrom: source)
         defer { try? reader.close() }
         var hasher = SHA256()
         try writeAtomically(to: destination) { writer in
-            try writer.write(contentsOf: header.encoded())
             var remaining = length
             for index in 0 ..< header.chunkCount {
                 let want = Int(min(remaining, UInt64(chunkSize)))
@@ -152,13 +178,14 @@ public enum ChunkedAssetCipher {
                 remaining -= UInt64(want)
                 try writer.write(contentsOf: sealChunk(chunk, index: index, header: header, key: key))
             }
+            if let extra = try reader.read(upToCount: 1), !extra.isEmpty { throw AssetCipherError.sourceChanged }
         }
         return descriptor(key: key, header: header, hasher: hasher)
     }
 
     public static func decryptFile(at source: URL, to destination: URL, descriptor: AssetDescriptor) throws {
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        let length = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard let length = (attributes[.size] as? NSNumber)?.int64Value else { throw AssetCipherError.truncated }
         let reader = try FileHandle(forReadingFrom: source)
         defer { try? reader.close() }
         try writeAtomically(to: destination) { writer in
@@ -207,9 +234,8 @@ public enum ChunkedAssetCipher {
         read: (Int) throws -> Data,
         write: (Data) throws -> Void
     ) throws {
-        guard fileLength >= Int64(AssetHeader.encodedLength) else { throw AssetCipherError.truncated }
-        let header = try AssetHeader.parse(read(AssetHeader.encodedLength))
-        guard header == descriptor.header else { throw AssetCipherError.headerMismatch }
+        let header = descriptor.header
+        guard header.suite == 1, header.chunkSize > 0, header.chunkCount > 0 else { throw AssetCipherError.badHeader }
         let expected = sealedLength(forPlaintext: Int64(header.totalLength), chunkSize: header.chunkSize)
         guard fileLength >= expected else { throw AssetCipherError.truncated }
         guard fileLength == expected else { throw AssetCipherError.oversized }
@@ -261,8 +287,13 @@ public enum ChunkedAssetCipher {
         }
         do {
             let writer = try FileHandle(forWritingTo: temp)
-            defer { try? writer.close() }
-            try body(writer)
+            do {
+                try body(writer)
+            } catch {
+                // The body's error is the one reported; a failing close adds nothing.
+                try? writer.close()
+                throw error
+            }
             try writer.close()
             if fileManager.fileExists(atPath: destination.path) {
                 _ = try fileManager.replaceItemAt(destination, withItemAt: temp)
@@ -270,7 +301,13 @@ public enum ChunkedAssetCipher {
                 try fileManager.moveItem(at: temp, to: destination)
             }
         } catch {
-            try? fileManager.removeItem(at: temp)
+            // Best effort: the original error is what the caller needs, but a temp file that survives may hold
+            // authenticated plaintext (decryptFile), so a failed removal is logged, never silent.
+            do {
+                try fileManager.removeItem(at: temp)
+            } catch let removalError {
+                logger.error("temp file removal failed: \(removalError.localizedDescription)")
+            }
             throw error
         }
     }

@@ -52,21 +52,40 @@ final class ChunkedAssetCipherTests: XCTestCase {
 
     func testSwappedChunksFailAuthentication() throws {
         let (sealed, d) = try ChunkedAssetCipher.encrypt(Data((0 ..< 48).map { UInt8($0) }), assetID: assetID, key: key, chunkSize: 16)
-        let h = AssetHeader.encodedLength, c = 32
-        var swapped = Data(sealed.prefix(h))
-        swapped.append(sealed[(h + c) ..< (h + 2 * c)])
-        swapped.append(sealed[h ..< (h + c)])
-        swapped.append(sealed.suffix(from: h + 2 * c))
+        let c = 32
+        var swapped = Data(sealed[c ..< 2 * c])
+        swapped.append(sealed[0 ..< c])
+        swapped.append(sealed.suffix(from: 2 * c))
         XCTAssertThrowsError(try ChunkedAssetCipher.decrypt(swapped, descriptor: d)) {
             XCTAssertEqual($0 as? AssetCipherError, .chunkAuthenticationFailed(0))
         }
     }
 
-    func testAFileOfAnotherAssetIsRefusedByTheHeader() throws {
+    func testAFileOfAnotherAssetFailsBecauseTheHeaderIsInTheAAD() throws {
         let (sealed, _) = try ChunkedAssetCipher.encrypt(Data(count: 20), assetID: assetID, key: key, chunkSize: 16)
         let (_, other) = try ChunkedAssetCipher.encrypt(Data(count: 20), assetID: UUID(), key: key, chunkSize: 16)
         XCTAssertThrowsError(try ChunkedAssetCipher.decrypt(sealed, descriptor: other)) {
-            XCTAssertEqual($0 as? AssetCipherError, .headerMismatch)
+            XCTAssertEqual($0 as? AssetCipherError, .chunkAuthenticationFailed(0))
+        }
+    }
+
+    func testTheSealedFileCarriesNoPlaintextHeader() throws {
+        let (sealed, d) = try ChunkedAssetCipher.encrypt(Data(count: 20), assetID: assetID, key: key, chunkSize: 16)
+        XCTAssertEqual(sealed.count, 2 * 32)
+        XCTAssertNil(sealed.range(of: WireBytes.bytes(of: assetID)))
+        XCTAssertNil(sealed.range(of: d.header.encoded().prefix(3)))
+    }
+
+    func testZeroChunkSizeIsRefused() {
+        XCTAssertThrowsError(try ChunkedAssetCipher.encrypt(Data(count: 4), assetID: assetID, key: key, chunkSize: 0)) {
+            XCTAssertEqual($0 as? AssetCipherError, .badHeader)
+        }
+        XCTAssertEqual(ChunkedAssetCipher.sealedLength(forPlaintext: 10, chunkSize: 0), 0)
+    }
+
+    func testAHeaderWhoseChunkCountOverflowsU32IsRefused() {
+        XCTAssertThrowsError(try AssetHeader(assetID: assetID, chunkSize: 1, totalLength: 1 << 33)) {
+            XCTAssertEqual($0 as? AssetCipherError, .badHeader)
         }
     }
 
@@ -78,7 +97,7 @@ final class ChunkedAssetCipherTests: XCTestCase {
     }
 
     func testTheProductionChunkSizeAllowsTwentyMiBInTheReplicaCap() {
-        XCTAssertEqual(ChunkedAssetCipher.sealedLength(forPlaintext: 20 * 1_048_576), 20 * 1_048_576 + 37 + 20 * 16)
+        XCTAssertEqual(ChunkedAssetCipher.sealedLength(forPlaintext: 20 * 1_048_576), 20 * 1_048_576 + 20 * 16)
     }
 
     func testDescriptorAndHeaderEncodingRoundTripAndRefuseBadInput() throws {
@@ -130,7 +149,7 @@ final class ChunkedAssetCipherTests: XCTestCase {
         try FileManager.default.removeItem(at: output)
 
         var bytes = try Data(contentsOf: sealedURL)
-        bytes[37 + 5] ^= 0x01
+        bytes[5] ^= 0x01
         try bytes.write(to: sealedURL)
         XCTAssertThrowsError(try ChunkedAssetCipher.decryptFile(at: sealedURL, to: output, descriptor: descriptor)) {
             XCTAssertEqual($0 as? AssetCipherError, .chunkAuthenticationFailed(0))
@@ -140,12 +159,54 @@ final class ChunkedAssetCipherTests: XCTestCase {
         XCTAssertEqual(names, ["in.bin", "in.sealed"])
     }
 
-    func testEncryptFileFailsWhenTheSourceShrinksWhileSealing() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        scratch = dir
+    func testEncryptFileOfAMissingSourceThrowsAndLeavesNothing() throws {
+        let dir = try makeScratch()
         let missing = dir.appendingPathComponent("absent.bin")
         XCTAssertThrowsError(try ChunkedAssetCipher.encryptFile(at: missing, to: dir.appendingPathComponent("o"), key: key))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), [])
+    }
+
+    func testASourceThatShrankWhileSealingFailsAndLeavesNoTempFile() throws {
+        let dir = try makeScratch()
+        let input = dir.appendingPathComponent("in.bin")
+        try Data(count: 40).write(to: input)
+        // The header promised 56 bytes; the file now holds 40.
+        XCTAssertThrowsError(try ChunkedAssetCipher.encryptFile(
+            at: input, to: dir.appendingPathComponent("o"), declaredLength: 56,
+            assetID: assetID, key: key, chunkSize: 16)) {
+            XCTAssertEqual($0 as? AssetCipherError, .truncated)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["in.bin"])
+    }
+
+    func testASourceThatGrewWhileSealingFailsAndLeavesNoTempFile() throws {
+        let dir = try makeScratch()
+        let input = dir.appendingPathComponent("in.bin")
+        try Data(count: 40).write(to: input)
+        XCTAssertThrowsError(try ChunkedAssetCipher.encryptFile(
+            at: input, to: dir.appendingPathComponent("o"), declaredLength: 32,
+            assetID: assetID, key: key, chunkSize: 16)) {
+            XCTAssertEqual($0 as? AssetCipherError, .sourceChanged)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["in.bin"])
+    }
+
+    func testAWrongDigestThroughDecryptFileLeavesNoDestination() throws {
+        let dir = try makeScratch()
+        let (sealed, d) = try ChunkedAssetCipher.encrypt(Data(count: 20), assetID: assetID, key: key, chunkSize: 16)
+        let wrong = AssetDescriptor(key: d.key, header: d.header, plaintextDigest: Data(count: 32))
+        let src = dir.appendingPathComponent("s.bin")
+        try sealed.write(to: src)
+        XCTAssertThrowsError(try ChunkedAssetCipher.decryptFile(at: src, to: dir.appendingPathComponent("o"), descriptor: wrong)) {
+            XCTAssertEqual($0 as? AssetCipherError, .digestMismatch)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["s.bin"])
+    }
+
+    private func makeScratch() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        scratch = dir
+        return dir
     }
 }
