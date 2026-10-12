@@ -696,3 +696,46 @@ func TestInstallCodex_TrustWriteAndCloseErrors(t *testing.T) {
 	})
 	require.ErrorIs(t, err, ErrCodexUnresolved)
 }
+
+// Spec I4 against the real codex: a live capture (codex 0.159.2, a scratch
+// CODEX_HOME, 2026-10-12) of InstallCodex's config/batchWrite upsert at
+// keyPath hooks.state, run with Bin /Users/example/bin/watchtower, over a
+// config.toml holding a comment, unrelated keys and two foreign hooks.state
+// entries. codex merges: everything that was there stays byte for byte, and
+// the only new entries are our hook set's session-flags keys.
+func TestProj04_LiveUpsertKeepsForeignHooksState(t *testing.T) {
+	const bin = "/Users/example/bin/watchtower"
+	beforeRaw := readTestFile(t, filepath.Join("testdata", "codex_hooks_state_upsert.before.toml"))
+	afterRaw := readTestFile(t, filepath.Join("testdata", "codex_hooks_state_upsert.after.toml"))
+	var before, after map[string]any
+	require.NoError(t, toml.Unmarshal([]byte(beforeRaw), &before))
+	require.NoError(t, toml.Unmarshal([]byte(afterRaw), &after))
+
+	assert.Contains(t, afterRaw, "# Owner's own note: this comment must survive.\n")
+	assert.Equal(t, before["model"], after["model"])
+	assert.Equal(t, before["tui"], after["tui"])
+
+	stateOf := func(doc map[string]any) map[string]any {
+		hooks, _ := doc["hooks"].(map[string]any)
+		state, _ := hooks["state"].(map[string]any)
+		return state
+	}
+	beforeState, afterState := stateOf(before), stateOf(after)
+	require.Len(t, beforeState, 2)
+	added := map[string]bool{}
+	for k := range afterState {
+		if prior, ok := beforeState[k]; ok {
+			assert.Equal(t, prior, afterState[k], "foreign entry %s changed", k)
+			continue
+		}
+		added[k] = true
+	}
+	for k := range beforeState {
+		assert.Contains(t, afterState, k, "foreign entry %s dropped", k)
+	}
+	ours := map[string]bool{}
+	for _, e := range sessionFlagHooks(codexAppServerArgs(bin)) {
+		ours[e.Key] = true
+	}
+	assert.Equal(t, ours, added, "the upsert adds exactly our hook set's keys")
+}
