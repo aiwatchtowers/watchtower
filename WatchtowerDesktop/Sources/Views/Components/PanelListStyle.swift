@@ -112,3 +112,13 @@ struct PanelTab: ViewModifier {
         return isHovering ? Color.primary.opacity(0.05) : .clear
     }
 }
+
+extension ScrollViewProxy {
+    /// Scrolls a tabbed panel to `id` (a `PanelSelectionScrollPolicy` result)
+    /// on the next main-queue turn, so the table already has the row; no
+    /// anchor = minimal scroll (a fully visible row stays put).
+    func followSelection(_ id: Int64?) {
+        guard let id else { return }
+        DispatchQueue.main.async { scrollTo(id) }
+    }
+}

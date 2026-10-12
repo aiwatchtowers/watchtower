@@ -13,9 +13,9 @@ struct WorkbenchSessionsPanel: View {
     let project: Workbench
     let actions: SessionRowActions
     let switcherActions: WorkbenchSwitcherActions
-    /// View-local by design: it is only this list's scroll, and a return to
-    /// the panel re-runs the selection's `initial` follow.
-    @State private var scroll = SessionPanelScrollPolicy<Int64>()
+    /// View-local: it is only this list's scroll. The view keeps its identity
+    /// when another workbench is opened, so `project.id` resets it.
+    @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
         let sessions = vm.drilledSessions
@@ -59,14 +59,15 @@ struct WorkbenchSessionsPanel: View {
                 }
                 .clearPlainList()
                 .onChange(of: selectedSessionID, initial: true) { _, id in
-                    follow(scroll.selectionChanged(to: id, rows: rowIDs), proxy)
+                    proxy.followSelection(scroll.selectionChanged(to: id, rows: rowIDs))
                 }
                 .onChange(of: rowIDs) { _, ids in
-                    follow(scroll.rowsChanged(ids), proxy)
+                    proxy.followSelection(scroll.rowsChanged(ids))
                 }
+                // Same view, another workbench: start the policy afresh.
                 .onChange(of: project.id) {
-                    scroll = SessionPanelScrollPolicy()
-                    follow(scroll.selectionChanged(to: selectedSessionID, rows: rowIDs), proxy)
+                    scroll = PanelSelectionScrollPolicy()
+                    proxy.followSelection(scroll.selectionChanged(to: selectedSessionID, rows: rowIDs))
                 }
             }
             WorkbenchFilesSection(vm: vm, project: project)
@@ -77,13 +78,6 @@ struct WorkbenchSessionsPanel: View {
     /// The session on screen, if the panel lists it (`.session` only).
     private var selectedSessionID: Int64? {
         if case let .session(id)? = vm.panelSelection { id } else { nil }
-    }
-
-    /// Scrolls to `id` on the next main-queue turn, so the table already has
-    /// the row; no anchor = minimal scroll (a fully visible row stays put).
-    private func follow(_ id: Int64?, _ proxy: ScrollViewProxy) {
-        guard let id else { return }
-        DispatchQueue.main.async { proxy.scrollTo(id) }
     }
 
     /// The chat history's header shape ("Chats" + New Chat), the title being

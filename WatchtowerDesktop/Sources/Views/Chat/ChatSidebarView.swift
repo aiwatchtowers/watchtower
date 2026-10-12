@@ -19,9 +19,8 @@ struct ChatSidebarView: View {
     /// The history takes ↑/↓ once a row was clicked, as the List's own
     /// selection did.
     @FocusState private var historyFocused: Bool
-    /// The history follows the selected chat (board #561); view-local, it is
-    /// only this list's scroll.
-    @State private var scroll = SessionPanelScrollPolicy<Int64>()
+    /// The history follows the selected chat (board #561), view-local.
+    @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
         let conversationIDs = historyVM.sections.flatMap { $0.conversations.map(\.id) }
@@ -66,10 +65,11 @@ struct ChatSidebarView: View {
                 .onKeyPress(.upArrow) { historyVM.selectAdjacent(by: -1) ? .handled : .ignored }
                 .onKeyPress(.downArrow) { historyVM.selectAdjacent(by: 1) ? .handled : .ignored }
                 .onChange(of: historyVM.selectedConversationID, initial: true) { _, id in
-                    follow(scroll.selectionChanged(to: id, rows: conversationIDs), proxy)
+                    proxy.followSelection(scroll.selectionChanged(to: id, rows: conversationIDs))
                 }
+                // Project rows are keyed by `sidebarRowKey` strings, never a chat id.
                 .onChange(of: conversationIDs) { _, ids in
-                    follow(scroll.rowsChanged(ids), proxy)
+                    proxy.followSelection(scroll.rowsChanged(ids))
                 }
             }
             if let error = historyVM.lastError {
@@ -91,14 +91,6 @@ struct ChatSidebarView: View {
         } message: {
             Text("This conversation will be permanently deleted.")
         }
-    }
-
-    /// Scrolls to the chat's row on the next main-queue turn, so the table
-    /// already has it; no anchor = minimal scroll. Project rows are keyed by
-    /// `sidebarRowKey` strings, so a conversation id never matches one.
-    private func follow(_ id: Int64?, _ proxy: ScrollViewProxy) {
-        guard let id else { return }
-        DispatchQueue.main.async { proxy.scrollTo(id) }
     }
 
     /// A labelled row above PROJECTS, so a new chat does not hide behind ⌘N

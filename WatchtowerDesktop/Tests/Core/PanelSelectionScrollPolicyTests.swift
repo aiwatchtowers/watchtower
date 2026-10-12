@@ -3,16 +3,16 @@ import XCTest
 
 /// Board #561: the sessions panel (and the chat history) follow the selection,
 /// and only the selection.
-final class SessionPanelScrollPolicyTests: XCTestCase {
+final class PanelSelectionScrollPolicyTests: XCTestCase {
     func testSelectionOfListedRowScrollsAtOnce() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertEqual(policy.selectionChanged(to: 4, rows: [5, 4, 3]), 4)
         XCTAssertNil(policy.pending)
     }
 
     func testNewSessionSelectedBeforeInsertScrollsWhenRowAppears() {
         // `activate` names the new session before `loadSessions` lists it.
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertNil(policy.selectionChanged(to: 9, rows: [5, 4]))
         XCTAssertEqual(policy.pending, 9)
         XCTAssertEqual(policy.rowsChanged([9, 5, 4]), 9)
@@ -20,7 +20,7 @@ final class SessionPanelScrollPolicyTests: XCTestCase {
     }
 
     func testRowsRefreshWithoutPendingNeverScrolls() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         _ = policy.selectionChanged(to: 5, rows: [5, 4])
         XCTAssertNil(policy.rowsChanged([5, 4]))
         XCTAssertNil(policy.rowsChanged([4, 5]))
@@ -28,7 +28,7 @@ final class SessionPanelScrollPolicyTests: XCTestCase {
     }
 
     func testSelectionClearedDropsPending() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertNil(policy.selectionChanged(to: 9, rows: [5]))
         XCTAssertNil(policy.selectionChanged(to: nil, rows: [5]))
         XCTAssertNil(policy.pending)
@@ -36,7 +36,7 @@ final class SessionPanelScrollPolicyTests: XCTestCase {
     }
 
     func testNewerSelectionReplacesPending() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertNil(policy.selectionChanged(to: 9, rows: [5]))
         XCTAssertNil(policy.selectionChanged(to: 10, rows: [5]))
         XCTAssertEqual(policy.pending, 10)
@@ -46,7 +46,7 @@ final class SessionPanelScrollPolicyTests: XCTestCase {
     }
 
     func testPendingRowNeverAppearingStaysQuiet() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertNil(policy.selectionChanged(to: 9, rows: [5]))
         XCTAssertNil(policy.rowsChanged([5]))
         XCTAssertNil(policy.rowsChanged([]))
@@ -54,14 +54,14 @@ final class SessionPanelScrollPolicyTests: XCTestCase {
     }
 
     func testSameSelectionAgainDoesNotRescroll() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertEqual(policy.selectionChanged(to: 4, rows: [5, 4]), 4)
         XCTAssertNil(policy.selectionChanged(to: 4, rows: [5, 4]))
         XCTAssertNil(policy.rowsChanged([5, 4]))
     }
 
     func testReselectingAfterAnotherRowScrollsAgain() {
-        var policy = SessionPanelScrollPolicy<Int64>()
+        var policy = PanelSelectionScrollPolicy<Int64>()
         XCTAssertEqual(policy.selectionChanged(to: 4, rows: [5, 4]), 4)
         XCTAssertEqual(policy.selectionChanged(to: 5, rows: [5, 4]), 5)
         XCTAssertEqual(policy.selectionChanged(to: 4, rows: [5, 4]), 4)

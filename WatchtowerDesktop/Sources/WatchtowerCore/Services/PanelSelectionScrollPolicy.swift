@@ -7,7 +7,7 @@ import Foundation
 /// id waits as `pending` and scrolls the moment it first appears among the
 /// rows. Row refreshes (status, reorder, asks arriving or closing) never
 /// scroll, so the owner's own scroll stays put.
-package struct SessionPanelScrollPolicy<ID: Hashable>: Equatable {
+package struct PanelSelectionScrollPolicy<ID: Hashable & Sendable>: Sendable {
     /// The selected id still waiting for its row.
     package private(set) var pending: ID?
     /// The last selection seen, so a re-render with the same one is a no-op.
