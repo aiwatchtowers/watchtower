@@ -135,7 +135,7 @@ public enum ChunkedAssetCipher {
         assetID: UUID = UUID(),
         key: SymmetricKey = SymmetricKey(size: .bits256),
         chunkSize: UInt32 = chunkSize
-    ) throws -> Self {
+    ) throws -> AssetDescriptor {
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
         let length = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
         let header = AssetHeader(assetID: assetID, chunkSize: chunkSize, totalLength: length)
@@ -171,7 +171,7 @@ public enum ChunkedAssetCipher {
 
     // MARK: - Internals
 
-    private static func descriptor(key: SymmetricKey, header: AssetHeader, hasher: SHA256) -> Self {
+    private static func descriptor(key: SymmetricKey, header: AssetHeader, hasher: SHA256) -> AssetDescriptor {
         AssetDescriptor(
             key: key.withUnsafeBytes { Data($0) }, header: header, plaintextDigest: Data(hasher.finalize()))
     }
