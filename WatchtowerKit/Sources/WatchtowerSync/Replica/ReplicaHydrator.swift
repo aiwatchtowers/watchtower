@@ -31,14 +31,16 @@ public actor ReplicaHydrator {
     /// Wraps CloudKitTransport.pull() at composition time; nil in tests
     /// (InMemoryCloudTransport has no engine to nudge).
     private let pull: (@Sendable () async throws -> Void)?
-    /// Fired once per APPLIED batch, after persist, with the data-zone
-    /// records of known kinds that batch landed (RelayFeed's
-    /// `onActionApplied` precedent: fire-and-forget, never on the cycle's
-    /// error path). A batch dropped by the store's monotonic guard fires
-    /// nothing — none of its records actually landed. Records of unknown
-    /// kinds are stored but NOT surfaced: this build cannot render them, so
-    /// it must not alert about them either. The closure is synchronous;
-    /// consumers hop to their own actor/Task (AppEnvironment wires it to the
+    /// Fired once per cycle that indexed something, after persist, with the
+    /// data-zone records of known kinds `ReplicaStore.indexPending` opened
+    /// (F11): the plain record name, the kind and the frame's notify level
+    /// (RelayFeed's `onActionApplied` precedent: fire-and-forget, never on
+    /// the cycle's error path). Rows stored while the keys were locked are
+    /// reported by the first cycle after unlock; a batch dropped by the
+    /// store's monotonic guard adds nothing. Records of unknown kinds are
+    /// stored but NOT surfaced: this build cannot render them, so it must not
+    /// alert about them either. The closure is synchronous; consumers hop to
+    /// their own actor/Task (AppEnvironment wires it to the
     /// NotificationCoordinator that way).
     private let onRecordsApplied: (@Sendable ([AppliedSliceRecord]) -> Void)?
     private var loopTask: Task<Void, Never>?
@@ -62,7 +64,8 @@ public actor ReplicaHydrator {
     // MARK: - One cycle
 
     /// One hydration cycle: optional engine pull, read data-zone changes
-    /// since the store's persisted token, apply them in one transaction.
+    /// since the store's persisted token, apply them in one transaction,
+    /// then index every row that opens (`ReplicaStore.indexPending`).
     ///
     /// Cycles are coalesced: actors are reentrant, so a caller arriving while
     /// a cycle is suspended (at `pull`/`changes`) would otherwise start a
@@ -84,48 +87,40 @@ public actor ReplicaHydrator {
     private func performHydration() async throws -> (applied: Int, deleted: Int) {
         try await pull?()
         let batch = try await transport.changes(in: .data, since: store.storedToken())
-        guard try store.apply(batch) else {
+        // A locked keychain before the first unlock (or no link yet) throws
+        // here: nothing of the batch is stored and the token is kept (F15).
+        let applied = try store.apply(batch)
+        if applied {
+            // Consumer-driven compaction of the CONSUMED data-zone buffer (see
+            // CompactingTransport's retention note): safe here because the
+            // replica is the ONLY data-zone consumer on this device and its
+            // floor is its own just-persisted token — desktop hygiene's aged
+            // -record scan only touches the hub's .relay buffer (the phone's
+            // .relay buffer is RelayFeed's to compact).
+            // Hygiene only; a failure must not fail an already-applied cycle.
+            if let compacting = transport as? any CompactingTransport {
+                do {
+                    try await compacting.compact(in: .data, keepSince: batch.newToken)
+                } catch {
+                    logger.warning("data-zone compaction failed (will retry next cycle): \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+
+        // Every cycle, applied batch or not: rows stored while the keys were
+        // locked open on the first cycle after unlock. Only what this pass
+        // indexed is reported, so a dropped stale batch reports nothing new.
+        let indexed = try store.indexPending()
+        if let onRecordsApplied, !indexed.isEmpty {
+            onRecordsApplied(indexed)
+        }
+        guard applied else {
             // Dropped by the monotonic guard — a stale/overlapping batch whose
-            // events are already behind our stored token. Nothing applied,
-            // nothing to compact.
+            // events are already behind our stored token. Nothing applied.
             return (applied: 0, deleted: 0)
         }
-
-        // Consumer-driven compaction of the CONSUMED data-zone buffer (see
-        // CompactingTransport's retention note): safe here because the
-        // replica is the ONLY data-zone consumer on this device and its
-        // floor is its own just-persisted token — desktop hygiene's aged
-        // -record scan only touches the hub's .relay buffer (the phone's
-        // .relay buffer is RelayFeed's to compact).
-        // Hygiene only; a failure must not fail an already-applied cycle.
-        if let compacting = transport as? any CompactingTransport {
-            do {
-                try await compacting.compact(in: .data, keepSince: batch.newToken)
-            } catch {
-                logger.warning("data-zone compaction failed (will retry next cycle): \(error.localizedDescription, privacy: .public)")
-            }
-        }
-
-        // apply ignores relay records, so count only what actually landed.
-        let dataRecords = batch.changed.filter { $0.zone == .data }
-
-        // Post-batch hook, AFTER persist (and compaction — both belong to the
-        // applied cycle): surface what landed so the app can raise local
-        // notifications for tagged rows. See the doc on `onRecordsApplied`.
-        if let onRecordsApplied {
-            let appliedRecords = dataRecords.compactMap { record -> AppliedSliceRecord? in
-                guard let kind = SliceKind(rawValue: record.kind) else { return nil }
-                return AppliedSliceRecord(
-                    recordName: record.recordName,
-                    kind: kind,
-                    notifyLevel: record.notifyLevel,
-                    modifiedAt: record.modifiedAt
-                )
-            }
-            if !appliedRecords.isEmpty {
-                onRecordsApplied(appliedRecords)
-            }
-        }
+        // apply ignores relay records and signals, so count only what reached it.
+        let dataRecords = batch.changed.filter { $0.zone == .data && $0.kind != WireKind.signal }
         return (applied: dataRecords.count, deleted: batch.deletedRecordNames.count)
     }
 

@@ -1,5 +1,6 @@
 import GRDB
 import os
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -15,7 +16,7 @@ final class ActionOutboxTests: XCTestCase {
         clock: OSAllocatedUnfairLock<Date>? = nil
     ) throws -> (transport: InMemoryCloudTransport, store: ReplicaStore, outbox: ActionOutbox) {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let frozen = base
         let outbox = ActionOutbox(transport: transport, store: store, deviceID: "D1") {
             clock?.withLock { $0 } ?? frozen
@@ -116,7 +117,7 @@ final class ActionOutboxTests: XCTestCase {
 
     func testUnlinkedOutboxRefusesToEnqueue() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let outbox = ActionOutbox(transport: transport, store: store)
 
         do {
@@ -135,7 +136,7 @@ final class ActionOutboxTests: XCTestCase {
     /// every action stamped "" (final-review A-T3).
     func testEmptyDeviceIDCountsAsUnlinked() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let viaInit = ActionOutbox(transport: transport, store: store, deviceID: "")
         let viaSetter = ActionOutbox(transport: transport, store: store, deviceID: "D1")
         await viaSetter.setDeviceID("  ")
@@ -155,7 +156,7 @@ final class ActionOutboxTests: XCTestCase {
 
     func testSetDeviceIDLinksAndUnlinksTheOutbox() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let outbox = ActionOutbox(transport: transport, store: store)
 
         await outbox.setDeviceID("D2")
@@ -174,7 +175,7 @@ final class ActionOutboxTests: XCTestCase {
     }
 
     func testEnqueueTransportThrowLeavesNoPendingRow() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let outbox = ActionOutbox(transport: ThrowingSaveTransport(), store: store, deviceID: "D1")
 
         do {

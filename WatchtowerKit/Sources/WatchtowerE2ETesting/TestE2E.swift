@@ -51,6 +51,54 @@ public enum TestE2E {
             store: phoneStore(identity: strangerIdentity), hubID: hubID.uuidString, seq: seqAllocator(firstSeq))
     }
 
+    /// The paired phone's replica opener over `store` (a fresh paired store when nil).
+    public static func opener(store: InMemoryPhoneKeyStore? = nil) throws -> EnvelopeReplicaOpener {
+        EnvelopeReplicaOpener(hubID: hubID.uuidString, deviceID: deviceID, keys: try store ?? phoneStore())
+    }
+
+    /// A transport that seals as `keys` (the test hub) over `inner`; DataZone reads pass through untouched, so a
+    /// replica hydrating from it receives the hub's envelopes exactly as CloudKit would hand them over.
+    public static func hubTransport(
+        _ keys: TestHubKeyProvider = hub(),
+        inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()
+    ) -> SecureTransport {
+        SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard())
+    }
+
+    /// A plain `device_grant-<deviceID>` record whose payload is the RelayCoder `Keybox` (grant only) the hub seals
+    /// as `keybox-<deviceID>`.
+    public static func keyboxRecord(deviceID: UUID = deviceID, modifiedAt: Date) throws -> CloudRecord {
+        let grant = DeviceGrant(
+            deviceID: deviceID.uuidString, hubID: hubID.uuidString, name: "Acme iPhone", scope: .private, linked: true,
+            linkedAt: modifiedAt, typingAllowed: false, startSessionsAllowed: true, decidedAt: modifiedAt)
+        return CloudRecord(
+            recordName: SliceKind.deviceGrant.recordName(id: deviceID.uuidString), zone: .data,
+            kind: SliceKind.deviceGrant.rawValue, modifiedAt: modifiedAt,
+            payload: try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: nil)))
+    }
+
+    /// A DataZone envelope sealed directly (no `SecureTransport` kind check): a kind this build does not know, an
+    /// exact `(epoch, seq)`, another hub, another signer. `wireName` defaults to the hub's opaque name of the record.
+    public static func sealedDataRecord(
+        _ plain: CloudRecord,
+        wireName: String? = nil,
+        epoch: UInt32 = 1,
+        seq: UInt64,
+        hubID: UUID = hubID,
+        signer: Curve25519.Signing.PrivateKey = hubSigningKey
+    ) throws -> CloudRecord {
+        let wire = try wireName ?? hubTransport().wireName(plain: plain.recordName, zone: .data)
+        let frame = InnerFrame(
+            kind: plain.kind, id: plain.recordName, notifyLevel: plain.notifyLevel, asset: plain.asset,
+            payload: plain.payload)
+        let envelope = try EnvelopeSealer.sealSymmetric(
+            frame, envelopeClass: .data, key: dataKey(epoch: epoch), hubID: hubID, senderID: hubID, epoch: epoch,
+            seq: seq, context: EnvelopeContext(zone: .data, wireName: wire), signer: signer)
+        return CloudRecord(
+            recordName: wire, zone: .data, kind: WireKind.envelope, modifiedAt: plain.modifiedAt, payload: envelope,
+            assetFileURL: plain.assetFileURL)
+    }
+
     // MARK: - Helpers
 
     static func seqAllocator(_ firstSeq: UInt64) -> SeqAllocator {

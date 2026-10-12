@@ -1,3 +1,4 @@
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -43,7 +44,7 @@ final class ActionStatusTests: XCTestCase {
 
     func testReceivedAndHeldKeepTheOverlayPending() async throws {
         for status in [ActionStatus.received, .held] {
-            let store = try ReplicaStore.inMemory()
+            let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
             let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: "D1") { self.stamp }
             _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
 
@@ -55,7 +56,7 @@ final class ActionStatusTests: XCTestCase {
 
     func testExpiredAndCancelledFailTheOverlay() async throws {
         for status in [ActionStatus.expired, .cancelled] {
-            let store = try ReplicaStore.inMemory()
+            let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
             let outbox = ActionOutbox(transport: InMemoryCloudTransport(), store: store, deviceID: "D1") { self.stamp }
             _ = try await outbox.enqueue(kind: .probe, entityRecordName: nil)
 

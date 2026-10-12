@@ -148,16 +148,23 @@ public actor ActionOutbox {
     }
 
     /// Fails (locally) every row still `pending` after `age` — default 24 h,
-    /// the Plan 3 notes' silent-pending rule. Returns the swept ids.
+    /// the Plan 3 notes' silent-pending rule. Returns the swept ids. Also
+    /// prunes the relay rollback guard's rows older than 8 days (past the
+    /// 7-day action age window, F3).
     @discardableResult
     public func sweepSilentPending(olderThan age: Duration = .seconds(86_400)) throws -> [String] {
         let seconds = TimeInterval(age.components.seconds)
             + TimeInterval(age.components.attoseconds) / 1e18
-        return try store.sweepPendingActions(
+        let swept = try store.sweepPendingActions(
             before: now().addingTimeInterval(-seconds),
             errorMessage: Self.silentPendingMessage
         )
+        try store.pruneRelaySeen(before: now().addingTimeInterval(-Self.relaySeenRetention))
+        return swept
     }
+
+    /// How long the relay rollback guard remembers a record (F3).
+    private static let relaySeenRetention: TimeInterval = 8 * 86_400
 
     /// `target-42` → "42", `inbox_item-7` → "7": SliceKind rawValues never
     /// contain hyphens (underscores only), so everything after the FIRST

@@ -1,3 +1,4 @@
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -48,7 +49,7 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
 
     func testHubVerdictsRouteToTheSeam() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let uploads = CapturingUploads()
         let feed = makeFeed(transport: transport, store: store, uploads: uploads)
 
@@ -66,7 +67,7 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
 
     func testOwnPendingSaveIsSkipped() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let uploads = CapturingUploads()
         let feed = makeFeed(transport: transport, store: store, uploads: uploads)
 
@@ -80,7 +81,7 @@ final class RelayFeedRecordingUploadTests: XCTestCase {
 
     func testMissingUploaderSkipsWithoutWedgingTheToken() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let feed = makeFeed(transport: transport, store: store, uploads: nil)
 
         try await transport.save([try uploadRecord(id: "R1", status: .received)])

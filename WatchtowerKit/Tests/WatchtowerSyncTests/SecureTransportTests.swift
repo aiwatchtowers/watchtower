@@ -358,7 +358,7 @@ final class SecureTransportTests: XCTestCase {
 
         let compacting = try XCTUnwrap(secure as? any CompactingTransport)
         let sweeping = try XCTUnwrap(secure as? any SweepingTransport)
-        let hydrator = ReplicaHydrator(transport: secure, store: try ReplicaStore.inMemory())
+        let hydrator = ReplicaHydrator(transport: secure, store: try ReplicaStore.inMemory(opener: TestE2E.opener()))
         _ = try await hydrator.hydrateOnce()
         let compacted = await spy.compacted
         XCTAssertEqual(compacted.map(\.0), [.data])

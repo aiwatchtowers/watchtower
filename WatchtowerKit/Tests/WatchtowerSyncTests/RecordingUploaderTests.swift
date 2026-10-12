@@ -1,3 +1,4 @@
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -28,7 +29,7 @@ final class RecordingUploaderTests: XCTestCase {
     private func makeStack(
         transport: any CloudSyncTransport = InMemoryCloudTransport()
     ) throws -> (RecordingUploader, ReplicaStore, any CloudSyncTransport) {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         return (RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID), store, transport)
     }
 
@@ -129,7 +130,7 @@ final class RecordingUploaderTests: XCTestCase {
 
     func testRelaunchResendsUndeliveredUploads() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let file = try makeAudioFile()
 
         let first = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
@@ -196,7 +197,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// The launch pass of a new process re-sends an `uploading` row once —
     /// the relaunch retry — and later passes leave it alone.
     func testTheLaunchPassResendsAnUploadingRowOnce() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
@@ -218,7 +219,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// the `uploading` row instead of stranding it until the next launch
     /// (final-review P1-M1). The store's failure seam is an SQLite trigger.
     func testALaunchPassThatThrowsKeepsTheInFlightResendArmed() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
@@ -248,7 +249,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// The launch pass waits for a link: a pass without a device sends
     /// nothing and does not use up the re-send of in-flight rows.
     func testTheLaunchResendWaitsForALinkedDevice() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let before = RecordingUploader(transport: InMemoryCloudTransport(), store: store, directory: dir, deviceID: Self.deviceID)
         let recording = try await register(before, file: try makeAudioFile())
         _ = try await before.uploadPending()
@@ -415,7 +416,7 @@ final class RecordingUploaderTests: XCTestCase {
 
     func testNothingIsSentWithoutALinkedDevice() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let uploader = RecordingUploader(transport: transport, store: store)
         let recording = try await register(uploader, file: try makeAudioFile())
 
@@ -435,7 +436,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// `device_not_linked` (final-review P2-M5).
     func testABlankDeviceIDLeavesUploadsWaiting() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let viaInit = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: "")
         let recording = try await register(viaInit, file: try makeAudioFile())
         let viaSetter = RecordingUploader(transport: transport, store: store, directory: dir, deviceID: Self.deviceID)
@@ -491,7 +492,7 @@ final class RecordingUploaderTests: XCTestCase {
 
     func testOversizedAssetFailsLocallyWithoutSending() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let uploader = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID, maxAssetBytes: 32)
         let file = try makeAudioFile(bytes: 64)
         let recording = try await register(uploader, file: file)
@@ -720,7 +721,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// container. It is rewritten to the bare name and found in the new one.
     func testALegacyAbsolutePathIsMovedToTheCurrentFolder() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
         XCTAssertTrue(legacy.storedPath.hasPrefix("/"))
@@ -739,7 +740,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// delivered audio is deleted, not leaked in the moved container.
     func testAnEchoBeforeAnyOtherCallUsesTheMigratedPath() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
         let moved = try moveFolder()
@@ -756,7 +757,7 @@ final class RecordingUploaderTests: XCTestCase {
     /// the current folder.
     func testADiscardBeforeAnyOtherCallUsesTheMigratedPath() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let old = RecordingUploader(transport: transport, store: store, deviceID: Self.deviceID)
         let legacy = try await register(old, file: try makeAudioFile(name: "legacy.m4a"))
         let moved = try moveFolder()

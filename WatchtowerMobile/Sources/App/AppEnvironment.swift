@@ -180,12 +180,22 @@ final class AppEnvironment {
             !(transport is CloudKitTransport && transportKind == .inMemoryDemo),
             "a CloudKitTransport must not run under the demo kind"
         )
-        store = try ReplicaStore(path: replicaPath)
         self.sleep = sleep
         self.transport = transport
         self.transportKind = transportKind
         let device = transportKind == .inMemoryDemo ? DemoSeed.device : linkedDevice
         self.linkedDevice = device
+        // Compile-only placeholder (mobile E2E Task 8, F6): the replica now keeps the hub's envelopes and needs
+        // the phone's key store, which Task 16 wires (with the SecureTransport and the demo hub). Until then no
+        // link material exists, so `apply` refuses every batch and the replica stays empty.
+        store = try ReplicaStore(
+            path: replicaPath,
+            opener: EnvelopeReplicaOpener(
+                hubID: Self.unlinkedHubID,
+                deviceID: device.flatMap { UUID(uuidString: $0.deviceID) } ?? UUID(),
+                keys: InMemoryPhoneKeyStore()
+            )
+        )
 
         // On the live path the hydrator nudges the CKSyncEngine before each
         // cycle; the feed reads what that fetch buffered, so it gets no pull

@@ -1,5 +1,6 @@
 import GRDB
 import os
+import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
 
@@ -44,21 +45,36 @@ final class ReplicaTests: XCTestCase {
         ])
     }
 
+    /// Seqs of the records this test seals, in creation order: a later
+    /// rewrite of a record is a newer version for the replica's guard.
+    private var nextSeq: UInt64 = 1
+
+    /// A data-zone record sealed by the test hub (the replica no longer
+    /// accepts plaintext), under the hub's opaque wire name.
     private func dataRecord(
         kind: SliceKind,
         id: String,
         payload: Data,
         notifyLevel: String? = nil,
         modifiedAt: Date = Date(timeIntervalSince1970: 1_720_000_000)
-    ) -> CloudRecord {
-        CloudRecord(
-            recordName: kind.recordName(id: id),
-            zone: .data,
-            kind: kind.rawValue,
-            modifiedAt: modifiedAt,
-            payload: payload,
-            notifyLevel: notifyLevel
+    ) throws -> CloudRecord {
+        defer { nextSeq += 1 }
+        return try TestE2E.sealedDataRecord(
+            CloudRecord(
+                recordName: kind.recordName(id: id),
+                zone: .data,
+                kind: kind.rawValue,
+                modifiedAt: modifiedAt,
+                payload: payload,
+                notifyLevel: notifyLevel
+            ),
+            seq: nextSeq
         )
+    }
+
+    /// The opaque wire name the hub files a plain record name under.
+    private func wireName(_ plain: String) throws -> String {
+        try TestE2E.hubTransport().wireName(plain: plain, zone: .data)
     }
 
     // MARK: - Hydrate + decode
@@ -71,7 +87,7 @@ final class ReplicaTests: XCTestCase {
             dataRecord(kind: .inboxItem, id: "3",
                        payload: try RowPayloadCoder.payload(from: inboxRow(id: 3, snippet: "can you check the deploy?")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
 
         let result = try await hydrator.hydrateOnce()
@@ -93,7 +109,7 @@ final class ReplicaTests: XCTestCase {
         try await transport.save([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "once")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         XCTAssertNil(try store.storedToken())
 
         let hydrator = ReplicaHydrator(transport: transport, store: store)
@@ -119,12 +135,12 @@ final class ReplicaTests: XCTestCase {
         try await transport.save([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "doomed")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
         _ = try await hydrator.hydrateOnce()
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).count, 1)
 
-        try await transport.delete(recordNames: [SliceKind.target.recordName(id: "1")], in: .data)
+        try await transport.delete(recordNames: [wireName(SliceKind.target.recordName(id: "1"))], in: .data)
         let result = try await hydrator.hydrateOnce()
         XCTAssertEqual(result.deleted, 1)
         XCTAssertTrue(try store.fetchAll(ProbeRow.self, kind: .target).isEmpty)
@@ -137,23 +153,24 @@ final class ReplicaTests: XCTestCase {
     /// modifiedAt are deliberately staggered so record_name order,
     /// newestFirst, and oldestFirst each produce a distinct sequence.
     func testFetchAllSortOrdersDiffer() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let base = Date(timeIntervalSince1970: 1_720_000_000)
         try store.apply(CloudChangeBatch(
             changed: [
-                CloudRecord(recordName: SliceKind.target.recordName(id: "1"), zone: .data, kind: SliceKind.target.rawValue,
-                            modifiedAt: base.addingTimeInterval(300),
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "newest"))),
-                CloudRecord(recordName: SliceKind.target.recordName(id: "2"), zone: .data, kind: SliceKind.target.rawValue,
-                            modifiedAt: base.addingTimeInterval(100),
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 2, text: "oldest"))),
-                CloudRecord(recordName: SliceKind.target.recordName(id: "3"), zone: .data, kind: SliceKind.target.rawValue,
-                            modifiedAt: base.addingTimeInterval(200),
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 3, text: "middle")))
+                dataRecord(kind: .target, id: "1",
+                           payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "newest")),
+                           modifiedAt: base.addingTimeInterval(300)),
+                dataRecord(kind: .target, id: "2",
+                           payload: try RowPayloadCoder.payload(from: targetRow(id: 2, text: "oldest")),
+                           modifiedAt: base.addingTimeInterval(100)),
+                dataRecord(kind: .target, id: "3",
+                           payload: try RowPayloadCoder.payload(from: targetRow(id: 3, text: "middle")),
+                           modifiedAt: base.addingTimeInterval(200))
             ],
             deletedRecordNames: [],
             newToken: CloudChangeToken(value: 1)
         ))
+        try store.indexPending()
 
         let newest = try store.fetchAll(ProbeRow.self, kind: .target, sort: .newestFirst)
         XCTAssertEqual(newest.map(\.id), [1, 3, 2])
@@ -174,20 +191,21 @@ final class ReplicaTests: XCTestCase {
     /// directions — a regression dropping the secondary key ships undetected
     /// by testFetchAllSortOrdersDiffer (its stamps are all distinct).
     func testFetchAllTimeSortsTieBreakByRecordName() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let stamp = Date(timeIntervalSince1970: 1_720_000_000)
         try store.apply(CloudChangeBatch(
             changed: [
-                CloudRecord(recordName: SliceKind.target.recordName(id: "9"), zone: .data, kind: SliceKind.target.rawValue,
-                            modifiedAt: stamp,
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 9, text: "tie-b"))),
-                CloudRecord(recordName: SliceKind.target.recordName(id: "8"), zone: .data, kind: SliceKind.target.rawValue,
-                            modifiedAt: stamp,
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 8, text: "tie-a")))
+                dataRecord(kind: .target, id: "9",
+                           payload: try RowPayloadCoder.payload(from: targetRow(id: 9, text: "tie-b")),
+                           modifiedAt: stamp),
+                dataRecord(kind: .target, id: "8",
+                           payload: try RowPayloadCoder.payload(from: targetRow(id: 8, text: "tie-a")),
+                           modifiedAt: stamp)
             ],
             deletedRecordNames: [],
             newToken: CloudChangeToken(value: 1)
         ))
+        try store.indexPending()
 
         // Same timestamp → record_name ("target-8" < "target-9") decides,
         // identically for both time-based directions.
@@ -198,7 +216,7 @@ final class ReplicaTests: XCTestCase {
     // MARK: - Relay records ignored
 
     func testApplyIgnoresRelayZoneRecords() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let relay = CloudRecord(
             recordName: "action-R1",
             zone: .relay,
@@ -206,11 +224,12 @@ final class ReplicaTests: XCTestCase {
             modifiedAt: Date(),
             payload: Data("{}".utf8)
         )
-        let data = dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "kept")))
+        let data = try dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "kept")))
         try store.apply(CloudChangeBatch(changed: [relay, data], deletedRecordNames: [], newToken: CloudChangeToken(value: 2)))
+        try store.indexPending()
 
         let names = try store.reader.read { db in
-            try String.fetchAll(db, sql: "SELECT record_name FROM slice_records ORDER BY record_name")
+            try String.fetchAll(db, sql: "SELECT plain_name FROM slice_records ORDER BY plain_name")
         }
         XCTAssertEqual(names, ["target-1"])
         // Token still persisted — ignoring relay records is not an error.
@@ -227,7 +246,7 @@ final class ReplicaTests: XCTestCase {
             payload: Data("{}".utf8)
         )
         try await transport.save([relay])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
 
         let result = try await hydrator.hydrateOnce()
@@ -247,7 +266,7 @@ final class ReplicaTests: XCTestCase {
             dataRecord(kind: .target, id: "1", payload: Data("not json".utf8)),
             dataRecord(kind: .target, id: "2", payload: try RowPayloadCoder.payload(from: targetRow(id: 2, text: "good")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
 
         // apply stores payload blobs without decoding, so a corrupt payload
@@ -273,7 +292,7 @@ final class ReplicaTests: XCTestCase {
     // MARK: - ValueObservation
 
     func testValueObservationFiresAfterApply() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let observed = expectation(description: "observation sees the applied row")
         let observation = ValueObservation.tracking { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
@@ -287,7 +306,7 @@ final class ReplicaTests: XCTestCase {
         )
         defer { cancellable.cancel() }
 
-        let record = dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed")))
+        let record = try dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed")))
         try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
         wait(for: [observed], timeout: 5)
     }
@@ -321,7 +340,7 @@ final class ReplicaTests: XCTestCase {
         try await transport.save([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "compacted")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
         _ = try await hydrator.hydrateOnce()
 
@@ -338,8 +357,8 @@ final class ReplicaTests: XCTestCase {
 
     func testPullHookRunsBeforeChangesAreRead() async throws {
         let transport = InMemoryCloudTransport()
-        let store = try ReplicaStore.inMemory()
-        let record = dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "pulled")))
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let record = try dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "pulled")))
         // The pull hook lands the record; hydrateOnce sees it in the same
         // cycle only if pull ran before changes().
         let hydrator = ReplicaHydrator(transport: transport, store: store) {
@@ -353,15 +372,16 @@ final class ReplicaTests: XCTestCase {
     // MARK: - Monotonic apply guard
 
     func testApplyDropsStaleBatchAndKeepsNewerPayload() throws {
-        let store = try ReplicaStore.inMemory()
-        let v2 = dataRecord(kind: .target, id: "1",
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "v2")))
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let v2 = try dataRecord(kind: .target, id: "1",
+                                payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "v2")))
         XCTAssertTrue(try store.apply(CloudChangeBatch(changed: [v2], deletedRecordNames: [], newToken: CloudChangeToken(value: 5))))
+        try store.indexPending()
 
         // A later-arriving OLDER batch (token 3 <= stored 5) with an earlier
         // version of the same record must be dropped wholesale.
-        let v1 = dataRecord(kind: .target, id: "1",
-                            payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "v1")))
+        let v1 = try dataRecord(kind: .target, id: "1",
+                                payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "v1")))
         XCTAssertFalse(try store.apply(CloudChangeBatch(changed: [v1], deletedRecordNames: [], newToken: CloudChangeToken(value: 3))))
 
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).first?.text, "v2")
@@ -401,7 +421,7 @@ final class ReplicaTests: XCTestCase {
         try await transport.seed([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "gated")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
 
         async let first = hydrator.hydrateOnce()
@@ -430,9 +450,11 @@ final class ReplicaTests: XCTestCase {
         try await transport.save([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "on disk")))
         ])
-        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path)
+        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path, opener: TestE2E.opener())
 
         let observed = expectation(description: "pool observation sees the row")
+        // The hydrate cycle writes twice (apply, then indexPending), so the count can be seen as 1 twice.
+        observed.assertForOverFulfill = false
         let observation = ValueObservation.tracking { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM slice_records") ?? 0
         }
@@ -462,7 +484,7 @@ final class ReplicaTests: XCTestCase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path)
+        let store = try ReplicaStore(path: dir.appendingPathComponent("replica.sqlite").path, opener: TestE2E.opener())
 
         let observed = expectation(description: "observation decodes the applied target")
         // Tracking closure decodes on its own db — NOT store.fetchAll(_:kind:),
@@ -480,9 +502,10 @@ final class ReplicaTests: XCTestCase {
         )
         defer { cancellable.cancel() }
 
-        let record = dataRecord(kind: .target, id: "1",
-                                payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed via from-db")))
+        let record = try dataRecord(kind: .target, id: "1",
+                                    payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed via from-db")))
         try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
+        try store.indexPending()
 
         await fulfillment(of: [observed], timeout: 5)
     }
@@ -511,7 +534,7 @@ final class ReplicaTests: XCTestCase {
         try await transport.seed([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "applied")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
 
         // compact throws, but the cycle already applied — it must succeed.
@@ -550,10 +573,11 @@ final class ReplicaTests: XCTestCase {
                         modifiedAt: urgentAt, payload: Data()),
             // … and a data-zone record of a kind this build does not know
             // (it still lands in slice_records, but never in the hook).
-            CloudRecord(recordName: "future_thing-1", zone: .data, kind: "future_thing",
-                        modifiedAt: urgentAt, payload: Data())
+            TestE2E.sealedDataRecord(
+                CloudRecord(recordName: "future_thing-1", zone: .data, kind: "future_thing", modifiedAt: urgentAt, payload: Data()),
+                seq: 99)
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let log = HookLog()
         // A local, not a literal argument: trailing-closure syntax would
         // forward-scan onto `pull` and fail to type-check.
@@ -594,13 +618,13 @@ final class ReplicaTests: XCTestCase {
     /// store's guard (stale token) applies nothing — and the hook must stay
     /// silent, because none of its records actually landed.
     func testOnRecordsAppliedStaysSilentForStaleDroppedBatch() async throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         // Advance the stored token past the replayed batch's token 1.
         try store.apply(CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 5)))
 
-        let stale = dataRecord(kind: .inboxItem, id: "9",
-                               payload: try RowPayloadCoder.payload(from: inboxRow(id: 9, snippet: "old news")),
-                               notifyLevel: "urgent")
+        let stale = try dataRecord(kind: .inboxItem, id: "9",
+                                   payload: try RowPayloadCoder.payload(from: inboxRow(id: 9, snippet: "old news")),
+                                   notifyLevel: "urgent")
         let log = HookLog()
         let hook: @Sendable ([AppliedSliceRecord]) -> Void = { log.append($0) }
         let hydrator = ReplicaHydrator(
@@ -621,7 +645,7 @@ final class ReplicaTests: XCTestCase {
     /// nil until first set (the "never alerted" state the coordinator's
     /// initial-hydrate suppression keys on), then exact-value reads.
     func testLastAlertedWatermarkRoundTrip() throws {
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         XCTAssertNil(try store.lastAlertedWatermark(), "a fresh replica has never alerted")
 
         let mark = Date(timeIntervalSince1970: 1_720_000_123.5)
@@ -640,7 +664,7 @@ final class ReplicaTests: XCTestCase {
         try await transport.save([
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "looped")))
         ])
-        let store = try ReplicaStore.inMemory()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
 
         await hydrator.start(interval: .milliseconds(10))
@@ -671,7 +695,7 @@ final class ReplicaTests: XCTestCase {
                 INSERT INTO phone_recordings VALUES ('old', '/tmp/old.m4a', 0, 60, 60, NULL, 'aac-64k-mono', 'waiting', NULL);
                 """)
         }
-        let store = try ReplicaStore(path: path)
+        let store = try ReplicaStore(path: path, opener: TestE2E.opener())
         let rows = try store.phoneRecordings()
         XCTAssertEqual(rows.map(\.id), ["old"])
         XCTAssertNil(rows.first?.eventID)
@@ -710,7 +734,7 @@ final class ReplicaTests: XCTestCase {
                 arguments: [payload]
             )
         }
-        let store = try ReplicaStore(path: path)
+        let store = try ReplicaStore(path: path, opener: TestE2E.opener())
         let row = try XCTUnwrap(store.pendingActions().first)
         XCTAssertEqual(row.id, "old")
         XCTAssertEqual(row.errorMessage, "boom")
@@ -719,7 +743,7 @@ final class ReplicaTests: XCTestCase {
         XCTAssertNil(row.echoStatus)
 
         try store.markPendingActionFailed(id: "old", errorMessage: "conflict", reason: .conflict, result: ["current": .string("done")])
-        let failed = try XCTUnwrap(ReplicaStore(path: path).pendingActions().first)
+        let failed = try XCTUnwrap(ReplicaStore(path: path, opener: TestE2E.opener()).pendingActions().first)
         XCTAssertEqual(failed.reason, .conflict)
         XCTAssertEqual(failed.result, ["current": .string("done")])
     }
@@ -749,7 +773,7 @@ final class ReplicaTests: XCTestCase {
                 INSERT INTO phone_recording_marks VALUES ('old', 12);
                 """)
         }
-        let store = try ReplicaStore(path: path)
+        let store = try ReplicaStore(path: path, opener: TestE2E.opener())
         XCTAssertEqual(try store.phoneRecordings().map(\.id), ["old"])
         XCTAssertEqual(try store.phoneRecordings().first?.eventID, "evt-1")
         XCTAssertEqual(try store.phoneRecordingMarks(id: "old"), [12], "the rebuild must not cascade into the marks")
@@ -763,6 +787,6 @@ final class ReplicaTests: XCTestCase {
         try store.removePhoneRecording(id: "old")
         XCTAssertTrue(try store.phoneRecordingMarks(id: "old").isEmpty)
         // A second open finds the new CHECK and leaves the table alone.
-        XCTAssertEqual(try ReplicaStore(path: path).phoneRecording(id: row.id)?.state, .recording)
+        XCTAssertEqual(try ReplicaStore(path: path, opener: TestE2E.opener()).phoneRecording(id: row.id)?.state, .recording)
     }
 }

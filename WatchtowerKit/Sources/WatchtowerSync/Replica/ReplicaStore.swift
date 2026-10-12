@@ -11,19 +11,28 @@ public enum ReplicaSort: Sendable {
     case recordName
 
     /// The ORDER BY fragment over `slice_records` columns
-    /// (`record_name`, `modified_at`) this case maps to.
+    /// (`plain_name`, `modified_at`) this case maps to. `record_name` is the
+    /// opaque wire name, so names order by the plain record name.
     fileprivate var orderByFragment: String {
         switch self {
-        case .newestFirst: return "modified_at DESC, record_name"
-        case .oldestFirst: return "modified_at ASC, record_name"
-        case .recordName: return "record_name"
+        case .newestFirst: return "modified_at DESC, plain_name"
+        case .oldestFirst: return "modified_at ASC, plain_name"
+        case .recordName: return "plain_name"
         }
     }
 }
 
-/// The mobile-side mirror of DataZone: one generic table of slice payloads
+/// The mobile-side mirror of DataZone: one generic table of slice records
 /// (`slice_records`) plus the persisted data-zone change token. The UI reads
 /// it via `fetchAll` (typed decode) or ValueObservation on `reader`.
+///
+/// Ciphertext at rest (mobile E2E spec §2.6, replica format 2): `payload`
+/// holds the hub's envelope and `slice_assets.data` the sealed asset bytes.
+/// `apply` verifies each envelope's hub signature with the public key (which
+/// reads while the phone is locked) and keeps its `(epoch, seq)` as the
+/// rollback guard; `indexPending` opens rows with the epoch keys and fills
+/// their plain `kind` and record name (D11); every read opens again and
+/// returns the frame's payload. `record_name` is the opaque wire name.
 ///
 /// The store also hosts the sidecar `pending_actions` table — the optimistic
 /// overlay for relay actions the phone has enqueued but the desktop has not
@@ -32,19 +41,28 @@ public enum ReplicaSort: Sendable {
 /// hydration-only: pending actions never mutate replica rows (Plan 4
 /// decision 4 — overlay, not mutation).
 ///
-/// Mechanism: `init(path:)` opens a `DatabasePool` (WAL) so ValueObservation
-/// can read concurrently with the hydrator's writes on-device; `inMemory()`
-/// uses a `DatabaseQueue` because GRDB pools require a file. Both are
-/// `DatabaseWriter`s and ValueObservation tracks both, so tests exercise the
-/// same code paths.
+/// Mechanism: `init(path:opener:)` opens a `DatabasePool` (WAL) so
+/// ValueObservation can read concurrently with the hydrator's writes
+/// on-device; `inMemory(opener:)` uses a `DatabaseQueue` because GRDB pools
+/// require a file. Both are `DatabaseWriter`s and ValueObservation tracks
+/// both, so tests exercise the same code paths.
 public final class ReplicaStore: Sendable {
     /// Widened from `private` to `internal`: read/written directly by the
     /// pending-actions and phone-recordings methods, which the split moved
     /// into `ReplicaStore+PendingActions.swift` / `ReplicaStore+PhoneRecordings.swift`.
     let writer: any DatabaseWriter
-    /// Distinct record_names whose payloads failed to decode, so the count is
-    /// a true tally of bad rows (not fetch passes) and each is logged once.
+    /// Verifies at apply, opens at read.
+    let opener: any ReplicaOpening
+    /// Distinct wire names whose rows failed to open or decode, so the count
+    /// is a true tally of bad rows (not fetch passes) and each is logged once.
     private let corrupt = OSAllocatedUnfairLock(initialState: Set<String>())
+    /// Distinct wire names refused at apply: a bad signature, another hub, a
+    /// malformed envelope, an older version of a stored record.
+    private let rejected = OSAllocatedUnfairLock(initialState: Set<String>())
+    /// Distinct wire names of a newer envelope version or suite.
+    private let newerFormat = OSAllocatedUnfairLock(initialState: Set<String>())
+    /// Key-store failures other than "locked" already logged, by cause.
+    private let keyFailures = OSAllocatedUnfairLock(initialState: Set<String>())
     /// Same log-once idea for pending_actions rows, kept separate so
     /// `corruptCount()` stays a pure slice-record tally.
     ///
@@ -67,38 +85,63 @@ public final class ReplicaStore: Sendable {
     /// (Plan 6 Task 4) — the newest `modifiedAt` the app has already alerted
     /// (or deliberately suppressed) about.
     private static let alertWatermarkKey = "notify_alert_watermark"
+    /// The replica's on-disk format. A store of any other format drops its
+    /// slice rows, assets and both change tokens on open (hard cut, spec
+    /// §2.8): format 1 held plaintext payloads.
+    private static let formatKey = "replica_format"
+    private static let format = "2"
 
-    public init(path: String) throws {
+    public init(path: String, opener: any ReplicaOpening) throws {
         writer = try DatabasePool(path: path)
+        self.opener = opener
         try createSchema()
     }
 
-    private init(writer: any DatabaseWriter) throws {
+    private init(writer: any DatabaseWriter, opener: any ReplicaOpening) throws {
         self.writer = writer
+        self.opener = opener
         try createSchema()
     }
 
-    public static func inMemory() throws -> ReplicaStore {
-        try ReplicaStore(writer: DatabaseQueue())
+    public static func inMemory(opener: any ReplicaOpening) throws -> ReplicaStore {
+        try ReplicaStore(writer: DatabaseQueue(), opener: opener)
     }
 
     /// Entry point for the UI's ValueObservation.
     public var reader: any DatabaseReader { writer }
 
     private func createSchema() throws {
+        let wiped = try writer.write { db -> Bool in
+            try db.execute(sql: "CREATE TABLE IF NOT EXISTS replica_meta (key TEXT PRIMARY KEY, value TEXT)")
+            let stored = try String.fetchOne(
+                db, sql: "SELECT value FROM replica_meta WHERE key = ?", arguments: [Self.formatKey])
+            guard stored != Self.format else { return false }
+            // `pending_actions`, `phone_recordings` (with marks), the alert
+            // watermark and `envelope_seq_ceiling` (F29) stay.
+            try db.execute(sql: "DROP TABLE IF EXISTS slice_records; DROP TABLE IF EXISTS slice_assets")
+            try db.execute(
+                sql: "DELETE FROM replica_meta WHERE key IN (?, ?)", arguments: [Self.dataTokenKey, Self.relayTokenKey])
+            try Self.upsertMeta(db, key: Self.formatKey, value: Self.format)
+            return stored != nil
+        }
+        if wiped {
+            logger.notice("replica format changed: slice records and change tokens dropped, the zone is re-read")
+        }
         try writer.write { db in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS slice_records (
                     record_name TEXT PRIMARY KEY,
-                    kind TEXT NOT NULL,
+                    plain_name TEXT,
+                    kind TEXT,
+                    epoch INTEGER NOT NULL,
+                    seq INTEGER NOT NULL,
                     payload BLOB NOT NULL,
-                    modified_at REAL NOT NULL
+                    modified_at REAL NOT NULL,
+                    needs_index INTEGER NOT NULL DEFAULT 1
                 );
                 CREATE INDEX IF NOT EXISTS idx_slice_records_kind ON slice_records(kind);
-                CREATE TABLE IF NOT EXISTS replica_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                );
+                CREATE INDEX IF NOT EXISTS idx_slice_records_plain_name ON slice_records(plain_name);
+                CREATE INDEX IF NOT EXISTS idx_slice_records_needs_index ON slice_records(needs_index);
                 CREATE TABLE IF NOT EXISTS pending_actions (
                     action_id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -119,6 +162,7 @@ public final class ReplicaStore: Sendable {
                     PRIMARY KEY (recording_id, offset_sec)
                 );
                 \(Self.sliceAssetsTableSQL);
+                \(Self.relaySeenTableSQL);
                 """)
             // A replica created before `event_id` existed keeps its ledger:
             // the column is added in place (CREATE IF NOT EXISTS skipped it).
@@ -198,14 +242,28 @@ public final class ReplicaStore: Sendable {
 
     // MARK: - Ingest
 
-    /// Applies one data-zone change batch in a single transaction: upserts
-    /// changed records, removes deleted ones, persists the new token.
+    /// Applies one data-zone change batch in a single transaction: stores
+    /// verified envelopes, removes deleted ones (by wire name), persists the
+    /// new token.
     ///
     /// The replica ingests DataZone ONLY — relay records (actions, uploads)
-    /// are ignored here; RelayFeed reads the relay zone separately.
-    /// Payloads are stored as opaque blobs without decoding, so a corrupt
-    /// payload can never fail the batch or stall the token — corruption
-    /// surfaces (and is skipped) in `fetchAll`.
+    /// are ignored here; RelayFeed reads the relay zone separately. Before
+    /// the transaction each envelope's hub signature is checked with the
+    /// public key (`opener.verify`), so this works while the phone is locked:
+    /// - a signal record (F12) and another phone's keybox (F13) are skipped
+    ///   silently;
+    /// - a bad signature, another hub, a malformed envelope, or an older
+    ///   `(epoch, seq)` than the stored row is skipped and counted
+    ///   (`rejectedCount`), never stored; the same version is a no-op;
+    /// - a newer envelope version or suite is stored unindexed and counted
+    ///   (`newerFormatCount`): an updated app opens it without a refetch;
+    /// - a key that cannot be read (`KeyStoreError.locked` before the first
+    ///   unlock, no link yet) throws: nothing of the batch is stored and the
+    ///   token is kept (F15), so nothing is skipped while the token moves.
+    /// Rows a fixed name identifies (`heartbeat`, this phone's keybox) get
+    /// their plain name and kind at once; the others stay unindexed until
+    /// `indexPending` opens them. A record that cannot be decoded after
+    /// opening never fails the batch — it surfaces (and is skipped) in reads.
     ///
     /// Returns `true` if the batch was applied, `false` if it was dropped by
     /// the monotonic guard (a stale/overlapping read). Callers should skip
@@ -217,8 +275,9 @@ public final class ReplicaStore: Sendable {
         // unreachable; skipping only the token persistence would just
         // re-read the zone next cycle (safe — upserts are idempotent).
         let tokenJSON = String(bytes: try JSONEncoder().encode(batch.newToken), encoding: .utf8)
-        let assets = Self.readAssets(of: batch.changed)
-        return try writer.write { db in
+        let (accepted, refused) = try verify(batch.changed)
+        let assets = Self.readAssets(of: accepted.map(\.record))
+        let outcome = try writer.write { db -> (applied: Bool, rolledBack: [String]) in
             // Monotonic guard: a batch whose token is not newer than what we
             // already applied is a stale or overlapping read — e.g. a
             // reentrant hydration cycle that resumed after a newer one
@@ -231,24 +290,20 @@ public final class ReplicaStore: Sendable {
                 arguments: [Self.dataTokenKey]
             )
             if let stored = Self.decodeToken(storedRaw), batch.newToken.value <= stored.value {
-                return false
+                return (false, [])
             }
-            for record in batch.changed where record.zone == .data {
-                try db.execute(
-                    sql: """
-                        INSERT INTO slice_records (record_name, kind, payload, modified_at)
-                        VALUES (?, ?, ?, ?)
-                        ON CONFLICT(record_name) DO UPDATE SET
-                            kind = excluded.kind,
-                            payload = excluded.payload,
-                            modified_at = excluded.modified_at
-                        """,
-                    arguments: [
-                        record.recordName, record.kind,
-                        record.payload, record.modifiedAt.timeIntervalSince1970
-                    ]
-                )
-                try storeAsset(assets[record.recordName].flatMap { $0 }, recordName: record.recordName, in: db)
+            var rolledBack: [String] = []
+            for item in accepted {
+                let name = item.record.recordName
+                if let version = item.version, let stored = try Self.storedVersion(of: name, in: db) {
+                    if version == stored { continue }
+                    if version < stored {
+                        rolledBack.append(name)
+                        continue
+                    }
+                }
+                try upsert(item, in: db)
+                try storeAsset(assets[name].flatMap { $0 }, recordName: name, in: db)
             }
             for name in batch.deletedRecordNames {
                 try db.execute(sql: "DELETE FROM slice_records WHERE record_name = ?", arguments: [name])
@@ -257,8 +312,244 @@ public final class ReplicaStore: Sendable {
             if let tokenJSON {
                 try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
             }
-            return true
+            return (true, rolledBack)
         }
+        guard outcome.applied else { return false }
+        for (name, reason) in refused { noteRejected(name, reason: reason) }
+        for name in outcome.rolledBack { noteRejected(name, reason: "rolledBack") }
+        for item in accepted where item.version == nil { noteNewerFormat(item.record.recordName) }
+        return true
+    }
+
+    /// The data records of a batch this replica stores, verified, and the
+    /// ones it refuses. Signals and other phones' keyboxes are in neither.
+    /// A key-store error (locked, no link yet) propagates: apply aborts.
+    private func verify(
+        _ records: [CloudRecord]
+    ) throws -> (accepted: [VerifiedRecord], refused: [(wireName: String, reason: String)]) {
+        var accepted: [VerifiedRecord] = []
+        var refused: [(wireName: String, reason: String)] = []
+        for record in records where record.zone == .data {
+            if record.kind == WireKind.signal { continue }
+            if record.recordName.hasPrefix(Self.keyboxPrefix), opener.fixedName(record.recordName) == nil { continue }
+            do {
+                let header = try opener.verify(wireName: record.recordName, envelope: record.payload)
+                accepted.append(VerifiedRecord(record: record, version: RecordVersion(header)))
+            } catch let error as EnvelopeError {
+                if Self.isNewerFormat(error) {
+                    accepted.append(VerifiedRecord(record: record, version: nil))
+                } else {
+                    refused.append((record.recordName, Self.code(error)))
+                }
+            }
+        }
+        return (accepted, refused)
+    }
+
+    /// The `(epoch, seq)` of a verified envelope; nil for a newer format,
+    /// which cannot be parsed and so carries no version this build can read.
+    private struct VerifiedRecord {
+        let record: CloudRecord
+        let version: RecordVersion?
+    }
+
+    /// Envelope versions compare as `(epoch, seq)`, epoch first.
+    private struct RecordVersion: Comparable {
+        let epoch: UInt32
+        let seq: UInt64
+
+        init(epoch: UInt32, seq: UInt64) {
+            self.epoch = epoch
+            self.seq = seq
+        }
+
+        init(_ header: EnvelopeHeader) {
+            self.init(epoch: header.epoch, seq: header.seq)
+        }
+
+        static func < (lhs: Self, rhs: Self) -> Bool { (lhs.epoch, lhs.seq) < (rhs.epoch, rhs.seq) }
+    }
+
+    private static let keyboxPrefix = "keybox-"
+
+    /// SQLite INTEGER is signed: a u64 seq is stored by bit pattern and
+    /// compared in Swift after reading it back.
+    private static func storedVersion(of wireName: String, in db: Database) throws -> RecordVersion? {
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT epoch, seq FROM slice_records WHERE record_name = ?", arguments: [wireName]
+        ) else { return nil }
+        let epoch: Int64 = row["epoch"]
+        let seq: Int64 = row["seq"]
+        return RecordVersion(epoch: UInt32(truncatingIfNeeded: epoch), seq: UInt64(bitPattern: seq))
+    }
+
+    /// A new version keeps the row's plain name and kind (the wire name is a
+    /// keyed hash of exactly that kind and id, so they cannot change) and is
+    /// marked for indexing again: `indexPending` reports it once it opens.
+    private func upsert(_ item: VerifiedRecord, in db: Database) throws {
+        let fixed = opener.fixedName(item.record.recordName)
+        let version = item.version ?? RecordVersion(epoch: 0, seq: 0)
+        try db.execute(
+            sql: """
+                INSERT INTO slice_records (record_name, plain_name, kind, epoch, seq, payload, modified_at, needs_index)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(record_name) DO UPDATE SET
+                    plain_name = COALESCE(excluded.plain_name, slice_records.plain_name),
+                    kind = COALESCE(excluded.kind, slice_records.kind),
+                    epoch = excluded.epoch,
+                    seq = excluded.seq,
+                    payload = excluded.payload,
+                    modified_at = excluded.modified_at,
+                    needs_index = 1
+                """,
+            arguments: [
+                item.record.recordName, fixed?.plainName, fixed?.kind,
+                Int64(version.epoch), Int64(bitPattern: version.seq),
+                item.record.payload, item.record.modifiedAt.timeIntervalSince1970
+            ]
+        )
+    }
+
+    // MARK: - Indexing
+
+    /// Opens every unindexed row it can and fills `kind`/`plain_name`;
+    /// returns the indexed records (for `onRecordsApplied`, F11:
+    /// `recordName` = plain name, typed `SliceKind`, `notifyLevel` from the
+    /// opened frame, `modifiedAt`; rows of an unknown kind are indexed but
+    /// not surfaced). Rows that stay unopenable for `.locked` (or keys not
+    /// here yet) stay unindexed and are not counted (F15); others are
+    /// counted corrupt (or newer-format) and retried on the next pass.
+    /// Opening happens outside the write transaction; a row replaced in
+    /// between keeps its new version unindexed for the next pass.
+    @discardableResult
+    public func indexPending() throws -> [AppliedSliceRecord] {
+        let rows = try writer.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT record_name, epoch, seq, payload, modified_at FROM slice_records
+                    WHERE needs_index = 1 ORDER BY record_name
+                    """
+            )
+        }
+        var opened: [(row: Row, frame: InnerFrame)] = []
+        for row in rows {
+            if let frame = openRow(wireName: row["record_name"], payload: row["payload"]) {
+                opened.append((row, frame))
+            }
+        }
+        guard !opened.isEmpty else { return [] }
+        return try writer.write { db -> [AppliedSliceRecord] in
+            var indexed: [AppliedSliceRecord] = []
+            for (row, frame) in opened {
+                try db.execute(
+                    sql: """
+                        UPDATE slice_records SET plain_name = ?, kind = ?, needs_index = 0
+                        WHERE record_name = ? AND epoch = ? AND seq = ? AND needs_index = 1
+                        """,
+                    arguments: [frame.id, frame.kind, row["record_name"] as String, row["epoch"] as Int64, row["seq"] as Int64]
+                )
+                guard db.changesCount > 0, let kind = SliceKind(rawValue: frame.kind) else { continue }
+                indexed.append(AppliedSliceRecord(
+                    recordName: frame.id, kind: kind, notifyLevel: frame.notifyLevel,
+                    modifiedAt: Date(timeIntervalSince1970: row["modified_at"])
+                ))
+            }
+            return indexed
+        }
+    }
+
+    // MARK: - Opening
+
+    /// The frame of one stored envelope, or nil when it does not open now.
+    /// A locked keychain or keys not here yet: skipped, not counted (F15,
+    /// F35). A newer format: counted as such. Anything else about the
+    /// envelope: counted corrupt and logged once.
+    private func openRow(wireName: String, payload: Data) -> InnerFrame? {
+        do {
+            return try opener.open(wireName: wireName, envelope: payload)
+        } catch let error as EnvelopeError {
+            if Self.isNewerFormat(error) {
+                noteNewerFormat(wireName)
+            } else {
+                noteCorrupt([wireName], what: "envelope (\(Self.code(error)))")
+            }
+            return nil
+        } catch KeyStoreError.locked {
+            return nil
+        } catch SecureTransportError.keysUnavailable {
+            return nil
+        } catch {
+            // Not the row's fault (an unreadable keychain item, a bad hub id): skipped and logged once per cause.
+            let cause = String(describing: error)
+            if keyFailures.withLock({ $0.insert(cause).inserted }) {
+                logger.error("replica keys unreadable, rows skipped: \(cause, privacy: .public)")
+            }
+            return nil
+        }
+    }
+
+    /// The opened payload of one row for a single-record read: a locked
+    /// keychain throws (locked is its own state, never "absent"); an
+    /// envelope that does not open is counted and throws its error.
+    private func openedPayload(wireName: String, payload: Data) throws -> Data {
+        do {
+            return try opener.open(wireName: wireName, envelope: payload).payload
+        } catch let error as EnvelopeError {
+            if Self.isNewerFormat(error) {
+                noteNewerFormat(wireName)
+            } else {
+                noteCorrupt([wireName], what: "envelope (\(Self.code(error)))")
+            }
+            throw error
+        }
+    }
+
+    private static func isNewerFormat(_ error: EnvelopeError) -> Bool {
+        switch error {
+        case .unsupportedVersion, .unsupportedSuite: return true
+        default: return false
+        }
+    }
+
+    /// A short code for logs (`signatureInvalid`, `wrongHub`, ...); never key material.
+    private static func code(_ error: EnvelopeError) -> String {
+        String(describing: error)
+    }
+
+    private func noteRejected(_ wireName: String, reason: String) {
+        guard rejected.withLock({ $0.insert(wireName).inserted }) else { return }
+        logger.warning("data record refused: \(wireName, privacy: .public): \(reason, privacy: .public)")
+    }
+
+    private func noteNewerFormat(_ wireName: String) {
+        guard newerFormat.withLock({ $0.insert(wireName).inserted }) else { return }
+        logger.notice("data record of a newer format kept unread: \(wireName, privacy: .public)")
+    }
+
+    /// Tracks distinct corrupt wire names and logs only on the first
+    /// sighting of each — an observation-driven list refetches on every
+    /// change, so a persistently-bad row must not re-log forever.
+    private func noteCorrupt(_ wireNames: [String], what: String) {
+        let names = wireNames // immutable copy for the @Sendable withLock closure
+        let firstSeen = corrupt.withLock { seen -> [String] in
+            names.filter { seen.insert($0).inserted }
+        }
+        for name in firstSeen {
+            logger.warning("unreadable \(what, privacy: .public) skipped: \(name, privacy: .public)")
+        }
+    }
+
+    /// Records refused at apply (bad signature, another hub, malformed, an
+    /// older version), distinct wire names since init.
+    public func rejectedCount() -> Int {
+        rejected.withLock { $0.count }
+    }
+
+    /// Records of a newer envelope version or suite, distinct wire names
+    /// since init: the phone shows "Update Watchtower on this iPhone".
+    public func newerFormatCount() -> Int {
+        newerFormat.withLock { $0.count }
     }
 
     private static func decodeToken(_ raw: String?) -> CloudChangeToken? {
@@ -360,50 +651,69 @@ public final class ReplicaStore: Sendable {
     ///
     /// Only `updated_at` is decoded, so no other field a newer Mac adds or
     /// reshapes can turn the Mac offline. A payload without a readable
-    /// `updated_at` reads as never seen (conservative) and is logged once.
+    /// `updated_at`, or an envelope that does not open, reads as never seen
+    /// (conservative) and is logged once. A locked keychain throws.
     public func heartbeatAge(now: Date = Date()) throws -> Duration? {
-        let payload = try writer.read { db in
-            try Data.fetchOne(
+        let row = try writer.read { db in
+            try Row.fetchOne(
                 db,
-                sql: "SELECT payload FROM slice_records WHERE record_name = ?",
+                sql: "SELECT record_name, payload FROM slice_records WHERE plain_name = ?",
                 arguments: [HeartbeatPayload.recordName]
             )
         }
-        guard let payload else { return nil }
+        guard let row else { return nil }
+        let payload: Data
+        do {
+            payload = try openedPayload(wireName: row["record_name"], payload: row["payload"])
+        } catch is EnvelopeError {
+            noteUndecodableHeartbeat()
+            return nil
+        }
         guard let stamp = try? RelayCoder.makeDecoder().decode(HeartbeatStamp.self, from: payload) else {
-            let firstTime = undecodableHeartbeatLogs.withLock { emitted -> Bool in
-                guard emitted == 0 else { return false }
-                emitted = 1
-                return true
-            }
-            if firstTime {
-                logger.warning("undecodable heartbeat payload, the Mac reads as offline")
-            }
+            noteUndecodableHeartbeat()
             return nil
         }
         return .seconds(now.timeIntervalSince(stamp.updatedAt))
     }
 
-    /// The stored payload of one data-zone record (`heartbeat`,
-    /// `device_grant-<id>`), from an ALREADY-OPEN database so it runs inside
-    /// a ValueObservation tracking closure; nil when the record is absent.
-    public func payload(forRecordName recordName: String, from db: Database) throws -> Data? {
-        try Data.fetchOne(
-            db,
-            sql: "SELECT payload FROM slice_records WHERE record_name = ?",
-            arguments: [recordName]
-        )
+    private func noteUndecodableHeartbeat() {
+        let firstTime = undecodableHeartbeatLogs.withLock { emitted -> Bool in
+            guard emitted == 0 else { return false }
+            emitted = 1
+            return true
+        }
+        if firstTime {
+            logger.warning("undecodable heartbeat payload, the Mac reads as offline")
+        }
     }
 
-    /// Every stored payload of one data-zone kind (the WatchtowerKit slice
-    /// mirrors decode them), from an ALREADY-OPEN database so it runs inside
-    /// a ValueObservation tracking closure. Ordered by record name.
-    public func payloads(of kind: SliceKind, from db: Database) throws -> [Data] {
-        try Data.fetchAll(
+    /// The opened payload of one data-zone record by its PLAIN name
+    /// (`heartbeat`, `device_grant-<id>`), from an ALREADY-OPEN database so
+    /// it runs inside a ValueObservation tracking closure; nil when the
+    /// record is absent (or not indexed yet). A locked keychain throws
+    /// `KeyStoreError.locked`, and an envelope that does not open throws its
+    /// `EnvelopeError` (counted): absent, locked and unreadable stay apart.
+    public func payload(forRecordName recordName: String, from db: Database) throws -> Data? {
+        guard let row = try Row.fetchOne(
             db,
-            sql: "SELECT payload FROM slice_records WHERE kind = ? ORDER BY record_name",
+            sql: "SELECT record_name, payload FROM slice_records WHERE plain_name = ?",
+            arguments: [recordName]
+        ) else { return nil }
+        return try openedPayload(wireName: row["record_name"], payload: row["payload"])
+    }
+
+    /// Every opened payload of one data-zone kind (the WatchtowerKit slice
+    /// mirrors decode them), from an ALREADY-OPEN database so it runs inside
+    /// a ValueObservation tracking closure. Ordered by plain record name. A
+    /// row that does not open is skipped: counted corrupt, except while the
+    /// keys are locked (not counted, F15/F35).
+    public func payloads(of kind: SliceKind, from db: Database) throws -> [Data] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: "SELECT record_name, payload FROM slice_records WHERE kind = ? ORDER BY plain_name",
             arguments: [kind.rawValue]
         )
+        return rows.compactMap { row in openRow(wireName: row["record_name"], payload: row["payload"])?.payload }
     }
 
     /// Undecodable-heartbeat warnings emitted so far (for tests).
@@ -462,7 +772,8 @@ public final class ReplicaStore: Sendable {
     ///
     /// Typed sorting on model fields happens in memory after decode; `sort`
     /// only orders the underlying `slice_records` scan. Default: most recent
-    /// first.
+    /// first. A row that does not open is skipped like an undecodable one,
+    /// except while the keys are locked (skipped, not counted).
     public func fetchAll<T: FetchableRecord>(
         _ type: T.Type,
         kind: SliceKind,
@@ -477,30 +788,22 @@ public final class ReplicaStore: Sendable {
         var decoded: [T] = []
         var badNames: [String] = []
         for row in rows {
-            let payload: Data = row["payload"]
+            let wireName: String = row["record_name"]
+            guard let frame = openRow(wireName: wireName, payload: row["payload"]) else { continue }
             do {
-                decoded.append(try T(row: RowPayloadCoder.row(from: payload)))
+                decoded.append(try T(row: RowPayloadCoder.row(from: frame.payload)))
             } catch {
-                badNames.append(row["record_name"])
+                badNames.append(wireName)
             }
         }
         if !badNames.isEmpty {
-            // Track distinct corrupt record_names, and log only on the first
-            // sighting of each — an observation-driven list refetches on every
-            // change, so a persistently-bad row must not re-log forever.
-            let names = badNames // immutable copy for the @Sendable withLock closure
-            let firstSeen = corrupt.withLock { seen -> [String] in
-                names.filter { seen.insert($0).inserted }
-            }
-            for name in firstSeen {
-                logger.warning("undecodable \(kind.rawValue, privacy: .public) payload skipped: \(name, privacy: .public)")
-            }
+            noteCorrupt(badNames, what: "\(kind.rawValue) payload")
         }
         return decoded
     }
 
-    /// Number of DISTINCT record_names whose payloads failed to decode across
-    /// all `fetchAll` passes since init.
+    /// Number of DISTINCT wire names whose rows failed to open or decode
+    /// across all reads and `indexPending` passes since init.
     public func corruptCount() -> Int {
         corrupt.withLock { $0.count }
     }
