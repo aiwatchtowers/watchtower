@@ -133,3 +133,22 @@ func TestProj16_PrunableWorktreeWithUnreadableHeadIsKept(t *testing.T) {
 	writeFile(t, filepath.Join(admin, "HEAD"), gitIn(t, f.repo, "rev-parse", "refs/remotes/origin/wt")+"\n")
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCheckFailed)
 }
+
+// W6 sees the sessions of every workbench: an agent of a second workbench
+// over the same repository working inside the worktree keeps it, and so
+// does the caller when its session belongs to another workbench.
+func TestProj16_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.pushedWork("wt", "feat/x")
+	f.record(root, "feat/x")
+	other := SessionActivity{ID: 91, WorkbenchID: testWorkbench + 1, Title: "other workbench",
+		AgentCwd: filepath.Join(root, "sub"), ReportedAt: time.Now().Add(-time.Minute)}
+	f.store.activity = []SessionActivity{other}
+
+	if it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonSessionInIt); it.Detail != other.Title {
+		t.Fatalf("detail = %q", it.Detail)
+	}
+	wantItem(t, f.plan(Request{Sweep: true}), "worktree:"+root, ActionKeep, ReasonSessionInIt)
+	wantItem(t, f.plan(Request{CallerSessionID: other.ID}), "worktree:"+root, ActionKeep, ReasonYouAreInIt)
+}

@@ -205,7 +205,7 @@ func (s *fakeStore) WorkbenchSessionWorktrees(context.Context, int64) (map[strin
 	return s.rootOwners, nil
 }
 
-func (s *fakeStore) WorkbenchSessionActivity(context.Context, int64) ([]SessionActivity, error) {
+func (s *fakeStore) AllSessionActivity(context.Context) ([]SessionActivity, error) {
 	return s.activity, nil
 }
 

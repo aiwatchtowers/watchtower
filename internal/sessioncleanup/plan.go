@@ -144,9 +144,9 @@ func (b *builder) loadFacts(ctx context.Context) error {
 	for _, f := range folders {
 		b.folders = append(b.folders, resolvePath(f))
 	}
-	acts, err := b.deps.DB.WorkbenchSessionActivity(ctx, b.req.WorkbenchID)
+	acts, err := b.deps.DB.AllSessionActivity(ctx)
 	if err != nil {
-		return fmt.Errorf("reading workbench %d sessions: %w", b.req.WorkbenchID, err)
+		return fmt.Errorf("reading the terminal sessions: %w", err)
 	}
 	b.activity = map[int64]SessionActivity{}
 	for _, a := range acts {

@@ -70,16 +70,17 @@ type SessionInfo struct {
 	CreatedAt       time.Time
 }
 
-// SessionActivity is one session of the workbench as the in-use and
-// recent-owner catches see it. AgentCwd is the main agent's latest place
+// SessionActivity is one terminal session, of any workbench, as the in-use
+// and recent-owner catches see it. AgentCwd is the main agent's latest place
 // (board #565's column, read through the Store seam; "" = unknown).
 type SessionActivity struct {
-	ID         int64
-	Title      string
-	AgentCwd   string
-	ReportedAt time.Time // agent_state_at; zero = never reported
-	LastActive time.Time // last_active_at
-	Finished   bool
+	ID          int64
+	WorkbenchID int64 // 0 = a standalone terminal
+	Title       string
+	AgentCwd    string
+	ReportedAt  time.Time // agent_state_at; zero = never reported
+	LastActive  time.Time // last_active_at
+	Finished    bool
 }
 
 // Store is what a plan reads from the database. It has no write method: a
@@ -94,7 +95,10 @@ type Store interface {
 	// WorkbenchFolders is every workbench's folder_path.
 	WorkbenchFolders(ctx context.Context) ([]string, error)
 	WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error)
-	WorkbenchSessionActivity(ctx context.Context, workbenchID int64) ([]SessionActivity, error)
+	// AllSessionActivity is every terminal session of every workbench (and
+	// standalone ones): an agent of another workbench over the same
+	// repository can work inside a worktree too (W6).
+	AllSessionActivity(ctx context.Context) ([]SessionActivity, error)
 }
 
 // Proc is one process of the scan. Cwd "" = unknown.
