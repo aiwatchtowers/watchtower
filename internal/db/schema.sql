@@ -2267,6 +2267,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     chat_question     TEXT, -- a short question the Stop ask guard let through while the owner was present: JSON {"question": "...", "options": [{"label","recommended"}]}; NULL = none (Go only)
     chat_question_at  TEXT, -- the guard's Stop time, agent_state_at format; NULL with chat_question
     agent_turns       TEXT, -- JSON {"since": run mark, "turns": {"<agent_id>": {"start": stamp, "stop": stamp}}}: the last SubagentStart/SubagentStop per subagent or teammate of this run, open while start > stop; a stamp before since writes nothing; NULL = none (Go only)
+    cleanup_result    TEXT, -- JSON of the last `workbench cleanup --apply` of this session (Go only); NULL = never
+    cleanup_at        TEXT, -- its time, agent_state_at format; NULL with cleanup_result
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 );
@@ -2326,6 +2328,17 @@ CREATE TABLE IF NOT EXISTS terminal_session_targets (
     PRIMARY KEY (session_id, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_session_targets(target_id);
+
+-- Worktrees and branches a workbench session's agents worked in (00111):
+-- one row per new (session, root, branch), written by the session-state hook
+-- (at most 64 per session) and read by `workbench cleanup`. Go only.
+CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
+    session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+    root       TEXT NOT NULL,             -- worktree root (the dir holding .git), symlink-resolved, absolute
+    branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
+    first_at   TEXT NOT NULL,             -- agent_state_at format
+    PRIMARY KEY (session_id, root, branch)
+);
 
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
