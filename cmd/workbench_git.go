@@ -28,7 +28,10 @@ var workbenchGitCmd = &cobra.Command{
 	Long: "Local branches only; no fetch, pull or push. git is the developer tools' or\n" +
 		"Homebrew's binary, never /usr/bin/git (which could pop the install dialog),\n" +
 		"and no git process runs outside a repository. Every command exits 0 once the\n" +
-		"workbench and its folder resolve; a refusal is in the output, not the exit code.",
+		"workbench and its folder resolve; a refusal is in the output, not the exit code.\n" +
+		"--folder F runs the command in the worktree of the repository that holds F (a\n" +
+		"session's worktree); a folder outside the repository's worktrees is refused\n" +
+		"(`folder_not_a_worktree`) — `status` reports it and shows the workbench folder.",
 }
 
 var workbenchGitStatusCmd = &cobra.Command{
@@ -73,12 +76,15 @@ var (
 	workbenchGitFlagAgentRunning bool
 	workbenchGitFlagConfirmAgent bool
 	workbenchGitFlagName         string
+	workbenchGitFlagFolder       string
 )
 
 func init() {
 	for _, c := range []*cobra.Command{workbenchGitStatusCmd, workbenchGitBranchesCmd, workbenchGitSwitchCmd, workbenchGitCreateCmd} {
 		addWorkbenchIDFlag(c, &workbenchGitFlagWorkbench, "workbench id")
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
+		c.Flags().StringVar(&workbenchGitFlagFolder, "folder", "",
+			"an absolute folder in one of the repository's worktrees (a session's); default the workbench folder")
 		workbenchGitCmd.AddCommand(c)
 	}
 	sw := workbenchGitSwitchCmd.Flags()
@@ -90,27 +96,47 @@ func init() {
 	workbenchCmd.AddCommand(workbenchGitCmd)
 }
 
-// workbenchGitTarget resolves the command's workbench to its id and folder;
-// an error (bad id, no such workbench, a missing folder) exits non-zero.
-func workbenchGitTarget(cmd *cobra.Command) (int64, workbenchgit.Options, error) {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return 0, workbenchgit.Options{}, err
+// workbenchGitTarget resolves the command's workbench to its id and folder,
+// then --folder against the repository's worktrees (git runs only in the
+// workbench folder for that); Options.Folder is the resolved root. An error
+// (bad id, no such workbench, a missing workbench folder) exits non-zero;
+// resolveErr is git failing to list the worktrees, which the caller turns
+// into its envelope.
+func workbenchGitTarget(ctx context.Context, cmd *cobra.Command) (
+	id int64, o workbenchgit.Options, folder workbenchgit.ResolvedFolder, resolveErr, err error,
+) {
+	if err = checkWorkbenchIDFlags(cmd); err != nil {
+		return 0, o, folder, nil, err
 	}
-	id := workbenchGitFlagWorkbench
+	id = workbenchGitFlagWorkbench
 	if id <= 0 {
-		return 0, workbenchgit.Options{}, fmt.Errorf("%s: a positive workbench id is required",
+		return 0, o, folder, nil, fmt.Errorf("%s: a positive workbench id is required",
 			workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag)))
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
-		return 0, workbenchgit.Options{}, err
+		return 0, o, folder, nil, err
 	}
 	defer database.Close()
 	p, err := workbenchWithFolder(database, id)
 	if err != nil {
-		return 0, workbenchgit.Options{}, err
+		return 0, o, folder, nil, err
 	}
-	return id, workbenchgit.Options{Folder: p.FolderPath}, nil
+	folder, resolveErr = workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, workbenchGitFlagFolder)
+	return id, workbenchgit.Options{Folder: folder.Root}, folder, resolveErr, nil
+}
+
+// folderRefusal is why a branches, switch or create call may not use the
+// folder asked for: a failed worktree listing or a folder outside the
+// repository's worktrees. "" = go ahead.
+func folderRefusal(folder workbenchgit.ResolvedFolder, resolveErr error) (refused, detail string) {
+	switch {
+	case resolveErr != nil:
+		return workbenchgit.RefusedGitFailed, "listing the worktrees: " + resolveErr.Error()
+	case folder.OutsideTheRepository():
+		return workbenchgit.RefusedFolderNotAWorktree, string(folder.Scope)
+	}
+	return "", ""
 }
 
 func workbenchGitContext(cmd *cobra.Command, budget time.Duration) (context.Context, context.CancelFunc) {
@@ -122,14 +148,17 @@ func workbenchGitContext(cmd *cobra.Command, budget time.Duration) (context.Cont
 }
 
 func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
-	id, o, err := workbenchGitTarget(cmd)
+	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
+	defer cancel()
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
-	defer cancel()
 	st := workbenchgit.ReadStatus(ctx, o)
-	st.WorkbenchID = id
+	st.WorkbenchID, st.ResolvedFolder = id, folder
+	if resolveErr != nil { // the folder could not be placed: a failed read
+		st.StatusOK, st.StatusError = false, "listing the worktrees: "+resolveErr.Error()
+	}
 	if workbenchGitFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), st)
 	}
@@ -138,19 +167,29 @@ func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkbenchGitBranches(cmd *cobra.Command, _ []string) error {
-	id, o, err := workbenchGitTarget(cmd)
+	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
+	defer cancel()
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
-	defer cancel()
-	l := workbenchgit.ListBranches(ctx, o)
+	l := workbenchgit.BranchList{Branches: []workbenchgit.Branch{}}
+	if l.Refused, l.RefusedDetail = folderRefusal(folder, resolveErr); l.Refused == "" {
+		l = workbenchgit.ListBranches(ctx, o)
+	}
 	l.WorkbenchID = id
 	if workbenchGitFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), l)
 	}
-	w := cmd.OutOrStdout()
+	printGitBranches(cmd.OutOrStdout(), l)
+	return nil
+}
+
+func printGitBranches(w io.Writer, l workbenchgit.BranchList) {
 	fmt.Fprintf(w, "workbench: %d\ngit: %t\n", l.WorkbenchID, l.Git)
+	if l.Refused != "" {
+		fmt.Fprintf(w, "refused: %s %s\n", l.Refused, l.RefusedDetail)
+	}
 	if l.BranchesError != "" {
 		fmt.Fprintf(w, "error: %s\n", l.BranchesError)
 	}
@@ -168,33 +207,50 @@ func runWorkbenchGitBranches(cmd *cobra.Command, _ []string) error {
 		}
 		fmt.Fprintln(w, line)
 	}
-	return nil
 }
 
 func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
-	id, o, err := workbenchGitTarget(cmd)
+	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
+	defer cancel()
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
-	defer cancel()
-	res := workbenchgit.Switch(ctx, o, workbenchgit.SwitchRequest{
-		Branch:       workbenchGitFlagBranch,
-		Stash:        workbenchGitFlagStash,
-		AgentRunning: workbenchGitFlagAgentRunning,
-		ConfirmAgent: workbenchGitFlagConfirmAgent,
-	})
+	res := refusedSwitch(workbenchGitFlagBranch, folder, resolveErr)
+	if res.Refused == "" {
+		res = workbenchgit.Switch(ctx, o, workbenchgit.SwitchRequest{
+			Branch:       workbenchGitFlagBranch,
+			Stash:        workbenchGitFlagStash,
+			AgentRunning: workbenchGitFlagAgentRunning,
+			ConfirmAgent: workbenchGitFlagConfirmAgent,
+		})
+	}
+	res.Status.ResolvedFolder = folder
 	return writeSwitchResult(cmd.OutOrStdout(), id, res)
 }
 
 func runWorkbenchGitCreate(cmd *cobra.Command, _ []string) error {
-	id, o, err := workbenchGitTarget(cmd)
+	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
+	defer cancel()
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
-	defer cancel()
-	return writeSwitchResult(cmd.OutOrStdout(), id, workbenchgit.Create(ctx, o, workbenchGitFlagName))
+	res := refusedSwitch(workbenchGitFlagName, folder, resolveErr)
+	if res.Refused == "" {
+		res = workbenchgit.Create(ctx, o, workbenchGitFlagName)
+	}
+	res.Status.ResolvedFolder = folder
+	return writeSwitchResult(cmd.OutOrStdout(), id, res)
+}
+
+// refusedSwitch is the switch or create envelope refusing the folder asked
+// for; Refused is "" when the folder may be used. Its status is not read:
+// no git runs in a refused folder.
+func refusedSwitch(branch string, folder workbenchgit.ResolvedFolder, resolveErr error) workbenchgit.SwitchResult {
+	res := workbenchgit.SwitchResult{Branch: branch, NeedsConfirmation: []string{}}
+	res.Refused, res.RefusedDetail = folderRefusal(folder, resolveErr)
+	return res
 }
 
 func writeSwitchResult(w io.Writer, id int64, res workbenchgit.SwitchResult) error {
@@ -218,7 +274,10 @@ func writeSwitchResult(w io.Writer, id int64, res workbenchgit.SwitchResult) err
 			fmt.Fprintf(w, "%s: %s\n", f.key, f.value)
 		}
 	}
-	printGitStatus(w, res.Status)
+	// A refused folder (or worktree listing) read no status at all.
+	if res.Status.GitAvailable || res.Status.Note != "" {
+		printGitStatus(w, res.Status)
+	}
 	return nil
 }
 
@@ -255,4 +314,7 @@ func printGitStatus(w io.Writer, st workbenchgit.Status) {
 		fmt.Fprintf(w, "operation: %s\n", st.Operation)
 	}
 	fmt.Fprintf(w, "folder: %s\n", st.TopLevel)
+	if st.Scope != "" && st.Scope != workbenchgit.ScopeMain {
+		fmt.Fprintf(w, "folder scope: %s\n", strings.TrimSpace(string(st.Scope)+" "+st.WorktreeName))
+	}
 }

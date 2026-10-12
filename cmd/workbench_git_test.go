@@ -85,8 +85,9 @@ func sorted(keys ...string) []string {
 var (
 	gitStatusKeys = sorted("workbench_id", "git_available", "git", "note", "branch", "detached", "unborn", "head",
 		"upstream", "ahead", "behind", "dirty", "changes", "operation", "top_level", "git_dir", "common_dir",
-		"status_ok", "status_error")
-	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "note", "current", "branches", "branches_ok", "branches_error")
+		"status_ok", "status_error", "folder_requested", "folder_scope", "folder_root", "worktree_name")
+	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "note", "current", "branches", "branches_ok", "branches_error",
+		"refused", "refused_detail")
 	gitBranchKeys   = sorted("name", "current", "head", "committed_at", "upstream", "upstream_gone", "ahead", "behind", "worktree", "worktree_name")
 	gitSwitchKeys   = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
 		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "warning", "status")
@@ -189,6 +190,9 @@ func TestWorkbenchGit_EverySubcommandTakesWorkbenchAndJSON(t *testing.T) {
 		assert.NotNil(t, c.Flags().Lookup("workbench"), c.Name())
 		assert.NotNil(t, c.Flags().Lookup("json"), c.Name())
 	}
+	for _, c := range subs {
+		assert.NotNil(t, c.Flags().Lookup("folder"), c.Name())
+	}
 	for _, f := range []string{"branch", "stash", "agent-running", "confirm-agent"} {
 		assert.NotNil(t, workbenchGitSwitchCmd.Flags().Lookup(f), f)
 	}
@@ -199,4 +203,96 @@ func TestWorkbenchGit_TextStatusLeadsWithTheError(t *testing.T) {
 	var b strings.Builder
 	printGitStatus(&b, workbenchgit.Status{GitAvailable: true, Git: true, StatusError: "git status timed out"})
 	assert.Equal(t, "git: true\nstatus error: git status timed out\n", b.String(), "no clean-looking fields after a failed status")
+}
+
+// gitWorktree adds a linked worktree of repo on a new branch from main and
+// returns its symlink-resolved path.
+func gitWorktree(t *testing.T, repo, branch string) string {
+	t.Helper()
+	bin, _ := gitbin.Locate()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	dir := filepath.Join(parent, branch)
+	c := exec.Command(bin, "worktree", "add", "-q", "-b", branch, dir, "main")
+	c.Dir = repo
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, "git worktree add: %s", out)
+	return dir
+}
+
+func TestWorkbenchGitStatusWithoutFolderIsUnchanged(t *testing.T) {
+	database := writeActionsConfig(t)
+	dir := gitBranchRepo(t)
+	id, err := database.CreateWorkbench("acme", dir)
+	require.NoError(t, err)
+
+	st := gitJSON(t, id, "status")
+	assert.Equal(t, gitStatusKeys, keysOf(st))
+	assert.Equal(t, "main", st["branch"])
+	assert.Equal(t, "", st["folder_requested"])
+	assert.Equal(t, "main", st["folder_scope"])
+	assert.Equal(t, dir, st["folder_root"])
+	assert.Equal(t, "", st["worktree_name"])
+	br := gitJSON(t, id, "branches")
+	assert.Equal(t, "", br["refused"])
+	assert.Len(t, br["branches"], 2)
+}
+
+// PROJ-10 (2026-10-12): --folder runs the command in the session's
+// worktree; a folder outside the repository's worktrees is refused with
+// nothing written, and status reports it over the workbench folder's status.
+func TestProj10_FolderFlagEnvelopeAndRefusal(t *testing.T) {
+	database := writeActionsConfig(t)
+	dir := gitBranchRepo(t)
+	id, err := database.CreateWorkbench("acme", dir)
+	require.NoError(t, err)
+	wt := gitWorktree(t, dir, "mobile-a")
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	missing := filepath.Join(outside, "gone")
+
+	st := gitJSON(t, id, "status", "--folder", wt)
+	assert.Equal(t, gitStatusKeys, keysOf(st))
+	assert.Equal(t, "mobile-a", st["branch"], "the worktree's own branch")
+	assert.Equal(t, "worktree", st["folder_scope"])
+	assert.Equal(t, wt, st["folder_root"])
+	assert.Equal(t, "mobile-a", st["worktree_name"])
+	assert.Equal(t, wt, st["folder_requested"])
+
+	st = gitJSON(t, id, "status", "--folder", missing)
+	assert.Equal(t, "missing", st["folder_scope"])
+	assert.Equal(t, "main", st["branch"], "the page falls back to the workbench folder")
+	assert.Equal(t, dir, st["folder_root"])
+	assert.Equal(t, "outside", gitJSON(t, id, "status", "--folder", outside)["folder_scope"])
+
+	sw := gitJSON(t, id, "switch", "--folder", missing, "--branch", "feature", "--stash", "--confirm-agent")
+	assert.Equal(t, gitSwitchKeys, keysOf(sw))
+	assert.Equal(t, "folder_not_a_worktree", sw["refused"], "a refusal is an exit-0 envelope")
+	assert.Equal(t, "missing", sw["refused_detail"])
+	assert.Equal(t, false, sw["switched"])
+	assert.Equal(t, "missing", sw["status"].(map[string]any)["folder_scope"])
+	cr := gitJSON(t, id, "create", "--folder", outside, "--name", "topic")
+	assert.Equal(t, "folder_not_a_worktree", cr["refused"])
+	assert.Equal(t, "outside", cr["refused_detail"])
+	br := gitJSON(t, id, "branches", "--folder", outside)
+	assert.Equal(t, gitBranchesKeys, keysOf(br))
+	assert.Equal(t, "folder_not_a_worktree", br["refused"])
+	assert.Equal(t, []any{}, br["branches"])
+	plain := gitJSON(t, id, "status")
+	assert.Equal(t, "main", plain["branch"], "nothing was written")
+	assert.Equal(t, "main", plain["folder_scope"])
+	assert.Len(t, gitJSON(t, id, "branches")["branches"], 3, "no branch topic was created")
+
+	sw = gitJSON(t, id, "switch", "--folder", wt, "--branch", "main")
+	assert.Equal(t, "checked_out_elsewhere", sw["refused"], "main is checked out in the workbench folder")
+	cr = gitJSON(t, id, "create", "--folder", wt, "--name", "topic")
+	assert.Equal(t, true, cr["created"])
+	assert.Equal(t, "topic", cr["status"].(map[string]any)["branch"])
+	assert.Equal(t, "worktree", cr["status"].(map[string]any)["folder_scope"])
+	assert.Equal(t, "main", gitJSON(t, id, "status")["branch"], "the workbench folder stayed on main")
+
+	out, err := runWorkbenchGit(t, "switch", "--folder", missing, "--branch", "feature", "--workbench", strconv.FormatInt(id, 10))
+	require.NoError(t, err)
+	assert.Contains(t, out, "refused: folder_not_a_worktree missing")
+	assert.NotContains(t, out, "git: false", "a refused folder read no status")
 }
