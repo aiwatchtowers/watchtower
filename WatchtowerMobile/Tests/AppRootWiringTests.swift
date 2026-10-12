@@ -26,16 +26,27 @@ final class AppRootWiringTests: XCTestCase {
     private var recordingsDirectory: URL?
     private var transports: [InMemoryCloudTransport] = []
     private var replicaPath = ""
+    private var container: FakeLinkContainer!
 
     /// A live-kind root on one replica path. Without `transportStorePath`
     /// each environment gets a fresh in-memory transport; with it, a
     /// `CloudKitTransport` over the persistent store at that path (the app's
     /// shape: one transport file across restarts; no engine starts in the
     /// unsigned test host).
-    private func makeRoot(linked: LinkedDevice?, transportStorePath: String? = nil) throws -> AppRoot {
+    /// `link` is the saved link the flow starts from; `linkClock` runs the
+    /// flow's grant wait.
+    private func makeRoot(
+        linked: LinkedDevice?,
+        link: LinkRecord? = nil,
+        linkClock: any LinkClock = SystemLinkClock(),
+        transportStorePath: String? = nil
+    ) throws -> AppRoot {
         let path = try makeReplicaPath()
         replicaPath = path
         let defaults = try makeDefaults()
+        let store = LinkStore(defaults: defaults)
+        store.link = link
+        container = FakeLinkContainer(log: LinkEventLog())
         let recordings = try makeRecordingsDirectory()
         recordingsDirectory = recordings
         let engine = engine
@@ -72,7 +83,7 @@ final class AppRootWiringTests: XCTestCase {
             env: try make(.private, AppEnvironment.unlinkedHubID, linked),
             scope: .private,
             hubID: AppEnvironment.unlinkedHubID,
-            linking: LinkingViewModel(container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity),
+            linking: LinkingViewModel(container: container, store: store, identity: identity, clock: linkClock),
             restarter: AppRoot.Restarter(replicaPath: path, transportStorePath: transportStorePath, make: make)
         )
     }
@@ -442,12 +453,124 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(demo.env.linkedDevice, DemoSeed.device)
     }
 
-    private func heartbeat(updatedAt: Date) -> HeartbeatPayload {
+    // MARK: - Glue: the root's signals, heartbeat, link URL and Unlink (board #71)
+
+    private func linkRecord() -> LinkRecord {
+        LinkRecord(
+            hubID: "hub-acme", macName: "Acme Mac", scope: .private, ownerName: "_owner-acme",
+            userRecordName: "_owner-acme", nonce: LinkPayload.makeNonce(), dataShareURL: nil, relayShareURL: nil
+        )
+    }
+
+    private func deviceWrites(in transport: InMemoryCloudTransport) async throws -> [DevicePayload] {
+        try await transport.changes(in: .relay, since: nil).changed
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+            .map { try RelayCoder.makeDecoder().decode(DevicePayload.self, from: $0.payload) }
+    }
+
+    /// The transport's `unlinked` event reaches the link flow through the
+    /// root (`AppRoot.handle`): the link ends, the replica is wiped.
+    func testTheTransportsUnlinkedSignalEndsTheLink() async throws {
+        let root = try makeRoot(linked: device, link: linkRecord())
+        let first = root.env
+        XCTAssertFalse(root.showsOnboarding)
+
+        first.onLinkSignal?(.unlinked)
+
+        try await poll { root.linking.notice == .removed }
+        XCTAssertNil(root.linking.link)
+        XCTAssertFalse(root.env === first, "wiped onto a new environment")
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    func testAnAccountChangeSignalForAnotherAccountEndsTheLink() async throws {
+        let root = try makeRoot(linked: device, link: linkRecord())
+        let first = root.env
+        container.userRecordNameValue = "_colleague-b"
+
+        first.onLinkSignal?(.accountChanged)
+
+        try await poll { root.linking.link == nil }
+        try await poll { !(root.env === first) }
+        XCTAssertNil(root.linking.notice)
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    /// Every successful fetch checks the heartbeat (`AppRoot.checkHeartbeat`):
+    /// another hub's stops the writes.
+    func testAFetchedHeartbeatOfAnotherHubShowsMovedAndStopsWrites() async throws {
+        let root = try makeRoot(linked: device, link: linkRecord())
+        let now = Date()
+        let moved = heartbeat(updatedAt: now, hubID: "hub-studio", macName: "Acme Studio")
+        try await transports[0].save([try CloudRecordFactory.record(for: moved, modifiedAt: now)])
+
+        let fetched = await root.env.refresh()
+
+        XCTAssertTrue(fetched)
+        try await poll { root.linking.notice == .moved(macName: "Acme Studio") }
+        try await poll { !root.env.writesAllowed }
+        XCTAssertEqual(root.env.linkedDevice, device, "the link stands")
+    }
+
+    /// A `watchtower://link` URL on a live root runs the whole flow over the
+    /// real host: the restart onto the code's hub, the device record, the
+    /// Mac's grant, the link.
+    func testALinkURLOnALiveRootLinksThroughTheRealHost() async throws {
+        let linkClock = GateLinkClock()
+        addTeardownBlock { linkClock.release() }
+        let root = try makeRoot(linked: nil, linkClock: linkClock)
+        let iat = Int64(linkClock.start.timeIntervalSince1970)
+        let code = LinkPayload(
+            hubID: "hub-acme", macName: "Acme Mac", ownerUser: "_owner-acme", nonce: LinkPayload.makeNonce(), iat: iat, exp: iat + 600
+        )
+
+        let flow = Task { await root.open(code.url()) }
+        try await poll { linkClock.waiting == 1 }
+
+        XCTAssertEqual(root.linking.phase, .waiting(macName: "Acme Mac"))
+        XCTAssertEqual(built.last?.hubID, "hub-acme", "restarted onto the code's hub")
+        XCTAssertEqual(built.last?.scope, .private, "same Apple ID: the private database")
+        let macSide = try XCTUnwrap(transports.last)
+        let writes = try await deviceWrites(in: macSide)
+        XCTAssertEqual(writes.map(\.linkNonce), [code.nonce])
+        let grant = DeviceGrant(
+            deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
+            linked: true, typingAllowed: false, startSessionsAllowed: true
+        )
+        try await macSide.save([try CloudRecordFactory.record(for: grant, modifiedAt: Date())])
+        linkClock.release()
+        await flow.value
+
+        XCTAssertEqual(root.linking.phase, .linked(macName: "Acme Mac"))
+        XCTAssertEqual(root.env.linkedDevice?.deviceID, device.deviceID)
+        XCTAssertFalse(root.showsOnboarding)
+    }
+
+    /// Settings → Unlink this Mac on a live root: offered while linked, it
+    /// writes `unlinked` to the link's hub and ends on the unlinked hub.
+    func testSettingsUnlinkOnALiveRootWritesUnlinkedAndEndsUnlinked() async throws {
+        let root = try makeRoot(linked: device, link: linkRecord())
+        XCTAssertTrue(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: root.linking.link))
+        XCTAssertFalse(SettingsView.offersUnlink(transportKind: .inMemoryDemo, link: linkRecord()), "the demo has no link to end")
+
+        await root.linking.unlink()
+
+        XCTAssertNil(root.linking.link)
+        XCTAssertFalse(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: root.linking.link))
+        XCTAssertEqual(Array(built.map(\.hubID).suffix(2)), ["hub-acme", AppEnvironment.unlinkedHubID])
+        let linkSide = transports[transports.count - 2]
+        let writes = try await deviceWrites(in: linkSide)
+        XCTAssertEqual(writes.last?.unlinked, true, "the link's hub hears the unlink")
+        XCTAssertEqual(root.linking.phase, .idle)
+        XCTAssertTrue(root.showsOnboarding)
+    }
+
+    private func heartbeat(updatedAt: Date, hubID: String = "hub-acme", macName: String = "Acme Mac") -> HeartbeatPayload {
         HeartbeatPayload(
             updatedAt: updatedAt,
             appVersion: "1.0",
-            hubID: "hub-acme",
-            macName: "Acme Mac",
+            hubID: hubID,
+            macName: macName,
             flavor: .default,
             lastPublishAt: updatedAt,
             lastRelayAt: updatedAt,
@@ -486,5 +609,33 @@ private actor GatedTransport: CloudSyncTransport {
             await withCheckedContinuation { waiters.append($0) }
         }
         return try await inner.changes(in: zone, since: token)
+    }
+}
+
+/// A link clock whose sleeps wait for `release()` and whose `now` stands
+/// still: the grant wait polls once, then the test answers for the Mac.
+private final class GateLinkClock: LinkClock, @unchecked Sendable {
+    let start = Date()
+    private let lock = NSLock()
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var waiting: Int { lock.withLock { waiters.count } }
+
+    func now() -> Date { start }
+
+    func sleep(for duration: Duration) async throws {
+        await withCheckedContinuation { continuation in
+            lock.withLock { waiters.append(continuation) }
+        }
+        try Task.checkCancellation()
+    }
+
+    func release() {
+        let all = lock.withLock {
+            let parked = waiters
+            waiters = []
+            return parked
+        }
+        all.forEach { $0.resume() }
     }
 }
