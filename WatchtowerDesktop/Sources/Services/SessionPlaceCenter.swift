@@ -60,6 +60,9 @@ final class SessionPlaceCenter {
     @ObservationIgnored private var statusQueued: Set<CwdKey> = []
     @ObservationIgnored private var cwdReads: [Int64: Task<Void, Never>] = [:]
     @ObservationIgnored private var cwdQueued: Set<Int64> = []
+    /// Bumped by `forgetWorkbench`: a cwd read that started before lands on
+    /// nothing.
+    @ObservationIgnored private var forgetCounts: [Int64: Int] = [:]
 
     init(readCwds: @escaping CwdReader, readStatus: @escaping StatusReader, isLive: @escaping (Int64) -> Bool) {
         self.readCwds = readCwds
@@ -82,16 +85,18 @@ final class SessionPlaceCenter {
     /// The workbench's page is on screen: its cwds are read now and kept up
     /// to date by `cwdsMayHaveChanged` and `refreshPlaces`. Coming back to it,
     /// the places already known are read again too — their branch may have
-    /// moved while nothing watched.
+    /// moved while nothing watched. That runs after the cwds are read again,
+    /// on the known cwds still held only (a new cwd was just read).
     @discardableResult
     func followWorkbench(_ workbenchID: Int64, folder: String) -> Task<Void, Never> {
         let returning = followed[workbenchID] == nil
         followed[workbenchID] = folder
+        let known = keysInUse(workbenchID: workbenchID)
         let cwds = rereadCwds(workbenchID: workbenchID)
-        let places = returning ? refreshPlaces(workbenchID: workbenchID) : Task {}
+        guard returning, !known.isEmpty else { return cwds }
         return Task {
             await cwds.value
-            await places.value
+            await self.refreshPlaces(workbenchID: workbenchID, among: known).value
         }
     }
 
@@ -104,6 +109,7 @@ final class SessionPlaceCenter {
     /// The workbench was deleted: everything known about it goes.
     func forgetWorkbench(_ workbenchID: Int64) {
         followed[workbenchID] = nil
+        forgetCounts[workbenchID, default: 0] += 1
         for (sessionID, key) in sessionKeys where key.workbenchID == workbenchID {
             evictSession(sessionID)
         }
@@ -137,15 +143,21 @@ final class SessionPlaceCenter {
     /// again (a worktree's branch may have moved, or the worktree gone).
     @discardableResult
     func refreshPlaces(workbenchID: Int64) -> Task<Void, Never> {
+        refreshPlaces(workbenchID: workbenchID, among: nil)
+    }
+
+    // MARK: - Private
+
+    /// `among`: only these cwds (those still in use); nil = every cwd in use.
+    private func refreshPlaces(workbenchID: Int64, among: Set<CwdKey>?) -> Task<Void, Never> {
         guard let folder = followed[workbenchID] else { return Task {} }
-        let keys = keysInUse(workbenchID: workbenchID).filter {
+        let inUse = keysInUse(workbenchID: workbenchID)
+        let keys = (among.map { $0.intersection(inUse) } ?? inUse).filter {
             !SessionPlace.isWorkbenchFolder($0.cwd, workbenchFolder: folder)
         }
         let reads = keys.map { readPlace($0, folder: folder) }
         return Task { for read in reads { await read.value } }
     }
-
-    // MARK: - Private
 
     /// Coalesced: a call while a read runs asks for one more after it and
     /// gets the running one, which ends after that rerun.
@@ -165,9 +177,11 @@ final class SessionPlaceCenter {
         return read
     }
 
-    /// A read started on screen lands even if the page goes away meanwhile.
+    /// A read started on screen lands even if the page goes away meanwhile,
+    /// but not when the workbench was deleted meanwhile.
     private func readCwdsOnce(workbenchID: Int64) async {
         guard let folder = followed[workbenchID] else { return }
+        let forgets = forgetCounts[workbenchID, default: 0]
         let rows: [Int64: SessionAgentCwd]
         do {
             rows = try await readCwds(workbenchID)
@@ -176,6 +190,7 @@ final class SessionPlaceCenter {
             print("[SessionPlace] cwds of workbench \(workbenchID) could not be read: \(error.localizedDescription)")
             return
         }
+        guard forgetCounts[workbenchID, default: 0] == forgets else { return }
         let changed = assignCwds(rows, workbenchID: workbenchID, folder: folder)
         dropUnusedCwds(workbenchID: workbenchID)
         for read in changed.map({ readPlace($0, folder: folder) }) { await read.value }

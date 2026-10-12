@@ -26,9 +26,26 @@ final class SessionPlaceCenterTests: XCTestCase {
         /// Holds every status read until `release()`.
         var holding = false
         var onStatusCall: (() -> Void)?
+        /// Holds every cwd read until `releaseCwds()`.
+        var holdingCwds = false
+        var onCwdCall: (() -> Void)?
+        var cwdCalls = 0
         private var held: [CheckedContinuation<Void, Never>] = []
+        private var heldCwds: [CheckedContinuation<Void, Never>] = []
 
-        func cwdRows() -> [Int64: SessionAgentCwd] { cwds }
+        func cwdRows() async -> [Int64: SessionAgentCwd] {
+            cwdCalls += 1
+            onCwdCall?()
+            if holdingCwds { await withCheckedContinuation { heldCwds.append($0) } }
+            return cwds
+        }
+
+        func releaseCwds() {
+            holdingCwds = false
+            let waiting = heldCwds
+            heldCwds = []
+            for continuation in waiting { continuation.resume() }
+        }
 
         func status(_ cwd: String) async throws -> WorkbenchGitStatus {
             statusCalls.append(cwd)
@@ -335,6 +352,42 @@ final class SessionPlaceCenterTests: XCTestCase {
         reads.statusCalls = []
         await center.cwdsMayHaveChanged().value
         XCTAssertEqual(reads.statusCalls, [], "a forgotten workbench is not followed")
+    }
+
+    /// A cwd read that was running when the workbench was deleted lands on
+    /// nothing: no session, no git read.
+    func testACwdReadRunningAtForgetDoesNotLand() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, worktreeA)]
+        reads.holdingCwds = true
+        let called = expectation(description: "cwd read started")
+        reads.onCwdCall = { called.fulfill() }
+        let center = makeCenter(reads)
+        let read = center.followWorkbench(workbenchID, folder: folder)
+        await fulfillment(of: [called], timeout: 5)
+
+        center.forgetWorkbench(workbenchID)
+        reads.releaseCwds()
+        await read.value
+        XCTAssertTrue(center.sessionPlaces.isEmpty)
+        XCTAssertFalse(center.isPlaceStale(sessionID: 1))
+        XCTAssertEqual(reads.statusCalls, [], "no git read for a deleted workbench")
+    }
+
+    /// Coming back, the places are refreshed only after the cwds were read
+    /// again: a cwd the session left meanwhile is not read.
+    func testFollowingAgainRefreshesOnlyTheCwdsStillHeld() async {
+        let reads = Reads()
+        reads.cwds = [1: cwd(1, worktreeA)]
+        let center = makeCenter(reads)
+        await center.followWorkbench(workbenchID, folder: folder).value
+        center.unfollowWorkbench(workbenchID)
+
+        reads.cwds = [1: cwd(1, worktreeB)]
+        reads.statusCalls = []
+        await center.followWorkbench(workbenchID, folder: folder).value
+        XCTAssertEqual(reads.statusCalls, [worktreeB], "A was left: only B is read")
+        XCTAssertEqual(worktreeName(center.currentPlace(sessionID: 1)), "mobile-b")
     }
 
     /// A repeated failure does not touch `staleCwds` (no re-render).

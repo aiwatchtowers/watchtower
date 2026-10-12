@@ -184,6 +184,37 @@ final class SessionPlaceViewModelTests: XCTestCase {
         vm.stopGitWatching(projectID: project.id)
     }
 
+    /// A state change alone (no cwd stamp at all, so `stateRowsRead` asks
+    /// for nothing) re-reads the cwds through `onChange`; a poll with no
+    /// change and the same stamp reads nothing.
+    func testAStateChangeWithoutANewCwdStampRereadsTheCwds() async throws {
+        let runner = RoutingRunner(workbenchID: project.id)
+        let rows = LockedValue<[SessionAgentStateRow]>([])
+        let reader: SessionAgentStateCenter.Reader = { _ in rows.value }
+        let agentStates = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: TerminalCenter(), interval: .seconds(3600),
+            notifier: RecordingSessionNotifier(), defaults: defaults, notificationCenter: NotificationCenter(),
+            read: reader
+        )
+        let (vm, _, _) = makeVM(runner, agentStates: agentStates)
+        await vm.startGitWatching(project: project)
+        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+
+        try await storeCwd(worktreeB, at: "2026-10-12 10:00:05.000")
+        await agentStates.poll()
+        await settle()
+        XCTAssertEqual(runner.folderReads, [worktreeA], "no change, no stamp: nothing is read")
+
+        rows.value = [SessionAgentStateRow(id: sessionID, projectID: project.id, title: "s", agentState: nil,
+                                           agentStateAt: nil, workbenchName: "acme", agentCwdAt: nil)]
+        await agentStates.poll()
+        await waitUntil { self.worktreeName(vm) == "mobile-b" }
+        await agentStates.poll()
+        await settle()
+        XCTAssertEqual(runner.folderReads, [worktreeA, worktreeB])
+        vm.stopGitWatching(projectID: project.id)
+    }
+
     /// The refs watcher re-reads the worktree places only for a batch that
     /// may have moved another worktree; app activation always does.
     func testTheRefsWatcherAndActivationRefreshThePlaces() async throws {
@@ -210,11 +241,11 @@ final class SessionPlaceViewModelTests: XCTestCase {
 
     // MARK: - Helpers
 
-    final class LockedValue: @unchecked Sendable {
+    final class LockedValue<Value>: @unchecked Sendable {
         private let lock = NSLock()
-        private var stored: String
-        init(_ value: String) { stored = value }
-        var value: String {
+        private var stored: Value
+        init(_ value: Value) { stored = value }
+        var value: Value {
             get { lock.withLock { stored } }
             set { lock.withLock { stored = newValue } }
         }

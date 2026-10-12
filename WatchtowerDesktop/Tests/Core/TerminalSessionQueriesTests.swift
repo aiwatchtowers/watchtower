@@ -438,4 +438,23 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertEqual(try TerminalSessionQueries.fetchAgentCwds(db, projectID: project), [:])
         }
     }
+
+    /// A database without migration 00110: the session states still load,
+    /// each with no cwd stamp (`agent_cwd_at` reads as NULL).
+    func testFetchAgentStatesWorksWithoutTheCwdColumns() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd_at")
+            try db.execute(sql: "ALTER TABLE terminal_sessions DROP COLUMN agent_cwd")
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let row = try TerminalSessionQueries.create(db, claude(project, "Waiting"))
+            try db.execute(
+                sql: "UPDATE terminal_sessions SET agent_state = 'waiting' WHERE id = ?", arguments: [row.id]
+            )
+            let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
+            XCTAssertEqual(rows.map(\.id), [row.id])
+            XCTAssertEqual(rows.first?.agentState, "waiting")
+            XCTAssertNil(rows.first?.agentCwdAt)
+        }
+    }
 }
