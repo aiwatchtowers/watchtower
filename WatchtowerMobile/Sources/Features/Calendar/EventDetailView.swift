@@ -144,8 +144,10 @@ struct EventDetailView: View {
                 }
             }
         case let .openRecap(id):
-            Button(action.title) {
-                env.navigation.calendarPath.append(.recap(id))
+            // A link, not a calendarPath append: the event detail is also
+            // pushed on Now's stack, and the recap opens on the stack it is on.
+            NavigationLink(value: CalendarRoute.recap(id)) {
+                Text(action.title)
             }
             .buttonStyle(ProminentActionStyle())
         }

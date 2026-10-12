@@ -2,9 +2,6 @@ import Foundation
 import WatchtowerKit
 import WatchtowerSync
 
-/// The event detail (spec §13 C1, design pass C4): time, attendees, prep bullets, linked
-/// targets read-only, the Recording section, and Join and Record, or Open recap once it is over.
-/// Targets are never made from the phone here (hidden until D).
 /// A button of the event detail's bottom bar (design pass C4).
 enum EventAction: Hashable {
     case join
@@ -21,6 +18,9 @@ enum EventAction: Hashable {
     }
 }
 
+/// The event detail (spec §13 C1, design pass C4): time, attendees, prep bullets, linked
+/// targets read-only, the Recording section, and Join and Record, or Open recap once it is over.
+/// Targets are never made from the phone here (hidden until D).
 struct EventDetailModel {
     struct Attendee: Identifiable, Equatable {
         let id: String

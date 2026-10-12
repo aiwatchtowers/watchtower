@@ -32,6 +32,14 @@ struct NowView: View {
             }
             .navigationDestination(for: NowRoute.self) { _ in SettingsView() }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
+            // An event detail pushed here opens its recap here (Open recap).
+            .navigationDestination(for: CalendarRoute.self) { route in
+                switch route {
+                case let .event(id): EventDetailView(eventID: id)
+                case .recordings: RecordingsListView()
+                case let .recap(id): RecapView(transcriptID: id)
+                }
+            }
             .navigationDestination(for: AskRoute.self) { route in
                 AskView(replica: replica, drafts: env.askDrafts, answerer: env.askAnswerer, askID: route.id)
             }
