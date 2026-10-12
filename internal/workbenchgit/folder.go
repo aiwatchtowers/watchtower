@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"watchtower/internal/gitbin"
@@ -41,7 +40,7 @@ type ResolvedFolder struct {
 	Requested string      `json:"folder_requested"`
 	Scope     FolderScope `json:"folder_scope"`
 	// Root is the folder git runs in: the workbench folder for main,
-	// outside and missing; for a worktree, the worktree's top level joined
+	// outside, missing and unresolved; for a worktree, the worktree's top level joined
 	// with the workbench folder's path relative to its own top level when
 	// that exists there, else the worktree's top level.
 	Root string `json:"folder_root"`
@@ -190,14 +189,27 @@ func within(path, base string) bool {
 	return len(path) > len(base) && samePath(path[:len(base)], base)
 }
 
-// samePath compares two paths the way the file system does: ignoring case
-// on macOS, whose default volumes are case-insensitive (a folder given in
-// another case than git lists it is still that folder).
+// samePath compares two paths the way the file system does: equal
+// strings are the same path; strings that differ only in case are the same
+// path only when both name one directory on disk (a case-insensitive
+// volume, the macOS default). On a case-sensitive volume /x/WT and /x/wt
+// are two folders, and any doubt (either fails to stat) answers no.
 func samePath(a, b string) bool {
-	if runtime.GOOS == "darwin" {
-		return strings.EqualFold(a, b)
+	if a == b {
+		return true
 	}
-	return a == b
+	return strings.EqualFold(a, b) && sameDirectory(a, b)
+}
+
+// sameDirectory reports whether a and b name one existing file; a seam for
+// the tests, which cannot make a case-sensitive volume.
+var sameDirectory = func(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	return err == nil && os.SameFile(fa, fb)
 }
 
 // mappedRoot maps a workbench in a repository subfolder into the worktree

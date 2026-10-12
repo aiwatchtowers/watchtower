@@ -261,10 +261,54 @@ func TestWithinIsAPathPrefix(t *testing.T) {
 	assert.False(t, within("/a/bc", "/a/b"))
 	assert.True(t, within("/a", "/"))
 	assert.False(t, within("/a", "/a/b"))
-	if runtime.GOOS == "darwin" {
-		assert.True(t, within("/A/b/c", "/a/B"))
-		assert.False(t, within("/A/bc", "/a/b"))
-	} else {
-		assert.False(t, within("/A/b/c", "/a/B"))
+}
+
+// stubSameDirectory replaces the identity check for the test's duration.
+func stubSameDirectory(t *testing.T, same func(a, b string) bool) {
+	t.Helper()
+	orig := sameDirectory
+	sameDirectory = same
+	t.Cleanup(func() { sameDirectory = orig })
+}
+
+// A case-only match counts only when both spellings are one directory: on a
+// case-sensitive volume /x/WT beside the worktree /x/wt is another folder.
+func TestWithinCaseOnlyMatchNeedsTheSameDirectory(t *testing.T) {
+	var asked [][2]string
+	stubSameDirectory(t, func(a, b string) bool {
+		asked = append(asked, [2]string{a, b})
+		return false
+	})
+	assert.False(t, within("/x/WT", "/x/wt"))
+	assert.False(t, within("/x/WT/app", "/x/wt"))
+	assert.False(t, within("/A/bc", "/a/b"))
+	assert.Equal(t, [2]string{"/x/WT", "/x/wt"}, asked[0])
+	assert.Equal(t, [2]string{"/x/WT/", "/x/wt/"}, asked[1], "the prefix is checked with its separator")
+	assert.True(t, within("/x/wt/app", "/x/wt"), "an exact prefix needs no identity check")
+	assert.Len(t, asked, 2, "a different-length or non-case-equal path needs no identity check")
+
+	stubSameDirectory(t, func(string, string) bool { return true })
+	assert.True(t, within("/A/b/c", "/a/B"))
+	assert.False(t, within("/A/bc", "/a/b"), "still separator-safe")
+}
+
+// On a case-sensitive volume a folder that differs from a listed worktree
+// only in case is outside, not that worktree.
+func TestResolveFolderCaseOnlyMatchOfAnotherDirectoryIsOutside(t *testing.T) {
+	repo, wtB := subfolderRepo(t)
+	parent, base := filepath.Split(wtB)
+	other := filepath.Join(parent, strings.ToUpper(base))
+	if _, err := os.Stat(other); err != nil {
+		require.NoError(t, os.Mkdir(other, 0o755)) // a case-sensitive temp volume
 	}
+	stubSameDirectory(t, func(string, string) bool { return false })
+	got := resolve(t, Options{Folder: repo}, other)
+	assert.Equal(t, ScopeOutside, got.Scope)
+	assert.Equal(t, repo, got.Root)
+	assert.Empty(t, got.WorktreeName)
+
+	stubSameDirectory(t, func(string, string) bool { return true })
+	got = resolve(t, Options{Folder: repo}, other)
+	assert.Equal(t, ScopeWorktree, got.Scope, "the same directory in another case is that worktree")
+	assert.Equal(t, base, got.WorktreeName)
 }
