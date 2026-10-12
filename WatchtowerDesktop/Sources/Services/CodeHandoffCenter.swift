@@ -120,7 +120,7 @@ final class CodeHandoffCenter {
     /// The sheet's new-session entries, one per agent in a fixed order, each
     /// disabled when its CLI is known to be missing.
     func newSessionChoices(workbenchID: Int64) -> [AgentChoice] {
-        AgentChoicePresentation.newSession { workbenches?.agentAvailable($0, projectID: workbenchID) ?? true }
+        AgentChoicePresentation.newSessionAgentChoices { workbenches?.agentAvailable($0, projectID: workbenchID) ?? true }
     }
 
     /// The session Send comments would use when it can take the text, else
