@@ -37,7 +37,11 @@ struct ParakeetProvider: TranscriptionProvider {
         }
         let asrManager = AsrManager(config: .default)
         try await asrManager.loadModels(models)
-        return ParakeetTranscriber(asrManager: asrManager)
+        return ParakeetTranscriber { samples in
+            let decoderLayers = await asrManager.decoderLayerCount
+            var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
+            return try await asrManager.transcribe(samples, decoderState: &decoderState).text
+        }
     }
 }
 
@@ -49,9 +53,19 @@ struct ParakeetProvider: TranscriptionProvider {
 /// `@unchecked Sendable` is sound here: one instance is created per recording and its
 /// `transcribe` is awaited once from a single detached task, never shared concurrently
 /// (same single-use invariant as `WhisperKitEngine`).
+///
+/// Silence defence (spec D5, board #554): everything outside the detected
+/// speech is muted to exact zeros before the whole buffer goes to the engine
+/// (L5, `speechOnlyBuffer`; a recording with no speech is not decoded), and
+/// the text goes through the phrase filter.
 final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
-    private let asrManager: AsrManager
-    init(asrManager: AsrManager) { self.asrManager = asrManager }
+    /// Whole-buffer decode (production: FluidAudio `AsrManager`; tests: a fake).
+    private let decode: @Sendable ([Float]) async throws -> String
+    private let detectors: SpeechDetectorSlot
+    init(speechDetector: SpeechDetector? = nil, decode: @escaping @Sendable ([Float]) async throws -> String) {
+        detectors = SpeechDetectorSlot(detector: speechDetector)
+        self.decode = decode
+    }
 
     func transcribe(
         _ samples: [Float],
@@ -59,14 +73,19 @@ final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> TranscriptionOutput {
         progress(0, 1)
-        let decoderLayers = await asrManager.decoderLayerCount
-        var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
-        let result = try await asrManager.transcribe(samples, decoderState: &decoderState)
+        let (input, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
+        var drops = WindowDropCounts()
+        defer { gate.logSummary(engineDrops: drops) }
+        guard let input else {
+            progress(1, 1)
+            return TranscriptionOutput(text: "", langStats: [:])
+        }
+        let text = withoutHallucinatedPhrases(try await decode(input), config: config, counting: &drops)
         progress(1, 1)
         // ASRResult carries no per-utterance language tag (FluidAudio does not
         // expose language detection results for the v3 batch path), so langStats
         // stays empty — best-effort per the pluggable-provider contract.
-        return TranscriptionOutput(text: result.text, langStats: [:])
+        return TranscriptionOutput(text: text, langStats: [:])
     }
 
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? { nil }

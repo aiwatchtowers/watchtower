@@ -58,6 +58,21 @@ final class SpeechGateTests: XCTestCase {
         XCTAssertEqual(SpeechGate.merged([10..<20, 0..<5, 5..<8, 15..<30, 40..<50]), [0..<8, 10..<30, 40..<50])
     }
 
+    // MARK: L5 muting
+
+    func testMutingZeroesEverythingOutsideTheRanges() {
+        let samples: [Float] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+        XCTAssertEqual(SpeechGate.muted(samples, keeping: [1..<3, 5..<6]), [0, 0.2, 0.3, 0, 0, 0.6, 0, 0])
+    }
+
+    func testMutingWithNoRangesIsAllZeros() {
+        XCTAssertEqual(SpeechGate.muted([0.5, -0.5, 0.25], keeping: []), [0, 0, 0])
+    }
+
+    func testMutingClampsRangesToTheBuffer() {
+        XCTAssertEqual(SpeechGate.muted([0.5, 0.5, 0.5], keeping: [2..<10]), [0, 0, 0.5])
+    }
+
     // MARK: Energy fallback
 
     func testEnergyDetectorFindsNothingInZeros() {

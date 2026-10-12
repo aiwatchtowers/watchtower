@@ -111,19 +111,53 @@ enum AppleLocaleCatalog {
 /// `@unchecked Sendable` is sound here: one instance is created per recording and its
 /// `transcribe` is awaited once from a single detached task, never shared concurrently
 /// (same single-use invariant as `WhisperKitEngine`).
+///
+/// Silence defence (spec D5, board #554): everything outside the detected
+/// speech is muted to exact zeros before the whole buffer goes to the analyzer
+/// (L5, `speechOnlyBuffer`; a recording with no speech is not decoded), and
+/// the text goes through the phrase filter.
 final class AppleTranscriber: Transcriber, @unchecked Sendable {
+    typealias Decode = @Sendable (_ samples: [Float], _ locale: Locale) async throws -> String
+
+    /// Whole-buffer decode (production: `analyze`; tests: a fake).
+    private let decode: Decode
+    private let detectors: SpeechDetectorSlot
+
+    init(speechDetector: SpeechDetector? = nil, decode: @escaping Decode = AppleTranscriber.analyze) {
+        detectors = SpeechDetectorSlot(detector: speechDetector)
+        self.decode = decode
+    }
+
     func transcribe(
         _ samples: [Float],
         config: TranscriptionConfig,
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> TranscriptionOutput {
+        progress(0, 1)
+        let locale = AppleLocaleCatalog.resolveLocale(langset: config.langset)
+        let (input, gate) = await speechOnlyBuffer(samples, detector: detectors.detector(for: config), config: config)
+        var drops = WindowDropCounts()
+        defer { gate.logSummary(engineDrops: drops) }
+        guard let input else {
+            progress(1, 1)
+            return TranscriptionOutput(text: "", langStats: [:])
+        }
+        let text = withoutHallucinatedPhrases(try await decode(input, locale), config: config, counting: &drops)
+        progress(1, 1)
+        // langStats has different semantics from WhisperKit's per-window counters (one
+        // fixed locale for the whole session, not windows-per-language) — synthesize a
+        // single-entry stat so downstream UI still has something to label, tagged with
+        // the resolved locale's language code.
+        let stats: [String: Int] = text.isEmpty ? [:] : [locale.identifier(.bcp47): 1]
+        return TranscriptionOutput(text: text, langStats: stats)
+    }
+
+    /// The real macOS 26 `SpeechAnalyzer` pass over one buffer (see the type comment).
+    static func analyze(samples: [Float], locale: Locale) async throws -> String {
         guard #available(macOS 26, *) else {
             throw NSError(domain: "AppleProvider", code: 2,
                           userInfo: [NSLocalizedDescriptionKey: "Requires macOS 26"])
         }
-        progress(0, 1)
-
-        let locale = AppleLocaleCatalog.resolveLocale(langset: config.langset)
         let transcriberModule = SpeechTranscriber(locale: locale, preset: .transcription)
         let analyzer = SpeechAnalyzer(modules: [transcriberModule])
 
@@ -148,15 +182,7 @@ final class AppleTranscriber: Transcriber, @unchecked Sendable {
 
         _ = try await analyzer.analyzeSequence(stream)
         try await analyzer.finalizeAndFinishThroughEndOfInput()
-        let finalText = try await collector.value
-
-        progress(1, 1)
-        // langStats has different semantics from WhisperKit's per-window counters (one
-        // fixed locale for the whole session, not windows-per-language) — synthesize a
-        // single-entry stat so downstream UI still has something to label, tagged with
-        // the resolved locale's language code.
-        let stats: [String: Int] = finalText.isEmpty ? [:] : [locale.identifier(.bcp47): 1]
-        return TranscriptionOutput(text: finalText, langStats: stats)
+        return try await collector.value
     }
 
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? { nil }

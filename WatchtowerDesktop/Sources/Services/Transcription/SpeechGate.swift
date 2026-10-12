@@ -14,8 +14,9 @@ enum WindowSpeech: Equatable {
 /// One recording's window gate (spec D2, board #554): L1 asks the detector
 /// whether a window holds speech before anything is decoded, L2 drops the
 /// decoded segments that lie outside it. Shared by `WindowedTranscriber`
-/// (batch) and `StreamingTranscriber` (live) — and later the Qwen3 windower —
-/// so the loops cannot drift, the same rule as `liftWindowSegments`.
+/// (batch), `StreamingTranscriber` (live) and `Qwen3Windower` (L1 only), and
+/// by `speechOnlyBuffer` for the whole-buffer engines, so the loops cannot
+/// drift — the same rule as `liftWindowSegments`.
 ///
 /// The first detector error moves the rest of the recording to
 /// `EnergySpeechDetector` — never "no gate", so a broken model cannot quietly
@@ -119,4 +120,70 @@ func decodeGatedWindow(
     } catch {
         return .failed(error)
     }
+}
+
+/// One speech detector per transcriber, created on the first call whose
+/// config has `speechGate` on — the config only arrives there — and reused
+/// for the transcriber's lifetime; a gate-off config (dictation) never
+/// creates one.
+final class SpeechDetectorSlot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var detector: SpeechDetector?
+
+    /// `detector` replaces the lazily created Silero one (tests).
+    init(detector: SpeechDetector? = nil) { self.detector = detector }
+
+    func detector(for config: TranscriptionConfig) -> SpeechDetector? {
+        guard config.speechGate else { return nil }
+        return lock.withLock {
+            if let detector { return detector }
+            let created = SileroSpeechDetector()
+            detector = created
+            return created
+        }
+    }
+}
+
+/// L5 (spec D5) for engines that decode the whole recording in one call
+/// (Parakeet, Apple): the detector runs over the recording in 30 s chunks
+/// with the window gate's rules (minimum speech, per-recording energy
+/// fallback), and every sample outside the padded speech is set to 0.
+/// Returns the samples to decode — unchanged when the gate is off, nil when
+/// the recording holds no speech at all (nothing to decode) — and the gate,
+/// whose counts the caller logs once the text is filtered.
+func speechOnlyBuffer(
+    _ samples: [Float],
+    detector: SpeechDetector?,
+    config: TranscriptionConfig
+) async -> (samples: [Float]?, gate: WindowSpeechGate) {
+    var gate = WindowSpeechGate(detector: detector, config: config)
+    guard detector != nil, config.speechGate else { return (samples, gate) }
+    let chunk = 30 * TranscriptionConfig.sampleRate
+    var speech: [Range<Int>] = []
+    for start in stride(from: 0, to: samples.count, by: chunk) {
+        let end = min(start + chunk, samples.count)
+        if case let .speech(ranges) = await gate.check(Array(samples[start..<end])) {
+            speech += ranges.map { (start + $0.lowerBound)..<(start + $0.upperBound) }
+        }
+    }
+    guard !speech.isEmpty else { return (nil, gate) }
+    return (SpeechGate.muted(samples, keeping: speech), gate)
+}
+
+/// The phrase filter on a non-Whisper engine's text (Qwen3 window text,
+/// Parakeet/Apple transcript), trimmed, with what it removed added to
+/// `drops` for the gate's summary line. Part of the gate: with `speechGate`
+/// off (the kill switch, dictation) the text is only trimmed, as before.
+func withoutHallucinatedPhrases(
+    _ text: String,
+    config: TranscriptionConfig,
+    counting drops: inout WindowDropCounts
+) -> String {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard config.speechGate else { return trimmed }
+    let cleaned = WhisperHallucinationFilter.clean(text)
+    if cleaned != trimmed {
+        drops.add(WindowDropCounts(phrase: 1, droppedChars: trimmed.count - cleaned.count))
+    }
+    return cleaned
 }

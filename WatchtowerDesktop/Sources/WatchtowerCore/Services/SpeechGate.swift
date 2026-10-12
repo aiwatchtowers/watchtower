@@ -22,6 +22,17 @@ package enum SpeechGate {
         return Double(total) / Double(sampleRate) < minWindowSpeechSec
     }
 
+    /// L5 (spec D5): the samples with everything outside `speech` set to
+    /// exactly 0, for engines that decode the whole recording at once.
+    package static func muted(_ samples: [Float], keeping speech: [Range<Int>]) -> [Float] {
+        var muted = [Float](repeating: 0, count: samples.count)
+        for range in speech {
+            let kept = range.clamped(to: 0..<samples.count)
+            muted.replaceSubrange(kept, with: samples[kept])
+        }
+        return muted
+    }
+
     /// Sorted ranges with overlapping or touching neighbours joined.
     package static func merged(_ ranges: [Range<Int>]) -> [Range<Int>] {
         ranges.sorted { $0.lowerBound < $1.lowerBound }.reduce(into: []) { result, range in
