@@ -164,17 +164,56 @@ func TestHasSessionWorktree_UsesAReadOnlyTx(t *testing.T) {
 	}
 }
 
-func TestGetTerminalSession_ReadsCreatedAt(t *testing.T) {
+func TestTerminalSessionStart_ReadsCreatedAt(t *testing.T) {
+	ctx := context.Background()
 	d := openTestDB(t)
 	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
 	if _, err := d.Exec(`UPDATE terminal_sessions SET created_at = '2026-10-12T09:30:00Z' WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
-	s, err := d.GetTerminalSession(id)
+	at, err := d.TerminalSessionStart(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-10-12T09:30:00Z" {
-		t.Fatalf("CreatedAt = %s", got)
+	if got := at.UTC().Format("2006-01-02T15:04:05Z"); got != "2026-10-12T09:30:00Z" {
+		t.Fatalf("start = %s", got)
+	}
+	if _, err := d.TerminalSessionStart(ctx, id+100); !errors.Is(err, ErrTerminalSessionNotFound) {
+		t.Fatalf("missing row = %v, want ErrTerminalSessionNotFound", err)
+	}
+}
+
+// An unreadable created_at is an error, never a zero time: a zero start
+// would make everything the session saw look younger than it.
+func TestTerminalSessionStart_UnreadableIsAnError(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	for _, bad := range []string{"", "yesterday", "2026-10-12 09:30"} {
+		if _, err := d.Exec(`UPDATE terminal_sessions SET created_at = ? WHERE id = ?`, bad, id); err != nil {
+			t.Fatal(err)
+		}
+		if at, err := d.TerminalSessionStart(ctx, id); err == nil {
+			t.Fatalf("created_at %q read as %v, want an error", bad, at)
+		}
+	}
+}
+
+// GetTerminalSession reads no column the cleanup added (and not created_at
+// either): the readers that open a database without migrating it keep
+// working on a database older than 00111.
+func TestGetTerminalSessionNeedsNoCleanupColumns(t *testing.T) {
+	d := openTestDB(t)
+	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	for _, col := range []string{"cleanup_result", "cleanup_at"} {
+		if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN ` + col); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := d.Exec(`DROP TABLE terminal_session_worktrees`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.GetTerminalSession(id); err != nil {
+		t.Fatalf("GetTerminalSession on a pre-00111 schema: %v", err)
 	}
 }

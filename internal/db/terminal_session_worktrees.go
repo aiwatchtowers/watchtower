@@ -3,7 +3,9 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"time"
 )
 
 // MaxSessionWorktrees caps the terminal_session_worktrees rows of one
@@ -147,4 +149,24 @@ func (db *DB) SaveCleanupResult(ctx context.Context, sessionID int64, resultJSON
 		return fmt.Errorf("saving terminal session %d cleanup result: %w", sessionID, ErrTerminalSessionNotFound)
 	}
 	return nil
+}
+
+// TerminalSessionStart is session sessionID's created_at.
+// ErrTerminalSessionNotFound when there is no such row; a created_at that
+// does not parse is an error, never a zero time (the cleanup's ownership
+// rule compares against it, and a zero start would make everything young).
+func (db *DB) TerminalSessionStart(ctx context.Context, sessionID int64) (time.Time, error) {
+	var raw string
+	err := db.QueryRowContext(ctx, `SELECT created_at FROM terminal_sessions WHERE id = ?`, sessionID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, fmt.Errorf("reading terminal session %d start: %w", sessionID, ErrTerminalSessionNotFound)
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading terminal session %d start: %w", sessionID, err)
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("reading terminal session %d start: created_at %q: %w", sessionID, raw, err)
+	}
+	return at, nil
 }

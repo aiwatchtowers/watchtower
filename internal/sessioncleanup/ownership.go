@@ -49,13 +49,15 @@ const (
 )
 
 // bornReason is "" when an item born at birth (known or not) is younger
-// than the session (spec §2 rule 2), else why it is kept. created_at has
-// second precision, so the birth is compared at seconds too.
+// than the session (spec §2 rule 2), else why it is kept. A zero session
+// start is unknown too: nothing can be shown younger than it. The times are
+// compared as they are — truncating either would let an item born a moment
+// before the session start count as the session's.
 func bornReason(birth time.Time, known bool, sessionCreated time.Time) string {
 	switch {
-	case !known:
+	case !known || sessionCreated.IsZero():
 		return ReasonCreatedUnknown
-	case birth.Truncate(time.Second).Before(sessionCreated.Truncate(time.Second)):
+	case birth.Before(sessionCreated):
 		return ReasonExistedBeforeSession
 	}
 	return ""
