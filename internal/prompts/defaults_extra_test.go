@@ -233,7 +233,7 @@ func TestTerminalTitlePromptRegistered(t *testing.T) {
 	id := TerminalTitle
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 1, DefaultVersions[id])
+	assert.Equal(t, 2, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%s")
 	assert.False(t, strings.HasPrefix(Defaults[id], "-"))
@@ -265,4 +265,18 @@ func contains(slice []string, val string) bool {
 		}
 	}
 	return false
+}
+
+// TestPrompts_TerminalTitleIsAgentNeutral pins the v2 text: the title prompt
+// names Claude Code and Codex sessions alike, so neither the template nor its
+// description names one agent.
+func TestPrompts_TerminalTitleIsAgentNeutral(t *testing.T) {
+	id := TerminalTitle
+	assert.Contains(t, Defaults[id], "an embedded coding-agent session")
+	assert.Contains(t, Descriptions[id], "an embedded coding-agent session")
+	for _, agent := range []string{"Claude", "Codex"} {
+		assert.NotContains(t, Defaults[id], agent)
+		assert.NotContains(t, Descriptions[id], agent)
+	}
+	assert.Equal(t, 2, DefaultVersions[id], "an edited shipped template bumps its version")
 }

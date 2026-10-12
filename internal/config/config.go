@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"watchtower/internal/agentkind"
 )
 
 type WorkspaceConfig struct {
@@ -385,6 +387,7 @@ type Config struct {
 	Transcripts      TranscriptsConfig           `mapstructure:"transcripts"`
 	Catchup          CatchupConfig               `mapstructure:"catchup"`
 	DB               DBConfig                    `mapstructure:"db"`
+	Workbench        WorkbenchConfig             `mapstructure:"workbench"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
 
@@ -404,6 +407,22 @@ type Config struct {
 // upgrade when the on-disk value is below db.CurrentSchemaFormat.
 type DBConfig struct {
 	SchemaFormat int `mapstructure:"schema_format"`
+}
+
+// WorkbenchConfig holds Workbench terminal-session settings.
+type WorkbenchConfig struct {
+	// DefaultAgent is the coding agent a new session starts when the launch
+	// names none (the phone, a plain Work on It): claude or codex.
+	DefaultAgent string `mapstructure:"default_agent"`
+}
+
+// Agent is DefaultAgent as an agent kind; an empty or unknown value reads
+// Claude Code, today's only agent before the key existed.
+func (c WorkbenchConfig) Agent() agentkind.Kind {
+	if k, ok := agentkind.Parse(c.DefaultAgent); ok {
+		return k
+	}
+	return agentkind.Claude
 }
 
 // Load reads config from the given path, binds env vars, and returns the config.
@@ -518,6 +537,7 @@ func Load(configPath string) (*Config, error) {
 	// goose-based binary. cmd/root.go bumps it to db.CurrentSchemaFormat
 	// after RunSchemaUpgrade succeeds.
 	v.SetDefault("db.schema_format", 1)
+	v.SetDefault("workbench.default_agent", string(agentkind.Claude))
 	// Config file
 	v.SetConfigFile(configPath)
 

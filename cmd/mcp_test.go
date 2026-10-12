@@ -40,9 +40,11 @@ func TestMCPTurnBinding(t *testing.T) {
 // resetMCPFlags restores the mcp command's package-level flags after a test.
 func resetMCPFlags(t *testing.T) {
 	t.Helper()
-	chat, project, chatProject := mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject
-	t.Cleanup(func() { mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject = chat, project, chatProject })
-	mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject = false, 0, 0
+	chat, project, chatProject, agent := mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent
+	t.Cleanup(func() {
+		mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent = chat, project, chatProject, agent
+	})
+	mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject, mcpFlagAgent = false, 0, 0, ""
 }
 
 func openMCPTestDB(t *testing.T) *db.DB {
@@ -251,4 +253,50 @@ func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 			assert.Equal(t, tools.UpdateWorkbenchTool, rows[0].Tool, "the audit row records the canonical name")
 		}
 	}
+}
+
+// Spec 2026-10-12 §6.5: `mcp --workbench N --agent codex` labels an agent
+// comment codex-cli when no terminal session names the agent; --agent is
+// refused outside workbench mode and for anything but an agent kind.
+func TestMCPWorkbenchMode_AgentFlagLabelsComments(t *testing.T) {
+	resetMCPFlags(t)
+	t.Setenv("WATCHTOWER_TERMINAL_SESSION_ID", "")
+	database := openMCPTestDB(t)
+	cfg := &config.Config{ActiveWorkspace: "test-ws"}
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
+	require.NoError(t, err)
+	pid, err := database.CreateWorkbench("acme", folder)
+	require.NoError(t, err)
+
+	mcpFlagAgent = "codex"
+	_, err = mcpModeOptions(cfg, database, "", nil)
+	assert.ErrorContains(t, err, "--agent requires --workbench")
+
+	mcpFlagWorkbench = pid
+	for _, bad := range []string{"shell", "Codex", "gemini"} {
+		mcpFlagAgent = bad
+		_, err = mcpModeOptions(cfg, database, "", nil)
+		assert.ErrorContains(t, err, "--agent must be claude or codex", bad)
+	}
+
+	mcpFlagAgent = "codex"
+	opts, err := mcpModeOptions(cfg, database, "", nil)
+	require.NoError(t, err)
+	_, ls := localToolNames(t, database, opts)
+	text, isErr, err := ls.Call(context.Background(), "create_targets", map[string]any{
+		"items": []any{map[string]any{"text": "Feature X"}}, "reason": "first board",
+	})
+	require.NoError(t, err)
+	require.False(t, isErr, text)
+	board, err := database.GetWorkbenchBoard(pid)
+	require.NoError(t, err)
+	require.Len(t, board, 1)
+	text, isErr, err = ls.Call(context.Background(), "add_comment", map[string]any{
+		"target_id": board[0].Target.ID, "body": "Which DB?", "reason": "blocked",
+	})
+	require.NoError(t, err)
+	require.False(t, isErr, text)
+	var label string
+	require.NoError(t, database.QueryRow(`SELECT agent_label FROM project_comments WHERE project_id = ?`, pid).Scan(&label))
+	assert.Equal(t, "codex-cli", label)
 }

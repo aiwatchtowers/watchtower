@@ -21,7 +21,8 @@ var workbenchSessionReportCmd = &cobra.Command{
 		"finish summary. It first refreshes the PR cache for the session's refs within 10 s\n" +
 		"(local git merge detection, plus gh; --no-network keeps the refresh offline:\n" +
 		"git only, gh never runs). --summary prints one line per\n" +
-		"claude session of the workbench from the cache only, never running git or gh.\n" +
+		"agent session (Claude Code or Codex) of the workbench from the cache only, never\n" +
+		"running git or gh.\n" +
 		"Exits non-zero only when the workbench or the session does not resolve; a git or gh\n" +
 		"failure is reported in pr_note. The pre-rename `project session-report --project N`\n" +
 		"works too.",
@@ -42,7 +43,7 @@ func init() {
 	addWorkbenchIDFlag(c, &workbenchSessionReportFlagWorkbench, "workbench id")
 	fs := c.Flags()
 	fs.Int64Var(&workbenchSessionReportFlagSession, "session", 0, "terminal session id: print its report")
-	fs.BoolVar(&workbenchSessionReportFlagSummary, "summary", false, "print every claude session's row line (cache only)")
+	fs.BoolVar(&workbenchSessionReportFlagSummary, "summary", false, "print every agent session's row line (cache only)")
 	fs.BoolVar(&workbenchSessionReportFlagJSON, "json", false, "output JSON")
 	fs.BoolVar(&workbenchSessionReportFlagNoNetwork, "no-network", false, "refresh offline: local git merge detection only, never gh")
 	c.MarkFlagsOneRequired("session", "summary")
@@ -287,7 +288,7 @@ func prReportLine(pr sessionreport.PR) string {
 
 func printSessionSummaries(w io.Writer, rows []sessionreport.Summary) {
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "No claude sessions.")
+		fmt.Fprintln(w, "No agent sessions.")
 		return
 	}
 	for _, s := range rows {
