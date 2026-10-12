@@ -109,6 +109,13 @@ final class WorkbenchesViewModel {
     /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
     /// read it without touching the disk again.
     @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
+    /// Each session's last proven worktree root (`codeRoot(sessionID:project:)`):
+    /// where an ask's path still opens while a resumed session's place is
+    /// unproven (`openAskLink`).
+    @ObservationIgnored var lastWorktreeRoots: [CodeRootMemoKey: CodeRoot] = [:]
+    /// How long an ask link waits for a session brought onto the page to
+    /// prove its place. Internal for tests.
+    @ObservationIgnored var askPlaceTimeout: Duration = .seconds(3)
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
@@ -447,6 +454,8 @@ final class WorkbenchesViewModel {
             discardPendingDeletes(workbenchID: id)
             terminalSessions[id] = nil
             sessionPlaces.forgetWorkbench(id)
+            codeFiles.forgetRemovedBuffers(workbenchID: id)
+            lastWorktreeRoots = lastWorktreeRoots.filter { $0.key.projectID != id }
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }

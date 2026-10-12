@@ -361,25 +361,28 @@ final class CodeFilesCenterRootTests: XCTestCase {
         page.release()
     }
 
-    /// A removed worktree's clean buffers have nothing to Copy or Discard:
-    /// freed once the page's grace for late text is over; dirty ones stay.
-    func testCleanBuffersOfARemovedWorktreeAreFreedAfterTheGrace() async throws {
+    /// A removed worktree's clean buffers stay locked past the page's
+    /// `pendingTimeout`: text handed over however late still joins the
+    /// Copy/Discard list, and deleting the workbench frees them.
+    func testLateTextForACleanLockedBufferLandsAfterThePendingTimeout() async throws {
         let center = makeCenter()
-        center.pendingTimeout = .milliseconds(50)
+        center.pendingTimeout = .milliseconds(20)
         let clean = center.buffer(for: rootA, relPath: "main.go")
         clean.loadIfNeeded()
-        let dirty = center.buffer(for: rootA, relPath: "Makefile")
-        dirty.loadIfNeeded()
-        center.edited(dirty, text: "all: kept\n", base: 0)
         try FileManager.default.removeItem(at: worktreeA)
-
         center.rootRemoved(rootA)
-        XCTAssertNotNil(center.buffer(id: clean.id), "kept for late text")
-        await eventually { center.buffer(id: clean.id) == nil }
 
+        try await Task.sleep(for: .milliseconds(200))
+        center.apply([CodeEditorPendingEdit(id: clean.id, text: "package late\n", base: 0)], now: true)
+
+        XCTAssertTrue(center.buffer(id: clean.id) === clean, "still held")
+        XCTAssertTrue(clean.writesLocked)
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [clean.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "nothing was written")
+
+        center.forgetRemovedBuffers(workbenchID: project.id)
         XCTAssertNil(center.buffer(id: clean.id))
-        XCTAssertTrue(center.buffer(id: dirty.id) === dirty)
-        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [dirty.id])
+        XCTAssertTrue(center.orphanedEdits(workbenchID: project.id).isEmpty)
     }
 
     func testThePageGoingAwayUnregistersWhereverItsBridgeIs() async {
@@ -623,6 +626,27 @@ final class CodeFilesActiveRootTests: XCTestCase {
         XCTAssertEqual(vm.activeCodeRoot(project: project), root)
         XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, ["only-here.go"])
         XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
+    }
+
+    /// An ask from a session whose place is not proven yet (not running,
+    /// its cwd not read — as right after a resume) waits for the place, so
+    /// a file only its worktree has opens there instead of beeping.
+    func testAnAskLinkWaitsForTheResumedSessionsPlace() async throws {
+        let vm = makeVM()
+        await vm.reload()
+        vm.setLayout(layout(.board), projectID: project.id)
+        XCTAssertFalse(vm.sessionPlaces.isPlaceProven(sessionID: sessionID))
+        try "package wt\n".write(to: worktree.appendingPathComponent("only-here.go"), atomically: true, encoding: .utf8)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+
+        let opened = await vm.openAskLink(OpenQuicklyTarget(path: "only-here.go", line: 1, col: nil),
+                                          projectID: project.id, sessionID: sessionID)
+
+        XCTAssertTrue(opened)
+        XCTAssertTrue(vm.sessionPlaces.isPlaceProven(sessionID: sessionID))
+        XCTAssertEqual(vm.activeCodeRoot(project: project), root)
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, ["only-here.go"])
+        XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty)
     }
 
     /// Its session gone, an ask's path opens in the page's root only when
