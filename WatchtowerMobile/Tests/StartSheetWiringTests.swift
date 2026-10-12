@@ -586,7 +586,7 @@ final class StartSheetWiringTests: XCTestCase {
 
     /// Ruling 6: Stop is offered on a live session only; it sends
     /// `session_stop` with `{}` and shows in place until the Mac applies
-    /// it. Finish stays hidden.
+    /// it. Finish stays hidden without typing (`SessionInputWiringTests`).
     func testStopSendsSessionStopForALiveSessionOnly() async throws {
         let fixture = try await makeFixture()
         var replica = try snapshot(fixture.store)
