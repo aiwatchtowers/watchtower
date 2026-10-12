@@ -13,11 +13,16 @@ struct WorkbenchSessionsPanel: View {
     let project: Workbench
     let actions: SessionRowActions
     let switcherActions: WorkbenchSwitcherActions
+    /// View-local: it is only this list's scroll. The view keeps its identity
+    /// when another workbench is opened, so `project.id` resets it.
+    @State private var scroll = PanelSelectionScrollPolicy<Int64>()
 
     var body: some View {
         let sessions = vm.drilledSessions
         let stack = vm.asks.stack(projectID: project.id)
         let closed = vm.asks.closedCounts[project.id] ?? [:]
+        let rows = vm.sessionRows(sessions)
+        let rowIDs = rows.map(\.id)
         VStack(alignment: .leading, spacing: 0) {
             header
             OwnerAskStackSection(vm: vm, project: project)
@@ -32,26 +37,47 @@ struct WorkbenchSessionsPanel: View {
             // row opens on its own click (`SessionRowActions.open`), which
             // also reaches the row already highlighted but not running
             // (VoiceOver has the row's action).
-            List {
-                ForEach(vm.sessionRows(sessions)) { row in
-                    TerminalSessionRow(
-                        row: row,
-                        actions: actions,
-                        openAsks: stack.count(session: row.id),
-                        reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: project.id) : nil,
-                        reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: project.id) : nil,
-                        closedAsks: (closed[row.id] ?? 0) > 0
-                            ? OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: row.id, count: closed[row.id] ?? 0)
-                            : nil
-                    )
-                    .panelTab(isSelected: vm.panelSelection == .session(row.id))
+            // The list follows the session on screen, never the asks stack
+            // above it (board #561): a new session is selected before its row
+            // loads, so the policy keeps it pending until the row appears.
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(rows) { row in
+                        TerminalSessionRow(
+                            row: row,
+                            actions: actions,
+                            openAsks: stack.count(session: row.id),
+                            reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: project.id) : nil,
+                            reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: project.id) : nil,
+                            closedAsks: (closed[row.id] ?? 0) > 0
+                                ? OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: row.id, count: closed[row.id] ?? 0)
+                                : nil
+                        )
+                        .panelTab(isSelected: vm.panelSelection == .session(row.id))
+                    }
+                    .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
                 }
-                .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
+                .clearPlainList()
+                .onChange(of: selectedSessionID, initial: true) { _, id in
+                    proxy.followSelection(scroll.panelScrollTarget(selecting: id, rows: rowIDs))
+                }
+                .onChange(of: rowIDs) { _, ids in
+                    proxy.followSelection(scroll.panelScrollTarget(rows: ids))
+                }
+                // Same view, another workbench: start the policy afresh.
+                .onChange(of: project.id) {
+                    scroll = PanelSelectionScrollPolicy()
+                    proxy.followSelection(scroll.panelScrollTarget(selecting: selectedSessionID, rows: rowIDs))
+                }
             }
-            .clearPlainList()
             WorkbenchFilesSection(vm: vm, project: project)
         }
         .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
+    }
+
+    /// The session on screen, if the panel lists it (`.session` only).
+    private var selectedSessionID: Int64? {
+        if case let .session(id)? = vm.panelSelection { id } else { nil }
     }
 
     /// The chat history's header shape ("Chats" + New Chat), the title being
