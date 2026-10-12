@@ -3,6 +3,7 @@ package sessioncleanup
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -151,4 +152,68 @@ func TestProj16_SessionOfAnotherWorkbenchInTheWorktreeKeepsIt(t *testing.T) {
 	}
 	wantItem(t, f.plan(Request{Sweep: true}), "worktree:"+root, ActionKeep, ReasonSessionInIt)
 	wantItem(t, f.plan(Request{CallerSessionID: other.ID}), "worktree:"+root, ActionKeep, ReasonYouAreInIt)
+}
+
+// After reflog expiry the oldest remaining entry is some later update, not
+// the creation: the branch's birth is unknown and it is kept.
+func TestProj16_BranchWhoseCreationEntryExpiredIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	gitIn(t, f.repo, "branch", "feat/old", "main")
+	f.record(f.repo, "feat/old")
+	sha := gitIn(t, f.repo, "rev-parse", "main")
+	line := sha + " " + sha + " Test <test@example.com> " + strconv.FormatInt(time.Now().Unix(), 10) +
+		" +0000\treset: moving to main\n"
+	writeFile(t, filepath.Join(f.repo, ".git", "logs", "refs", "heads", "feat", "old"), line)
+
+	wantItem(t, f.plan(Request{}), "branch:feat/old", ActionKeep, ReasonCreatedUnknown)
+}
+
+func TestReflogCreation(t *testing.T) {
+	t.Parallel()
+	const zero, a, b = "0000000000000000000000000000000000000000", "1111111111111111111111111111111111111111",
+		"2222222222222222222222222222222222222222"
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{zero + " " + a + " T <t@example.com> 1791800000 +0200\tbranch: Created from main\n", true},
+		{zero + " " + a + " T <t@example.com> 1791800000 +0200\tcommit (initial): a\n", true},
+		{zero + " " + a + " T <t@example.com> 1791800000 +0200\tfetch origin x:x: storing head\n", true},
+		{b + " " + a + " T <t@example.com> 1791800000 +0200\tbranch: Created from HEAD\n", true},
+		{b + " " + a + " T <t@example.com> 1791800000 +0200\tcommit: later work\n", false},
+		{b + " " + a + " T <t@example.com> 1791800000 +0200\treset: moving to main\n", false},
+		{zero + " " + a + " T <t@example.com> notatime +0200\tbranch: Created from main\n", false},
+		{"garbage\n", false},
+	}
+	for _, tc := range cases {
+		at, ok := reflogCreation(tc.line)
+		if ok != tc.want {
+			t.Errorf("reflogCreation(%q) = %v, want %v", tc.line, ok, tc.want)
+		}
+		if ok && at.Unix() != 1791800000 {
+			t.Errorf("reflogCreation(%q) time = %v", tc.line, at)
+		}
+	}
+}
+
+// A worktree added under worktree.useRelativePaths has a relative gitdir
+// file: it resolves against the admin dir, so the worktree's birth is known.
+func TestPlan_RelativeGitdirResolvesAgainstTheAdminDir(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := filepath.Join(f.base, "wt-rel")
+	gitIn(t, f.repo, "-c", "worktree.useRelativePaths=true", "worktree", "add", "-q", "-b", "feat/rel", root, "main")
+	gitdir, err := os.ReadFile(filepath.Join(f.repo, ".git", "worktrees", "wt-rel", "gitdir"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.IsAbs(strings.TrimSpace(string(gitdir))) {
+		t.Skip("this git writes no relative gitdir")
+	}
+	f.commit(root, "rel.txt", "work\n")
+	gitIn(t, root, "push", "-q", "origin", "feat/rel")
+	f.record(root, "feat/rel")
+
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
 }

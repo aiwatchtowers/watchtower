@@ -196,7 +196,8 @@ func (r *repoState) branchTip(name string) (string, bool) {
 }
 
 // readAdminDirs maps each linked worktree's root to its admin dir by
-// reading <common>/worktrees/*/gitdir (the path of the worktree's .git).
+// reading <common>/worktrees/*/gitdir (the path of the worktree's .git,
+// absolute or relative to the admin dir).
 func readAdminDirs(commonDir string) (map[string]string, error) {
 	base := filepath.Join(commonDir, "worktrees")
 	entries, err := os.ReadDir(base)
@@ -213,7 +214,8 @@ func readAdminDirs(commonDir string) (map[string]string, error) {
 		if err != nil {
 			continue // not a worktree admin dir, or a broken one git lists as prunable
 		}
-		root := filepath.Dir(strings.TrimSpace(string(b)))
+		// gitdir is relative to the admin dir under worktree.useRelativePaths.
+		root := filepath.Dir(absFrom(admin, strings.TrimSpace(string(b))))
 		out[resolvePath(root)] = admin
 	}
 	return out, nil
@@ -330,8 +332,10 @@ func (r *repoState) worktreeBirth(root string) (time.Time, bool) {
 	return birthTime(admin)
 }
 
-// branchBirth is the time of the first entry of the branch's reflog; false
-// when there is no reflog or it does not parse.
+// branchBirth is the time of the first entry of the branch's reflog when
+// that entry is the branch's creation; false when there is no reflog, it
+// does not parse, or expiry has dropped the creation entry (the oldest
+// remaining one is only some later update).
 func (r *repoState) branchBirth(name string) (time.Time, bool) {
 	f, err := os.Open(filepath.Join(r.commonDir, "logs", "refs", "heads", filepath.FromSlash(name)))
 	if err != nil {
@@ -342,14 +346,20 @@ func (r *repoState) branchBirth(name string) (time.Time, bool) {
 	if err != nil && line == "" {
 		return time.Time{}, false
 	}
-	return reflogTime(line)
+	return reflogCreation(line)
 }
 
-// reflogTime reads "<old> <new> <name> <email> <unix> <tz>\t<msg>".
-func reflogTime(line string) (time.Time, bool) {
-	head, _, _ := strings.Cut(line, "\t")
+// reflogCreation reads "<old> <new> <name> <email> <unix> <tz>\t<msg>" and
+// returns its time when the entry created the ref: an all-zero old sha, or
+// a "branch: Created from" message.
+func reflogCreation(line string) (time.Time, bool) {
+	head, msg, _ := strings.Cut(strings.TrimRight(line, "\n"), "\t")
 	f := strings.Fields(head)
-	if len(f) < 2 {
+	if len(f) < 4 {
+		return time.Time{}, false
+	}
+	created := strings.Trim(f[0], "0") == "" || strings.HasPrefix(msg, "branch: Created from")
+	if !created {
 		return time.Time{}, false
 	}
 	sec, err := strconv.ParseInt(f[len(f)-2], 10, 64)
