@@ -130,11 +130,17 @@ mobile-run: mobile-build
 # number is the Unix time of the archive, so every upload is unique and newer
 # than the last one (App Store Connect refuses a reused or lower number); the
 # command line overrides it for the app and both extensions alike. Pin it with
-# make mobile-archive MOBILE_BUILD_NUMBER=N.
+# make mobile-archive MOBILE_BUILD_NUMBER=N. The version (MARKETING_VERSION)
+# is the Mac's: the latest v<x.y.z> tag without the v, cut to x.y.z because
+# iOS takes at most three numbers (git describe's -N-g<sha> suffix would be
+# refused); override with MOBILE_VERSION=x.y.z.
 MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
 MOBILE_EXPORT := build/WatchtowerMobile-export
 ifndef MOBILE_BUILD_NUMBER
 MOBILE_BUILD_NUMBER := $(shell date -u +%s)
+endif
+ifndef MOBILE_VERSION
+MOBILE_VERSION := $(shell git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed -E 's/^v//; s/^([0-9]+(\.[0-9]+){0,2}).*/\1/')
 endif
 mobile-archive:
 	@if [ ! -f WatchtowerMobile/Signing.xcconfig ]; then \
@@ -149,14 +155,18 @@ mobile-archive:
 		echo "Signing.xcconfig is gitignored on purpose: never commit a team ID."; \
 		exit 1; \
 	fi
+	@if ! echo "$(MOBILE_VERSION)" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$$'; then \
+		echo "error: version '$(MOBILE_VERSION)' is not x.y.z (no v<x.y.z> tag found?); pass MOBILE_VERSION=x.y.z"; \
+		exit 1; \
+	fi
 	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-configuration Release -destination 'generic/platform=iOS' \
 		-archivePath $(MOBILE_ARCHIVE) $(MOBILE_ARCHIVE_AUTH) \
-		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER)
+		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER) MARKETING_VERSION=$(MOBILE_VERSION)
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
 		-exportPath $(MOBILE_EXPORT) $(MOBILE_ARCHIVE_AUTH)
-	@echo "Archived build $(MOBILE_BUILD_NUMBER): $(MOBILE_EXPORT)"
+	@echo "Archived $(MOBILE_VERSION) ($(MOBILE_BUILD_NUMBER)): $(MOBILE_EXPORT)"
 
 # Archive and upload to App Store Connect; the build then shows up in
 # TestFlight once Apple has processed it. Authenticates with an App Store
@@ -193,13 +203,13 @@ mobile-testflight:
 		exit 1; \
 	fi
 	@if [ -z "$(SKIP_CLOUDKIT_CHECK)" ]; then bash scripts/cloudkit-schema-check.sh; fi
-	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
+	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_VERSION=$(MOBILE_VERSION) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
 	cp WatchtowerMobile/ExportOptions.plist build/ExportOptions-upload.plist
 	plutil -replace destination -string upload build/ExportOptions-upload.plist
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist build/ExportOptions-upload.plist \
 		-exportPath $(MOBILE_EXPORT)-upload $(ASC_AUTH)
-	@echo "Uploaded build $(MOBILE_BUILD_NUMBER); it appears in TestFlight after processing."
+	@echo "Uploaded $(MOBILE_VERSION) ($(MOBILE_BUILD_NUMBER)); it appears in TestFlight after processing."
 	@echo "The .ipa is in build/WatchtowerMobile-export: upload it with Xcode Organizer or Transporter."
 
 # The suites that spawn child processes, on a one-thread Swift concurrency
