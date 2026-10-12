@@ -75,12 +75,38 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
                                                     canPost: true)).map(\.title),
                        ["Release work stopped"], "ready → stopped (asks answered, turn over): one notice")
 
-        // A check filed, then `finish_session`: the row reads ready to
-        // check, not finished — one notice per hand-off (the ask's), not two.
+        // A check filed, then `finish_session`: the stored row (finished_at
+        // set, the turn's Stop after it) resolves to ready to check, not
+        // finished — one notice per hand-off (the ask's), not two.
         var finishing = SessionAgentNoticePolicy()
+        let finished = finishedWithACheck(id: 6)
+        XCTAssertEqual(finished.state.kind, .readyToCheck, "a finished row with only a check open reads ready to check")
+        XCTAssertNotNil(finished.finishedAt, "the finish path ran: finished_at is set")
         _ = finishing.update(statusMap(agentStatus(6, .live(.working), at: "t1")), canPost: true)
-        XCTAssertEqual(finishing.update(statusMap(agentStatus(6, ready, at: "t2")), canPost: true), [],
+        XCTAssertEqual(finishing.update(statusMap(finished), canPost: true), [],
                        "a check filed then finish: no finished notice")
+    }
+
+    /// The status of a live session whose agent filed one check, called
+    /// `finish_session` (finished_at) and ended its turn (a stored `waiting`
+    /// of this run), resolved from the stored row as the app resolves it.
+    private func finishedWithACheck(id: Int64) -> SessionAgentStatus {
+        let started = Date().addingTimeInterval(-600)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let finishedAt = formatter.string(from: started.addingTimeInterval(5))
+        let stoppedAt = formatter.string(from: started.addingTimeInterval(6))
+        let row = SessionAgentStateRow(
+            id: id, projectID: 7, title: "Release work", agentState: "waiting", agentStateAt: stoppedAt,
+            workbenchName: "acme", finishedAt: finishedAt, finishSummary: "Done", openAsks: 1, oldestOpenAskID: 9,
+            openQuestionAsks: 0
+        )
+        let resolved = SessionAgentStatus.resolve([row], liveIDs: [id], startedAt: [id: started], now: Date())
+        guard let status = resolved[id] else {
+            XCTFail("the row resolves")
+            return agentStatus(id, .live(.notStarted), at: nil)
+        }
+        return status
     }
 
     /// The background Stop's stamp is never announced while agents run; when
