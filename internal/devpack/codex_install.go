@@ -30,17 +30,25 @@ var codexExcludeLines = []string{".agents/skills/" + WorkbenchSkillName + "/"}
 // the entries by hand.
 var ErrCodexHooksNotEditable = errors.New("cannot remove the imported workbench hooks from .codex/config.toml in place")
 
+// ErrCodexUnresolved means it is unknown which codex binary to use (the
+// config naming codex_path did not load): unlike ErrCodexNotFound it is an
+// error, and Found reads false.
+var ErrCodexUnresolved = errors.New("could not resolve the codex binary")
+
 // CodexStatus is the codex part of a workbench folder. Found: a codex binary
 // was resolved. Skill: the skill copy in .agents/skills is in and current
 // (an owner-edited copy counts: it is theirs, PROJ-04). HooksTrusted: every
 // hook of the codex hook set is trusted, nil when codex could not be asked.
 // ImportedDuplicates: codex's import left our hook commands in the folder's
 // .codex/hooks.json or .codex/config.toml. SkillState and DuplicatesRemoved
-// say what an install or removal did.
+// say what an install or removal did. TrustError is why a status could not
+// confirm the trust ("" when it could): codex could not be asked, did not
+// list every hook, or could not be resolved.
 type CodexStatus struct {
 	Found, Skill       bool
 	HooksTrusted       *bool
 	ImportedDuplicates bool
+	TrustError         string
 
 	SkillState        State
 	DuplicatesRemoved bool
@@ -174,9 +182,10 @@ func RemoveCodex(_ context.Context, o WorkbenchInstallOptions) (SkillStatus, err
 }
 
 // StatusCodex reports the codex part, writing nothing. An app-server that
-// cannot be asked leaves HooksTrusted nil; a malformed .codex hook file
-// reads as ImportedDuplicates when it names our commands. Only a bad
-// option or a gone folder is an error.
+// cannot be asked leaves HooksTrusted nil; every trust failure is reported
+// in TrustError; a malformed .codex hook file reads as ImportedDuplicates
+// when it names our commands. Only a bad option or a gone folder is an
+// error.
 func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (codex.AppServer, error)) (CodexStatus, error) {
 	if err := o.validateCodex(); err != nil {
 		return CodexStatus{}, err
@@ -192,18 +201,26 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (cod
 	st.SkillState = sk.State
 	st.Skill = sk.State != StateMissing && sk.State != StateUpdated
 	st.ImportedDuplicates = hasImportedDuplicates(o.Folder, o.WorkbenchID)
-	// Status reports, it does not fail: "could not ask" is HooksTrusted nil.
-	st.HooksTrusted, st.Found, _ = trustCodexHooks(ctx, o, srv, false)
+	// Status reports, it does not fail: the trust failure goes on the wire.
+	var trustErr error
+	st.HooksTrusted, st.Found, trustErr = trustCodexHooks(ctx, o, srv, false)
+	if trustErr != nil {
+		st.TrustError = trustErr.Error()
+	}
 	return st, nil
 }
 
 // trustCodexHooks asks the app-server srv starts which of our hooks are
 // trusted and, with write, trusts the rest. trusted is nil when codex could
-// not be asked; found is false only when no codex binary was resolved.
+// not be asked; found is false only when no codex binary was resolved
+// (ErrCodexNotFound is no error, ErrCodexUnresolved is).
 func trustCodexHooks(ctx context.Context, o WorkbenchInstallOptions, srv func() (codex.AppServer, error), write bool) (trusted *bool, found bool, err error) {
 	s, err := srv()
-	if errors.Is(err, ErrCodexNotFound) {
+	switch {
+	case errors.Is(err, ErrCodexNotFound):
 		return nil, false, nil
+	case errors.Is(err, ErrCodexUnresolved):
+		return nil, false, err
 	}
 	if err != nil {
 		return nil, true, err

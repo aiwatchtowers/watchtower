@@ -328,18 +328,30 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         /// Watchtower hooks codex imported from Claude Code's settings into
         /// the folder's `.codex` are still there (they would run twice).
         let importedDuplicates: Bool
+        /// Why the CLI could not confirm the hook trust (codex did not
+        /// answer, did not list every hook, or could not be resolved); nil
+        /// when it could, or from a CLI that does not send the key.
+        let trustError: String?
 
-        init(found: Bool, skill: Bool, hooksTrusted: Bool?, importedDuplicates: Bool = false) { // swiftlint:disable:this discouraged_optional_boolean
+        init(
+            found: Bool,
+            skill: Bool,
+            hooksTrusted: Bool?, // swiftlint:disable:this discouraged_optional_boolean
+            importedDuplicates: Bool = false,
+            trustError: String? = nil
+        ) {
             self.found = found
             self.skill = skill
             self.hooksTrusted = hooksTrusted
             self.importedDuplicates = importedDuplicates
+            self.trustError = trustError
         }
 
         enum CodingKeys: String, CodingKey {
             case found, skill
             case hooksTrusted = "hooks_trusted"
             case importedDuplicates = "imported_duplicates"
+            case trustError = "trust_error"
         }
 
         /// The Codex part's state, for the page header: nothing without
@@ -357,9 +369,14 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             case absent, notSetUp, ready, broken
         }
 
-        /// The Codex part of the install tooltip.
+        /// The Codex part of the install tooltip, with the trust check's
+        /// failure when there is one.
         var summary: String {
-            if state == .notSetUp { return "Codex: not set up" }
+            (state == .notSetUp ? "Codex: not set up" : partsSummary)
+                + (trustError.map { "\nCodex trust check failed: \($0)" } ?? "")
+        }
+
+        private var partsSummary: String {
             let trust = switch hooksTrusted {
             case true?: "trusted"
             case false?: "not trusted"

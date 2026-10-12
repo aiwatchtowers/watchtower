@@ -620,8 +620,11 @@ final class WorkbenchesViewModel {
             let status = try await cli.status(projectID: projectID)
             installStatus[projectID] = status
             statusReadErrors[projectID] = nil
-            if let codex = status.codex, codex.found, codex.hooksTrusted == nil {
+            if let codex = status.codex, let trustError = codex.trustError {
                 // Spec §4.5: an unknown trust offers no Repair, only this line.
+                NSLog("WorkbenchesViewModel: codex hook trust check failed for workbench %lld: %@",
+                      projectID, trustError)
+            } else if let codex = status.codex, codex.found, codex.hooksTrusted == nil {
                 NSLog("WorkbenchesViewModel: codex could not be asked about hook trust for workbench %lld", projectID)
             }
             if !status.needsRepair { installNotes[projectID] = nil }

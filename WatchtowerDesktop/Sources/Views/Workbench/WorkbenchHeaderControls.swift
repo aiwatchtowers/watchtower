@@ -308,13 +308,14 @@ private struct HeaderIconButtonStyle: ButtonStyle {
 extension WorkbenchInstallStatus {
     /// What is installed and what is missing, for the install icons' and
     /// Repair install's help. The Codex line shows only once codex is found
-    /// (D5: without it Codex is skipped quietly).
+    /// (D5: without it Codex is skipped quietly) or when the CLI could not
+    /// tell which codex to use (a trust error).
     var repairHelp: String {
         "Skill \(skillDisplay) · hook \(hook ? "on" : "missing") · "
             + "drift hook \(stopHook ? "on" : "missing") · "
             + "state hooks \(stateHooks ? "on" : "missing") · "
             + "ask guard \(askGuard && askToolBlock ? "on" : "missing") · MCP \(mcp ? "on" : "missing")"
-            + (codex.flatMap { $0.found ? "\n" + $0.summary : nil } ?? "")
+            + (codex.flatMap { $0.found || $0.trustError != nil ? "\n" + $0.summary : nil } ?? "")
     }
 }
 

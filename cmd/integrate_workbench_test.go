@@ -398,6 +398,41 @@ func TestIntegrateStatusJSON_CodexNotFoundIsNullTrust(t *testing.T) {
 	}
 }
 
+// A config that does not load is not "codex found": status says codex was
+// not resolved and why, on the wire and in the text report (#399 B1).
+func TestIntegrateStatus_ConfigErrorIsATrustError(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	useFakeCmdCodex(t)
+	bad := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(bad, []byte("workbench: [unclosed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := flagConfig
+	flagConfig = bad
+	t.Cleanup(func() { flagConfig = prev })
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	var got struct {
+		Codex codexStatusJSON `json:"codex"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Codex.Found || got.Codex.HooksTrusted != nil || !strings.Contains(got.Codex.TrustError, "loading config") {
+		t.Fatalf("codex = %+v", got.Codex)
+	}
+	out.Reset()
+	if err := runWorkbenchStatus(context.Background(), &out, p, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "trust check failed: could not resolve the codex binary: loading config") {
+		t.Fatalf("text status:\n%s", out.String())
+	}
+}
+
 func TestIntegrateCodex_InstallReportsAndIsIdempotent(t *testing.T) {
 	f := useFakeCmdCodex(t)
 	p := testWorkbench(t)

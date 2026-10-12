@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,8 +32,10 @@ type fakeAppServer struct {
 	writes  [][]codex.HookEntry
 	args    []string // the last start's extraArgs
 	env     []string
-	listErr error
-	bin     string // the codex binary the factory resolves
+	listErr  error
+	trustErr error
+	closeErr error
+	bin      string // the codex binary the factory resolves
 }
 
 func newFakeAppServer(t *testing.T) *fakeAppServer {
@@ -82,6 +85,9 @@ func (c *fakeAppServerConn) ListHooks(_ context.Context, _ string) ([]codex.Hook
 }
 
 func (c *fakeAppServerConn) TrustHooks(_ context.Context, entries []codex.HookEntry) error {
+	if c.f.trustErr != nil {
+		return c.f.trustErr
+	}
 	c.f.writes = append(c.f.writes, entries)
 	for _, e := range entries {
 		c.f.state[e.Key] = e.CurrentHash
@@ -89,7 +95,7 @@ func (c *fakeAppServerConn) TrustHooks(_ context.Context, entries []codex.HookEn
 	return nil
 }
 
-func (c *fakeAppServerConn) Close() error { return nil }
+func (c *fakeAppServerConn) Close() error { return c.f.closeErr }
 
 // sessionFlagHooks parses codex launch flags into hooks/list entries.
 func sessionFlagHooks(args []string) []codex.HookEntry {
@@ -315,7 +321,8 @@ func TestStatusCodex_NullTrustWhenAppServerUnavailable(t *testing.T) {
 	}
 	st, err := StatusCodex(context.Background(), codexOpts(folder), unavailable)
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, SkillState: StateMissing}, st)
+	assert.Equal(t, CodexStatus{Found: true, SkillState: StateMissing,
+		TrustError: "codex hook trust unavailable: no answer within 10s"}, st)
 
 	f := newFakeAppServer(t)
 	f.listErr = fmt.Errorf("%w: hooks/list: error -32601", codex.ErrCodexTrustUnavailable)
@@ -323,11 +330,13 @@ func TestStatusCodex_NullTrustWhenAppServerUnavailable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, st.HooksTrusted)
 	assert.True(t, st.Found)
+	assert.Contains(t, st.TrustError, "hooks/list: error -32601")
 
 	st, err = StatusCodex(context.Background(), codexOpts(folder), codexNotFound)
 	require.NoError(t, err)
 	assert.False(t, st.Found)
 	assert.Nil(t, st.HooksTrusted)
+	assert.Empty(t, st.TrustError, "no codex is no error (D5)")
 
 	_, err = InstallCodex(context.Background(), codexOpts(folder), unavailable)
 	assert.ErrorIs(t, err, codex.ErrCodexTrustUnavailable, "an install that could not trust says so")
@@ -629,4 +638,61 @@ func TestMultilineStringState(t *testing.T) {
 	} {
 		assert.Equal(t, tc.want, multilineStringState(tc.line, tc.open), "%q from %q", tc.line, tc.open)
 	}
+}
+
+func TestStatusCodex_ReportsEveryTrustFailure(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeAppServer(t)
+	srv := func() (codex.AppServer, error) {
+		s, err := f.factory()()
+		if err != nil {
+			return nil, err
+		}
+		c := s.(*fakeAppServerConn)
+		c.args = c.args[:len(c.args)-2] // codex ignores the Stop hooks
+		return c, nil
+	}
+	st, err := StatusCodex(context.Background(), codexOpts(folder), srv)
+	require.NoError(t, err)
+	assert.Equal(t, ptrFalse(), st.HooksTrusted)
+	assert.Contains(t, st.TrustError, "did not list 2 of the 9 workbench hooks")
+
+	unresolved := func() (codex.AppServer, error) {
+		return nil, fmt.Errorf("%w: loading config: bad toml", ErrCodexUnresolved)
+	}
+	st, err = StatusCodex(context.Background(), codexOpts(folder), unresolved)
+	require.NoError(t, err)
+	assert.False(t, st.Found, "a config that did not load is no resolved codex")
+	assert.Nil(t, st.HooksTrusted)
+	assert.Contains(t, st.TrustError, "loading config: bad toml")
+
+	f.closeErr = errors.New("kill: no such process")
+	st, err = StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	require.NoError(t, err)
+	assert.Nil(t, st.HooksTrusted)
+	assert.Contains(t, st.TrustError, "no such process")
+}
+
+func TestInstallCodex_TrustWriteAndCloseErrors(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeAppServer(t)
+	f.trustErr = fmt.Errorf("%w: config/batchWrite: error -32000", codex.ErrCodexTrustUnavailable)
+	st, err := InstallCodex(context.Background(), codexOpts(folder), f.factory())
+	require.ErrorIs(t, err, codex.ErrCodexTrustUnavailable)
+	assert.Nil(t, st.HooksTrusted)
+	assert.True(t, st.Found)
+	assert.True(t, st.Skill, "the skill copy is in despite the trust failure")
+	assert.Empty(t, f.state, "nothing was trusted")
+
+	f.trustErr = nil
+	f.closeErr = errors.New("kill: no such process")
+	st, err = InstallCodex(context.Background(), codexOpts(folder), f.factory())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no such process")
+	assert.Nil(t, st.HooksTrusted, "a close failure leaves the trust unconfirmed")
+
+	_, err = InstallCodex(context.Background(), codexOpts(folder), func() (codex.AppServer, error) {
+		return nil, fmt.Errorf("%w: loading config: bad toml", ErrCodexUnresolved)
+	})
+	require.ErrorIs(t, err, ErrCodexUnresolved)
 }

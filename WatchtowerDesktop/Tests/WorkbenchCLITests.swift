@@ -389,6 +389,24 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertTrue(unknown.repairHelp.contains("trust unknown"))
     }
 
+    /// The CLI's `trust_error` reaches the tooltip — also when the config
+    /// did not load and codex reads as not found — and an older CLI without
+    /// the key decodes as nil.
+    func testTrustErrorShowsInTheHelp() throws {
+        let failed = try status(#"{"found":true,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"trust_error":"codex hook trust unavailable: no answer within 10s"}"#)
+        XCTAssertEqual(failed.codex?.trustError, "codex hook trust unavailable: no answer within 10s")
+        XCTAssertFalse(failed.needsRepair)
+        XCTAssertTrue(failed.repairHelp.contains("Codex trust check failed: codex hook trust unavailable"), failed.repairHelp)
+
+        let unresolved = try status(#"{"found":false,"skill":true,"hooks_trusted":null,"imported_duplicates":false,"trust_error":"could not resolve the codex binary: loading config: bad"}"#)
+        XCTAssertEqual(unresolved.codex?.state, .absent)
+        XCTAssertTrue(unresolved.repairHelp.contains("loading config: bad"), unresolved.repairHelp)
+
+        let older = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#)
+        XCTAssertNil(older.codex?.trustError)
+        XCTAssertFalse(older.repairHelp.contains("trust check failed"))
+    }
+
     /// The header's Codex control: only for a part never set up; neutral,
     /// orange only after a failed setup; nothing for absent, whole or broken
     /// parts (broken is Repair's orange icon).

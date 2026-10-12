@@ -97,7 +97,9 @@ func codexAppServerFor(ctx context.Context, cfg *config.Config, o devpack.Workbe
 	if cfg == nil {
 		var err error
 		if cfg, err = config.Load(flagConfig); err != nil {
-			return func() (codex.AppServer, error) { return nil, fmt.Errorf("loading config: %w", err) }
+			return func() (codex.AppServer, error) {
+				return nil, fmt.Errorf("%w: loading config: %w", devpack.ErrCodexUnresolved, err)
+			}
 		}
 	}
 	return devpack.CodexAppServer(ctx, cfg, o.Bin, codexFindBinary, codexAppServerStart)
@@ -139,6 +141,8 @@ func printCodexInstallBody(w io.Writer, st devpack.CodexStatus, err error) {
 
 func codexTrustLine(st devpack.CodexStatus, err error) string {
 	switch {
+	case !st.Found && errors.Is(err, devpack.ErrCodexUnresolved):
+		return "skipped — could not tell which codex to use (see problems)"
 	case !st.Found:
 		return "skipped — codex not found; install codex and run this again"
 	case st.HooksTrusted == nil && errors.Is(err, codex.ErrCodexTrustUnavailable):
@@ -402,15 +406,17 @@ type workbenchStatusJSON struct {
 	AskGuard     bool `json:"ask_guard"`
 	AskToolBlock bool `json:"ask_tool_block"`
 	// Codex is the codex part (spec §4.5). hooks_trusted is null when codex
-	// could not be asked (not found, no answer, an unknown protocol).
+	// could not be asked (not found, no answer, an unknown protocol);
+	// trust_error says why the trust could not be confirmed.
 	Codex codexStatusJSON `json:"codex"`
 }
 
 type codexStatusJSON struct {
-	Found              bool  `json:"found"`
-	Skill              bool  `json:"skill"`
-	HooksTrusted       *bool `json:"hooks_trusted"`
-	ImportedDuplicates bool  `json:"imported_duplicates"`
+	Found              bool   `json:"found"`
+	Skill              bool   `json:"skill"`
+	HooksTrusted       *bool  `json:"hooks_trusted"`
+	ImportedDuplicates bool   `json:"imported_duplicates"`
+	TrustError         string `json:"trust_error,omitempty"`
 }
 
 // legacySkillState is a legacy skill's state on the wire: "" when there is
@@ -449,6 +455,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			AskGuard: st.AskGuard, AskToolBlock: st.AskToolBlock,
 			Codex: codexStatusJSON{
 				Found: cs.Found, Skill: cs.Skill, HooksTrusted: cs.HooksTrusted, ImportedDuplicates: cs.ImportedDuplicates,
+				TrustError: cs.TrustError,
 			},
 		})
 	}
@@ -486,6 +493,9 @@ func codexStatusLine(cs devpack.CodexStatus) string {
 	line := fmt.Sprintf("%s, skill %s, hooks trusted %s", found, cs.SkillState, trust)
 	if cs.ImportedDuplicates {
 		line += ", imported Watchtower hooks in .codex (run 'watchtower integrate codex' to clean up)"
+	}
+	if cs.TrustError != "" {
+		line += ", trust check failed: " + cs.TrustError
 	}
 	return line
 }
