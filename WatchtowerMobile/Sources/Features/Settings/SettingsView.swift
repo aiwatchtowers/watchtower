@@ -1,7 +1,7 @@
 import SwiftUI
 import WatchtowerSync
 
-/// Settings (reached from More): Your Mac, read-only accounts, the Workbench
+/// Settings (pushed from Now's gear): Your Mac, read-only accounts, the Workbench
 /// requests to the Mac, notifications, the parked offline chat, and Unlink
 /// this Mac.
 struct SettingsView: View {
@@ -36,13 +36,11 @@ struct SettingsView: View {
     private var yourMacSection: some View {
         Section("Your Mac") {
             // The status turns offline by the clock alone, so re-evaluate it
-            // periodically, not only on replica writes.
+            // periodically, not only on replica writes. One row: the Form
+            // lays a TimelineView's views out in one cell.
             TimelineView(.periodic(from: .now, by: 30)) { context in
-                let status = MacStatus(heartbeat: model.snapshot.heartbeat, now: context.date)
-                statusRow(status)
-                if let name = status.macName {
-                    LabeledContent("Mac", value: name)
-                }
+                let row = MacStatusRow(status: MacStatus(heartbeat: model.snapshot.heartbeat, now: context.date), now: context.date)
+                MacStatusRowView(row: row)
                 // Nothing at all while every observation is healthy.
                 ForEach(model.diagnostics(now: context.date)) { row in
                     Text(row.text)
@@ -50,41 +48,14 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            LabeledContent("Last sync") {
-                if let last = env.lastSyncAt {
-                    Text(last, style: .relative)
-                } else {
-                    Text("Never")
-                }
+            // Its own TimelineView: a Form lays one TimelineView's views out
+            // in one cell, and "3 min. ago" moves with the clock alone.
+            TimelineView(.periodic(from: .now, by: 30)) { _ in
+                LabeledContent("Last sync", value: LastSyncText.string(env.lastSyncAt))
             }
             LabeledContent("Queued", value: "\(model.snapshot.queuedCount)")
             if env.transportKind == .inMemoryDemo {
                 LabeledContent("Sync", value: "Demo")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func statusRow(_ status: MacStatus) -> some View {
-        switch status {
-        case .notConnected:
-            Label(status.title, systemImage: "desktopcomputer")
-                .foregroundStyle(.secondary)
-        case .online:
-            Label {
-                Text(status.title)
-            } icon: {
-                Image(systemName: "circle.fill").foregroundStyle(.green)
-            }
-        case let .offline(_, lastSeen):
-            LabeledContent {
-                Text(lastSeen, style: .relative)
-            } label: {
-                Label {
-                    Text(status.title)
-                } icon: {
-                    Image(systemName: "circle").foregroundStyle(.secondary)
-                }
             }
         }
     }
@@ -97,7 +68,7 @@ struct SettingsView: View {
             Section {
                 ForEach(Array(accounts.enumerated()), id: \.offset) { _, account in
                     LabeledContent {
-                        Text(account.status)
+                        AccountStatusLabel(style: AccountStatusStyle(status: account.status))
                     } label: {
                         Label(account.label, systemImage: Self.symbol(for: account.kind))
                     }
@@ -185,6 +156,25 @@ struct SettingsView: View {
         @Bindable var settings = env.deviceSettings
         return Section("Notifications") {
             Toggle("New asks", isOn: $settings.newAskAlerts)
+        }
+    }
+}
+
+/// SET3's mark and text, in the style's tones.
+private struct AccountStatusLabel: View {
+    let style: AccountStatusStyle
+
+    var body: some View {
+        HStack(spacing: Spacing.compact) {
+            switch style.mark {
+            case .dot:
+                Circle().fill(style.tone.color).frame(width: 8, height: 8)
+            case let .symbol(name):
+                Image(systemName: name).foregroundStyle(style.tone.color)
+            case .textOnly:
+                EmptyView()
+            }
+            Text(style.text).foregroundStyle(style.textTone.color)
         }
     }
 }

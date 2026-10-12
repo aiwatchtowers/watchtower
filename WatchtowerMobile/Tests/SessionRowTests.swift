@@ -4,7 +4,7 @@ import XCTest
 @testable import WatchtowerMobile
 
 /// One SESSIONS row (spec §4.5, §13 B2): the Mac's resolved dot, label and
-/// glyph drawn as given, the report line, the open-ask pill and "▸ N closed".
+/// glyph drawn as given, the report line, the open-ask pill and "N closed".
 final class SessionRowTests: XCTestCase {
     private func session(_ overrides: [String: Any]) throws -> TerminalSessionState {
         try mirror(TerminalSessionState.self, DemoSeed.JSON.session(31, workbench: 7, overrides))
@@ -15,22 +15,19 @@ final class SessionRowTests: XCTestCase {
         let row = SessionRowModel(try session([
             "report_target_id": 415, "report_done": 1, "report_total": 2, "report_pr_line": "PR #175 open"
         ]), now: Date())
-        XCTAssertEqual(row.reportLine, "#415 · 1/2 · PR #175 open")
-        XCTAssertEqual(row.reportProgress, 0.5)
+        XCTAssertEqual(row.metaItems.dropFirst().map(\.text), ["#415 · 1/2", "PR #175 open"])
     }
 
     func testARecordWithoutAReportTargetHasNoReportLine() throws {
         let row = SessionRowModel(try session(["report_done": 1, "report_total": 2, "report_pr_line": "PR #175 open"]), now: Date())
-        XCTAssertNil(row.reportLine)
-        XCTAssertNil(row.reportProgress)
+        XCTAssertEqual(row.metaItems.map(\.text), [row.caption], "the caption alone")
     }
 
     func testAReportWithoutAPRLineOrTotalsStaysShort() throws {
         let noPR = SessionRowModel(try session(["report_target_id": 415, "report_done": 0, "report_total": 3]), now: Date())
-        XCTAssertEqual(noPR.reportLine, "#415 · 0/3")
+        XCTAssertEqual(noPR.metaItems.dropFirst().map(\.text), ["#415 · 0/3"])
         let noTotals = SessionRowModel(try session(["report_target_id": 415, "report_pr_line": ""]), now: Date())
-        XCTAssertEqual(noTotals.reportLine, "#415")
-        XCTAssertNil(noTotals.reportProgress)
+        XCTAssertEqual(noTotals.metaItems.dropFirst().map(\.text), ["#415"])
     }
 
     /// Every published tone maps to exactly the system colour of spec §14;
@@ -76,8 +73,24 @@ final class SessionRowTests: XCTestCase {
     func testOpenAndClosedAskCounts() throws {
         let row = SessionRowModel(try session(["open_asks": 2, "closed_asks": 3]), now: Date())
         XCTAssertEqual(row.openAsks, 2)
-        XCTAssertEqual(row.closedLabel, "▸ 3 closed")
+        XCTAssertEqual(row.metaItems.last?.text, "3 closed")
         let none = SessionRowModel(try session([:]), now: Date())
-        XCTAssertNil(none.closedLabel)
+        XCTAssertFalse(none.metaItems.contains { $0.text.hasSuffix("closed") })
+    }
+
+    /// Review focus 2 (design pass S3, §9.4): the caption in the session's
+    /// tone first, then the report, the PR line and "N closed" last, so it
+    /// is the first to truncate; no mini progress bar.
+    func testTheMetaLineIsCaptionThenReportThenPRThenClosed() throws {
+        let row = SessionRowModel(try session([
+            "state_kind": "waiting_on_ask", "state_caption": "Waiting for you · ask #109 · 2 asks", "state_tone": "orange",
+            "open_asks": 2, "closed_asks": 2, "report_target_id": 415, "report_done": 1, "report_total": 2,
+            "report_pr_line": "PR #175 open"
+        ]), now: Date())
+        XCTAssertEqual(row.metaItems.map(\.text), ["Waiting for you · ask #109 · 2 asks", "#415 · 1/2", "PR #175 open", "2 closed"])
+        XCTAssertEqual(row.metaItems.first?.tone, .orange)
+        XCTAssertEqual(row.metaItems.first?.role, .session(isWaiting: true))
+        XCTAssertTrue(row.metaItems.dropFirst().allSatisfy { $0.tone == .secondary })
+        XCTAssertFalse(row.toneUses.contains { $0.role == .progress }, "the mini progress bar is gone")
     }
 }

@@ -21,8 +21,8 @@ struct RecordingView: View {
                 RecordingCaptureView()
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, Spacing.page)
+        .padding(.vertical, Spacing.medium)
     }
 }
 
@@ -32,19 +32,13 @@ private struct RecordingCaptureView: View {
 
     var body: some View {
         let recorder = env.recorder
+        let chrome = RecorderChrome(phase: recorder.phase)
         VStack(spacing: 20) {
             HStack {
                 Button("Minimize") { recorder.minimize() }
                 Spacer()
-                if recorder.phase == .recording {
-                    Label("REC", systemImage: "circle.fill")
-                        .labelStyle(.titleAndIcon)
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.red)
-                } else {
-                    Text("PAUSED")
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.secondary)
+                if let chrome {
+                    markView(chrome)
                 }
             }
 
@@ -88,43 +82,62 @@ private struct RecordingCaptureView: View {
 
             Spacer(minLength: 0)
 
-            controls(recorder)
+            if let chrome {
+                controls(recorder, chrome)
+            }
         }
     }
 
-    private func controls(_ recorder: PhoneRecorderController) -> some View {
+    @ViewBuilder
+    private func markView(_ chrome: RecorderChrome) -> some View {
+        switch chrome.mark {
+        case .recording:
+            Label(chrome.markText, systemImage: "circle.fill")
+                .labelStyle(.titleAndIcon)
+                .font(TypeScale.kind)
+                .foregroundStyle(chrome.markTone.color)
+        case .starting:
+            HStack(spacing: Spacing.compact) {
+                ProgressView().controlSize(.small)
+                Text(chrome.markText)
+            }
+            .font(TypeScale.kind)
+            .foregroundStyle(chrome.markTone.color)
+        case .paused, .saving:
+            Text(chrome.markText)
+                .font(TypeScale.kind)
+                .foregroundStyle(chrome.markTone.color)
+        }
+    }
+
+    private func controls(_ recorder: PhoneRecorderController, _ chrome: RecorderChrome) -> some View {
         HStack(alignment: .center, spacing: 36) {
-            let paused = recorder.phase != .recording
-            RoundButton(
-                systemImage: paused ? "play.fill" : "pause.fill",
-                label: paused ? "Resume" : "Pause",
-                size: 64
-            ) {
-                if paused {
+            RoundButton(systemImage: chrome.leftSystemImage, label: chrome.leftTitle, size: 64) {
+                if chrome.resumes {
                     recorder.resume()
                 } else {
                     recorder.pause()
                 }
             }
-            .disabled(!recorder.isCapturing)
+            .disabled(!chrome.isLeftEnabled)
 
             Button {
                 Task { await recorder.stop() }
             } label: {
                 ZStack {
-                    Circle().fill(.red)
-                    RoundedRectangle(cornerRadius: 6).fill(.white).frame(width: 30, height: 30)
+                    Circle().fill(PhoneTone.red.color)
+                    RoundedRectangle(cornerRadius: Radius.chip).fill(.white).frame(width: 30, height: 30)
                 }
                 .frame(width: 88, height: 88)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Stop")
-            .disabled(!recorder.isCapturing)
+            .disabled(!chrome.areCaptureControlsEnabled)
 
             RoundButton(systemImage: "bookmark.fill", label: "Mark moment", size: 64) {
                 recorder.markMoment()
             }
-            .disabled(!recorder.isCapturing)
+            .disabled(!chrome.areCaptureControlsEnabled)
         }
         .padding(.bottom, 8)
     }
@@ -154,7 +167,7 @@ private struct RoundButton: View {
     }
 }
 
-/// The waveform: recent input levels as red bars, newest on the right.
+/// The waveform: recent input levels, newest on the right; silence is a grey line (`WaveformStyle`).
 private struct WaveformBars: View {
     let levels: [Float]
 
@@ -167,8 +180,12 @@ private struct WaveformBars: View {
             HStack(alignment: .center, spacing: spacing) {
                 ForEach(padded.indices, id: \.self) { index in
                     Capsule()
-                        .fill(.red.opacity(0.85))
-                        .frame(width: width, height: max(3, proxy.size.height * CGFloat(padded[index])))
+                        .fill(
+                            WaveformStyle.isSilent(padded[index])
+                                ? AnyShapeStyle(HierarchicalShapeStyle.quaternary)
+                                : AnyShapeStyle(PhoneTone.red.color.opacity(0.85))
+                        )
+                        .frame(width: width, height: WaveformStyle.height(padded[index], in: proxy.size.height))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -189,7 +206,7 @@ private struct RecordingSavedView: View {
             let recording = snapshot.recording(saved.id)
             VStack(alignment: .leading, spacing: 18) {
                 Text("Saved · \(PhoneRecorderController.clockText(saved.durationSec))")
-                    .font(.title2.weight(.semibold))
+                    .font(TypeScale.pageTitle)
                     .padding(.top, 24)
 
                 if let notice = env.recorder.endNotice {
@@ -203,7 +220,7 @@ private struct RecordingSavedView: View {
                     uploadStep(upload)
                     transcriptStep(PhoneTranscriptStage(job: snapshot.jobs[saved.id]))
                 } else {
-                    StepRow(state: .working, text: "Sending to your Mac")
+                    StepRow(state: .current, text: "Sending to your Mac")
                     StepRow(state: .todo, text: "Transcript and recap")
                 }
 
@@ -227,7 +244,7 @@ private struct RecordingSavedView: View {
     @ViewBuilder
     private func uploadStep(_ stage: PhoneUploadStage) -> some View {
         switch stage {
-        case .recording, .sending: StepRow(state: .working, text: stage.label)
+        case .recording, .sending: StepRow(state: .current, text: stage.label)
         case .waitingForMac: StepRow(state: .waiting, text: stage.label)
         case .delivered: StepRow(state: .done, text: stage.label)
         case .failed:
@@ -247,37 +264,9 @@ private struct RecordingSavedView: View {
     private func transcriptStep(_ stage: PhoneTranscriptStage) -> some View {
         switch stage {
         case .notStarted: StepRow(state: .todo, text: "Transcript and recap")
-        case let .inProgress(text): StepRow(state: .working, text: text)
+        case let .inProgress(text): StepRow(state: .current, text: text)
         case .ready: StepRow(state: .done, text: "Transcript and recap ready")
         case let .failed(message): StepRow(state: .failed, text: message)
-        }
-    }
-}
-
-/// One step of the Saved screen.
-private struct StepRow: View {
-    enum State {
-        case done, working, waiting, todo, failed
-    }
-
-    let state: State
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            icon.frame(width: 22)
-            Text(text)
-                .foregroundStyle(state == .todo ? .secondary : .primary)
-        }
-    }
-
-    @ViewBuilder private var icon: some View {
-        switch state {
-        case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .working: ProgressView()
-        case .waiting: Image(systemName: "moon.zzz").foregroundStyle(.secondary)
-        case .todo: Image(systemName: "circle").foregroundStyle(.secondary)
-        case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
         }
     }
 }

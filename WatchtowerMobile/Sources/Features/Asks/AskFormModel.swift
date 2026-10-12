@@ -39,15 +39,6 @@ enum AskText {
         ask.status == .open ? "This ask is no longer open on the Mac" : "This ask is no longer open: \(status(ask))"
     }
 
-    static func kind(_ kind: OwnerAsk.Kind) -> String {
-        switch kind {
-        case .review: "REVIEW"
-        case .check: "CHECK"
-        case .question: "QUESTION"
-        default: kind.rawValue.uppercased()
-        }
-    }
-
     static func check(_ state: OwnerAskAnswer.CheckState) -> String {
         switch state {
         case .ok: "OK"
@@ -103,6 +94,20 @@ struct AskFormModel {
         let commentsLine: String
     }
 
+    /// One of a check step's three buttons (design pass A5): the `.fill`
+    /// symbol in its tone while marked, the outline in secondary otherwise.
+    /// Green for OK, red for Broken, secondary for Skipped; never orange.
+    struct CheckChoice: Equatable, Identifiable {
+        let state: OwnerAskAnswer.CheckState
+        /// "OK", "Broken", "Skipped": the button's VoiceOver label.
+        let label: String
+        let symbol: String
+        let tone: PhoneTone
+        let isSelected: Bool
+
+        var id: String { state.rawValue }
+    }
+
     struct CheckRow: Equatable, Identifiable {
         let id: String
         let text: String
@@ -111,6 +116,15 @@ struct AskFormModel {
         let note: String
         /// Broken without a note: the Mac would refuse it.
         let needsNote: Bool
+        /// OK, Broken, Skipped.
+        let choices: [CheckChoice]
+    }
+
+    /// One part of a closed ask's stored answer: what was asked, over what
+    /// was answered (design pass A6).
+    struct ClosedLine: Equatable {
+        let label: String
+        let value: String
     }
 
     /// The answer on its way, refused, or applied.
@@ -124,8 +138,13 @@ struct AskFormModel {
     }
 
     let askID: Int64
-    /// "ASK #109 · QUESTION · 1 OF 2".
-    let header: String
+    /// The kind's icon and word ("Question"), drawn in `headerTone`.
+    let kindIcon: String
+    let kindName: String
+    /// "#109".
+    let idText: String
+    /// "1 of 2" on a question ask with more than one question; nil otherwise.
+    let pageText: String?
     let headerTone: PhoneTone
     let title: String
     /// "From <session> · #415".
@@ -144,7 +163,7 @@ struct AskFormModel {
     let noteHint: String?
     /// A closed ask: its status and its stored answer, read-only.
     let closedStatus: String?
-    let closedLines: [String]
+    let closedLines: [ClosedLine]
     let status: Status
     let isEditable: Bool
     let canSend: Bool
@@ -164,6 +183,9 @@ struct AskFormModel {
     ) {
         guard let ask = snapshot.asks.first(where: { $0.id == askID }) else { return nil }
         self.askID = askID
+        kindIcon = AskKindStyle.icon(ask.kind)
+        kindName = AskKindStyle.name(ask.kind)
+        idText = "#\(ask.id)"
         title = ask.title
         summary = ask.summary
         changes = ask.changes
@@ -184,9 +206,7 @@ struct AskFormModel {
         let questions = open && !clipped ? payload?.questions ?? [] : []
         let shown = questions.isEmpty ? 0 : min(max(page, 0), questions.count - 1)
         question = questions.isEmpty ? nil : Self.page(questions[shown], index: shown, count: questions.count, draft: draft)
-        var header = "ASK #\(ask.id) · \(AskText.kind(ask.kind))"
-        if questions.count > 1 { header += " · \(shown + 1) OF \(questions.count)" }
-        self.header = header
+        pageText = questions.count > 1 ? "\(shown + 1) of \(questions.count)" : nil
         review = open && !clipped && ask.kind == .review ? Self.review(ask, draft: draft, render: render) : nil
         checks = open && !clipped ? (payload?.checklist ?? []).map { Self.checkRow($0, draft: draft) } : []
         note = draft.note
@@ -199,6 +219,9 @@ struct AskFormModel {
 
     var toneUses: [ToneUse] {
         [ToneUse(element: "ask \(askID) form header", tone: headerTone, role: .ask)]
+            + checks.flatMap { row in
+                row.choices.map { ToneUse(element: "ask \(askID) step \(row.id) \($0.label)", tone: $0.tone, role: .status) }
+            }
     }
 
     // MARK: - Parts
@@ -247,33 +270,47 @@ struct AskFormModel {
         )
     }
 
+    private static let checkMarks: [(state: OwnerAskAnswer.CheckState, symbol: String, tone: PhoneTone)] = [
+        (.ok, "checkmark.circle", .green), (.broken, "xmark.circle", .red), (.skipped, "minus.circle", .secondary)
+    ]
+
     private static func checkRow(_ item: OwnerAskPayload.CheckItem, draft: AskDraft) -> CheckRow {
         let state = draft.checks[item.id]
         let note = draft.checkNotes[item.id] ?? ""
+        let choices = checkMarks.map { mark in
+            let selected = state == mark.state
+            return CheckChoice(
+                state: mark.state, label: AskText.check(mark.state),
+                symbol: selected ? mark.symbol + ".fill" : mark.symbol,
+                tone: selected ? mark.tone : .secondary, isSelected: selected
+            )
+        }
         return CheckRow(
             id: item.id, text: item.text, hint: item.hint, state: state, note: note,
-            needsNote: state == .broken && AskDraft.trimmed(note).isEmpty
+            needsNote: state == .broken && AskDraft.trimmed(note).isEmpty, choices: choices
         )
     }
 
-    private static func closedLines(_ ask: OwnerAsk) -> [String] {
+    private static func closedLines(_ ask: OwnerAsk) -> [ClosedLine] {
         guard let answer = ask.answer else { return [] }
-        var lines: [String] = []
+        var lines: [ClosedLine] = []
         if let verdict = answer.verdict {
-            lines.append(verdict == .approved ? "Approved" : "Changes requested")
+            lines.append(ClosedLine(label: "Verdict", value: verdict == .approved ? "Approved" : "Changes requested"))
         }
         let questions = Dictionary((ask.payload?.questions ?? []).map { ($0.id, $0.question) }) { first, _ in first }
         for item in answer.answers {
             let picked = (item.labels + (item.other.isEmpty ? [] : ["Other: \(item.other)"])).joined(separator: ", ")
-            lines.append("\(questions[item.id] ?? item.id): \(picked)")
+            lines.append(ClosedLine(label: questions[item.id] ?? item.id, value: picked.isEmpty ? "No answer" : picked))
         }
         let checks = Dictionary((ask.payload?.checklist ?? []).map { ($0.id, $0.text) }) { first, _ in first }
         for item in answer.checklist {
             let note = item.note.isEmpty ? "" : " — \(item.note)"
-            lines.append("\(checks[item.id] ?? item.id): \(AskText.check(item.state))\(note)")
+            lines.append(ClosedLine(label: checks[item.id] ?? item.id, value: "\(AskText.check(item.state))\(note)"))
         }
-        lines += answer.comments.map { "“\($0.quote)” — \($0.body)" }
-        if !answer.note.isEmpty { lines.append("Note: \(answer.note)") }
+        lines += answer.comments.map { ClosedLine(label: "“\($0.quote)”", value: $0.body) }
+        if !answer.note.isEmpty {
+            lines.append(ClosedLine(label: "Note", value: answer.note))
+        }
         return lines
     }
 

@@ -2,16 +2,18 @@ import SwiftUI
 import UIKit
 import WatchtowerKit
 
-/// Every colour the Workbench, Now and Calendar screens draw (spec §14).
-/// Session tones map exactly to `SessionStatePresentation.Tone`; `accent` is
-/// system blue; `purple` is the Mac working on a phone recording.
+/// Every colour the phone's screens draw (mobile POC spec §14, design pass
+/// spec §2.2). Session tones map exactly to `SessionStatePresentation.Tone`;
+/// `accent` is system blue; `purple` is the Mac working on a phone
+/// recording, or a snoozed target; `teal` is a target in review and `gray`
+/// a dismissed one (the Mac's target model table).
 ///
 /// Orange is for waiting-for-you and ask elements only. This file is the
-/// only place under `Sources/Features/` allowed to name it (SwiftLint
-/// `orange_outside_phone_tone`): screens get it as `waitingForYou` or from
-/// a session record's published tone.
+/// only place under `Sources/Features/` and `Sources/DesignSystem/` allowed
+/// to name it (SwiftLint `orange_outside_phone_tone`): screens get it as
+/// `waitingForYou` or from a session record's published tone.
 enum PhoneTone: Equatable, Sendable {
-    case green, orange, blue, red, purple, secondary, accent
+    case green, orange, blue, red, purple, teal, gray, secondary, accent
 
     /// The tone of every waiting-for-you and ask element.
     static let waitingForYou = Self.orange
@@ -36,6 +38,8 @@ enum PhoneTone: Equatable, Sendable {
         case .blue: .blue
         case .red: .red
         case .purple: .purple
+        case .teal: .teal
+        case .gray: .gray
         case .secondary: .secondary
         case .accent: .accentColor
         }

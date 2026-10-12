@@ -174,9 +174,9 @@ final class ReplicaWiringTests: XCTestCase {
         env.setFetchInterval(RootTabView.Tab.now.fetchInterval)
         XCTAssertEqual(env.fetchInterval, .seconds(5))
         try await poll({ sleeper.requested.last == .seconds(5) && sleeper.waitingCount == 1 }, "the loop sleeps 5 s on Now")
-        env.setFetchInterval(RootTabView.Tab.more.fetchInterval)
+        env.setFetchInterval(RootTabView.Tab.calendar.fetchInterval)
         XCTAssertEqual(env.fetchInterval, .seconds(30))
-        try await poll({ sleeper.requested.last == .seconds(30) && sleeper.waitingCount == 1 }, "the loop sleeps 30 s on More")
+        try await poll({ sleeper.requested.last == .seconds(30) && sleeper.waitingCount == 1 }, "the loop sleeps 30 s on Calendar")
 
         let running = env.fetchCycles
         sleeper.tick()

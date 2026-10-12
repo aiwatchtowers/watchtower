@@ -251,7 +251,8 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .failed(.noAnswer))
         XCTAssertEqual(
             LinkFailure.noAnswer.message,
-            "Your Mac didn't answer — keep Settings → Mobile open on the Mac and scan again"
+            "Your Mac didn't answer — Keep Settings → Mobile open on the Mac and scan again",
+            "title — hint (design pass O3)"
         )
         XCTAssertGreaterThanOrEqual(clock.slept, 60)
         XCTAssertLessThan(clock.slept, 62, "the wait ends at 60 s")
@@ -736,6 +737,76 @@ final class LinkingViewModelTests: XCTestCase {
         await flow.value
         let writes = try await host.deviceWrites()
         XCTAssertEqual(writes.count, 1)
+    }
+
+    /// Design pass O3: every failure is a title over a hint; `message` stays
+    /// "title — hint" for every other reader, and signIn, updateApp and
+    /// updateMac keep today's exact text. An iCloud failure without a
+    /// reason has no hint.
+    func testEveryFailureIsATitleOverAHint() {
+        let expected: [(LinkFailure, String, String?)] = [
+            (.expired, "This code expired", "Show a new code on the Mac"),
+            (.signIn, "Sign in to iCloud on this iPhone", "Watchtower uses iCloud to reach your Mac"),
+            (.cannotShare, "This Mac can't share with another Apple ID right now", "Show a new code on the Mac"),
+            (.noAnswer, "Your Mac didn't answer", "Keep Settings → Mobile open on the Mac and scan again"),
+            (.refused, "This code can't be used", "Show a new code on the Mac"),
+            (.updateApp, "Update Watchtower on this iPhone", nil),
+            (.updateMac, "Update Watchtower on this Mac", nil),
+            (.iCloud("The network is offline"), "Couldn't reach iCloud", "The network is offline")
+        ]
+        for (failure, title, hint) in expected {
+            XCTAssertEqual(failure.title, title, "\(failure)")
+            XCTAssertEqual(failure.hint, hint, "\(failure)")
+        }
+        XCTAssertEqual(LinkFailure.signIn.message, "Sign in to iCloud on this iPhone to use Watchtower", "today's exact text")
+        XCTAssertEqual(LinkFailure.updateApp.message, "Update Watchtower on this iPhone")
+        for (failure, title, hint) in expected where ![.signIn, .updateApp, .updateMac].contains(failure) {
+            XCTAssertEqual(failure.message, "\(title) — \(hint ?? "")", "\(failure)")
+        }
+        XCTAssertNil(LinkFailure.iCloud("").hint, "an empty reason is no hint")
+        XCTAssertEqual(LinkFailure.iCloud("").message, "Couldn't reach iCloud")
+    }
+
+    /// Design pass O2: every phase change stamps when it started, on the
+    /// flow's clock; the waiting screen's hint reads it.
+    func testEveryPhaseChangeStampsWhenItStarted() async throws {
+        let model = makeModel()
+        XCTAssertNil(model.phaseStartedAt, "nothing has started yet")
+        model.startScan()
+        XCTAssertEqual(model.phaseStartedAt, start)
+        clock.advance(by: 5)
+        model.dismiss()
+        XCTAssertEqual(model.phase, .idle)
+        XCTAssertEqual(model.phaseStartedAt, start.addingTimeInterval(5))
+
+        clock.parked = true
+        let flow = Task { await model.open(code().url()) }
+        try await poll { model.phase == .waiting(macName: "Acme Mac") }
+        XCTAssertEqual(model.phaseStartedAt, clock.now(), "the wait starts when it is shown")
+        flow.cancel()
+        await flow.value
+    }
+
+    /// Design pass O2 and review focus 5: checking makes step 1 current;
+    /// waiting makes it done and step 2 current; the hint appears after 20 s
+    /// of waiting, never before (a start stamped in the future included);
+    /// an empty Mac name reads "your Mac".
+    func testTheLinkStepsFollowThePhaseAndHintAfterTwentySeconds() {
+        let checking = LinkStepsModel(waitingFor: nil, startedAt: start, now: start.addingTimeInterval(60))
+        XCTAssertEqual(checking.steps.map(\.state), [.current, .todo, .todo])
+        XCTAssertEqual(checking.steps.map(\.text), ["Code read", "Waiting for your Mac to confirm", "Linked"])
+        XCTAssertNil(checking.hint, "no hint while checking")
+
+        let waiting = LinkStepsModel(waitingFor: "Acme Mac", startedAt: start, now: start.addingTimeInterval(19))
+        XCTAssertEqual(waiting.steps.map(\.state), [.done, .current, .todo])
+        XCTAssertEqual(waiting.steps[1].text, "Waiting for Acme Mac to confirm")
+        XCTAssertNil(waiting.hint)
+        let late = LinkStepsModel(waitingFor: "Acme Mac", startedAt: start, now: start.addingTimeInterval(20))
+        XCTAssertEqual(late.hint, "Keep Settings → Mobile open on the Mac.")
+
+        XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: start.addingTimeInterval(30), now: start).hint, "a future start")
+        XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: nil, now: start).hint)
+        XCTAssertEqual(LinkStepsModel(waitingFor: "", startedAt: nil, now: start).steps[1].text, "Waiting for your Mac to confirm")
     }
 
     // MARK: - Live container

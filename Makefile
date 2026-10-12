@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-archive mobile-testflight cloudkit-check
+.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -123,6 +123,20 @@ mobile-run: mobile-build
 	open -a Simulator
 	xcrun simctl install "$(SIM)" "$$(xcodebuild -project $(MOBILE_PROJ) -scheme WatchtowerMobile -destination '$(MOBILE_DEST)' -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR/{d=$$3} / FULL_PRODUCT_NAME/{n=$$3} END{print d "/" n}')"
 	xcrun simctl launch "$(SIM)" $(MOBILE_BUNDLE_ID)
+
+# The design pass's screenshot tour (WatchtowerMobile/Tests/ScreenshotTourTests.swift):
+# every demo screen in light and dark mode as PNGs plus an INDEX.md, written
+# to SHOTS_DIR (under the gitignored build/). Compare a before and an after
+# set by eye; nothing asserts pixels. xcodebuild hands TEST_RUNNER_-prefixed
+# variables to the test process with the prefix stripped.
+SHOTS_DIR ?= build/mobile-shots
+mobile-shots:
+	xcrun simctl boot "$(SIM)" 2>/dev/null || true
+	xcrun simctl uninstall "$(SIM)" $(MOBILE_BUNDLE_ID) 2>/dev/null || true
+	mkdir -p "$(SHOTS_DIR)"
+	TEST_RUNNER_WATCHTOWER_SHOTS_DIR="$(abspath $(SHOTS_DIR))" xcodebuild test -project $(MOBILE_PROJ) \
+		-scheme WatchtowerMobile -destination '$(MOBILE_DEST)' CODE_SIGNING_ALLOWED=NO \
+		-only-testing:WatchtowerMobileTests/ScreenshotTourTests
 
 # TestFlight archive: a Release archive for generic iOS plus an .ipa export
 # through the committed ExportOptions.plist. Needs the gitignored

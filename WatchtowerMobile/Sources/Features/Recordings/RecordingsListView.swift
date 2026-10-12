@@ -28,16 +28,22 @@ struct RecordingsListView: View {
                 Text(empty).foregroundStyle(.secondary)
             }
             if !model.inProgress.isEmpty {
-                Section("In progress") {
+                Section {
                     ForEach(model.inProgress) { row($0) }
+                } header: {
+                    Text("In progress").font(TypeScale.sectionHeader).textCase(nil)
                 }
             }
             if !model.earlier.isEmpty {
-                Section("Earlier") {
+                Section {
                     ForEach(model.earlier) { row($0) }
+                } header: {
+                    Text("Earlier").font(TypeScale.sectionHeader).textCase(nil)
                 }
             }
         }
+        // A list screen on systemBackground (design pass §2.7, §9.3).
+        .listStyle(.plain)
     }
 
     @ViewBuilder

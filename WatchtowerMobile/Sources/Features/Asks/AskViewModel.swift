@@ -99,6 +99,12 @@ final class AskViewModel {
         drafts.update(askID) { $0.checks[itemID] = state }
     }
 
+    /// One tap marks a step; tapping its marked state again clears it, as
+    /// on the Mac (design pass A5).
+    func toggleCheck(_ state: OwnerAskAnswer.CheckState, for itemID: String) {
+        drafts.update(askID) { $0.checks[itemID] = $0.checks[itemID] == state ? nil : state }
+    }
+
     func setCheckNote(_ note: String, for itemID: String) {
         drafts.update(askID) { $0.checkNotes[itemID] = note }
     }

@@ -8,11 +8,17 @@ struct RecapView: View {
     let transcriptID: Int
 
     @Environment(AppEnvironment.self) private var env
-    @State private var tab: Tab = .recap
+    @State private var tab: Tab
     @State private var bodyModel = RecapBodyModel()
     /// The line a jump point asked for; consumed by the scroll reader.
     @State private var jumpTarget: Int?
     @State private var highlighted: Int?
+
+    /// `initialTab` is for the screenshot tour; the app always opens Recap.
+    init(transcriptID: Int, initialTab: Tab = .recap) {
+        self.transcriptID = transcriptID
+        _tab = State(initialValue: initialTab)
+    }
 
     enum Tab: String, CaseIterable, Identifiable {
         case recap = "Recap"
@@ -128,10 +134,11 @@ struct RecapView: View {
         }
         ForEach(model.sections) { section in
             VStack(alignment: .leading, spacing: 0) {
-                Text(section.title.uppercased())
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 2)
+                // C6: a headline as written, not an uppercase caption.
+                Text(section.title)
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
+                    .padding(.bottom, Spacing.small)
                 ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
                     Text(item)
                         .font(.subheadline)
@@ -140,10 +147,10 @@ struct RecapView: View {
                     Divider()
                 }
                 if let more = section.moreText {
-                    Text(more).font(.footnote).foregroundStyle(.secondary).padding(.top, 8)
+                    Text(more).font(.footnote).foregroundStyle(.secondary).padding(.top, Spacing.regular)
                 }
             }
-            .padding(.top, 8)
+            .padding(.top, Spacing.large)
         }
     }
 
@@ -179,7 +186,7 @@ struct RecapView: View {
                 .padding(8)
                 .background(
                     highlighted == line.id ? PhoneTone.accent.color.opacity(0.12) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8)
+                    in: RoundedRectangle(cornerRadius: Radius.row)
                 )
                 .id(line.id)
                 .accessibilityElement(children: .combine)

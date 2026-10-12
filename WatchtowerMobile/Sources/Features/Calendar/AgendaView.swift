@@ -5,10 +5,12 @@ import WatchtowerKit
 /// accent colour), the selected day's agenda as "time | card" rows with the
 /// red now line on today, the current or next meeting highlighted with
 /// Record and Prep, a red mic button for a voice note, and the
-/// "Recordings · 1 new" pill to the Recordings list.
+/// waveform button (with a new-recap badge) to the Recordings list.
 struct AgendaView: View {
     @Environment(AppEnvironment.self) private var env
     @State private var selectedDay = Calendar.current.startOfDay(for: Date())
+    /// The day the agenda last scrolled for (`AgendaScroll`).
+    @State private var scrolledDay: Date?
 
     var body: some View {
         @Bindable var navigation = env.navigation
@@ -26,14 +28,15 @@ struct AgendaView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { recordingsPill }
+                ToolbarItem(placement: .topBarTrailing) { recordingsButton }
             }
             .refreshable { await env.refresh() }
-            .overlay(alignment: .bottomTrailing) { voiceNoteButton }
         }
     }
 
-    private var recordingsPill: some View {
+    /// C1: the waveform icon, with an accent badge counting new recaps. It
+    /// speaks "Recordings · 1 new".
+    private var recordingsButton: some View {
         let newCount = RecordingsListModel.newCount(
             transcripts: env.calendarReplica.snapshot.transcripts,
             seen: env.recordingsSeen.value
@@ -41,14 +44,16 @@ struct AgendaView: View {
         return Button {
             env.navigation.calendarPath.append(.recordings)
         } label: {
-            Text(RecordingsListModel.pillText(newCount: newCount))
-                .font(.footnote.weight(.medium))
-                .padding(.horizontal, 12)
-                .frame(minHeight: 44)
-                .background(Color.secondary.opacity(0.14), in: Capsule().inset(by: 5))
+            Image(systemName: "waveform")
+                .frame(minWidth: 44, minHeight: 44)
+                .overlay(alignment: .topTrailing) {
+                    if newCount > 0 {
+                        CountBadge(count: newCount, tone: .accent).offset(x: 2, y: 4)
+                    }
+                }
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .accessibilityLabel(RecordingsListModel.pillText(newCount: newCount))
     }
 
     private func content(now: Date) -> some View {
@@ -63,29 +68,45 @@ struct AgendaView: View {
         let agenda = AgendaDayModel(
             day: selectedDay, snapshot: snapshot, recordings: env.phoneRecordings.snapshot, now: now, calendar: calendar
         )
-        return List {
-            Section {
-                WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
-                    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-            }
-            Section {
-                if let empty = agenda.emptyText {
-                    Text(empty).foregroundStyle(.secondary)
+        return ScrollViewReader { proxy in
+            List {
+                Section {
+                    WeekStripView(strip: strip, select: { selectedDay = $0 }, shiftWeek: shiftWeek)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
                 }
-                ForEach(agenda.rows) { row in
-                    switch row {
-                    case let .event(card):
-                        AgendaEventRow(card: card) { env.navigation.calendarPath.append(.event(card.id)) }
-                    case let .nowLine(time):
-                        NowLineView(time: time)
+                Section {
+                    if let empty = agenda.emptyText {
+                        Text(empty).foregroundStyle(.secondary)
                     }
+                    ForEach(agenda.rows) { row in
+                        switch row {
+                        case let .event(card):
+                            AgendaEventRow(card: card) { env.navigation.calendarPath.append(.event(card.id)) }
+                                .listRowInsets(RowInsets.card)
+                        case let .nowLine(time):
+                            NowLineView(time: time)
+                        }
+                    }
+                    .listRowSeparator(.hidden)
                 }
-                .listRowSeparator(.hidden)
             }
-            // Room above the mic button.
-            Color.clear.frame(height: 64).listRowBackground(Color.clear)
+            .listStyle(.plain)
+            // The mic button takes room at the bottom: the list's last row
+            // ends above it.
+            .safeAreaInset(edge: .bottom, alignment: .trailing, spacing: 0) {
+                voiceNoteButton
+                    .padding(.trailing, Spacing.large)
+                    .padding(.bottom, Spacing.medium)
+            }
+            .task(id: AgendaScrollKey(day: selectedDay, rowID: agenda.highlightedRowID)) {
+                // The current or next meeting sits mid-screen, never under
+                // the button at rest; without one the day stays at the top.
+                let key = AgendaScrollKey(day: selectedDay, rowID: agenda.highlightedRowID)
+                guard let row = AgendaScroll.target(for: key, scrolledDay: scrolledDay) else { return }
+                scrolledDay = key.day
+                proxy.scrollTo(row, anchor: .center)
+            }
         }
-        .listStyle(.plain)
     }
 
     private func shiftWeek(_ weeks: Int) {
@@ -104,7 +125,6 @@ struct AgendaView: View {
                 .shadow(radius: 3, y: 1)
         }
         .accessibilityLabel("Record a voice note")
-        .padding(20)
     }
 }
 
@@ -174,59 +194,33 @@ private struct AgendaEventRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 48, alignment: .leading)
                 .padding(.top, 10)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
                 Text(card.title).font(.subheadline.weight(.semibold))
-                Text(card.detailLine).font(.caption).foregroundStyle(.secondary)
+                Text(card.detailLine).font(TypeScale.meta).foregroundStyle(.secondary)
                 if !card.pills.isEmpty {
-                    HStack(spacing: 6) {
-                        ForEach(card.pills) { EventPillView(pill: $0) }
+                    FlowRow {
+                        ForEach(card.pills) { Pill(text: $0.text, tone: $0.tone) }
                     }
                 }
                 if card.isHighlighted {
-                    HStack(spacing: 8) {
+                    // Leading-aligned; the 44 pt Record of Now (Global Constraints).
+                    HStack(spacing: Spacing.regular) {
                         if let meeting = card.meetingEvent {
-                            Button {
+                            RecordButton {
                                 Task { await env.recorder.recordMeeting(meeting) }
-                            } label: {
-                                Label("Record", systemImage: "record.circle")
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(PhoneTone.red.color)
                         }
-                        Button("Prep", action: open).buttonStyle(.bordered)
+                        Button("Prep", action: open)
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
                     }
-                    // Large size: the button itself is at least 44 pt tall.
-                    .controlSize(.large)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(10)
-            .background(
-                card.isHighlighted ? PhoneTone.accent.color.opacity(0.1) : Color.secondary.opacity(0.08),
-                in: RoundedRectangle(cornerRadius: 10)
-            )
-            .overlay {
-                if card.isHighlighted {
-                    RoundedRectangle(cornerRadius: 10).stroke(PhoneTone.accent.color, lineWidth: 1.5)
-                }
-            }
+            .card(card.cardStyle)
             .opacity(card.isPast ? 0.75 : 1)
             .contentShape(Rectangle())
             .onTapGesture(perform: open)
         }
-    }
-}
-
-struct EventPillView: View {
-    let pill: EventPill
-
-    var body: some View {
-        Text(pill.text)
-            .font(.caption2.weight(.medium))
-            .foregroundStyle(pill.tone.color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(pill.tone.color.opacity(0.14), in: Capsule())
     }
 }
 

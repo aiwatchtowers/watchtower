@@ -14,10 +14,16 @@ struct MacNotShowingView: View {
     var body: some View {
         List {
             Section {
-                ForEach(Self.checklist, id: \.self) { item in
-                    Label(item, systemImage: "checkmark.circle")
-                        .frame(minHeight: 44, alignment: .leading)
+                ForEach(Array(Self.checklist.enumerated()), id: \.offset) { index, item in
+                    Label {
+                        Text(item)
+                    } icon: {
+                        Image(systemName: "\(index + 1).circle").foregroundStyle(.secondary)
+                    }
+                    .frame(minHeight: 44, alignment: .leading)
                 }
+            } header: {
+                Text("Check on your Mac")
             } footer: {
                 Text("Then choose Use Watchtower on iPhone in Settings → Mobile on the Mac, and scan the code it shows.")
             }
