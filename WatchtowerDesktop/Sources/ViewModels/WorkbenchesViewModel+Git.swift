@@ -144,10 +144,13 @@ extension WorkbenchesViewModel {
 
     /// The page is on screen: read the status, then follow it — the refs
     /// watcher, app activation and the dirty-dot poll (only while the tab is
-    /// what the owner sees).
+    /// what the owner sees). The sessions' places follow the same page
+    /// (board #565); their reads are not this task's, so leaving the page
+    /// does not cancel them.
     func startGitWatching(project: Workbench) async {
         let id = project.id
         gitWatching.insert(id)
+        sessionPlaces.followWorkbench(id, folder: project.folderPath)
         observeAppActivation()
         if gitTimers[id] == nil {
             gitTimers[id] = Task { [weak self] in
@@ -168,6 +171,7 @@ extension WorkbenchesViewModel {
     /// flight and its pending confirmation all stay.
     func stopGitWatching(projectID: Int64) {
         gitWatching.remove(projectID)
+        sessionPlaces.unfollowWorkbench(projectID)
         gitTimers.removeValue(forKey: projectID)?.cancel()
         gitWatchers.removeValue(forKey: projectID)?.stop()
         gitWatchedDirs[projectID] = nil
@@ -314,7 +318,11 @@ extension WorkbenchesViewModel {
         gitWatchers.removeValue(forKey: projectID)?.stop()
         gitWatchedDirs[projectID] = dirs
         guard !dirs.isEmpty else { return }
-        gitWatchers[projectID] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] in
+        // The common dir holds every worktree's HEAD and the refs: a
+        // worktree session's branch is read again too, unless only the
+        // folder's own HEAD or index moved (board #565).
+        gitWatchers[projectID] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] change in
+            if change.mayMoveWorktrees { self?.sessionPlaces.refreshPlaces(workbenchID: projectID) }
             Task { await self?.refreshGitStatus(projectID: projectID) }
         }
     }
@@ -333,6 +341,7 @@ extension WorkbenchesViewModel {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 for id in self.gitWatching {
+                    self.sessionPlaces.refreshPlaces(workbenchID: id)
                     Task { await self.refreshGitStatus(projectID: id) }
                 }
             }

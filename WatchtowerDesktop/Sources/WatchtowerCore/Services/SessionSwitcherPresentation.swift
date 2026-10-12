@@ -111,6 +111,10 @@ package enum SessionSwitcherPresentation {
         package let badge: String?
         /// ⌘1…⌘9 for the first nine rows of the panel order.
         package let shortcut: Int?
+        /// Where the session's agent works (board #565): `⑂ mobile-a ·
+        /// feature/x`, `main folder · main`, `worktree removed`. nil for a
+        /// row the caller placed nowhere (a standalone terminal, a shell).
+        package var place: SessionPlacePresentation.PlaceLabel?
 
         package var id: Int64 { session.id }
 
@@ -135,21 +139,23 @@ package enum SessionSwitcherPresentation {
         _ sessions: [TerminalSession],
         liveIDs: Set<Int64>,
         statuses: [Int64: SessionAgentStatus],
-        now: Date
+        now: Date,
+        places: [Int64: SessionPlacePresentation.PlaceLabel] = [:]
     ) -> [Row] {
-        rows(sessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: sessions.map(\.id))
+        rows(sessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: sessions.map(\.id), places: places)
     }
 
     /// `rows` with ⌘1…⌘9 numbered over `shortcutOrder` instead of the listed
     /// order (the sessions panel's main list, then its open finished group,
     /// #480): a row whose id is not among the first nine of `shortcutOrder`
-    /// gets no shortcut.
+    /// gets no shortcut. `places` labels the rows it names (`Row.place`).
     package static func rows(
         _ sessions: [TerminalSession],
         liveIDs: Set<Int64>,
         statuses: [Int64: SessionAgentStatus],
         now: Date,
-        shortcutOrder: [Int64]
+        shortcutOrder: [Int64],
+        places: [Int64: SessionPlacePresentation.PlaceLabel] = [:]
     ) -> [Row] {
         var shortcuts: [Int64: Int] = [:]
         for (index, id) in shortcutOrder.prefix(maxShortcut).enumerated() where shortcuts[id] == nil {
@@ -162,7 +168,8 @@ package enum SessionSwitcherPresentation {
                 state: state,
                 caption: caption(state, session: session, now: now),
                 badge: session.targetID.map { "#\($0)" },
-                shortcut: shortcuts[session.id]
+                shortcut: shortcuts[session.id],
+                place: places[session.id]
             )
         }
     }

@@ -106,10 +106,13 @@ struct SessionSwitcherRow: View {
                     .frame(width: 12)
                     // The label reads the state out.
                     .accessibilityHidden(row.caption != nil)
-                Text(row.session.title)
-                    .font(.callout.weight(isCurrent ? .semibold : .regular))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(row.session.title)
+                        .font(.callout.weight(isCurrent ? .semibold : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if let place = row.place { SessionPlaceLine(label: place) }
+                }
                 if let badge = row.badge {
                     WorkbenchCapsuleBadge(text: badge)
                 }
@@ -123,7 +126,7 @@ struct SessionSwitcherRow: View {
                 }
             }
             .padding(.horizontal, 6)
-            .frame(height: 30)
+            .frame(minHeight: 30)
             .background(
                 RoundedRectangle(cornerRadius: 4)
                     .fill(isCurrent ? Color.accentColor.opacity(0.12) : .clear)

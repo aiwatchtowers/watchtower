@@ -102,6 +102,9 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Where each session's agent works (board #565): the rows' place line
+    /// and the header's worktree crumb.
+    let sessionPlaces: SessionPlaceCenter
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
@@ -261,7 +264,7 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
     /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
     /// notification center, the clipboard.
-    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor () -> Void)
+    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor (GitRefsChange) -> Void)
         -> any GitRefsWatching = { GitRefsWatcher(gitDir: $0, commonDir: $1, onChange: $2) }
     @ObservationIgnored var gitPollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     @ObservationIgnored var gitNotificationCenter: NotificationCenter = .default
@@ -290,6 +293,7 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
+        sessionPlaces = Self.makeSessionPlaces(dbPool: dbPool, cli: cli, terminalCenter: terminalCenter)
         let lineDelivery = lineDelivery ?? SessionLineDelivery(terminalCenter: terminalCenter)
         self.lineDelivery = lineDelivery
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
@@ -335,12 +339,17 @@ final class WorkbenchesViewModel {
         }
         // A failed read (or no states at all) vouches for nothing: no Return.
         lineDelivery.refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
-        agentStates?.onChange = { [weak lineDelivery] in
+        agentStates?.onChange = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
             Task { await lineDelivery?.deliverHeld() }
+            // A session started, stopped or began a run: whether its stored
+            // cwd is trusted may have moved (board #565).
+            sessionPlaces?.cwdsMayHaveChanged()
         }
         // Also on an unchanged read: a line held because a read failed.
-        agentStates?.onRead = { [weak lineDelivery] in
+        agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
             Task { await lineDelivery?.deliverHeld() }
+            // A hook may have stored a new cwd: re-read only on a new stamp.
+            sessionPlaces?.stateRowsRead(agentStates?.rows ?? [])
         }
     }
 
@@ -391,6 +400,7 @@ final class WorkbenchesViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
+            sessionPlaces.forgetWorkbench(id)
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedWorkbenchID == id { selectedWorkbenchID = nil }

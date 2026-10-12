@@ -95,7 +95,7 @@ struct WorkbenchPageView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
-                // Breadcrumbs: 📁 ~/folder › ⎇ branch ● ↑2 ▾ (#233).
+                // Breadcrumbs: 📁 ~/folder › [⑂ worktree ›] ⎇ branch ● ↑2 ▾ (#233, #565).
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([project.folderURL])
                 } label: {
@@ -110,6 +110,7 @@ struct WorkbenchPageView: View {
                 .buttonStyle(.link)
                 .help("\(project.folderPath)\nShow in Finder")
                 .layoutPriority(-1)
+                WorkbenchPlaceCrumb(vm: vm, project: project)
                 WorkbenchBranchCrumb(vm: vm, project: project)
                 installStatusIcons
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
