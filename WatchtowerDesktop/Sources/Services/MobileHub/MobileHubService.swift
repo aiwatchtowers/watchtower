@@ -174,6 +174,10 @@ final class MobileHubService {
     /// pass ends between two records) and the transport stop. start()
     /// awaits it, so two relay passes never overlap.
     @ObservationIgnored private var teardown: Task<Void, Never>?
+    /// The last hub zone delete, kept past its `cloudTimeout` bound: a delete
+    /// that timed out may still land and wipe the transport store, so the
+    /// next one waits for it.
+    @ObservationIgnored private var zoneDelete: Task<Bool, Never>?
     /// Set by dispose(): a replaced hub never starts again, even from a
     /// start() queued before it was replaced.
     @ObservationIgnored private var disposed = false
@@ -248,6 +252,13 @@ final class MobileHubService {
         // stop() may have run during the install: never start the
         // transport it already stopped.
         guard status == .starting, epoch == startEpoch else { return }
+        let zonesSettled = await finishPendingZoneDelete()
+        guard status == .starting, epoch == startEpoch else { return }
+        guard zonesSettled else {
+            status = .unavailable("Couldn't finish deleting this Mac's iCloud zones")
+            startReprobeLoop()
+            return
+        }
         do {
             try adoptPerHubZones()
         } catch {
@@ -352,40 +363,20 @@ final class MobileHubService {
 
     /// The Settings toggle turned off (multi-hub spec §3.3): stops, removes
     /// the staged slice assets, then deletes this hub's two zones (bounded).
-    /// Once they are gone the sync state is wiped (nothing is published, the
-    /// relay seqs restart; the ledger stays) and the link center forgets
-    /// every phone. A delete that fails or times out changes nothing: the
-    /// zones, the state and the phones stay consistent (Review focus 5).
+    /// Once they are gone the link center forgets every phone and the sync
+    /// state is wiped (nothing is published; the relay buffer was wiped, so
+    /// it is re-read from the start; the ledger stays). A delete that fails
+    /// changes nothing: the zones, the state and the phones stay consistent
+    /// (Review focus 5). One that times out may still land, so its outcome is
+    /// unknown: `hub_zones_delete_pending` stays set and the next start
+    /// finishes it before the engine runs.
     func disable() {
         stop()
         publisher.closeStagedAssets()
         let previous = teardown
-        let transport = self.transport
-        let sidecar = self.sidecar
-        let now = self.now
-        let logger = self.logger
-        let timeout = cloudTimeout
         teardown = Task { [weak self] in
             await previous?.value
-            let deleted = await Self.bounded(timeout) { () -> Bool in
-                do {
-                    try await transport.deleteHubZones()
-                    return true
-                } catch {
-                    logger.error("hub off: zones not deleted: \(error.localizedDescription, privacy: .public)")
-                    return false
-                }
-            }
-            guard deleted == true else {
-                if deleted == nil { logger.error("hub off: zone delete timed out") }
-                return
-            }
-            do {
-                try sidecar.wipeSyncState(now: now())
-            } catch {
-                logger.error("hub off: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
-            }
-            self?.onZonesDeleted?()
+            await self?.deleteZonesForHubOff()
         }
     }
 
@@ -402,6 +393,91 @@ final class MobileHubService {
     }
 
     // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
+
+    private enum ZoneDeleteOutcome { case deleted, failed, timedOut }
+
+    /// Turning the hub off: records the delete as pending first, so a
+    /// timeout (outcome unknown) or a crash leaves the next start to finish
+    /// it. A delete CloudKit refused deleted nothing: the marker clears.
+    private func deleteZonesForHubOff() async {
+        do {
+            try sidecar.setMetaValue("1", forKey: HubIdentity.zonesDeletePendingKey)
+        } catch {
+            logger.error("hub off: zones kept, sidecar unwritable: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        switch await deleteHubZonesBounded() {
+        case .deleted:
+            _ = zonesDeleted()
+        case .failed:
+            do {
+                try sidecar.removeMetaValue(forKey: HubIdentity.zonesDeletePendingKey)
+            } catch {
+                logger.error("hub off: pending marker not cleared: \(error.localizedDescription, privacy: .public)")
+            }
+        case .timedOut:
+            logger.warning("hub off: zone delete timed out; the next start finishes it")
+        }
+    }
+
+    /// At start, before the engine runs: a hub-off zone delete whose outcome
+    /// is unknown is done again (`deleteHubZones` treats a missing zone as
+    /// deleted). True when nothing is pending any more; false keeps the hub
+    /// off the engine, so a late store wipe never lands under it.
+    private func finishPendingZoneDelete() async -> Bool {
+        do {
+            guard try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey) != nil else { return true }
+        } catch {
+            logger.error("pending zone delete: sidecar unreadable: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard case .deleted = await deleteHubZonesBounded() else { return false }
+        return zonesDeleted()
+    }
+
+    /// Runs `deleteHubZones()` once any earlier delete has ended, each wait
+    /// bounded by `cloudTimeout`. The delete is not cancelled on timeout: it
+    /// stays in `zoneDelete`, so the next call waits for it rather than
+    /// racing its late store wipe; while it is still running no second one
+    /// is queued.
+    private func deleteHubZonesBounded() async -> ZoneDeleteOutcome {
+        if let previous = zoneDelete, await Self.bounded(cloudTimeout, { await previous.value }) == nil {
+            return .timedOut
+        }
+        let transport = self.transport
+        let logger = self.logger
+        let work = Task<Bool, Never> {
+            do {
+                try await transport.deleteHubZones()
+                return true
+            } catch {
+                logger.error("zones not deleted: \(error.localizedDescription, privacy: .public)")
+                return false
+            }
+        }
+        zoneDelete = work
+        let outcome = await Self.bounded(cloudTimeout) { await work.value }
+        switch outcome {
+        case true?: return .deleted
+        case false?: return .failed
+        case nil: return .timedOut
+        }
+    }
+
+    /// The zones are gone: the link center forgets the phones, then the sync
+    /// state is wiped. The pending marker clears only once the wipe landed,
+    /// so a failed wipe is redone at the next start. True when it cleared.
+    private func zonesDeleted() -> Bool {
+        onZonesDeleted?()
+        do {
+            try sidecar.wipeSyncState(now: now())
+            try sidecar.removeMetaValue(forKey: HubIdentity.zonesDeletePendingKey)
+            return true
+        } catch {
+            logger.error("zones deleted: sync state not wiped: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
 
     /// First start on the per-hub build: the transport store, bound to no
     /// hub, wipes itself at `start()`, so what the sidecar believes published

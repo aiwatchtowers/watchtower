@@ -37,6 +37,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var legacyFails = false
     private var zoneDeletesFail = false
     private var zoneDeleteCount = 0
+    private var zoneDeleteDelay: Duration?
 
     init(
         availability: CloudAvailability = .available,
@@ -91,6 +92,9 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     func setLegacyZones(_ value: LegacyZones) { lock.withLock { legacy = value } }
     func setLegacyCheckFails(_ value: Bool) { lock.withLock { legacyFails = value } }
     func setZoneDeletesFail(_ value: Bool) { lock.withLock { zoneDeletesFail = value } }
+    /// The next `deleteHubZones` sleeps this long (uncancellable, like a
+    /// CloudKit call that outlives its bound), then goes through.
+    func delayNextZoneDelete(_ value: Duration) { lock.withLock { zoneDeleteDelay = value } }
     var legacyCheckCount: Int { lock.withLock { legacyChecks } }
     var zoneDeletes: Int { lock.withLock { zoneDeleteCount } }
     var legacyZonesPresent: Bool {
@@ -101,10 +105,12 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     func deleteHubZones() async throws {
-        let fails = lock.withLock { () -> Bool in
+        let (fails, delay) = lock.withLock { () -> (Bool, Duration?) in
             lifecycleLog.append("deleteZones")
-            return zoneDeletesFail
+            defer { zoneDeleteDelay = nil }
+            return (zoneDeletesFail, zoneDeleteDelay)
         }
+        if let delay { await Task.detached { try? await Task.sleep(for: delay) }.value }
         if fails { throw URLError(.notConnectedToInternet) }
         lock.withLock { zoneDeleteCount += 1 }
     }

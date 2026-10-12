@@ -16,6 +16,10 @@ struct HubIdentity: Sendable {
     /// The legacy zone check's outcome (`LegacyZoneCleanup.rawValue`); set
     /// once the check completed, so it runs at one start only.
     static let legacyZonesCheckedKey = "legacy_zones_checked"
+    /// Set while turning the hub off has not settled its zone delete (it
+    /// timed out, or the sync state wipe after it failed): the next start
+    /// deletes again before the engine runs (multi-hub spec §3.3).
+    static let zonesDeletePendingKey = "hub_zones_delete_pending"
 
     let sidecar: HubSyncState
 

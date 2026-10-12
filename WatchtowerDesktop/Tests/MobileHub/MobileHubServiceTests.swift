@@ -40,6 +40,7 @@ final class MobileHubServiceTests: XCTestCase {
         dispatcher: MobileHubCommandDispatcher? = nil,
         companions: [any HubCompanion] = [],
         assets: SliceAssetStore? = nil,
+        cloudTimeout: Duration = MobileHubService.defaultCloudTimeout,
         isEnabled: @escaping () -> Bool = { true }
     ) -> MobileHubService {
         let publisher = SlicePublisher(
@@ -54,7 +55,7 @@ final class MobileHubServiceTests: XCTestCase {
             transport: transport, publisher: publisher, processor: processor, sidecar: sidecar,
             hostInfo: testHostInfo(), companions: companions,
             relayIdleInterval: relayInterval, relayActiveInterval: relayActiveInterval ?? relayInterval,
-            availabilityReprobeInterval: .milliseconds(20), isEnabled: isEnabled
+            availabilityReprobeInterval: .milliseconds(20), cloudTimeout: cloudTimeout, isEnabled: isEnabled
         )
     }
 
@@ -373,7 +374,7 @@ final class MobileHubServiceTests: XCTestCase {
 
         await service.start()
 
-        XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "the wiped store's seqs restart")
+        XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "the relay buffer was wiped; re-read from the start")
         XCTAssertEqual(try sidecar.relayPhase("action-x"), .done, "exactly-once survives")
         XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.perHubZonesKey), "1")
 
@@ -447,6 +448,35 @@ final class MobileHubServiceTests: XCTestCase {
         XCTAssertEqual(forgotten, 1)
     }
 
+    func testATimedOutZoneDeleteIsFinishedAtTheNextStartBeforeTheEngineRuns() async throws {
+        let transport = StubHubTransport()
+        transport.delayNextZoneDelete(.milliseconds(400))
+        let service = makeService(transport: transport, cloudTimeout: .milliseconds(50))
+        var forgotten = 0
+        service.onZonesDeleted = { forgotten += 1 }
+        await service.start()
+        try sidecar.setMetaValue("42", forKey: RelayProcessor.relayTokenKey)
+
+        service.disable()
+        await service.waitUntilStopped()
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "1", "outcome unknown")
+        XCTAssertEqual(forgotten, 0)
+        XCTAssertEqual(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "42")
+
+        let generation = try sidecar.generation()
+        let startsBefore = transport.starts
+        await service.start()
+        XCTAssertEqual(service.status, .unavailable("Couldn't finish deleting this Mac's iCloud zones"))
+        XCTAssertEqual(transport.starts, startsBefore, "no engine while the first delete may still land")
+
+        await awaitHubCondition("the reprobe finishes the delete and starts") { service.status == .running }
+        XCTAssertEqual(transport.zoneDeletes, 2, "the late delete landed, then the start deleted again")
+        XCTAssertEqual(forgotten, 1)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey))
+        XCTAssertGreaterThan(try sidecar.generation(), generation, "the sync state was wiped")
+        service.stop()
+    }
+
     /// Review focus 5.
     func testDisableWhileTheZoneDeleteFailsKeepsSyncStateAndLinkedPhones() async throws {
         let transport = StubHubTransport()
@@ -463,6 +493,7 @@ final class MobileHubServiceTests: XCTestCase {
 
         XCTAssertEqual(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "42", "zones still there: state still true")
         XCTAssertEqual(forgotten, 0, "the phones still share the zones")
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey), "a refused delete deleted nothing")
         XCTAssertEqual(service.status, .running, "the hub comes back on its existing zones")
         service.stop()
     }

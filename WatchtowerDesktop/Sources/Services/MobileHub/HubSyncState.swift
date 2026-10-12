@@ -242,6 +242,12 @@ final class HubSyncState: Sendable {
         }
     }
 
+    func removeMetaValue(forKey key: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
+        }
+    }
+
     /// This install's hub id (spec §4.1), created on first use and kept for
     /// good: an account reset does not change which Mac this is.
     func ensureHubID() throws -> String {
