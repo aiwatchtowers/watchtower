@@ -232,6 +232,15 @@ package enum Constants {
         return (path, codexHome)
     }
 
+    /// `resolvedEnvironment()` once it has been resolved (the launch-time
+    /// prewarm), else the app's own environment. Never runs the login
+    /// shell, so the MainActor can call it without blocking.
+    package nonisolated static func resolvedEnvironmentIfReady() -> [String: String] {
+        resolvedEnvironmentBox.get() ?? ProcessInfo.processInfo.environment
+    }
+
+    nonisolated private static let resolvedEnvironmentBox = ResolvedEnvironmentBox()
+
     /// Returns a process environment with the user's full PATH — and their
     /// CODEX_HOME, when the login shell sets one — resolved from their login
     /// shell. Cached after first call. Useful for launching subprocesses from
@@ -289,6 +298,7 @@ package enum Constants {
                 return env
             }()
         }
+        resolvedEnvironmentBox.set(Cache.env)
         return Cache.env
     }
 
@@ -337,5 +347,22 @@ private extension Substring {
         guard hasPrefix(marker) else { return nil }
         let value = dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
         return value.isEmpty ? nil : value
+    }
+}
+
+/// The resolved environment, once a `resolvedEnvironment()` call returned
+/// it; the first value set stays.
+package final class ResolvedEnvironmentBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var env: [String: String]?
+
+    package init() {}
+
+    package func get() -> [String: String]? {
+        lock.withLock { env }
+    }
+
+    package func set(_ value: [String: String]) {
+        lock.withLock { if env == nil { env = value } }
     }
 }

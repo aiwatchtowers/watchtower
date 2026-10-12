@@ -46,4 +46,15 @@ final class ConstantsLoginShellProbeTests: XCTestCase {
             XCTAssertEqual(probed.codexHome, "/Users/example/codex home", shell)
         }
     }
+
+    /// `resolvedEnvironmentIfReady`'s store: empty until the resolve
+    /// returns (the caller then gets the app's own environment), then the
+    /// first value for good. No login shell runs here.
+    func testResolvedEnvironmentBoxKeepsTheFirstValue() {
+        let box = ResolvedEnvironmentBox()
+        XCTAssertNil(box.get())
+        box.set(["CODEX_HOME": "/Users/example/cx"])
+        box.set(["CODEX_HOME": "/Users/example/other"])
+        XCTAssertEqual(box.get(), ["CODEX_HOME": "/Users/example/cx"])
+    }
 }

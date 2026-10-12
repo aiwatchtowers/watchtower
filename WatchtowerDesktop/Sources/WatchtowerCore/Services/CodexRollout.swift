@@ -7,9 +7,11 @@ import Foundation
 package enum CodexRollout {
     /// `$CODEX_HOME` when it is an absolute path, else `~/.codex` (Codex's own
     /// rule; Go `defaultTerminalCodexHome`). The environment is the login
-    /// shell's (`Constants.resolvedEnvironment`), the one the launched Codex
-    /// reads (spec 2026-10-12 §7).
-    package static func home(environment: [String: String] = Constants.resolvedEnvironment()) -> URL {
+    /// shell's, the one the launched Codex reads (spec 2026-10-12 §7), once
+    /// the launch-time prewarm resolved it; before that the app's own — the
+    /// MainActor never waits on the login shell
+    /// (`Constants.resolvedEnvironmentIfReady`).
+    package static func home(environment: [String: String] = Constants.resolvedEnvironmentIfReady()) -> URL {
         if let dir = environment["CODEX_HOME"], dir.hasPrefix("/") { return URL(fileURLWithPath: dir, isDirectory: true) }
         return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent(".codex", isDirectory: true)
     }
