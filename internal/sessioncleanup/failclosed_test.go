@@ -217,3 +217,39 @@ func TestPlan_RelativeGitdirResolvesAgainstTheAdminDir(t *testing.T) {
 
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
 }
+
+// A git failure inside a catch keeps the item as check_failed with git's
+// error in the detail: W4 (status), W7 (ancestry, remote containment) and
+// B4 (the branch's tip).
+func TestProj16_GitFailureInACatchKeepsTheItem(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		failOn []string
+		key    func(root string) string
+	}{
+		{"W4 status", []string{"status"}, func(root string) string { return "worktree:" + root }},
+		{"W7 merge-base", []string{"merge-base"}, func(root string) string { return "worktree:" + root }},
+		{"W7 remote refs", []string{"for-each-ref", "--count=1"}, func(root string) string { return "worktree:" + root }},
+		{"B4 merge-base", []string{"merge-base"}, func(string) string { return "branch:feat/merged" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			root := f.pushedWork("wt", "feat/x")
+			f.record(root, "feat/x")
+			gitIn(t, f.repo, "branch", "feat/merged", "main")
+			f.record(f.repo, "feat/merged")
+			p := f.plan(Request{})
+			wantItem(t, p, "worktree:"+root, ActionRemove, "")
+			wantItem(t, p, "branch:feat/merged", ActionRemove, "")
+
+			f.git = failGitOn(tc.failOn...)
+			it := wantItem(t, f.plan(Request{}), tc.key(root), ActionKeep, ReasonCheckFailed)
+			if !strings.Contains(it.Detail, "injected failure") {
+				t.Fatalf("detail = %q, want the git error", it.Detail)
+			}
+		})
+	}
+}
