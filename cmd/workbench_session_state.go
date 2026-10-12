@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/terminal"
@@ -56,6 +57,16 @@ var workbenchSessionStateCmd = &cobra.Command{
 	Args:               cobra.ArbitraryArgs,
 	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		agent, err := hookAgentFor(cmd, workbenchSessionStateFlagAgent)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: session state not recorded: %v\n", err)
+			return nil
+		}
+		if agent == agentkind.Codex {
+			readCodexHook(cmd.InOrStdin(), cmd.ErrOrStderr(), "session state not recorded", sessionStateInputWait,
+				sessionStateStdinLimit, openHookDB)
+			return nil
+		}
 		if err := checkWorkbenchIDFlags(cmd); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: session state not recorded: %v\n", err)
 			return nil
@@ -65,46 +76,22 @@ var workbenchSessionStateCmd = &cobra.Command{
 	},
 }
 
-var workbenchSessionStateFlagWorkbench string
+var workbenchSessionStateFlagWorkbench, workbenchSessionStateFlagAgent string
 
 func init() {
 	addWorkbenchIDFlag(workbenchSessionStateCmd, &workbenchSessionStateFlagWorkbench, "workbench id")
+	addHookAgentFlag(workbenchSessionStateCmd, &workbenchSessionStateFlagAgent)
 	workbenchCmd.AddCommand(workbenchSessionStateCmd)
 }
 
 // agentErrorRunes caps the StopFailure error type a row stores.
 const agentErrorRunes = 60
 
-// sessionStateInput is the part of Claude Code's hook input the state hook
-// reads; every other field is ignored.
-type sessionStateInput struct {
-	HookEventName    string `json:"hook_event_name"`
-	SessionID        string `json:"session_id"`
-	NotificationType string `json:"notification_type"`
-	// AgentID is set when the hook fired inside a subagent or teammate;
-	// AgentType is its type (a teammate's name), empty for Claude Code's
-	// internal agents (boards #411, #543).
-	AgentID   string `json:"agent_id"`
-	AgentType string `json:"agent_type"`
-	// BackgroundTasks is a SubagentStop's snapshot of in-flight background
-	// tasks (board #411). A Stop's is never read here: only the sync Stop
-	// hook records a count.
-	BackgroundTasks backgroundTasks `json:"background_tasks"`
-	// TranscriptPath and a PostToolUse's ToolUseID place the tool call
-	// against the last Stop (board #368).
-	TranscriptPath string `json:"transcript_path"`
-	ToolUseID      string `json:"tool_use_id"`
-	// Error is a StopFailure's error type ("rate_limit", pinned by
-	// testdata/stopfailure_rate_limit.json). Raw, so a non-string value
-	// never fails the whole input.
-	Error json.RawMessage `json:"error"`
-}
-
 // agentFailure is the failure a StopFailure records: its error type on one
 // line, clipped, or ” when the field is missing or not a string. nil for
 // every other event.
-func (in sessionStateInput) agentFailure() *db.AgentFailure {
-	if in.HookEventName != "StopFailure" {
+func (in hookEvent) agentFailure() *db.AgentFailure {
+	if in.Event != "StopFailure" {
 		return nil
 	}
 	var e string
@@ -181,7 +168,7 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	// finished reading: a slow read must not outrank a later event.
 	at := hookNow()
 	ctx, cancel := context.WithTimeout(context.Background(), sessionStateInputWait)
-	in, err := readHookInputLimit[sessionStateInput](ctx, stdin, sessionStateStdinLimit)
+	in, err := readHookEvent(ctx, stdin, sessionStateStdinLimit, agentkind.Claude)
 	cancel()
 	if errors.Is(err, io.EOF) {
 		return nil // a manual run with stdin closed
@@ -189,7 +176,7 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	if err != nil {
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
-	state, onlyFrom, ok := agentStateFor(in.HookEventName, in.NotificationType)
+	state, onlyFrom, ok := agentStateFor(in.Event, in.NotificationType)
 	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) {
 		return nil
 	}
@@ -219,19 +206,19 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		return recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, nil)
 	}
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, in.agentFailure(),
-		in.HookEventName == "UserPromptSubmit", at, turn)
+		in.Event == "UserPromptSubmit", at, turn)
 }
 
 // agentTurnEvent says the event starts or ends a subagent's or teammate's
 // turn (board #543).
-func (in sessionStateInput) agentTurnEvent() bool {
-	return in.HookEventName == "SubagentStart" || in.HookEventName == "SubagentStop"
+func (in hookEvent) agentTurnEvent() bool {
+	return in.Event == "SubagentStart" || in.Event == "SubagentStop"
 }
 
 // recordsAgentTurn says a SubagentStart or SubagentStop names an agent the
 // turns track: one with an agent_id and a type. Claude Code's internal agents
 // (prompt suggestions, /btw) have no type and say nothing about the work.
-func (in sessionStateInput) recordsAgentTurn() bool {
+func (in hookEvent) recordsAgentTurn() bool {
 	return in.AgentID != "" && in.AgentType != ""
 }
 
@@ -240,14 +227,14 @@ func (in sessionStateInput) recordsAgentTurn() bool {
 // agent's turns. A SubagentStop with a list then lowers the Stop's count to
 // what that list and the recorded turns still count (board #411); it never
 // raises or starts one.
-func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in sessionStateInput, at time.Time) error {
+func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at time.Time) error {
 	if !terminal.IsSessionID(in.SessionID) {
 		return fmt.Errorf("the hook input carries no session id (%q)", briefClip(in.SessionID, 40))
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return fmt.Errorf("recording the agent turn: %w", err)
 	}
-	start := in.HookEventName == "SubagentStart"
+	start := in.Event == "SubagentStart"
 	turns, err := database.RecordTerminalAgentTurn(rowID, workbenchID, in.SessionID, in.AgentID, start,
 		at.Truncate(time.Millisecond))
 	// A replaced unreadable value is reported, never a reason to skip the
@@ -266,8 +253,8 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in sessionStateI
 // toolRunTurn classifies a PostToolUse: subagent is true for one fired
 // inside a subagent, and a main-thread one gets its turn placement. The zero
 // values are every other event.
-func (in sessionStateInput) toolRunTurn() (turn hookTurn, subagent bool) {
-	if in.HookEventName != "PostToolUse" {
+func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
+	if in.Event != "PostToolUse" {
 		return hookTurn{}, false
 	}
 	if in.AgentID != "" {

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/claude"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -73,14 +74,6 @@ const (
 	askRequestChat = "chat"
 	askRequestFull = "full"
 )
-
-// askGuardStopInput is the part of Claude Code's Stop hook input the guard
-// reads.
-type askGuardStopInput struct {
-	SessionID            string `json:"session_id"`
-	StopHookActive       bool   `json:"stop_hook_active"`
-	LastAssistantMessage string `json:"last_assistant_message"`
-}
 
 // askGuardVerdict is the classifier's answer after normalisation (Part 4.3).
 type askGuardVerdict struct {
@@ -376,7 +369,7 @@ func runAskGuardStop(parent context.Context, stdin io.Reader, stdout, stderr io.
 // askGuardVerdictFor classifies the Stop's message (nil verdict for an
 // empty one, which calls no model); false after a model failure, reported in
 // one stderr line.
-func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Config, in askGuardStopInput, empty bool) (*askGuardVerdict, bool) {
+func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Config, in hookEvent, empty bool) (*askGuardVerdict, bool) {
 	if empty {
 		return nil, true
 	}
@@ -404,9 +397,9 @@ func askGuardCancelled(ctx context.Context, stderr io.Writer) bool {
 // askGuardStopSetup reads the hook input (at most askGuardInputWait), the
 // workbench id and the config; false when any of them fails, which ends the
 // turn (a config failure is one stderr line; a bad input or id is silent).
-func askGuardStopSetup(ctx context.Context, stdin io.Reader, stderr io.Writer, rawID string) (askGuardStopInput, int64, *config.Config, bool) {
+func askGuardStopSetup(ctx context.Context, stdin io.Reader, stderr io.Writer, rawID string) (hookEvent, int64, *config.Config, bool) {
 	inCtx, cancel := context.WithTimeout(ctx, askGuardInputWait)
-	in, err := readHookInputLimit[askGuardStopInput](inCtx, stdin, sessionStateStdinLimit)
+	in, err := readHookEvent(inCtx, stdin, sessionStateStdinLimit, agentkind.Claude)
 	cancel()
 	if err != nil {
 		return in, 0, nil, false

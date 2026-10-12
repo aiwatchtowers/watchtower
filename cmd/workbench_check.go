@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 	"watchtower/internal/workbenchcheck"
@@ -65,6 +66,7 @@ var (
 	workbenchCheckFlagStaleDays int
 	workbenchCheckFlagNoNetwork bool
 	workbenchCheckFlagStopHook  bool
+	workbenchCheckFlagAgent     string
 )
 
 func init() {
@@ -74,6 +76,7 @@ func init() {
 		"days without movement before an in-progress target counts as stale")
 	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagNoNetwork, "no-network", false, "skip pull request states (no gh call)")
 	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagStopHook, "stop-hook", false, "run as the Claude Code Stop hook (stdin input, always exit 0)")
+	addHookAgentFlag(workbenchCheckCmd, &workbenchCheckFlagAgent)
 	workbenchCmd.AddCommand(workbenchCheckCmd)
 }
 
@@ -82,9 +85,17 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	flagErr := checkWorkbenchIDFlags(cmd)
+	agent, flagErr := hookAgentFor(cmd, workbenchCheckFlagAgent)
+	if flagErr == nil {
+		flagErr = checkWorkbenchIDFlags(cmd)
+	}
 	legacy := workbenchCheckLegacy()
 	if workbenchCheckFlagStopHook {
+		if flagErr == nil && agent == agentkind.Codex {
+			readCodexHook(cmd.InOrStdin(), cmd.ErrOrStderr(), "board drift check skipped", stopHookStdinWait,
+				sessionStateStdinLimit, openHookDB)
+			return nil
+		}
 		if flagErr != nil {
 			// The hook still exits 0; the reason goes to its log only.
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: board drift check skipped: %v\n", flagErr)
@@ -95,6 +106,9 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	}
 	if flagErr != nil {
 		return flagErr
+	}
+	if agent == agentkind.Codex {
+		return errors.New("--agent codex runs only with --stop-hook")
 	}
 	id, err := parseWorkbenchID(strings.TrimSpace(workbenchCheckFlagWorkbench))
 	if err != nil {
@@ -171,16 +185,6 @@ func printCheckReport(w io.Writer, rep workbenchcheck.Report) {
 	for _, n := range rep.Notes {
 		fmt.Fprintf(w, "  note: %s\n", n)
 	}
-}
-
-// stopHookInput is the part of Claude Code's Stop hook input we read.
-type stopHookInput struct {
-	SessionID      string `json:"session_id"`
-	TranscriptPath string `json:"transcript_path"`
-	StopHookActive bool   `json:"stop_hook_active"`
-	// BackgroundTasks lists what the session runs in the background as the
-	// turn ends (board #411).
-	BackgroundTasks backgroundTasks `json:"background_tasks"`
 }
 
 // backgroundTask is one entry of a hook input's background_tasks; every
@@ -289,7 +293,7 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	inCtx, cancelIn := context.WithTimeout(ctx, stopHookStdinWait)
 	// The session state's cap: Stop carries last_assistant_message, and a
 	// cut-off input would lose the "waiting" write.
-	in, err := readHookInputLimit[stopHookInput](inCtx, stdin, sessionStateStdinLimit)
+	in, err := readHookEvent(inCtx, stdin, sessionStateStdinLimit, agentkind.Claude)
 	cancelIn()
 	if err != nil {
 		if _, inTerminal := os.LookupEnv(terminalSessionEnv); inTerminal && !errors.Is(err, io.EOF) {

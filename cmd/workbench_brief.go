@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"slices"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
@@ -82,12 +84,25 @@ var workbenchBriefFlagWorkbench string
 // folder is still on its old install (spec 2026-10-02 §5.2).
 var workbenchBriefLegacy func() bool
 
+// workbenchBriefFlagAgent is --agent: codex for the Codex SessionStart hook.
+var workbenchBriefFlagAgent string
+
 func init() {
 	workbenchBriefLegacy = addWorkbenchIDFlag(workbenchBriefCmd, &workbenchBriefFlagWorkbench, "workbench id")
+	addHookAgentFlag(workbenchBriefCmd, &workbenchBriefFlagAgent)
 	workbenchCmd.AddCommand(workbenchBriefCmd)
 }
 
 func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
+	agent, err := hookAgentFor(cmd, workbenchBriefFlagAgent)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: workbench brief: %v\n", err)
+		return nil //nolint:nilerr // a hook never fails: the reason is one stderr line
+	}
+	if agent == agentkind.Codex {
+		runCodexBrief(cmd.OutOrStdout(), cmd.ErrOrStderr())
+		return nil
+	}
 	if err := checkWorkbenchIDFlags(cmd); err != nil {
 		fmt.Fprintln(cmd.OutOrStdout(), briefUnavailable(0, "is unavailable: "+err.Error()))
 		return nil //nolint:nilerr // a hook never fails: the reason is the one-line brief
@@ -103,6 +118,20 @@ func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench, flag, vocabularyFor(legacy)))
 	return nil
+}
+
+// runCodexBrief is `workbench brief --agent codex`, the Codex SessionStart
+// hook: the brief of the workbench of the Desktop terminal row the session
+// runs in. Without such a row (no env var, a deleted row, a row of another
+// kind) it prints nothing: a Codex hook outside a Desktop codex row has no
+// workbench to brief.
+func runCodexBrief(stdout, stderr io.Writer) {
+	database, row, ok := codexHookRow(stderr, "workbench brief", openHookDB)
+	if !ok {
+		return
+	}
+	_ = database.Close()
+	fmt.Fprintln(stdout, loadWorkbenchBrief(row.WorkbenchID.Int64, vocabularyFor(false)))
 }
 
 // parseWorkbenchBriefFlag parses the raw id flag value, given under the
