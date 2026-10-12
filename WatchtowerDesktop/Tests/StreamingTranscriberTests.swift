@@ -248,4 +248,40 @@ final class StreamingTranscriberTests: XCTestCase {
                        "error keeps the context; the third silent window expires it")
         XCTAssertEqual(batchOut.text, "alpha\ngamma\ndelta")
     }
+
+    func testMatchesBatchWithSpeechGate() async throws {
+        // The gate joins the equivalence: a VAD-silent window must count as a
+        // silent window on both paths (same prompt sequence), and the detector
+        // must see identical windows. 0.5 s windows: w1 speech, w2 throws,
+        // w3 speech, w4 silent by VAD (never decoded), w5 speech.
+        var samples = [Float](repeating: 0, count: 5 * 8000)
+        for window in [0, 1, 2, 4] {
+            for i in (window * 8000)..<(window * 8000 + 6000) { samples[i] = 0.2 }
+        }
+        let cfg = forcedConfig(windowSec: 0.5)
+        let script: [Result<String, Error>] = [
+            .success("alpha"), .failure(MockEngine.MockError()), .success("gamma"), .success("delta")
+        ]
+
+        let batchEngine = MockEngine()
+        batchEngine.texts = script
+        let batchDetector = FakeSpeechDetector()
+        let batchOut = try await WindowedTranscriber(engine: batchEngine, config: cfg, speechDetector: batchDetector)
+            .transcribe(samples: samples) { _, _ in }
+
+        let streamEngine = MockEngine()
+        streamEngine.texts = script
+        let streamDetector = FakeSpeechDetector()
+        let streamOut = try await StreamingTranscriber(engine: streamEngine, config: cfg, speechDetector: streamDetector)
+            .run(samples: stream(of: samples, pieceSize: 333)) { _ in }
+
+        XCTAssertEqual(streamOut, batchOut)
+        XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
+        XCTAssertEqual(streamDetector.calls, batchDetector.calls)
+        XCTAssertEqual(batchDetector.calls, 5)
+        XCTAssertEqual(batchEngine.windowSizes.count, 4, "the VAD-silent window is never decoded")
+        XCTAssertEqual(batchEngine.prompts, [nil, "alpha", "alpha", "gamma"])
+        XCTAssertEqual(batchOut.text, "alpha\ngamma\ndelta")
+    }
 }

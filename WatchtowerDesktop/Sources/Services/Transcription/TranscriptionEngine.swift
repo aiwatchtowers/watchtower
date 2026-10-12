@@ -81,6 +81,11 @@ struct TranscriptionConfig: Equatable {
     /// always the meeting path) = the factory resolves the model from its own
     /// Settings keys; `fromDefaults` never sets this.
     var model: String?
+    /// Skip windows with no detected speech and drop decoded segments that
+    /// lie outside it (spec D1/D2, board #554) — the defence against text
+    /// invented over silence. A hidden kill switch (`transcription.speechGate`,
+    /// absent = on) with no Settings UI; the dictation lane stamps it off.
+    var speechGate: Bool = true
     static let sampleRate = 16_000
 }
 
@@ -136,7 +141,8 @@ extension TranscriptionConfig {
             ("transcription.liveTranscription", \.liveTranscription),
             ("transcription.diarization", \.diarization),
             ("transcription.voiceRecognition", \.voiceRecognition),
-            ("transcription.voiceNotifications", \.voiceNotifications)
+            ("transcription.voiceNotifications", \.voiceNotifications),
+            ("transcription.speechGate", \.speechGate)
         ]
         for toggle in toggles where defaults.object(forKey: toggle.key) != nil {
             config[keyPath: toggle.field] = defaults.bool(forKey: toggle.key)

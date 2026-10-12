@@ -55,6 +55,7 @@ final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
         XCTAssertEqual(config.model, "small",
                        "the whisper model must come from dictation.model, never transcription.model")
         XCTAssertFalse(config.diarization)
+        XCTAssertFalse(config.speechGate, "dictation keeps today's ungated decode (spec D2)")
 
         center.cancel()
     }

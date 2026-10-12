@@ -16,9 +16,13 @@ import Foundation
 /// If no window produces speech and at least one failed with an engine error,
 /// the last engine error is thrown — total engine failure never masquerades
 /// as an all-silence recording.
+/// With `speechDetector` set and `config.speechGate` on, `WindowSpeechGate`
+/// skips windows without speech before language detection (they count as
+/// silent windows) and drops decoded segments outside the detected speech.
 struct WindowedTranscriber {
     let engine: WhisperWindowEngine
     let config: TranscriptionConfig
+    var speechDetector: SpeechDetector?
 
     /// progress: (windowIndex, windowCount) after each window completes (1-based).
     func transcribe(samples: [Float],
@@ -37,35 +41,27 @@ struct WindowedTranscriber {
         var prevLang: String?
         var promptState = ContextPromptState()
         var lastEngineError: Error?
+        var gate = WindowSpeechGate(detector: speechDetector, config: config)
+        defer { gate.logSummary() }
 
         for (index, range) in ranges.enumerated() {
-            let window = Array(samples[range])
-
-            let language: String
-            if let forced = config.forcedLanguage {
-                language = forced
-            } else {
-                language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
-            }
-
-            let prompt = contextPromptTail(prevText: promptState.text, prevLang: prevLang, language: language, config: config)
-            let rawSegments: [TranscribedSegment]
-            do {
-                rawSegments = try await engine.transcribeWindow(window, language: language, prompt: prompt)
-            } catch {
+            let decoded = await decodeGatedWindow(Array(samples[range]), gate: &gate, previousLanguage: prevLang,
+                                                  promptText: promptState.text, config: config, engine: engine)
+            switch decoded {
+            case let .failed(error):
                 // A failed window is skipped: nothing counted, language does not stick.
                 lastEngineError = error
-                progress(index + 1, windowCount)
-                continue
-            }
-
-            if let lifted = liftWindowSegments(rawSegments, windowStart: range.lowerBound, language: language) {
-                texts.append(lifted.windowText)
-                segments.append(contentsOf: lifted.segments)
-                prevLang = language
-                promptState.recordSpeech(lifted.windowText)
-                langStats[language, default: 0] += 1
-            } else {
+            case let .decoded(rawSegments, language):
+                if let lifted = liftWindowSegments(rawSegments, windowStart: range.lowerBound, language: language) {
+                    texts.append(lifted.windowText)
+                    segments.append(contentsOf: lifted.segments)
+                    prevLang = language
+                    promptState.recordSpeech(lifted.windowText)
+                    langStats[language, default: 0] += 1
+                } else {
+                    promptState.recordSilence()
+                }
+            case .silent:
                 promptState.recordSilence()
             }
             progress(index + 1, windowCount)

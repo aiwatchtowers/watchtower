@@ -30,6 +30,8 @@ struct StreamChunk: Equatable, Sendable {
 struct StreamingTranscriber {
     let engine: WhisperWindowEngine
     let config: TranscriptionConfig
+    /// The same window gate as `WindowedTranscriber` (see there).
+    var speechDetector: SpeechDetector?
 
     func run(samples: AsyncStream<[Float]>,
              onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
@@ -46,21 +48,22 @@ struct StreamingTranscriber {
         var promptState = ContextPromptState()
         var lastEngineError: Error?
         var chunkIndex = 0
+        var gate = WindowSpeechGate(detector: speechDetector, config: config)
+        defer { gate.logSummary() }
 
         func process(window: [Float], windowStart: Int) async {
-            let language: String
-            if let forced = config.forcedLanguage {
-                language = forced
-            } else {
-                language = await resolveWindowLanguage(for: window, previous: prevLang, config: config, engine: engine)
-            }
-            let prompt = contextPromptTail(prevText: promptState.text, prevLang: prevLang, language: language, config: config)
-            let rawSegments: [TranscribedSegment]
-            do {
-                rawSegments = try await engine.transcribeWindow(window, language: language, prompt: prompt)
-            } catch {
+            let decoded = await decodeGatedWindow(window, gate: &gate, previousLanguage: prevLang,
+                                                  promptText: promptState.text, config: config, engine: engine)
+            let rawSegments: [TranscribedSegment], language: String
+            switch decoded {
+            case let .failed(error):
                 lastEngineError = error
                 return // skip: not counted, language does not stick
+            case .silent:
+                promptState.recordSilence()
+                return
+            case let .decoded(segments, decodedLanguage):
+                (rawSegments, language) = (segments, decodedLanguage)
             }
             guard let lifted = liftWindowSegments(rawSegments, windowStart: windowStart, language: language) else {
                 // Silent window: not counted, language does not stick, and a

@@ -31,21 +31,37 @@ struct WhisperKitProvider: TranscriptionProvider {
 
 /// Wraps a loaded WhisperKitEngine, reusing the existing batch/live orchestrators
 /// verbatim so their behavior (and the live↔batch pin test) is unchanged.
+/// The speech detector (spec D2) is created on the first call whose config
+/// has `speechGate` on — the config only arrives here — and reused for the
+/// transcriber's lifetime; a gate-off config (dictation) never creates one.
 final class WhisperTranscriber: Transcriber, @unchecked Sendable {
     private let engine: WhisperKitEngine
+    private let lock = NSLock()
+    private var detector: SileroSpeechDetector?
     init(engine: WhisperKitEngine) { self.engine = engine }
+
+    private func speechDetector(for config: TranscriptionConfig) -> SpeechDetector? {
+        guard config.speechGate else { return nil }
+        return lock.withLock {
+            if let detector { return detector }
+            let created = SileroSpeechDetector()
+            detector = created
+            return created
+        }
+    }
 
     func transcribe(
         _ samples: [Float],
         config: TranscriptionConfig,
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> TranscriptionOutput {
-        let transcriber = WindowedTranscriber(engine: engine, config: config)
+        let transcriber = WindowedTranscriber(engine: engine, config: config,
+                                              speechDetector: speechDetector(for: config))
         return try await transcriber.transcribe(samples: samples, progress: progress)
     }
 
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
-        WhisperLiveSession(engine: engine, config: config)
+        WhisperLiveSession(engine: engine, config: config, speechDetector: speechDetector(for: config))
     }
 }
 
@@ -53,8 +69,10 @@ final class WhisperTranscriber: Transcriber, @unchecked Sendable {
 struct WhisperLiveSession: TranscriptionLiveSession {
     let engine: WhisperKitEngine
     let config: TranscriptionConfig
+    let speechDetector: SpeechDetector?
     func run(samples: AsyncStream<[Float]>,
              onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
-        try await StreamingTranscriber(engine: engine, config: config).run(samples: samples, onChunk: onChunk)
+        try await StreamingTranscriber(engine: engine, config: config, speechDetector: speechDetector)
+            .run(samples: samples, onChunk: onChunk)
     }
 }
