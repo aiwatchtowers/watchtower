@@ -27,9 +27,9 @@ final class CodexRolloutTests: XCTestCase {
 
     func testCodexRolloutGlobFindsDateDir() throws {
         try rollout("rollout-2026-10-12T09-00-00-\(id).jsonl", in: "2026/10/12")
-        XCTAssertTrue(CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home))
+        XCTAssertTrue(try CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home))
         let other = "0199d1c2-7a3b-7c4d-8e5f-0a1b2c3d4e60"
-        XCTAssertFalse(CodexRollout.exists(sessionID: other, storedPath: nil, codexHome: home))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: other, storedPath: nil, codexHome: home))
     }
 
     func testStoredPathWins() throws {
@@ -37,7 +37,7 @@ final class CodexRolloutTests: XCTestCase {
         try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
         let file = elsewhere.appendingPathComponent("rollout-x-\(id).jsonl")
         try Data("{}\n".utf8).write(to: file)
-        XCTAssertTrue(CodexRollout.exists(sessionID: id, storedPath: file.path, codexHome: home))
+        XCTAssertTrue(try CodexRollout.exists(sessionID: id, storedPath: file.path, codexHome: home))
     }
 
     /// A stored path of another name, a relative one, a directory or a gone
@@ -48,26 +48,38 @@ final class CodexRolloutTests: XCTestCase {
         let dir = home.appendingPathComponent("rollout-x-\(id).jsonl", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         for stored in [foreign.path, "rollout-x-\(id).jsonl", dir.path, "/nonexistent/rollout-x-\(id).jsonl", ""] {
-            XCTAssertFalse(CodexRollout.exists(sessionID: id, storedPath: stored, codexHome: home), stored)
+            XCTAssertFalse(try CodexRollout.exists(sessionID: id, storedPath: stored, codexHome: home), stored)
         }
         try rollout("rollout-2026-10-12T09-00-00-\(id).jsonl")
-        XCTAssertTrue(CodexRollout.exists(sessionID: id, storedPath: foreign.path, codexHome: home))
+        XCTAssertTrue(try CodexRollout.exists(sessionID: id, storedPath: foreign.path, codexHome: home))
     }
 
     func testDegenerateHomeAndNames() throws {
-        XCTAssertFalse(CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home), "no sessions folder")
+        XCTAssertFalse(try CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home), "no sessions folder")
         try rollout("\(id).jsonl")
         try rollout("rollout-\(id).jsonl.bak")
         try rollout("rollout-x-\(id).jsonl", in: "2026/10")  // one level short
-        XCTAssertFalse(CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home))
+    }
+
+    /// A date folder that exists but cannot be listed is an error, never
+    /// "no rollout": a relaunch must not drop the stored id on it.
+    func testAnUnreadableFolderThrows() throws {
+        let file = try rollout("rollout-2026-10-12T09-00-00-\(id).jsonl")
+        let day = file.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o300], ofItemAtPath: day.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: day.path) }
+        XCTAssertThrowsError(try CodexRollout.exists(sessionID: id, storedPath: nil, codexHome: home))
+        XCTAssertTrue(try CodexRollout.exists(sessionID: id, storedPath: file.path, codexHome: home),
+                      "a stored path that is still a file needs no listing")
     }
 
     func testInvalidIDIsNeverLookedUp() throws {
         let upper = id.uppercased()
         try rollout("rollout-x-\(upper).jsonl")
-        XCTAssertFalse(CodexRollout.exists(sessionID: upper, storedPath: nil, codexHome: home))
-        XCTAssertFalse(CodexRollout.exists(sessionID: "*", storedPath: nil, codexHome: home))
-        XCTAssertFalse(CodexRollout.exists(sessionID: "", storedPath: nil, codexHome: home))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: upper, storedPath: nil, codexHome: home))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: "*", storedPath: nil, codexHome: home))
+        XCTAssertFalse(try CodexRollout.exists(sessionID: "", storedPath: nil, codexHome: home))
     }
 
     func testHomeHonoursAnAbsoluteCODEXHOME() {

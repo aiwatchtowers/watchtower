@@ -14,14 +14,18 @@ package enum CodexRollout {
 
     /// The stored path (`agent_transcript_path`) when it is an absolute
     /// regular file named for this session; else any date folder under
-    /// `codexHome/sessions`. An invalid id is never used in a path.
-    package static func exists(sessionID: String, storedPath: String?, codexHome: URL) -> Bool {
+    /// `codexHome/sessions`. An invalid id is never used in a path. A
+    /// missing folder lists nothing; a folder that exists but could not be
+    /// listed (no permission, say) throws, so "could not look" is never
+    /// read as "no rollout".
+    package static func exists(sessionID: String, storedPath: String?, codexHome: URL) throws -> Bool {
         guard TerminalLaunch.isValidSessionID(sessionID) else { return false }
         if let storedPath, isRollout(storedPath, of: sessionID), isRegularFile(storedPath) { return true }
         let sessions = codexHome.appendingPathComponent("sessions", isDirectory: true).path
-        for year in subdirectories(of: sessions) {
-            for month in subdirectories(of: year) {
-                for day in subdirectories(of: month) where entries(of: day).contains(where: { isRolloutName($0, of: sessionID) }) {
+        for year in try subdirectories(of: sessions) {
+            for month in try subdirectories(of: year) {
+                for day in try subdirectories(of: month)
+                    where try entries(of: day).contains(where: { isRolloutName($0, of: sessionID) }) {
                     return true
                 }
             }
@@ -45,13 +49,17 @@ package enum CodexRollout {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && !isDirectory.boolValue
     }
 
-    /// A missing folder lists nothing.
-    private static func entries(of path: String) -> [String] {
-        (try? FileManager.default.contentsOfDirectory(atPath: path)) ?? []
+    /// A missing folder lists nothing; any other failure throws.
+    private static func entries(of path: String) throws -> [String] {
+        do {
+            return try FileManager.default.contentsOfDirectory(atPath: path)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return []
+        }
     }
 
-    private static func subdirectories(of path: String) -> [String] {
-        entries(of: path).map { (path as NSString).appendingPathComponent($0) }.filter { child in
+    private static func subdirectories(of path: String) throws -> [String] {
+        try entries(of: path).map { (path as NSString).appendingPathComponent($0) }.filter { child in
             var isDirectory: ObjCBool = false
             return FileManager.default.fileExists(atPath: child, isDirectory: &isDirectory) && isDirectory.boolValue
         }

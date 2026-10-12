@@ -163,6 +163,66 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         XCTAssertNil(after?.transcriptPath)
     }
 
+    /// Spec §5/§7: the stored id is NULL before the process starts, so a
+    /// SessionStart that runs at once finds a row to store its id in.
+    func testCodexMissingRolloutNullsTheIDBeforeTheProcessStarts() async throws {
+        let row = try await codexRow(try await workbench(), id: storedID, transcript: "/Users/example/rollout-x-\(storedID).jsonl")
+        let vm = makeVM()
+        var atStart: TerminalSession?
+        center.makeProcess = { [weak self] in
+            atStart = try? self?.pool.read { try TerminalSessionQueries.fetch($0, id: row.id) }
+            let process = FakeTerminalSession(pid: 0)
+            self?.processes.append(process)
+            return process
+        }
+
+        await vm.open(row)
+
+        XCTAssertEqual(center.states[row.id], .running)
+        let probed = try XCTUnwrap(atStart, "the process started")
+        XCTAssertNil(probed.claudeSessionID)
+        XCTAssertNil(probed.transcriptPath)
+    }
+
+    /// A reset that does not go in launches nothing and keeps the id: a new
+    /// session under the old id would have every hook ignored.
+    func testCodexResetFailureLaunchesNothing() async throws {
+        let p = try await workbench()
+        let row = try await codexRow(p, id: storedID)
+        try await pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER no_reset BEFORE UPDATE OF claude_session_id ON terminal_sessions
+                BEGIN SELECT RAISE(ABORT, 'reset refused'); END
+                """)
+        }
+        let vm = makeVM()
+
+        await vm.open(row)
+
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        let after = try await stored(row.id)
+        XCTAssertEqual(after?.claudeSessionID, storedID)
+        let error = try XCTUnwrap(vm.sessionActionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not reset the Codex session"), error)
+    }
+
+    /// Codex's sessions folder that could not be listed is no "no rollout":
+    /// the id stays and nothing launches.
+    func testCodexUnreadableRolloutsKeepTheID() async throws {
+        let p = try await workbench()
+        let row = try await codexRow(p, id: storedID)
+        center.codexRolloutExists = { _, _ in throw CocoaError(.fileReadNoPermission) }
+        let vm = makeVM()
+
+        await vm.open(row)
+
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        let after = try await stored(row.id)
+        XCTAssertEqual(after?.claudeSessionID, storedID)
+        let error = try XCTUnwrap(vm.sessionActionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not check Codex's saved sessions"), error)
+    }
+
     /// A resume keeps the id; a new start of a row with nothing stored writes nothing.
     func testCodexResumeKeepsTheStoredID() async throws {
         let row = try await codexRow(try await workbench(), id: storedID)

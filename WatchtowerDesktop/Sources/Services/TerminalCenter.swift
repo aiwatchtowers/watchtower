@@ -158,9 +158,10 @@ final class TerminalCenter {
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
     /// Whether Codex has a rollout for a session id (`CodexRollout`), given
-    /// the path its SessionStart stored. A seam for tests.
-    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?) -> Bool = {
-        CodexRollout.exists(sessionID: $0, storedPath: $1, codexHome: CodexRollout.home())
+    /// the path its SessionStart stored; throws when Codex's sessions folder
+    /// could not be listed. A seam for tests.
+    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?) throws -> Bool = {
+        try CodexRollout.exists(sessionID: $0, storedPath: $1, codexHome: CodexRollout.home())
     }
     /// `watchtower workbench launch-args` for a Codex session of a workbench
     /// (`WorkbenchCLI.launchArgs`); nil when there is no CLI to ask.
@@ -352,13 +353,25 @@ final class TerminalCenter {
 
     /// Whether the agent has a transcript for the row's stored session id:
     /// Claude Code's under `~/.claude`, Codex's rollout. No id, no transcript.
+    /// A Codex lookup that failed reads as none here: the one caller that
+    /// acts on "none" for Codex, a relaunch, asks `codexResumes` first.
     func hasTranscript(_ session: TerminalSession) -> Bool {
         guard let id = session.claudeSessionID else { return false }
         switch session.kind {
         case .claude: return transcriptExists(id)
-        case .codex: return codexRolloutExists(id, session.transcriptPath)
+        case .codex: return (try? codexRolloutExists(id, session.transcriptPath)) ?? false
         case .shell: return false
         }
+    }
+
+    /// Whether relaunching the Codex row (not fresh) resumes its stored id:
+    /// a valid id whose rollout exists. Throws when Codex's sessions folder
+    /// could not be listed, so the caller does not drop the id on it.
+    func codexResumes(_ session: TerminalSession) throws -> Bool {
+        guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
+            return false
+        }
+        return try codexRolloutExists(id, session.transcriptPath)
     }
 
     /// How lines are typed into the session (spec 2026-10-12 §8): its
