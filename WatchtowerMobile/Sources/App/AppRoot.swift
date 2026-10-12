@@ -133,21 +133,35 @@ final class AppRoot {
         }
     }
 
-    /// The heartbeat after each fetch: the moved and stale checks.
+    /// The heartbeat and this phone's grant after each fetch: the moved and
+    /// stale checks, and the Mac's Remove (#64).
     private func checkHeartbeat() {
-        guard !isDemo, linking.link != nil else { return }
+        guard !isDemo, linking.link != nil, let deviceID = linking.linkedDevice?.deviceID else { return }
         let store = env.store
+        let grantName = SliceKind.deviceGrant.recordName(id: deviceID)
         let heartbeat: HeartbeatPayload?
+        let grant: DeviceGrant?
+        let grantStored: Bool
         do {
-            heartbeat = try store.reader.read { db in
-                try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db)
+            (heartbeat, grant, grantStored) = try store.reader.read { db in
+                (
+                    try SettingsSnapshot.decode(HeartbeatPayload.self, recordName: HeartbeatPayload.recordName, store: store, from: db),
+                    try SettingsSnapshot.decode(DeviceGrant.self, recordName: grantName, store: store, from: db),
+                    try store.payload(forRecordName: grantName, from: db) != nil
+                )
             }
         } catch {
-            Self.logger.error("heartbeat read failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("heartbeat or grant read failed: \(error.localizedDescription, privacy: .public)")
             return
         }
         let linking = linking
-        Task { await linking.evaluate(heartbeat: heartbeat) }
+        Task {
+            await linking.evaluate(heartbeat: heartbeat)
+            // A stored grant this build cannot decode (a newer Mac's) is not
+            // a removed one: only an absent or a decoded grant is judged.
+            guard grant != nil || !grantStored else { return }
+            await linking.evaluate(grant: grant, heartbeat: heartbeat)
+        }
     }
 
     /// Shuts the current environment down and builds the next one on

@@ -27,11 +27,12 @@ final class AppRootWiringTests: XCTestCase {
     /// each environment gets a fresh in-memory transport; with it, a
     /// `CloudKitTransport` over the persistent store at that path (the app's
     /// shape: one transport file across restarts; no engine starts in the
-    /// unsigned test host).
-    private func makeRoot(linked: LinkedDevice?, transportStorePath: String? = nil) throws -> AppRoot {
+    /// unsigned test host). `link` is the saved link the flow starts with.
+    private func makeRoot(linked: LinkedDevice?, transportStorePath: String? = nil, link: LinkRecord? = nil) throws -> AppRoot {
         let path = try makeReplicaPath()
         replicaPath = path
         let defaults = try makeDefaults()
+        LinkStore(defaults: defaults).link = link
         let recordings = try makeRecordingsDirectory()
         let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { [weak self] scope, hubID, device in
             let transport: any CloudSyncTransport
@@ -244,6 +245,44 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(fetched, grant)
         let other = await root.fetchGrant(deviceID: "device-other")
         XCTAssertNil(other)
+    }
+
+    /// #64: a same-Apple-ID phone gets no `unlinked` event. After a fetch,
+    /// the linked hub's heartbeat without this phone's grant is the Mac's
+    /// Remove; a grant this build cannot decode is not.
+    func testAFetchWithoutThisPhonesGrantIsTheMacsRemoveAndAnUndecodableOneIsNot() async throws {
+        let link = LinkRecord(
+            hubID: "hub-acme", macName: "Acme Mac", scope: .private, ownerName: "_owner-acme",
+            userRecordName: "_owner-acme", nonce: LinkPayload.makeNonce(), dataShareURL: nil, relayShareURL: nil
+        )
+        let root = try makeRoot(linked: device, link: link)
+        let transport = transports[0]
+        let now = Date()
+        let grant = DeviceGrant(
+            deviceID: device.deviceID, hubID: "hub-acme", name: device.name, scope: .private,
+            linked: true, linkedAt: now, typingAllowed: false, startSessionsAllowed: true
+        )
+        try await transport.save([
+            try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now),
+            try CloudRecordFactory.record(for: grant, modifiedAt: now)
+        ])
+        await root.env.refresh()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNotNil(root.linking.link, "granted")
+
+        let reshaped = CloudRecord(
+            recordName: grant.recordName, zone: .data, kind: SliceKind.deviceGrant.rawValue,
+            modifiedAt: now.addingTimeInterval(1), payload: Data(#"{"linked":"maybe"}"#.utf8)
+        )
+        try await transport.save([reshaped])
+        await root.env.refresh()
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertNotNil(root.linking.link, "an unreadable grant is not a removed one")
+
+        try await transport.delete(recordNames: [grant.recordName], in: .data)
+        await root.env.refresh()
+        try await poll({ root.linking.link == nil }, "the Mac's Remove ends the link")
+        XCTAssertEqual(root.linking.notice, .removed)
     }
 
     func testALiveRootWithoutALinkOnboardsAndTheDemoNever() throws {

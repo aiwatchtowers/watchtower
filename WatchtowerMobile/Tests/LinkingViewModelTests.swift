@@ -578,6 +578,42 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(writes.last?.unlinked, "the Mac's zones are gone: nothing to write")
     }
 
+    /// #64: a same-Apple-ID phone gets no `unlinked` event (its zones are the
+    /// Mac's own and never vanish); the Mac's Remove deletes its grant, and a
+    /// fetch that leaves the linked hub's heartbeat without it reads as the
+    /// same removal.
+    func testAGrantGoneFromTheLinkedHubReadsAsRemovedByTheMac() async throws {
+        let model = try await linkedModel(code())
+        XCTAssertEqual(model.link?.scope, .private)
+
+        await model.evaluate(grant: grant(linked: true), heartbeat: heartbeat(updatedAt: start))
+        XCTAssertNotNil(model.link, "still granted")
+        await model.evaluate(grant: nil, heartbeat: nil)
+        XCTAssertNotNil(model.link, "no heartbeat: the replica may not hold the hub's zone")
+        await model.evaluate(grant: nil, heartbeat: heartbeat(hubID: "hub-studio", macName: "Acme Studio", updatedAt: start))
+        XCTAssertNotNil(model.link, "another hub's data says nothing about this link")
+        XCTAssertEqual(host.wipes, 0)
+
+        await model.evaluate(grant: nil, heartbeat: heartbeat(updatedAt: start))
+
+        XCTAssertEqual(model.notice, .removed)
+        XCTAssertNil(model.link)
+        XCTAssertEqual(host.wipes, 1)
+        XCTAssertNil(host.links.last?.device)
+        let writes = try await host.deviceWrites()
+        XCTAssertNil(writes.last?.unlinked, "removed, not unlinking itself: nothing to write")
+    }
+
+    /// #64: a grant the Mac turned into a refusal is no longer a link either.
+    func testAnUnlinkedGrantOfTheLinkedHubReadsAsRemoved() async throws {
+        let model = try await linkedModel(code())
+
+        await model.evaluate(grant: grant(linked: false, refused: .usedCode), heartbeat: heartbeat(updatedAt: start))
+
+        XCTAssertEqual(model.notice, .removed)
+        XCTAssertNil(model.link)
+    }
+
     func testHubChangedShowsMovedAndStopsWrites() async throws {
         let model = try await linkedModel(code())
 

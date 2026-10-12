@@ -484,7 +484,8 @@ final class LinkingViewModel {
     }
 
     /// `TransportEvent.unlinked`: the Mac's zones are gone (the phone was
-    /// removed, maybe while offline).
+    /// removed, maybe while offline); or the Mac deleted this phone's grant
+    /// (`evaluate(grant:heartbeat:)`).
     func removedByMac() async {
         guard link != nil else { return }
         _ = await unlinkCurrent(writeUnlinked: false)
@@ -514,6 +515,24 @@ final class LinkingViewModel {
         pendingSwitch = nil
         phase = .idle
         notice = nil
+    }
+
+    /// After each fetch: this phone's own `device_grant` in the linked hub's
+    /// replica. The Mac's Remove deletes it (`DeviceGrantSlice` publishes no
+    /// record for a removed phone), and for a same-Apple-ID phone that is
+    /// the only sign: its zones are the Mac's own and never vanish, so no
+    /// `unlinked` event comes (#64). With the linked hub's heartbeat in the
+    /// replica and no linked grant there, the Mac removed this phone: the
+    /// same path as that event. A link is saved only once its linked grant
+    /// reached the replica, and a linked replica is never wiped, so a
+    /// missing grant is a deletion the fetch applied, not one still to come.
+    /// A shared phone whose participant removal failed is told the same way.
+    func evaluate(grant: DeviceGrant?, heartbeat: HeartbeatPayload?) async {
+        guard let link, !isBusy, store.pending == nil,
+              let heartbeat, heartbeat.hubID == link.hubID else { return }
+        if let grant, grant.hubID != link.hubID || grant.linked { return }
+        Self.logger.notice("the linked Mac no longer grants this phone: removed")
+        await removedByMac()
     }
 
     /// After each fetch: the heartbeat names another hub (moved: writes
