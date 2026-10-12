@@ -53,6 +53,49 @@ final class SessionStatePresentationTests: XCTestCase {
                        "Waiting for you · 3 asks", "without the oldest id the caption names no ask")
     }
 
+    /// #534: Ready to check is purple with a checklist glyph, a ring when
+    /// not live and never pulsing; its caption names the oldest ask, says
+    /// "review" only when every open ask is one, and counts more than one.
+    func testReadyToCheckIsPurpleWithChecklist() {
+        let checks = State.live(.readyToCheck, openAsks: 1, oldestAskID: 7, openQuestionAsks: 0)
+        XCTAssertEqual(SessionStatePresentation.color(for: checks), .purple)
+        XCTAssertEqual(SessionStatePresentation.glyph(for: checks), "checklist")
+        XCTAssertFalse(SessionStatePresentation.isRing(checks))
+        XCTAssertFalse(SessionStatePresentation.pulses(checks))
+        XCTAssertEqual(SessionStatePresentation.caption(for: checks), "Ready to check · ask #7")
+        let ring = State(kind: .readyToCheck, live: false, openAsks: 1, oldestAskID: 7, openQuestionAsks: 0)
+        XCTAssertTrue(SessionStatePresentation.isRing(ring))
+        XCTAssertEqual(SessionStatePresentation.color(for: ring), .purple, "a purple ring")
+        let reviews = State.live(.readyToCheck, openAsks: 1, oldestAskID: 7, openQuestionAsks: 0, openReviewAsks: 1)
+        XCTAssertEqual(SessionStatePresentation.caption(for: reviews), "Ready for review · ask #7")
+        XCTAssertEqual(SessionStatePresentation.glyph(for: reviews), "checklist")
+        let mixed = State.live(.readyToCheck, openAsks: 2, oldestAskID: 7, openQuestionAsks: 0, openReviewAsks: 1)
+        XCTAssertEqual(SessionStatePresentation.caption(for: mixed), "Ready to check · ask #7 · 2 asks",
+                       "a check among reviews reads check")
+        let many = State.live(.readyToCheck, openAsks: 3, oldestAskID: 7, openQuestionAsks: 0, openReviewAsks: 3)
+        XCTAssertEqual(SessionStatePresentation.caption(for: many), "Ready for review · ask #7 · 3 asks")
+        XCTAssertEqual(SessionStatePresentation.caption(for: checks, oldestAskID: nil), "Ready to check")
+    }
+
+    /// #534: Working and Agents working keep their kind and caption with only
+    /// checks or reviews open; the glyph beside the ask count is `checklist`,
+    /// and one question brings back `questionmark`.
+    func testWorkingWithOnlyChecksShowsChecklistGlyph() {
+        let cases: [(State, String?, String)] = [
+            (.live(.working, openAsks: 1, openQuestionAsks: 0), "checklist", "Working · 1 ask open"),
+            (.live(.working, openAsks: 2, openQuestionAsks: 1), "questionmark", "Working · 2 asks open"),
+            (.live(.background, openAsks: 1, backgroundAgents: 2, openQuestionAsks: 0, openReviewAsks: 1),
+             "checklist", "2 agents working · 1 ask open"),
+            (.live(.background, openAsks: 1, backgroundAgents: 2), "questionmark", "2 agents working · 1 ask open"),
+            (.live(.background, backgroundAgents: 2), "person.2.fill", "2 agents working")
+        ]
+        for (state, glyph, caption) in cases {
+            XCTAssertEqual(SessionStatePresentation.glyph(for: state), glyph, "\(state)")
+            XCTAssertEqual(SessionStatePresentation.caption(for: state), caption, "\(state)")
+            XCTAssertEqual(SessionStatePresentation.color(for: state), .green, "\(state)")
+        }
+    }
+
     func testErrorCaption() {
         XCTAssertEqual(SessionStatePresentation.caption(for: .live(.failed, error: "rate_limit"), oldestAskID: nil),
                        "Error: rate limit", "the raw error type reads as words")

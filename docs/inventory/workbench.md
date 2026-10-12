@@ -732,7 +732,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer the session's agent and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
@@ -769,11 +769,14 @@ Since 2026-10-03 (the session report's state set, spec
 `waiting` means the turn is over and shows **Stopped** (grey), never
 "waiting for you". "Waiting for you" (orange) comes only from an open ask of
 the session (`owner_asks.session_id`, `status = 'open'`) or a permission
-dialog (`approval`, **Needs approval**). A StopFailure stores `waiting` with
+dialog (`approval`, **Needs approval**); since 2026-10-12 (below) only an open
+`question` ask keeps it — open asks that are all checks or reviews show
+**Ready to check** instead. A StopFailure stores `waiting` with
 `agent_failed_at` (= that write's `agent_state_at`) and `agent_error` (the
 payload's top-level `error`, one line, ≤ 60 runes; `''` when missing) and
 shows **Error** (red). `finish_session` stores `finished_at`/`finish_summary`
-and shows **Finished** (blue, orange while the session has open asks)
+and shows **Finished** (blue; orange while the session has an open `question` ask; Ready to check below while
+every open ask is a check or a review)
 whether or not the session runs. A write that changes the state into
 `working` (a UserPromptSubmit, or a PostToolUse out of waiting or approval:
 a turn the agent started itself is a new turn) clears `finished_at` and the
@@ -784,15 +787,15 @@ a PostToolUse (that is `finish_session`'s own turn); an
 error, while a plain `waiting` (the `idle_prompt` notice, the Stop hook)
 over a failed one writes nothing, so the error stays until the owner acts;
 a StopFailure with another error replaces the stored one and its time.
-The order is: approval > error > working > agents working (since
-2026-10-10, below) > finished > open ask > stopped > running > not started,
+The order is: approval > error > working > agents working (since 2026-10-10, below) > ready to check (since
+2026-10-12, below) > finished > open ask > stopped > running > not started,
 the first match winning. The hook states (approval,
 error, working, stopped) stay run-scoped; finished and the open asks are
 not, so a session that is not live shows them as a ring in their colour.
 `SessionAgentNoticePolicy` announces each transition of a live session into
 needs approval, error, stopped or finished at most once, only while the app
-is inactive; waiting on an ask, or working with asks, gets no state notice
-(the ask's own notice announced it).
+is inactive; waiting on an ask, ready to check, or working with asks, gets no state notice (the ask's own notice announced
+it).
 
 Since 2026-10-10 (board #411, owner approved, ask #139): the Stop hook also
 stores the count of in-flight background subagents its input reports
@@ -830,6 +833,15 @@ came once no teammate is listed, does not count). Only the Stop's write
 still sets a count; a teammate starting a turn over Stopped shows from the
 main agent's next Stop. A new run and a conversation switch clear
 `agent_turns`; a main turn does not.
+
+Since 2026-10-12 (board #534, owner approved 2026-10-12, ask #195): a session with open asks none of which is a
+`question` — every one a `check` or a `review` — shows **Ready to check · ask #N** (**Ready for review** when
+every one is a review; "· M asks" with more than one), purple with a checklist glyph, instead of Finished or
+Waiting for you; one open `question` keeps Waiting for you, or Finished in orange. Like the open asks it is not
+run-scoped: a session that is not live shows it as a ring. Working and Agents working keep their kind with only
+checks or reviews open and show the ask count beside a checklist glyph instead of `?`. Ready to check counts as
+at the prompt (`isAtPrompt`) like Waiting for you, and an ask answer's Return into it follows PROJ-12 unchanged.
+An ask notice of a check or review reads "Ready to check: <title>" / "Ready for review: <title>".
 
 A count with no report for 30 minutes is probed, never ended on the clock
 alone. The probe (Go, no model turn) reads Claude Code's session registry
@@ -898,9 +910,10 @@ it again once it was cleared; only Go writes it.
 - `cmd/workbench_session_state_test.go::TestProj11_NestedSessionNeverMovesTheRow`
 - `internal/db/terminal_sessions_test.go::TestProj11_OlderEventNeverOverwritesANewerState`
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateFromAnEarlierRunIsIgnored` (since 2026-10-10 also an earlier run's background count)
-- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped"; since 2026-10-10: working → agents working posts nothing, agents working → stopped posts once, agents working withdraws a stopped banner)
-- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the nine kinds in the order above, live and not live)
+- `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_OneNoticePerTransition` (a turn end is announced as "stopped"; since 2026-10-10: working → agents working posts nothing, agents working → stopped posts once, agents working withdraws a stopped banner; since 2026-10-12, board #534: ready to check posts nothing and withdraws a stopped banner, a check filed then `finish_session` posts no finished notice, ready to check → stopped posts once)
+- `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_StateOrder` (a table over the ten kinds in the order above, live and not live; since 2026-10-12, board #534, the rows before Ready to check keep their expectation because the fixture's asks are questions — the `row` helper's `questions` defaults to `openAsks`, stated in the test)
 - `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift::testProj11_TurnEndWithoutAskIsStoppedNotWaiting`
+- Board #534, Ready to check (2026-10-12, ask #195) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_ReadyToCheckNeedsOnlyCheckOrReviewAsks` (checks only, reviews only, both → ready; no open ask → not), `testProj11_OneQuestionKeepsWaitingForYou` (two checks and a question → Waiting for you, `openQuestionAsks == 1`), `testProj11_ReadyToCheckIsAtPrompt` (live over this run's turn end → at the prompt; not live → a ring, never at the prompt); supporting: `TerminalSessionQueriesTests.testAgentStatesCountQuestionAndReviewAsks`, `SessionStatePresentationTests` (`testReadyToCheckIsPurpleWithChecklist`, `testWorkingWithOnlyChecksShowsChecklistGlyph`), `OwnerAsksViewModelTests.testProj12_AnAnswerIntoAReadyToCheckSessionGetsTheReturn`; the ask notice wording in `WatchtowerDesktop/Tests/Core/WorkbenchNotificationPolicyTests.swift`: `testCheckAskNoticeSaysReadyToCheck` (check → "Ready to check: T", review → "Ready for review: T", question or no kind → "Agent asks: T"), `testCoalescedChecksSayReadyToCheck` (only checks → "Ready to check (N)", with a question → "Waiting for you (N)"); every existing PROJ-11 guard above unchanged
 - `internal/db/session_report_test.go::TestProj11_WorkingClearsFinishedAndError`
 - `internal/db/session_report_test.go::TestProj11_WorkingOverWorkingClearsFinished` and `cmd/workbench_session_state_test.go::TestProj11_WorkingOverWorkingClearsFinished` (finish, an Esc interrupt and a new prompt: the UserPromptSubmit's `working` over `working` clears `finished_at`; a plain `working` repeat stays a no-op)
 - `internal/db/session_report_test.go::TestProj11_ToolRunWorkingOverWorkingKeepsFinished` and `cmd/workbench_session_state_test.go::TestProj11_PostToolUseOverWorkingKeepsFinished` (finish, then a PostToolUse `working` over `working`: still finished)
@@ -1530,6 +1543,7 @@ other direction.
 
 ## Changelog
 
+- 2026-10-12 (board #534, sessions panel; spec `docs/superpowers/specs/2026-10-12-sessions-panel-design.md` §8.1, plan `docs/superpowers/plans/2026-10-12-sessions-panel.md` Tasks 1–4; **PROJ-11 amended, owner approved 2026-10-12, ask #195**): a session whose open asks are all `check` or `review` asks (no `question`) shows **Ready to check** (purple, checklist glyph, "Ready for review" when every one is a review) instead of Finished or Waiting for you. It sits between Agents working and Finished in the order (ten kinds), is not run-scoped (a ring when not live), counts as at the prompt (`isAtPrompt`, PROJ-12's Return unchanged) and gets no state notice — the ask's own notice now reads "Ready to check: <title>" / "Ready for review: <title>". One open question keeps Waiting for you. `fetchAgentStates` adds `open_question_asks`/`open_review_asks`; no migration. The phone hub wires the kind `ready_to_check` and the tone `purple` (Kit known values appended, wire order unchanged). Guards extended, none relaxed or renamed: `testProj11_StateOrder` (ten kinds; the `row` helper's `questions` defaults to `openAsks`, so the earlier rows keep their expectation), `testProj11_OneNoticePerTransition`; new guards listed under PROJ-11.
 - 2026-10-12 (board #399, Codex as a Workbench agent; spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md` §13 and §15, business spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-business.md`, plan `docs/superpowers/plans/2026-10-12-codex-workbench-agent.md`; **owner approved the spec, which carries these amendments, in ask #189**): a workbench terminal session can run Codex CLI. No new PROJ number (no new principle): **PROJ-02** (delete also removes the Codex skill copy, never the shared trust), **PROJ-04** (`integrate codex`: only our skill copy and exclude line in the folder, only our entries removed from imported `.codex` hook files, only our `hooks.state` trust entries in `~/.codex/config.toml` through codex's API — narrower than the spec's §13 wording, since `--remove` never removes trust), **PROJ-11** (heading "never steer Claude Code" → "never steer the session's agent"; the codex mapping table and codex v1 limits), **PROJ-12** (the gates apply to codex rows; the input profile is per agent), **PROJ-13** (the ask guard for codex: `request_user_input`, `last_assistant_message`), **PROJ-14** (the report includes codex rows; the comment `agent_label` follows the row) amended. Migration `00109` rebuilds `terminal_sessions` (`kind` adds `codex`; a codex row may hold a NULL id until its first SessionStart; `agent_transcript_path`). Every existing `TestProj*`/`testProj*` guard is unchanged and green; new guards are listed under each contract. The v1 limits note (d) of "Owner asks" is updated.
 
 - 2026-10-11 (board #543, child of #411; spec `docs/superpowers/specs/2026-10-10-session-background-agents-design.md` §11 and Appendix C, plan `docs/superpowers/plans/2026-10-11-teammates-working.md`): **PROJ-11 amended, approved by the owner in ask #167** ("only while they work") — a named agent-team teammate counts toward Agents working only inside its own turn. Claude Code lists a teammate in `background_tasks` as `running` from spawn to shutdown, idle or not, under an id that is not its hook `agent_id`, so the list cannot say; its `SubagentStart` (every message it handles) and `SubagentStop` (its turn's end) can. Migration `00108` adds the Go-only `terminal_sessions.agent_turns`; the new async `SubagentStart` state hook and `SubagentStop` record turns; the count adds the open unlisted turns, capped by the listed teammates, and drops subagents whose turn closed — which also fixes the #543 tail where the last `SubagentStop` left the count at 1 because the list still carried a subagent that had stopped just before it. **PROJ-04 amended** (same approval): six state hook entries; a malformed owner `hooks.SubagentStart` is refused like the others. Guards: `TestHasStateHooksNeedsAllFiveCoreNeedsFour` became `TestHasStateHooksNeedsAllSixCoreNeedsFour` and `TestInstallStateHooksAddsSubagentStop` became `…AddsSubagentStopAndStart` (supporting, each with the sixth entry, no case dropped); `TestBackgroundSubagentsCountsSubagentsAndWorkflows` became `TestBackgroundAgentsCountTable` plus `TestBackgroundAgentsLeavesOutTheStoppingAgent` (every case kept, the three `except` cases in the second); `TestProj11_SubagentStopOnlyLowersTheCount`'s last step now pins that a `SubagentStop` over `working` changes only `agent_turns` (it wrote nothing at all before) — every other column still byte-identical. No guard relaxed otherwise. Folders need Re-run Setup / Repair once more. Review fixes (same PR): `GetTerminalSession` never reads `agent_turns` (`workbench asks` and the ask guard open a 00107 database unmigrated; `TestGetTerminalSessionNeedsNoAgentTurnsColumn`); `MarkTerminalAgentRun` keeps its stamp as the turns' run mark and an earlier turn stamp writes nothing; a SubagentStop never counts its own agent; a replaced unreadable `agent_turns` is one stderr line.

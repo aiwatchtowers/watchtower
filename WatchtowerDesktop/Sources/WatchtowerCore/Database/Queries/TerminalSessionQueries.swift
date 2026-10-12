@@ -106,11 +106,12 @@ package enum TerminalSessionQueries {
     /// The stored state of every workbench agent session (`claude` or
     /// `codex`), live or not, plus `liveIDs` (a live standalone agent terminal): the hook state,
     /// finished, the error, the background agent count and its report, the
-    /// recorded Chat question and its stamp, the open-ask count and the
-    /// oldest open ask, with the workbench name a notice names, and the
-    /// stamp of the stored working directory (NULL without migration 00110;
-    /// the column probe is `fetchAgentCwds`', with its `DatabasePool.read`
-    /// rule). Read-only: Go writes these columns.
+    /// recorded Chat question and its stamp, the open-ask count, its
+    /// questions and reviews (#534) and the oldest open ask, with the
+    /// workbench name a notice names, and the stamp of the stored working
+    /// directory (NULL without migration 00110; the column probe is
+    /// `fetchAgentCwds`', with its `DatabasePool.read` rule). Read-only: Go
+    /// writes these columns.
     package static func fetchAgentStates(_ db: Database, liveIDs: [Int64]) throws -> [SessionAgentStateRow] {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
@@ -123,7 +124,11 @@ package enum TerminalSessionQueries {
                        \(cwdAt) AS agent_cwd_at,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open') AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open')
-                           AS oldest_open_ask_id
+                           AS oldest_open_ask_id,
+                       (SELECT COUNT(*) FROM owner_asks a
+                        WHERE a.session_id = s.id AND a.status = 'open' AND a.kind = 'question') AS open_question_asks,
+                       (SELECT COUNT(*) FROM owner_asks a
+                        WHERE a.session_id = s.id AND a.status = 'open' AND a.kind = 'review') AS open_review_asks
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
                 WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))

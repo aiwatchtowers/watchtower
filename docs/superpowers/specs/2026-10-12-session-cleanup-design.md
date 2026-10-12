@@ -317,3 +317,66 @@ the report only reads it.
 
 1. Delete dialog default button: **Delete and Clean Up** (recommended) or **Delete Only**.
 2. A one-time hint on the workbench when the sweep finds over 1 GB (recommended) or the menu item only.
+
+## Appendix: Observed (Claude Code 2.1.296, 2026-10-12)
+
+Plan Task 0 spikes run on macOS 26 (Darwin 25.6) in a throwaway `mktemp -d` directory, removed afterwards. Paths
+below are shown as `<tmp>`.
+
+**§14.5 Worktree admin dir birth time — confirmed.** After `git worktree add -b wt1 ../wt1`,
+`stat -f %B .git/worktrees/wt1` is the creation second. `git worktree list` (plain and `--porcelain`),
+`git status` in the worktree, a commit in it, `git worktree lock`/`unlock` and a `checkout -b` there leave `%B`
+unchanged, while `%m`/`%c` move (git status rewrites the worktree's `index` and the dir mtime follows). So
+ownership must read the birth time (`%B`), never mtime. Removing the worktree and re-adding one with the same
+name gives a fresh admin dir with a new `%B`, so a re-used name never inherits an older session's age. The
+worktree's own top dir has the same birth second as its admin dir.
+
+**§14.4 `lsregister -u` — confirmed, with one path rule.** A minimal bundle (`Info.plist` with a fake
+`com.example.spike535.<n>` id, a stub `Contents/MacOS` script) registered with `lsregister -f` shows up in
+`lsregister -dump` (~0.1 s). Two copies at different paths make two entries.
+- `-u` on a bundle that still exists removes its entry (~0.02 s); the other copy stays listed.
+- `-u` after the bundle was deleted, with the path as given (`/var/folders/...`, which goes through a symlink),
+  fails: `failed to scan <path>: -10814`, exit 1, and the entry stays. The same `-u` with the canonical path that
+  `-dump` shows (`/private/var/folders/...`) succeeds, exit 0, and the entry is gone.
+- Rule for §7 step 3: unregister **before** `git worktree remove` (the bundle still exists, any path form works);
+  for already-deleted bundles pass the canonical path (resolve with `filepath.EvalSymlinks` on the deepest
+  existing parent, or take the path from `-dump`). A non-zero exit is an item `error`, as §7 says.
+
+**§14.1 Subagent `cwd` in hook input — not settled without a live capture.**
+- Hooks reference: the common `cwd` field "follows Claude": it "is the worktree root after Claude enters a
+  worktree". Hooks fired inside a subagent carry `agent_id`/`agent_type`, and `PreToolUse`/`PostToolUse` fire there
+  too. The page does not say which `cwd` a worktree-isolated subagent's hooks get.
+- Sub-agents page: a subagent with `isolation: worktree` "runs its Bash and PowerShell commands inside its
+  worktree", branched by default from the default branch, and the worktree is "automatically cleaned up if the
+  subagent makes no changes" (kept otherwise). When a `WorktreeCreate` hook made the worktree, Claude Code keeps
+  it at subagent end and does not run `WorktreeRemove`.
+- Repo fixtures (`cmd/testdata/subagentstart_*.json`, `subagentstop_*.json`) come from subagents and teammates
+  **without** worktree isolation; their `cwd` is the parent's. No `PostToolUse` fixture exists.
+- Indirect evidence: in the owner's local Claude Code transcripts, the per-message `cwd` of worktree-isolated
+  subagent transcripts (`subagents/*.jsonl`) is the agent worktree (`.claude/worktrees/agent-…`), not the parent's
+  directory. That is the transcript, not hook input, so the capture is still needed before Task 3 relies on it.
+
+**§14.2 lsof — format clean, TCC part open.** `lsof -a -d cwd -n -P -w -F pn -p <pid>` against a throwaway
+`sleep` whose cwd is in `<tmp>` (a name with a space) prints three lines, `p<pid>`, `fcwd`, `n<canonical path>`
+(`/private<tmp>/wt cwd`, spaces unescaped, symlinks resolved), exit 0, ~0.06 s. A dead or unknown pid prints
+nothing and exits 1. `ps -o comm=` is argv-based: `/bin/sleep` for a process started by absolute path, but just
+`sleep` for one started through `PATH`, so the executable-path half of S5 needs `proc_pidpath` (or
+`lsof -d txt`), not `comm`. The `-u <uid>` form and protected-folder cwds were not run; the TCC question is left to
+the owner check below.
+
+**§14.3 Allow rule in auto mode — not run (needs the owner's settings).** Owner steps below.
+
+**Owner checks still open:**
+1. *Desktop-spawned lsof (TCC).* In Terminal: `mkdir -p ~/Documents/spike535 && cd ~/Documents/spike535 && sleep 600 &`.
+   Trigger a CLI run from the Desktop that executes `lsof -a -d cwd -n -P -w -F pn -u $(id -u)` (a dev build, or a
+   temporary debug action), watch for any privacy dialog and note in whose name it appears; then
+   check System Settings → Privacy & Security → Files and Folders for a new Watchtower entry.
+   Repeat with `~/Desktop` and `~/Downloads`. Kill the `sleep`s and remove the dirs. Any dialog → §7 fallback.
+2. *Allow rule in auto mode.* In a scratch repo's `.claude/settings.local.json` add
+   `"permissions": {"allow": ["Bash('<watchtower bin>' workbench cleanup:*)"]}`; start `claude` in auto mode there,
+   ask it to run `'<watchtower bin>' workbench cleanup --help` (and a `--json` dry run); record whether it runs
+   with no prompt and no classifier block. Delete the scratch settings afterwards.
+3. *Subagent `cwd` capture.* In a scratch repo with a `PostToolUse` + `SubagentStop` command hook that appends
+   stdin to a file (`cat >> /tmp/spike535-hooks.jsonl`), ask Claude to start a subagent with
+   `isolation: "worktree"` that runs one Bash command; check the `cwd` of the entries with an `agent_id`. Save one,
+   redacted, as `cmd/testdata/posttooluse_subagent_worktree_cwd.json`, then remove the hook.

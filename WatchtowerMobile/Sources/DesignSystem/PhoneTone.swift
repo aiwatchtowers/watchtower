@@ -4,8 +4,8 @@ import WatchtowerKit
 
 /// Every colour the phone's screens draw (mobile POC spec §14, design pass
 /// spec §2.2). Session tones map exactly to `SessionStatePresentation.Tone`;
-/// `accent` is system blue; `purple` is the Mac working on a phone
-/// recording, or a snoozed target; `teal` is a target in review and `gray`
+/// `accent` is system blue; `purple` is a session Ready to check (#534), the
+/// Mac working on a phone recording, or a snoozed target; `teal` is a target in review and `gray`
 /// a dismissed one (the Mac's target model table).
 ///
 /// Orange is for waiting-for-you and ask elements only. This file is the
@@ -27,6 +27,7 @@ enum PhoneTone: Equatable, Sendable {
         case .orange: self = .orange
         case .blue: self = .blue
         case .red: self = .red
+        case .purple: self = .purple
         default: self = .secondary
         }
     }
