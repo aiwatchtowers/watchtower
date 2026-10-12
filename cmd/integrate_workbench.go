@@ -94,15 +94,23 @@ var codexAppServerStart devpack.StartCodexAppServer = codex.StartAppServer
 // codexAppServerFor is the app-server factory for o's trust step, with cfg's
 // codex_path (nil: loaded from --config) or else codexFindBinary.
 func codexAppServerFor(ctx context.Context, cfg *config.Config, o devpack.WorkbenchInstallOptions) func() (codex.AppServer, error) {
+	_, srv := codexStatusSources(ctx, cfg, o)
+	return srv
+}
+
+// codexStatusSources is StatusCodex's resolve and app-server factory, with
+// cfg's codex_path (nil: loaded from --config) or else codexFindBinary. A
+// config that does not load makes both answer ErrCodexUnresolved.
+func codexStatusSources(ctx context.Context, cfg *config.Config, o devpack.WorkbenchInstallOptions) (func() error, func() (codex.AppServer, error)) {
 	if cfg == nil {
 		var err error
 		if cfg, err = config.Load(flagConfig); err != nil {
-			return func() (codex.AppServer, error) {
-				return nil, fmt.Errorf("%w: loading config: %w", devpack.ErrCodexUnresolved, err)
-			}
+			err = fmt.Errorf("%w: loading config: %w", devpack.ErrCodexUnresolved, err)
+			return func() error { return err }, func() (codex.AppServer, error) { return nil, err }
 		}
 	}
-	return devpack.CodexAppServer(ctx, cfg, o.Bin, codexFindBinary, codexAppServerStart)
+	return func() error { return devpack.ResolveCodex(cfg, codexFindBinary) },
+		devpack.CodexAppServer(ctx, cfg, o.Bin, codexFindBinary, codexAppServerStart)
 }
 
 // runCodexInstall is `integrate codex --workbench N`: the skill copy, the
@@ -439,7 +447,8 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 	}
 	codexCtx, cancel := codexShutdownContext(ctx)
 	defer cancel()
-	cs, err := devpack.StatusCodex(codexCtx, o, codexAppServerFor(codexCtx, nil, o))
+	resolve, srv := codexStatusSources(codexCtx, nil, o)
+	cs, err := devpack.StatusCodex(codexCtx, o, resolve, srv)
 	if err != nil {
 		return err
 	}

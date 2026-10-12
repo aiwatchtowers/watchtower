@@ -184,9 +184,11 @@ func RemoveCodex(_ context.Context, o WorkbenchInstallOptions) (SkillStatus, err
 // StatusCodex reports the codex part, writing nothing. An app-server that
 // cannot be asked leaves HooksTrusted nil; every trust failure is reported
 // in TrustError; a malformed .codex hook file reads as ImportedDuplicates
-// when it names our commands. Only a bad option or a gone folder is an
-// error.
-func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (codex.AppServer, error)) (CodexStatus, error) {
+// when it names our commands. A folder without the skill copy (never set up
+// for codex) is not asked about trust — the answer is unused — so Found
+// comes from resolve alone and no app-server starts. Only a bad option or a
+// gone folder is an error.
+func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, resolve func() error, srv func() (codex.AppServer, error)) (CodexStatus, error) {
 	if err := o.validateCodex(); err != nil {
 		return CodexStatus{}, err
 	}
@@ -203,11 +205,35 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, srv func() (cod
 	st.ImportedDuplicates = hasImportedDuplicates(o.Folder, o.WorkbenchID)
 	// Status reports, it does not fail: the trust failure goes on the wire.
 	var trustErr error
-	st.HooksTrusted, st.Found, trustErr = trustCodexHooks(ctx, o, srv, false)
+	if sk.State == StateMissing {
+		st.Found, trustErr = codexResolved(resolve)
+	} else {
+		st.HooksTrusted, st.Found, trustErr = trustCodexHooks(ctx, o, srv, false)
+	}
 	if trustErr != nil {
 		st.TrustError = trustErr.Error()
 	}
 	return st, nil
+}
+
+// codexResolved is resolve's answer as trustCodexHooks gives it: no codex
+// (ErrCodexNotFound) is no error.
+func codexResolved(resolve func() error) (found bool, err error) {
+	switch err := resolve(); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrCodexNotFound):
+		return false, nil
+	default:
+		return false, err
+	}
+}
+
+// ResolveCodex is StatusCodex's resolve: nil when a codex binary resolves
+// (cfg's codex_path, else find), else why not.
+func ResolveCodex(cfg *config.Config, find func() (string, error)) error {
+	_, err := resolveCodexBinary(cfg, find)
+	return err
 }
 
 // trustCodexHooks asks the app-server srv starts which of our hooks are

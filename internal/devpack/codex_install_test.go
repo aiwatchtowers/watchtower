@@ -155,6 +155,10 @@ func codexSkillFile(folder string) string {
 
 func codexNotFound() (codex.AppServer, error) { return nil, ErrCodexNotFound }
 
+// StatusCodex's resolve: codex resolves, or there is none.
+func codexResolves() error { return nil }
+func codexMissing() error  { return ErrCodexNotFound }
+
 func TestInstallCodex_Idempotent(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeAppServer(t)
@@ -284,7 +288,7 @@ func TestInstallCodex_RetrustsAModifiedHook(t *testing.T) {
 		f.state[k] = "sha256:stale" // another build trusted other strings
 		break
 	}
-	st, err := StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
 	assert.Equal(t, ptrFalse(), st.HooksTrusted)
 
@@ -316,23 +320,25 @@ func TestInstallCodex_HookCodexDoesNotListIsAnError(t *testing.T) {
 
 func TestStatusCodex_NullTrustWhenAppServerUnavailable(t *testing.T) {
 	folder := fakeRepo(t)
+	_, err := InstallCodex(context.Background(), codexOpts(folder), codexNotFound) // the skill copy
+	require.NoError(t, err)
 	unavailable := func() (codex.AppServer, error) {
 		return nil, fmt.Errorf("%w: no answer within 10s", codex.ErrCodexTrustUnavailable)
 	}
-	st, err := StatusCodex(context.Background(), codexOpts(folder), unavailable)
+	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, unavailable)
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, SkillState: StateMissing,
+	assert.Equal(t, CodexStatus{Found: true, Skill: true, SkillState: StateUnchanged,
 		TrustError: "codex hook trust unavailable: no answer within 10s"}, st)
 
 	f := newFakeAppServer(t)
 	f.listErr = fmt.Errorf("%w: hooks/list: error -32601", codex.ErrCodexTrustUnavailable)
-	st, err = StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	st, err = StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
 	assert.Nil(t, st.HooksTrusted)
 	assert.True(t, st.Found)
 	assert.Contains(t, st.TrustError, "hooks/list: error -32601")
 
-	st, err = StatusCodex(context.Background(), codexOpts(folder), codexNotFound)
+	st, err = StatusCodex(context.Background(), codexOpts(folder), codexMissing, codexNotFound)
 	require.NoError(t, err)
 	assert.False(t, st.Found)
 	assert.Nil(t, st.HooksTrusted)
@@ -345,21 +351,32 @@ func TestStatusCodex_NullTrustWhenAppServerUnavailable(t *testing.T) {
 func TestStatusCodex_ReportsEachPartAndWritesNothing(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeAppServer(t)
-	st, err := StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
-	assert.Equal(t, CodexStatus{Found: true, HooksTrusted: ptrFalse(), SkillState: StateMissing}, st)
+	assert.Equal(t, CodexStatus{Found: true, SkillState: StateMissing}, st)
+	assert.Zero(t, f.starts, "never set up for codex: no app-server starts (its answer is unused)")
 	assert.Empty(t, f.writes)
 	assert.NoDirExists(t, filepath.Join(folder, ".agents"))
 
+	st, err = StatusCodex(context.Background(), codexOpts(folder), codexMissing, f.factory())
+	require.NoError(t, err)
+	assert.Equal(t, CodexStatus{SkillState: StateMissing}, st, "no codex, no error (D5)")
+	st, err = StatusCodex(context.Background(), codexOpts(folder),
+		func() error { return fmt.Errorf("%w: loading config: bad", ErrCodexUnresolved) }, f.factory())
+	require.NoError(t, err)
+	assert.False(t, st.Found)
+	assert.Contains(t, st.TrustError, "loading config: bad")
+	assert.Zero(t, f.starts)
+
 	_, err = InstallCodex(context.Background(), codexOpts(folder), f.factory())
 	require.NoError(t, err)
-	st, err = StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	st, err = StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
 	assert.Equal(t, CodexStatus{Found: true, Skill: true, HooksTrusted: ptrTrue(), SkillState: StateUnchanged}, st)
 
 	// An owner-edited skill is theirs and counts as installed (PROJ-04).
 	writeTestFile(t, codexSkillFile(folder), readTestFile(t, codexSkillFile(folder))+"\nmy note\n")
-	st, err = StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	st, err = StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
 	assert.Equal(t, StateDrifted, st.SkillState)
 	assert.True(t, st.Skill)
@@ -406,7 +423,7 @@ func TestCodex_FolderGoneAndBadOptions(t *testing.T) {
 	_, err := InstallCodex(context.Background(), codexOpts(gone), codexNotFound)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer exists")
-	_, err = StatusCodex(context.Background(), codexOpts(gone), codexNotFound)
+	_, err = StatusCodex(context.Background(), codexOpts(gone), codexMissing, codexNotFound)
 	require.Error(t, err)
 	_, err = RemoveCodex(context.Background(), codexOpts(gone))
 	require.Error(t, err)
@@ -582,7 +599,7 @@ func TestProj04_MalformedImportedHooksNeverWritten(t *testing.T) {
 			st, err := InstallCodex(context.Background(), codexOpts(folder), newFakeAppServer(t).factory())
 			assert.ErrorIs(t, err, ErrMalformedSettings)
 			assert.True(t, st.Skill, "the other steps still ran")
-			st, err = StatusCodex(context.Background(), codexOpts(folder), codexNotFound)
+			st, err = StatusCodex(context.Background(), codexOpts(folder), codexMissing, codexNotFound)
 			require.NoError(t, err)
 			assert.True(t, st.ImportedDuplicates)
 		})
@@ -592,7 +609,7 @@ func TestProj04_MalformedImportedHooksNeverWritten(t *testing.T) {
 func TestProj04_MalformedForeignFileIsNoDuplicate(t *testing.T) {
 	folder := fakeRepo(t)
 	writeTestFile(t, filepath.Join(folder, ".codex", "hooks.json"), `{"hooks":`)
-	st, err := StatusCodex(context.Background(), codexOpts(folder), codexNotFound)
+	st, err := StatusCodex(context.Background(), codexOpts(folder), codexMissing, codexNotFound)
 	require.NoError(t, err)
 	assert.False(t, st.ImportedDuplicates)
 }
@@ -642,6 +659,8 @@ func TestMultilineStringState(t *testing.T) {
 
 func TestStatusCodex_ReportsEveryTrustFailure(t *testing.T) {
 	folder := fakeRepo(t)
+	_, err := InstallCodex(context.Background(), codexOpts(folder), codexNotFound) // the skill copy
+	require.NoError(t, err)
 	f := newFakeAppServer(t)
 	srv := func() (codex.AppServer, error) {
 		s, err := f.factory()()
@@ -652,7 +671,7 @@ func TestStatusCodex_ReportsEveryTrustFailure(t *testing.T) {
 		c.args = c.args[:len(c.args)-2] // codex ignores the Stop hooks
 		return c, nil
 	}
-	st, err := StatusCodex(context.Background(), codexOpts(folder), srv)
+	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, srv)
 	require.NoError(t, err)
 	assert.Equal(t, ptrFalse(), st.HooksTrusted)
 	assert.Contains(t, st.TrustError, "did not list 2 of the 9 workbench hooks")
@@ -660,14 +679,14 @@ func TestStatusCodex_ReportsEveryTrustFailure(t *testing.T) {
 	unresolved := func() (codex.AppServer, error) {
 		return nil, fmt.Errorf("%w: loading config: bad toml", ErrCodexUnresolved)
 	}
-	st, err = StatusCodex(context.Background(), codexOpts(folder), unresolved)
+	st, err = StatusCodex(context.Background(), codexOpts(folder), func() error { _, err := unresolved(); return err }, unresolved)
 	require.NoError(t, err)
 	assert.False(t, st.Found, "a config that did not load is no resolved codex")
 	assert.Nil(t, st.HooksTrusted)
 	assert.Contains(t, st.TrustError, "loading config: bad toml")
 
 	f.closeErr = errors.New("kill: no such process")
-	st, err = StatusCodex(context.Background(), codexOpts(folder), f.factory())
+	st, err = StatusCodex(context.Background(), codexOpts(folder), codexResolves, f.factory())
 	require.NoError(t, err)
 	assert.Nil(t, st.HooksTrusted)
 	assert.Contains(t, st.TrustError, "no such process")
