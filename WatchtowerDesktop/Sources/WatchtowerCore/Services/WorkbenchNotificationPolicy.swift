@@ -45,38 +45,37 @@ package enum WorkbenchNotificationPolicy {
         package let title: String
         /// The terminal session that filed it; nil for one filed outside the app.
         package let sessionID: Int64?
-        /// `owner_asks.kind` (`question`, `check`, `review`). Nil in a
-        /// snapshot persisted before the kind was read: the ask is still
-        /// known by its id, so it is not announced again.
-        package let kind: String?
+        /// `owner_asks.kind`. Nil in a snapshot persisted before the kind
+        /// was read (the ask is still known by its id, so it is not announced
+        /// again) and for a kind this build does not know.
+        package let kind: OwnerAskKind?
 
-        package init(title: String, sessionID: Int64? = nil, kind: String? = nil) {
+        package init(title: String, sessionID: Int64? = nil, kind: OwnerAskKind? = nil) {
             self.title = title
             self.sessionID = sessionID
             self.kind = kind
         }
 
-        private enum CodingKeys: String, CodingKey {
-            case title, sessionID, kind
-        }
-
+        /// Hand-written only for `kind`: the synthesized decoder would throw
+        /// on a kind string this build does not know and lose the whole
+        /// snapshot; this one reads it as nil.
         package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             title = try c.decode(String.self, forKey: .title)
             sessionID = try c.decodeIfPresent(Int64.self, forKey: .sessionID)
-            kind = try c.decodeIfPresent(String.self, forKey: .kind)
+            kind = try c.decodeIfPresent(String.self, forKey: .kind).flatMap(OwnerAskKind.init(rawValue:))
         }
 
-        var isReview: Bool { kind == "review" }
-        var isReadyWork: Bool { kind == "check" || kind == "review" }
+        var isReview: Bool { kind == .review }
+        var isReadyWork: Bool { kind == .check || kind == .review }
 
         /// The notice title: a check or a review is work ready for the
         /// owner, anything else (a question, an unknown kind) a question.
         var noticeTitle: String {
             switch kind {
-            case "check": "Ready to check: \(title)"
-            case "review": "Ready for review: \(title)"
-            default: "Agent asks: \(title)"
+            case .check: "Ready to check: \(title)"
+            case .review: "Ready for review: \(title)"
+            case .question, nil: "Agent asks: \(title)"
             }
         }
     }

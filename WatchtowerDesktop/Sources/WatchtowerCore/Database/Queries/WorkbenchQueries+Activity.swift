@@ -35,7 +35,9 @@ extension WorkbenchQueries {
         for row in try Row.fetchAll(db, sql: """
             SELECT id, title, session_id, kind FROM owner_asks WHERE project_id = ? AND status = 'open'
             """, arguments: [project.id]) {
-            asks[row["id"]] = .init(title: row["title"], sessionID: row["session_id"], kind: row["kind"])
+            // An unknown kind reads as nil: the notice says "Agent asks".
+            let kind = (row["kind"] as String?).flatMap(OwnerAskKind.init(rawValue:))
+            asks[row["id"]] = .init(title: row["title"], sessionID: row["session_id"], kind: kind)
         }
         // Proposals the workbench session filed (`context_type='project'`, Go
         // `tools.WorkbenchContextType`) — only an External, propose-only tool
