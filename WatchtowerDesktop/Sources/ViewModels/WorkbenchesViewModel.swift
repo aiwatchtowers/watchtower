@@ -185,6 +185,23 @@ final class WorkbenchesViewModel {
     }
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// The deleted sessions whose DELETE waits for the Undo window (board
+    /// #480, PROJ-17): hidden from every read here, restored by Undo,
+    /// committed when the window ends or the app quits. Here, on the
+    /// AppState-owned view model, so the toast and its Undo survive
+    /// navigating away.
+    var pendingDeletes = PendingSessionDeletes()
+    /// Waits out the Undo window, then commits the batch; re-armed by every
+    /// delete, cancelled by Undo and the quit commit.
+    @ObservationIgnored var deleteCommitTask: Task<Void, Never>?
+    /// The Undo window's wait. A seam for tests.
+    @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// Runs the deferred DELETEs in one write. A seam for tests (a failing write).
+    @ObservationIgnored lazy var commitSessionDeletes: ([Int64]) async throws -> Void = { [dbPool] ids in
+        try await dbPool.write { db in
+            for id in ids { try TerminalSessionQueries.delete(db, id: id) }
+        }
+    }
 
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
@@ -390,6 +407,7 @@ final class WorkbenchesViewModel {
         }
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
+            discardPendingDeletes(workbenchID: id)
             terminalSessions[id] = nil
             onWorkbenchRemoved?(id)
             // Deleted elsewhere (CLI): never leave its id selected.
@@ -439,6 +457,8 @@ final class WorkbenchesViewModel {
         // The rows are gone: an answer still streaming stops now, not at the
         // reload (a failed delete above leaves the questions as they were).
         onWorkbenchRemoved?(id)
+        // Its hidden sessions went with the cascade: nothing to commit or restore.
+        discardPendingDeletes(workbenchID: id)
         if let warning = result.cleanupWarning {
             errorMessage = warning
         }

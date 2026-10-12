@@ -22,7 +22,10 @@ final class SessionDeletePolicyTests: XCTestCase {
         )
     }
 
-    func testQuickDeleteTable() {
+    /// PROJ-17: a live session whose agent may still be working is deleted
+    /// only after a confirmation; one with no process, or an agent that is
+    /// done, goes at once (with Undo). A standalone terminal keeps its dialog.
+    func testProj17_QuickDeleteTable() {
         for kind in Kind.allCases {
             let name = "\(kind)"
             XCTAssertTrue(isQuick(kind, live: false, workbench: true), "\(name) not live: no process to kill")

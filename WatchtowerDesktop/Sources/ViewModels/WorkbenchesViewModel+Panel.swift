@@ -49,9 +49,12 @@ extension WorkbenchesViewModel {
         standaloneSessions.first { $0.id == selectedStandaloneID }
     }
 
-    /// The sessions' agent statuses, for `SessionSwitcherPresentation.rows`.
+    /// The sessions' agent statuses, for `SessionSwitcherPresentation.rows`;
+    /// a session waiting in the Undo batch has none (PROJ-17).
     var sessionStatuses: [Int64: SessionAgentStatus] {
-        agentStates?.statuses ?? [:]
+        let statuses = agentStates?.statuses ?? [:]
+        let hidden = pendingDeletes.ids
+        return hidden.isEmpty ? statuses : statuses.filter { !hidden.contains($0.key) }
     }
 
     /// `sessions` (in the panel's order) as the panel and the switchers

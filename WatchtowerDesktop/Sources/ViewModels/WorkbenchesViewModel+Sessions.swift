@@ -15,6 +15,8 @@ extension WorkbenchesViewModel {
     /// How many "no owner message yet" answers in a row the title poll takes
     /// before it stops asking about a session the owner is not in.
     static let maxNotYetTitledPolls = 5
+    /// How long the quit commit of the Undo batch may hold the quit.
+    static let quitDeleteWait: TimeInterval = 2
 
     /// Where an opened or new session goes in its project's layout.
     enum Placement: Equatable {
@@ -131,7 +133,9 @@ extension WorkbenchesViewModel {
         let load = workbenchLoads[projectID, default: SessionLoads()].started + 1
         workbenchLoads[projectID, default: SessionLoads()].started = load
         do {
-            let rows = try await readWorkbenchSessions(projectID)
+            let read = try await readWorkbenchSessions(projectID)
+            // Filtered once read: a delete made while the read ran is hidden too.
+            let rows = withoutPendingDeletes(read)
             let loads = workbenchLoads[projectID, default: SessionLoads()]
             guard load > loads.applied else { return true }
             workbenchLoads[projectID]?.applied = load
@@ -159,8 +163,9 @@ extension WorkbenchesViewModel {
         standaloneLoads += 1
         let load = standaloneLoads
         do {
-            let rows = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+            let read = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
             guard load == standaloneLoads else { return true }
+            let rows = withoutPendingDeletes(read)
             standaloneSessions = rows
             if let id = selectedStandaloneID, !rows.contains(where: { $0.id == id }) {
                 selectedStandaloneID = nil
@@ -382,15 +387,18 @@ extension WorkbenchesViewModel {
     /// workbench, and the sessions of that workbench working on it.
     typealias TargetSessions = (project: Workbench, targetText: String, isGroup: Bool, rows: [TerminalSession])
 
-    /// nil when the target is not on a workbench board.
+    /// nil when the target is not on a workbench board. A session waiting in
+    /// the Undo batch is never among the rows: "open existing" must not
+    /// resume a session the owner just deleted (PROJ-17).
     private func readTargetSessions(_ targetID: Int64) async throws -> TargetSessions? {
-        try await dbPool.read { db in
+        let hidden = pendingDeletes.ids
+        return try await dbPool.read { db in
             guard let target = try TargetQueries.fetchByID(db, id: Int(targetID)),
                   let projectID = target.workbenchID,
                   let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
             let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
             let isGroup = try TargetQueries.hasChildren(db, id: targetID, workbenchID: projectID)
-            return (project, target.text, isGroup, rows.filter { $0.projectID == projectID })
+            return (project, target.text, isGroup, rows.filter { $0.projectID == projectID && !hidden.contains($0.id) })
         }
     }
 
@@ -487,24 +495,127 @@ extension WorkbenchesViewModel {
         await activate(row, fresh: true, prompt: nil, placement: placement, ticket: ticket)
     }
 
-    /// Closes the process first, then deletes the row and drops it from the
-    /// layout. Claude Code's transcript is left alone.
+    // MARK: - Deferred delete (board #480, PROJ-17)
+
+    /// Hides the row at once — from the lists, the layout and the
+    /// selection — and stops its process, but writes nothing: the row joins
+    /// the Undo batch (`pendingDeletes`) and its DELETE (with its cascades)
+    /// runs when the window ends (`commitPendingDeletes`) or the app quits
+    /// (`commitPendingDeletesForQuit`). The process closes before any
+    /// DELETE. Claude Code's transcript is left alone.
     func delete(_ session: TerminalSession) async {
         setSessionError(nil, projectID: session.projectID)
+        pendingDeletes.enqueueSessionDelete(
+            .init(sessionID: session.id, workbenchID: session.projectID, title: session.title), now: now()
+        )
+        if let projectID = session.projectID {
+            terminalSessions[projectID]?.removeAll { $0.id == session.id }
+            forgetInLayout(session.id, projectID: projectID)
+        } else {
+            standaloneSessions.removeAll { $0.id == session.id }
+        }
+        if selectedStandaloneID == session.id { selectedStandaloneID = nil }
         await terminalCenter?.close(sessionID: session.id)
         forgetProcessState(session.id)
         titleAttempts[session.id] = nil
         notYetTitledStreak[session.id] = nil
+        armPendingDeleteCommit()
+    }
+
+    /// The toast's text while a batch waits: "Session deleted" / "N
+    /// sessions deleted"; nil when nothing is pending.
+    var pendingDeleteToast: String? { pendingDeletes.toastText }
+
+    /// Undo: every session of the batch comes back, untouched — its row,
+    /// report links and asks were never written. A row comes back not
+    /// running (a click or Restart resumes it); the layout is not restored.
+    func undoPendingDeletes() async {
+        deleteCommitTask?.cancel()
+        deleteCommitTask = nil
+        let restored = pendingDeletes.restoreBatch()
+        for list in Self.sessionLists(of: restored) { await loadSessions(projectID: list) }
+    }
+
+    /// Runs the batch's DELETEs in one write. A failed write never keeps a
+    /// row hidden: the batch has left `pendingDeletes`, so the reload brings
+    /// the rows back, with the error on their list.
+    func commitPendingDeletes(_ entries: [PendingSessionDeletes.Entry]) async {
+        guard !entries.isEmpty else { return }
+        let lists = Self.sessionLists(of: entries)
         do {
-            try await dbPool.write { try TerminalSessionQueries.delete($0, id: session.id) }
+            try await commitSessionDeletes(entries.map(\.sessionID))
         } catch {
-            setSessionError("Could not delete the session: \(error.localizedDescription)", projectID: session.projectID)
-            await loadSessions(projectID: session.projectID)
+            NSLog("WorkbenchesViewModel: deleting %d session(s) failed: %@", entries.count, error.localizedDescription)
+            for list in lists {
+                setSessionError("Could not delete the session: \(error.localizedDescription)", projectID: list)
+            }
+        }
+        for list in lists { await loadSessions(projectID: list) }
+    }
+
+    /// The quit path (`willTerminate`): the batch is committed now, in a
+    /// synchronous write bounded by `quitDeleteWait`. A timeout or an error
+    /// is logged; the row then survives and is listed again on the next
+    /// launch — the safe side.
+    func commitPendingDeletesForQuit() {
+        deleteCommitTask?.cancel()
+        deleteCommitTask = nil
+        let ids = pendingDeletes.takeBatch().map(\.sessionID)
+        guard !ids.isEmpty else { return }
+        let pool = dbPool
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try pool.write { db in
+                    for id in ids { try TerminalSessionQueries.delete(db, id: id) }
+                }
+            } catch {
+                NSLog("WorkbenchesViewModel: deleting %d session(s) on quit failed: %@", ids.count, error.localizedDescription)
+            }
+            done.signal()
+        }
+        if done.wait(timeout: .now() + Self.quitDeleteWait) == .timedOut {
+            NSLog("WorkbenchesViewModel: deleting %d session(s) on quit timed out; they are listed again next launch", ids.count)
+        }
+    }
+
+    /// The workbench is gone and its delete cascaded its hidden sessions:
+    /// they leave the batch (nothing to commit, nothing to restore).
+    func discardPendingDeletes(workbenchID: Int64) {
+        pendingDeletes.discardBatch(workbenchID: workbenchID)
+        if pendingDeletes.batch.isEmpty {
+            deleteCommitTask?.cancel()
+            deleteCommitTask = nil
+        }
+    }
+
+    /// `rows` without the sessions waiting in the Undo batch.
+    func withoutPendingDeletes(_ rows: [TerminalSession]) -> [TerminalSession] {
+        let hidden = pendingDeletes.ids
+        return hidden.isEmpty ? rows : rows.filter { !hidden.contains($0.id) }
+    }
+
+    /// (Re)starts the Undo window: one batch, one timer — every delete
+    /// restarts it, and once it ran out uncancelled the whole batch commits.
+    private func armPendingDeleteCommit() {
+        deleteCommitTask?.cancel()
+        guard !pendingDeletes.batch.isEmpty else {
+            deleteCommitTask = nil
             return
         }
-        if let projectID = session.projectID { forgetInLayout(session.id, projectID: projectID) }
-        if selectedStandaloneID == session.id { selectedStandaloneID = nil }
-        await loadSessions(projectID: session.projectID)
+        deleteCommitTask = Task { [weak self] in
+            guard let sleep = self?.deleteSleep else { return }
+            await sleep(.seconds(PendingSessionDeletes.window))
+            guard let self, !Task.isCancelled else { return }
+            await commitPendingDeletes(pendingDeletes.takeBatch())
+        }
+    }
+
+    /// The session lists (workbench id, nil = standalone) `entries` touch,
+    /// in first-seen order.
+    private static func sessionLists(of entries: [PendingSessionDeletes.Entry]) -> [Int64?] {
+        var seen: Set<Int64?> = []
+        return entries.map(\.workbenchID).filter { seen.insert($0).inserted }
     }
 
     /// An empty name is refused (the title stays as it was).
