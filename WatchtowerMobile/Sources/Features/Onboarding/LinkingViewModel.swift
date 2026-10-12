@@ -20,7 +20,13 @@ protocol LinkContainer: Sendable {
 /// The link flow's clock: the grant wait and the expiry check run on it.
 protocol LinkClock: Sendable {
     func now() -> Date
+    /// Seconds on a monotonic source that a wall-clock jump cannot move.
+    func uptime() -> TimeInterval
     func sleep(for duration: Duration) async throws
+}
+
+extension LinkClock {
+    func uptime() -> TimeInterval { ProcessInfo.processInfo.systemUptime }
 }
 
 struct SystemLinkClock: LinkClock {
@@ -182,12 +188,23 @@ final class LinkingViewModel {
 
     private(set) var phase: Phase = .idle {
         didSet {
-            if phase != oldValue { phaseStartedAt = clock.now() }
+            if phase != oldValue {
+                phaseStartedAt = clock.now()
+                phaseStartedUptime = clock.uptime()
+            }
         }
     }
     /// When `phase` last changed, on the flow's clock; nil before the first
     /// change. The waiting screen's hint reads it (design pass O2).
     private(set) var phaseStartedAt: Date?
+    @ObservationIgnored private var phaseStartedUptime: TimeInterval?
+
+    /// Seconds since `phase` last changed, on the monotonic source (a clock
+    /// jump neither brings the 20 s hint forward nor holds it back); nil
+    /// before the first phase change.
+    func phaseElapsed() -> TimeInterval? {
+        phaseStartedUptime.map { max(0, clock.uptime() - $0) }
+    }
     private(set) var notice: LinkNotice?
     /// The saved link; nil while unlinked (Welcome). A pending link is not
     /// a link.

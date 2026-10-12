@@ -20,6 +20,11 @@ struct LinkStepsModel: Equatable {
     /// `macName` nil: checking the code. A name: waiting for that Mac's
     /// grant since `startedAt`.
     init(waitingFor macName: String?, startedAt: Date?, now: Date) {
+        self.init(waitingFor: macName, waited: startedAt.map { now.timeIntervalSince($0) })
+    }
+
+    /// `waited`: seconds in the phase on a monotonic source; nil is zero.
+    init(waitingFor macName: String?, waited: TimeInterval?) {
         guard let macName else {
             steps = [
                 Step(state: .current, text: "Code read"),
@@ -35,8 +40,7 @@ struct LinkStepsModel: Equatable {
             Step(state: .current, text: "Waiting for \(name) to confirm"),
             Step(state: .todo, text: "Linked")
         ]
-        let waited = startedAt.map { now.timeIntervalSince($0) } ?? 0
-        hint = waited >= Self.hintDelay ? Self.hintText : nil
+        hint = (waited ?? 0) >= Self.hintDelay ? Self.hintText : nil
     }
 }
 
@@ -59,5 +63,8 @@ struct LinkStepsView: View {
         }
         .padding(.horizontal, Spacing.page)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: model.hint) { _, hint in
+            if let hint { AccessibilityNotification.Announcement(hint).post() }
+        }
     }
 }
