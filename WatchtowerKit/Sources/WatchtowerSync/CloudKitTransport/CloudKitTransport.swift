@@ -75,6 +75,9 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private let engineFactory: EngineFactory
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
+    /// Counts the CloudKit requests this transport issues (the phone's
+    /// battery diagnostics); nil counts nothing.
+    private let energy: EnergyCounter?
     private let logger = Logger(subsystem: "WatchtowerKit", category: "CloudKitTransport")
 
     private var engine: (any SyncEngineDriving)?
@@ -150,7 +153,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         scope: CloudDatabaseScope,
         hubID: String,
         role: TransportRole,
-        containerID: String = WatchtowerCloud.containerID
+        containerID: String = WatchtowerCloud.containerID,
+        energy: EnergyCounter? = nil
     ) {
         precondition(role == .phone || scope == .private, "a hub syncs its own private database")
         let zones = HubZones(scope: scope, hubID: hubID)
@@ -166,7 +170,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 CKSyncEngineDriver(containerID: containerID, zones: zones, stateSerialization: state, delegate: delegate)
             },
             now: { Date() },
-            sleep: { seconds in try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
+            sleep: { seconds in try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) },
+            energy: energy
         )
     }
 
@@ -181,7 +186,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         zoneAdmin: any CloudZoneAdministering,
         engineFactory: @escaping EngineFactory,
         now: @escaping @Sendable () -> Date,
-        sleep: @escaping @Sendable (TimeInterval) async -> Void
+        sleep: @escaping @Sendable (TimeInterval) async -> Void,
+        energy: EnergyCounter? = nil
     ) {
         self.store = store
         zones = HubZones(scope: scope, hubID: hubID)
@@ -192,6 +198,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         self.engineFactory = engineFactory
         self.now = now
         self.sleep = sleep
+        self.energy = energy
     }
 
     /// In the phone role an account switch does NOT emit `.unlinked`: the
@@ -375,6 +382,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     private func fetchAndHandle(engine: any SyncEngineDriving) async throws {
         var thrown: CKError?
+        energy?.record(.engineFetch)
         do {
             try await engine.fetchChanges(scope: zones.allZoneIDs)
         } catch let error as CKError {
@@ -419,6 +427,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 if let throttledUntil, now() < throttledUntil { return }
                 let zoneID = zones.zoneID(for: zone)
                 let page: PolledZoneChanges
+                energy?.record(zone == .data ? .dataZonePoll : .relayZonePoll)
                 do {
                     page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
                 } catch let error as CKError {
@@ -560,6 +569,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             }
         case .accountChange(let change):
             handleAccountChange(change.changeType)
+        case .willFetchChanges:
+            energy?.record(.engineFetchRun)
         default:
             break
         }
@@ -680,6 +691,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 return
             }
         }
+        energy?.record(.engineFetch)
         try await engine.fetchChanges(scope: zones.allZoneIDs)
         clearThrottle()
     }
@@ -776,6 +788,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             let recordIDsToDelete = pending.deletes.map {
                 CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone))
             }
+            energy?.record(.sendBatch)
             return CKSyncEngine.RecordZoneChangeBatch(
                 recordsToSave: recordsToSave,
                 recordIDsToDelete: recordIDsToDelete,

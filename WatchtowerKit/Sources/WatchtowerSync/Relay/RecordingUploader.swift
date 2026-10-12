@@ -62,6 +62,8 @@ public actor RecordingUploader: RecordingUploadAcking {
     private let store: ReplicaStore
     private let maxAssetBytes: Int64
     private let now: @Sendable () -> Date
+    /// Counts each upload attempt (the phone's battery diagnostics).
+    private let energy: EnergyCounter?
     /// The linked phone's device id, stamped on every upload. nil until
     /// linking finishes (or after an unlink): uploads then wait, because the
     /// hub fails a record without one as `device_not_linked`. A blank id
@@ -88,7 +90,8 @@ public actor RecordingUploader: RecordingUploadAcking {
         directory: URL? = nil,
         deviceID: String? = nil,
         maxAssetBytes: Int64 = RecordingUploader.maximumAssetBytes,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        energy: EnergyCounter? = nil
     ) {
         self.transport = transport
         self.store = store
@@ -96,6 +99,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         self.deviceID = linkedDeviceID(deviceID)
         self.maxAssetBytes = maxAssetBytes
         self.now = now
+        self.energy = energy
     }
 
     /// Called by the link flow once the device is linked, and with nil on
@@ -473,6 +477,7 @@ public actor RecordingUploader: RecordingUploadAcking {
                 let record = try CloudRecordFactory.record(
                     for: payload, modifiedAt: now(), assetFileURL: file
                 )
+                energy?.record(.uploadAttempt)
                 try await transport.save([record])
             } catch {
                 // Transient (or encoding — unreachable for our own payloads)
