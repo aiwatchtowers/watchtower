@@ -89,8 +89,8 @@ public actor ReplicaHydrator {
         let batch = try await transport.changes(in: .data, since: store.storedToken())
         // A locked keychain before the first unlock (or no link yet) throws
         // here: nothing of the batch is stored and the token is kept (F15).
-        let applied = try store.apply(batch)
-        if applied {
+        let stored = try store.applyCounting(batch)
+        if stored != nil {
             // Consumer-driven compaction of the CONSUMED data-zone buffer (see
             // CompactingTransport's retention note): safe here because the
             // replica is the ONLY data-zone consumer on this device and its
@@ -114,14 +114,14 @@ public actor ReplicaHydrator {
         if let onRecordsApplied, !indexed.isEmpty {
             onRecordsApplied(indexed)
         }
-        guard applied else {
+        guard let stored else {
             // Dropped by the monotonic guard — a stale/overlapping batch whose
             // events are already behind our stored token. Nothing applied.
             return (applied: 0, deleted: 0)
         }
-        // apply ignores relay records and signals, so count only what reached it.
-        let dataRecords = batch.changed.filter { $0.zone == .data && $0.kind != WireKind.signal }
-        return (applied: dataRecords.count, deleted: batch.deletedRecordNames.count)
+        // Only what the replica stored: relay records, signals, other phones'
+        // keyboxes, refused, rolled-back and unchanged records are not counted.
+        return (applied: stored, deleted: batch.deletedRecordNames.count)
     }
 
     // MARK: - Poll loop

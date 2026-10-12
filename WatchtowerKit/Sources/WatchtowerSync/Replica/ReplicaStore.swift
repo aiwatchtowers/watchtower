@@ -118,7 +118,7 @@ public final class ReplicaStore: Sendable {
             guard stored != Self.format else { return false }
             // `pending_actions`, `phone_recordings` (with marks), the alert
             // watermark and `envelope_seq_ceiling` (F29) stay.
-            try db.execute(sql: "DROP TABLE IF EXISTS slice_records; DROP TABLE IF EXISTS slice_assets")
+            try db.execute(sql: "DROP TABLE IF EXISTS slice_records; DROP TABLE IF EXISTS slice_assets; DROP TABLE IF EXISTS data_seen")
             try db.execute(
                 sql: "DELETE FROM replica_meta WHERE key IN (?, ?)", arguments: [Self.dataTokenKey, Self.relayTokenKey])
             try Self.upsertMeta(db, key: Self.formatKey, value: Self.format)
@@ -163,6 +163,7 @@ public final class ReplicaStore: Sendable {
                 );
                 \(Self.sliceAssetsTableSQL);
                 \(Self.relaySeenTableSQL);
+                \(Self.dataSeenTableSQL);
                 """)
             // A replica created before `event_id` existed keeps its ledger:
             // the column is added in place (CREATE IF NOT EXISTS skipped it).
@@ -271,13 +272,20 @@ public final class ReplicaStore: Sendable {
     /// stored token.
     @discardableResult
     public func apply(_ batch: CloudChangeBatch) throws -> Bool {
+        try applyCounting(batch) != nil
+    }
+
+    /// `apply`, returning how many records it stored (refused, rolled-back,
+    /// unchanged, signal and other-phone keybox records are not counted), or
+    /// nil when the monotonic guard dropped the batch. The hydrator's count.
+    func applyCounting(_ batch: CloudChangeBatch) throws -> Int? {
         // JSONEncoder always emits valid UTF-8, so the nil branch is
         // unreachable; skipping only the token persistence would just
         // re-read the zone next cycle (safe — upserts are idempotent).
         let tokenJSON = String(bytes: try JSONEncoder().encode(batch.newToken), encoding: .utf8)
         let (accepted, refused) = try verify(batch.changed)
         let assets = Self.readAssets(of: accepted.map(\.record))
-        let outcome = try writer.write { db -> (applied: Bool, rolledBack: [String]) in
+        let outcome = try writer.write { db -> (applied: Bool, stored: Int, rolledBack: [String]) in
             // Monotonic guard: a batch whose token is not newer than what we
             // already applied is a stale or overlapping read — e.g. a
             // reentrant hydration cycle that resumed after a newer one
@@ -290,18 +298,25 @@ public final class ReplicaStore: Sendable {
                 arguments: [Self.dataTokenKey]
             )
             if let stored = Self.decodeToken(storedRaw), batch.newToken.value <= stored.value {
-                return (false, [])
+                return (false, 0, [])
             }
             var rolledBack: [String] = []
+            var stored = 0
             for item in accepted {
                 let name = item.record.recordName
-                if let version = item.version, let stored = try Self.storedVersion(of: name, in: db) {
-                    if version == stored { continue }
-                    if version < stored {
-                        rolledBack.append(name)
-                        continue
+                if let version = item.version {
+                    // The high-water mark, not the row: it survives a deletion and a newer-format row
+                    // (stored as (0, 0)), so neither can open the door to replaying an older envelope.
+                    if let seen = try Self.seenVersion(of: name, in: db) {
+                        if version == seen { continue }
+                        if version < seen {
+                            rolledBack.append(name)
+                            continue
+                        }
                     }
+                    try Self.recordSeen(name, version: version, in: db)
                 }
+                stored += 1
                 try upsert(item, in: db)
                 try storeAsset(assets[name].flatMap { $0 }, recordName: name, in: db)
             }
@@ -312,13 +327,13 @@ public final class ReplicaStore: Sendable {
             if let tokenJSON {
                 try Self.upsertMeta(db, key: Self.dataTokenKey, value: tokenJSON)
             }
-            return (true, rolledBack)
+            return (true, stored, rolledBack)
         }
-        guard outcome.applied else { return false }
+        guard outcome.applied else { return nil }
         for (name, reason) in refused { noteRejected(name, reason: reason) }
         for name in outcome.rolledBack { noteRejected(name, reason: "rolledBack") }
         for item in accepted where item.version == nil { noteNewerFormat(item.record.recordName) }
-        return true
+        return outcome.stored
     }
 
     /// The data records of a batch this replica stores, verified, and the
@@ -372,15 +387,37 @@ public final class ReplicaStore: Sendable {
 
     private static let keyboxPrefix = "keybox-"
 
+    /// Every verified version this replica accepted, per wire name: the
+    /// DataZone rollback guard. Kept across deletions; dropped only by the
+    /// format wipe, together with the rows the zone is then re-read into.
+    static let dataSeenTableSQL = """
+        CREATE TABLE IF NOT EXISTS data_seen (
+            wire_name TEXT PRIMARY KEY,
+            epoch INTEGER NOT NULL,
+            seq INTEGER NOT NULL
+        )
+        """
+
     /// SQLite INTEGER is signed: a u64 seq is stored by bit pattern and
     /// compared in Swift after reading it back.
-    private static func storedVersion(of wireName: String, in db: Database) throws -> RecordVersion? {
+    private static func seenVersion(of wireName: String, in db: Database) throws -> RecordVersion? {
         guard let row = try Row.fetchOne(
-            db, sql: "SELECT epoch, seq FROM slice_records WHERE record_name = ?", arguments: [wireName]
+            db, sql: "SELECT epoch, seq FROM data_seen WHERE wire_name = ?", arguments: [wireName]
         ) else { return nil }
         let epoch: Int64 = row["epoch"]
         let seq: Int64 = row["seq"]
         return RecordVersion(epoch: UInt32(truncatingIfNeeded: epoch), seq: UInt64(bitPattern: seq))
+    }
+
+    /// Callers checked `version` is above the stored mark.
+    private static func recordSeen(_ wireName: String, version: RecordVersion, in db: Database) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO data_seen (wire_name, epoch, seq) VALUES (?, ?, ?)
+                ON CONFLICT(wire_name) DO UPDATE SET epoch = excluded.epoch, seq = excluded.seq
+                """,
+            arguments: [wireName, Int64(version.epoch), Int64(bitPattern: version.seq)]
+        )
     }
 
     /// A new version keeps the row's plain name and kind (the wire name is a

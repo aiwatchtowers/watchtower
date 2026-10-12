@@ -49,4 +49,23 @@ final class ReplicaHydratorTests: XCTestCase {
         _ = try await hydrator.hydrateOnce()
         XCTAssertEqual(reported.withLock { $0 }.count, 2)
     }
+
+    func testAppliedCountsOnlyTheRecordsTheReplicaStored() async throws {
+        let inner = InMemoryCloudTransport()
+        let hub = TestE2E.hub()
+        hub.link(TestE2E.strangerIdentity)
+        let sealer = TestE2E.hubTransport(hub)
+        try await inner.save([
+            try await sealer.seal(slice(.target, id: "1")),
+            try await sealer.seal(TestE2E.keyboxRecord(deviceID: TestE2E.strangerDeviceID, modifiedAt: stamp)),
+            try TestE2E.sealedDataRecord(slice(.target, id: "2"), seq: 50, signer: TestE2E.strangerIdentity.signing),
+            CloudRecord(recordName: "sig-abc", zone: .data, kind: WireKind.signal, modifiedAt: stamp, payload: Data())
+        ])
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+
+        let result = try await ReplicaHydrator(transport: inner, store: store).hydrateOnce()
+
+        XCTAssertEqual(result.applied, 1, "refused, other-phone keybox and signal records are not counted")
+        XCTAssertEqual(store.rejectedCount(), 1)
+    }
 }

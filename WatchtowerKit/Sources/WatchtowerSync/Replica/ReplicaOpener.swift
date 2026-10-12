@@ -17,17 +17,17 @@ public protocol ReplicaOpening: Sendable {
     func openOwnRelay(wireName: String, envelope: Data) throws -> InnerFrame
 }
 
-/// The phone's `ReplicaOpening` over its `PhoneKeyStore`, for one linked hub. Secret keys are read from the store on
-/// every open (never cached), so a lock takes effect at once; only the hub's public signing key is cached.
-public final class EnvelopeReplicaOpener: ReplicaOpening, @unchecked Sendable {
+/// The phone's `ReplicaOpening` over its `PhoneKeyStore`, for one linked hub. Every key is read from the store on
+/// each call, never cached: a lock takes effect at once, and a re-pair that changes the hub's signing key for the
+/// same hub id is honoured by the very next record (a stale cached key would refuse every record while the token
+/// moves on). The public key is an `afterFirstUnlock` item, so the read is cheap.
+public final class EnvelopeReplicaOpener: ReplicaOpening {
     private static let dataClasses: Set<EnvelopeClass> = [.data, .alert, .keybox]
     private static let keyboxPrefix = "keybox-"
 
     private let hubID: String
     private let deviceID: UUID
     private let keys: any PhoneKeyStore
-    private let lock = NSLock()
-    private var cachedSigningKey: Curve25519.Signing.PublicKey?
 
     /// `deviceID` (F13, F14): read from `PhoneKeyStore.deviceID()`, which works while locked; keyboxes for any
     /// other device id are dropped at apply.
@@ -118,9 +118,7 @@ public final class EnvelopeReplicaOpener: ReplicaOpening, @unchecked Sendable {
 
     /// The `afterFirstUnlock` copy; absent (no link yet) is `keysUnavailable`, so apply keeps the batch for later.
     private func hubSigningKey() throws -> Curve25519.Signing.PublicKey {
-        if let cached = lock.withLock({ cachedSigningKey }) { return cached }
         guard let key = try keys.hubSigningKey(hubID) else { throw SecureTransportError.keysUnavailable }
-        lock.withLock { cachedSigningKey = key }
         return key
     }
 

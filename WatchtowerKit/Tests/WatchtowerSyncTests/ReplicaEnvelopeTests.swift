@@ -131,6 +131,83 @@ final class ReplicaEnvelopeTests: XCTestCase {
         XCTAssertEqual(try store.storedToken(), CloudChangeToken(value: 1), "a rejected record does not stall the token")
     }
 
+    func testANewerFormatRowDoesNotLowerTheRollbackMark() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let ten = try TestE2E.sealedDataRecord(ask(title: "seq ten"), seq: 10)
+        var unreadable = try TestE2E.sealedDataRecord(ask(title: "next format"), seq: 11).payload
+        unreadable[3] = 2 // ver: stored unverified as (0, 0)
+        let newer = CloudRecord(recordName: ten.recordName, zone: .data, kind: WireKind.envelope, modifiedAt: stamp, payload: unreadable)
+        let nine = try TestE2E.sealedDataRecord(ask(title: "seq nine"), seq: 9)
+
+        try store.apply(batch([ten], token: 1))
+        try store.apply(batch([newer], token: 2))
+        try store.apply(batch([nine], token: 3))
+        XCTAssertEqual(store.rejectedCount(), 1, "the newer-format row never lowers the mark")
+        let stored = try read(store) { db in try Data.fetchOne(db, sql: "SELECT payload FROM slice_records") }
+        XCTAssertEqual(stored, unreadable)
+
+        try store.apply(batch([try TestE2E.sealedDataRecord(ask(title: "seq twelve"), seq: 12)], token: 4))
+        try store.indexPending()
+        XCTAssertEqual(try texts(store, .ownerAsk), ["{\"id\":42,\"title\":\"seq twelve\"}"])
+    }
+
+    func testADeletedRecordCannotBeReplayedAtOrBelowItsLastVersion() throws {
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
+        let ten = try TestE2E.sealedDataRecord(ask(title: "seq ten"), seq: 10)
+        try store.apply(batch([ten], token: 1))
+        try store.apply(batch([], deleted: [ten.recordName], token: 2))
+
+        try store.apply(batch([try TestE2E.sealedDataRecord(ask(title: "seq nine"), seq: 9)], token: 3))
+        XCTAssertEqual(try rowCount(store), 0)
+        XCTAssertEqual(store.rejectedCount(), 1)
+        try store.apply(batch([ten], token: 4))
+        XCTAssertEqual(try rowCount(store), 0, "a replay of the deleted version is not a new record")
+
+        try store.apply(batch([try TestE2E.sealedDataRecord(ask(title: "seq eleven"), seq: 11)], token: 5))
+        try store.indexPending()
+        XCTAssertEqual(try texts(store, .ownerAsk), ["{\"id\":42,\"title\":\"seq eleven\"}"])
+    }
+
+    func testARePairWithANewHubSigningKeyIsHonouredAtOnce() throws {
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        try store.apply(batch([try TestE2E.sealedDataRecord(ask(id: "1"), seq: 1)], token: 1))
+
+        // The same hub id re-paired with another signing key (test stand-in: the stranger's key).
+        let newSigner = TestE2E.strangerIdentity.signing
+        let link = try XCTUnwrap(keys.hubLink(TestE2E.hubID.uuidString))
+        try keys.saveHubLink(HubLinkKeys(
+            hubID: link.hubID, hubSigningKey: newSigner.publicKey.rawRepresentation, hubAgreementKey: link.hubAgreementKey,
+            linkNonce: link.linkNonce, metaKey: link.metaKey, epochs: link.epochs))
+        try store.apply(batch([try TestE2E.sealedDataRecord(ask(id: "2"), seq: 2, signer: newSigner)], token: 2))
+
+        XCTAssertEqual(store.rejectedCount(), 0)
+        XCTAssertEqual(try rowCount(store), 2)
+        XCTAssertEqual(try store.indexPending().map(\.recordName), ["owner_ask-2"], "rows open under the new key")
+    }
+
+    func testARecordOfAnEpochAheadOfTheKeyboxWaitsUncountedUntilItsKeysLand() async throws {
+        let keys = try TestE2E.phoneStore(epochs: [1])
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let sealed = try await seal([ask()], hub: TestE2E.hub(epoch: 2))
+
+        XCTAssertTrue(try store.apply(batch(sealed, token: 1)))
+        XCTAssertEqual(try rowCount(store), 1)
+        XCTAssertTrue(try store.indexPending().isEmpty)
+        XCTAssertEqual(store.corruptCount(), 0)
+        XCTAssertEqual(store.rejectedCount(), 0)
+
+        // The keybox for epoch 2 is processed.
+        let link = try XCTUnwrap(keys.hubLink(TestE2E.hubID.uuidString))
+        let raw = { (key: SymmetricKey) in key.withUnsafeBytes { Data($0) } }
+        try keys.saveHubLink(HubLinkKeys(
+            hubID: link.hubID, hubSigningKey: link.hubSigningKey, hubAgreementKey: link.hubAgreementKey,
+            linkNonce: link.linkNonce, metaKey: link.metaKey,
+            epochs: link.epochs + [EpochKeys(epoch: 2, dataKey: raw(TestE2E.dataKey(epoch: 2)), alertKey: raw(TestE2E.alertKey(epoch: 2)))]))
+        XCTAssertEqual(try store.indexPending().map(\.recordName), ["owner_ask-42"])
+        XCTAssertEqual(store.corruptCount(), 0)
+    }
+
     func testAnEnvelopeOfAnotherHubIsRejected() throws {
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let otherHub = UUID(uuid: (0xE2, 0xE0, 0, 0, 0, 0, 0x40, 0, 0x80, 0, 0, 0, 0, 0, 0, 0x02))
