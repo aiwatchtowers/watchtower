@@ -1,6 +1,7 @@
 # Codex as a Workbench agent (board #399): design
 
-**Status:** Draft, waiting for the owner's decisions D1–D7 (business spec).
+**Status:** Implemented on `feat/399-codex-agent` (2026-10-12); the owner approved D1–D7 with the recommended defaults
+(ask #189). Section 15 lists where the shipped behaviour differs from the text below; where they differ, section 15 wins.
 **Business spec:** `2026-10-12-codex-workbench-agent-business.md`. **Plan:** `docs/superpowers/plans/2026-10-12-codex-workbench-agent.md`.
 **Codex version verified:** codex-cli 0.159.2, live spike on 2026-10-12. Section 2 lists the facts this design relies on.
 **Touches:** `terminal_sessions` (table rebuild), `internal/db`, `internal/devpack`, `internal/codex`, `internal/terminal`,
@@ -25,7 +26,7 @@ green unchanged.
 | # | Fact | Used for |
 |---|---|---|
 | C1 | Codex mints the session id (lowercase canonical UUIDv7). No flag presets it. `SessionStart` reports it as `session_id`, plus `transcript_path` and `source`. | §5 re-key |
-| C2 | `SessionStart` fires **lazily**, with the first submitted prompt, not at process start. `source` values seen: `startup`, `resume`, `clear`. `/clear` mints a new id at once. `codex resume <id> [PROMPT]` keeps the id. | §5 |
+| C2 | `SessionStart` fires **lazily**, with the first submitted prompt, not at process start. `source` values seen: `startup`, `resume`, `clear`, `compact` (`/compact` keeps the same id). `/clear` mints a new id at once. `codex resume <id> [PROMPT]` keeps the id. | §5 |
 | C3 | Hooks run only when trusted: a per-hook `hooks.state."<key>".trusted_hash` in `~/.codex/config.toml`. Project-layer hooks (`.codex/hooks.json`) also need `[projects."<dir>"] trust_level = "trusted"`, and an untrusted project layer is not loaded even with `--dangerously-bypass-hook-trust`. | §4 |
 | C4 | Hooks passed as launch flags (`-c hooks.<Event>=[…]`) load in **untrusted** folders. Their trust key is `/<session-flags>/config.toml:<event_snake>:<group>:<handler>`, the same for every folder. Once trusted, a hash stays trusted in every cwd. A changed command reads `modified` and stops running. | §4 |
 | C5 | Trust can be written without the bypass flag through Codex's own app-server API: `codex app-server` (stdio JSON-RPC) `initialize` → `hooks/list {cwds}` (returns `key`, `currentHash`, `trustStatus`) → `config/batchWrite {edits:[{keyPath:"hooks.state", mergeStrategy:"upsert", value:{<key>:{trusted_hash}}}]}`. | §4 |
@@ -35,7 +36,7 @@ green unchanged.
 | C9 | Tool names in hooks: MCP `mcp__<server, '-'→'_'>__<tool>` (`mcp__watchtower_workbench__ask_owner`); shell `Bash`; the ask-the-user tool `request_user_input` (Plan mode only). | §6.4, skill text |
 | C10 | Skills in `<folder>/.agents/skills/<name>/SKILL.md` load in untrusted folders too. | §4.1 |
 | C11 | No app-server daemon was started by the TUI or `exec`. `--no-daemon` exists and is accepted by `codex` and `codex resume`. SIGTERM to the process group ends the TUI (no `SessionEnd`). | §7 |
-| C12 | The TUI enables bracketed paste and the kitty keyboard protocol. Typed text + CR submits. A bracketed paste (also multi-line) + pause + CR submits one prompt. A one-off notice (for example a model migration) swallows keystrokes, and while showing it the TUI rewrites `~/.codex/config.toml`. | §8 |
+| C12 | The TUI enables bracketed paste and the kitty keyboard protocol. Typed text + CR submits. A bracketed paste (also multi-line) + pause + CR submits one prompt. A one-off notice (for example a model migration) swallows keystrokes, and while showing it the TUI rewrites `~/.codex/config.toml`. On the "Update available" notice, Enter means "Update now" and runs `npm install -g @openai/codex`; `-c check_for_update_on_startup=false` suppresses it. | §8 |
 | C13 | Rollouts at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`. New sessions are **paginated** (`ordinal` on lines; owner text in `event_msg` `item_completed` `item.type == "UserMessage"`, `item.content[].text`). Older sessions are **legacy** (`event_msg` `user_message.message`). `response_item` role `user` also carries injected context. Compression is a codex feature in development. | §9 |
 | C14 | The `codex` on PATH may be an nvm node shim (`#!/usr/bin/env node`). A zsh login shell does not read `.zshrc`, so nvm's bin is often missing from the PATH there. | §7 |
 
@@ -105,7 +106,7 @@ resolution. No per-workbench column (D1).
 | Project trust | n/a | **not needed and never written** |
 
 `watchtower integrate codex --workbench N` installs the skill, writes the exclude line, cleans up any imported
-duplicates (§4.4) and runs the trust step. `--remove` takes out the skill, the exclude line and our trust entries,
+duplicates (§4.4) and runs the trust step. `--remove` takes out the skill and the exclude line (never the trust entries, see §15),
 and removes `.agents/skills`/`.agents` when they end up empty. `watchtower integrate status --workbench N --json` gains a `codex`
 object (§4.5). `watchtower integrate claude-code` is unchanged. The `Setup` flow runs both when the binary is found
 (D5). `workbench resync` re-copies the skill for every agent that has it installed.
@@ -123,10 +124,11 @@ object (§4.5). `watchtower integrate claude-code` is unchanged. The `Setup` flo
 - `path_prepend`: the binary's directory, so the node shim finds `node` (C14). Swift puts it in front of `PATH` in
   the launch command.
 - `args`, in a fixed order:
-  1. `--no-daemon`.
+  1. `--no-daemon`, then `-c check_for_update_on_startup=false` (§15).
   2. MCP: `mcp_servers.watchtower-workbench.command="<watchtower bin>"`,
      `mcp_servers.watchtower-workbench.args=["mcp","--workbench","N","--agent","codex"]`,
-     `mcp_servers.watchtower-workbench.default_tools_approval_mode="approve"` (D3).
+     `mcp_servers.watchtower-workbench.default_tools_approval_mode="approve"` (D3),
+     `mcp_servers.watchtower-workbench.env_vars=["WATCHTOWER_TERMINAL_SESSION_ID"]` (§15).
   3. One `-c hooks.<Event>=[…]` per event (§4.3 table), as TOML inline values.
 - The hook command lines are **workbench-agnostic** (C4: one trust key per event and index for every folder). The
   workbench and the row come from `WATCHTOWER_TERMINAL_SESSION_ID` at hook time (§6.1).
@@ -194,11 +196,12 @@ decodes. `needsRepair` gains: `codex.found && (!skill || hooks_trusted == false 
     `kind = 'codex' AND claude_session_id IS NULL`) and mark the run. When it equals the payload, mark the run. When it
     differs, write nothing (a stale or foreign start).
   - `resume`: mark the run. When the ids differ, move the id (same as Claude).
-  - `clear`, `compact`, `fork`: move the id and clear the state (same as Claude's switch path).
+  - `clear`, `fork`, and `compact` onto another id: move the id, as Claude's switch path does (§15: the stored
+    `agent_state` is kept until the next prompt). `compact` with the same id writes nothing but a changed transcript path.
   - unknown `source`: treated as `startup`.
   - Every accepted SessionStart also stores `agent_transcript_path` when the payload's path is absolute.
 - Missing or non-UUID `session_id` → no write, brief still printed, exit 0.
-- Start fresh on a codex row: the Desktop NULLs the stored id and transcript path (`replaceClaudeSessionID(nil)`) before
+- Start fresh on a codex row: the Desktop NULLs the stored id and transcript path (`TerminalSessionQueries.resetAgentSession`) before
   it launches `codex` without `resume`.
 - A codex row with a NULL id is never resumed. It relaunches as a new session (business limit 2).
 - A nested `codex exec` started by the agent inherits `WATCHTOWER_TERMINAL_SESSION_ID` but not the launch flags, so
@@ -277,8 +280,9 @@ fixtures.
 
 - Claude argv is byte-identical to today (golden test).
 - Codex: the Desktop runs `launch-args` (§4.2) and builds the login-shell command
-  `PATH=<path_prepend>:"$PATH" exec env -u WATCHTOWER_FIRST_PROMPT '<binary>' <args, each single-quoted> [resume '<id>'] "$WATCHTOWER_FIRST_PROMPT"`.
-  The prompt is still passed through env (never argv text), and a leading `-` is still guarded the same way as for Claude.
+  `exec /bin/sh -c 'eval "$WATCHTOWER_CODEX_COMMAND"'`, with the script in the environment:
+  `PATH='<path_prepend>':"$PATH" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND '<binary>' <args, each single-quoted> [resume '<id>'] [-- "$WATCHTOWER_FIRST_PROMPT"]`.
+  The prompt is still passed through env (never argv text). `--` always precedes it, which guards a leading `-`.
 - `isValidSessionID` accepts any lowercase canonical UUID (v4 and v7).
 - Exit messages per agent: "Codex was not found …", "Codex exited (code N)". A `launch-args` failure with
   `codex_not_found` shows the same notice without starting a process.
@@ -303,7 +307,7 @@ the same way as a Claude dialog would eat it. PROJ-12's "never into a permission
 ## 9. Transcripts (Go)
 
 `internal/terminal`:
-- `type Transcript interface { OwnerLines(max int) ([]string, error) }`
+- `type Transcript interface { OwnerText(capChars int) (string, error) }`
 - `func OpenTranscript(kind agentkind.Kind, sessionID, storedPath, agentHome string) (Transcript, error)`
 
 The Claude implementation is today's code. `codexRollout` locates by the stored path, else the date-dir glob. It
@@ -375,3 +379,41 @@ missing.
 - A codex error state from rollout parsing.
 - Lifting the Claude `CLAUDE_CONFIG_DIR` limit through the new `agent_transcript_path` (possible later).
 - Codex sessions in external terminals.
+
+## 15. Amendments after implementation (2026-10-12)
+
+What shipped differs from the text above in these points. The inline text is updated where it was plainly wrong.
+
+- **C2, compact.** `SessionStart` `source` also takes `compact`, with the same id. Codex handles it like Claude: no
+  state change and no run mark; only a changed transcript path is stored.
+- **C12, update notice.** Enter on codex's "Update available" notice means "Update now" (`npm install -g
+  @openai/codex`), so an ask delivery's Return could start an install. The Workbench launch (and the installer's
+  app-server) pass `-c check_for_update_on_startup=false`. This is not a sandbox or approval flag, so D4 holds.
+- **MCP env.** Codex gives MCP stdio servers a filtered environment. The launch adds
+  `mcp_servers.watchtower-workbench.env_vars=["WATCHTOWER_TERMINAL_SESSION_ID"]`, so asks, session links,
+  `finish_session` and the comment `agent_label` resolve the row. Hooks get the variable without this.
+- **Argv order.** No option may follow the `resume` subcommand: a `-c` after a subcommand replaces the root `-c`
+  list, and the hooks and the MCP server then do not load. The Desktop appends only `[resume '<id>'] -- <prompt>`;
+  `--` always precedes the prompt.
+- **§4.1, remove.** `integrate codex --remove` (and `workbench delete`) never touches `hooks.state` in
+  `~/.codex/config.toml`. One trust key covers every folder (C4), so removing it would break every other workbench.
+  Stale trust entries after the last workbench is gone are harmless.
+- **§5, clear and fork.** They move the id like Claude's switch path: the turn order, background count, turns, chat
+  question and old transcript path are cleared, and `agent_state` is kept until the next prompt. A same-id `compact`
+  writes no mark. A NULL stored id is filled only through `SetTerminalAgentSessionID`; moving a set id uses
+  `SetTerminalClaudeSessionID`. A nested `claude` in a codex row's shell never writes into the codex row.
+- **§3.1, Down.** The Down migration keeps the codex rows' asks with `session_id` NULL (the FK is `ON DELETE SET
+  NULL`); links and the rows go.
+- **§9, transcript API.** `Transcript.OwnerText(capChars int) (string, error)`, shared with Claude's reader. A stored
+  rollout path is used only when it is absolute, a regular file and named `rollout-*-<id>.jsonl`. The reader also
+  skips top-level `compacted` lines and empty text parts.
+- **§7, launch command.** The login shell runs a fixed literal, `exec /bin/sh -c 'eval
+  "$WATCHTOWER_CODEX_COMMAND"'`, and the script travels in that environment variable. That keeps the command
+  independent of the login shell's quoting rules (fish, nushell). Both variables are dropped before `codex` runs.
+- **§11, standalone terminals.** Codex is not offered for standalone (non-workbench) sessions in v1:
+  `launch-args` needs `--workbench`. A standalone codex row shows "Codex sessions run in a workbench."
+- **§4.5/§11, setup state.** New workbenches install the codex part automatically when codex is found (D5). Existing
+  workbenches are not changed without a click: a never-installed codex part shows a neutral "Codex: not set up" with
+  **Set up Codex**; the orange Repair state is only for a real failure (skill present but hooks untrusted or imported
+  duplicates) or a failed setup. A failed codex step never fails the Claude setup.
+
