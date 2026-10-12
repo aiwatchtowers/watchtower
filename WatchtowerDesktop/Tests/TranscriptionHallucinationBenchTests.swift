@@ -445,10 +445,10 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         let start: Double
         let end: Double
         let noSpeechProb: Float
+        /// The segment's own text-token values L3 judged (not the pass's).
         let avgLogprob: Float
         let compressionRatio: Float
         let temperature: Float
-        let textTokenLogprob: Float?
         let dropReason: String?
 
         init(_ scored: ScoredWhisperSegment) {
@@ -456,10 +456,9 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
             start = scored.segment.startSec
             end = scored.segment.endSec
             noSpeechProb = scored.noSpeechProb
-            avgLogprob = scored.avgLogprob
-            compressionRatio = scored.compressionRatio
+            avgLogprob = scored.score.avgLogprob
+            compressionRatio = scored.score.compressionRatio
             temperature = scored.temperature
-            textTokenLogprob = scored.textTokenLogprob
             dropReason = scored.dropReason?.rawValue
         }
     }

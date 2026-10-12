@@ -45,13 +45,26 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         )
     }
 
-    /// The segment's own confidence: the mean log-probability of its text
-    /// tokens (timestamps and other special tokens excluded). nil when the
-    /// segment carries none — the caller then falls back to the decode's.
-    private func textTokenLogprob(_ segment: TranscriptionSegment) -> Float? {
-        let begin = whisperKit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
-        let values = segment.tokenLogProbs.flatMap { $0.filter { $0.key < begin }.map(\.value) }
-        return values.isEmpty ? nil : values.reduce(0, +) / Float(values.count)
+    /// L3's inputs for one segment, from the segment's OWN text tokens
+    /// (timestamps and other special tokens, ids ≥ `specialTokenBegin`,
+    /// excluded): the mean log-probability and the zlib compression ratio.
+    /// WhisperKit 0.18 copies one decode pass's `avgLogprob` and
+    /// `compressionRatio` onto every segment of the pass, so judging those
+    /// would let one looping or doubtful segment drop the real speech beside
+    /// it. A segment without text tokens falls back to the pass values.
+    static func segmentScore(
+        tokens: [Int],
+        tokenLogProbs: [[Int: Float]],
+        specialTokenBegin: Int,
+        passAvgLogprob: Float,
+        passCompressionRatio: Float
+    ) -> WhisperSegmentScore {
+        let textTokens = tokens.filter { $0 < specialTokenBegin }
+        let logprobs = tokenLogProbs.flatMap { $0.filter { $0.key < specialTokenBegin }.map(\.value) }
+        return WhisperSegmentScore(
+            avgLogprob: logprobs.isEmpty ? passAvgLogprob : logprobs.reduce(0, +) / Float(logprobs.count),
+            compressionRatio: textTokens.isEmpty ? passCompressionRatio : TextUtilities.compressionRatio(of: textTokens)
+        )
     }
 
     func takeDropCounts() -> WindowDropCounts {
@@ -137,23 +150,44 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         // mapping segments (not text) cannot drop speech; L3 then drops the
         // segments the model itself doubts, and the filter removes only
         // Whisper's known subtitle-credit boilerplate.
+        let specialTokenBegin = whisperKit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
+        let (confident, confidenceCounts) = Self.confidentSegments(results.flatMap(\.segments),
+                                                                   specialTokenBegin: specialTokenBegin,
+                                                                   observer: segmentScoreObserver)
+        var counts = confidenceCounts
+        let cleaned = confident.withoutHallucinations()
+        counts.phrase += confident.count - cleaned.count
+        counts.droppedChars += confident.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +)
+        dropLock.withLock { drops.add(counts) }
+        return cleaned
+    }
+
+    /// L3 over one decode's segments: maps each to a `TranscribedSegment`
+    /// and drops those `WhisperSegmentConfidence` rejects on the segment's
+    /// own score. Pure apart from the bench observer.
+    static func confidentSegments(
+        _ segments: [TranscriptionSegment],
+        specialTokenBegin: Int,
+        observer: (@Sendable (ScoredWhisperSegment) -> Void)? = nil
+    ) -> (segments: [TranscribedSegment], counts: WindowDropCounts) {
         var counts = WindowDropCounts()
-        let confident = results.flatMap(\.segments).compactMap { segment -> TranscribedSegment? in
+        let kept = segments.compactMap { segment -> TranscribedSegment? in
             let mapped = TranscribedSegment(
                 text: segment.text.trimmingCharacters(in: .whitespacesAndNewlines),
                 startSec: Double(segment.start),
                 endSec: Double(segment.end)
             )
+            let score = segmentScore(tokens: segment.tokens, tokenLogProbs: segment.tokenLogProbs,
+                                     specialTokenBegin: specialTokenBegin,
+                                     passAvgLogprob: segment.avgLogprob,
+                                     passCompressionRatio: segment.compressionRatio)
             let reason = WhisperSegmentConfidence.dropReason(
                 noSpeechProb: segment.noSpeechProb,
-                avgLogprob: textTokenLogprob(segment) ?? segment.avgLogprob,
-                compressionRatio: segment.compressionRatio
+                avgLogprob: score.avgLogprob,
+                compressionRatio: score.compressionRatio
             )
-            segmentScoreObserver?(ScoredWhisperSegment(
-                segment: mapped, noSpeechProb: segment.noSpeechProb, avgLogprob: segment.avgLogprob,
-                compressionRatio: segment.compressionRatio, temperature: segment.temperature,
-                textTokenLogprob: textTokenLogprob(segment), dropReason: reason
-            ))
+            observer?(ScoredWhisperSegment(segment: mapped, noSpeechProb: segment.noSpeechProb, score: score,
+                                           temperature: segment.temperature, dropReason: reason))
             guard reason == nil else {
                 counts.confidence += 1
                 counts.droppedChars += mapped.text.count
@@ -161,23 +195,21 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
             }
             return mapped
         }
-        let cleaned = confident.withoutHallucinations()
-        counts.phrase += confident.count - cleaned.count
-        counts.droppedChars += confident.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +)
-        dropLock.withLock { drops.add(counts) }
-        return cleaned
+        return (kept, counts)
     }
+}
+
+/// What L3 judges a segment by (see `WhisperKitEngine.segmentScore`).
+struct WhisperSegmentScore: Equatable, Sendable {
+    let avgLogprob: Float
+    let compressionRatio: Float
 }
 
 /// One decoded segment with the confidence L3 judged it by (bench seam).
 struct ScoredWhisperSegment: Sendable {
     let segment: TranscribedSegment
     let noSpeechProb: Float
-    let avgLogprob: Float
-    let compressionRatio: Float
+    let score: WhisperSegmentScore
     let temperature: Float
-    /// Mean log-probability of the segment's own text tokens — what L3
-    /// judges; `avgLogprob` is the decode pass's, shared by its segments.
-    let textTokenLogprob: Float?
     let dropReason: WhisperSegmentConfidence.Reason?
 }
