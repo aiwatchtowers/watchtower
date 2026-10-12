@@ -240,6 +240,7 @@ package enum Constants {
     }
 
     nonisolated private static let resolvedEnvironmentBox = ResolvedEnvironmentBox()
+    nonisolated private static let loginEnvironmentBox = ResolvedEnvironmentBox()
 
     /// Returns a process environment with the user's full PATH — and their
     /// CODEX_HOME, when the login shell sets one — resolved from their login
@@ -247,7 +248,9 @@ package enum Constants {
     /// a macOS app (where PATH is minimal).
     package nonisolated static func resolvedEnvironment() -> [String: String] {
         struct Cache {
-            static let env: [String: String] = {
+            /// answered: the login shell printed the probe (it did not
+            /// time out or fail), so PATH and CODEX_HOME are its own.
+            static let resolved: (env: [String: String], answered: Bool) = {
                 var env = ProcessInfo.processInfo.environment
                 let shell = env["SHELL"] ?? "/bin/zsh"
                 let pathProc = Process()
@@ -295,11 +298,26 @@ package enum Constants {
                         }
                     }
                 }
-                return env
+                return (env, probed.path != nil)
             }()
         }
-        resolvedEnvironmentBox.set(Cache.env)
-        return Cache.env
+        resolvedEnvironmentBox.set(Cache.resolved.env)
+        if Cache.resolved.answered { loginEnvironmentBox.set(Cache.resolved.env) }
+        return Cache.resolved.env
+    }
+
+    /// The login shell's environment, resolved on a thread of its own (never
+    /// a pool or main thread, see `prewarmResolvedEnvironment`); nil when the
+    /// login shell did not answer the probe, so a caller about to act on
+    /// CODEX_HOME knows it does not have the shell's value.
+    package nonisolated static func resolvedLoginEnvironment() async -> [String: String]? {
+        if let env = loginEnvironmentBox.get() { return env }
+        return await withCheckedContinuation { continuation in
+            Thread.detachNewThread {
+                _ = resolvedEnvironment()
+                continuation.resume(returning: loginEnvironmentBox.get())
+            }
+        }
     }
 
     /// The CLI binary shipped inside the app bundle. Live processes must not

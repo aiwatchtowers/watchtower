@@ -160,8 +160,8 @@ final class TerminalCenter {
     /// Whether Codex has a rollout for a session id (`CodexRollout`), given
     /// the path its SessionStart stored; throws when Codex's sessions folder
     /// could not be listed. A seam for tests.
-    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?) throws -> Bool = {
-        try CodexRollout.exists(sessionID: $0, storedPath: $1, codexHome: CodexRollout.home())
+    @ObservationIgnored var codexRolloutExists: (_ sessionID: String, _ storedPath: String?, _ codexHome: URL) throws -> Bool = {
+        try CodexRollout.exists(sessionID: $0, storedPath: $1, codexHome: $2)
     }
     /// `watchtower workbench launch-args` for a Codex session of a workbench
     /// (`WorkbenchCLI.launchArgs`); nil when there is no CLI to ask.
@@ -359,19 +359,20 @@ final class TerminalCenter {
         guard let id = session.claudeSessionID else { return false }
         switch session.kind {
         case .claude: return transcriptExists(id)
-        case .codex: return (try? codexRolloutExists(id, session.transcriptPath)) ?? false
+        case .codex: return (try? codexRolloutExists(id, session.transcriptPath, CodexRollout.home())) ?? false
         case .shell: return false
         }
     }
 
     /// Whether relaunching the Codex row (not fresh) resumes its stored id:
-    /// a valid id whose rollout exists. Throws when Codex's sessions folder
-    /// could not be listed, so the caller does not drop the id on it.
-    func codexResumes(_ session: TerminalSession) throws -> Bool {
+    /// a valid id whose rollout exists under `codexHome` (the login shell's,
+    /// resolved by the caller). Throws when Codex's sessions folder could not
+    /// be listed, so the caller does not drop the id on it.
+    func codexResumes(_ session: TerminalSession, codexHome: URL) throws -> Bool {
         guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
             return false
         }
-        return try codexRolloutExists(id, session.transcriptPath)
+        return try codexRolloutExists(id, session.transcriptPath, codexHome)
     }
 
     /// How lines are typed into the session (spec 2026-10-12 §8): its

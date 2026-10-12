@@ -66,6 +66,12 @@ final class WorkbenchesViewModel {
     /// Reads `workbench.default_agent`; AppState wires the config file. A
     /// test VM launches Claude Code unless it sets this.
     @ObservationIgnored var readDefaultAgent: @MainActor () -> AgentKind = { .claude }
+    /// The Codex home a relaunch looks for rollouts in: the login shell's
+    /// CODEX_HOME (spec 2026-10-12 §7), resolved off the main thread; nil when
+    /// the login shell did not answer — the relaunch then resets nothing.
+    @ObservationIgnored var resolveCodexHome: () async -> URL? = {
+        await Constants.resolvedLoginEnvironment().map { CodexRollout.home(environment: $0) }
+    }
     /// Why installing or repairing a project's install failed. It explains
     /// the Repair button, so it stays until a status read finds nothing to
     /// repair — the page's own `.task` read races `createWorkbench`'s and must

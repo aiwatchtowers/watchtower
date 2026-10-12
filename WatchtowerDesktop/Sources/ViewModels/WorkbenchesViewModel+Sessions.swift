@@ -728,14 +728,19 @@ extension WorkbenchesViewModel {
     ) async -> (row: TerminalSession, codexResume: Bool?)? { // swiftlint:disable:this discouraged_optional_boolean
         guard row.kind == .codex else { return (row, nil) }
         guard !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return (row, false) }
+        // Never reset an id on a lookup in a home that is not the login
+        // shell's: an unresolved environment is "unknown", not "no rollout".
+        let codexHome: URL
         do {
-            if try center.codexResumes(row) { return (row, true) }
+            guard let home = await resolveCodexHome() else { throw CodexHomeUnresolved() }
+            codexHome = home
+            if try center.codexResumes(row, codexHome: home) { return (row, true) }
         } catch {
             await failed(row, "Could not check Codex's saved sessions", error, ticket: ticket, background: ticket == nil)
             return nil
         }
         NSLog("WorkbenchesViewModel: Codex session %lld starts anew: no rollout for id %@ (stored path %@) under %@",
-              row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", CodexRollout.home().path)
+              row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", codexHome.path)
         do {
             let reset = try await dbPool.write { db in
                 try TerminalSessionQueries.resetAgentSession(db, id: row.id)
@@ -799,5 +804,12 @@ extension WorkbenchesViewModel {
 
     private func setSessionError(_ message: String?, projectID: Int64?) {
         sessionActionErrors[projectID] = message
+    }
+}
+
+/// The login shell did not answer, so its CODEX_HOME is unknown.
+private struct CodexHomeUnresolved: LocalizedError {
+    var errorDescription: String? {
+        "your login shell did not answer, so Codex's CODEX_HOME is unknown; try again, or use Start fresh"
     }
 }

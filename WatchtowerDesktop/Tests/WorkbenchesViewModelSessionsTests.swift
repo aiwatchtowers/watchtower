@@ -87,6 +87,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
             return try titleResult.get()
         }
         vm.now = { [weak self] in self?.clock ?? Date() }
+        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
         return vm
     }
 

@@ -44,7 +44,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         }
         center.shell = { "/bin/zsh" }
         center.transcriptExists = { _ in false }
-        center.codexRolloutExists = { [weak self] id, _ in self?.rollouts.contains(id) ?? false }
+        center.codexRolloutExists = { [weak self] id, _, _ in self?.rollouts.contains(id) ?? false }
         stubLaunchArgs()
     }
 
@@ -69,6 +69,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { _ in .init(title: "", written: false) }
+        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
         vm.now = { [weak self] in self?.clock ?? Date() }
         stubLaunchArgs()
         return vm
@@ -206,12 +207,46 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         XCTAssertTrue(error.hasPrefix("Could not reset the Codex session"), error)
     }
 
+    /// Before the login shell's environment is known, a relaunch neither
+    /// resets the stored id nor launches: a lookup in the wrong home would
+    /// wipe it for good (#399 V1).
+    func testCodexUnresolvedHomeNeverResetsTheID() async throws {
+        let p = try await workbench()
+        let row = try await codexRow(p, id: storedID)
+        var lookups = 0
+        center.codexRolloutExists = { _, _, _ in lookups += 1; return false }
+        let vm = makeVM()
+        vm.resolveCodexHome = { nil }
+
+        await vm.open(row)
+
+        XCTAssertEqual(lookups, 0, "no lookup in an unresolved home")
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        let after = try await stored(row.id)
+        XCTAssertEqual(after?.claudeSessionID, storedID)
+        let error = try XCTUnwrap(vm.sessionActionErrors[p])
+        XCTAssertTrue(error.hasPrefix("Could not check Codex's saved sessions"), error)
+    }
+
+    /// The lookup uses the resolved login-shell home.
+    func testCodexRelaunchLooksInTheResolvedHome() async throws {
+        let row = try await codexRow(try await workbench(), id: storedID)
+        var homes: [String] = []
+        center.codexRolloutExists = { _, _, home in homes.append(home.path); return true }
+        let vm = makeVM()
+        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/codex-work") }
+
+        await vm.open(row)
+
+        XCTAssertEqual(homes, ["/Users/example/codex-work"])
+    }
+
     /// Codex's sessions folder that could not be listed is no "no rollout":
     /// the id stays and nothing launches.
     func testCodexUnreadableRolloutsKeepTheID() async throws {
         let p = try await workbench()
         let row = try await codexRow(p, id: storedID)
-        center.codexRolloutExists = { _, _ in throw CocoaError(.fileReadNoPermission) }
+        center.codexRolloutExists = { _, _, _ in throw CocoaError(.fileReadNoPermission) }
         let vm = makeVM()
 
         await vm.open(row)
@@ -227,7 +262,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
     /// and passes the answer, the center does not look again (#399 N2/N3).
     func testCodexRelaunchLooksForTheRolloutOnce() async throws {
         var lookups: [String] = [] // the title refresh of the session left also looks: count per id
-        center.codexRolloutExists = { [weak self] id, _ in
+        center.codexRolloutExists = { [weak self] id, _, _ in
             lookups.append(id)
             return self?.rollouts.contains(id) ?? false
         }
