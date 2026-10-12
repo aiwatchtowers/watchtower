@@ -7,6 +7,7 @@ import XCTest
 final class CloudKitTransportScopeTests: XCTestCase {
     private let owner = "_acme-owner-record"
     private var shared: CloudDatabaseScope { .shared(ownerName: owner) }
+    private var sharedZones: HubZones { .test(shared) }
 
     private func record(_ name: String, zone: CloudZoneID = .relay) -> CloudRecord {
         CloudRecord(recordName: name, zone: zone, kind: "action", modifiedAt: Date(), payload: Data("{}".utf8))
@@ -20,12 +21,15 @@ final class CloudKitTransportScopeTests: XCTestCase {
 
     // MARK: - Scope basics
 
-    func testScopeDatabaseAndZoneOwner() {
-        XCTAssertEqual(CloudDatabaseScope.private.zoneID(for: .data).ownerName, CKCurrentUserDefaultName)
-        XCTAssertEqual(shared.zoneID(for: .relay).ownerName, owner)
-        XCTAssertEqual(shared.zoneID(for: .relay).zoneName, "RelayZone")
-        XCTAssertTrue(CloudDatabaseScope.private.writesZones)
-        XCTAssertFalse(shared.writesZones)
+    func testScopeDatabaseAndZoneOwner() async throws {
+        XCTAssertEqual(HubZones.test().zoneID(for: .data).ownerName, CKCurrentUserDefaultName)
+        XCTAssertEqual(sharedZones.zoneID(for: .relay).ownerName, owner)
+        XCTAssertEqual(sharedZones.zoneID(for: .relay).zoneName, HubZones.testRelayZoneName)
+        let hub = await CloudKitTransport.testing(store: try .inMemory())
+        let phone = await CloudKitTransport.testing(store: try .inMemory(), scope: shared)
+        XCTAssertEqual(hub.role, .hub)
+        XCTAssertEqual(phone.role, .phone)
+        XCTAssertEqual(phone.zones, sharedZones)
     }
 
     func testPrivateScopeStartRegistersBothZones() async throws {
@@ -35,7 +39,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
             if case .saveZone(let zone) = change { return zone.zoneID.zoneName }
             return nil
         }
-        XCTAssertEqual(saved, ["DataZone", "RelayZone"])
+        XCTAssertEqual(saved, [HubZones.testDataZoneName, HubZones.testRelayZoneName])
     }
 
     // MARK: - Shared scope, no zone writes
@@ -93,7 +97,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
         let collected = await events(of: transport)
 
-        await transport.handleDeletedZones([shared.zoneID(for: .data), shared.zoneID(for: .relay)])
+        await transport.handleDeletedZones([sharedZones.zoneID(for: .data), sharedZones.zoneID(for: .relay)])
 
         XCTAssertEqual(collected.values, [.unlinked], "one event for one deletion batch")
         XCTAssertTrue(engine.databaseChanges.isEmpty)
@@ -103,7 +107,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared)
         let collected = await events(of: transport)
 
-        await transport.handleDeletedZones([CKRecordZone.ID(zoneName: "DataZone", ownerName: "_someone-else")])
+        await transport.handleDeletedZones([CKRecordZone.ID(zoneName: HubZones.testDataZoneName, ownerName: "_someone-else")])
 
         XCTAssertTrue(collected.values.isEmpty)
     }
@@ -114,13 +118,13 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let collected = await events(of: transport)
         let before = engine.databaseChanges.count
 
-        await transport.handleDeletedZones([CloudDatabaseScope.private.zoneID(for: .data)])
+        await transport.handleDeletedZones([HubZones.test().zoneID(for: .data)])
 
         XCTAssertTrue(collected.values.isEmpty)
         guard case .saveZone(let zone) = engine.databaseChanges.last, engine.databaseChanges.count == before + 1 else {
             return XCTFail("the private scope re-creates a deleted zone (unchanged branch behaviour)")
         }
-        XCTAssertEqual(zone.zoneID.zoneName, "DataZone")
+        XCTAssertEqual(zone.zoneID.zoneName, HubZones.testDataZoneName)
     }
 
     /// A deleted private DataZone (`.encryptedDataReset`, the owner deleting
@@ -137,8 +141,8 @@ final class CloudKitTransportScopeTests: XCTestCase {
         await transport.setAccountResetHandler { accountResets.append(1) }
 
         await transport.handleDeletedZones([
-            CloudDatabaseScope.private.zoneID(for: .data),
-            CloudDatabaseScope.private.zoneID(for: .relay)
+            HubZones.test().zoneID(for: .data),
+            HubZones.test().zoneID(for: .relay)
         ])
 
         XCTAssertEqual(dataResets.values.count, 1, "one reset for one deletion batch")
@@ -152,7 +156,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let resets = Collector<Int>()
         await transport.setDataZoneResetHandler { resets.append(1) }
 
-        await transport.handleDeletedZones([CloudDatabaseScope.private.zoneID(for: .relay)])
+        await transport.handleDeletedZones([HubZones.test().zoneID(for: .relay)])
 
         XCTAssertTrue(resets.values.isEmpty, "published slice records live in DataZone only")
     }
@@ -162,7 +166,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let resets = Collector<Int>()
         await transport.setDataZoneResetHandler { resets.append(1) }
 
-        await transport.handleDeletedZones([shared.zoneID(for: .data)])
+        await transport.handleDeletedZones([sharedZones.zoneID(for: .data)])
 
         XCTAssertTrue(resets.values.isEmpty, "a participant is unlinked instead")
     }
@@ -179,7 +183,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
 
     func testSharedScopeZoneNotFoundInsidePartialFailureEmitsUnlinked() async throws {
         let partial = CKError(.partialFailure, userInfo: [
-            CKPartialErrorsByItemIDKey: [shared.zoneID(for: .relay): CKError(.zoneNotFound)]
+            CKPartialErrorsByItemIDKey: [sharedZones.zoneID(for: .relay): CKError(.zoneNotFound)]
         ])
         let engine = FakeSyncEngine(fetchErrors: [partial])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
@@ -254,7 +258,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
     }
 
     func testForeignOwnersZoneNotFoundInPartialFailureDoesNotUnlink() async throws {
-        let stale = CKRecordZone.ID(zoneName: "RelayZone", ownerName: "_stale-owner")
+        let stale = CKRecordZone.ID(zoneName: HubZones.testRelayZoneName, ownerName: "_stale-owner")
         let partial = CKError(.partialFailure, userInfo: [CKPartialErrorsByItemIDKey: [stale: CKError(.zoneNotFound)]])
         let engine = FakeSyncEngine(fetchErrors: [partial])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
@@ -271,11 +275,11 @@ final class CloudKitTransportScopeTests: XCTestCase {
 
         await transport.handleFetchEventError(
             CKError(.zoneNotFound),
-            zoneID: CKRecordZone.ID(zoneName: "DataZone", ownerName: "_stale-owner")
+            zoneID: CKRecordZone.ID(zoneName: HubZones.testDataZoneName, ownerName: "_stale-owner")
         )
         XCTAssertTrue(collected.values.isEmpty)
 
-        await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: shared.zoneID(for: .data))
+        await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: sharedZones.zoneID(for: .data))
         XCTAssertEqual(collected.values, [.unlinked])
     }
 
@@ -283,7 +287,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
 
-        await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: shared.zoneID(for: .relay))
+        await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: sharedZones.zoneID(for: .relay))
 
         XCTAssertEqual(engine.fetchCount, 1)
         XCTAssertEqual(engine.zoneQueryCount, 1)
@@ -292,7 +296,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
     func testErrorBothThrownAndDeliveredAsAnEventIsHandledOnce() async throws {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.changeTokenExpired)])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
-        let zone = shared.zoneID(for: .relay)
+        let zone = sharedZones.zoneID(for: .relay)
         engine.onNextFetch { await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: zone) }
 
         try await transport.pull()
@@ -305,7 +309,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
         let collected = await events(of: transport)
-        let zone = shared.zoneID(for: .data)
+        let zone = sharedZones.zoneID(for: .data)
         engine.onNextFetch { await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: zone) }
 
         try await transport.pull()
@@ -319,7 +323,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneNotFound)])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
         let collected = await events(of: transport)
-        let stale = CKRecordZone.ID(zoneName: "DataZone", ownerName: "_stale-owner")
+        let stale = CKRecordZone.ID(zoneName: HubZones.testDataZoneName, ownerName: "_stale-owner")
         engine.onNextFetch { await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: stale) }
 
         try await transport.pull()
@@ -393,8 +397,8 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.zoneNotFound)])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
         let collected = await events(of: transport)
-        let live = shared.zoneID(for: .data)
-        let stale = CKRecordZone.ID(zoneName: "DataZone", ownerName: "_stale-owner")
+        let live = sharedZones.zoneID(for: .data)
+        let stale = CKRecordZone.ID(zoneName: HubZones.testDataZoneName, ownerName: "_stale-owner")
         engine.onNextFetch {
             await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: live)
             await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: stale)
@@ -411,7 +415,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
         let engine = FakeSyncEngine(fetchErrors: [CKError(.changeTokenExpired), CKError(.zoneNotFound)])
         let transport = await CloudKitTransport.testing(store: try .inMemory(), scope: shared, engine: engine)
         let collected = await events(of: transport)
-        let zone = shared.zoneID(for: .relay)
+        let zone = sharedZones.zoneID(for: .relay)
         engine.onNextFetch {
             engine.onNextFetch { await transport.handleFetchEventError(CKError(.zoneNotFound), zoneID: zone) }
         }
@@ -425,7 +429,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
     func testPrivateScopeIgnoresEventPathErrors() async throws {
         let engine = FakeSyncEngine()
         let transport = await CloudKitTransport.testing(store: try .inMemory(), engine: engine)
-        let zone = CloudDatabaseScope.private.zoneID(for: .data)
+        let zone = HubZones.test().zoneID(for: .data)
 
         await transport.handleFetchEventError(CKError(.networkFailure), zoneID: zone)
         await transport.handleFetchEventError(CKError(.changeTokenExpired), zoneID: zone)
@@ -475,7 +479,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
 
     func testStartWithADifferentScopeWipesTheOldScopesState() async throws {
         let store = try TransportStore.inMemory()
-        try store.saveScope(.private)
+        try store.saveScope(.private, hubID: HubZones.testHubID)
         try store.saveEngineState(Data("private-engine".utf8))
         try store.enqueueSave([record("action-1")])
 
@@ -488,7 +492,7 @@ final class CloudKitTransportScopeTests: XCTestCase {
 
     func testStartWithTheSameScopeKeepsState() async throws {
         let store = try TransportStore.inMemory()
-        try store.saveScope(shared)
+        try store.saveScope(shared, hubID: HubZones.testHubID)
         try store.enqueueSave([record("action-1")])
 
         _ = await CloudKitTransport.testing(store: store, scope: shared)
@@ -496,23 +500,27 @@ final class CloudKitTransportScopeTests: XCTestCase {
         XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["action-1"])
     }
 
-    func testStoreWithoutARecordedScopeAdoptsItAndKeepsState() async throws {
-        // Every hub store predates scopes: it must keep its queue and state.
+    func testStoreWithoutABindingIsWipedOnAdopt() async throws {
+        // Rewritten for multi-hub (spec §4.4): every single-hub store is bound
+        // to no hub, and its state (system fields naming the fixed-name
+        // zones) must not drive a per-hub zone.
         let store = try TransportStore.inMemory()
         try store.saveEngineState(Data("hub-engine".utf8))
         try store.enqueueSave([record("action-1")])
 
         _ = await CloudKitTransport.testing(store: store)
 
-        XCTAssertEqual(try store.loadEngineState(), Data("hub-engine".utf8))
-        XCTAssertEqual(try store.pendingBatch(limit: 10).saves.map(\.recordName), ["action-1"])
+        XCTAssertNil(try store.loadEngineState())
+        XCTAssertTrue(try store.pendingBatch(limit: 10).saves.isEmpty)
         XCTAssertEqual(try store.storedScope(), .private)
+        XCTAssertEqual(try store.storedHubID(), HubZones.testHubID)
     }
 
     func testStoredScopeSurvivesAccountWipe() throws {
         let store = try TransportStore.inMemory()
-        try store.saveScope(shared)
+        try store.saveScope(shared, hubID: HubZones.testHubID)
         try store.wipe()
         XCTAssertEqual(try store.storedScope(), shared)
+        XCTAssertEqual(try store.storedHubID(), HubZones.testHubID)
     }
 }

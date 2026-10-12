@@ -16,6 +16,25 @@ public enum CloudAvailability: Equatable, Sendable {
     case unavailable(String)
 }
 
+/// What `removeLegacyZones` did with the single-hub build's fixed-name zones.
+public enum LegacyZoneCleanup: String, Equatable, Sendable {
+    case noneFound = "none_found"
+    case deleted
+    case kept
+}
+
+public enum HubZoneError: Error, Equatable {
+    case notHub
+    case noEntitlement
+    case engineRunning
+    /// The server step of `deleteHubZones` landed or may have landed (one
+    /// zone is gone while the other's delete failed, or both are gone and
+    /// the local store wipe did not land). Unlike a delete that removed
+    /// nothing, this one has to be finished: the caller keeps its retry
+    /// marker (multi-hub spec §3.3).
+    case partlyDeleted
+}
+
 /// CloudKit adapter for the CloudSyncTransport seam, built on CKSyncEngine.
 /// Push-shaped engine events land in the TransportStore buffer; the seam's
 /// pull-shaped changes(since:) reads that buffer, so consumer tokens are
@@ -23,8 +42,9 @@ public enum CloudAvailability: Equatable, Sendable {
 /// decision 1 in the Plan 2 header).
 ///
 /// The same code runs on the Mac user's private database and on a
-/// participant's shared database (`CloudDatabaseScope`, spec §2.3), and
-/// handles the transport errors of spec §9: batch halving on
+/// participant's shared database (`CloudDatabaseScope`, spec §2.3), always
+/// on one hub's two zones (`HubZones`, multi-hub spec §4); only the hub
+/// role writes zones (`TransportRole`). It handles the transport errors of spec §9: batch halving on
 /// `.limitExceeded`, retry-after backoff on `.requestRateLimited` /
 /// `.zoneBusy`, the quota pause, and "unlinked" when a share vanishes.
 public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
@@ -42,9 +62,16 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     private let store: TransportStore
     private let containerID: String
-    /// The database this transport syncs, fixed for its lifetime.
-    nonisolated public let scope: CloudDatabaseScope
+    /// The hub this transport syncs and its two zones, fixed for its lifetime.
+    nonisolated public let zones: HubZones
+    /// Which side of the link this transport plays (multi-hub spec §4.1).
+    nonisolated public let role: TransportRole
+    /// The database this transport syncs.
+    nonisolated public var scope: CloudDatabaseScope { zones.scope }
+    /// Only the hub creates, re-creates and deletes zones.
+    private var managesZones: Bool { role == .hub }
     private let entitlementCheck: @Sendable () -> Bool
+    private let zoneAdmin: any CloudZoneAdministering
     private let engineFactory: EngineFactory
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
@@ -60,7 +87,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Fired after an account-change reset so an owner (the desktop hub) can
     /// wipe its own derived state. Set before `start()` via `setAccountResetHandler`.
     private var accountResetHandler: (@Sendable () -> Void)?
-    /// Fired after a `private`-scope DataZone deletion (see
+    /// Fired after a hub-role DataZone deletion (see
     /// `setDataZoneResetHandler`).
     private var dataZoneResetHandler: (@Sendable () -> Void)?
     private var eventHandler: (@Sendable (TransportEvent) -> Void)?
@@ -90,7 +117,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private(set) var retryTask: Task<Void, Never>?
     /// True after `.quotaExceeded`: nothing is sent until `resume()`.
     public private(set) var isPaused = false
-    /// `shared` scope: the owner's zones are gone (`TransportEvent.unlinked`
+    /// Phone role: the hub's zones are gone (`TransportEvent.unlinked`
     /// was emitted). Terminal for this transport's lifetime — nothing is
     /// sent, nudged or fetched any more, and neither an account-change reset
     /// nor anything else clears it. One transport serves one link: the phone
@@ -105,26 +132,38 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private var pullTask: Task<Void, Error>?
     /// Pulls that joined a running one (observable in tests).
     private(set) var pullJoins = 0
-    /// The running pull's `fetchChanges()` is awaiting the engine (cleared
+    /// The running pull's `fetchChanges(scope:)` is awaiting the engine (cleared
     /// before its error handling). Fetch-error events delivered meanwhile
-    /// are parked — every one: in `shared` scope one fetch covers every
+    /// are parked — every one: in the phone role one fetch covers every
     /// zone and fails once per zone — and handled by the pull, so one
     /// server failure is handled once.
     private var manualFetchInFlight = false
     private var parkedEventErrors: [(error: CKError, zoneID: CKRecordZone.ID)] = []
+    /// The running `deleteHubZones` (server delete, then store wipe). It
+    /// lives here, with the store it wipes, rather than on any one owner:
+    /// `start()` and a second delete wait for it, so a late wipe never lands
+    /// under an engine some other owner of this transport started.
+    private var hubZoneDelete: Task<Void, Error>?
 
     public init(
         store: TransportStore,
-        scope: CloudDatabaseScope = .private,
+        scope: CloudDatabaseScope,
+        hubID: String,
+        role: TransportRole,
         containerID: String = WatchtowerCloud.containerID
     ) {
+        precondition(role == .phone || scope == .private, "a hub syncs its own private database")
+        let zones = HubZones(scope: scope, hubID: hubID)
         self.init(
             store: store,
             scope: scope,
+            hubID: hubID,
+            role: role,
             containerID: containerID,
             entitlementPresent: { CloudKitTransport.entitlementPresent(containerID: containerID) },
+            zoneAdmin: CKDatabaseZoneAdmin(containerID: containerID, scope: scope),
             engineFactory: { state, delegate in
-                CKSyncEngineDriver(containerID: containerID, scope: scope, stateSerialization: state, delegate: delegate)
+                CKSyncEngineDriver(containerID: containerID, zones: zones, stateSerialization: state, delegate: delegate)
             },
             now: { Date() },
             sleep: { seconds in try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)) }
@@ -135,30 +174,35 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     init(
         store: TransportStore,
         scope: CloudDatabaseScope,
+        hubID: String,
+        role: TransportRole,
         containerID: String = WatchtowerCloud.containerID,
         entitlementPresent: @escaping @Sendable () -> Bool,
+        zoneAdmin: any CloudZoneAdministering,
         engineFactory: @escaping EngineFactory,
         now: @escaping @Sendable () -> Date,
         sleep: @escaping @Sendable (TimeInterval) async -> Void
     ) {
         self.store = store
-        self.scope = scope
+        zones = HubZones(scope: scope, hubID: hubID)
+        self.role = role
         self.containerID = containerID
         entitlementCheck = entitlementPresent
+        self.zoneAdmin = zoneAdmin
         self.engineFactory = engineFactory
         self.now = now
         self.sleep = sleep
     }
 
-    /// In `shared` scope an account switch does NOT emit `.unlinked`: the
-    /// transport wipes and relaunches on the new account's shared database
-    /// with the same `ownerName`. The phone decides (Task 12, spec §9) from
+    /// In the phone role an account switch does NOT emit `.unlinked`: the
+    /// transport wipes and relaunches on the new account's database with the
+    /// same scope and hub. The phone decides (Task 12, spec §9) from
     /// this handler whether the old link still stands.
     public func setAccountResetHandler(_ handler: (@Sendable () -> Void)?) {
         accountResetHandler = handler
     }
 
-    /// `private` scope: fired once per deletion batch that includes DataZone
+    /// Hub role: fired once per deletion batch that includes DataZone
     /// (`.encryptedDataReset`, the owner deleting iCloud data). Every
     /// published slice record is gone, so the owner (the desktop hub)
     /// forgets what it published and republishes into the recreated zone.
@@ -213,26 +257,29 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     // MARK: - Lifecycle
 
     /// Builds the CKSyncEngine on the scope's database with the stored
-    /// engine state and, in `private` scope, registers both zones as pending
-    /// database changes (a `shared` participant cannot create zones).
+    /// engine state and, in the hub role, registers this hub's two zones as
+    /// pending database changes (a phone never creates zones).
     /// Failures are recorded and surfaced via availability() — never thrown,
     /// never fatal: unsigned dev builds routinely lack the iCloud entitlement
     /// and must degrade to store-only operation (records wait in the pending
     /// queue).
+    /// A `deleteHubZones` still running is awaited first: the engine is
+    /// built only on the store its wipe left.
     public func start() async {
         isStopped = false
+        await settleHubZoneDelete()
         await startEngine()
     }
 
     private func startEngine() async {
-        guard engine == nil, !isStopped else { return }
+        guard engine == nil, !isStopped, hubZoneDelete == nil else { return }
         guard entitlementCheck() else {
             lastError = "missing iCloud entitlement (unsigned dev build?)"
             return
         }
         do {
-            if try store.adoptScope(scope) {
-                logger.notice("transport store held another database scope's state; wiped it")
+            if try store.adoptScope(scope, hubID: zones.hubID) {
+                logger.notice("transport store held another database's or hub's state; wiped it")
             }
         } catch {
             // The store's scope is unknown: starting could drive this
@@ -252,15 +299,15 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             stateSerialization = nil
         }
 
-        let box = DelegateBox()
+        let box = DelegateBox(ownZoneIDs: zones.allZoneIDs)
         box.transport = self
         let engine = engineFactory(stateSerialization, box)
         self.engine = engine
         delegateBox = box
 
-        if scope.writesZones {
+        if managesZones {
             engine.add(pendingDatabaseChanges: CloudZoneID.allCases.map {
-                .saveZone(CKRecordZone(zoneID: scope.zoneID(for: $0)))
+                .saveZone(CKRecordZone(zoneID: zones.zoneID(for: $0)))
             })
         }
         lastError = nil
@@ -329,7 +376,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private func fetchAndHandle(engine: any SyncEngineDriving) async throws {
         var thrown: CKError?
         do {
-            try await engine.fetchChanges()
+            try await engine.fetchChanges(scope: zones.allZoneIDs)
         } catch let error as CKError {
             thrown = error
         } catch {
@@ -370,7 +417,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             while moreComing {
                 guard self.engine === engine, !isUnlinked, !isStopped else { return }
                 if let throttledUntil, now() < throttledUntil { return }
-                let zoneID = scope.zoneID(for: zone)
+                let zoneID = zones.zoneID(for: zone)
                 let page: PolledZoneChanges
                 do {
                     page = try await engine.fetchZoneChanges(zoneID, since: try store.pollToken(zone: zone))
@@ -388,8 +435,8 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     /// A poll error. An expired token restarts that zone's poll from the
     /// beginning on the next pull (known records are skipped by change tag).
-    /// A missing zone in `private` scope is one the engine has not created
-    /// yet; in `shared` scope it unlinks, through the usual fetch-error
+    /// A missing zone in the hub role is one the engine has not created
+    /// yet; in the phone role it unlinks, through the usual fetch-error
     /// rules, which also wait out throttling and rethrow anything else.
     private func handlePollError(
         _ error: CKError,
@@ -401,7 +448,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             try store.setPollToken(nil, zone: zone)
             return
         }
-        if scope.writesZones, Self.zoneGoneCodes.contains(error.code) { return }
+        if managesZones, Self.zoneGoneCodes.contains(error.code) { return }
         try await handleFetchError(error, zoneID: zoneID, engine: engine)
     }
 
@@ -411,12 +458,12 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// system fields for (never seen, or its deletion already buffered).
     private func bufferPolledChanges(_ page: PolledZoneChanges) {
         let modifications = page.modifications.filter { record in
-            guard let zone = scope.cloudZone(for: record.recordID.zoneID),
+            guard let zone = zones.cloudZone(for: record.recordID.zoneID),
                   let tag = record.recordChangeTag else { return true }
             return Self.knownChangeTag(recordName: record.recordID.recordName, zone: zone, store: store) != tag
         }
         let deletions = page.deletions.filter { id in
-            guard let zone = scope.cloudZone(for: id.zoneID) else { return false }
+            guard let zone = zones.cloudZone(for: id.zoneID) else { return false }
             return (try? store.systemFields(recordName: id.recordName, zone: zone)) != nil
         }
         bufferFetched(modifications: modifications, deletions: deletions)
@@ -469,10 +516,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // when it asks for a batch.
             let pending = try store.pendingNames(limit: Self.maxBatchSize)
             var changes: [CKSyncEngine.PendingRecordZoneChange] = pending.saves.map {
-                .saveRecord(CKRecord.ID(recordName: $0.name, zoneID: scope.zoneID(for: $0.zone)))
+                .saveRecord(CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone)))
             }
             changes += pending.deletes.map {
-                .deleteRecord(CKRecord.ID(recordName: $0.name, zoneID: scope.zoneID(for: $0.zone)))
+                .deleteRecord(CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone)))
             }
             guard !changes.isEmpty else { return }
             engine.add(pendingRecordZoneChanges: changes)
@@ -501,11 +548,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // event delivery would wait on the fetch that is delivering.
             // Parked right here while a pull's fetch is awaiting the engine:
             // the engine awaits this delivery inside that fetch, so the park
-            // happens before `fetchChanges()` returns — no Task hop that
-            // could lose the race with the pull's resume. Shared scope only
-            // (private scope ignores event-path errors, as before scopes).
+            // happens before `fetchChanges(scope:)` returns — no Task hop that
+            // could lose the race with the pull's resume. Phone role only
+            // (the hub role ignores event-path errors, as before roles).
             if let error = fetched.error {
-                if manualFetchInFlight, !scope.writesZones, !isUnlinked {
+                if manualFetchInFlight, !managesZones, !isUnlinked {
                     parkedEventErrors.append((error, fetched.zoneID))
                 } else {
                     Task { await self.handleFetchEventError(error, zoneID: fetched.zoneID) }
@@ -519,26 +566,27 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     }
 
     /// A server-side zone deletion evicts that zone's buffered events and
-    /// archived system fields. In `private` scope it then re-registers the
+    /// archived system fields. In the hub role it then re-registers the
     /// zone so the surviving pending rows re-create it and re-send on the
-    /// next batch, and a deleted DataZone fires the data-zone reset handler once. In `shared` scope the owner removed this participant or
-    /// deleted the share: the phone is unlinked, and it must not (and
-    /// cannot) re-create the owner's zone.
+    /// next batch, and a deleted DataZone fires the data-zone reset handler
+    /// once. In the phone role the hub removed its zones (unlinked or
+    /// removed this phone): the phone is unlinked, and it must never
+    /// re-create the hub's zone. Another hub's zones are not ours.
     func handleDeletedZones(_ zoneIDs: [CKRecordZone.ID]) {
-        let deletedZones = zoneIDs.compactMap(scope.cloudZone(for:))
+        let deletedZones = zoneIDs.compactMap(zones.cloudZone(for:))
         guard !deletedZones.isEmpty else { return }
         do {
             for zone in deletedZones {
                 try store.evictZone(zone)
-                if scope.writesZones {
-                    engine?.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: scope.zoneID(for: zone)))])
+                if managesZones {
+                    engine?.add(pendingDatabaseChanges: [.saveZone(CKRecordZone(zoneID: zones.zoneID(for: zone)))])
                 }
             }
             lastError = nil
         } catch {
             recordError(error)
         }
-        if scope.writesZones {
+        if managesZones {
             // A deleted DataZone (`.encryptedDataReset`, the owner deleting
             // iCloud data) took every published slice record with it: the
             // owner's record of what is published is stale. Tell it once per
@@ -554,13 +602,14 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 
     /// Acts on a fetch error, `zoneID` being the zone it is about when
     /// known (the event path). Per-zone errors of a `.partialFailure` carry
-    /// their own zone. Only this scope's zones count: in `shared` scope an
-    /// error about another (stale) owner's zone never touches this link.
-    /// - `shared`: `.zoneNotFound` / `.userDeletedZone` → unlinked.
-    /// - Both scopes: an expired change token re-fetches once (unless, in
-    ///   `shared` scope, a zone is gone: unlinked); throttling waits.
-    /// - Anything else is rethrown (`shared`: unless it is only about other
-    ///   owners' zones).
+    /// their own zone. Only this hub's zones count: an error about another
+    /// hub's (or, in `shared` scope, another owner's) zone never touches
+    /// this link.
+    /// - Phone role: `.zoneNotFound` / `.userDeletedZone` → unlinked.
+    /// - Both roles: an expired change token re-fetches once (unless, in
+    ///   the phone role, a zone is gone: unlinked); throttling waits.
+    /// - Anything else is rethrown (phone role: unless it is only about
+    ///   zones that are not this hub's).
     func handleFetchError(_ error: CKError, zoneID: CKRecordZone.ID?, engine: any SyncEngineDriving) async throws {
         try await handleFetchItems(Self.flatten(error, zoneID: zoneID), original: error, engine: engine)
     }
@@ -573,7 +622,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         engine: any SyncEngineDriving
     ) async throws {
         let mine = items.filter { ownsZone($0.zoneID) }.map(\.error)
-        if !scope.writesZones, mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
+        if !managesZones, mine.contains(where: { Self.zoneGoneCodes.contains($0.code) }) {
             emitUnlinked(reason: "zone not found on fetch")
             return
         }
@@ -582,17 +631,17 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             return
         }
         if applyThrottle(from: mine) { return }
-        if !scope.writesZones, mine.isEmpty { return }
+        if !managesZones, mine.isEmpty { return }
         throw error
     }
 
-    /// The engine's report that fetching one zone failed. Private scope:
-    /// ignored, exactly as before scopes (the engine retries its own
-    /// automatic fetches; `pull()` handles manual ones). Shared scope: acts
-    /// only on "zone gone" and an expired token for this owner's zones.
+    /// The engine's report that fetching one zone failed. Hub role:
+    /// ignored, exactly as before roles (the engine retries its own
+    /// automatic fetches; `pull()` handles manual ones). Phone role: acts
+    /// only on "zone gone" and an expired token for this hub's zones.
     /// While a `pull()` is awaiting the engine the error is parked for it.
     func handleFetchEventError(_ error: CKError, zoneID: CKRecordZone.ID) async {
-        guard !scope.writesZones, let engine, !isUnlinked else { return }
+        guard !managesZones, let engine, !isUnlinked else { return }
         if manualFetchInFlight {
             parkedEventErrors.append((error, zoneID))
             return
@@ -618,7 +667,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         guard !refetchInFlight else { return }
         refetchInFlight = true
         defer { refetchInFlight = false }
-        if !scope.writesZones {
+        if !managesZones {
             let exists: Bool
             do {
                 exists = try await ownersZonesExist(engine: engine)
@@ -631,14 +680,14 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 return
             }
         }
-        try await engine.fetchChanges()
+        try await engine.fetchChanges(scope: zones.allZoneIDs)
         clearThrottle()
     }
 
     /// nil (no zone context) counts as ours: the error may be about any zone.
     private func ownsZone(_ zoneID: CKRecordZone.ID?) -> Bool {
         guard let zoneID else { return true }
-        return scope.cloudZone(for: zoneID) != nil
+        return zones.cloudZone(for: zoneID) != nil
     }
 
     private func ownersZonesExist(engine: any SyncEngineDriving) async throws -> Bool {
@@ -714,7 +763,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             let recordsToSave = try pending.saves.map {
                 Self.ckRecord(
                     from: $0,
-                    in: scope.zoneID(for: $0.zone),
+                    in: zones.zoneID(for: $0.zone),
                     systemFields: try store.systemFields(recordName: $0.recordName, zone: $0.zone)
                 )
             }
@@ -725,7 +774,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
                 saves: pending.saves.map { (name: $0.recordName, zone: $0.zone) }
             )
             let recordIDsToDelete = pending.deletes.map {
-                CKRecord.ID(recordName: $0.name, zoneID: scope.zoneID(for: $0.zone))
+                CKRecord.ID(recordName: $0.name, zoneID: zones.zoneID(for: $0.zone))
             }
             return CKSyncEngine.RecordZoneChangeBatch(
                 recordsToSave: recordsToSave,
@@ -752,13 +801,14 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         bufferFetched(modifications: event.modifications.map(\.record), deletions: event.deletions.map(\.recordID))
     }
 
-    /// Buffers fetched records and deletions of this scope's zones (the
+    /// Buffers fetched records and deletions of this hub's zones (the
     /// engine's fetched-changes events and the transport's own zone poll).
     /// Internal so tests feed it without fabricating an engine event.
     func bufferFetched(modifications fetched: [CKRecord], deletions: [CKRecord.ID]) {
-        let modifications = fetched.filter { scope.cloudZone(for: $0.recordID.zoneID) != nil }
+        let modifications = fetched.filter { zones.cloudZone(for: $0.recordID.zoneID) != nil }
         let changed = modifications.compactMap { modification -> CloudRecord? in
-            guard let record = Self.cloudRecord(from: modification) else { return nil }
+            guard let record = zones.cloudZone(for: modification.recordID.zoneID)
+                .flatMap({ Self.cloudRecord(from: modification, zone: $0) }) else { return nil }
             // CKAsset downloads land in a temporary staging area that may be
             // purged after this callback; the buffered event outlives it, so
             // stash a durable copy and point the event at that. A failed
@@ -781,7 +831,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
         var deletedByZone: [CloudZoneID: [String]] = [:]
         for deletion in deletions {
-            guard let zone = scope.cloudZone(for: deletion.zoneID) else { continue }
+            guard let zone = zones.cloudZone(for: deletion.zoneID) else { continue }
             deletedByZone[zone, default: []].append(deletion.recordName)
         }
         do {
@@ -790,7 +840,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             // of the same recordName goes out with the server's change tag
             // (e.g. desktop status write-backs onto mobile-created records).
             for modification in modifications {
-                guard let zone = scope.cloudZone(for: modification.recordID.zoneID) else { continue }
+                guard let zone = zones.cloudZone(for: modification.recordID.zoneID) else { continue }
                 try store.saveSystemFields(
                     Self.archivedSystemFields(of: modification),
                     recordName: modification.recordID.recordName,
@@ -820,7 +870,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         var saves: [(name: String, zone: CloudZoneID, sentModifiedAt: Date)] = []
         var savedFields: [(name: String, zone: CloudZoneID, data: Data)] = []
         for record in saved {
-            guard let zone = scope.cloudZone(for: record.recordID.zoneID) else { continue }
+            guard let zone = zones.cloudZone(for: record.recordID.zoneID) else { continue }
             // Use the record's own modifiedAt as the stamp so that a newer
             // local re-enqueue (modified_at > stamp) is not silently lost.
             // Missing field → .distantFuture → clears unconditionally (old behaviour).
@@ -837,14 +887,14 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         }
         var deletes: [(name: String, zone: CloudZoneID)] = []
         for recordID in deleted {
-            guard let zone = scope.cloudZone(for: recordID.zoneID) else { continue }
+            guard let zone = zones.cloudZone(for: recordID.zoneID) else { continue }
             deletes.append((name: recordID.recordName, zone: zone))
         }
         // Failed saves stay pending — the engine retries them. Failed deletes
         // for records the server never saw count as success under the seam's
         // idempotent-delete contract, so clear those too.
         for (recordID, error) in failedDeletes where error.code == .unknownItem {
-            guard let zone = scope.cloudZone(for: recordID.zoneID) else { continue }
+            guard let zone = zones.cloudZone(for: recordID.zoneID) else { continue }
             deletes.append((name: recordID.recordName, zone: zone))
         }
 
@@ -872,7 +922,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             try dropSavesWithMissingAssets(failedSaves)
             let batchSize = saved.count + deleted.count + failedSaves.count + failedDeletes.count
             let tooLarge = failedSaves.filter { $0.error.code == .limitExceeded }.compactMap { failure in
-                scope.cloudZone(for: failure.record.recordID.zoneID).map { (name: failure.record.recordID.recordName, zone: $0) }
+                zones.cloudZone(for: failure.record.recordID.zoneID).map { (name: failure.record.recordID.recordName, zone: $0) }
             }
             if !tooLarge.isEmpty {
                 try shrinkBatch(size: batchSize, rejectable: tooLarge)
@@ -910,7 +960,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// identically forever.
     private func fixSystemFieldsForFailedSaves(_ failures: [(record: CKRecord, error: CKError)]) throws {
         for failure in failures {
-            guard let zone = scope.cloudZone(for: failure.record.recordID.zoneID) else { continue }
+            guard let zone = zones.cloudZone(for: failure.record.recordID.zoneID) else { continue }
             let name = failure.record.recordID.recordName
             switch failure.error.code {
             case .serverRecordChanged:
@@ -951,7 +1001,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// without such a handler loses that newer save.
     private func dropSavesWithMissingAssets(_ failures: [(record: CKRecord, error: CKError)]) throws {
         for failure in failures where failure.error.code == .assetFileNotFound {
-            guard let zone = scope.cloudZone(for: failure.record.recordID.zoneID) else { continue }
+            guard let zone = zones.cloudZone(for: failure.record.recordID.zoneID) else { continue }
             let name = failure.record.recordID.recordName
             try store.dropPending(recordName: name, zone: zone)
             logger.error("the asset file of \(name, privacy: .public) is gone (assetFileNotFound); dropped it from the send queue")
@@ -979,10 +1029,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         return inner.isEmpty ? [(zoneID, error)] : inner
     }
 
-    /// Unlinked (`shared` scope) and the quota pause.
+    /// Unlinked (phone role) and the quota pause.
     private func applySendFailures(_ errors: [CKError]) {
         let codes = Set(errors.map(\.code))
-        if !scope.writesZones, !codes.isDisjoint(with: Self.zoneGoneCodes) {
+        if !managesZones, !codes.isDisjoint(with: Self.zoneGoneCodes) {
             emitUnlinked(reason: "zone not found on send")
         }
         if codes.contains(.quotaExceeded) {
@@ -1078,7 +1128,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     private func emitUnlinked(reason: String) {
         guard !isUnlinked else { return }
         isUnlinked = true
-        logger.notice("shared zones gone (\(reason, privacy: .public)); unlinked")
+        logger.notice("hub zones gone (\(reason, privacy: .public)); unlinked")
         eventHandler?(.unlinked)
     }
 
@@ -1087,7 +1137,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         guard let engine, !isUnlinked else { return }
         nudgeEngine()
         do {
-            try await engine.sendChanges()
+            try await engine.sendChanges(scope: zones.allZoneIDs)
         } catch let error as CKError {
             handleSendError(error)
         } catch {
@@ -1206,9 +1256,10 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         return archiver.encodedData
     }
 
-    static func cloudRecord(from ck: CKRecord) -> CloudRecord? {
-        guard let payload = ck.encryptedValues["payload"] as? Data,
-              let zone = CloudZoneID(rawValue: ck.recordID.zoneID.zoneName) else { return nil }
+    /// `zone` is the kind of the record's zone, resolved by the caller
+    /// through `HubZones` (a zone name carries the hub id).
+    static func cloudRecord(from ck: CKRecord, zone: CloudZoneID) -> CloudRecord? {
+        guard let payload = ck.encryptedValues["payload"] as? Data else { return nil }
         return CloudRecord(
             recordName: ck.recordID.recordName,
             zone: zone,
@@ -1230,6 +1281,11 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
 /// of how CKSyncEngine.Configuration retains its delegate.
 private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Sendable {
     weak var transport: CloudKitTransport?
+    let ownZoneIDs: [CKRecordZone.ID]
+
+    init(ownZoneIDs: [CKRecordZone.ID]) {
+        self.ownZoneIDs = ownZoneIDs
+    }
 
     func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
         await transport?.handleEngineEvent(event)
@@ -1240,6 +1296,17 @@ private final class DelegateBox: NSObject, CKSyncEngineDelegate, @unchecked Send
         syncEngine: CKSyncEngine
     ) async -> CKSyncEngine.RecordZoneChangeBatch? {
         await transport?.nextEngineBatch()
+    }
+
+    /// The engine's own (push-driven) fetches read this hub's zones only
+    /// (multi-hub spec §4.2): another hub's changes are never downloaded.
+    func nextFetchChangesOptions(
+        _ context: CKSyncEngine.FetchChangesContext,
+        syncEngine: CKSyncEngine
+    ) async -> CKSyncEngine.FetchChangesOptions {
+        var options = context.options
+        options.scope = .zoneIDs(ownZoneIDs)
+        return options
     }
 }
 
@@ -1255,5 +1322,90 @@ extension CloudKitTransport {
         guard !isStopped, !isPaused else { return }
         if let throttledUntil, now() < throttledUntil { return }
         await resend()
+    }
+}
+
+// MARK: - Hub zones (multi-hub spec §3.3, §3.6)
+
+extension CloudKitTransport {
+    /// Hub role, after `stop()`: deletes this hub's two zones on the server
+    /// (the owner turned the hub off; their shares and every participant go
+    /// with them) and wipes the store, whose engine state and system fields
+    /// describe zones that no longer exist. A delete that removed nothing
+    /// throws CloudKit's error and leaves both in place; one that removed
+    /// something but did not finish throws `HubZoneError.partlyDeleted`.
+    /// A call while a delete runs joins it (its outcome, no second server
+    /// delete), and `start()` waits for it.
+    public func deleteHubZones() async throws {
+        guard role == .hub else { throw HubZoneError.notHub }
+        if let running = hubZoneDelete {
+            try await running.value
+            return
+        }
+        guard engine == nil else { throw HubZoneError.engineRunning }
+        guard entitlementCheck() else { throw HubZoneError.noEntitlement }
+        let work = Task { try await self.deleteZonesThenWipe() }
+        hubZoneDelete = work
+        let outcome = await work.result
+        if hubZoneDelete == work { hubZoneDelete = nil }
+        try outcome.get()
+    }
+
+    /// Returns once no `deleteHubZones` is running.
+    private func settleHubZoneDelete() async {
+        while let running = hubZoneDelete {
+            _ = await running.result
+            if hubZoneDelete == running { hubZoneDelete = nil }
+        }
+    }
+
+    private func deleteZonesThenWipe() async throws {
+        do {
+            try await zoneAdmin.deleteZones(zones.allZoneIDs)
+        } catch let partial as PartialZoneDeleteError {
+            logger.error("hub zones partly deleted: \(partial.underlying.localizedDescription, privacy: .public)")
+            throw HubZoneError.partlyDeleted
+        }
+        // Re-checked after the await: the zones are gone, so a store this
+        // engine drives must not be wiped under it (`start()` waits for this
+        // delete, so this holds unless that contract breaks).
+        guard engine == nil else {
+            logger.error("hub zones deleted while an engine runs; the store is not wiped")
+            throw HubZoneError.partlyDeleted
+        }
+        do {
+            try store.wipe()
+        } catch {
+            logger.error("hub zones deleted, store not wiped: \(error.localizedDescription, privacy: .public)")
+            throw HubZoneError.partlyDeleted
+        }
+    }
+
+    /// Hub role: the single-hub build's fixed-name `DataZone`/`RelayZone`.
+    /// `deleteIf` gets the legacy DataZone `heartbeat` payload (nil: none)
+    /// and decides; both legacy zones that exist go together, or neither. A
+    /// legacy RelayZone with no legacy DataZone has no heartbeat (nil) and is
+    /// deleted if `deleteIf` agrees. A heartbeat record that exists but whose
+    /// payload cannot be read keeps the zones without asking `deleteIf`
+    /// (spec §3.6): it may be another hub's.
+    public func removeLegacyZones(
+        deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool
+    ) async throws -> LegacyZoneCleanup {
+        guard role == .hub else { throw HubZoneError.notHub }
+        guard entitlementCheck() else { throw HubZoneError.noEntitlement }
+        let present = try await zoneAdmin.zoneIDs().filter(HubZones.legacyZoneIDs.contains)
+        guard !present.isEmpty else { return .noneFound }
+        var payload: Data?
+        let legacyData = HubZones.legacyZoneID(.data)
+        if present.contains(legacyData) {
+            let heartbeat = try await zoneAdmin.record(CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: legacyData))
+            if let heartbeat {
+                guard let bytes = heartbeat.encryptedValues["payload"] as? Data else { return .kept }
+                payload = bytes
+            }
+        }
+        guard deleteIf(payload) else { return .kept }
+        try await zoneAdmin.deleteZones(present)
+        return .deleted
     }
 }

@@ -33,6 +33,10 @@ import WatchtowerSync
 /// that put it back to `pending` only gets `received` echoed again). An upload
 /// found still `begun` is echoed `failed` / `outcome_unknown`, not re-ingested.
 ///
+/// Hub addressing (multi-hub spec §3.5): a record whose `hub_id` names another
+/// hub fails `wrong_hub`, ledgered `done` like any refusal, so a re-save is
+/// re-echoed, never dispatched.
+///
 /// Device gate (§5.2 rule 4): an action or upload is applied only when its
 /// `device_id` is a linked phone in the sidecar's `devices` table and, in
 /// `shared` scope, the record's creator is that phone's iCloud user
@@ -281,6 +285,8 @@ final class RelayProcessor: Sendable {
         let outcome: ActionOutcome
         if try sidecar.relayPhase(action.recordName) == .begun {
             outcome = .failed(.outcomeUnknown, message: "The Mac restarted while applying this")
+        } else if let target = action.hubID, target != hubID {
+            outcome = .failed(.wrongHub, message: Self.wrongHubMessage)
         } else if try !isFromLinkedDevice(action.deviceID, creator: creator) {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else if isExpired(action) {
@@ -298,6 +304,7 @@ final class RelayProcessor: Sendable {
     }
 
     static let notLinkedMessage = "This phone is not linked to this Mac."
+    static let wrongHubMessage = "This was sent to another Mac."
 
     /// The device gate (§5.2 rule 4).
     private func isFromLinkedDevice(_ deviceID: String?, creator: String?) throws -> Bool {
@@ -408,6 +415,8 @@ final class RelayProcessor: Sendable {
         let outcome: ActionOutcome
         if try sidecar.relayPhase(name) == .begun {
             outcome = .failed(.outcomeUnknown, message: "Your Mac restarted while saving this recording. Send it again.")
+        } else if let target = upload.hubID, target != hubID {
+            outcome = .failed(.wrongHub, message: Self.wrongHubMessage)
         } else if try !isFromLinkedDevice(upload.deviceID, creator: creator) {
             outcome = .failed(.deviceNotLinked, message: Self.notLinkedMessage)
         } else {

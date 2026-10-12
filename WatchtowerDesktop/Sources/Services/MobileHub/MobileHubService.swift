@@ -1,4 +1,5 @@
 import AppKit
+import CloudKit
 import Foundation
 import os
 import WatchtowerCore
@@ -27,6 +28,14 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     /// `.zoneBusy`); nil once a send goes through. Settings → Mobile shows
     /// "iCloud is slowing sync down" after 60 s of it (spec §9).
     var throttledSince: Date? { get async }
+    /// Hub zones deleted when Settings turns the hub off (multi-hub spec
+    /// §3.3); call after `stop()`. Throws `HubZoneError.partlyDeleted` when
+    /// something was deleted but the delete did not finish. Serialized on
+    /// the transport: a second delete joins a running one and `start()`
+    /// waits for it, whichever hub object calls them.
+    func deleteHubZones() async throws
+    /// The single-hub build's fixed-name zones (multi-hub spec §3.6).
+    func removeLegacyZones(deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool) async throws -> LegacyZoneCleanup
 }
 
 extension CloudKitTransport: HubTransport {}
@@ -67,17 +76,20 @@ struct MobileHubStorage {
         return base.appendingPathComponent("Watchtower/MobileHub", isDirectory: true)
     }
 
-    /// The real storage: `transport.db` behind a private-scope
-    /// CloudKitTransport, and `hubstate.db`.
+    /// The real storage (multi-hub spec §3.1): `hubstate.db`, whose `hub_id`
+    /// names this hub's zones, and `transport.db` behind a hub-role
+    /// CloudKitTransport on those zones; the shares are of the same zones.
     static func live() throws -> Self {
         let dir = directory()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
         let sidecar = try HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)
+        let hubID = try sidecar.ensureHubID()
+        let store = try TransportStore(path: dir.appendingPathComponent("transport.db").path)
         return Self(
-            transport: CloudKitTransport(store: store), sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
+            transport: CloudKitTransport(store: store, scope: .private, hubID: hubID, role: .hub),
+            sidecar: sidecar, ownerUser: HubHostInfo.iCloudUserRecordName,
             sliceAssets: SliceAssetStore(directory: dir.appendingPathComponent("SliceAssets", isDirectory: true)),
-            shares: CloudKitShareService(),
+            shares: CloudKitShareService(hubID: hubID),
             registerForPushes: registerForCloudKitPushes
         )
     }
@@ -97,13 +109,6 @@ enum HubStatus: Equatable {
     /// CloudKit can't be used (no entitlement on unsigned dev builds, no
     /// iCloud account, …): expected and harmless; no loops run.
     case unavailable(String)
-    /// Enabling was refused: the named Mac's heartbeat is under 720 s old
-    /// (spec §8 I-1). Settings shows "<mac_name> is your hub. Turn it off
-    /// there, or Take over".
-    case otherHub(String)
-    /// The named Mac took over while this hub ran, so this one stopped.
-    /// Settings shows "Another Mac took over".
-    case tookOver(String)
 }
 
 /// Composition root of the mobile hub (spec §6.1): owns the slice publisher
@@ -118,20 +123,24 @@ final class MobileHubService {
     nonisolated static let activityWindow: TimeInterval = 300
     /// The heartbeat is rewritten this often (spec §3).
     nonisolated static let heartbeatInterval: Duration = .seconds(300)
-    /// Bound on each CloudKit wait the heartbeat adds: the pull before the
-    /// single-hub check and the iCloud user lookup.
+    /// Bound on each CloudKit wait the hub adds: the iCloud user lookup,
+    /// the legacy zone check and the zone delete.
     nonisolated static let defaultCloudTimeout: Duration = .seconds(30)
     /// Heartbeat ticks failing in a row before the hub stops (3 × 300 s
     /// outlasts the 720 s the phone waits before it shows the Mac offline).
     nonisolated static let maxTickFailures = 3
 
     private(set) var status: HubStatus = .off
+    /// Why the last hub-off zone delete did not go through, for Settings →
+    /// Mobile while the toggle is off; nil once it went through or started.
+    private(set) var hubOffProblem: String?
     /// The heartbeat's `sharing` field; the link center sets it once the
     /// zone shares exist.
     @ObservationIgnored var sharing: HubSharing = .none
-    /// Runs after a successful `takeOver()`: the link center's share
-    /// teardown (spec §2.3).
-    @ObservationIgnored var onTakeOver: (@MainActor () async -> Void)?
+    /// Runs after Settings turned the hub off and its zones were deleted
+    /// (multi-hub spec §3.3): the link center forgets codes and phones. A
+    /// throw keeps the delete pending, so the next start redoes it.
+    @ObservationIgnored var onZonesDeleted: (@MainActor () throws -> Void)?
     /// Phone linking (Settings → Mobile); nil when the storage has no share
     /// service.
     @ObservationIgnored var linkCenter: MobileLinkCenter?
@@ -226,32 +235,17 @@ final class MobileHubService {
     }
 
     /// Turns the hub on and reports where it landed: `.running`, or
-    /// `.otherHub` when another Mac's heartbeat is live (spec §8 I-1).
+    /// `.unavailable` when iCloud can't be used or the heartbeat write failed.
     @discardableResult
     func enable() async -> HubStatus {
         await start()
         return status
     }
 
-    /// Enables over a live foreign heartbeat: writes this hub's heartbeat,
-    /// so the other hub stops at its next read.
-    @discardableResult
-    func takeOver() async -> HubStatus {
-        await start(takingOver: true)
-        if status == .running, let onTakeOver {
-            await onTakeOver()
-        }
-        return status
-    }
-
-    /// Starts the transport, gates on availability and the single-hub rule,
-    /// then spins up the loops. Safe to call again after `.unavailable`,
-    /// `.otherHub`, `.tookOver` or `stop()`.
+    /// Starts the transport, gates on availability, writes the heartbeat,
+    /// then spins up the loops. Safe to call again after `.unavailable` or
+    /// `stop()`.
     func start() async {
-        await start(takingOver: false)
-    }
-
-    private func start(takingOver: Bool) async {
         guard !disposed, isEnabled() else { return }
         guard status != .running, status != .starting else { return }
         status = .starting
@@ -262,6 +256,21 @@ final class MobileHubService {
         // stop() may have run during the install: never start the
         // transport it already stopped.
         guard status == .starting, epoch == startEpoch else { return }
+        let zonesSettled = await finishPendingZoneDelete()
+        guard status == .starting, epoch == startEpoch else { return }
+        guard zonesSettled else {
+            status = .unavailable("Couldn't finish deleting this Mac's iCloud zones")
+            startReprobeLoop()
+            return
+        }
+        do {
+            try adoptPerHubZones()
+        } catch {
+            logger.error("per-hub zone adoption failed: \(error.localizedDescription, privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's iCloud zones: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
         await transport.start()
         let availability = await transport.availability()
         // stop() may have run while we awaited above.
@@ -273,25 +282,26 @@ final class MobileHubService {
         }
         reprobeTask?.cancel()
         reprobeTask = nil
-        switch await claimHub(takingOver: takingOver, startEpoch: startEpoch) {
-        case nil:
-            return
-        case .refused(let macName):
-            stop()
-            status = .otherHub(macName)
-            return
-        case .failed(let message):
-            status = .unavailable(message)
+        await removeLegacyZonesIfDue()
+        guard status == .starting, epoch == startEpoch else { return }
+        // Each Mac publishes into its own zones (multi-hub spec §2, §3.2):
+        // no other hub's heartbeat is read, so there is nothing to refuse.
+        await resolveOwnerUser()
+        guard status == .starting, epoch == startEpoch else { return }
+        do {
+            try await writeHeartbeat(hubID: try identity.hubID())
+        } catch {
+            logger.error("first heartbeat failed: \(error.localizedDescription, privacy: .public)")
+            status = .unavailable("Couldn't write the heartbeat: \(error.localizedDescription)")
             startReprobeLoop()
             return
-        case .claimed:
-            break
         }
         tickFailures = 0
         publisher.start()
         companions.forEach { $0.start() }
         startRelayLoop()
         startHeartbeatLoop()
+        hubOffProblem = nil
         status = .running
     }
 
@@ -356,11 +366,23 @@ final class MobileHubService {
         status = .off
     }
 
-    /// The Settings toggle turned off: stops, and removes the staged slice
-    /// assets (restaged and republished at the next start).
+    /// The Settings toggle turned off (multi-hub spec §3.3): stops, removes
+    /// the staged slice assets, then deletes this hub's two zones (bounded).
+    /// Once they are gone the link center forgets every phone and the sync
+    /// state is wiped (nothing is published; the relay buffer was wiped, so
+    /// it is re-read from the start; the ledger stays). A delete that fails
+    /// changes nothing: the zones, the state and the phones stay consistent
+    /// (Review focus 5). One that times out may still land, so its outcome is
+    /// unknown: `hub_zones_delete_pending` stays set and the next start
+    /// finishes it before the engine runs.
     func disable() {
         stop()
         publisher.closeStagedAssets()
+        let previous = teardown
+        teardown = Task { [weak self] in
+            await previous?.value
+            await self?.deleteZonesForHubOff()
+        }
     }
 
     /// Terminal stop for a hub being replaced (an `initWorkbenches` re-run).
@@ -373,6 +395,164 @@ final class MobileHubService {
     /// transport stopped).
     func waitUntilStopped() async {
         await teardown?.value
+    }
+
+    // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
+
+    /// `failed`: refused before anything was sent or applied (see
+    /// `isDefinitelyRefused`), so nothing changed. `partlyDeleted`: something
+    /// was deleted (one zone, or both without the store wipe). `unconfirmed`:
+    /// the bound ran out, or an error left it open whether the server
+    /// applied the delete. The last two have to be finished at the next start.
+    private enum ZoneDeleteOutcome { case deleted, failed, partlyDeleted, unconfirmed }
+
+    /// Turning the hub off: records the delete as pending first, so an
+    /// unconfirmed outcome (a timeout, or an error after the request may have
+    /// reached the server), a partial delete or a crash leaves the next start
+    /// to finish it. Only a delete that was definitely refused clears the
+    /// marker. What did not go through shows in `hubOffProblem`.
+    private func deleteZonesForHubOff() async {
+        hubOffProblem = nil
+        do {
+            try sidecar.setMetaValue("1", forKey: HubIdentity.zonesDeletePendingKey)
+        } catch {
+            logger.error("hub off: zones kept, sidecar unwritable: \(error.localizedDescription, privacy: .public)")
+            hubOffProblem = "This Mac's iCloud zones were kept: its sync state couldn't be written "
+                + "(\(error.localizedDescription))"
+            return
+        }
+        switch await deleteHubZonesBounded() {
+        case .deleted:
+            if !zonesDeleted() {
+                hubOffProblem = "This Mac's iCloud zones were deleted, but its phones and sync state "
+                    + "weren't cleared. That finishes when the hub is turned on."
+            }
+        case .failed:
+            hubOffProblem = "Couldn't delete this Mac's iCloud zones; they and the linked phones are kept"
+            do {
+                try sidecar.removeMetaValue(forKey: HubIdentity.zonesDeletePendingKey)
+            } catch {
+                logger.error("hub off: pending marker not cleared: \(error.localizedDescription, privacy: .public)")
+            }
+        case .partlyDeleted:
+            logger.warning("hub off: zones partly deleted; the next start finishes it")
+            hubOffProblem = "This Mac's iCloud zones were only partly deleted. That finishes when the hub is turned on."
+        case .unconfirmed:
+            logger.warning("hub off: zone delete unconfirmed; the next start finishes it")
+            hubOffProblem = "iCloud didn't confirm deleting this Mac's zones. That finishes when the hub is turned on."
+        }
+    }
+
+    /// At start, before the engine runs: a hub-off zone delete whose outcome
+    /// is unknown is done again (`deleteHubZones` treats a missing zone as
+    /// deleted). True when nothing is pending any more; false keeps the hub
+    /// off the engine, so a late store wipe never lands under it.
+    private func finishPendingZoneDelete() async -> Bool {
+        do {
+            guard try sidecar.metaValue(forKey: HubIdentity.zonesDeletePendingKey) != nil else { return true }
+        } catch {
+            logger.error("pending zone delete: sidecar unreadable: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+        guard case .deleted = await deleteHubZonesBounded() else { return false }
+        return zonesDeleted()
+    }
+
+    /// Runs `deleteHubZones()`, bounded by `cloudTimeout`. The delete is not
+    /// cancelled on timeout and may still land; the transport, which lives
+    /// for the app run with its store, serializes it: a later delete joins
+    /// it and `transport.start()` waits for it — from this hub object or one
+    /// built after it — so its late store wipe never races either.
+    private func deleteHubZonesBounded() async -> ZoneDeleteOutcome {
+        let transport = self.transport
+        let logger = self.logger
+        let work = Task<ZoneDeleteOutcome, Never> {
+            do {
+                try await transport.deleteHubZones()
+                return .deleted
+            } catch HubZoneError.partlyDeleted {
+                return .partlyDeleted
+            } catch {
+                logger.error("zones not deleted: \(error.localizedDescription, privacy: .public)")
+                return Self.isDefinitelyRefused(error) ? .failed : .unconfirmed
+            }
+        }
+        return await Self.bounded(cloudTimeout) { await work.value } ?? .unconfirmed
+    }
+
+    /// Errors that mean the delete was never sent or never applied: the
+    /// transport refused it, or CloudKit rejected the request up front.
+    /// Anything else (a lost response, a network failure mid-request,
+    /// throttling, a server rejection, a non-CloudKit error) may have landed.
+    nonisolated static func isDefinitelyRefused(_ error: any Error) -> Bool {
+        if let hub = error as? HubZoneError {
+            return [.notHub, .engineRunning, .noEntitlement].contains(hub)
+        }
+        guard let ck = error as? CKError else { return false }
+        let refused: Set<CKError.Code> = [
+            .networkUnavailable, .notAuthenticated, .permissionFailure, .quotaExceeded, .missingEntitlement,
+            .badContainer, .managedAccountRestricted, .incompatibleVersion, .accountTemporarilyUnavailable,
+            .invalidArguments
+        ]
+        return refused.contains(ck.code)
+    }
+
+    /// The zones are gone: the link center forgets the phones, then the sync
+    /// state is wiped. The pending marker clears only once both landed, so
+    /// a failure is redone at the next start. True when it cleared.
+    private func zonesDeleted() -> Bool {
+        do {
+            try onZonesDeleted?()
+            try sidecar.wipeSyncState(now: now())
+            try sidecar.removeMetaValue(forKey: HubIdentity.zonesDeletePendingKey)
+            return true
+        } catch {
+            logger.error("zones deleted: phones or sync state not cleared: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// First start on the per-hub build: the transport store, bound to no
+    /// hub, wipes itself at `start()`, so what the sidecar believes published
+    /// and its relay cursor describe the old fixed-name zones. Forgets them
+    /// once (Review focus 3); the exactly-once ledger stays.
+    private func adoptPerHubZones() throws {
+        guard try sidecar.metaValue(forKey: HubIdentity.perHubZonesKey) == nil else { return }
+        try sidecar.wipeSyncState(now: now())
+        publisher.removeStagedAssets()
+        try sidecar.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+    }
+
+    /// Deletes the single-hub build's zones when they are this hub's (or
+    /// nobody's), bounded by `cloudTimeout`. Best-effort: a failure or a
+    /// timeout leaves the marker unset, so the next start checks again; it
+    /// never blocks the hub.
+    private func removeLegacyZonesIfDue() async {
+        do {
+            guard try sidecar.metaValue(forKey: HubIdentity.legacyZonesCheckedKey) == nil else { return }
+            let hubID = try identity.hubID()
+            let transport = self.transport
+            let outcome = await Self.bounded(cloudTimeout) { () -> Result<LegacyZoneCleanup, any Error> in
+                do {
+                    return .success(try await transport.removeLegacyZones {
+                        HubIdentity.legacyZonesAreOurs(heartbeat: $0, hubID: hubID)
+                    })
+                } catch {
+                    return .failure(error)
+                }
+            }
+            switch outcome {
+            case .success(let cleanup)?:
+                try sidecar.setMetaValue(cleanup.rawValue, forKey: HubIdentity.legacyZonesCheckedKey)
+                logger.notice("legacy zones: \(cleanup.rawValue, privacy: .public)")
+            case .failure(let error)?:
+                logger.warning("legacy zone check failed: \(error.localizedDescription, privacy: .public)")
+            case nil:
+                logger.warning("legacy zone check timed out")
+            }
+        } catch {
+            logger.error("legacy zone check: sidecar unreadable: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Loops
@@ -442,56 +622,7 @@ final class MobileHubService {
         return relayIdleInterval
     }
 
-    // MARK: - Heartbeat and the single-hub rule (spec §4.1, §8 I-1)
-
-    private enum Claim {
-        case claimed
-        case refused(macName: String)
-        case failed(String)
-    }
-
-    /// Pulls (bounded), reads the heartbeat and, unless another hub's is
-    /// live, writes this hub's. `takingOver` skips the refusal. nil: a
-    /// stop() ran meanwhile.
-    private func claimHub(takingOver: Bool, startEpoch: Int) async -> Claim? {
-        let transport = self.transport
-        let logger = self.logger
-        let pulled = await Self.bounded(cloudTimeout) { () -> Bool in
-            do {
-                try await transport.pull()
-                return true
-            } catch {
-                logger.warning("heartbeat pull failed: \(error.localizedDescription, privacy: .public)")
-                return false
-            }
-        }
-        guard status == .starting, epoch == startEpoch else { return nil }
-        do {
-            // A pull that failed or timed out leaves a buffer that proves
-            // nothing: empty, or as old as the last fetch that got through,
-            // so a live hub's newer heartbeat may be missing from it.
-            // Claiming on it would silently take over that hub (spec §8 I-1).
-            // Only the owner's explicit Take over goes ahead without it.
-            if pulled != true, !takingOver {
-                let why = pulled == nil ? "iCloud didn't answer in time" : "iCloud fetch failed"
-                logger.warning("single-hub check deferred: \(why, privacy: .public)")
-                return .failed("Couldn't check which Mac is the hub: \(why)")
-            }
-            if pulled != true { logger.warning("heartbeat pull did not complete; taking over on the buffered heartbeat") }
-            let hubID = try identity.hubID()
-            let latest = try await identity.readHeartbeat(from: transport)
-            if !takingOver, let latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {
-                return .refused(macName: latest.macName)
-            }
-            await resolveOwnerUser()
-            guard status == .starting, epoch == startEpoch else { return nil }
-            try await writeHeartbeat(hubID: hubID, after: latest)
-            return .claimed
-        } catch {
-            logger.error("single-hub check failed: \(error.localizedDescription, privacy: .public)")
-            return .failed("Couldn't check which Mac is the hub: \(error.localizedDescription)")
-        }
-    }
+    // MARK: - Heartbeat (multi-hub spec §3.2)
 
     private func startHeartbeatLoop() {
         heartbeatTask?.cancel()
@@ -504,29 +635,18 @@ final class MobileHubService {
         }
     }
 
-    /// One heartbeat tick: read the record first. When the newest
-    /// heartbeat known is another hub's, live, and later than this hub's
-    /// own last write, that hub took over: this one stops (`.tookOver`).
-    /// Otherwise this hub's heartbeat is rewritten. Reads only the local
-    /// buffer the relay loop's pulls fill. `maxTickFailures` failures in a
-    /// row stop the hub as `.unavailable` (it could no longer see a take
-    /// over), and the reprobe loop restarts it through the full check.
+    /// One heartbeat tick: rewrites this hub's heartbeat (multi-hub spec
+    /// §3.2). `maxTickFailures` failures in a row stop the hub as
+    /// `.unavailable` (its local store is failing), and the reprobe loop
+    /// restarts it.
     func heartbeatTick() async {
         guard status == .running else { return }
         let tickEpoch = epoch
         do {
             let hubID = try identity.hubID()
-            let latest = try await identity.readHeartbeat(from: transport)
-            guard status == .running, epoch == tickEpoch else { return }
-            if let latest, HubIdentity.isLiveForeign(latest, hubID: hubID, now: now()) {
-                logger.notice("another Mac took over the hub; stopping")
-                stop()
-                status = .tookOver(latest.macName)
-                return
-            }
             await resolveOwnerUser()
             guard status == .running, epoch == tickEpoch else { return }
-            try await writeHeartbeat(hubID: hubID, after: latest)
+            try await writeHeartbeat(hubID: hubID)
             tickFailures = 0
         } catch {
             guard status == .running, epoch == tickEpoch else { return }
@@ -539,32 +659,15 @@ final class MobileHubService {
             }
             guard tickFailures >= Self.maxTickFailures else { return }
             stop()
-            status = .unavailable("Couldn't check which Mac is the hub: \(error.localizedDescription)")
+            status = .unavailable("Couldn't write the heartbeat: \(error.localizedDescription)")
             startReprobeLoop()
         }
     }
 
-    /// Stamped `max(now, newest heartbeat known + 1 s)`: a take over must
-    /// read as the later write on the old hub even when this Mac's clock
-    /// runs behind it, and every later write keeps that order (the newest
-    /// known is then this hub's own), so clock skew cannot hand the hub back.
-    /// A newest heartbeat more than `liveWindow` (720 s) ahead of this Mac's
-    /// clock is a broken clock, not skew: it is logged and not followed (the
-    /// stamp is `now`), so one wrong date cannot keep the record fresh for
-    /// every later hub.
-    private func writeHeartbeat(hubID: String, after latest: HeartbeatPayload?) async throws {
-        let current = now()
-        var at = current
-        if let latest {
-            let bumped = latest.updatedAt.addingTimeInterval(1)
-            if bumped.timeIntervalSince(current) > HubIdentity.liveWindow {
-                logger.warning(
-                    "newest heartbeat is \(Int(bumped.timeIntervalSince(current)), privacy: .public) s ahead of this Mac's clock; not following it"
-                )
-            } else {
-                at = max(current, bumped)
-            }
-        }
+    /// Writes this hub's heartbeat into its own DataZone, stamped with this
+    /// Mac's clock (multi-hub spec §3.2).
+    private func writeHeartbeat(hubID: String) async throws {
+        let at = now()
         let heartbeat = HeartbeatPayload(
             updatedAt: at,
             appVersion: hostInfo.appVersion,
@@ -581,7 +684,6 @@ final class MobileHubService {
         )
         let record = try CloudRecordFactory.record(for: heartbeat, modifiedAt: at)
         try await transport.save([record])
-        try identity.remember(record.payload)
     }
 
     /// Looks the iCloud user up once (bounded); retried at the next write

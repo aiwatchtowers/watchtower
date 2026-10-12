@@ -242,6 +242,12 @@ final class HubSyncState: Sendable {
         }
     }
 
+    func removeMetaValue(forKey key: String) throws {
+        try queue.write { db in
+            try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
+        }
+    }
+
     /// This install's hub id (spec §4.1), created on first use and kept for
     /// good: an account reset does not change which Mac this is.
     func ensureHubID() throws -> String {
@@ -881,7 +887,8 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Take over (spec §2.3): forgets every code, linked phone and refusal.
+    /// The hub's zones were deleted (multi-hub spec §3.3): forgets every
+    /// code, linked phone and refusal.
     func clearLinkState() throws {
         try queue.write { db in
             try db.execute(sql: "DELETE FROM link_codes; DELETE FROM devices; DELETE FROM link_refusals")
@@ -918,8 +925,8 @@ final class HubSyncState: Sendable {
 
     /// Clears the sync state derived from the CloudKit account so the next
     /// publish/relay cycle starts clean against the new account: slice
-    /// hashes, the relay change token and the heartbeat read state (the new
-    /// account's DataZone is another zone). The exactly-once ledger is KEPT:
+    /// hashes and the relay change token (the new account's DataZone is
+    /// another zone). The exactly-once ledger is KEPT:
     /// relay record names carry phone-generated UUIDs, so they cannot
     /// collide across accounts, and on a same-Apple-ID sign-out/sign-in the
     /// re-fetched zone still holds actions whose echo never reached the
@@ -958,7 +965,7 @@ final class HubSyncState: Sendable {
             )
             try db.execute(sql: "DELETE FROM slice_state")
             let relayKeys = keepingRelayToken ? [] : [RelayProcessor.relayTokenKey]
-            for key in relayKeys + HubIdentity.heartbeatReadKeys {
+            for key in relayKeys {
                 try db.execute(sql: "DELETE FROM hub_meta WHERE key = ?", arguments: [key])
             }
             try db.execute(
