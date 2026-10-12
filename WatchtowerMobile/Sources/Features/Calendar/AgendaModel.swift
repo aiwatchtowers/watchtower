@@ -80,6 +80,10 @@ struct EventRecordingStatus: Equatable {
     let pills: [EventPill]
     /// The event detail's Recording section text; nil = not recorded yet.
     let text: String?
+    /// The Mac's percent, clamped to 0…100, while a phone recording of
+    /// this event is on its way and its job is transcribing; nil otherwise
+    /// (design pass C4's row).
+    let transcribingPercent: Int?
 
     static let notRecordedText =
         "Not recorded yet. A recording here is attached to this event; the Mac transcribes it and writes the recap."
@@ -88,11 +92,12 @@ struct EventRecordingStatus: Equatable {
         // The newest phone recording made for this event (the ledger is
         // newest first). While it is on its way or on the Mac, its state
         // wins over an older recap of the same event.
-        let phone = recordings.recordings.first { $0.eventID == event.id }
-            .map { Self.phonePill($0, recordings: recordings, now: now) }
+        let newest = recordings.recordings.first { $0.eventID == event.id }
+        let phone = newest.map { Self.phonePill($0, recordings: recordings, now: now) }
         if let phone, phone.inFlight {
             pills = [phone.pill]
             text = phone.pill.text
+            transcribingPercent = newest.flatMap { recordings.jobs[$0.id] }.flatMap(Self.transcribingPercent)
         } else if let transcript = snapshot.transcript(forEvent: event.id) {
             var pills: [EventPill] = []
             let recap = transcript.summary != nil
@@ -103,13 +108,22 @@ struct EventRecordingStatus: Equatable {
             }
             self.pills = pills
             text = transcript.summary ?? "Transcript ready"
+            transcribingPercent = nil
         } else if let phone {
             pills = [phone.pill]
             text = phone.pill.text
+            transcribingPercent = nil
         } else {
             pills = []
             text = nil
+            transcribingPercent = nil
         }
+    }
+
+    /// The job's percent while it transcribes, clamped to 0…100; nil in any
+    /// other job state.
+    static func transcribingPercent(_ job: RecordingJob) -> Int? {
+        job.status == .transcribing ? min(100, max(0, job.percent ?? 0)) : nil
     }
 
     /// One phone recording's pill; `inFlight` while the upload or the Mac's

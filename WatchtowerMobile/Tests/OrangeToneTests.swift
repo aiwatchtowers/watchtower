@@ -77,6 +77,8 @@ final class OrangeToneTests: XCTestCase {
             let row = BoardRowModel(target, snapshot: WorkbenchReplicaSnapshot())
             XCTAssertTrue(row.toneUses.allSatisfy { $0.tone != .orange }, "priority \(priority.rawValue)")
         }
+        XCTAssertFalse(EventDetailModel.attendeeTones.contains(.orange), "attendee initials are never orange")
+        XCTAssertFalse(EventDetailModel.attendeeTones.contains(.red), "red is the recording colour")
         var snapshot = WorkbenchReplicaSnapshot()
         let now = Date()
         for status in [MacStatus.notConnected, .online(macName: "Acme Mac"), .offline(macName: "Acme Mac", lastSeen: now)] {

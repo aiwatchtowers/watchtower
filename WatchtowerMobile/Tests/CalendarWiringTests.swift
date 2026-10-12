@@ -173,6 +173,48 @@ final class CalendarWiringTests: XCTestCase {
             eventID: recorded.id, snapshot: snapshot([recorded]), recordings: recordings, now: now, calendar: calendar
         ))
         XCTAssertEqual(detail.recordingText, "Transcribing on Mac · 37%")
+        XCTAssertEqual(detail.transcribingPercent, 37, "design pass C4: one row with a bar and 37%")
+        XCTAssertTrue(detail.toneUses.contains { $0.tone == .purple && $0.role == .progress })
+    }
+
+    /// Review focus 4: a percent from a newer Mac or a glitch clamps to
+    /// 0…100 on the row.
+    func testTheTranscribingRowClampsThePercent() async throws {
+        for (sent, shown) in [(140, 100), (-5, 0)] {
+            let store = try makePoolStore()
+            let transport = InMemoryCloudTransport()
+            let uploader = RecordingUploader(transport: transport, store: store, deviceID: DemoSeed.device.deviceID)
+            try await DemoSeed.loadRecordingDemo(uploader: uploader, store: store, transport: transport, now: now, percent: sent)
+            _ = try await ReplicaHydrator(transport: transport, store: store).hydrateOnce()
+            let recordings = try await store.reader.read { db in try PhoneRecordingsSnapshot.read(from: db, store: store) }
+            let recorded = event(DemoSeed.recordedEventID, start: now.addingTimeInterval(-3_600), minutes: 30)
+            let detail = try XCTUnwrap(EventDetailModel(
+                eventID: recorded.id, snapshot: snapshot([recorded]), recordings: recordings, now: now, calendar: calendar
+            ))
+            XCTAssertEqual(detail.transcribingPercent, shown, "sent \(sent)")
+        }
+        XCTAssertNil(EventDetailModel(
+            eventID: "plain", snapshot: snapshot([event("plain", start: now)]), recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        )?.transcribingPercent, "no phone recording: no row")
+    }
+
+    /// Design pass C4: each attendee's initials get a tone from a stable
+    /// hash of the name (the email without one), from blue, green, teal and
+    /// purple; listed as info tones.
+    func testAttendeesGetAStableToneFromTheirName() throws {
+        let names = ["Colleague A", "Colleague B", "Colleague C", "Colleague D", "Colleague E"]
+        XCTAssertEqual(names.map(EventDetailModel.attendeeTone), [.blue, .green, .teal, .purple, .blue])
+        XCTAssertEqual(EventDetailModel.attendeeTone(""), .blue, "an empty name still gets a tone")
+
+        let attendees = (1...3).map { EventAttendee(email: "colleague-\($0)@example.com", displayName: "", responseStatus: "accepted") }
+        let detail = try XCTUnwrap(EventDetailModel(
+            eventID: "e", snapshot: snapshot([event("e", start: now, attendees: attendees)]),
+            recordings: PhoneRecordingsSnapshot(), now: now, calendar: calendar
+        ))
+        XCTAssertEqual(detail.attendees.map(\.tone), attendees.map { EventDetailModel.attendeeTone($0.email) }, "no name: the email")
+        let uses = detail.toneUses.filter { $0.element.hasPrefix("attendee ") }
+        XCTAssertEqual(uses.count, 3)
+        XCTAssertTrue(uses.allSatisfy { $0.role == .info })
     }
 
     /// The demo phone recording of `DemoSeed.recordedEventID` (received by

@@ -34,7 +34,7 @@ struct EventDetailView: View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(model.title).font(.title3.weight(.semibold))
+                    Text(model.title).font(TypeScale.screenTitle)
                     Text(model.whenLine).font(.subheadline).foregroundStyle(.secondary)
                 }
                 if let line = model.attendeesLine {
@@ -43,9 +43,10 @@ struct EventDetailView: View {
                         HStack(spacing: -6) {
                             ForEach(model.attendees) { attendee in
                                 Text(attendee.initials)
-                                    .font(.caption2.weight(.semibold))
-                                    .frame(width: 28, height: 28)
-                                    .background(Color.secondary.opacity(0.2), in: Circle())
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(attendee.tone.color)
+                                    .frame(width: 32, height: 32)
+                                    .background(attendee.tone.color.opacity(0.2), in: Circle())
                                     .overlay(Circle().stroke(Color(.systemBackground), lineWidth: 2))
                             }
                         }
@@ -84,7 +85,18 @@ struct EventDetailView: View {
                 }
             }
             Section("Recording") {
-                if model.recordingPills.isEmpty {
+                if let percent = model.transcribingPercent {
+                    HStack(spacing: Spacing.regular) {
+                        Image(systemName: "waveform").foregroundStyle(PhoneTone.purple.color)
+                        Text(EventDetailModel.transcribingTitle).font(.callout)
+                        Spacer(minLength: Spacing.regular)
+                        ThinProgressBar(value: Double(percent) / 100, tone: .purple)
+                            .frame(width: 80)
+                            .accessibilityHidden(true)
+                        Text("\(percent)%").font(TypeScale.time)
+                    }
+                    .accessibilityElement(children: .combine)
+                } else if model.recordingPills.isEmpty {
                     Text(model.recordingText).foregroundStyle(.secondary)
                 } else {
                     FlowRow {
