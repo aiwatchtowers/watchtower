@@ -342,13 +342,24 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             case importedDuplicates = "imported_duplicates"
         }
 
-        /// Without codex nothing is offered (D5: setup skips it quietly).
-        var needsRepair: Bool {
-            found && (!skill || hooksTrusted == false || importedDuplicates)
+        /// The Codex part's state, for the page header: nothing without
+        /// codex (D5: skipped quietly); never set up — a neutral "Set up
+        /// Codex", not a failure; set up and whole; set up and broken since
+        /// (its hooks untrusted, say after a Codex update, or imported twice)
+        /// — Repair. An unknown trust is no break: it is only logged.
+        var state: State {
+            guard found else { return .absent }
+            guard skill else { return .notSetUp }
+            return hooksTrusted == false || importedDuplicates ? .broken : .ready
+        }
+
+        enum State: Equatable {
+            case absent, notSetUp, ready, broken
         }
 
         /// The Codex part of the install tooltip.
         var summary: String {
+            if state == .notSetUp { return "Codex: not set up" }
             let trust = switch hooksTrusted {
             case true?: "trusted"
             case false?: "not trusted"
@@ -448,11 +459,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         claudeNeedsRepair || codexNeedsRepair
     }
 
-    /// The Codex part needs `integrate codex` (codex found, and its skill
-    /// missing, its hooks untrusted or imported twice). An unknown trust is
-    /// no repair: it is only logged.
+    /// The Codex part was set up and broke since (`Codex.State.broken`):
+    /// Repair, with the orange install icon. A part never set up is no
+    /// repair — see `codexNeedsSetup`.
     var codexNeedsRepair: Bool {
-        codex?.needsRepair ?? false
+        codex?.state == .broken
+    }
+
+    /// Codex is installed but this folder's Codex part was never set up (or
+    /// its skill copy is gone): a neutral "Set up Codex", never the orange
+    /// icon.
+    var codexNeedsSetup: Bool {
+        codex?.state == .notSetUp
     }
 
     /// Whether the agent's CLI is there to launch: `claude_found`, or the
@@ -462,6 +480,23 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case .claude: claudeFound
         case .codex: codex?.found ?? false
         }
+    }
+
+    /// The header's Codex setup control (board #399): nil unless codex is
+    /// found and this folder's Codex part was never set up. Neutral by
+    /// default; a warning only after a setup that failed (`failure`).
+    func codexSetupNotice(failure: String?) -> CodexSetupNotice? {
+        guard codexNeedsSetup else { return nil }
+        guard let failure else {
+            return CodexSetupNotice(
+                title: "Codex: not set up",
+                help: "Codex is installed but this folder is not set up for it yet. Set up Codex adds the "
+                    + "\(WorkbenchVocabulary.current.skillName) skill for Codex and trusts Watchtower's hooks, "
+                    + "so Codex sessions here get the board tools.",
+                isWarning: false
+            )
+        }
+        return CodexSetupNotice(title: "Codex setup failed", help: "\(failure)\nSet up Codex tries again.", isWarning: true)
     }
 
     /// The Claude Code part. Without `claude` an unregistered MCP server is
@@ -524,6 +559,14 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         if !s.isEmpty, s.unicodeScalars.allSatisfy(safe.contains) { return s }
         return "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
+}
+
+/// What the page header shows for a Codex part never set up.
+struct CodexSetupNotice: Equatable {
+    let title: String
+    let help: String
+    /// Orange: a setup that failed. Otherwise neutral (secondary).
+    let isWarning: Bool
 }
 
 /// A `WorkbenchCLI` call's own refusals, beyond the runner's errors.

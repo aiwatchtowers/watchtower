@@ -135,6 +135,15 @@ struct WorkbenchHeaderControls: View {
             }
             .disabled(installing || status?.needsRepair != true)
             .help(status?.repairHelp ?? "Re-install what is missing in the folder")
+            if status?.codexNeedsSetup == true {
+                Button {
+                    Task { await vm.setUpCodex(projectID: project.id) }
+                } label: {
+                    Label("Set up Codex", systemImage: "plus.circle")
+                }
+                .disabled(installing)
+                .help("Set this folder up for Codex sessions: the skill for Codex and the trust of Watchtower's hooks")
+            }
             Button {
                 Task { await vm.resync(projectID: project.id) }
             } label: {

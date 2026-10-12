@@ -76,8 +76,13 @@ final class WorkbenchesViewModel {
     /// The page's error line, per project — never the shared `errorMessage`,
     /// where one project's failure would outlive a switch to another.
     var installErrors: [Int64: String] {
-        installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
+        installNotes.merging(codexSetupErrors) { note, codex in "\(note) \(codex)" }
+            .merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
+    /// Why the last Codex setup (Setup, Set up Codex or Repair) failed: the
+    /// one Codex state that warns while the part is not set up. Cleared by a
+    /// successful run or a status that finds the part whole.
+    private(set) var codexSetupErrors: [Int64: String] = [:]
     /// A project was created: Task 18 seeds its notification baseline.
     var onWorkbenchCreated: ((Workbench, _ installed: Bool) -> Void)?
     /// The embedded terminals. AppState passes its own; nil (most tests) =
@@ -549,8 +554,8 @@ final class WorkbenchesViewModel {
         await refreshInstallStatus(projectID: created.id)
         // D5: the Codex part only when codex is found (the status says so);
         // its failure never fails the Claude Code setup.
-        if installStatus[created.id]?.codexNeedsRepair == true {
-            await installCodexPart(projectID: created.id, failure: "Setting up Codex failed — use Repair.")
+        if let status = installStatus[created.id], status.codexNeedsSetup || status.codexNeedsRepair {
+            await installCodexPart(projectID: created.id, failure: "Setting up Codex failed — use Set up Codex.")
             await refreshInstallStatus(projectID: created.id)
         }
         guard let project = selectedWorkbench else { return }
@@ -574,16 +579,27 @@ final class WorkbenchesViewModel {
         return codex?.found == true && codex?.skill == true ? .codex : .claude
     }
 
-    /// `integrate codex`: Setup's and Repair's Codex step. A failure becomes
-    /// an install note beside Repair, after the Claude Code part's own.
+    /// `integrate codex`: Setup's, Set up Codex's and Repair's Codex step.
+    /// A failure is kept in `codexSetupErrors`, apart from the Claude Code
+    /// part's notes.
     private func installCodexPart(projectID: Int64, failure: String) async {
         guard let cli else { return }
         do {
             try await cli.installCodex(projectID: projectID)
+            codexSetupErrors[projectID] = nil
         } catch {
-            let note = "\(failure) \(error.localizedDescription)"
-            installNotes[projectID] = installNotes[projectID].map { "\($0) \(note)" } ?? note
+            codexSetupErrors[projectID] = "\(failure) \(error.localizedDescription)"
         }
+    }
+
+    /// The header's "Set up Codex" (a workbench whose Codex part was never
+    /// set up — `codexNeedsSetup`): the same `integrate codex` as Repair.
+    func setUpCodex(projectID: Int64) async {
+        guard !isInstalling(projectID: projectID) else { return }
+        repairing.insert(projectID)
+        defer { repairing.remove(projectID) }
+        await installCodexPart(projectID: projectID, failure: "Setting up Codex failed:")
+        await refreshInstallStatus(projectID: projectID)
     }
 
     /// The skill and server names the workbench's folder answers to
@@ -609,6 +625,7 @@ final class WorkbenchesViewModel {
                 NSLog("WorkbenchesViewModel: codex could not be asked about hook trust for workbench %lld", projectID)
             }
             if !status.needsRepair { installNotes[projectID] = nil }
+            if status.codex?.state != .notSetUp, !status.codexNeedsRepair { codexSetupErrors[projectID] = nil }
         } catch {
             // The process runner terminates the child on cancel, which can
             // surface as a non-zero exit rather than CancellationError.
@@ -661,7 +678,9 @@ final class WorkbenchesViewModel {
                 installNotes[projectID] = "Repair failed: \(error.localizedDescription)"
             }
         }
-        if status?.codexNeedsRepair == true {
+        // A Codex part never set up comes along (D5) — it is not why Repair
+        // is on, but the owner asked to fix the folder.
+        if status?.codexNeedsRepair == true || status?.codexNeedsSetup == true {
             await installCodexPart(projectID: projectID, failure: "Repairing Codex failed:")
         }
         await refreshInstallStatus(projectID: projectID)

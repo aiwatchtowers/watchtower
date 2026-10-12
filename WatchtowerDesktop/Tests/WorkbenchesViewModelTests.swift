@@ -330,6 +330,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
     private let codexMissing = #"{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":false}"#
     private let codexBare = #"{"found":true,"skill":false,"hooks_trusted":false,"imported_duplicates":false}"#
+    private let codexBroken = #"{"found":true,"skill":true,"hooks_trusted":false,"imported_duplicates":false}"#
     private let codexReady = #"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#
 
     /// D5: Setup installs the Codex part only when the status finds codex.
@@ -377,9 +378,11 @@ final class WorkbenchesViewModelTests: XCTestCase {
         await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertEqual(announced, [true])
         XCTAssertTrue(vm.installErrors[id]?.contains("Setting up Codex failed") == true, "\(vm.installErrors)")
-        XCTAssertTrue(vm.installErrors[id]?.contains("timed out") == true)
-        XCTAssertEqual(vm.installStatus[id]?.claudeNeedsRepair, false)
-        XCTAssertEqual(vm.installStatus[id]?.codexNeedsRepair, true, "Repair offers Codex again")
+        XCTAssertTrue(vm.codexSetupErrors[id]?.contains("timed out") == true, "the failure survives the status read")
+        XCTAssertEqual(vm.installStatus[id]?.needsRepair, false, "Claude Code is whole")
+        XCTAssertEqual(vm.installStatus[id]?.codexNeedsSetup, true, "Set up Codex is offered again")
+        XCTAssertEqual(vm.installStatus[id]?.codexSetupNotice(failure: vm.codexSetupErrors[id])?.isWarning, true,
+                       "a failed setup is the warning state")
         let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         XCTAssertEqual(rows.map(\.kind), [.claude], "Codex is the default, but its part is not in the folder")
     }
@@ -404,9 +407,9 @@ final class WorkbenchesViewModelTests: XCTestCase {
     func testRepairRunsOnlyThePartsThatNeedIt() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [
-            .success(statusJSON(codex: codexBare)),
+            .success(statusJSON(codex: codexBroken)),
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "codex app-server timed out")),
-            .success(statusJSON(codex: codexBare))
+            .success(statusJSON(codex: codexBroken))
         ])
         let vm = makeVM(runner)
         await vm.refreshInstallStatus(projectID: id)
@@ -416,6 +419,36 @@ final class WorkbenchesViewModelTests: XCTestCase {
         ], "the Claude Code part is whole: not re-installed")
         XCTAssertTrue(vm.installErrors[id]?.contains("Repairing Codex failed") == true, "\(vm.installErrors)")
         XCTAssertFalse(vm.installErrors[id]?.contains("Repair failed") == true, "Claude Code did not fail")
+        XCTAssertEqual(vm.installStatus[id]?.needsRepair, true, "a broken Codex part is the orange state")
+    }
+
+    /// A Codex part never set up is neutral (no Repair); Set up Codex runs
+    /// the same install, and a status finding it whole clears a failure.
+    func testSetUpCodexRunsTheCodexInstall() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(statusJSON(codex: codexBare)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "codex app-server timed out")),
+            .success(statusJSON(codex: codexBare)),
+            .success(Data()),
+            .success(statusJSON(codex: codexReady))
+        ])
+        let vm = makeVM(runner)
+        await vm.refreshInstallStatus(projectID: id)
+        XCTAssertEqual(vm.installStatus[id]?.needsRepair, false, "never set up is no repair")
+        XCTAssertEqual(vm.installStatus[id]?.codexSetupNotice(failure: nil)?.isWarning, false)
+
+        await vm.setUpCodex(projectID: id)
+        XCTAssertTrue(vm.codexSetupErrors[id]?.contains("timed out") == true)
+
+        await vm.setUpCodex(projectID: id)
+        XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [
+            ["integrate", "status"], ["integrate", "codex"], ["integrate", "status"],
+            ["integrate", "codex"], ["integrate", "status"]
+        ])
+        XCTAssertNil(vm.codexSetupErrors[id])
+        XCTAssertNil(vm.installErrors[id])
+        XCTAssertEqual(vm.installStatus[id]?.codexNeedsSetup, false)
     }
 
     func testRevealSelectsTheProjectAndPane() {

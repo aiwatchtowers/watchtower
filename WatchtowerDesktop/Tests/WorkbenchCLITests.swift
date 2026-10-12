@@ -357,8 +357,15 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(untrusted.claudeNeedsRepair, "the Claude Code part is whole")
         XCTAssertTrue(untrusted.repairHelp.contains("hooks not trusted"))
 
-        let noSkill = try status(#"{"found":true,"skill":false,"hooks_trusted":true,"imported_duplicates":false}"#)
-        XCTAssertTrue(noSkill.codexNeedsRepair, "Repair offers Codex once it shows up (D5)")
+        XCTAssertEqual(untrusted.codex?.state, .broken)
+
+        // Never set up: a neutral "Set up Codex", not Repair (controller ruling).
+        let noSkill = try status(#"{"found":true,"skill":false,"hooks_trusted":false,"imported_duplicates":true}"#)
+        XCTAssertEqual(noSkill.codex?.state, .notSetUp)
+        XCTAssertFalse(noSkill.needsRepair, "no orange icon for a part never set up")
+        XCTAssertFalse(noSkill.codexNeedsRepair)
+        XCTAssertTrue(noSkill.codexNeedsSetup)
+        XCTAssertTrue(noSkill.repairHelp.contains("Codex: not set up"), noSkill.repairHelp)
 
         let duplicates = try status(#"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":true}"#)
         XCTAssertTrue(duplicates.codexNeedsRepair)
@@ -367,6 +374,8 @@ final class WorkbenchCLITests: XCTestCase {
         // Without codex nothing is offered, whatever the rest says.
         let missing = try status(#"{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":true}"#)
         XCTAssertFalse(missing.needsRepair)
+        XCTAssertFalse(missing.codexNeedsSetup)
+        XCTAssertEqual(missing.codex?.state, .absent)
         XCTAssertFalse(missing.agentFound(.codex))
         XCTAssertFalse(missing.repairHelp.contains("Codex"), "D5: quiet without codex")
     }
@@ -378,6 +387,28 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertNil(unknown.codex?.hooksTrusted)
         XCTAssertFalse(unknown.needsRepair)
         XCTAssertTrue(unknown.repairHelp.contains("trust unknown"))
+    }
+
+    /// The header's Codex control: only for a part never set up; neutral,
+    /// orange only after a failed setup; nothing for absent, whole or broken
+    /// parts (broken is Repair's orange icon).
+    func testCodexNotSetUpIsANeutralNoticeUntilASetupFails() throws {
+        let notSetUp = try status(#"{"found":true,"skill":false,"hooks_trusted":null,"imported_duplicates":false}"#)
+        let neutral = try XCTUnwrap(notSetUp.codexSetupNotice(failure: nil))
+        XCTAssertEqual(neutral.title, "Codex: not set up")
+        XCTAssertFalse(neutral.isWarning)
+        XCTAssertTrue(neutral.help.contains("Set up Codex"))
+
+        let failed = try XCTUnwrap(notSetUp.codexSetupNotice(failure: "Setting up Codex failed: timed out"))
+        XCTAssertEqual(failed.title, "Codex setup failed")
+        XCTAssertTrue(failed.isWarning)
+        XCTAssertTrue(failed.help.hasPrefix("Setting up Codex failed: timed out"))
+
+        for codex in [nil, #"{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":false}"#,
+                      #"{"found":true,"skill":true,"hooks_trusted":true,"imported_duplicates":false}"#,
+                      #"{"found":true,"skill":true,"hooks_trusted":false,"imported_duplicates":false}"#] {
+            XCTAssertNil(try status(codex).codexSetupNotice(failure: "x"), codex ?? "no codex key")
+        }
     }
 
     func testInstallCodexArguments() async throws {
