@@ -20,12 +20,15 @@ import WatchtowerTestSupport
 /// Other env: `WATCHTOWER_TX_BENCH_PROVIDERS` (comma-separated ids, default
 /// all), `WATCHTOWER_TX_BENCH_PATHS` (`batch`, `live` or both, the default),
 /// `WATCHTOWER_TX_BENCH_LANGUAGES` (subset of en,ru,uk — splits a long run),
-/// `WATCHTOWER_TX_BENCH_GATE=0` (run with the speech gate off — the
+/// `WATCHTOWER_TX_BENCH_SCORES=1` (record every Whisper segment's L3
+/// confidence, for tuning), `WATCHTOWER_TX_BENCH_GATE=0` (run with the speech gate off — the
 /// "before" baseline), `WATCHTOWER_TX_BENCH_DOWNLOAD=1` (let providers download missing
 /// models), `WATCHTOWER_BENCH_CACHE` (corpus root, as for the fetch script).
 final class TranscriptionHallucinationBenchTests: XCTestCase {
     private static let languages = ["en", "ru", "uk"]
     private static let liveFeedSec = 0.5
+    /// Set while a Whisper engine with the score seam attached is running.
+    private var scoreLog: ScoreLog?
     /// Engines whose output segments carry real decode timestamps. Qwen3's
     /// segments span whole windows and Parakeet/Apple return none, so for
     /// them only `insertedWords` measures text over filler.
@@ -63,7 +66,16 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
             }
             let transcriber: Transcriber
             do {
-                transcriber = try await provider.makeTranscriber(model: model) { _ in }
+                if id == WhisperKitProvider.id, env["WATCHTOWER_TX_BENCH_SCORES"] == "1" {
+                    let engine = try await WhisperKitEngine.load(modelName: model) { _ in }
+                    let log = ScoreLog()
+                    engine.segmentScoreObserver = { log.append($0) }
+                    scoreLog = log
+                    transcriber = WhisperTranscriber(engine: engine)
+                } else {
+                    scoreLog = nil
+                    transcriber = try await provider.makeTranscriber(model: model) { _ in }
+                }
             } catch {
                 skipped[id] = "load failed: \(error.localizedDescription)"
                 continue
@@ -314,6 +326,7 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         // Apple decodes one locale per session, picked from the langset.
         if provider == AppleProvider.id { config.langset = [clip.language] }
         let samples = clip.composition.samples
+        _ = scoreLog?.take()
         let started = Date()
         let output: TranscriptionOutput
         do {
@@ -330,8 +343,9 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
             return ClipResult(clip: clip, provider: provider, model: model, path: path,
                               error: error.localizedDescription)
         }
-        let result = ClipResult(clip: clip, provider: provider, model: model, path: path, output: output,
+        var result = ClipResult(clip: clip, provider: provider, model: model, path: path, output: output,
                                 decodeSec: Date().timeIntervalSince(started))
+        result.scored = scoreLog?.take().map(ScoredText.init)
         print("[bench] \(provider) \(path) \(clip.id): filler words \(result.wordsInFiller.map(String.init) ?? "-")"
             + " inserted \(result.insertedWords) deleted \(result.deletedWords) WER \(String(format: "%.3f", result.wer))")
         return result
@@ -382,6 +396,9 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         let segments: [TimedText]
         let decodeSec: Double
         let error: String?
+        /// Every decoded Whisper segment with its L3 confidence (window-relative
+        /// times), when `WATCHTOWER_TX_BENCH_SCORES=1`.
+        var scored: [ScoredText]?
 
         init(
             clip: Clip,
@@ -420,6 +437,44 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
             self.segments = segments.map { TimedText(text: $0.text, start: $0.startSec, end: $0.endSec) }
             self.decodeSec = decodeSec
             self.error = error
+        }
+    }
+
+    private struct ScoredText: Encodable {
+        let text: String
+        let start: Double
+        let end: Double
+        let noSpeechProb: Float
+        let avgLogprob: Float
+        let compressionRatio: Float
+        let temperature: Float
+        let textTokenLogprob: Float?
+        let dropReason: String?
+
+        init(_ scored: ScoredWhisperSegment) {
+            text = scored.segment.text
+            start = scored.segment.startSec
+            end = scored.segment.endSec
+            noSpeechProb = scored.noSpeechProb
+            avgLogprob = scored.avgLogprob
+            compressionRatio = scored.compressionRatio
+            temperature = scored.temperature
+            textTokenLogprob = scored.textTokenLogprob
+            dropReason = scored.dropReason?.rawValue
+        }
+    }
+
+    private final class ScoreLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var entries: [ScoredWhisperSegment] = []
+
+        func append(_ entry: ScoredWhisperSegment) { lock.withLock { entries.append(entry) } }
+
+        func take() -> [ScoredWhisperSegment] {
+            lock.withLock {
+                defer { entries = [] }
+                return entries
+            }
         }
     }
 
