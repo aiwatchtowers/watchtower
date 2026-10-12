@@ -60,6 +60,11 @@ enum PhoneTranscriptStage: Equatable {
     case ready
     case failed(String)
 
+    /// The Mac's percent clamped to 0…100 (nil is 0); every surface shows this.
+    static func clampedPercent(_ percent: Int?) -> Int {
+        min(100, max(0, percent ?? 0))
+    }
+
     init(job: RecordingJob?) {
         guard let job else {
             self = .notStarted
@@ -67,7 +72,7 @@ enum PhoneTranscriptStage: Equatable {
         }
         switch job.status {
         case .received, .queued: self = .inProgress("Queued on your Mac")
-        case .transcribing: self = .inProgress("Transcribing on Mac · \(job.percent ?? 0)%")
+        case .transcribing: self = .inProgress("Transcribing on Mac · \(Self.clampedPercent(job.percent))%")
         case .diarizing: self = .inProgress("Finding speakers on your Mac")
         case .summarizing: self = .inProgress("Writing the recap on your Mac")
         case .done: self = .ready

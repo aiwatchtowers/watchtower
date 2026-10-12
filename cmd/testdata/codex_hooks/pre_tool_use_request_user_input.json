@@ -1,0 +1,30 @@
+{
+  "session_id": "01a10000-0000-7000-8000-000000000001",
+  "turn_id": "01a10000-0000-7000-8000-000000000005",
+  "transcript_path": "/Users/example/.codex/sessions/2026/10/12/rollout-2026-10-12T15-00-11-01a10000-0000-7000-8000-000000000001.jsonl",
+  "cwd": "/Users/example/projects/example",
+  "hook_event_name": "PreToolUse",
+  "model": "gpt-6.1-sol",
+  "permission_mode": "default",
+  "tool_name": "request_user_input",
+  "tool_input": {
+    "questions": [
+      {
+        "header": "example",
+        "id": "example",
+        "question": "example",
+        "options": [
+          {
+            "label": "example",
+            "description": "example"
+          },
+          {
+            "label": "other",
+            "description": "example"
+          }
+        ]
+      }
+    ]
+  },
+  "tool_use_id": "call_00000000000000000000000000000001"
+}

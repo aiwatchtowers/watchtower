@@ -37,10 +37,10 @@ struct WorkbenchPageView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
-        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project))
-        // Hand to Claude Code (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
+        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: project.mainCodeRoot))
+        // Hand to Session (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in
-            HandToClaudeSheet(handoff: appState.codeHandoffCenter, request: request)
+            HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)
         }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
         .task(id: project.id) { await vm.startGitWatching(project: project) }
@@ -175,6 +175,9 @@ struct WorkbenchPageView: View {
     private var installStatusIcons: some View {
         if let status = vm.installStatus[project.id] {
             if !status.claudeFound && !status.mcp { claudeNotFoundIcon }
+            if let notice = status.codexSetupNotice(failure: vm.codexSetupErrors[project.id]) {
+                codexSetupMenu(notice)
+            }
             if status.needsRepair {
                 Image(systemName: "exclamationmark.circle")
                     .foregroundStyle(.orange)
@@ -196,6 +199,26 @@ struct WorkbenchPageView: View {
                     .accessibilityLabel("Installed")
             }
         }
+    }
+
+    /// Codex is installed but the folder's Codex part was never set up
+    /// (board #399): a neutral item, orange only after a failed setup, whose
+    /// menu runs the same Codex install as Repair.
+    private func codexSetupMenu(_ notice: CodexSetupNotice) -> some View {
+        Menu {
+            Text(notice.title)
+            Button("Set up Codex") { Task { await vm.setUpCodex(projectID: project.id) } }
+                .disabled(vm.isInstalling(projectID: project.id))
+        } label: {
+            Label(notice.title, systemImage: notice.isWarning ? "exclamationmark.triangle" : "plus.circle")
+                .font(.caption)
+                .foregroundStyle(notice.isWarning ? Color.orange : Color.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(notice.help)
+        .accessibilityLabel(notice.title)
     }
 
     /// Repair cannot register the MCP server without `claude`: a warning

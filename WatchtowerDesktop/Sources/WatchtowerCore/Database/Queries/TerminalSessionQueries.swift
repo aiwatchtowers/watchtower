@@ -4,11 +4,13 @@ import GRDB
 package enum TerminalSessionQueryError: LocalizedError, Equatable {
     case emptyTitle
     case notFound(Int64)
+    case missingSessionID
 
     package var errorDescription: String? {
         switch self {
         case .emptyTitle: "A session needs a name."
         case let .notFound(id): "Terminal session \(id) no longer exists."
+        case .missingSessionID: "A Claude Code session needs a session id."
         }
     }
 }
@@ -25,6 +27,8 @@ package enum TerminalSessionQueries {
         package var title: String
         package var targetID: Int64?
         package var folderPath: String
+        /// The agent's own session id. Required (non-empty) for `.claude`;
+        /// nil for a shell, and for a new codex row (Codex mints its id).
         package var claudeSessionID: String?
 
         package init(
@@ -44,7 +48,12 @@ package enum TerminalSessionQueries {
         }
     }
 
+    /// Throws `missingSessionID` for a `.claude` row without a session id
+    /// (the schema's CHECK would reject a NULL one; an empty one too, here).
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
+        if new.kind == .claude, new.claudeSessionID?.isEmpty ?? true {
+            throw TerminalSessionQueryError.missingSessionID
+        }
         try db.execute(
             sql: """
                 INSERT INTO terminal_sessions
@@ -94,8 +103,8 @@ package enum TerminalSessionQueries {
         )
     }
 
-    /// The stored state of every workbench `claude` session, live or not,
-    /// plus `liveIDs` (a live standalone `claude` terminal): the hook state,
+    /// The stored state of every workbench agent session (`claude` or
+    /// `codex`), live or not, plus `liveIDs` (a live standalone agent terminal): the hook state,
     /// finished, the error, the background agent count and its report, the
     /// recorded Chat question and its stamp, the open-ask count and the
     /// oldest open ask, with the workbench name a notice names. Read-only:
@@ -113,11 +122,36 @@ package enum TerminalSessionQueries {
                            AS oldest_open_ask_id
                 FROM terminal_sessions s
                 LEFT JOIN projects p ON p.id = s.project_id
-                WHERE (s.kind = 'claude' AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
+                WHERE (s.kind IN \(AgentKind.sqlKinds) AND s.project_id IS NOT NULL) OR s.id IN (\(marks))
                 ORDER BY s.id
                 """,
             arguments: StatementArguments(liveIDs)
         )
+    }
+
+    /// The recorded main-agent working directory of workbench `projectID`'s
+    /// rows that have one (board #565), by session id, with each row's run
+    /// start read as Go's `db.TerminalAgentCwd` reads it (`agent_turns`'
+    /// `since`, NULL unless the column is JSON). Read-only: Go's hooks write
+    /// them. Kept out of `TerminalSession` and its `SELECT *` readers, as Go
+    /// keeps them out of `GetTerminalSession`: a database without migration
+    /// 00110 yields no cwds rather than failing anything else. The column
+    /// probe costs one `PRAGMA table_xinfo` per connection, not per reload:
+    /// GRDB caches it per connection until the schema version changes, so a
+    /// database migrated while the app runs gets its cwds on the next read.
+    package static func fetchAgentCwds(_ db: Database, projectID: Int64) throws -> [Int64: SessionAgentCwd] {
+        guard try db.columns(in: "terminal_sessions").contains(where: { $0.name == "agent_cwd_at" }) else { return [:] }
+        let rows = try SessionAgentCwd.fetchAll(
+            db,
+            sql: """
+                SELECT id, agent_cwd, agent_cwd_at,
+                       CASE WHEN json_valid(agent_turns) THEN json_extract(agent_turns, '$.since') END AS run_start
+                FROM terminal_sessions
+                WHERE project_id = ? AND agent_cwd IS NOT NULL
+                """,
+            arguments: [projectID]
+        )
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.sessionID, $0) })
     }
 
     /// Best-effort, unchecked: a session deleted meanwhile is not active,
@@ -143,6 +177,24 @@ package enum TerminalSessionQueries {
             arguments: [uuid, id]
         )
         try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
+    }
+
+    /// "Start fresh" on a codex row: NULLs the stored session id and
+    /// transcript path, so the next launch starts a new Codex session whose
+    /// first SessionStart reports the new id. Any other kind is left
+    /// untouched (a claude row keeps its id: see `replaceClaudeSessionID`).
+    /// Throws `notFound` when the row is gone.
+    package static func resetAgentSession(_ db: Database, id: Int64) throws {
+        try db.execute(
+            sql: """
+                UPDATE terminal_sessions SET claude_session_id = NULL, agent_transcript_path = NULL
+                WHERE id = ? AND kind = 'codex'
+                """,
+            arguments: [id]
+        )
+        if db.changesCount == 0, try fetch(db, id: id) == nil {
+            throw TerminalSessionQueryError.notFound(id)
+        }
     }
 
     package static func delete(_ db: Database, id: Int64) throws {

@@ -102,8 +102,8 @@ struct WorkspacePaneView: View {
                     }
                     .disabled(pane == .session(session.id))
                 }
-                Button("New session") {
-                    Task { await vm.newSession(inPane: pane, projectID: project.id) }
+                NewSessionMenuItems(vm: vm, projectID: project.id) { agent in
+                    Task { await vm.newSession(inPane: pane, projectID: project.id, agent: agent) }
                 }
             }
         } label: {
@@ -135,7 +135,7 @@ struct WorkspacePaneView: View {
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
         case .files:
-            CodeFilesPaneView(files: vm.codeFiles, project: project)
+            CodeFilesPaneView(files: vm.codeFiles, project: project, root: project.mainCodeRoot)
                 .id(project.id)
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)

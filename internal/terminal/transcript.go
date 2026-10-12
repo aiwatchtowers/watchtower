@@ -1,5 +1,6 @@
-// Package terminal reads Claude Code session transcripts for the embedded
-// terminal sessions (pure: no DB, no network).
+// Package terminal reads the coding agents' session transcripts (Claude Code
+// transcripts, Codex rollouts) for the embedded terminal sessions (pure: no
+// DB, no network).
 package terminal
 
 import (
@@ -9,15 +10,69 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"watchtower/internal/agentkind"
 )
 
-// ErrNoTranscript means Claude Code has not written a transcript for the
+// ErrNoTranscript means the agent has not written a transcript for the
 // session (yet): not an error worth surfacing to the owner.
 var ErrNoTranscript = errors.New("no transcript for session")
+
+// ErrUnsupportedTranscript means the transcript exists but is in a format
+// this reader does not parse (a compressed Codex rollout, or no JSON line at
+// all): the caller treats it like a missing transcript.
+var ErrUnsupportedTranscript = errors.New("unsupported transcript format")
+
+// Transcript is one agent session's transcript.
+type Transcript interface {
+	// OwnerText returns the owner's typed text, oldest first, joined by
+	// newlines and capped at capChars runes.
+	OwnerText(capChars int) (string, error)
+}
+
+// OpenTranscript locates the transcript of an agent session. agentHome is
+// the agent's home directory (`~/.claude` for Claude Code, `$CODEX_HOME` or
+// `~/.codex` for Codex); storedPath is the path the session's SessionStart
+// hook reported (read for Codex only; "" when none). A transcript the agent
+// has not written yet is ErrNoTranscript.
+func OpenTranscript(kind agentkind.Kind, sessionID, storedPath, agentHome string) (Transcript, error) {
+	switch kind {
+	case agentkind.Claude:
+		path, err := FindTranscript(agentHome, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		return claudeTranscript{path: path}, nil
+	case agentkind.Codex:
+		path, err := findCodexRollout(agentHome, sessionID, storedPath)
+		if err != nil {
+			return nil, err
+		}
+		return codexRollout{path: path}, nil
+	default:
+		return nil, fmt.Errorf("not an agent kind: %q", kind)
+	}
+}
+
+// claudeTranscript is a Claude Code transcript (projects/*/<id>.jsonl).
+type claudeTranscript struct{ path string }
+
+func (c claudeTranscript) OwnerText(capChars int) (string, error) {
+	f, err := os.Open(c.path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", fmt.Errorf("%w %s", ErrNoTranscript, c.path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("opening transcript: %w", err)
+	}
+	defer f.Close()
+	return OwnerMessages(f, capChars)
+}
 
 var uuidRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -70,7 +125,13 @@ var maxTranscriptLine = 8 * 1024 * 1024
 // newlines and capped at capChars runes: meta lines, slash-command echoes,
 // tool results and assistant text are left out.
 func OwnerMessages(r io.Reader, capChars int) (string, error) {
-	br := bufio.NewReaderSize(r, 64*1024)
+	return scanOwnerText(bufio.NewReaderSize(r, 64*1024), capChars, ownerLineText)
+}
+
+// scanOwnerText reads br line by line and joins the non-empty lineText of
+// each line, capped at capChars runes. A line longer than maxTranscriptLine
+// is skipped.
+func scanOwnerText(br *bufio.Reader, capChars int, lineText func([]byte) string) (string, error) {
 	var parts []string
 	total := 0
 	for total < capChars {
@@ -79,7 +140,7 @@ func OwnerMessages(r io.Reader, capChars int) (string, error) {
 			return "", fmt.Errorf("reading transcript: %w", err)
 		}
 		if line != nil {
-			if text := ownerLineText(line); text != "" {
+			if text := lineText(line); text != "" {
 				parts = append(parts, text)
 				total += utf8.RuneCountInString(text) + 1
 			}

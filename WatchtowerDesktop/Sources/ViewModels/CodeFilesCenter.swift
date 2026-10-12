@@ -41,7 +41,8 @@ struct CodeEditorPendingEdit: Equatable {
     let base: Int
 }
 
-/// The trees, tabs, buffers and git status of every workbench, kept for the
+/// The trees, tabs, buffers and git status of every code root (a
+/// workbench's folder or one of its worktrees, `CodeRoot`), kept for the
 /// app's lifetime (owned by `WorkbenchesViewModel`, itself owned by `AppState`).
 @MainActor
 @Observable
@@ -66,35 +67,37 @@ final class CodeFilesCenter {
         }
     }
 
-    private(set) var tabsByWorkbench: [Int64: CodeTabs] = [:]
-    private(set) var gitByWorkbench: [Int64: GitStatusSnapshot] = [:]
+    private(set) var tabsByRoot: [CodeRoot: CodeTabs] = [:]
+    private(set) var gitByRoot: [CodeRoot: GitStatusSnapshot] = [:]
     /// git ran and failed; the last good marks stay shown.
-    private(set) var gitErrors: [Int64: String] = [:]
+    private(set) var gitErrors: [CodeRoot: String] = [:]
     /// The folder's FSEvents stream could not start: the view is not live.
-    private(set) var watchErrors: [Int64: String] = [:]
+    private(set) var watchErrors: [CodeRoot: String] = [:]
     /// The editor page failed (load error, crash); shown over the pane.
-    var editorErrors: [Int64: String] = [:]
-    /// Per workbench: where the cursor goes once the file is on screen.
-    private(set) var reveals: [Int64: CodeRevealRequest] = [:]
-    /// Per workbench: the editor's cursor as the page last reported it
+    var editorErrors: [CodeRoot: String] = [:]
+    /// Per root: where the cursor goes once the file is on screen.
+    private(set) var reveals: [CodeRoot: CodeRevealRequest] = [:]
+    /// Per root: the editor's cursor as the page last reported it
     /// (`cursor`, at most 10 a second) — back/forward and the jump bar.
-    private(set) var cursors: [Int64: CodeNavLocation] = [:]
+    private(set) var cursors: [CodeRoot: CodeNavLocation] = [:]
     @ObservationIgnored private var revealSerial = 0
-    /// Per workbench, loaded on first use (gone files pruned).
-    @ObservationIgnored private var recents: [Int64: CodeRecentFiles] = [:]
-    @ObservationIgnored private var trees: [Int64: CodeFileTree] = [:]
-    /// Per workbench and path: a workbench nested in another has its own
-    /// buffer of a shared file (both guard their saves against the disk).
+    /// Per root, loaded on first use (gone files pruned).
+    @ObservationIgnored private var recents: [CodeRoot: CodeRecentFiles] = [:]
+    @ObservationIgnored private var trees: [CodeRoot: CodeFileTree] = [:]
+    /// Per root and path: a workbench nested in another, or two worktrees,
+    /// have their own buffer of a path (each guards its saves against the
+    /// disk and writes only to the URL it was made with).
     @ObservationIgnored private var buffers: [BufferKey: CodeFileBuffer] = [:]
-    @ObservationIgnored private var watchers: [Int64: FolderWatcher] = [:]
-    @ObservationIgnored private var folders: [Int64: URL] = [:]
-    @ObservationIgnored private var bridges: [Int64: WeakBridge] = [:]
-    /// How many views (FILES, the Files pane) show each workbench: git runs
+    @ObservationIgnored private var watchers: [CodeRoot: FolderWatcher] = [:]
+    /// The roots shown at least once (their folder watched, git read).
+    @ObservationIgnored private var watched: Set<CodeRoot> = []
+    @ObservationIgnored private var bridges: [CodeRoot: WeakBridge] = [:]
+    /// How many views (FILES, the Files pane) show each root: git runs
     /// only for one on screen, a hidden one is refreshed when it shows again.
-    @ObservationIgnored private var showing: [Int64: Int] = [:]
-    @ObservationIgnored private var gitRunning: Set<Int64> = []
-    @ObservationIgnored private var gitPending: Set<Int64> = []
-    @ObservationIgnored private var gitLastRun: [Int64: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var showing: [CodeRoot: Int] = [:]
+    @ObservationIgnored private var gitRunning: Set<CodeRoot> = []
+    @ObservationIgnored private var gitPending: Set<CodeRoot> = []
+    @ObservationIgnored private var gitLastRun: [CodeRoot: ContinuousClock.Instant] = [:]
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let trash: (URL) throws -> Void
     @ObservationIgnored private let gitRead: (URL) async -> GitStatusRead
@@ -141,131 +144,143 @@ final class CodeFilesCenter {
 
     // MARK: Tree and watching
 
-    func tree(for project: Workbench) -> CodeFileTree {
-        if let tree = trees[project.id], tree.root == project.folderURL { return tree }
-        let tree = CodeFileTree(root: project.folderURL)
-        trees[project.id] = tree
+    func tree(for root: CodeRoot) -> CodeFileTree {
+        if let tree = trees[root] { return tree }
+        let tree = CodeFileTree(root: root.folder)
+        trees[root] = tree
         return tree
     }
 
-    func git(for project: Workbench) -> GitStatusSnapshot {
-        gitByWorkbench[project.id] ?? GitStatusSnapshot()
+    func git(for root: CodeRoot) -> GitStatusSnapshot {
+        gitByRoot[root] ?? GitStatusSnapshot()
     }
 
-    /// FILES or the Files pane came on screen: the folder is watched (once
-    /// per workbench and folder) and its git status read. Balanced by
+    /// FILES or the Files pane came on screen: the root's folder is watched
+    /// (once per root) and its git status read. Balanced by
     /// `stopShowing` when that view goes.
-    func startWatching(_ project: Workbench) {
-        showing[project.id, default: 0] += 1
-        codeIndex?.markShown(workbenchID: project.id, folder: project.folderURL)
-        let isNew = folders[project.id] != project.folderURL
-        folders[project.id] = project.folderURL
-        if watchesFolders, isNew || watchers[project.id] == nil {
-            let projectID = project.id
-            let watcher = FolderWatcher(root: project.folderURL, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
-                self?.handle(batch, projectID: projectID)
+    func startWatching(_ root: CodeRoot) {
+        if root.isMain { dropStaleMainRoots(of: root) }
+        showing[root, default: 0] += 1
+        codeIndex?.markShown(root: root)
+        let isNew = watched.insert(root).inserted
+        if watchesFolders, isNew || watchers[root] == nil {
+            let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
+                self?.handle(batch, root: root)
             }
-            watchers[projectID] = watcher
+            watchers[root] = watcher
             if watcher == nil {
-                NSLog("CodeFilesCenter: no FSEvents stream for workbench %lld", projectID)
-                watchErrors[projectID] = "Live updates are off for this folder — use Reload the tree."
+                NSLog("CodeFilesCenter: no FSEvents stream for workbench %lld", root.workbenchID)
+                watchErrors[root] = "Live updates are off for this folder — use Reload the tree."
             } else {
-                watchErrors[projectID] = nil
+                watchErrors[root] = nil
             }
         }
-        refreshGit(project.id)
+        refreshGit(root)
     }
 
-    func stopShowing(_ project: Workbench) {
-        showing[project.id] = max(0, (showing[project.id] ?? 0) - 1)
-        codeIndex?.markHidden(workbenchID: project.id)
+    /// The workbench moved to another folder: the old main root's stream
+    /// and tree go (as `CodeIndexCenter.markShown` drops its index). Its
+    /// buffers stay — one may still hold an edit to save.
+    private func dropStaleMainRoots(of root: CodeRoot) {
+        for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale != root {
+            watched.remove(stale)
+            watchers[stale] = nil
+            watchErrors[stale] = nil
+            trees[stale] = nil
+            gitByRoot[stale] = nil
+            gitErrors[stale] = nil
+        }
+    }
+
+    func stopShowing(_ root: CodeRoot) {
+        showing[root] = max(0, (showing[root] ?? 0) - 1)
+        codeIndex?.markHidden(root: root)
     }
 
     /// `startWatching` for as long as the calling task runs — a view's
     /// `.task(id:)`, cancelled when the view goes or its workbench changes.
-    func show(_ project: Workbench) async {
-        startWatching(project)
+    func show(_ root: CodeRoot) async {
+        startWatching(root)
         while !Task.isCancelled {
             try? await Task.sleep(for: .seconds(3600))
         }
-        stopShowing(project)
+        stopShowing(root)
     }
 
     /// What FSEvents saw; internal for tests.
-    func handle(_ batch: FolderWatcher.Batch, projectID: Int64) {
-        guard folders[projectID] != nil else { return }
-        codeIndex?.applyWatcherBatch(batch, workbenchID: projectID)
-        let tree = trees[projectID]
+    func handle(_ batch: FolderWatcher.Batch, root: CodeRoot) {
+        guard watched.contains(root) else { return }
+        codeIndex?.applyWatcherBatch(batch, root: root)
+        let tree = trees[root]
         if batch.mustRescan {
             tree?.reloadAll()
-            for (key, buffer) in buffers where key.workbench == projectID {
+            for (key, buffer) in buffers where key.root == root {
                 buffer.diskChanged()
             }
         } else {
             if !batch.paths.isEmpty { tree?.refresh(directories: Set(batch.paths.map(Self.parent))) }
             for rel in batch.paths {
-                buffers[BufferKey(workbench: projectID, path: rel)]?.diskChanged()
+                buffers[BufferKey(root: root, path: rel)]?.diskChanged()
             }
         }
-        if !batch.isEmpty { refreshGit(projectID) }
+        if !batch.isEmpty { refreshGit(root) }
     }
 
     private func refreshAllGit() {
-        folders.keys.filter { (showing[$0] ?? 0) > 0 }.forEach(refreshGit)
+        watched.filter { (showing[$0] ?? 0) > 0 }.forEach(refreshGit)
     }
 
-    /// One `git status` at a time per workbench, at most one per
+    /// One `git status` at a time per root, at most one per
     /// `gitMinInterval`; a change during a run queues exactly one more. A
     /// failed run keeps the last good marks and says why.
-    private func refreshGit(_ projectID: Int64) {
-        guard let folder = folders[projectID], (showing[projectID] ?? 0) > 0 else { return }
-        guard !gitRunning.contains(projectID) else {
-            gitPending.insert(projectID)
+    private func refreshGit(_ root: CodeRoot) {
+        guard watched.contains(root), (showing[root] ?? 0) > 0 else { return }
+        guard !gitRunning.contains(root) else {
+            gitPending.insert(root)
             return
         }
-        gitRunning.insert(projectID)
-        let wait = gitLastRun[projectID].map { gitMinInterval - (ContinuousClock.now - $0) } ?? .zero
+        gitRunning.insert(root)
+        let wait = gitLastRun[root].map { gitMinInterval - (ContinuousClock.now - $0) } ?? .zero
         Task { @MainActor in
             if wait > .zero { try? await Task.sleep(for: wait) }
-            let read = await gitRead(folder)
-            gitLastRun[projectID] = .now
-            gitRunning.remove(projectID)
+            let read = await gitRead(root.folder)
+            gitLastRun[root] = .now
+            gitRunning.remove(root)
             switch read {
             case .noRepository:
-                gitByWorkbench[projectID] = nil
-                gitErrors[projectID] = nil
+                gitByRoot[root] = nil
+                gitErrors[root] = nil
             case let .snapshot(snapshot):
-                if gitByWorkbench[projectID] != snapshot { gitByWorkbench[projectID] = snapshot }
-                gitErrors[projectID] = nil
+                if gitByRoot[root] != snapshot { gitByRoot[root] = snapshot }
+                gitErrors[root] = nil
             case let .failed(message):
-                NSLog("CodeFilesCenter: git status failed for workbench %lld: %@", projectID, message)
-                gitErrors[projectID] = message
+                NSLog("CodeFilesCenter: git status failed for workbench %lld: %@", root.workbenchID, message)
+                gitErrors[root] = message
             }
-            if gitPending.remove(projectID) != nil { refreshGit(projectID) }
+            if gitPending.remove(root) != nil { refreshGit(root) }
         }
     }
 
     // MARK: Tabs
 
-    func tabs(for project: Workbench) -> CodeTabs {
-        if let tabs = tabsByWorkbench[project.id] { return tabs }
-        let tabs = restoredTabs(project)
+    func tabs(for root: CodeRoot) -> CodeTabs {
+        if let tabs = tabsByRoot[root] { return tabs }
+        let tabs = restoredTabs(root)
         // Deferred: this runs while a view body reads it.
-        let id = project.id
-        Task { @MainActor in if self.tabsByWorkbench[id] == nil { self.tabsByWorkbench[id] = tabs } }
+        Task { @MainActor in if self.tabsByRoot[root] == nil { self.tabsByRoot[root] = tabs } }
         return tabs
     }
 
-    private func restoredTabs(_ project: Workbench) -> CodeTabs {
-        let key = CodeTabs.key(workbenchID: project.id)
+    private func restoredTabs(_ root: CodeRoot) -> CodeTabs {
+        let key = CodeTabs.key(root: root)
         guard let data = defaults.data(forKey: key) else { return CodeTabs() }
         do {
             var tabs = try JSONDecoder().decode(CodeTabs.self, from: data)
-            tabs.prune { FileManager.default.fileExists(atPath: project.folderURL.appendingPathComponent($0).path) }
+            tabs.prune { FileManager.default.fileExists(atPath: root.folder.appendingPathComponent($0).path) }
             return tabs
         } catch {
             // Kept aside rather than overwritten by the next change.
-            NSLog("CodeFilesCenter: unreadable saved tabs for workbench %lld: %@", project.id, String(describing: error))
+            NSLog("CodeFilesCenter: unreadable saved tabs for workbench %lld: %@", root.workbenchID, String(describing: error))
             defaults.set(data, forKey: key + ".unreadable")
             defaults.removeObject(forKey: key)
             return CodeTabs()
@@ -276,66 +291,66 @@ final class CodeFilesCenter {
     /// lets that tab's buffer go when nothing in it is unsaved (callers pull
     /// the page's pending edits first — `WorkbenchesViewModel.openFile` —
     /// and a dirty preview tab was already kept by its first edit).
-    func open(_ path: String, project: Workbench, preview: Bool) {
-        let before = tabsByWorkbench[project.id] ?? restoredTabs(project)
-        mutateTabs(project) { $0.open(path, preview: preview) }
-        recordRecent(path, project: project)
-        let after = tabsByWorkbench[project.id] ?? CodeTabs()
+    func open(_ path: String, root: CodeRoot, preview: Bool) {
+        let before = tabsByRoot[root] ?? restoredTabs(root)
+        mutateTabs(root) { $0.open(path, preview: preview) }
+        recordRecent(path, root: root)
+        let after = tabsByRoot[root] ?? CodeTabs()
         for gone in before.paths where !after.contains(gone) {
-            if let buffer = existingBuffer(project, gone), !buffer.isDirty, buffer.problem == nil {
-                forgetBuffer(project, gone)
+            if let buffer = existingBuffer(root, gone), !buffer.isDirty, buffer.problem == nil {
+                forgetBuffer(root, gone)
             }
         }
     }
 
-    func activate(_ path: String, project: Workbench) {
-        mutateTabs(project) { $0.activate(path) }
-        if tabsByWorkbench[project.id]?.active == path { recordRecent(path, project: project) }
+    func activate(_ path: String, root: CodeRoot) {
+        mutateTabs(root) { $0.activate(path) }
+        if tabsByRoot[root]?.active == path { recordRecent(path, root: root) }
     }
 
-    func pin(_ path: String, project: Workbench) {
-        mutateTabs(project) { $0.pin(path) }
+    func pin(_ path: String, root: CodeRoot) {
+        mutateTabs(root) { $0.pin(path) }
     }
 
-    func move(_ path: String, before target: String?, project: Workbench) {
-        mutateTabs(project) { $0.move(path, before: target) }
+    func move(_ path: String, before target: String?, root: CodeRoot) {
+        mutateTabs(root) { $0.move(path, before: target) }
     }
 
     /// Closes the tabs `paths` after pulling the page's unsent edits and
     /// saving what each still holds. A tab whose save is refused stays open;
     /// the refusals say why (a conflict, a deletion, a write error).
     @discardableResult
-    func close(_ paths: [String], project: Workbench) async -> [Refusal] {
-        await pullPending(project)
+    func close(_ paths: [String], root: CodeRoot) async -> [Refusal] {
+        await pullPending(root)
         var refusals: [Refusal] = []
         for path in paths {
-            if let buffer = existingBuffer(project, path), buffer.isDirty, !buffer.saveNow() {
+            if let buffer = existingBuffer(root, path), buffer.isDirty, !buffer.saveNow() {
                 refusals.append(Refusal(path: path, reason: buffer.unsavedReason ?? "Could not save."))
                 continue
             }
-            mutateTabs(project) { $0.close(path) }
-            forgetBuffer(project, path)
+            mutateTabs(root) { $0.close(path) }
+            forgetBuffer(root, path)
         }
         return refusals
     }
 
     /// Closes `paths` dropping their unsaved edits (the refusal dialog's
     /// Close and Discard).
-    func discardAndClose(_ paths: [String], project: Workbench) {
+    func discardAndClose(_ paths: [String], root: CodeRoot) {
         for path in paths {
-            mutateTabs(project) { $0.close(path) }
-            forgetBuffer(project, path)
+            mutateTabs(root) { $0.close(path) }
+            forgetBuffer(root, path)
         }
     }
 
-    private func mutateTabs(_ project: Workbench, _ change: (inout CodeTabs) -> Void) {
-        var tabs = tabsByWorkbench[project.id] ?? restoredTabs(project)
+    private func mutateTabs(_ root: CodeRoot, _ change: (inout CodeTabs) -> Void) {
+        var tabs = tabsByRoot[root] ?? restoredTabs(root)
         change(&tabs)
-        tabsByWorkbench[project.id] = tabs
+        tabsByRoot[root] = tabs
         do {
-            defaults.set(try JSONEncoder().encode(tabs), forKey: CodeTabs.key(workbenchID: project.id))
+            defaults.set(try JSONEncoder().encode(tabs), forKey: CodeTabs.key(root: root))
         } catch {
-            NSLog("CodeFilesCenter: could not save the tabs of workbench %lld: %@", project.id, String(describing: error))
+            NSLog("CodeFilesCenter: could not save the tabs of workbench %lld: %@", root.workbenchID, String(describing: error))
         }
     }
 
@@ -344,121 +359,121 @@ final class CodeFilesCenter {
     /// The files the Files pane opened most recently, newest first (the
     /// last 50) — Open Quickly's "recently opened" boost (ruling R22).
     /// Files gone from disk are dropped when the list is first read.
-    func recentFiles(for project: Workbench) -> [String] {
-        recentList(project).paths
+    func recentFiles(for root: CodeRoot) -> [String] {
+        recentList(root).paths
     }
 
-    private func recentList(_ project: Workbench) -> CodeRecentFiles {
-        if let list = recents[project.id] { return list }
-        var list = CodeRecentFiles(paths: defaults.stringArray(forKey: CodeRecentFiles.key(workbenchID: project.id)) ?? [])
-        list.prune { FileManager.default.fileExists(atPath: project.folderURL.appendingPathComponent($0).path) }
-        recents[project.id] = list
+    private func recentList(_ root: CodeRoot) -> CodeRecentFiles {
+        if let list = recents[root] { return list }
+        var list = CodeRecentFiles(paths: defaults.stringArray(forKey: CodeRecentFiles.key(root: root)) ?? [])
+        list.prune { FileManager.default.fileExists(atPath: root.folder.appendingPathComponent($0).path) }
+        recents[root] = list
         return list
     }
 
-    private func recordRecent(_ path: String, project: Workbench) {
-        var list = recentList(project)
+    private func recordRecent(_ path: String, root: CodeRoot) {
+        var list = recentList(root)
         list.record(path)
-        recents[project.id] = list
-        defaults.set(list.paths, forKey: CodeRecentFiles.key(workbenchID: project.id))
+        recents[root] = list
+        defaults.set(list.paths, forKey: CodeRecentFiles.key(root: root))
     }
 
     /// The cursor goes to `line`:`col` of `path` (nil line: where it was)
     /// and the keyboard into the editor once the Files pane shows it
     /// (replacing any request not yet carried out).
-    func requestReveal(_ path: String, line: Int?, col: Int?, project: Workbench) {
+    func requestReveal(_ path: String, line: Int?, col: Int?, root: CodeRoot) {
         revealSerial += 1
-        reveals[project.id] = CodeRevealRequest(
+        reveals[root] = CodeRevealRequest(
             path: path, line: line.map { max(1, $0) }, col: max(1, col ?? 1), serial: revealSerial
         )
     }
 
     /// The page's `cursor` message.
-    func cursorMoved(_ location: CodeNavLocation, workbenchID: Int64) {
-        if cursors[workbenchID] != location { cursors[workbenchID] = location }
+    func cursorMoved(_ location: CodeNavLocation, root: CodeRoot) {
+        if cursors[root] != location { cursors[root] = location }
     }
 
     /// The page was told: the request is done (a newer one stays).
-    func revealSent(_ request: CodeRevealRequest, workbenchID: Int64) {
-        if reveals[workbenchID] == request { reveals[workbenchID] = nil }
+    func revealSent(_ request: CodeRevealRequest, root: CodeRoot) {
+        if reveals[root] == request { reveals[root] = nil }
     }
 
     // MARK: Buffers
 
-    func buffer(for project: Workbench, relPath: String) -> CodeFileBuffer {
-        let key = BufferKey(workbench: project.id, path: relPath)
+    func buffer(for root: CodeRoot, relPath: String) -> CodeFileBuffer {
+        let key = BufferKey(root: root, path: relPath)
         if let buffer = buffers[key] { return buffer }
-        let buffer = CodeFileBuffer(url: project.folderURL.appendingPathComponent(relPath), relPath: relPath)
+        let buffer = CodeFileBuffer(url: root.folder.appendingPathComponent(relPath), relPath: relPath)
         buffers[key] = buffer
         return buffer
     }
 
     /// The buffer of `path` if one is loaded — also after a preview tab was
     /// replaced, so an edit the page sends late still lands.
-    func existingBuffer(_ project: Workbench, _ path: String) -> CodeFileBuffer? {
-        buffers[BufferKey(workbench: project.id, path: path)]
+    func existingBuffer(_ root: CodeRoot, _ path: String) -> CodeFileBuffer? {
+        buffers[BufferKey(root: root, path: path)]
     }
 
     func buffer(id: String) -> CodeFileBuffer? {
         buffers.values.first { $0.id == id }
     }
 
-    /// The loaded buffers of `project` at `path` or under it (a folder) —
-    /// never another workbench's, whatever the paths.
-    func buffers(under path: String, project: Workbench) -> [CodeFileBuffer] {
+    /// The loaded buffers of `root` at `path` or under it (a folder) —
+    /// never another root's, whatever the paths.
+    func buffers(under path: String, root: CodeRoot) -> [CodeFileBuffer] {
         buffers.compactMap { key, buffer in
-            key.workbench == project.id && (key.path == path || key.path.hasPrefix(path + "/")) ? buffer : nil
+            key.root == root && (key.path == path || key.path.hasPrefix(path + "/")) ? buffer : nil
         }
     }
 
-    private func forgetBuffer(_ project: Workbench, _ path: String) {
-        let key = BufferKey(workbench: project.id, path: path)
+    private func forgetBuffer(_ root: CodeRoot, _ path: String) {
+        let key = BufferKey(root: root, path: path)
         buffers[key]?.cancelAutosave()
         buffers[key] = nil
     }
 
     // MARK: Flushing
 
-    func register(_ bridge: CodeEditorBridge, for project: Workbench) {
-        bridges[project.id] = WeakBridge(bridge: bridge, project: project)
+    func register(_ bridge: CodeEditorBridge, for root: CodeRoot) {
+        bridges[root] = WeakBridge(bridge: bridge, root: root)
     }
 
-    func unregister(_ bridge: CodeEditorBridge, for workbenchID: Int64) {
-        if bridges[workbenchID]?.bridge === bridge { bridges[workbenchID] = nil }
+    func unregister(_ bridge: CodeEditorBridge, for root: CodeRoot) {
+        if bridges[root]?.bridge === bridge { bridges[root] = nil }
     }
 
-    /// The page's unsent edits of `project` go into their buffers. A page
+    /// The page's unsent edits of `root` go into their buffers. A page
     /// that cannot be asked is logged and shown — its last 300 ms of typing
     /// may be lost, and the owner should know.
-    func pullPending(_ project: Workbench) async {
-        guard let bridge = bridges[project.id]?.bridge else { return }
+    func pullPending(_ root: CodeRoot) async {
+        guard let bridge = bridges[root]?.bridge else { return }
         guard let edits = await bridge.takePending() else {
-            NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its unsent edits", project.id)
-            editorErrors[project.id] = "The editor did not answer; edits typed in the last moment may not be saved."
+            NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its unsent edits", root.workbenchID)
+            editorErrors[root] = "The editor did not answer; edits typed in the last moment may not be saved."
             return
         }
-        if editorErrors[project.id]?.hasPrefix("The editor did not answer") == true { editorErrors[project.id] = nil }
-        apply(edits, project: project, now: false)
+        if editorErrors[root]?.hasPrefix("The editor did not answer") == true { editorErrors[root] = nil }
+        apply(edits, root: root, now: false)
     }
 
     /// Edits the page handed over (a pull, the pane going away).
-    func apply(_ edits: [CodeEditorPendingEdit], project: Workbench, now: Bool) {
+    func apply(_ edits: [CodeEditorPendingEdit], root: CodeRoot, now: Bool) {
         for edit in edits {
             guard let buffer = buffer(id: edit.id) else {
                 NSLog("CodeFilesCenter: an edit for a buffer no longer open was dropped")
                 continue
             }
-            edited(buffer, text: edit.text, base: edit.base, project: project, now: now)
+            edited(buffer, text: edit.text, base: edit.base, root: root, now: now)
         }
     }
 
     /// One edit from the page: into its buffer, and the first edit keeps a
     /// preview tab.
-    func edited(_ buffer: CodeFileBuffer, text: String, base: Int, project: Workbench, now: Bool = false, explicit: Bool = false) {
+    func edited(_ buffer: CodeFileBuffer, text: String, base: Int, root: CodeRoot, now: Bool = false, explicit: Bool = false) {
         buffer.edited(text, base: base, now: now, explicit: explicit)
-        let tabs = tabsByWorkbench[project.id] ?? restoredTabs(project)
+        let tabs = tabsByRoot[root] ?? restoredTabs(root)
         if buffer.isDirty, tabs.tabs.first(where: { $0.path == buffer.relPath })?.isPreview == true {
-            pin(buffer.relPath, project: project)
+            pin(buffer.relPath, root: root)
         }
     }
 
@@ -467,7 +482,7 @@ final class CodeFilesCenter {
         for entry in bridges.values {
             guard let bridge = entry.bridge, let edits = await bridge.takePending() else { continue }
             // Through `apply`: the first edit keeps a preview tab here too.
-            apply(edits, project: entry.project, now: false)
+            apply(edits, root: entry.root, now: false)
         }
         flushAll()
     }
@@ -489,31 +504,31 @@ final class CodeFilesCenter {
     @ObservationIgnored var pendingTimeout: Duration = .seconds(2)
 
     /// A branch switch is about to rewrite `workTree` (the repository's work
-    /// tree): the unsent edits of `project` and of any workbench inside the
+    /// tree): the unsent edits of `root` and of any root inside the
     /// work tree are pulled and every buffer there saved, so the switch's
     /// dirty check sees them on disk. Unlike a close or a rename, a page
     /// that does not answer stops the switch: the files would be swapped
     /// under edits nobody has.
-    func saveEdits(project: Workbench, workTree: String) async -> WorkTreeSave {
-        let root = TerminalCenter.resolvedPath(workTree)
-        let prefix = root.hasSuffix("/") ? root : root + "/"
+    func saveEdits(root: CodeRoot, workTree: String) async -> WorkTreeSave {
+        let tree = TerminalCenter.resolvedPath(workTree)
+        let prefix = tree.hasSuffix("/") ? tree : tree + "/"
         func inside(_ path: String) -> Bool {
             let resolved = TerminalCenter.resolvedPath(path)
-            return resolved == root || resolved.hasPrefix(prefix)
+            return resolved == tree || resolved.hasPrefix(prefix)
         }
         var silent = false
-        for entry in bridges.values where entry.project.id == project.id || inside(entry.project.folderPath) {
+        for entry in bridges.values where entry.root == root || inside(entry.root.folder.path) {
             guard let bridge = entry.bridge else { continue }
-            guard let edits = await takePending(bridge, project: entry.project) else {
-                NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its edits before a branch switch", entry.project.id)
+            guard let edits = await takePending(bridge, root: entry.root) else {
+                NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its edits before a branch switch", entry.root.workbenchID)
                 silent = true
                 continue
             }
-            apply(edits, project: entry.project, now: false)
+            apply(edits, root: entry.root, now: false)
         }
         if silent { return .editorSilent }
         let affected = buffers
-            .filter { key, buffer in key.workbench == project.id || inside(buffer.url.path) }
+            .filter { key, buffer in key.root == root || inside(buffer.url.path) }
             .sorted { $0.key.path < $1.key.path }
         var unsaved: String?
         for (_, buffer) in affected where buffer.isDirty && !buffer.saveNow() {
@@ -526,7 +541,7 @@ final class CodeFilesCenter {
     /// The page's unsent edits, nil when it failed or did not answer within
     /// `pendingTimeout`. Edits handed over after that still go into their
     /// buffers — the page has let go of them.
-    private func takePending(_ bridge: CodeEditorBridge, project: Workbench) async -> [CodeEditorPendingEdit]? {
+    private func takePending(_ bridge: CodeEditorBridge, root: CodeRoot) async -> [CodeEditorPendingEdit]? {
         let wait = PendingWait()
         let limit = pendingTimeout
         return await withCheckedContinuation { continuation in
@@ -540,7 +555,7 @@ final class CodeFilesCenter {
                 if wait.finish() {
                     continuation.resume(returning: edits)
                 } else if let edits {
-                    self.apply(edits, project: project, now: false)
+                    self.apply(edits, root: root, now: false)
                 }
             }
         }
@@ -559,9 +574,9 @@ final class CodeFilesCenter {
     /// Creates an empty file (and any missing folders) and opens it in a
     /// kept tab. Returns its path.
     @discardableResult
-    func createFile(_ input: String, in directory: String, project: Workbench) throws -> String {
+    func createFile(_ input: String, in directory: String, root: CodeRoot) throws -> String {
         let path = try CodeFileName.resolve(input, in: directory)
-        let url = project.folderURL.appendingPathComponent(path)
+        let url = root.folder.appendingPathComponent(path)
         guard !FileManager.default.fileExists(atPath: url.path) else { throw OperationError.exists(path) }
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -569,23 +584,23 @@ final class CodeFilesCenter {
         } catch {
             throw OperationError.failed(error.localizedDescription)
         }
-        revealInTree(path, project: project)
-        open(path, project: project, preview: false)
+        revealInTree(path, root: root)
+        open(path, root: root, preview: false)
         return path
     }
 
     @discardableResult
-    func createFolder(_ input: String, in directory: String, project: Workbench) throws -> String {
+    func createFolder(_ input: String, in directory: String, root: CodeRoot) throws -> String {
         let path = try CodeFileName.resolve(input, in: directory)
-        let url = project.folderURL.appendingPathComponent(path)
+        let url = root.folder.appendingPathComponent(path)
         guard !FileManager.default.fileExists(atPath: url.path) else { throw OperationError.exists(path) }
         do {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         } catch {
             throw OperationError.failed(error.localizedDescription)
         }
-        revealInTree(path, project: project)
-        tree(for: project).expand(path)
+        revealInTree(path, root: root)
+        tree(for: root).expand(path)
         return path
     }
 
@@ -593,24 +608,24 @@ final class CodeFilesCenter {
     /// path relative to its folder. Unsaved edits under it are saved first;
     /// its tabs and buffers follow, keeping undo. Returns the new path.
     @discardableResult
-    func rename(_ path: String, to input: String, project: Workbench) async throws -> String {
+    func rename(_ path: String, to input: String, root: CodeRoot) async throws -> String {
         let newPath = try CodeFileName.resolve(input, in: Self.parent(path))
         guard newPath != path else { return path }
         guard !newPath.hasPrefix(path + "/") else { throw OperationError.failed("A folder cannot move into itself.") }
-        await pullPending(project)
-        let root = project.folderURL
-        let affected = buffers(under: path, project: project)
+        await pullPending(root)
+        let folder = root.folder
+        let affected = buffers(under: path, root: root)
         for buffer in affected where buffer.isDirty && !buffer.saveNow() {
             throw OperationError.unsaved(buffer.relPath)
         }
-        let from = root.appendingPathComponent(path)
-        let to = root.appendingPathComponent(newPath)
+        let from = folder.appendingPathComponent(path)
+        let to = folder.appendingPathComponent(newPath)
         let caseOnly = path.lowercased() == newPath.lowercased()
         // An open tab or buffer at the target (a file deleted on disk but
         // still open) would be shadowed by the moved one.
-        let tabs = tabsByWorkbench[project.id] ?? restoredTabs(project)
+        let tabs = tabsByRoot[root] ?? restoredTabs(root)
         let occupied = tabs.paths.contains { $0 == newPath || $0.hasPrefix(newPath + "/") }
-            || !buffers(under: newPath, project: project).isEmpty
+            || !buffers(under: newPath, root: root).isEmpty
         if !caseOnly, occupied || FileManager.default.fileExists(atPath: to.path) { throw OperationError.exists(newPath) }
         if caseOnly, Self.exactNameExists(to) { throw OperationError.exists(newPath) }
         do {
@@ -638,14 +653,14 @@ final class CodeFilesCenter {
         }
         for buffer in affected {
             let moved = newPath + buffer.relPath.dropFirst(path.count)
-            buffers[BufferKey(workbench: project.id, path: buffer.relPath)] = nil
-            buffer.moved(to: root.appendingPathComponent(moved), relPath: moved)
-            buffers[BufferKey(workbench: project.id, path: moved)] = buffer
+            buffers[BufferKey(root: root, path: buffer.relPath)] = nil
+            buffer.moved(to: folder.appendingPathComponent(moved), relPath: moved)
+            buffers[BufferKey(root: root, path: moved)] = buffer
         }
-        mutateTabs(project) { $0.rename(path, to: newPath) }
-        let tree = tree(for: project)
+        mutateTabs(root) { $0.rename(path, to: newPath) }
+        let tree = tree(for: root)
         tree.refresh(directories: [Self.parent(path), Self.parent(newPath)])
-        revealInTree(newPath, project: project)
+        revealInTree(newPath, root: root)
         return newPath
     }
 
@@ -659,23 +674,23 @@ final class CodeFilesCenter {
     /// Moves `path` (a file or a folder) to the macOS Trash; its tabs close.
     /// Unsaved edits under it are saved first, so the Trash holds them; one
     /// that cannot be saved refuses the move.
-    func moveToTrash(_ path: String, project: Workbench) async throws {
-        await pullPending(project)
-        let gone = buffers(under: path, project: project)
+    func moveToTrash(_ path: String, root: CodeRoot) async throws {
+        await pullPending(root)
+        let gone = buffers(under: path, root: root)
         for buffer in gone where buffer.isDirty && !buffer.saveNow() {
             throw OperationError.unsaved(buffer.relPath)
         }
         do {
-            try trash(project.folderURL.appendingPathComponent(path))
+            try trash(root.folder.appendingPathComponent(path))
         } catch {
             throw OperationError.failed(error.localizedDescription)
         }
         for buffer in gone {
             buffer.cancelAutosave()
-            buffers[BufferKey(workbench: project.id, path: buffer.relPath)] = nil
+            buffers[BufferKey(root: root, path: buffer.relPath)] = nil
         }
-        mutateTabs(project) { $0.closeTree(path) }
-        tree(for: project).refresh(directories: [Self.parent(path)])
+        mutateTabs(root) { $0.closeTree(path) }
+        tree(for: root).refresh(directories: [Self.parent(path)])
     }
 
     /// How many files a folder holds, for the Trash confirmation.
@@ -693,8 +708,8 @@ final class CodeFilesCenter {
         return count
     }
 
-    private func revealInTree(_ path: String, project: Workbench) {
-        let tree = tree(for: project)
+    private func revealInTree(_ path: String, root: CodeRoot) {
+        let tree = tree(for: root)
         let parent = Self.parent(path)
         tree.expand(parent)
         tree.refresh(directories: [parent])
@@ -707,7 +722,7 @@ final class CodeFilesCenter {
 }
 
 private struct BufferKey: Hashable {
-    let workbench: Int64
+    let root: CodeRoot
     let path: String
 }
 
@@ -725,5 +740,5 @@ private final class PendingWait {
 
 private struct WeakBridge {
     weak var bridge: CodeEditorBridge?
-    let project: Workbench
+    let root: CodeRoot
 }

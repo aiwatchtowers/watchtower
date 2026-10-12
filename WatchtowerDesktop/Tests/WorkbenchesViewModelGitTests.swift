@@ -112,7 +112,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     private func liveClaudeCenter() throws -> TerminalCenter {
         let center = terminalCenter()
         try startClaude(in: center, folder: folder.path, projectID: project.id)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: project.id, workTree: folder.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: project.id, workTree: folder.path))
         return center
     }
 
@@ -283,13 +283,13 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":2"#))
         ])
         let vm = makeVM(runner)
-        let bufferA = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        let bufferA = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "a.go")
         bufferA.loadIfNeeded()
-        let bufferB = vm.codeFiles.buffer(for: project, relPath: "b.go")
+        let bufferB = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "b.go")
         bufferB.loadIfNeeded()
-        vm.codeFiles.edited(bufferB, text: "package b // typed\n", base: 0, project: project)
+        vm.codeFiles.edited(bufferB, text: "package b // typed\n", base: 0, root: project.mainCodeRoot)
         let page = EditorPage(edits: [CodeEditorPendingEdit(id: bufferA.id, text: "package a // typed\n", base: 0)])
-        vm.codeFiles.register(page, for: project)
+        vm.codeFiles.register(page, for: project.mainCodeRoot)
 
         await vm.switchBranch("feature/x", project: project)
 
@@ -306,9 +306,9 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         try writeFile("a.go", "package a\n")
         let runner = ScriptedCLIRunner(results: [.success(switchResult(#""switched":true"#))])
         let vm = makeVM(runner)
-        let buffer = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        let buffer = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "a.go")
         buffer.loadIfNeeded()
-        vm.codeFiles.edited(buffer, text: "package a // mine\n", base: 0, project: project)
+        vm.codeFiles.edited(buffer, text: "package a // mine\n", base: 0, root: project.mainCodeRoot)
         try writeFile("a.go", "package a // theirs\n")
         buffer.diskChanged()
         XCTAssertTrue(buffer.conflict)
@@ -329,10 +329,10 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         try writeFile("a.go", "package a\n")
         let runner = ScriptedCLIRunner(results: [.success(switchResult(#""switched":true"#))])
         let vm = makeVM(runner)
-        vm.codeFiles.buffer(for: project, relPath: "a.go").loadIfNeeded()
+        vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "a.go").loadIfNeeded()
         let page = EditorPage(edits: [])
         page.fails = true
-        vm.codeFiles.register(page, for: project)
+        vm.codeFiles.register(page, for: project.mainCodeRoot)
 
         await vm.switchBranch("feature/x", project: project)
 
@@ -348,10 +348,10 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         let runner = ScriptedCLIRunner(results: [.success(switchResult(#""switched":true"#))])
         let vm = makeVM(runner)
         vm.codeFiles.pendingTimeout = .milliseconds(50)
-        let buffer = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        let buffer = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "a.go")
         buffer.loadIfNeeded()
         let page = StalledEditorPage()
-        vm.codeFiles.register(page, for: project)
+        vm.codeFiles.register(page, for: project.mainCodeRoot)
 
         await vm.switchBranch("feature/x", project: project)
 
@@ -380,10 +380,10 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#))
         ])
         let vm = makeVM(runner)
-        vm.codeFiles.buffer(for: project, relPath: "a.go").loadIfNeeded()
-        let foreign = vm.codeFiles.buffer(for: otherProject, relPath: "c.go")
+        vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "a.go").loadIfNeeded()
+        let foreign = vm.codeFiles.buffer(for: otherProject.mainCodeRoot, relPath: "c.go")
         foreign.loadIfNeeded()
-        vm.codeFiles.edited(foreign, text: "package c // mine\n", base: 0, project: otherProject)
+        vm.codeFiles.edited(foreign, text: "package c // mine\n", base: 0, root: otherProject.mainCodeRoot)
         try writeFile("c.go", "package c // theirs\n", in: other)
         foreign.diskChanged()
         XCTAssertTrue(foreign.conflict)

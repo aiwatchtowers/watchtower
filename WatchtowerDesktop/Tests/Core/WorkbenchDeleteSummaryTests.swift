@@ -59,6 +59,15 @@ final class WorkbenchDeleteSummaryTests: XCTestCase {
         XCTAssertTrue(s.message.contains("terminal"), "the owner is told the running session is closed")
     }
 
+    /// The codex part `workbench delete` removes (board #399): the skill copy
+    /// and the imported hooks; the shared hook trust stays.
+    func testMessageNamesTheCodexPart() {
+        let s = WorkbenchDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 0, asks: 0, comments: 0)
+        XCTAssertTrue(s.message.contains("Codex's copy of the skill in .agents/skills"), s.message)
+        XCTAssertTrue(s.message.contains("hooks Codex imported into .codex"), s.message)
+        XCTAssertTrue(s.message.contains("hook trust in ~/.codex/config.toml stays"), s.message)
+    }
+
     /// The code questions go with the workbench (PROJ-02): named when
     /// there are any.
     func testMessageNamesTheCodeQuestionsWhenThereAreAny() {

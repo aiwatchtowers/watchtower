@@ -441,6 +441,7 @@ struct WatchtowerApp: App {
             CommandMenu("Navigate") {
                 let navigation = appState.codeNavigationCenter
                 let shown = appState.openQuicklyCenter.keyWorkbench
+                let shownRoot = appState.openQuicklyCenter.keyRoot
                 Button("Open Quickly…") { appState.openQuicklyCenter.present(scope: .all) }
                     .keyboardShortcut("o", modifiers: [.command, .shift])
                     .disabled(shown == nil)
@@ -449,13 +450,13 @@ struct WatchtowerApp: App {
                     .disabled(shown == nil)
                 Divider()
                 Button("Go to Definition") {
-                    if let shown { Task { await navigation.goToDefinitionAtCursor(project: shown) } }
+                    if let shownRoot { Task { await navigation.goToDefinitionAtCursor(root: shownRoot) } }
                 }
                 .keyboardShortcut("j", modifiers: [.control, .command])
                 .disabled(shown == nil)
                 Button("Show All Usages") {
                     let usages = appState.codeUsagesCenter
-                    if let shown { Task { await usages.showUsagesAtCursor(project: shown) } }
+                    if let shownRoot { Task { await usages.showUsagesAtCursor(root: shownRoot) } }
                 }
                 .keyboardShortcut("u", modifiers: [.shift, .command])
                 .disabled(shown == nil)
@@ -467,13 +468,13 @@ struct WatchtowerApp: App {
                 }
                 .keyboardShortcut("i", modifiers: .command)
                 .disabled(shown == nil)
-                Button("File Symbols…") { if let shown { navigation.showFileSymbols(project: shown) } }
+                Button("File Symbols…") { if let shownRoot { navigation.showFileSymbols(root: shownRoot) } }
                     .keyboardShortcut("6", modifiers: .control)
                     .disabled(shown == nil)
-                Button("Back") { if let shown { navigation.goBack(project: shown) } }
+                Button("Back") { if let shownRoot { navigation.goBack(root: shownRoot) } }
                     .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoBack(workbenchID: shown?.id))
-                Button("Forward") { if let shown { navigation.goForward(project: shown) } }
+                Button("Forward") { if let shownRoot { navigation.goForward(root: shownRoot) } }
                     .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoForward(workbenchID: shown?.id))
                 Divider()

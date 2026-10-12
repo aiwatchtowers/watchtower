@@ -1370,22 +1370,6 @@ CREATE TABLE IF NOT EXISTS chat_artifact_comments (
     CHECK (anchor_quote != '' AND body != ''),
     CHECK (status != 'sent' OR sent_at IS NOT NULL)
 );
-CREATE TABLE IF NOT EXISTS terminal_sessions (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id        INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-    kind              TEXT NOT NULL CHECK(kind IN ('claude','shell')),
-    title             TEXT NOT NULL,
-    title_source      TEXT NOT NULL DEFAULT 'auto' CHECK(title_source IN ('auto','ai','user')),
-    target_id         INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    folder_path       TEXT NOT NULL,
-    claude_session_id TEXT,
-    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    closed_at         TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '', agent_turn_end INTEGER, agent_tool_run INTEGER NOT NULL DEFAULT 0, agent_background INTEGER
-    CHECK (agent_background IS NULL OR agent_background >= 0), agent_background_at TEXT, chat_question TEXT, chat_question_at TEXT, agent_turns TEXT, cleanup_result TEXT, cleanup_at TEXT,
-    CHECK (title != '' AND folder_path != ''),
-    CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
-);
 CREATE TABLE IF NOT EXISTS "targets" (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     text                TEXT NOT NULL,
@@ -1572,6 +1556,35 @@ CREATE TABLE IF NOT EXISTS owner_presence (
     session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
     seen_at    TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS "terminal_sessions" (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id        INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    kind              TEXT NOT NULL CHECK(kind IN ('claude','codex','shell')),
+    title             TEXT NOT NULL,
+    title_source      TEXT NOT NULL DEFAULT 'auto' CHECK(title_source IN ('auto','ai','user')),
+    target_id         INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    folder_path       TEXT NOT NULL,
+    claude_session_id TEXT,
+    created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    closed_at         TEXT,
+    agent_state       TEXT CHECK (agent_state IN ('working','waiting','approval')),
+    agent_state_at    TEXT,
+    finished_at       TEXT,
+    finish_summary    TEXT NOT NULL DEFAULT '',
+    agent_failed_at   TEXT,
+    agent_error       TEXT NOT NULL DEFAULT '',
+    agent_turn_end    INTEGER,
+    agent_tool_run    INTEGER NOT NULL DEFAULT 0,
+    agent_background  INTEGER CHECK (agent_background IS NULL OR agent_background >= 0),
+    agent_background_at TEXT,
+    chat_question     TEXT,
+    chat_question_at  TEXT,
+    agent_turns       TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT,
+    CHECK (title != '' AND folder_path != ''),
+    CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
+);
 CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,
@@ -1733,8 +1746,6 @@ CREATE INDEX IF NOT EXISTS idx_voice_samples_transcript ON voice_samples(transcr
 CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_label_queue_open ON voice_label_queue(transcript_id, cluster_label) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_voice_label_queue_status ON voice_label_queue(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
-CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
-CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
 CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
 CREATE INDEX IF NOT EXISTS idx_targets_period      ON targets(period_start, period_end);
@@ -1757,6 +1768,8 @@ CREATE INDEX IF NOT EXISTS idx_project_comments_project ON project_comments(proj
 CREATE INDEX IF NOT EXISTS idx_project_comments_target  ON project_comments(target_id);
 CREATE INDEX IF NOT EXISTS idx_project_comments_parent  ON project_comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_session_targets(target_id);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

@@ -198,7 +198,7 @@ extension WorkbenchesViewModel {
         // takes them). One that cannot be written, or a page that does not
         // hand its edits over, would leave them under the other branch —
         // nothing is sent.
-        switch await codeFiles.saveEdits(project: project, workTree: workTree) {
+        switch await codeFiles.saveEdits(root: project.mainCodeRoot, workTree: workTree) {
         case .saved:
             break
         case let .unsaved(path):
@@ -208,7 +208,7 @@ extension WorkbenchesViewModel {
             gitErrors[id] = "The editor did not hand over its latest edits — try again."
             return
         }
-        let agentRunning = terminalCenter?.hasLiveClaudeSession(workbenchID: id, workTree: workTree) ?? false
+        let agentRunning = terminalCenter?.hasLiveAgentSession(workbenchID: id, workTree: workTree) ?? false
         let result: WorkbenchGitSwitchResult
         do {
             result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash,

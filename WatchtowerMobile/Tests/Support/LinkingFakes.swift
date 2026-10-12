@@ -9,6 +9,7 @@ final class FakeLinkClock: LinkClock, @unchecked Sendable {
     private let lock = NSLock()
     private var current: Date
     private var sleptTotal: TimeInterval = 0
+    private var monotonic: TimeInterval = 0
     private var isParked = false
 
     init(now: Date) {
@@ -24,7 +25,18 @@ final class FakeLinkClock: LinkClock, @unchecked Sendable {
 
     func now() -> Date { lock.withLock { current } }
 
+    func uptime() -> TimeInterval { lock.withLock { monotonic } }
+
     func advance(by seconds: TimeInterval) {
+        lock.withLock {
+            current = current.addingTimeInterval(seconds)
+            monotonic += seconds
+        }
+    }
+
+    /// A wall-clock jump (the owner sets the time, a network sync): `now()`
+    /// moves, `uptime()` does not.
+    func jumpWallClock(by seconds: TimeInterval) {
         lock.withLock { current = current.addingTimeInterval(seconds) }
     }
 
@@ -39,6 +51,7 @@ final class FakeLinkClock: LinkClock, @unchecked Sendable {
         let seconds = Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
         lock.withLock {
             current = current.addingTimeInterval(seconds)
+            monotonic += seconds
             sleptTotal += seconds
         }
         await Task.yield()

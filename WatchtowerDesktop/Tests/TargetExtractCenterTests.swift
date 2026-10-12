@@ -124,6 +124,13 @@ final class TargetExtractCenterTests: XCTestCase {
         XCTAssertFalse(r.canRetry)
     }
 
+    /// The AI provider can be Codex (board #399): its missing CLI names Codex.
+    func testFriendlyMessageCodexNotFound() {
+        let r = TargetExtractCenter.friendlyMessage(for: "codex CLI not found in PATH")
+        XCTAssertEqual(r.text, "Codex isn't installed. Install it and try again.")
+        XCTAssertFalse(r.canRetry)
+    }
+
     func testFriendlyMessageWatchtowerNotFound() {
         let r = TargetExtractCenter.friendlyMessage(for: "watchtower binary not found in PATH")
         XCTAssertEqual(r.text, "Watchtower CLI not found in PATH.")

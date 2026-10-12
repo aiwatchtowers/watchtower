@@ -29,11 +29,31 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         return SessionSwitcherPresentation.rows(sessions, liveIDs: live, statuses: mapped, now: now)
     }
 
+    /// Board #399: a Codex row carries the "Codex" tag; Claude Code rows
+    /// and shells none, so a Claude-only list looks as before.
+    func testCodexTagShownOnCodexRows() {
+        var codex = session(1)
+        codex.kind = .codex
+        var shell = session(3)
+        shell.kind = .shell
+        let result = rows([codex, session(2), shell])
+        XCTAssertEqual(result.map(\.agentTag), ["Codex", nil, nil])
+    }
+
     func testOnlyTheFirstNineGetShortcutsInTheGivenOrder() {
         let sessions = [10, 3, 7, 1, 2, 4, 5, 6, 8, 9].map { session(Int64($0)) }
         let result = rows(sessions)
         XCTAssertEqual(result.map(\.id), sessions.map(\.id), "the panel order is kept")
         XCTAssertEqual(result.map(\.shortcut), [1, 2, 3, 4, 5, 6, 7, 8, 9, nil])
+    }
+
+    func testShortcutsFollowAnExplicitOrder() {
+        let sessions = [1, 2, 3].map { session(Int64($0)) }
+        let result = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, shortcutOrder: [3, 1]
+        )
+        XCTAssertEqual(result.map(\.id), [1, 2, 3], "the listed order is kept")
+        XCTAssertEqual(result.map(\.shortcut), [2, nil, 1])
     }
 
     func testLiveSessionHasNoAgeCaption() {

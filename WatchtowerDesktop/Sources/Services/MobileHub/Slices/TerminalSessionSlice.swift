@@ -32,8 +32,8 @@ final class SessionLivenessBox: Sendable {
 }
 
 /// The `terminal_session` slice (mobile POC spec §4.5), record name
-/// `terminal_session-<terminal_sessions.id>`: the `claude` sessions of the
-/// published workbenches — every live one plus the newest 50 by
+/// `terminal_session-<terminal_sessions.id>`: the agent sessions (`claude`
+/// and `codex`) of the published workbenches — every live one plus the newest 50 by
 /// `last_active_at` per workbench. Shell sessions are not published.
 ///
 /// The state fields are the Mac's resolved presentation, computed the way
@@ -117,6 +117,7 @@ struct TerminalSessionSlice: SliceSource {
     struct Published {
         let session: TerminalSession
         let workbenchID: Int64
+        let agent: AgentKind
         let state: SessionSwitcherPresentation.State
         let status: SessionAgentStatus?
         let row: SessionAgentStateRow?
@@ -158,26 +159,27 @@ struct TerminalSessionSlice: SliceSource {
         return counts
     }
 
-    /// The window: the published workbenches' `claude` sessions, every live
+    /// The window: the published workbenches' agent sessions, every live
     /// one plus the newest 50 per workbench, in `last_active_at` order.
     func publishedSessions(_ db: Database) throws -> [Published] {
         let workbenches = Set(try WorkbenchSlice.publishedWorkbenches(db).map(\.id))
         guard !workbenches.isEmpty else { return [] }
         let live = liveness()
         let sessions = try TerminalSessionQueries.fetchAllWorkbenchSessions(db).filter { session in
-            session.kind == .claude && session.projectID.map(workbenches.contains) == true
+            session.kind.isAgent && session.projectID.map(workbenches.contains) == true
         }
         let windowed = Self.window(sessions, liveIDs: live.liveIDs)
         guard !windowed.isEmpty else { return [] }
-        // Only workbench `claude` rows: no standalone live ids are passed.
+        // Only workbench agent rows: no standalone live ids are passed.
         let rows = try TerminalSessionQueries.fetchAgentStates(db, liveIDs: [])
         let statuses = SessionAgentStatus.resolve(rows, liveIDs: live.liveIDs, startedAt: live.startedAt, now: now())
         let rowsByID = Dictionary(rows.map { ($0.id, $0) }) { first, _ in first }
         return windowed.compactMap { session in
-            guard let workbenchID = session.projectID else { return nil }
+            guard let workbenchID = session.projectID, let agent = session.kind.agent else { return nil }
             return Published(
                 session: session,
                 workbenchID: workbenchID,
+                agent: agent,
                 state: SessionSwitcherPresentation.state(of: session.id, liveIDs: live.liveIDs, statuses: statuses),
                 status: statuses[session.id],
                 row: rowsByID[session.id]
@@ -197,7 +199,7 @@ struct TerminalSessionSlice: SliceSource {
         }
     }
 
-    /// The workbenches with a live `claude` session (the report summary
+    /// The workbenches with a live agent session (the report summary
     /// runner's 60 s cadence).
     static func liveWorkbenchIDs(_ db: Database, liveIDs: Set<Int64>) throws -> [Int64] {
         guard !liveIDs.isEmpty else { return [] }
@@ -206,7 +208,7 @@ struct TerminalSessionSlice: SliceSource {
             db,
             sql: """
                 SELECT DISTINCT project_id FROM terminal_sessions
-                WHERE kind = 'claude' AND project_id IS NOT NULL AND id IN (\(databaseQuestionMarks(count: ids.count)))
+                WHERE kind IN \(AgentKind.sqlKinds) AND project_id IS NOT NULL AND id IN (\(databaseQuestionMarks(count: ids.count)))
                 ORDER BY project_id
                 """,
             arguments: StatementArguments(ids)
@@ -228,7 +230,7 @@ struct TerminalSessionSlice: SliceSource {
             workbenchID: item.workbenchID,
             title: title.text, titleClipped: title.clipped,
             targetID: session.targetID,
-            agent: "claude_code",
+            agent: Self.wireAgent(item.agent),
             createdAt: SliceDate.required(session.createdAt, field: "created_at", record: record),
             lastActiveAt: SliceDate.required(session.lastActiveAt, field: "last_active_at", record: record),
             stateAt: Self.stateAt(item),
@@ -249,6 +251,14 @@ struct TerminalSessionSlice: SliceSource {
             reportPRLine: prLine?.text,
             reportPRLineClipped: prLine?.clipped
         )
+    }
+
+    /// The Kit's `TerminalSessionState.Agent` raw value for the row's agent.
+    static func wireAgent(_ agent: AgentKind) -> String {
+        switch agent {
+        case .claude: "claude_code"
+        case .codex: "codex_cli"
+        }
     }
 
     /// When the current state was reported: the trusted hook stamp, else a

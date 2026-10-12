@@ -215,6 +215,7 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertEqual(statuses[4]?.state, .live(.running), "an unknown stored value reads as no state")
         XCTAssertEqual(statuses[5]?.state, SessionSwitcherPresentation.State(kind: .finished, live: false))
         XCTAssertFalse(statuses[5]?.isAtPrompt == true, "a session that is not live is at no prompt")
+        XCTAssertEqual(statuses[5]?.finishedAt, stamp(1), "the finished group orders by it (#480)")
     }
 
     /// Board #396 (PROJ-12): the SessionStart hook's mark — no state,

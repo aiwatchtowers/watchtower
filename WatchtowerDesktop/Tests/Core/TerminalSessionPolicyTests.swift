@@ -35,6 +35,29 @@ final class TerminalSessionPolicyTests: XCTestCase {
         XCTAssertNil(TerminalSessionPolicy.activeSession([make(1, kind: .shell)], live: [1], lastFocused: [1]))
     }
 
+    func testPolicyPicksLiveCodexSessionAsActive() {
+        let s = [make(1), make(2, kind: .codex), make(3, kind: .shell)]
+        XCTAssertEqual(TerminalSessionPolicy.activeSession(s, live: [1, 2, 3], lastFocused: [1, 2, 3])?.id, 2,
+                       "the newest focused agent, past a shell")
+        XCTAssertEqual(TerminalSessionPolicy.activeSession(s, live: [2, 3], lastFocused: [])?.id, 2)
+        XCTAssertTrue(TerminalSessionPolicy.needsTitle(make(4, kind: .codex), attempts: 0))
+    }
+
+    func testShellIsNeverAnAgent() {
+        XCTAssertFalse(TerminalSession.Kind.shell.isAgent)
+        XCTAssertNil(TerminalSession.Kind.shell.agent)
+        XCTAssertEqual(TerminalSession.Kind.claude.agent, .claude)
+        XCTAssertEqual(TerminalSession.Kind.codex.agent, .codex)
+        XCTAssertNil(AgentKind(rawValue: "shell"))
+        XCTAssertNil(AgentKind(rawValue: ""))
+        XCTAssertNil(AgentKind(rawValue: "Codex"), "case-sensitive, like the schema CHECK")
+    }
+
+    func testAgentKindNamesAndSQLList() {
+        XCTAssertEqual(AgentKind.allCases.map(\.displayName), ["Claude Code", "Codex"])
+        XCTAssertEqual(AgentKind.sqlKinds, "('claude','codex')")
+    }
+
     func testSessionForTargetPicksMostRecent() {
         let s = [
             make(1, target: 5, active: "2026-09-30T10:00:00Z"),

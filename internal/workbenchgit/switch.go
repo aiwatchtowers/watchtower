@@ -13,8 +13,8 @@ import (
 const (
 	// NeedUncommitted: the worktree has changes; they would be stashed.
 	NeedUncommitted = "uncommitted_changes"
-	// NeedAgent: a Claude Code session is working in the folder; its files
-	// would be swapped under it.
+	// NeedAgent: an agent session (Claude Code or Codex) is working in the
+	// folder; its files would be swapped under it.
 	NeedAgent = "agent_running"
 )
 
@@ -28,6 +28,10 @@ const (
 	RefusedInvalidName         = "invalid_name"
 	RefusedExists              = "exists"
 	RefusedGitFailed           = "git_failed"
+	// RefusedFolderNotAWorktree: the folder asked for is outside the
+	// repository's worktrees or missing (RefusedDetail names the scope); no
+	// git ran in it.
+	RefusedFolderNotAWorktree = "folder_not_a_worktree"
 )
 
 // restoreBudget bounds what runs after a git write even when the caller's
@@ -40,7 +44,7 @@ const statusAfterBudget = 5 * time.Second
 
 // SwitchRequest is one `workbench git switch`. Stash and ConfirmAgent are
 // the owner's confirmations; AgentRunning is the Desktop's fact that a
-// Claude Code session works in the folder.
+// agent session (Claude Code or Codex) works in the folder.
 type SwitchRequest struct {
 	Branch       string
 	Stash        bool

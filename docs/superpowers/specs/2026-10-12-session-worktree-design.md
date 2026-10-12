@@ -88,7 +88,7 @@ skips the state write (`errors.Join`).
 | key | meaning |
 |---|---|
 | `folder_requested` | F as given (`""` without `--folder`) |
-| `folder_scope` | `main` (F is the workbench folder, inside it, or inside the main worktree), `worktree` (inside a linked worktree of the repo), `outside` (not under any listed worktree, or no repository), `missing` (F does not exist) |
+| `folder_scope` | `main` (F is the workbench folder, inside it, or inside the main worktree), `worktree` (inside a linked worktree of the repo), `outside` (not under any listed worktree, or no repository), `missing` (F does not exist), `""` (unresolved: the worktrees could not be listed — git unavailable, the listing failed or the workbench folder did not resolve; no verdict, keep the last known place) |
 | `folder_root` | the folder git ran in: the workbench folder for `main`/`outside`/`missing`; for `worktree`, the worktree's top level joined with the workbench folder's path relative to the main top level when that exists (a workbench in a repository subfolder), else the worktree top level |
 | `worktree_name` | base name of the linked worktree's top level; `""` otherwise |
 
@@ -101,16 +101,28 @@ so one call answers both "where is it" and "what to show". Without `--folder`: `
 - `TerminalSession.agentCwd: String?`, `agentCwdAt: String?` (read-only; Go writes).
 - `SessionPlace` — `enum { unknown, main(branch: BranchLabel?), worktree(name, root: URL, branch), removed(name) }`
   built by `SessionPlace.resolve(cwd:status:)` from the row and the status envelope.
-- `SessionPlace.trustedCwd(row:, runStart:, live:) -> String?` — D10/D11: nil without a cwd; for a live row, nil
-  when `agent_cwd_at` is earlier than the run start (the run's `SessionStart` did not report); else the cwd.
+- `SessionPlace.trustedCwd(row:, live:) -> String?` — D10/D11: nil without a cwd; for a live row, nil when
+  `agent_cwd_at` is earlier than the row's run start (the run's `SessionStart` did not report); else the cwd. The run
+  start is the row's own run mark, `agent_turns`' `since`, read by `TerminalSessionQueries.fetchAgentCwds` exactly as
+  Go's `db.TerminalAgentCwd` reads it (`json_valid`-guarded) — never a Desktop-side launch time — and the boundary is
+  Go's `AgentCwd.WouldRecord` (at the run start or later belongs to the run). Fail closed where Go does not block: a
+  live row without a readable run start or cwd stamp is untrusted (unknown).
+- `SessionPlace.resolvePlace(cwd:status:workbenchFolder:last:) -> SessionPlace?` — fail closed, an unproven place is
+  never `.main`. Only a cwd lexically equal to the workbench folder is `.main` without a read. Otherwise the envelope
+  must answer **this** cwd: `folder_requested` non-empty and lexically equal to the cwd (Go echoes `--folder`
+  verbatim); the header's own status (no `--folder`, scope `main`) or an envelope asked about another folder is no
+  verdict (nil: keep the last place, stale), as is `""`. `main`/`outside` → main; `worktree` → worktree (root =
+  `folder_root`); `missing` → see §7.
 - `SessionPlacePresentation.label(_:) -> (text, systemImage, help)`: `⑂ mobile-a · feature/x` (glyph
   `arrow.triangle.branch`), `main folder · main`, `worktree removed` (help: the last path), unknown → `main folder`
   + the main branch. Detached/unborn reuse `WorkbenchBranchPresentation.label`.
 
 **Desktop — `SessionPlaceCenter`** (on `WorkbenchesViewModel`, AppState-owned so places survive navigation):
 `place(sessionID) -> SessionPlace`; a cache keyed by trusted cwd. A worktree cwd is resolved through
-`WorkbenchCLI.gitStatus(projectID:folder:)`, at most one call in flight per cwd plus one queued rerun; a cwd equal
-to (or inside) the workbench folder uses the main status the header already reads (no extra process). Refreshed
+`WorkbenchCLI.gitStatus(projectID:folder:)`, at most one call in flight per cwd plus one queued rerun. Only a cwd
+exactly equal (lexically) to the workbench folder skips the process; any other cwd — inside the workbench folder
+included, where `.claude/worktrees/<name>` lives — is read with `--folder cwd`, and the header's status is never
+passed for it. Refreshed
 when a row's cwd changes (session reload), on the workbench's `GitRefsWatcher` fire (it watches the common dir, so
 `worktrees/*/HEAD` covers every worktree's branch) and on app activation — only for workbenches on screen. A failed
 read keeps the last place, marked stale (same rule as the branch button).
@@ -123,11 +135,14 @@ worktree root (the worktree crumb reveals its folder in Finder).
 
 ### 5.1 Folder resolution (`internal/workbenchgit`)
 
-`ResolveFolder(ctx, o Options, requested string) FolderScope` — `Options.Folder` is the workbench folder.
+`ResolveFolder(ctx, o Options, requested string) (ResolvedFolder, error)` — `Options.Folder` is the workbench folder.
 `gitbin.InsideRepository(workbench)` first; then `git worktree list --porcelain -z` **in the workbench folder**;
 `requested` realpath'd (missing → `missing`, no git); matched against the listed paths (realpath'd, longest prefix
 wins, `prunable` entries included only for the `missing` verdict). The result carries `Scope`, `Root`,
-`WorktreeName`, `MainTopLevel`. git runs in `requested`'s root only after this. The `.claude/worktrees` hidden-name
+`WorktreeName`, `MainTopLevel`. Paths compare case-insensitively on macOS. git unavailable → scope `""` with no
+error (the command's own git call reports git as unavailable); a failed listing → scope `""` and the error (status:
+`status_ok: false`; `branches`/`switch`/`create`: `refused: "git_failed"`). git runs in `requested`'s root only
+after this. The `.claude/worktrees` hidden-name
 rule of the Files tree is unrelated and unchanged.
 
 ### 5.2 CLI
@@ -148,11 +163,12 @@ unchanged). Before a switch, `CodeFilesCenter.saveEdits(root:workTree:)` saves t
 workbench root inside its work tree) — the PROJ-10 "edits on disk first" bullet per root.
 
 The agent fact (`TerminalCenter.hasLiveClaudeSession(workbenchID:workTree:place:)`): a live `claude` row counts
-when (a) its trusted place resolves to the target work tree or inside it, (b) its place is unknown (D10), or
-(c) it is not this workbench's row and its `folder_path` is in the work tree (today's rule for other rows). A live
-row of this workbench whose place is known to be another worktree no longer counts. `WorkbenchBranchPresentation`
-gains the `folder_not_a_worktree` text ("That session's worktree is gone — the branch menu shows the main
-folder.").
+when (a) its trusted place resolves to the target work tree or inside it, (b) its place is unknown (D10) **or
+removed** (§7 — a removed or unproven place may be anywhere; fail closed), or (c) it is not this workbench's row and
+its `folder_path` is in the work tree (today's rule for other rows). A live row of this workbench whose place is known
+to be another worktree no longer counts. `WorkbenchBranchPresentation` gains the `folder_not_a_worktree` texts:
+detail `outside` → "That session is outside this repository — the branch menu shows the main folder."; `missing` (or
+any other detail) → "That session's worktree is gone — the branch menu shows the main folder.".
 
 ### 5.4 #563 coordination
 
@@ -163,9 +179,11 @@ Whichever lands second adds `--folder` to `workbench git fetch` and the Remote-o
 
 ### 6.1 `CodeRoot` (Core)
 
-`struct CodeRoot: Hashable, Sendable { workbenchID: Int64; folder: URL (standardized); isMain: Bool }`;
+`struct CodeRoot: Hashable, Sendable { workbenchID: Int64; folder: URL (standardized lexically, never
+symlink-resolved, so the identity does not depend on whether the folder exists); isMain: Bool }`;
 `Workbench.mainCodeRoot`. `CodeRootPolicy.activeSessionID(layout:focusOrder:)` (D6) and
-`CodeRootPolicy.root(workbench:place:)`: `worktree` → that root (if the directory exists), everything else → main.
+`CodeRootPolicy.root(workbench:worktreeFolder:folderExists:)`, given the `.worktree` place's root (nil for any other
+place): that root if the directory exists and is not the workbench folder (compared symlink-resolved), else main.
 
 ### 6.2 Re-keying (no behaviour change first)
 
@@ -185,7 +203,7 @@ the header and Open Quickly. On a change of the active root for a workbench:
    unique per root) before the pane shows the new root's tabs; edits that arrive late still reach their buffer;
 2. the old root's tabs, buffers, models and autosave stay as they are (owner, ask #188: each worktree keeps its
    set); the new root's tabs are restored (main: `workbench.files.tabs.<id>`, unchanged key; worktree:
-   `workbench.files.tabs.<id>.wt.<16-hex SHA-256 of the realpath'd root>`; recents the same scheme);
+   `workbench.files.tabs.<id>.wt.<16-hex SHA-256 of the lexically standardized root>`; recents the same scheme);
 3. FSEvents, git marks and the index are started for the new root by the views' `show`, and released for the old
    one by `stopShowing`/the index idle TTL.
 
@@ -194,7 +212,11 @@ worktree, whatever the page shows (PROJ-03). Monaco keeps one model per buffer i
 
 ## 7. Worktree removed
 
-`folder_scope: missing` (or a root directory that vanished under FSEvents' root-changed event) → place `removed`,
+`folder_scope: missing` for a cwd that **was a worktree** (or a root directory that vanished under FSEvents'
+root-changed event) → place `removed`. "Was a worktree" is proven by the last known place (a worktree or removed place
+whose root holds the cwd) or by a `.claude/worktrees/<name>` folder in the cwd's path; the name is the worktree's, never
+the cwd's last component. A missing cwd not proven a worktree (`<folder>/build` deleted, `/tmp/x`) is `unknown`
+instead — shown as the main folder, counted by the agent check (§5.3). For `removed`:
 the row label `worktree removed`, the page falls back to the main root with no error. That root's clean buffers and
 its saved tabs key are dropped. Its **dirty buffers are never written** (the directory is gone; a write would
 recreate it): they stay in memory and a banner over the Files pane lists them ("The worktree <name> was removed —

@@ -55,7 +55,7 @@ private final class AgentStates: @unchecked Sendable {
     }
 }
 
-/// Hand to Claude Code (spec 2026-10-02 §9.5): the sheet's Send types the
+/// Hand to Session (spec 2026-10-02 §9.5): the sheet's Send types the
 /// stored conversation into a running session and submits it, or starts a
 /// new session with it; the session opens beside the editor.
 @MainActor
@@ -139,7 +139,7 @@ final class CodeHandoffCenterTests: XCTestCase {
             _ = try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: id, ownerText: "And then?", turnID: "t2",
                                                          provider: "claude", now: now + 1)
         }
-        return CodeQuestionRef(project: project, conversationID: id, origin: origin)
+        return CodeQuestionRef(project: project, root: project.mainCodeRoot, conversationID: id, origin: origin)
     }
 
     /// The Files pane alone on the page.
@@ -554,9 +554,9 @@ final class CodeHandoffCenterTests: XCTestCase {
         vm.setLayout(filesAlone, projectID: project.id)
         handoff.handQuery("why save", project: project, origin: CodeQuestionOrigin(path: "src/save.swift", line: 7, selection: nil))
         let text = try XCTUnwrap(handoff.requests[project.id]?.text)
-        XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .newSession, "no session runs")
+        XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .newSession(.claude), "no session runs")
 
-        let sent = await handoff.send(to: .newSession, workbenchID: project.id)
+        let sent = await handoff.send(to: .newSession(.claude), workbenchID: project.id)
 
         XCTAssertTrue(sent)
         let launch = try XCTUnwrap(processes.first?.launches.first)
@@ -579,7 +579,7 @@ final class CodeHandoffCenterTests: XCTestCase {
         await agentStates.poll()
         handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
         XCTAssertEqual(handoff.choices(workbenchID: project.id).map(\.isWaitingForApproval), [true])
-        XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .newSession)
+        XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .newSession(.claude))
 
         let sent = await handoff.send(to: .session(session.id), workbenchID: project.id)
 
@@ -609,7 +609,7 @@ final class CodeHandoffCenterTests: XCTestCase {
             workbenchID: project.id, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil),
             choice: .init(provider: .claude, model: ""), dbPool: pool)
         await handoff.handConversation(CodeQuestionRef(
-            project: project, conversationID: empty, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil)))
+            project: project, root: project.mainCodeRoot, conversationID: empty, origin: CodeQuestionOrigin(path: "a.go", line: 1, selection: nil)))
         handoff.handQuery("   ", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
         XCTAssertNil(handoff.requests[project.id])
         XCTAssertEqual(beeps, 2)
@@ -620,8 +620,46 @@ final class CodeHandoffCenterTests: XCTestCase {
         handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
         handoff.cancel(workbenchID: project.id)
         XCTAssertNil(handoff.requests[project.id])
-        let sent = await handoff.send(to: .newSession, workbenchID: project.id)
+        let sent = await handoff.send(to: .newSession(.claude), workbenchID: project.id)
         XCTAssertFalse(sent)
         XCTAssertTrue(processes.isEmpty)
+    }
+
+    // MARK: - Both agents (board #399)
+
+    /// The sheet lists the running sessions of both agents and a new session
+    /// of each; a new Codex session gets the text as its first prompt, and
+    /// with Codex the default a new session is Codex's.
+    func testHandToSessionListsBothAgents() async throws {
+        let (handoff, vm, project) = try await makeHandoffFixture()
+        terminals.codexLaunchArgs = { _ in CodexLaunchArgs(binary: "/Users/example/bin/codex", pathPrepend: "", args: []) }
+        await vm.newSession(projectID: project.id, agent: .claude)
+        await vm.newSession(projectID: project.id, agent: .codex)
+        let kinds = handoff.choices(workbenchID: project.id).map(\.session.kind)
+        XCTAssertEqual(Set(kinds), [.claude, .codex], "both agents' running sessions are offered")
+        XCTAssertEqual(handoff.newSessionChoices(workbenchID: project.id).map(\.title),
+                       ["New Claude Code session", "New Codex session"])
+
+        vm.readDefaultAgent = { .codex }
+        await vm.reload()
+        handoff.handQuery("why", project: project, origin: CodeQuestionOrigin(path: "", line: 0, selection: nil))
+        let sent = await handoff.send(to: .newSession(.codex), workbenchID: project.id)
+        XCTAssertTrue(sent)
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: project.id) }
+        XCTAssertEqual(rows.filter { $0.kind == .codex }.count, 2, "the hand-off started a Codex session")
+    }
+
+    /// A workbench whose status says Codex is missing offers its new session
+    /// disabled.
+    func testHandToSessionDisablesAMissingAgent() async throws {
+        let runner = FakeCLIRunner(stdout: Data(
+            #"{"skill":"unchanged","hook":true,"mcp":true,"codex":{"found":false,"skill":false,"hooks_trusted":null,"imported_duplicates":false}}"#
+                .utf8))
+        let (handoff, _, project) = try await makeHandoffFixture()
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        handoff.workbenches = vm
+        await vm.refreshInstallStatus(projectID: project.id)
+        XCTAssertEqual(handoff.newSessionChoices(workbenchID: project.id).map(\.isAvailable), [true, false])
+        XCTAssertEqual(handoff.defaultTarget(workbenchID: project.id), .newSession(.claude))
     }
 }

@@ -8,7 +8,7 @@ package enum SessionSwitcherPresentation {
     /// decided by `SessionAgentStatus.effective`; `SessionStatePresentation`
     /// maps it to the dot's colour, glyph, fill and caption.
     package struct State: Equatable, Sendable {
-        package enum Kind: Equatable, Sendable {
+        package enum Kind: Equatable, Sendable, CaseIterable {
             case notStarted
             /// Live, with no state reported during this run.
             case running
@@ -88,6 +88,12 @@ package enum SessionSwitcherPresentation {
         /// Whether the row draws the state label (glyph and caption): a
         /// workbench session; a standalone terminal shows its plain caption.
         package var showsStateLabel: Bool { session.projectID != nil }
+
+        /// "Codex" on a Codex session (board #399); Claude Code rows and
+        /// shells carry no tag, so a Claude-only list looks as before.
+        package var agentTag: String? {
+            session.kind == .codex ? AgentKind.codex.displayName : nil
+        }
     }
 
     /// The highest ⌘N the switchers bind.
@@ -102,14 +108,32 @@ package enum SessionSwitcherPresentation {
         statuses: [Int64: SessionAgentStatus],
         now: Date
     ) -> [Row] {
-        sessions.enumerated().map { index, session in
+        rows(sessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: sessions.map(\.id))
+    }
+
+    /// `rows` with ⌘1…⌘9 numbered over `shortcutOrder` instead of the listed
+    /// order (the sessions panel's main list, then its open finished group,
+    /// #480): a row whose id is not among the first nine of `shortcutOrder`
+    /// gets no shortcut.
+    package static func rows(
+        _ sessions: [TerminalSession],
+        liveIDs: Set<Int64>,
+        statuses: [Int64: SessionAgentStatus],
+        now: Date,
+        shortcutOrder: [Int64]
+    ) -> [Row] {
+        var shortcuts: [Int64: Int] = [:]
+        for (index, id) in shortcutOrder.prefix(maxShortcut).enumerated() where shortcuts[id] == nil {
+            shortcuts[id] = index + 1
+        }
+        return sessions.map { session in
             let state = state(of: session.id, liveIDs: liveIDs, statuses: statuses)
             return Row(
                 session: session,
                 state: state,
                 caption: caption(state, session: session, now: now),
                 badge: session.targetID.map { "#\($0)" },
-                shortcut: index < maxShortcut ? index + 1 : nil
+                shortcut: shortcuts[session.id]
             )
         }
     }

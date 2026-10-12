@@ -149,6 +149,16 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertTrue(confirmation.message.contains("the agent's files will be swapped"))
     }
 
+    /// Board #399: Go counts any agent session (Claude Code or Codex) as
+    /// running, so the warning names neither.
+    func testConfirmationForARunningAgentIsAgentNeutral() throws {
+        let result = WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.agentRunning])
+        let message = try XCTUnwrap(Pres.confirmation(for: result, stashing: false)).message
+        XCTAssertTrue(message.hasPrefix("An agent session is running in this folder"), message)
+        XCTAssertFalse(message.contains("Claude"), message)
+        XCTAssertFalse(message.contains("Codex"), message)
+    }
+
     func testConfirmationForBoth() throws {
         let result = WorkbenchGitSwitchResult(branch: "b", needsConfirmation: [.uncommittedChanges, .agentRunning], changes: 1)
         let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))
@@ -263,5 +273,19 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
     func testUpstreamCaption() {
         XCTAssertNil(Pres.upstreamCaption(WorkbenchGitBranch(name: "main", upstream: "origin/main")))
         XCTAssertEqual(Pres.upstreamCaption(WorkbenchGitBranch(name: "old", upstream: "origin/old", upstreamGone: true)), "upstream gone")
+    }
+
+    /// Go's detail for this refusal is only the scope word; the owner reads
+    /// what happened instead — a gone worktree and a folder outside the
+    /// repository are told apart.
+    func testFolderNotAWorktreeRefusalText() {
+        for scope in ["missing", ""] {
+            let result = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: scope)
+            XCTAssertEqual(Pres.outcome(result).error,
+                           "That session's worktree is gone — the branch menu shows the main folder.", scope)
+        }
+        let outside = WorkbenchGitSwitchResult(refused: "folder_not_a_worktree", refusedDetail: "outside")
+        XCTAssertEqual(Pres.outcome(outside).error,
+                       "That session is outside this repository — the branch menu shows the main folder.")
     }
 }
