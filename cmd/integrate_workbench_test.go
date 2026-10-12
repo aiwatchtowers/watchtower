@@ -515,6 +515,10 @@ func TestIntegrateCodex_AppServerContextFollowsTheCaller(t *testing.T) {
 	useFakeWorkbenchClaude(t)
 	f := useFakeCmdCodex(t)
 	p := testWorkbench(t)
+	// Status asks codex only in a folder set up for it (the skill copy).
+	if err := runCodexInstall(context.Background(), io.Discard, p); err != nil {
+		t.Fatal(err)
+	}
 	for name, run := range map[string]workbenchIntegrateFunc{
 		"install": runCodexInstall,
 		"status": func(ctx context.Context, w io.Writer, p *db.Workbench) error {
