@@ -162,7 +162,7 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 		}
 	}
 	if w.markRun {
-		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow()); err != nil {
+		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow(), ""); err != nil {
 			return fmt.Errorf("marking the new run: %w", err)
 		}
 	}

@@ -133,7 +133,9 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 // has its own transcript, so the turn order measured in the old one goes,
 // and so do the background agent count (agent_background and
 // agent_background_at) its Stop snapshotted, its agent turns (agent_turns)
-// and its chat question (chat_question, chat_question_at).
+// and its chat question (chat_question, chat_question_at). The working
+// directory (agent_cwd, agent_cwd_at) stays: the same process switched
+// conversations, it did not move.
 func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
 	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?, agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
@@ -165,16 +167,22 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 // skipped as a repeat of the previous run's last one, and a late async hook
 // of the previous run (stamped earlier) from landing. Same row guards as
 // SetTerminalAgentState; false when a guard held it back or a newer stamp
-// is stored.
-func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
+// is stored. cwd is the new run's working directory (board #566), stored in
+// agent_cwd stamped at; "" stores NULL in both cwd columns.
+func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at time.Time, cwd string) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
+	var cwdValue, cwdAt sql.NullString
+	if cwd != "" {
+		cwdValue = sql.NullString{String: cwd, Valid: true}
+		cwdAt = sql.NullString{String: stamp, Valid: true}
+	}
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
-		agent_turns = json_object('since', ?)
+		agent_turns = json_object('since', ?), agent_cwd = ?, agent_cwd_at = ?
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
-		stamp, stamp, id, workbenchID, sessionID, stamp)
+		stamp, stamp, cwdValue, cwdAt, id, workbenchID, sessionID, stamp)
 	if err != nil {
 		return false, fmt.Errorf("marking terminal session %d's new run: %w", id, err)
 	}
@@ -193,7 +201,8 @@ func (db *DB) MarkTerminalAgentRun(id, workbenchID int64, sessionID string, at t
 // late async hook of the previous run may still land, stamped before the
 // run, which the Desktop does not trust. A new run starts with no error, no
 // background agent count (agent_background, agent_background_at), no agent
-// turns (agent_turns), no chat question (chat_question, chat_question_at) and
+// turns (agent_turns), no chat question (chat_question, chat_question_at), no
+// working directory (agent_cwd, agent_cwd_at: no hook will report one) and
 // no turn order either (the Desktop's Start fresh moves the id without
 // resetting it, so a row with no state but a turn order, or with only a chat
 // question or agent turns, is cleared too).
@@ -203,10 +212,10 @@ func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string) (
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = NULL,
 		agent_failed_at = NULL, agent_error = '', agent_turn_end = NULL, agent_tool_run = 0,
 		agent_background = NULL, agent_background_at = NULL, chat_question = NULL, chat_question_at = NULL,
-		agent_turns = NULL
+		agent_turns = NULL, agent_cwd = NULL, agent_cwd_at = NULL
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state IS NOT NULL OR agent_state_at IS NOT NULL OR agent_turn_end IS NOT NULL OR agent_tool_run != 0
-		       OR chat_question IS NOT NULL OR agent_turns IS NOT NULL)`,
+		       OR chat_question IS NOT NULL OR agent_turns IS NOT NULL OR agent_cwd IS NOT NULL OR agent_cwd_at IS NOT NULL)`,
 		id, workbenchID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
@@ -242,6 +251,12 @@ type AgentOrder struct {
 	// raises agent_background from NULL; every other write keeps, lowers
 	// (LowerTerminalBackground) or NULLs it.
 	Background sql.NullInt64
+	// Cwd is the main agent's working directory the hook reported (board
+	// #566); "" = none. It rides in the write's UPDATE — agent_cwd and
+	// agent_cwd_at take it and the write's time — only when the stored
+	// agent_cwd_at is NULL, unreadable or earlier, and never makes a repeat
+	// a change: a cwd alone goes through SetTerminalAgentCwd.
+	Cwd string
 }
 
 // SetTerminalAgentState records what workbench workbenchID's claude row id is
@@ -274,7 +289,8 @@ type AgentOrder struct {
 // any plain `waiting` and agent_failed_at moves to the new agent_state_at
 // (Error outranks background: the Desktop reads a row as failed only while
 // the two match). One guarded UPDATE, no transaction; false when a
-// guard held it back.
+// guard held it back. order.Cwd rides along (see AgentOrder.Cwd); it never
+// changes another column or whether the write lands.
 func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string,
 	failure *AgentFailure, prompt bool, order AgentOrder) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
@@ -318,7 +334,9 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		agent_background = CASE WHEN ? = 1 THEN agent_background ELSE ? END,
 		agent_background_at = CASE WHEN ? = 1 THEN agent_background_at ELSE ? END,
 		finished_at = CASE WHEN ? = 'working' AND (agent_state IS NOT 'working' OR ? = 1)
-		                   THEN NULL ELSE finished_at END
+		                   THEN NULL ELSE finished_at END,
+		agent_cwd = CASE WHEN `+cwdNewerClause+` THEN ? ELSE agent_cwd END,
+		agent_cwd_at = CASE WHEN `+cwdNewerClause+` THEN ? ELSE agent_cwd_at END
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND (agent_state IS NOT ? OR (? = 1 AND (agent_failed_at IS NULL OR agent_error IS NOT ?))
 		       OR (? = 'working' AND ? = 1 AND finished_at IS NOT NULL)
@@ -330,7 +348,9 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		state, stamp, stamp,
 		failed, state, stamp, stamp, failedAt, failed, state, agentError,
 		toolRun, keepBackground, background, keepBackground, backgroundAt,
-		state, fromPrompt, id, workbenchID, sessionID, state, failed, agentError,
+		state, fromPrompt,
+		order.Cwd, stamp, order.Cwd, order.Cwd, stamp, stamp,
+		id, workbenchID, sessionID, state, failed, agentError,
 		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, toolRun, order.SeenTurnEnd)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
@@ -338,6 +358,39 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// cwdNewerClause holds when a cwd (the first parameter; empty = none) stamped
+// with the second parameter may replace the stored one: agent_cwd_at is
+// NULL, unreadable or earlier.
+const cwdNewerClause = `(? != '' AND (agent_cwd_at IS NULL OR agent_cwd_at < ? OR agent_cwd_at NOT GLOB '` +
+	agentStateAtGlob + `'))`
+
+// SetTerminalAgentCwd records the main agent's working directory cwd,
+// reported by a hook of conversation sessionID at at, on workbench
+// workbenchID's claude row id (board #566) when no state write carries it:
+// it writes only when cwd differs from agent_cwd and at is later than
+// agent_cwd_at (an unreadable stamp never blocks), with
+// SetTerminalAgentState's row guards, and changes agent_cwd and
+// agent_cwd_at only. An empty cwd writes nothing. false when nothing
+// changed or a guard held it back.
+func (db *DB) SetTerminalAgentCwd(id, workbenchID int64, sessionID, cwd string, at time.Time) (bool, error) {
+	if cwd == "" {
+		return false, nil
+	}
+	stamp := AgentStateStamp(at)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
+		  AND agent_cwd IS NOT ? AND `+cwdNewerClause,
+		cwd, stamp, id, workbenchID, sessionID, cwd, cwd, stamp)
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d working directory: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d working directory: %w", id, err)
 	}
 	return n > 0, nil
 }
