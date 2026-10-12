@@ -105,6 +105,9 @@ final class MobileLinkCenter {
     @ObservationIgnored private let shareTimeout: Duration
     /// The close that follows a link, run outside the relay pass.
     @ObservationIgnored private(set) var closeAfterLink: Task<Void, Never>?
+    /// The close an account change started; a new code waits for it, so it
+    /// never lands on the new code's link.
+    @ObservationIgnored private var accountChangeClose: Task<Void, Never>?
     @ObservationIgnored private var knownOwnerUser: String?
     /// Bumped when the account changes, so a lookup still running then
     /// never caches the old user.
@@ -185,6 +188,7 @@ final class MobileLinkCenter {
     /// iCloud or the Mac's user name; nothing is created then. The codes
     /// still open are retired: only the newest one links.
     func issueCode() async throws -> LinkPayload {
+        await accountChangeClose?.value
         let epoch = ownerEpoch
         let account = await accountAvailability()
         guard account == .available else { throw MobileLinkError.account(account) }
@@ -514,7 +518,7 @@ final class MobileLinkCenter {
         knownOwnerUser = nil
         ownerEpoch += 1
         guard openCode != nil else { return }
-        Task { await closeLink(reason: .accountChanged) }
+        accountChangeClose = Task { await self.closeLink(reason: .accountChanged) }
     }
 
     // MARK: - Helpers

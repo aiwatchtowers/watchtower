@@ -1011,6 +1011,23 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(next.ownerUser, "_owner-new")
     }
 
+    /// #65: a new code waits for the account change's close, so that close
+    /// never shuts the new code's link.
+    func testANewCodeWaitsForTheAccountChangesClose() async throws {
+        _ = try await center.issueCode()
+        let gate = SaveGate()
+        shares.gate("setPublicLink", on: gate)
+        center.accountChanged()
+        await fulfillment(of: [gate.arrived], timeout: 5)
+
+        let issuing = Task { try await center.issueCode() }
+        gate.release()
+        let code = try await issuing.value
+
+        XCTAssertEqual(center.openCode, code)
+        XCTAssertTrue(shares.isLinkOpen)
+    }
+
     /// #65: a code still being made when the account changes is closed, not shown.
     func testACodeBeingIssuedAcrossAnAccountChangeIsClosed() async throws {
         let gate = SaveGate()
