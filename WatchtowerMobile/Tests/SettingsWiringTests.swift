@@ -109,6 +109,12 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(error.mark, .symbol("exclamationmark.circle.fill"))
         XCTAssertEqual(error.text, "Error")
         XCTAssertEqual([error.tone, error.textTone], [.red, .red])
+        // Final review I1: the Mac writes "revoked" for a token it lost (the
+        // ErrAuthRevoked writers); it needs the owner like an error does.
+        let revoked = AccountStatusStyle(status: "revoked")
+        XCTAssertEqual(revoked.mark, .symbol("exclamationmark.circle.fill"))
+        XCTAssertEqual(revoked.text, "Revoked")
+        XCTAssertEqual([revoked.tone, revoked.textTone], [.red, .red])
         let newer = AccountStatusStyle(status: "expired")
         XCTAssertEqual(newer.mark, .textOnly)
         XCTAssertEqual(newer.text, "expired")

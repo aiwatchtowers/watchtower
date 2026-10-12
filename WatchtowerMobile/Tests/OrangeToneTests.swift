@@ -84,7 +84,7 @@ final class OrangeToneTests: XCTestCase {
         for status in [MacStatus.notConnected, .online(macName: "Acme Mac"), .offline(macName: "Acme Mac", lastSeen: now)] {
             XCTAssertNotEqual(MacStatusRow(status: status, now: now).tone, .orange, "\(status)")
         }
-        for status in ["ok", "error", "expired", ""] {
+        for status in ["ok", "error", "revoked", "expired", ""] {
             XCTAssertTrue(AccountStatusStyle(status: status).toneUses.allSatisfy { $0.tone != .orange }, "account status \(status)")
         }
         XCTAssertNotEqual(NowModel(snapshot: snapshot, now: now).macChipTone, .orange)
