@@ -102,14 +102,32 @@ package enum SessionSwitcherPresentation {
         statuses: [Int64: SessionAgentStatus],
         now: Date
     ) -> [Row] {
-        sessions.enumerated().map { index, session in
+        rows(sessions, liveIDs: liveIDs, statuses: statuses, now: now, shortcutOrder: sessions.map(\.id))
+    }
+
+    /// `rows` with ⌘1…⌘9 numbered over `shortcutOrder` instead of the listed
+    /// order (the sessions panel's main list, then its open finished group,
+    /// #480): a row whose id is not among the first nine of `shortcutOrder`
+    /// gets no shortcut.
+    package static func rows(
+        _ sessions: [TerminalSession],
+        liveIDs: Set<Int64>,
+        statuses: [Int64: SessionAgentStatus],
+        now: Date,
+        shortcutOrder: [Int64]
+    ) -> [Row] {
+        var shortcuts: [Int64: Int] = [:]
+        for (index, id) in shortcutOrder.prefix(maxShortcut).enumerated() where shortcuts[id] == nil {
+            shortcuts[id] = index + 1
+        }
+        return sessions.map { session in
             let state = state(of: session.id, liveIDs: liveIDs, statuses: statuses)
             return Row(
                 session: session,
                 state: state,
                 caption: caption(state, session: session, now: now),
                 badge: session.targetID.map { "#\($0)" },
-                shortcut: index < maxShortcut ? index + 1 : nil
+                shortcut: shortcuts[session.id]
             )
         }
     }
