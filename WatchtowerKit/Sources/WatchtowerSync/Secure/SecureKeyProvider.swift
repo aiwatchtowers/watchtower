@@ -59,13 +59,18 @@ public protocol WireNameIndex: Sendable {
     func plainName(forWire wireName: String) -> String?
 }
 
-/// A relay record this transport could not open (F2): another phone's, a removed phone's, a stranger's.
+/// A relay record this transport will not hand over (F2): another phone's, a removed phone's, a stranger's, or an
+/// older version of a record the rollback guard has seen newer (`reason == "rolledBack"`). Hygiene ages them out
+/// by wire name.
 public struct UnopenableRecord: Equatable, Sendable {
     public let wireName: String
     public let modifiedAt: Date      // plaintext on the wire (spec §2.4)
+    /// A short code (`authenticationFailed`, `noRelayKey`, `rolledBack`, ...); never key material.
+    public let reason: String
 
-    public init(wireName: String, modifiedAt: Date) {
+    public init(wireName: String, modifiedAt: Date, reason: String) {
         self.wireName = wireName
         self.modifiedAt = modifiedAt
+        self.reason = reason
     }
 }

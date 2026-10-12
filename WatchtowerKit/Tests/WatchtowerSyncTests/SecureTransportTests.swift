@@ -438,7 +438,7 @@ final class SecureTransportTests: XCTestCase {
         XCTAssertEqual(scan.opened.map(\.recordName), ["action-p1"])
         XCTAssertEqual(scan.unopenable.count, 1)
         let strangerWire = try stranger.wireName(plain: "action-s1", zone: .relay)
-        XCTAssertEqual(scan.unopenable.first, UnopenableRecord(wireName: strangerWire, modifiedAt: stamp))
+        XCTAssertEqual(scan.unopenable.first, UnopenableRecord(wireName: strangerWire, modifiedAt: stamp, reason: "noRelayKey"))
 
         try await hub.deleteWire(wireNames: [strangerWire], in: .relay)
         let deleted = try await inner.changes(in: .relay, since: nil).deletedRecordNames
@@ -513,5 +513,86 @@ final class SecureTransportTests: XCTestCase {
         XCTAssertEqual(try guardStore.check(wireName: "w", senderID: phone, epoch: 1, seq: 899), .older)
         XCTAssertEqual(try guardStore.check(wireName: "w", senderID: phone, epoch: 2, seq: 1), .newer)
         XCTAssertEqual(try guardStore.check(wireName: "w", senderID: hub, epoch: 1, seq: 5), .newer, "F3")
+    }
+
+    // MARK: - Fix round 1
+
+    func testARolledBackRecordIsListedForHygiene() async throws {
+        let inner = InMemoryCloudTransport()
+        let phone = try phoneTransport(inner: inner)
+        let hub = hubTransport(inner: inner)
+        let version1 = try await phone.seal(action(status: "pending"))
+        let version2 = try await phone.seal(action(status: "cancelled"))
+        try await inner.save([version2])
+        _ = try await hub.changes(in: .relay, since: nil)
+        try await inner.save([version1])
+
+        let scan = try await hub.relayHygieneScan()
+
+        XCTAssertTrue(scan.opened.isEmpty)
+        XCTAssertEqual(scan.unopenable, [UnopenableRecord(wireName: version1.recordName, modifiedAt: stamp, reason: "rolledBack")],
+                       "F2: hygiene can still age out a rolled-back copy by wire name")
+    }
+
+    func testASignalShapedRecordInRelayZoneIsNotPassedThrough() async throws {
+        let inner = InMemoryCloudTransport()
+        let rejections = Rejections()
+        let hub = hubTransport(inner: inner, rejections: rejections)
+        let forged = CloudRecord(
+            recordName: "action-a1", zone: .relay, kind: WireKind.signal, modifiedAt: stamp,
+            payload: action().payload)
+        let shaped = CloudRecord(
+            recordName: "sig-abcdefghijklmnopqrstuvwxyz", zone: .relay, kind: WireKind.signal, modifiedAt: stamp,
+            payload: Data())
+        try await inner.save([forged, shaped])
+
+        let read = try await hub.changes(in: .relay, since: nil).changed
+        let scan = try await hub.relayHygieneScan()
+
+        XCTAssertTrue(read.isEmpty, "signals live in DataZone only (D14); a relay \"sig\" record is unauthenticated")
+        XCTAssertEqual(rejections.values.map(\.reason), ["signalInRelayZone", "signalInRelayZone"])
+        XCTAssertEqual(scan.unopenable.map(\.wireName), ["action-a1", shaped.recordName])
+    }
+
+    func testALockedKeyInsideTheOwnEchoLoopPropagates() async throws {
+        let inner = InMemoryCloudTransport()
+        let hubKeys = TestE2E.hub()
+        let rejections = Rejections()
+        let hub = hubTransport(inner: inner, keys: hubKeys, rejections: rejections)
+        try await hub.save([action(status: "applied")])
+        hubKeys.isLocked = true
+
+        do {
+            _ = try await hub.changes(in: .relay, since: nil)
+            XCTFail("expected keysUnavailable")
+        } catch let error as SecureTransportError {
+            XCTAssertEqual(error, .keysUnavailable, "a locked key is never a miss in the h2p key loop")
+        }
+        XCTAssertTrue(rejections.values.isEmpty, "nothing dropped while locked")
+
+        hubKeys.isLocked = false
+        let replay = try await hub.changes(in: .relay, since: nil)
+        XCTAssertEqual(replay.changed.map(\.recordName), ["action-a1"], "the kept token replays after unlock")
+    }
+
+    func testAForgedHubEchoIsUnopenableAtTheHub() async throws {
+        let inner = InMemoryCloudTransport()
+        let wire = "abcdefghijklmnopqrstuvwxyz"
+        // Claims to be the hub's own h2p echo, sealed under a key no linked device holds.
+        let forged = try EnvelopeSealer.sealSymmetric(
+            InnerFrame(kind: "action", id: "action-a1", payload: action(status: "applied").payload),
+            envelopeClass: .relayToPhone, key: SymmetricKey(size: .bits256), hubID: TestE2E.hubID,
+            senderID: TestE2E.hubID, epoch: 1, seq: 99, context: EnvelopeContext(zone: .relay, wireName: wire),
+            signer: nil)
+        try await inner.save([CloudRecord(recordName: wire, zone: .relay, kind: WireKind.envelope, modifiedAt: stamp, payload: forged)])
+        let rejections = Rejections()
+        let hub = hubTransport(inner: inner, rejections: rejections)
+
+        let read = try await hub.changes(in: .relay, since: nil).changed
+        let scan = try await hub.relayHygieneScan()
+
+        XCTAssertTrue(read.isEmpty)
+        XCTAssertEqual(rejections.values.map(\.reason), ["noRelayKey"])
+        XCTAssertEqual(scan.unopenable, [UnopenableRecord(wireName: wire, modifiedAt: stamp, reason: "noRelayKey")])
     }
 }

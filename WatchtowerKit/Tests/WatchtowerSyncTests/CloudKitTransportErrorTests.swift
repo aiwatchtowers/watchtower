@@ -418,6 +418,6 @@ final class CloudKitTransportErrorTests: XCTestCase {
         XCTAssertEqual(retry.recordType, CloudKitTransport.recordType)
         XCTAssertEqual(retry.encryptedValues["payload"] as? Data, sealed.payload,
                        "the retry re-sends the pending envelope byte for byte, never the server's or a re-seal")
-        XCTAssertNil(retry["notifyLevel"])
+        XCTAssertNil(retry.encryptedValues["notifyLevel"], "a sealed record never carries a wire level (F28)")
     }
 }

@@ -18,8 +18,8 @@ import os
 /// `.relayToHub` from a sender with an accepted epoch, and opens its own `.relayToPhone` echoes (F2); the phone opens
 /// `.relayToPhone` under its own key and its own `.relayToHub` records. Everything else is dropped and reported
 /// once per wire name through `onRejected`. Every opened record passes the rollback guard keyed by (wire name,
-/// sender) (F3). A locked keychain makes `changes` throw `SecureTransportError.keysUnavailable` so the consumer keeps
-/// its token and replays (Review Focus 1). `deletedRecordNames` are passed through as wire names.
+/// sender) (F3); signals (DataZone only) are refused here. A locked keychain makes `changes` throw
+/// `SecureTransportError.keysUnavailable` so the consumer keeps its token and replays (Review Focus 1). `deletedRecordNames` are passed through as wire names.
 public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingTransport {
     private static let relayKinds: Set<String> = [
         RelayRecordKind.action.rawValue, RelayRecordKind.recordingUpload.rawValue, RelayRecordKind.device.rawValue
@@ -28,6 +28,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     private static let keyboxPrefix = "keybox-"
     private static let grantPrefix = "\(SliceKind.deviceGrant.rawValue)-"
     private static let helloPrefix = "\(RelayRecordKind.hello.rawValue)-"
+    private static let rolledBackReason = "rolledBack"
 
     private let inner: any CloudSyncTransport & Sendable
     private let keys: any SecureKeyProvider
@@ -230,7 +231,8 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     // MARK: - Hub relay hygiene (F2)
 
     /// The full-scan view of RelayZone: the opened records (`changes` semantics, own h2p echoes included) plus every
-    /// record nobody here can open, by wire name and plaintext `modifiedAt`. Reports nothing through `onRejected`.
+    /// record nobody here can open or the rollback guard refuses, by wire name, plaintext `modifiedAt` and reason.
+    /// Reports nothing through `onRejected`.
     public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord]) {
         let batch = try await inner.changes(in: .relay, since: nil)
         var opened: [CloudRecord] = []
@@ -238,8 +240,12 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         for record in batch.changed {
             switch try open(record) {
             case .opened(let plain): opened.append(plain)
-            case .unopenable: unopenable.append(UnopenableRecord(wireName: record.recordName, modifiedAt: record.modifiedAt))
-            case .rolledBack: break
+            case .unopenable(let reason):
+                unopenable.append(UnopenableRecord(wireName: record.recordName, modifiedAt: record.modifiedAt, reason: reason))
+            case .rolledBack:
+                // The server holds an older version than one already seen: hygiene must still be able to age it out.
+                unopenable.append(UnopenableRecord(
+                    wireName: record.recordName, modifiedAt: record.modifiedAt, reason: Self.rolledBackReason))
             }
         }
         return (opened, unopenable)
@@ -261,7 +267,9 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     /// Throws only `keysUnavailable` (a locked keychain) and the provider's or the guard's other errors unchanged;
     /// everything about the record itself is an `.unopenable` outcome.
     private func open(_ record: CloudRecord) throws -> OpenOutcome {
-        if record.kind == WireKind.signal { return .opened(record) }
+        // Signals live in DataZone only (D14), which passes through untouched; a "sig" record in RelayZone is
+        // unauthenticated plaintext anyone could write, so it is never handed over.
+        if record.kind == WireKind.signal { return .unopenable("signalInRelayZone") }
         do {
             return try openRelay(record)
         } catch KeyStoreError.locked {
