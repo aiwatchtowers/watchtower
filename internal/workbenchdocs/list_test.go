@@ -178,3 +178,40 @@ func TestListTextFiles_CapKeepsTheNewestAndLogsTheCut(t *testing.T) {
 	assert.Contains(t, logged.String(), "2001 text files")
 	assert.Contains(t, logged.String(), "2000 newest")
 }
+
+// writeCodexLayout writes what a codex workbench install and codex itself
+// leave in a folder, plus the owner's own files next to them.
+func writeCodexLayout(t *testing.T, folder string) {
+	t.Helper()
+	writeAt(t, folder, "README.md", "readme")
+	writeAt(t, folder, ".codex/notes.md", "codex's project state")
+	writeAt(t, folder, "sub/.codex/x.md", "a nested codex folder")
+	writeAt(t, folder, ".agents/skills/watchtower-workbench/SKILL.md", "the installed skill")
+	writeAt(t, folder, ".agents/skills/own/SKILL.md", "the owner's own skill")
+	writeAt(t, folder, ".agents/notes.md", "the owner's own note")
+	writeAt(t, folder, "docs/.codex-notes.md", "a file, not the .codex folder")
+}
+
+// The codex skill copy and codex's own folder are Watchtower's and codex's,
+// not the owner's documents: hidden in a repository (untracked and not
+// ignored) and outside one; the owner's files beside them stay listed.
+func TestWorkbenchDocs_HidesCodexAndAgentsSkill(t *testing.T) {
+	want := []string{"README.md", ".agents/skills/own/SKILL.md", ".agents/notes.md", "docs/.codex-notes.md"}
+	t.Run("walk", func(t *testing.T) {
+		folder := t.TempDir()
+		require.False(t, gitbin.InsideRepository(folder), "the temp dir must not sit in a repository")
+		writeCodexLayout(t, folder)
+		files, err := ListTextFiles(context.Background(), folder)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, want, fileRelPaths(files))
+	})
+	t.Run("git", func(t *testing.T) {
+		gitBin(t)
+		folder := t.TempDir()
+		gitIn(t, folder, "init", "-q")
+		writeCodexLayout(t, folder)
+		files, err := ListTextFiles(context.Background(), folder)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, want, fileRelPaths(files))
+	})
+}

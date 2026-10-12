@@ -45,21 +45,31 @@ func processTerminalSession() string { return os.Getenv(TerminalSessionEnv) }
 // workbench; otherwise none (an external terminal, a garbage value or a gone
 // row), never an error — only a failed lookup is one.
 func terminalSessionOf(d *db.DB, projectID int64, getenv func() string) (sql.NullInt64, error) {
+	s, err := terminalSessionRow(d, projectID, getenv)
+	if err != nil || s == nil {
+		return sql.NullInt64{}, err
+	}
+	return sql.NullInt64{Int64: s.ID, Valid: true}, nil
+}
+
+// terminalSessionRow is terminalSessionOf's row: nil for no session of
+// workbench projectID, an error only for a failed lookup.
+func terminalSessionRow(d *db.DB, projectID int64, getenv func() string) (*db.TerminalSession, error) {
 	id, ok := parseSessionID(getenv())
 	if !ok {
-		return sql.NullInt64{}, nil
+		return nil, nil
 	}
 	s, err := d.GetTerminalSession(id)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
-		return sql.NullInt64{}, nil
+		return nil, nil
 	}
 	if err != nil {
-		return sql.NullInt64{}, fmt.Errorf("loading terminal session %d: %w", id, err)
+		return nil, fmt.Errorf("loading terminal session %d: %w", id, err)
 	}
 	if s.WorkbenchID.Int64 != projectID {
-		return sql.NullInt64{}, nil
+		return nil, nil
 	}
-	return sql.NullInt64{Int64: id, Valid: true}, nil
+	return s, nil
 }
 
 // parseSessionID reads a terminal_sessions id the way the brief's session

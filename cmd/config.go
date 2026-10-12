@@ -251,6 +251,7 @@ var knownConfigKeys = map[string]bool{
 	"memory.semantic.preferences":          true,
 	"memory.focus.enabled":                 true,
 	"claude_path":                          true,
+	"workbench.default_agent":              true,
 	"tracks.enabled":                       true,
 	"people.enabled":                       true,
 	"targets.next_step.enabled":            true,
