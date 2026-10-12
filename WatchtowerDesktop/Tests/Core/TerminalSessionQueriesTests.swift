@@ -283,6 +283,53 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    /// The run start is `agent_turns`' `since`, read as Go's
+    /// `db.TerminalAgentCwd` reads it: NULL without a run mark and when the
+    /// column is not JSON (json_extract would fail on it).
+    func testFetchAgentCwdsReadsTheRunStartAsGoDoes() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db)
+            let marked = try TerminalSessionQueries.create(db, claude(project, "Marked"))
+            let garbled = try TerminalSessionQueries.create(db, claude(project, "Garbled"))
+            let unmarked = try TerminalSessionQueries.create(db, claude(project, "Unmarked"))
+            let turns: [(Int64, String?)] = [
+                (marked.id, #"{"since":"2026-10-12T09:00:00.000Z"}"#), (garbled.id, "not json"), (unmarked.id, nil)
+            ]
+            for (id, json) in turns {
+                try db.execute(sql: """
+                    UPDATE terminal_sessions SET agent_cwd = '/tmp/acme', agent_cwd_at = '2026-10-12T10:00:00.000Z',
+                        agent_turns = ? WHERE id = ?
+                    """, arguments: [json, id])
+            }
+            let cwds = try TerminalSessionQueries.fetchAgentCwds(db, projectID: project)
+            XCTAssertEqual(cwds[marked.id]?.runStart, "2026-10-12T09:00:00.000Z")
+            XCTAssertNil(cwds[garbled.id]?.runStart, "agent_turns that is not JSON reads as no run start")
+            XCTAssertNotNil(cwds[garbled.id], "and still loads the row")
+            XCTAssertNil(cwds[unmarked.id]?.runStart)
+        }
+    }
+
+    /// A reload does not probe the columns again: the probe is cached per
+    /// connection (GRDB's schema cache) until the schema changes.
+    func testFetchAgentCwdsProbesTheColumnsOncePerConnection() throws {
+        final class Box: @unchecked Sendable { var probes = 0 }
+        let box = Box()
+        let queue = try TestDatabase.create()
+        let project = try queue.write { db in try TestDatabase.insertWorkbench(db) }
+        _ = try queue.read { db in try TerminalSessionQueries.fetchAgentCwds(db, projectID: project) }
+        try queue.read { db in
+            db.trace { event in
+                if event.description.contains("table_info") || event.description.contains("table_xinfo") {
+                    box.probes += 1
+                }
+            }
+            _ = try TerminalSessionQueries.fetchAgentCwds(db, projectID: project)
+            db.trace(nil)
+        }
+        XCTAssertEqual(box.probes, 0)
+    }
+
     /// A database without migration 00110: no cwds, and every other session
     /// read still works (the cwd stays out of `TerminalSession`).
     func testADatabaseWithoutTheCwdColumnsStillLoadsSessions() throws {

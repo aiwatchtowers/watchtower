@@ -101,16 +101,28 @@ so one call answers both "where is it" and "what to show". Without `--folder`: `
 - `TerminalSession.agentCwd: String?`, `agentCwdAt: String?` (read-only; Go writes).
 - `SessionPlace` — `enum { unknown, main(branch: BranchLabel?), worktree(name, root: URL, branch), removed(name) }`
   built by `SessionPlace.resolve(cwd:status:)` from the row and the status envelope.
-- `SessionPlace.trustedCwd(row:, runStart:, live:) -> String?` — D10/D11: nil without a cwd; for a live row, nil
-  when `agent_cwd_at` is earlier than the run start (the run's `SessionStart` did not report); else the cwd.
+- `SessionPlace.trustedCwd(row:, live:) -> String?` — D10/D11: nil without a cwd; for a live row, nil when
+  `agent_cwd_at` is earlier than the row's run start (the run's `SessionStart` did not report); else the cwd. The run
+  start is the row's own run mark, `agent_turns`' `since`, read by `TerminalSessionQueries.fetchAgentCwds` exactly as
+  Go's `db.TerminalAgentCwd` reads it (`json_valid`-guarded) — never a Desktop-side launch time — and the boundary is
+  Go's `AgentCwd.WouldRecord` (at the run start or later belongs to the run). Fail closed where Go does not block: a
+  live row without a readable run start or cwd stamp is untrusted (unknown).
+- `SessionPlace.resolvePlace(cwd:status:workbenchFolder:last:) -> SessionPlace?` — fail closed, an unproven place is
+  never `.main`. Only a cwd lexically equal to the workbench folder is `.main` without a read. Otherwise the envelope
+  must answer **this** cwd: `folder_requested` non-empty and lexically equal to the cwd (Go echoes `--folder`
+  verbatim); the header's own status (no `--folder`, scope `main`) or an envelope asked about another folder is no
+  verdict (nil: keep the last place, stale), as is `""`. `main`/`outside` → main; `worktree` → worktree (root =
+  `folder_root`); `missing` → see §7.
 - `SessionPlacePresentation.label(_:) -> (text, systemImage, help)`: `⑂ mobile-a · feature/x` (glyph
   `arrow.triangle.branch`), `main folder · main`, `worktree removed` (help: the last path), unknown → `main folder`
   + the main branch. Detached/unborn reuse `WorkbenchBranchPresentation.label`.
 
 **Desktop — `SessionPlaceCenter`** (on `WorkbenchesViewModel`, AppState-owned so places survive navigation):
 `place(sessionID) -> SessionPlace`; a cache keyed by trusted cwd. A worktree cwd is resolved through
-`WorkbenchCLI.gitStatus(projectID:folder:)`, at most one call in flight per cwd plus one queued rerun; a cwd equal
-to (or inside) the workbench folder uses the main status the header already reads (no extra process). Refreshed
+`WorkbenchCLI.gitStatus(projectID:folder:)`, at most one call in flight per cwd plus one queued rerun. Only a cwd
+exactly equal (lexically) to the workbench folder skips the process; any other cwd — inside the workbench folder
+included, where `.claude/worktrees/<name>` lives — is read with `--folder cwd`, and the header's status is never
+passed for it. Refreshed
 when a row's cwd changes (session reload), on the workbench's `GitRefsWatcher` fire (it watches the common dir, so
 `worktrees/*/HEAD` covers every worktree's branch) and on app activation — only for workbenches on screen. A failed
 read keeps the last place, marked stale (same rule as the branch button).
@@ -151,11 +163,12 @@ unchanged). Before a switch, `CodeFilesCenter.saveEdits(root:workTree:)` saves t
 workbench root inside its work tree) — the PROJ-10 "edits on disk first" bullet per root.
 
 The agent fact (`TerminalCenter.hasLiveClaudeSession(workbenchID:workTree:place:)`): a live `claude` row counts
-when (a) its trusted place resolves to the target work tree or inside it, (b) its place is unknown (D10), or
-(c) it is not this workbench's row and its `folder_path` is in the work tree (today's rule for other rows). A live
-row of this workbench whose place is known to be another worktree no longer counts. `WorkbenchBranchPresentation`
-gains the `folder_not_a_worktree` text ("That session's worktree is gone — the branch menu shows the main
-folder.").
+when (a) its trusted place resolves to the target work tree or inside it, (b) its place is unknown (D10) **or
+removed** (§7 — a removed or unproven place may be anywhere; fail closed), or (c) it is not this workbench's row and
+its `folder_path` is in the work tree (today's rule for other rows). A live row of this workbench whose place is known
+to be another worktree no longer counts. `WorkbenchBranchPresentation` gains the `folder_not_a_worktree` texts:
+detail `outside` → "That session is outside this repository — the branch menu shows the main folder."; `missing` (or
+any other detail) → "That session's worktree is gone — the branch menu shows the main folder.".
 
 ### 5.4 #563 coordination
 
@@ -199,7 +212,11 @@ worktree, whatever the page shows (PROJ-03). Monaco keeps one model per buffer i
 
 ## 7. Worktree removed
 
-`folder_scope: missing` (or a root directory that vanished under FSEvents' root-changed event) → place `removed`,
+`folder_scope: missing` for a cwd that **was a worktree** (or a root directory that vanished under FSEvents'
+root-changed event) → place `removed`. "Was a worktree" is proven by the last known place (a worktree or removed place
+whose root holds the cwd) or by a `.claude/worktrees/<name>` folder in the cwd's path; the name is the worktree's, never
+the cwd's last component. A missing cwd not proven a worktree (`<folder>/build` deleted, `/tmp/x`) is `unknown`
+instead — shown as the main folder, counted by the agent check (§5.3). For `removed`:
 the row label `worktree removed`, the page falls back to the main root with no error. That root's clean buffers and
 its saved tabs key are dropped. Its **dirty buffers are never written** (the directory is gone; a write would
 recreate it): they stay in memory and a banner over the Files pane lists them ("The worktree <name> was removed —
