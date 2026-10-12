@@ -244,11 +244,13 @@ package enum WorkbenchBranchPresentation {
     }
 
     /// Go's detail wins over the generic text, except for a failed status
-    /// read, whose detail is git's own error.
+    /// read, whose detail is git's own error, and a folder that is no
+    /// worktree, whose detail is only the scope (`outside`, `missing`).
     private static func refusedText(_ result: WorkbenchGitSwitchResult) -> String {
         let detail = result.refusedDetail
         switch result.refused {
         case "git_failed": return "git could not read the folder: \(detail.isEmpty ? result.error : detail)"
+        case "folder_not_a_worktree": return detail == "outside" ? folderOutsideTheRepositoryText : folderNotAWorktreeText
         case _ where !detail.isEmpty: return detail
         case "unknown_branch": return "There is no local branch with that name."
         case "checked_out_elsewhere": return "That branch is checked out in another worktree."
@@ -260,6 +262,17 @@ package enum WorkbenchBranchPresentation {
         default: return "Refused: \(result.refused)"
         }
     }
+
+    /// `folder_not_a_worktree` (board #565) for a session folder that no
+    /// longer exists (`missing`, or a detail this app does not know): the
+    /// menu falls back to the main folder.
+    package static let folderNotAWorktreeText =
+        "That session's worktree is gone — the branch menu shows the main folder."
+
+    /// `folder_not_a_worktree` with detail `outside`: the session's folder
+    /// exists but is in none of the repository's worktrees.
+    package static let folderOutsideTheRepositoryText =
+        "That session is outside this repository — the branch menu shows the main folder."
 
     private static func changeCount(_ count: Int) -> String {
         count == 1 ? "1 change is" : "\(count) changes are"

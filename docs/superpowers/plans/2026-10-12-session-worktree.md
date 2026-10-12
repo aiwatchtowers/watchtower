@@ -201,7 +201,7 @@ decode), create `WatchtowerCore/Models/SessionPlace.swift`, `WatchtowerCore/Serv
 `Tests/Core/WorkbenchGitDecodingTests.swift`, `Tests/Core/WorkbenchBranchPresentationTests.swift`.
 
 **Interfaces:** `SessionPlace` (`unknown`, `main`, `worktree(name, root, status)`, `removed(name)`);
-`SessionPlace.trustedCwd(row:runStart:live:) -> String?`; `SessionPlace.resolve(cwd:status:workbenchFolder:)`;
+`SessionPlace.trustedCwd(row:live:) -> String?` (run start = the row's `agent_turns.since`); `SessionPlace.resolvePlace(cwd:status:workbenchFolder:last:)`;
 `SessionPlacePresentation.label(_:) -> (text, systemImage, help)`.
 
 - [ ] Tests: `testTrustedCwdTable` (no cwd; live with cwd older than the run → nil; not live → last cwd);
