@@ -45,10 +45,39 @@ package enum WorkbenchNotificationPolicy {
         package let title: String
         /// The terminal session that filed it; nil for one filed outside the app.
         package let sessionID: Int64?
+        /// `owner_asks.kind` (`question`, `check`, `review`). Nil in a
+        /// snapshot persisted before the kind was read: the ask is still
+        /// known by its id, so it is not announced again.
+        package let kind: String?
 
-        package init(title: String, sessionID: Int64? = nil) {
+        package init(title: String, sessionID: Int64? = nil, kind: String? = nil) {
             self.title = title
             self.sessionID = sessionID
+            self.kind = kind
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case title, sessionID, kind
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decode(String.self, forKey: .title)
+            sessionID = try c.decodeIfPresent(Int64.self, forKey: .sessionID)
+            kind = try c.decodeIfPresent(String.self, forKey: .kind)
+        }
+
+        var isReview: Bool { kind == "review" }
+        var isReadyWork: Bool { kind == "check" || kind == "review" }
+
+        /// The notice title: a check or a review is work ready for the
+        /// owner, anything else (a question, an unknown kind) a question.
+        var noticeTitle: String {
+            switch kind {
+            case "check": "Ready to check: \(title)"
+            case "review": "Ready for review: \(title)"
+            default: "Agent asks: \(title)"
+            }
         }
     }
 
@@ -165,9 +194,10 @@ package enum WorkbenchNotificationPolicy {
     }
 
     package static func decide(previous: Snapshot, current: Snapshot) -> [WorkbenchNotice] {
-        [
+        let opened = openedAsks(previous, current)
+        return [
             coalesce(questions(previous, current), kind: .agentAsks, in: current),
-            coalesce(openedAsks(previous, current), kind: .askOpened, in: current),
+            coalesce(opened.map(\.notice), kind: .askOpened, in: current, summary: askSummaryTitle(opened.map(\.ask))),
             coalesce(doneTargets(previous, current), kind: .targetDone, in: current),
             coalesce(proposedActions(previous, current), kind: .actionAwaitsApproval, in: current)
         ].flatMap { $0 }
@@ -187,7 +217,7 @@ package enum WorkbenchNotificationPolicy {
 
     /// An ask open now that the previous poll did not see. The owner's
     /// answer only closes asks, so it is never announced.
-    private static func openedAsks(_ previous: Snapshot, _ current: Snapshot) -> [WorkbenchNotice] {
+    private static func openedAsks(_ previous: Snapshot, _ current: Snapshot) -> [(ask: OpenAsk, notice: WorkbenchNotice)] {
         guard previous.asksKnown else { return [] }
         return current.openAsks.sorted { $0.key < $1.key }.compactMap { id, ask in
             guard previous.openAsks[id] == nil else { return nil }
@@ -196,9 +226,17 @@ package enum WorkbenchNotificationPolicy {
             let route = ask.sessionID.map {
                 WorkbenchRoute(projectID: current.projectID, pane: .terminal, subjectID: $0, askID: id)
             } ?? WorkbenchRoute(projectID: current.projectID, pane: .board, askID: id)
-            return notice(.askOpened, current, title: "Agent asks: \(ask.title)", body: current.projectName,
-                          route: route, key: "\(id)")
+            return (ask, notice(.askOpened, current, title: ask.noticeTitle, body: current.projectName,
+                                route: route, key: "\(id)"))
         }
+    }
+
+    /// A batch of only checks and reviews is ready work; one question in it
+    /// keeps the generic title.
+    private static func askSummaryTitle(_ asks: [OpenAsk]) -> String {
+        if asks.allSatisfy(\.isReview) { return "Ready for review (\(asks.count))" }
+        if asks.allSatisfy(\.isReadyWork) { return "Ready to check (\(asks.count))" }
+        return summaryTitle(.askOpened, count: asks.count)
     }
 
     private static func doneTargets(_ previous: Snapshot, _ current: Snapshot) -> [WorkbenchNotice] {
@@ -227,10 +265,16 @@ package enum WorkbenchNotificationPolicy {
 
     // MARK: - Shaping
 
-    private static func coalesce(_ notices: [WorkbenchNotice], kind: WorkbenchNoticeKind, in snapshot: Snapshot) -> [WorkbenchNotice] {
+    /// `summary` overrides the kind's summary title (the asks name ready work).
+    private static func coalesce(
+        _ notices: [WorkbenchNotice],
+        kind: WorkbenchNoticeKind,
+        in snapshot: Snapshot,
+        summary: String? = nil
+    ) -> [WorkbenchNotice] {
         guard notices.count >= coalesceThreshold else { return notices }
         return [notice(kind, snapshot,
-                       title: summaryTitle(kind, count: notices.count), body: snapshot.projectName,
+                       title: summary ?? summaryTitle(kind, count: notices.count), body: snapshot.projectName,
                        route: WorkbenchRoute(projectID: snapshot.projectID, pane: .board),
                        key: "summary-" + notices.map(\.identifier).joined(separator: ",").hashValueString)]
     }
