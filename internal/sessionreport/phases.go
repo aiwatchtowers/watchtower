@@ -12,16 +12,16 @@ import (
 // from target_status_history; "" = never.
 type span struct{ started, finished string }
 
-// statusSpans is the span of every target of workbench projectID that has
+// statusSpans is the span of every target of workbench workbenchID that has
 // history.
-func statusSpans(ctx context.Context, d *db.DB, projectID int64) (map[int64]span, error) {
+func statusSpans(ctx context.Context, d *db.DB, workbenchID int64) (map[int64]span, error) {
 	rows, err := d.QueryContext(ctx, `SELECT h.target_id,
 		COALESCE(MIN(CASE WHEN h.to_status = 'in_progress' THEN h.changed_at END), ''),
 		COALESCE(MAX(CASE WHEN h.to_status = 'done' THEN h.changed_at END), '')
 		FROM target_status_history h JOIN targets t ON t.id = h.target_id
-		WHERE t.project_id = ? GROUP BY h.target_id`, projectID)
+		WHERE t.project_id = ? GROUP BY h.target_id`, workbenchID)
 	if err != nil {
-		return nil, fmt.Errorf("reading workbench %d status history: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d status history: %w", workbenchID, err)
 	}
 	defer rows.Close()
 	out := map[int64]span{}
@@ -29,12 +29,12 @@ func statusSpans(ctx context.Context, d *db.DB, projectID int64) (map[int64]span
 		var id int64
 		var s span
 		if err := rows.Scan(&id, &s.started, &s.finished); err != nil {
-			return nil, fmt.Errorf("reading workbench %d status history: %w", projectID, err)
+			return nil, fmt.Errorf("reading workbench %d status history: %w", workbenchID, err)
 		}
 		out[id] = s
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading workbench %d status history: %w", projectID, err)
+		return nil, fmt.Errorf("reading workbench %d status history: %w", workbenchID, err)
 	}
 	return out, nil
 }

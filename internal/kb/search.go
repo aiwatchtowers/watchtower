@@ -133,7 +133,7 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 
 // workbenchDocVisible is the SQL condition (over kb_documents aliased d) that
 // hides every project document but those of the project bound to its one
-// argument; projectID 0 hides them all (PROJ-08).
+// argument; workbenchID 0 hides them all (PROJ-08).
 const workbenchDocVisible = `(d.source <> '` + WorkbenchDocSource + `' OR json_extract(d.anchor_json, '$.project_id') = ?)`
 
 // validate checks req and returns the effective limit.

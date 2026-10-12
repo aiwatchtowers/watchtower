@@ -114,7 +114,7 @@ type Options struct {
 
 // Check inspects every target of board against the folder's git state. It
 // never fails: a part it cannot check is skipped and named in Notes.
-func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options) Report {
+func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Options) Report {
 	if o.StaleAfter <= 0 {
 		o.StaleAfter = DefaultStaleAfter
 	}
@@ -124,7 +124,7 @@ func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options
 	if o.Run == nil {
 		o.Run = ExecRunner
 	}
-	rep := Report{WorkbenchID: projectID, Findings: []Finding{}}
+	rep := Report{WorkbenchID: workbenchID, Findings: []Finding{}}
 	g := newGitState(ctx, o)
 	rep.Git = g.workTree
 	rep.Base = g.baseName()

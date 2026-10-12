@@ -55,24 +55,24 @@ type prJSON struct {
 	MergedAt  string `json:"mergedAt"`
 }
 
-// Refresh updates workbench projectID's PR cache for refs ('pr:<n>' or
+// Refresh updates workbench workbenchID's PR cache for refs ('pr:<n>' or
 // 'branch:<name>'). Only refs whose cached row is stale are checked, within
 // opts.Budget; a ref not checked keeps its cached row (none = unknown). It
 // never fails: anything it could not check is named in the note. It writes
 // the cache only — never the board, so PROJ-07's drift check stays the only
 // place that flags merged_but_open.
-func Refresh(ctx context.Context, d *db.DB, projectID int64, refs []string, opts RefreshOptions) RefreshResult {
+func Refresh(ctx context.Context, d *db.DB, workbenchID int64, refs []string, opts RefreshOptions) RefreshResult {
 	if opts.Budget <= 0 {
 		opts.Budget = DefaultRefreshBudget
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	wb, err := d.GetWorkbench(projectID)
+	wb, err := d.GetWorkbench(workbenchID)
 	if err != nil {
 		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}
 	}
-	cache, err := d.PRStates(projectID)
+	cache, err := d.PRStates(workbenchID)
 	if err != nil {
 		return RefreshResult{Note: "PR states not refreshed: " + err.Error()}
 	}
@@ -93,7 +93,7 @@ func Refresh(ctx context.Context, d *db.DB, projectID int64, refs []string, opts
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.Budget)
 	defer cancel()
-	r := refresher{d: d, projectID: projectID, folder: wb.FolderPath, cache: cache, opts: opts}
+	r := refresher{d: d, workbenchID: workbenchID, folder: wb.FolderPath, cache: cache, opts: opts}
 	r.open(ctx)
 	deadline := start.Add(opts.Budget)
 	for i, ref := range stale {
@@ -122,16 +122,16 @@ func isStale(row db.PRState, now time.Time) bool {
 
 // refresher holds what every ref's check shares.
 type refresher struct {
-	d         *db.DB
-	projectID int64
-	folder    string
-	cache     map[string]db.PRState
-	opts      RefreshOptions
-	repo      *workbenchcheck.Repository // nil outside a repository
-	gh        bool                       // gh is installed, signed in and allowed
-	notes     []string
-	skipped   int    // refs whose state could not be read
-	firstErr  string // why the first of them could not
+	d           *db.DB
+	workbenchID int64
+	folder      string
+	cache       map[string]db.PRState
+	opts        RefreshOptions
+	repo        *workbenchcheck.Repository // nil outside a repository
+	gh          bool                       // gh is installed, signed in and allowed
+	notes       []string
+	skipped     int    // refs whose state could not be read
+	firstErr    string // why the first of them could not
 }
 
 // open probes the repository and gh once. A plain folder runs no git — and
@@ -190,7 +190,7 @@ func (r *refresher) check(ctx context.Context, ref string) bool {
 	if !ok {
 		return true
 	}
-	row.WorkbenchID, row.Ref = r.projectID, ref
+	row.WorkbenchID, row.Ref = r.workbenchID, ref
 	row.CheckedAt = r.opts.Now().UTC().Format(time.RFC3339)
 	if err := r.d.UpsertPRState(row); err != nil {
 		r.skip(ref, err.Error())

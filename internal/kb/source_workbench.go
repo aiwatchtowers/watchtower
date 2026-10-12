@@ -222,26 +222,26 @@ func hasPathPrefix(path, root string) bool {
 // failed listing is an error and leaves every entry in place. An unreadable
 // file is indexed by its path, never an error. documents is how many files
 // the folder lists, changed how many index entries were written or removed.
-func IndexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64) (documents, changed int, err error) {
-	return indexWorkbenchDocs(ctx, d, projectID, workbenchdocs.ListTextFiles)
+func IndexWorkbenchDocs(ctx context.Context, d *db.DB, workbenchID int64) (documents, changed int, err error) {
+	return indexWorkbenchDocs(ctx, d, workbenchID, workbenchdocs.ListTextFiles)
 }
 
-func indexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64, list listTextFiles) (documents, changed int, err error) {
+func indexWorkbenchDocs(ctx context.Context, d *db.DB, workbenchID int64, list listTextFiles) (documents, changed int, err error) {
 	var folder string
-	if err := d.QueryRowContext(ctx, `SELECT folder_path FROM projects WHERE id = ?`, projectID).Scan(&folder); err != nil {
-		return 0, 0, fmt.Errorf("kb: workbench %d: %w", projectID, err)
+	if err := d.QueryRowContext(ctx, `SELECT folder_path FROM projects WHERE id = ?`, workbenchID).Scan(&folder); err != nil {
+		return 0, 0, fmt.Errorf("kb: workbench %d: %w", workbenchID, err)
 	}
 	files, err := list(ctx, folder)
 	if err != nil {
-		return 0, 0, fmt.Errorf("kb: listing workbench %d documents: %w", projectID, err)
+		return 0, 0, fmt.Errorf("kb: listing workbench %d documents: %w", workbenchID, err)
 	}
-	set := FileSet{Source: WorkbenchDocSource, Container: projectID, Root: folder, Files: make([]string, 0, len(files))}
+	set := FileSet{Source: WorkbenchDocSource, Container: workbenchID, Root: folder, Files: make([]string, 0, len(files))}
 	for _, f := range files {
 		set.Files = append(set.Files, f.RelPath)
 	}
 	documents, changed, err = indexFileSet(ctx, d, set, true)
 	if err != nil {
-		return 0, 0, fmt.Errorf("kb: indexing workbench %d documents: %w", projectID, err)
+		return 0, 0, fmt.Errorf("kb: indexing workbench %d documents: %w", workbenchID, err)
 	}
 	return documents, changed, nil
 }

@@ -62,19 +62,19 @@ func New(workspaceDir string) Store {
 	return Store{root: filepath.Join(workspaceDir, "project_files")}
 }
 
-// Dir is project projectID's image directory.
-func (s Store) Dir(projectID int64) string {
-	return filepath.Join(s.root, strconv.FormatInt(projectID, 10))
+// Dir is workbench workbenchID's image directory.
+func (s Store) Dir(workbenchID int64) string {
+	return filepath.Join(s.root, strconv.FormatInt(workbenchID, 10))
 }
 
-// Ingest validates the image at src and copies it into project projectID's
+// Ingest validates the image at src and copies it into workbench workbenchID's
 // directory, reusing a copy of the same content already there. src must be
 // an absolute path to a regular file (a symlink is refused) holding a PNG,
 // JPEG, GIF or WebP of at most MaxImageBytes — decided by content, never by
 // extension. Every check runs against the one opened descriptor, and the
 // read stops one byte past the cap, so a file swapped or grown after the
 // open cannot slip past them.
-func (s Store) Ingest(projectID int64, src string) (Image, error) {
+func (s Store) Ingest(workbenchID int64, src string) (Image, error) {
 	data, mime, err := readImage(src)
 	if err != nil {
 		return Image{}, err
@@ -82,7 +82,7 @@ func (s Store) Ingest(projectID int64, src string) (Image, error) {
 	ext := imageExtensions[mime]
 	sum := sha256.Sum256(data)
 	sha := hex.EncodeToString(sum[:])
-	dir, err := s.ensureDir(projectID)
+	dir, err := s.ensureDir(workbenchID)
 	if err != nil {
 		return Image{}, err
 	}
@@ -159,8 +159,8 @@ func readRegular(src string) ([]byte, error) {
 
 // ensureDir creates the root and the project's directory 0700, tightening a
 // directory that already exists with looser permissions.
-func (s Store) ensureDir(projectID int64) (string, error) {
-	dir := s.Dir(projectID)
+func (s Store) ensureDir(workbenchID int64) (string, error) {
+	dir := s.Dir(workbenchID)
 	for _, d := range []string{s.root, dir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return "", fmt.Errorf("creating %s: %w", d, err)
@@ -228,11 +228,11 @@ func (s Store) contains(p string) bool {
 	return perr == nil && file != "" && !strings.Contains(dir, string(filepath.Separator))
 }
 
-// RemoveWorkbench deletes project projectID's whole directory; a missing one
+// RemoveWorkbench deletes workbench workbenchID's whole directory; a missing one
 // is a no-op.
-func (s Store) RemoveWorkbench(projectID int64) error {
-	if err := os.RemoveAll(s.Dir(projectID)); err != nil {
-		return fmt.Errorf("removing %s: %w", s.Dir(projectID), err)
+func (s Store) RemoveWorkbench(workbenchID int64) error {
+	if err := os.RemoveAll(s.Dir(workbenchID)); err != nil {
+		return fmt.Errorf("removing %s: %w", s.Dir(workbenchID), err)
 	}
 	return nil
 }
