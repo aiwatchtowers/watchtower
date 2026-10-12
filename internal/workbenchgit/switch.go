@@ -28,6 +28,10 @@ const (
 	RefusedInvalidName         = "invalid_name"
 	RefusedExists              = "exists"
 	RefusedGitFailed           = "git_failed"
+	// RefusedFolderNotAWorktree: the folder asked for is outside the
+	// repository's worktrees or missing (RefusedDetail names the scope); no
+	// git ran in it.
+	RefusedFolderNotAWorktree = "folder_not_a_worktree"
 )
 
 // restoreBudget bounds what runs after a git write even when the caller's

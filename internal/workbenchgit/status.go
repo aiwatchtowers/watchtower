@@ -48,6 +48,10 @@ type Status struct {
 	CommonDir   string `json:"common_dir"`
 	StatusOK    bool   `json:"status_ok"`
 	StatusError string `json:"status_error"`
+	// ResolvedFolder is the folder asked for (`--folder`) and where git
+	// ran; the caller fills it in. For an outside or missing folder the
+	// fields above are the workbench folder's status.
+	ResolvedFolder
 }
 
 // ReadStatus reads the folder's branch and changes. It never fails: a
