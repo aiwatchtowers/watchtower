@@ -245,7 +245,7 @@ func TestProj16_LiveProcessKeepsTheWorktree(t *testing.T) {
 	root := f.pushedWork("wt", "feat/x")
 	f.record(root, "feat/x")
 	uid := os.Getuid()
-	orphan := Proc{PID: 501, PPID: 1, UID: uid, Start: "Mon Oct 12 10:00:00 2026", Exe: "/usr/bin/sleep", Cwd: root}
+	orphan := Proc{PID: 501, PPID: 1, UID: uid, Start: "Mon Oct 12 10:00:00 2026", Exe: filepath.Join(root, ".build", "stub"), Cwd: root}
 	f.procs.list = []Proc{orphan}
 
 	p := f.plan(Request{})
@@ -257,12 +257,21 @@ func TestProj16_LiveProcessKeepsTheWorktree(t *testing.T) {
 		{PID: 503, PPID: 1, UID: uid + 1, Exe: "/usr/bin/sleep", Cwd: root},                                // another user
 		{PID: 504, PPID: 1, UID: uid, Exe: "/usr/local/bin/claude", Cwd: root},                             // Claude Code
 		{PID: 505, PPID: 1, UID: uid, Exe: filepath.Join(root, ".build", "debug", "watchtower"), Cwd: "/"}, // Watchtower's CLI
+		{PID: 506, PPID: 1, UID: uid, Exe: "/usr/local/bin/node", Cwd: root},                               // npm-installed codex
+		{PID: 507, PPID: 1, UID: uid, Exe: "/opt/homebrew/bin/tmux", Cwd: root},                            // tmux server
 	} {
 		f.procs.list = []Proc{orphan, blocker}
 		it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonProcessRunning)
 		if !strings.Contains(it.Detail, filepath.Base(blocker.Exe)) {
 			t.Fatalf("detail %q does not name %s", it.Detail, blocker.Exe)
 		}
+	}
+
+	// A current-user process the scan saw no cwd for keeps every worktree.
+	f.procs.list = []Proc{orphan, {PID: 508, PPID: 1, UID: uid, Name: "/usr/bin/vim"}}
+	it := wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonProcessUnknown)
+	if !strings.Contains(it.Detail, "vim pid 508") {
+		t.Fatalf("detail %q does not name the unknown process", it.Detail)
 	}
 
 	// The sweep never signals, so an orphan keeps the worktree there.
@@ -367,7 +376,7 @@ func TestProj16_PlanWritesNothing(t *testing.T) {
 	writeFile(t, filepath.Join(dirty, "notes.txt"), "new\n")
 	f.record(pushed, "feat/pushed")
 	f.record(dirty, "feat/dirty")
-	f.procs.list = []Proc{{PID: 501, PPID: 1, UID: os.Getuid(), Start: "x", Exe: "/usr/bin/sleep", Cwd: pushed}}
+	f.procs.list = []Proc{{PID: 501, PPID: 1, UID: os.Getuid(), Start: "x", Exe: filepath.Join(pushed, "stub"), Cwd: pushed}}
 	before := repoSnapshot(t, f)
 
 	p := f.plan(Request{})

@@ -185,10 +185,18 @@ Then branches: re-run B1–B4 (B2 now sees the removed worktrees), and delete wi
 `git update-ref -d refs/heads/<name> <checked sha>` — a compare-and-delete: if the tip moved since the check, git
 refuses and the branch is kept (`moved`). Then `git config --remove-section branch.<name>` (absent section ignored).
 
-**Orphans (S5).** A process is an orphan of this session when its cwd or executable is inside one of the session's
-worktree candidates, its ppid is 1, it runs as the current user, and its executable is not Watchtower's (`watchtower`
-CLI or daemon, `Watchtower*.app`) nor `claude`/`codex`. Orphans get SIGTERM (never SIGKILL), 5 s grace, re-scan.
-Sweep mode never terminates processes (it only reports `process_running`).
+**Orphans (S5).** A process is an orphan of this session when its ppid is 1, it runs as the current user, it is
+not the caller, and its **executable** (lsof's first `txt` entry) is inside one of the session's worktree candidates
+— a build output, a test stub or a dev binary built there — and is not Watchtower's (`watchtower` CLI or daemon,
+`Watchtower*.app`) nor `claude`/`codex` (that list stays as an extra guard). Orphans get SIGTERM (never SIGKILL), 5 s
+grace, re-scan. Sweep mode never terminates processes (it only reports `process_running`).
+
+**Never signalled: cwd inside, executable outside** (controller decision 2026-10-13, review of PR #223). A process
+whose cwd is inside the worktree but whose executable is outside it — a tmux or screen server, a shell, an
+npm-installed `claude`/`codex` (a `node` executable), a GUI app, the SPM dev binary built elsewhere — is never
+signalled, whatever its ppid: it is a blocker, the worktree is kept `process_running` with detail
+`process in use: <name> pid N`. A process of the current user whose cwd the scan could not see is a blocker for
+every worktree under consideration (`process_unknown`): it could be working in any of them.
 
 **Process scan.** One `ps -axo pid=,ppid=,uid=,lstart=,comm=` (executable path) and one
 `lsof -a -d cwd -n -P -w -F pn -u <uid>` per evaluation. The process key carries the start time so a reused pid is
@@ -356,7 +364,10 @@ worktree's own top dir has the same birth second as its admin dir.
   subagent transcripts (`subagents/*.jsonl`) is the agent worktree (`.claude/worktrees/agent-…`), not the parent's
   directory. That is the transcript, not hook input, so the capture is still needed before Task 3 relies on it.
 
-**§14.2 lsof — format clean, TCC part open.** `lsof -a -d cwd -n -P -w -F pn -p <pid>` against a throwaway
+**§14.2 lsof — format clean, TCC part open.** The shipped scan (Task 5) is
+`lsof -a -d cwd,txt -n -P -w -F pfn -u <uid>`, run in the caller's locale (not `LC_ALL=C`; lsof's `\xNN` escapes are
+decoded either way, a caret or unknown escape makes the name unknown); the owner's final manual check (Task 14)
+confirms it raises no TCC prompt with `txt` included. Spike notes: `lsof -a -d cwd -n -P -w -F pn -p <pid>` against a throwaway
 `sleep` whose cwd is in `<tmp>` (a name with a space) prints three lines, `p<pid>`, `fcwd`, `n<canonical path>`
 (`/private<tmp>/wt cwd`, spaces unescaped, symlinks resolved), exit 0, ~0.06 s. A dead or unknown pid prints
 nothing and exits 1. `ps -o comm=` is argv-based: `/bin/sleep` for a process started by absolute path, but just

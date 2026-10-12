@@ -101,10 +101,11 @@ type Store interface {
 	AllSessionActivity(ctx context.Context) ([]SessionActivity, error)
 }
 
-// Proc is one process of the scan. Cwd "" = unknown.
+// Proc is one process of the scan. Cwd and Exe "" = unknown. Name is ps's
+// comm (argv-based), for messages only — never a basis for a decision.
 type Proc struct {
-	PID, PPID, UID  int
-	Start, Exe, Cwd string
+	PID, PPID, UID        int
+	Start, Exe, Cwd, Name string
 }
 
 // ProcessScanner lists processes and signals orphans (Task 5 implements it).
@@ -145,23 +146,43 @@ type Deps struct {
 	WorktreeBirth func(adminDir string) (time.Time, bool)
 }
 
-// OrphansIn splits the processes whose cwd or executable is inside one of
-// roots into orphans — ppid 1, the current user, not self and not
-// Watchtower's, Claude Code's or Codex's executable — and blockers (every
-// other one inside). Processes outside every root are in neither.
+// OrphansIn splits the processes inside one of roots into orphans and
+// blockers; processes outside every root are in neither. An orphan has ppid
+// 1, runs as the current user, is not self, and its executable is inside
+// one of roots and is not Watchtower's, Claude Code's or Codex's: only a
+// build output, test stub or dev binary of the worktree itself is ever
+// signalled. A process whose cwd is inside but whose executable is outside
+// (a shell, a tmux server, a node-run CLI, an app) is a blocker. A process
+// of the current user whose cwd is unknown is a blocker for every root
+// (ProcUnknown): it could be working in any of them (fail closed).
 func OrphansIn(procs []Proc, roots []string, self int) (orphans, blockers []Proc) {
 	uid := os.Getuid()
 	for _, p := range procs {
-		if !procInside(p, roots) {
+		if !procInside(p, roots) && (p.UID != uid || !ProcUnknown(p)) {
 			continue
 		}
-		if p.PPID == 1 && p.UID == uid && p.PID != self && !protectedExe(p.Exe) {
+		if isOrphan(p, roots, uid, self) {
 			orphans = append(orphans, p)
 		} else {
 			blockers = append(blockers, p)
 		}
 	}
 	return orphans, blockers
+}
+
+// ProcUnknown reports whether the scan could not see p's cwd.
+func ProcUnknown(p Proc) bool { return p.Cwd == "" }
+
+func isOrphan(p Proc, roots []string, uid, self int) bool {
+	if p.PPID != 1 || p.UID != uid || p.PID == self || ProcUnknown(p) || protectedExe(p.Exe) {
+		return false
+	}
+	for _, r := range roots {
+		if pathWithin(p.Exe, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func procInside(p Proc, roots []string) bool {

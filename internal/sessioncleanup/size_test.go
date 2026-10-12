@@ -2,6 +2,7 @@ package sessioncleanup
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -79,5 +80,42 @@ func TestSize_DoesNotFollowSymlinks(t *testing.T) {
 	got, known := DiskSizer{}.Size(context.Background(), root, time.Minute)
 	if want := allocated(t, root, link); !known || got != want {
 		t.Fatalf("Size = %d (known %v), want %d: the link itself, not its target", got, known, want)
+	}
+}
+
+func TestSize_HugeDirectoryChecksTheBudgetBetweenChunks(t *testing.T) {
+	root := t.TempDir()
+	for i := range 3 * sizeReadChunk {
+		writeBytes(t, filepath.Join(root, fmt.Sprintf("f%04d", i)), 1)
+	}
+	base := time.Now()
+	calls := 0
+	clock := func() time.Time {
+		calls++
+		return base.Add(time.Duration(calls) * time.Second)
+	}
+	// The deadline is read once, the root's first chunk passes, the second
+	// chunk is over: the size is unknown before the directory is done.
+	if n, known := (DiskSizer{now: clock}).Size(context.Background(), root, 2*time.Second); known || n != 0 {
+		t.Fatalf("over budget mid-directory: Size = %d, known %v; want unknown", n, known)
+	}
+	if calls != 3 {
+		t.Fatalf("clock read %d times, want 3 (deadline, chunk 1, chunk 2)", calls)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reads := 0
+	cancelling := DiskSizer{now: func() time.Time {
+		if reads++; reads == 3 {
+			cancel()
+		}
+		return base
+	}}
+	if _, known := cancelling.Size(ctx, root, time.Hour); known {
+		t.Fatal("a walk cancelled mid-directory reported a known size")
+	}
+	cancel()
+	if n, known := (DiskSizer{}).Size(context.Background(), root, time.Minute); !known || n < int64(3*sizeReadChunk) {
+		t.Fatalf("full walk: Size = %d, known %v", n, known)
 	}
 }

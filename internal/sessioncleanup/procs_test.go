@@ -31,9 +31,9 @@ func TestPsParse_FixtureLines(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Proc{
-		{PID: 501, PPID: 1, UID: 501, Start: "Mon Oct 12 10:00:00 2026"},
-		{PID: 502, PPID: 501, UID: 501, Start: "Fri Oct 2 09:05:01 2026"},
-		{PID: 1, PPID: 0, UID: 0, Start: "Thu Oct 1 08:00:00 2026"},
+		{PID: 501, PPID: 1, UID: 501, Start: "Mon Oct 12 10:00:00 2026", Name: "/bin/sleep"},
+		{PID: 502, PPID: 501, UID: 501, Start: "Fri Oct 2 09:05:01 2026", Name: "/Applications/Foo Bar.app/Contents/MacOS/Foo Bar"},
+		{PID: 1, PPID: 0, UID: 0, Start: "Thu Oct 1 08:00:00 2026", Name: "/sbin/launchd"},
 	}
 	if !slices.Equal(procs, want) {
 		t.Fatalf("parsePs = %+v, want %+v", procs, want)
@@ -66,6 +66,41 @@ func TestLsofParse_FixtureLines(t *testing.T) {
 		if files[pid] != f {
 			t.Errorf("pid %d = %+v, want %+v", pid, files[pid], f)
 		}
+	}
+	for _, bad := range []string{
+		"pabc\nfcwd\nn/tmp\n", // pid not a number
+		"p0\nfcwd\nn/tmp\n",   // no such pid
+		"fcwd\nn/tmp\n",       // a file before any process
+		"p501\nk12\n",         // a field lsof was not asked for
+	} {
+		if files, err := parseLsof([]byte(bad)); err == nil {
+			t.Errorf("parseLsof(%q) = %+v, nil error; want a failure (fail closed)", bad, files)
+		}
+	}
+}
+
+func TestLsofParse_DecodesEscapedNames(t *testing.T) {
+	for raw, want := range map[string]string{
+		`/tmp/acme/\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba\xd1\x82/wt`: "/tmp/acme/проект/wt",
+		"/tmp/acme/проект/wt":                                           "/tmp/acme/проект/wt", // a UTF-8 locale prints it as is
+		`/tmp/a\tb`:                                                     "/tmp/a\tb",
+		`/tmp/a^Ib`:                                                     "", // caret notation is ambiguous: unknown
+		`/tmp/a\qb`:                                                     "", // unknown escape: unknown
+		`/tmp/a\x4`:                                                     "", // truncated escape: unknown
+	} {
+		files, err := parseLsof([]byte("p501\nfcwd\nn" + raw + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := files[501].cwd; got != want {
+			t.Errorf("cwd of %q = %q, want %q", raw, got, want)
+		}
+	}
+	root := "/tmp/acme/проект"
+	procs := []Proc{{PID: 501, PPID: 1, UID: os.Getuid(), Start: "x", Exe: root + "/wt/.build/stub",
+		Cwd: decodeLsofName(`/tmp/acme/\xd0\xbf\xd1\x80\xd0\xbe\xd0\xb5\xd0\xba\xd1\x82/wt`)}}
+	if orphans, _ := OrphansIn(procs, []string{root + "/wt"}, 0); len(orphans) != 1 {
+		t.Fatalf("a decoded non-ASCII cwd did not match its worktree: %+v", orphans)
 	}
 }
 
@@ -120,7 +155,7 @@ func TestProj16_OnlyOrphansAreSignalled(t *testing.T) {
 	root := "/private/tmp/acme/wt"
 	uid := os.Getuid()
 	start := "Mon Oct 12 10:00:00 2026"
-	orphan := Proc{PID: 501, PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: root + "/sub"}
+	orphan := Proc{PID: 501, PPID: 1, UID: uid, Start: start, Exe: root + "/.build/debug/stub", Cwd: root + "/sub"}
 	builtExe := Proc{PID: 502, PPID: 1, UID: uid, Start: start, Exe: root + "/.build/debug/server", Cwd: "/"}
 	never := []Proc{
 		{PID: 601, PPID: 77, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: root},               // has a parent
@@ -130,18 +165,28 @@ func TestProj16_OnlyOrphansAreSignalled(t *testing.T) {
 		{PID: 605, PPID: 1, UID: uid, Start: start, Exe: "/opt/bin/claude", Cwd: root},
 		{PID: 606, PPID: 1, UID: uid, Start: start, Exe: "/home/x/.local/share/claude/versions/2.1.296", Cwd: root},
 		{PID: 607, PPID: 1, UID: uid, Start: start, Exe: "/opt/bin/codex", Cwd: root},
-		{PID: 608, PPID: 1, UID: uid, Start: start, Exe: "", Cwd: root},                              // executable unknown
-		{PID: 609, PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: "/private/tmp/acme/wt2"}, // outside
-		{PID: 610, PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: ""},                      // cwd unknown, outside
-		{PID: os.Getpid(), PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: root},            // self
+		{PID: 608, PPID: 1, UID: uid, Start: start, Exe: "", Cwd: root},                               // executable unknown
+		{PID: 609, PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: "/private/tmp/acme/wt2"},  // outside
+		{PID: 610, PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: ""},                       // cwd unknown: may be inside
+		{PID: 611, PPID: 1, UID: uid + 1, Start: start, Exe: "/bin/sleep", Cwd: ""},                   // another user's, unknown
+		{PID: 612, PPID: 1, UID: uid, Start: start, Exe: "/usr/local/bin/node", Cwd: root},            // npm-installed codex
+		{PID: 613, PPID: 1, UID: uid, Start: start, Exe: "/opt/homebrew/bin/tmux", Cwd: root},         // tmux server
+		{PID: 614, PPID: 1, UID: uid, Start: start, Exe: "/bin/zsh", Cwd: root + "/sub"},              // a shell
+		{PID: 615, PPID: 1, UID: uid, Start: start, Exe: "/bin/sleep", Cwd: root},                     // a system tool
+		{PID: 616, PPID: 1, UID: uid, Start: start, Exe: root + "/.build/debug/stub", Cwd: ""},        // built inside, cwd unknown
+		{PID: os.Getpid(), PPID: 1, UID: uid, Start: start, Exe: root + "/.build/debug/x", Cwd: root}, // self
 	}
 	all := append([]Proc{orphan, builtExe}, never...)
 	orphans, blockers := OrphansIn(all, []string{root}, os.Getpid())
 	if got := pids(orphans); !slices.Equal(got, []int{501, 502}) {
 		t.Fatalf("orphans = %v, want [501 502]", got)
 	}
-	if got := pids(blockers); !slices.Equal(got, []int{601, 602, 603, 604, 605, 606, 607, 608, os.Getpid()}) {
+	if got := pids(blockers); !slices.Equal(got, []int{601, 602, 603, 604, 605, 606, 607, 608, 610, 612, 613, 614, 615, 616, os.Getpid()}) {
 		t.Fatalf("blockers = %v", got)
+	}
+	// An unknown cwd blocks every worktree, wherever it is.
+	if _, b := OrphansIn(all, []string{"/elsewhere/wt"}, os.Getpid()); !slices.Equal(pids(b), []int{610, 616}) {
+		t.Fatalf("blockers of an unrelated worktree = %v, want the unknown-cwd processes [610 616]", pids(b))
 	}
 
 	var killed []int
