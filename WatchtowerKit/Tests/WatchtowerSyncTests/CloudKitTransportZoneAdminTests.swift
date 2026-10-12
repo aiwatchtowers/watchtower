@@ -77,4 +77,15 @@ final class CloudKitTransportZoneAdminTests: XCTestCase {
         XCTAssertEqual(outcome, .kept)
         XCTAssertTrue(admin.deleted.isEmpty)
     }
+
+    /// Spec §3.6: a heartbeat it cannot read keeps the zones.
+    func testLegacyZonesWithAnUnreadableHeartbeatAreKept() async throws {
+        let id = CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: legacyData)
+        let bare = CKRecord(recordType: "WatchtowerRecord", recordID: id)
+        let admin = FakeZoneAdmin(zones: [legacyData, legacyRelay], records: [bare])
+        let transport = await CloudKitTransport.testing(store: try .inMemory(), zoneAdmin: admin)
+        let outcome = try await transport.removeLegacyZones { _ in true }
+        XCTAssertEqual(outcome, .kept)
+        XCTAssertTrue(admin.deleted.isEmpty)
+    }
 }

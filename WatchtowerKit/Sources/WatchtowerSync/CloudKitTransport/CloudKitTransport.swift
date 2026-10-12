@@ -1328,8 +1328,14 @@ extension CloudKitTransport {
 
     /// Hub role: the single-hub build's fixed-name `DataZone`/`RelayZone`.
     /// `deleteIf` gets the legacy DataZone `heartbeat` payload (nil: none)
-    /// and decides; both legacy zones that exist go together, or neither.
-    public func removeLegacyZones(deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool) async throws -> LegacyZoneCleanup {
+    /// and decides; both legacy zones that exist go together, or neither. A
+    /// legacy RelayZone with no legacy DataZone has no heartbeat (nil) and is
+    /// deleted if `deleteIf` agrees. A heartbeat record that exists but whose
+    /// payload cannot be read keeps the zones without asking `deleteIf`
+    /// (spec §3.6): it may be another hub's.
+    public func removeLegacyZones(
+        deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool
+    ) async throws -> LegacyZoneCleanup {
         guard role == .hub else { throw HubZoneError.notHub }
         guard entitlementCheck() else { throw HubZoneError.noEntitlement }
         let legacy = HubZones.legacyZoneIDs
@@ -1338,7 +1344,10 @@ extension CloudKitTransport {
         var payload: Data?
         if let data = legacy.first, present.contains(data) {
             let heartbeat = try await zoneAdmin.record(CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: data))
-            payload = heartbeat?.encryptedValues["payload"] as? Data
+            if let heartbeat {
+                guard let data = heartbeat.encryptedValues["payload"] as? Data else { return .kept }
+                payload = data
+            }
         }
         guard deleteIf(payload) else { return .kept }
         try await zoneAdmin.deleteZones(present)
