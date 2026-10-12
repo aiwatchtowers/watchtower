@@ -124,6 +124,9 @@ package struct SessionAgentStatus: Equatable, Sendable {
     /// The last `finish_session` summary ('' when none), a finished
     /// notice's body.
     package let finishSummary: String
+    /// The row's `finished_at` (nil while not finished): the sessions
+    /// panel's finished group orders by it (#480).
+    package let finishedAt: String?
 
     package init(
         sessionID: Int64,
@@ -133,7 +136,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
         state: SessionSwitcherPresentation.State,
         at: String?,
         runMarked: Bool = false,
-        finishSummary: String = ""
+        finishSummary: String = "",
+        finishedAt: String? = nil
     ) {
         self.sessionID = sessionID
         self.workbenchID = workbenchID
@@ -143,6 +147,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
         self.at = at
         self.runMarked = runMarked
         self.finishSummary = finishSummary
+        self.finishedAt = finishedAt
     }
 
     /// The §4b order over a row: the hook states count only for a live
@@ -273,7 +278,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
                                  displayOver: displayOver.contains(row.id)),
                 at: trusted ? row.agentStateAt : nil,
                 runMarked: marked,
-                finishSummary: row.finishSummary
+                finishSummary: row.finishSummary,
+                finishedAt: row.finishedAt
             )
         }
         return result
