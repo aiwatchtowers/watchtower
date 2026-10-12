@@ -57,4 +57,39 @@ final class ConstantsLoginShellProbeTests: XCTestCase {
         box.set(["CODEX_HOME": "/Users/example/other"])
         XCTAssertEqual(box.get(), ["CODEX_HOME": "/Users/example/cx"])
     }
+
+    /// A login shell that did not answer is not cached: the next resolve
+    /// probes again; the first answer stays for good (#399 F1, F2). The probe
+    /// is injected — no shell runs.
+    func testLoginEnvironmentResolverRetriesUntilAnAnswer() async {
+        let answers = ProbeAnswers([nil, ["CODEX_HOME": "/Users/example/cx"], ["CODEX_HOME": "/Users/example/other"]])
+        let resolver = LoginEnvironmentResolver { answers.next() }
+
+        let first = await resolver.resolve()
+        XCTAssertNil(first, "the shell did not answer")
+        let second = await resolver.resolve()
+        XCTAssertEqual(second, ["CODEX_HOME": "/Users/example/cx"])
+        let third = await resolver.resolve()
+        XCTAssertEqual(third, ["CODEX_HOME": "/Users/example/cx"], "an answer is cached")
+        XCTAssertEqual(answers.calls, 2, "no probe after the answer")
+    }
+}
+
+/// Probe answers in order, thread-safe (the resolver probes on a thread of
+/// its own).
+private final class ProbeAnswers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var answers: [[String: String]?]
+    private(set) var calls = 0
+
+    init(_ answers: [[String: String]?]) {
+        self.answers = answers
+    }
+
+    func next() -> [String: String]? {
+        lock.withLock {
+            calls += 1
+            return answers.isEmpty ? nil : answers.removeFirst()
+        }
+    }
 }
