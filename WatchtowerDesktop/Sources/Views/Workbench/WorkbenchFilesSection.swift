@@ -101,7 +101,10 @@ struct WorkbenchFilesSection: View {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text("FILES").sidebarSectionLabel()
+                    Text(root.filesCaption).sidebarSectionLabel()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(root.isMain ? "" : "The worktree the session on screen works in:\n\(root.folder.path)")
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())

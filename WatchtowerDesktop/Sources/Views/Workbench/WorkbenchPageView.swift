@@ -11,6 +11,10 @@ struct WorkbenchPageView: View {
     @State private var deleteSummary: WorkbenchDeleteSummary?
     @State private var deleteSummaryError: String?
 
+    /// The folder the code viewer works in: the worktree of the session on
+    /// screen, else the workbench folder.
+    private var activeRoot: CodeRoot { vm.activeCodeRoot(project: project) }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -37,7 +41,12 @@ struct WorkbenchPageView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // Open Quickly works while this page is on screen (spec §2 decision 3).
-        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: project.mainCodeRoot))
+        .background(OpenQuicklyHostView(center: appState.openQuicklyCenter, project: project, root: activeRoot))
+        // The session on screen moved the page to another folder (#565):
+        // the editor's unsent edits go to the old root's files first.
+        .onChange(of: activeRoot) { old, new in
+            Task { await vm.codeFiles.activate(root: new, previous: old) }
+        }
         // Hand to Session (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in
             HandToSessionSheet(handoff: appState.codeHandoffCenter, request: request)

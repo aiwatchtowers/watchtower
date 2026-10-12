@@ -135,7 +135,7 @@ struct WorkspacePaneView: View {
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
         case .files:
-            CodeFilesPaneView(files: vm.codeFiles, project: project, root: project.mainCodeRoot)
+            CodeFilesPaneView(files: vm.codeFiles, project: project, root: vm.activeCodeRoot(project: project))
                 .id(project.id)
         case let .sessionReport(id):
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)

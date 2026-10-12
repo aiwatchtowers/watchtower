@@ -54,9 +54,7 @@ extension WorkbenchesViewModel {
     /// one; nil for the main folder, an unknown place or a page without a
     /// session.
     func headerPlace(projectID: Int64) -> (label: SessionPlacePresentation.PlaceLabel, folder: URL?)? {
-        let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []
-        guard let sessionID = CodeRootPolicy.activeSessionID(layout: layout(projectID: projectID), focusOrder: focused)
-        else { return nil }
+        guard let sessionID = pageSessionID(projectID: projectID) else { return nil }
         switch sessionPlaces.currentPlace(sessionID: sessionID) {
         case let .worktree(_, root, _):
             return (sessionPlaceLabel(sessionID: sessionID, projectID: projectID), root)
@@ -65,6 +63,28 @@ extension WorkbenchesViewModel {
         case .main, .unknown:
             return nil
         }
+    }
+
+    /// The code root the page's FILES, Files pane, git marks and code
+    /// navigation work in (spec D6, §6.3): the worktree of the session the
+    /// layout holds, when its place is a worktree that was read and still
+    /// exists; the main folder for a page without a session, a main, unknown,
+    /// stale or removed place (never a worktree that cannot be proven). The
+    /// worktree root is built only from Go's `folder_root` spelling.
+    func activeCodeRoot(project: Workbench) -> CodeRoot {
+        guard let sessionID = pageSessionID(projectID: project.id), !sessionPlaces.isPlaceStale(sessionID: sessionID),
+              case let .worktree(_, folder, _) = sessionPlaces.currentPlace(sessionID: sessionID)
+        else { return project.mainCodeRoot }
+        let root = CodeRootPolicy.root(workbench: project, worktreeFolder: folder)
+        // Also read so a worktree removed under FSEvents moves the page
+        // before its place is read again.
+        return codeFiles.isRemoved(root) ? project.mainCodeRoot : root
+    }
+
+    /// The session whose place sets the page's root (D6), nil without one.
+    private func pageSessionID(projectID: Int64) -> Int64? {
+        let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []
+        return CodeRootPolicy.activeSessionID(layout: layout(projectID: projectID), focusOrder: focused)
     }
 
     private func sessionPlaceLabel(sessionID: Int64, projectID: Int64) -> SessionPlacePresentation.PlaceLabel {

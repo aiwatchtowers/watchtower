@@ -357,7 +357,7 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertNil(center.existingBuffer(root, "Makefile"))
         let dirty = center.buffer(for: root, relPath: "cmd/main.go")
         dirty.loadIfNeeded()
-        center.edited(dirty, text: "package edited\n", base: 0, root: root)
+        center.edited(dirty, text: "package edited\n", base: 0)
         XCTAssertEqual(center.tabs(for: root).tabs.first?.isPreview, false, "the first edit keeps the tab")
         center.open("Makefile", root: root, preview: true)
         XCTAssertTrue(center.existingBuffer(root, "cmd/main.go") === dirty)

@@ -45,6 +45,23 @@ package struct CodeRoot: Hashable, Sendable {
         return ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// The worktree's name as the FILES header and the removed-worktree
+    /// banner show it (its folder's name); nil for the main root.
+    package var worktreeName: String? {
+        isMain ? nil : folder.lastPathComponent
+    }
+
+    /// The FILES header: `FILES`, or `FILES — ⑂ mobile-a` in a worktree.
+    package var filesCaption: String {
+        worktreeName.map { "FILES — ⑂ \($0)" } ?? "FILES"
+    }
+
+    /// The banner over the Files pane once this worktree is gone (spec §7).
+    package func removedBannerText(unsavedFiles count: Int) -> String {
+        let files = count == 1 ? "1 file" : "\(count) files"
+        return "The worktree \(worktreeName ?? folder.lastPathComponent) was removed — \(files) had unsaved edits"
+    }
+
     /// Pure path arithmetic. `standardizedFileURL` is not used: it strips a
     /// leading `/private` when the shorter spelling exists on disk.
     private static func lexicalFolder(_ url: URL) -> URL {

@@ -53,6 +53,14 @@ final class CodeFilesCenter {
         let reason: String
     }
 
+    /// A file with unsaved edits in a worktree that was removed (spec §7):
+    /// its buffer never writes again; the owner copies or discards the text.
+    struct OrphanedEdit: Identifiable {
+        let root: CodeRoot
+        let buffer: CodeFileBuffer
+        var id: String { buffer.id }
+    }
+
     enum OperationError: Error, LocalizedError, Equatable {
         case exists(String)
         case unsaved(String)
@@ -80,6 +88,13 @@ final class CodeFilesCenter {
     /// Per root: the editor's cursor as the page last reported it
     /// (`cursor`, at most 10 a second) — back/forward and the jump bar.
     private(set) var cursors: [CodeRoot: CodeNavLocation] = [:]
+    /// Worktree roots whose folder went away (spec §7): the page falls back
+    /// to the main folder. A root leaves the set when it shows again with
+    /// its folder back.
+    private(set) var removedRoots: Set<CodeRoot> = []
+    /// The unsaved edits of removed worktrees, oldest first — shown over the
+    /// Files pane with Copy and Discard, kept for the app session.
+    private(set) var orphanedEdits: [OrphanedEdit] = []
     @ObservationIgnored private var revealSerial = 0
     /// Per root, loaded on first use (gone files pruned).
     @ObservationIgnored private var recents: [CodeRoot: CodeRecentFiles] = [:]
@@ -160,9 +175,13 @@ final class CodeFilesCenter {
     /// `stopShowing` when that view goes.
     func startWatching(_ root: CodeRoot) {
         if root.isMain { dropStaleMainRoots(of: root) }
+        if removedRoots.contains(root), CodeRootPolicy.directoryExists(root.folder) { removedRoots.remove(root) }
         showing[root, default: 0] += 1
         codeIndex?.markShown(root: root)
         let isNew = watched.insert(root).inserted
+        // A worktree root is not watched while hidden: what changed
+        // meanwhile is read again now.
+        if isNew, !root.isMain { rescanRoot(root) }
         if watchesFolders, isNew || watchers[root] == nil {
             let watcher = FolderWatcher(root: root.folder, hidden: CodeFileTree.hiddenNames) { [weak self] batch in
                 self?.handle(batch, root: root)
@@ -183,18 +202,50 @@ final class CodeFilesCenter {
     /// buffers stay — one may still hold an edit to save.
     private func dropStaleMainRoots(of root: CodeRoot) {
         for stale in watched where stale.isMain && stale.workbenchID == root.workbenchID && stale != root {
-            watched.remove(stale)
-            watchers[stale] = nil
-            watchErrors[stale] = nil
-            trees[stale] = nil
-            gitByRoot[stale] = nil
-            gitErrors[stale] = nil
+            unwatchRoot(stale)
+            dropRootViews(stale)
         }
     }
 
+    /// The root's FSEvents stream and git scheduling go. A git run in
+    /// flight finds the root unwatched after its await and lands nothing.
+    private func unwatchRoot(_ root: CodeRoot) {
+        watched.remove(root)
+        watchers[root] = nil
+        watchErrors[root] = nil
+        showing[root] = nil
+        gitPending.remove(root)
+    }
+
+    /// What the views showed of a root that is gone for good (a stale main
+    /// root, a removed worktree): its tree and marks.
+    private func dropRootViews(_ root: CodeRoot) {
+        trees[root] = nil
+        gitByRoot[root] = nil
+        gitErrors[root] = nil
+        gitLastRun[root] = nil
+        reveals[root] = nil
+        cursors[root] = nil
+        editorErrors[root] = nil
+    }
+
+    /// Back on screen after an eviction: the tree and the buffers read the
+    /// disk again (a clean buffer reloads, a dirty one turns to a conflict).
+    private func rescanRoot(_ root: CodeRoot) {
+        trees[root]?.reloadAll()
+        for (key, buffer) in buffers where key.root == root {
+            buffer.diskChanged()
+        }
+    }
+
+    /// Balances `startWatching`. A worktree root nothing shows any more
+    /// stops being watched (its tabs, buffers and autosave stay — a save
+    /// still checks the disk first); the main root's stream stays.
     func stopShowing(_ root: CodeRoot) {
-        showing[root] = max(0, (showing[root] ?? 0) - 1)
+        let count = max(0, (showing[root] ?? 0) - 1)
+        showing[root] = count
         codeIndex?.markHidden(root: root)
+        if count == 0, !root.isMain { unwatchRoot(root) }
     }
 
     /// `startWatching` for as long as the calling task runs — a view's
@@ -210,6 +261,10 @@ final class CodeFilesCenter {
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, root: CodeRoot) {
         guard watched.contains(root) else { return }
+        if !root.isMain, batch.mustRescan || batch.paths.contains(""), !CodeRootPolicy.directoryExists(root.folder) {
+            rootRemoved(root)
+            return
+        }
         codeIndex?.applyWatcherBatch(batch, root: root)
         let tree = trees[root]
         if batch.mustRescan {
@@ -244,8 +299,14 @@ final class CodeFilesCenter {
         Task { @MainActor in
             if wait > .zero { try? await Task.sleep(for: wait) }
             let read = await gitRead(root.folder)
-            gitLastRun[root] = .now
             gitRunning.remove(root)
+            // Unwatched meanwhile (hidden worktree, stale or removed root):
+            // nothing lands; showing it again reads git afresh.
+            guard watched.contains(root) else {
+                gitPending.remove(root)
+                return
+            }
+            gitLastRun[root] = .now
             switch read {
             case .noRepository:
                 gitByRoot[root] = nil
@@ -414,8 +475,15 @@ final class CodeFilesCenter {
         buffers[BufferKey(root: root, path: path)]
     }
 
+    /// Any loaded buffer by its page id — a removed worktree's included, so
+    /// an edit the page hands over late still reaches it (never the disk).
     func buffer(id: String) -> CodeFileBuffer? {
-        buffers.values.first { $0.id == id }
+        buffers.values.first { $0.id == id } ?? orphanedEdits.first { $0.id == id }?.buffer
+    }
+
+    /// The root a loaded buffer belongs to (nil for a removed worktree's).
+    private func ownerRoot(of buffer: CodeFileBuffer) -> CodeRoot? {
+        buffers.first { $0.value === buffer }?.key.root
     }
 
     /// The loaded buffers of `root` at `path` or under it (a folder) —
@@ -424,6 +492,18 @@ final class CodeFilesCenter {
         buffers.compactMap { key, buffer in
             key.root == root && (key.path == path || key.path.hasPrefix(path + "/")) ? buffer : nil
         }
+    }
+
+    /// The page ids of the buffers open in tabs of the workbench's other
+    /// roots — the models the editor page keeps while another root shows.
+    func openBufferIDs(workbenchID: Int64, except root: CodeRoot) -> Set<String> {
+        var ids: Set<String> = []
+        for (other, tabs) in tabsByRoot where other.workbenchID == workbenchID && other != root {
+            for path in tabs.paths {
+                if let buffer = buffers[BufferKey(root: other, path: path)] { ids.insert(buffer.id) }
+            }
+        }
+        return ids
     }
 
     private func forgetBuffer(_ root: CodeRoot, _ path: String) {
@@ -453,27 +533,108 @@ final class CodeFilesCenter {
             return
         }
         if editorErrors[root]?.hasPrefix("The editor did not answer") == true { editorErrors[root] = nil }
-        apply(edits, root: root, now: false)
+        apply(edits, now: false)
     }
 
-    /// Edits the page handed over (a pull, the pane going away).
-    func apply(_ edits: [CodeEditorPendingEdit], root: CodeRoot, now: Bool) {
+    // MARK: Switching roots
+
+    /// The page's active root moved from `previous` to `root` (one
+    /// workbench, spec §6.3): the editor page's unsent edits go into their
+    /// buffers — the old root's — and are saved there before anything else,
+    /// and the page's bridge now answers for `root`. The old root's tabs,
+    /// buffers and autosave stay (each worktree keeps its set). A previous
+    /// worktree whose folder is gone has its buffers locked before the page
+    /// is asked — what it hands over is kept, never written — and is then
+    /// `rootRemoved`.
+    func activate(root: CodeRoot, previous: CodeRoot) async {
+        guard root != previous, root.workbenchID == previous.workbenchID else { return }
+        let removed = !previous.isMain && !CodeRootPolicy.directoryExists(previous.folder)
+        if removed {
+            for (key, buffer) in buffers where key.root == previous {
+                buffer.lockWrites()
+            }
+        }
+        await handOverPending(from: previous, to: root)
+        if removed { rootRemoved(previous) }
+    }
+
+    /// The page's bridge moves from `previous` to `root`; its unsent edits
+    /// go into their buffers and are saved at once (unless locked).
+    private func handOverPending(from previous: CodeRoot, to root: CodeRoot) async {
+        guard let bridge = bridges[previous]?.bridge else { return }
+        bridges[previous] = nil
+        if bridges[root]?.bridge == nil { bridges[root] = WeakBridge(bridge: bridge, root: root) }
+        guard let edits = await bridge.takePending() else {
+            NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its unsent edits on a root switch", root.workbenchID)
+            editorErrors[root] = "The editor did not answer; edits typed in the last moment may not be saved."
+            return
+        }
+        apply(edits, now: true)
+    }
+
+    /// The worktree of `root` was removed (spec §7): it is never written
+    /// again. Clean buffers, the tabs and their saved key, the recents, the
+    /// tree and the marks go; buffers with unsaved edits are locked and
+    /// listed in `orphanedEdits` for Copy or Discard. The main root is never
+    /// "removed".
+    func rootRemoved(_ root: CodeRoot) {
+        guard !root.isMain else { return }
+        removedRoots.insert(root)
+        for (key, buffer) in buffers where key.root == root {
+            buffers[key] = nil
+            if buffer.isDirty {
+                buffer.lockWrites()
+                orphanedEdits.append(OrphanedEdit(root: root, buffer: buffer))
+            } else {
+                buffer.cancelAutosave()
+            }
+        }
+        tabsByRoot[root] = nil
+        defaults.removeObject(forKey: CodeTabs.key(root: root))
+        recents[root] = nil
+        defaults.removeObject(forKey: CodeRecentFiles.key(root: root))
+        unwatchRoot(root)
+        dropRootViews(root)
+    }
+
+    /// Whether `root`'s worktree was removed and has not come back.
+    func isRemoved(_ root: CodeRoot) -> Bool {
+        removedRoots.contains(root) && !CodeRootPolicy.directoryExists(root.folder)
+    }
+
+    /// The banner's Discard: the edits are dropped (nothing was written).
+    func discardOrphanedEdit(id: String) {
+        orphanedEdits.removeAll { $0.id == id }
+    }
+
+    /// The removed worktrees' unsaved edits a workbench's page lists.
+    func orphanedEdits(workbenchID: Int64) -> [OrphanedEdit] {
+        orphanedEdits.filter { $0.root.workbenchID == workbenchID }
+    }
+
+    /// Edits the page handed over (a pull, the pane going away), each into
+    /// its own buffer, whatever root the page shows now.
+    func apply(_ edits: [CodeEditorPendingEdit], now: Bool) {
         for edit in edits {
             guard let buffer = buffer(id: edit.id) else {
                 NSLog("CodeFilesCenter: an edit for a buffer no longer open was dropped")
                 continue
             }
-            edited(buffer, text: edit.text, base: edit.base, root: root, now: now)
+            edited(buffer, text: edit.text, base: edit.base, now: now)
         }
     }
 
     /// One edit from the page: into its buffer, and the first edit keeps a
-    /// preview tab.
-    func edited(_ buffer: CodeFileBuffer, text: String, base: Int, root: CodeRoot, now: Bool = false, explicit: Bool = false) {
+    /// preview tab — of the buffer's own root (the page holds the models of
+    /// every root it showed, so the root on screen says nothing).
+    /// An edit saved at once (a flush) keeps it too.
+    func edited(_ buffer: CodeFileBuffer, text: String, base: Int, now: Bool = false, explicit: Bool = false) {
+        let changesTheFile = buffer.state == .loaded && text != buffer.diskText
         buffer.edited(text, base: base, now: now, explicit: explicit)
-        let tabs = tabsByRoot[root] ?? restoredTabs(root)
-        if buffer.isDirty, tabs.tabs.first(where: { $0.path == buffer.relPath })?.isPreview == true {
-            pin(buffer.relPath, root: root)
+        guard changesTheFile, let owner = ownerRoot(of: buffer) else { return }
+        let tabs = tabsByRoot[owner] ?? restoredTabs(owner)
+        if tabs.tabs.first(where: { $0.path == buffer.relPath })?.isPreview == true {
+            pin(buffer.relPath, root: owner)
         }
     }
 
@@ -482,7 +643,7 @@ final class CodeFilesCenter {
         for entry in bridges.values {
             guard let bridge = entry.bridge, let edits = await bridge.takePending() else { continue }
             // Through `apply`: the first edit keeps a preview tab here too.
-            apply(edits, root: entry.root, now: false)
+            apply(edits, now: false)
         }
         flushAll()
     }
@@ -519,12 +680,12 @@ final class CodeFilesCenter {
         var silent = false
         for entry in bridges.values where entry.root == root || inside(entry.root.folder.path) {
             guard let bridge = entry.bridge else { continue }
-            guard let edits = await takePending(bridge, root: entry.root) else {
+            guard let edits = await takePending(bridge) else {
                 NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its edits before a branch switch", entry.root.workbenchID)
                 silent = true
                 continue
             }
-            apply(edits, root: entry.root, now: false)
+            apply(edits, now: false)
         }
         if silent { return .editorSilent }
         let affected = buffers
@@ -541,7 +702,7 @@ final class CodeFilesCenter {
     /// The page's unsent edits, nil when it failed or did not answer within
     /// `pendingTimeout`. Edits handed over after that still go into their
     /// buffers — the page has let go of them.
-    private func takePending(_ bridge: CodeEditorBridge, root: CodeRoot) async -> [CodeEditorPendingEdit]? {
+    private func takePending(_ bridge: CodeEditorBridge) async -> [CodeEditorPendingEdit]? {
         let wait = PendingWait()
         let limit = pendingTimeout
         return await withCheckedContinuation { continuation in
@@ -555,7 +716,7 @@ final class CodeFilesCenter {
                 if wait.finish() {
                     continuation.resume(returning: edits)
                 } else if let edits {
-                    self.apply(edits, root: root, now: false)
+                    self.apply(edits, now: false)
                 }
             }
         }
