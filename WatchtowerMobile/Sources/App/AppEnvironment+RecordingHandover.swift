@@ -83,9 +83,15 @@ extension AppEnvironment {
         if let reason = unreadable {
             Self.handoverLogger.error("recordings not handed over: \(reason, privacy: .public)")
             do {
-                let moved = try hold.protectUnreadable()
+                let (moved, failures) = try hold.protectUnreadable()
                 handover.problem = "Some recordings couldn't be read (\(reason)): their audio stays on this iPhone, unsent"
                     + (moved == 1 ? " (1 file)" : " (\(moved) files)")
+                if !failures.isEmpty {
+                    Self.handoverLogger.error("audio not protected: \(failures.joined(separator: "; "), privacy: .public)")
+                    handover.problem? += failures.count == 1
+                        ? "; 1 file could not be kept and may be lost"
+                        : "; \(failures.count) files could not be kept and may be lost"
+                }
             } catch {
                 handover.problem = "Some recordings couldn't be read (\(reason)) and may be lost"
             }
@@ -154,6 +160,10 @@ extension AppEnvironment {
         for recording in held where recording.hubID == hubID {
             do {
                 if try store.phoneRecording(id: recording.id) != nil {
+                    // Held but never wiped (a kill, or a replica that could
+                    // not be removed): the row is here, the audio goes back
+                    // next to it. A failed move keeps the entry held.
+                    _ = try hold.restoreAudio(of: recording)
                     settled.insert(recording.id)
                     continue
                 }

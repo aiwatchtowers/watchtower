@@ -127,20 +127,44 @@ struct RecordingHold {
 
     /// The ledger could not be read: every audio file still in the
     /// recordings folder moves to `.held/unreadable`, out of the sweep's
-    /// reach. Returns how many moved.
+    /// reach. A name already taken there gets a numbered one; a file that
+    /// cannot move does not stop the others. Returns how many moved and the
+    /// failures.
     @discardableResult
-    func protectUnreadable() throws -> Int {
+    func protectUnreadable() throws -> (moved: Int, failures: [String]) {
         let unreadable = directory.appendingPathComponent("unreadable", isDirectory: true)
         let files = try FileManager.default.contentsOfDirectory(
             at: recordingsDirectory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         )
-        guard !files.isEmpty else { return 0 }
+        guard !files.isEmpty else { return (0, []) }
         try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
+        var moved = 0
+        var failures: [String] = []
         for file in files {
-            try FileManager.default.moveItem(at: file, to: unreadable.appendingPathComponent(file.lastPathComponent))
+            do {
+                try FileManager.default.moveItem(at: file, to: Self.freeName(for: file.lastPathComponent, in: unreadable))
+                moved += 1
+            } catch {
+                failures.append("\(file.lastPathComponent): \(error.localizedDescription)")
+            }
         }
-        return files.count
+        return (moved, failures)
+    }
+
+    /// `name` in `folder`, or `<stem>-2.<ext>`, `<stem>-3.<ext>`, … when
+    /// it is taken.
+    static func freeName(for name: String, in folder: URL) -> URL {
+        let candidate = folder.appendingPathComponent(name)
+        guard FileManager.default.fileExists(atPath: candidate.path) else { return candidate }
+        let stem = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var index = 2
+        while true {
+            let numbered = folder.appendingPathComponent(ext.isEmpty ? "\(stem)-\(index)" : "\(stem)-\(index).\(ext)")
+            if !FileManager.default.fileExists(atPath: numbered.path) { return numbered }
+            index += 1
+        }
     }
 }

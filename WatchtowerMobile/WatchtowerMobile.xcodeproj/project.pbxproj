@@ -58,6 +58,7 @@
 		539249EE16F12B661A6D8359 /* WorkbenchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43762D471529DE769FDD240A /* WorkbenchView.swift */; };
 		5499E788A16EA0CBDE2FD812 /* TargetStatusStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D403CB3F9A7FA2CB7C28C34 /* TargetStatusStyle.swift */; };
 		5679863B13AEE6564739DBE9 /* ConflictPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30368F9308E6A9844739763B /* ConflictPrompt.swift */; };
+		598F0F750CFB3F8CF52F078F /* RecordingHoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */; };
 		61DAF868A96DA3A609732EA7 /* RecorderChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CF8F8EF7B0FD80D2412EE8A /* RecorderChrome.swift */; };
 		62E010AEAA71C7111D15A4FD /* ScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0879174780AFEA40D8A455F2 /* ScanView.swift */; };
 		63F458A70788063BE8CE64C1 /* RecordingsListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD20EE9A45C3DA848BF4C3CF /* RecordingsListModel.swift */; };
@@ -214,6 +215,7 @@
 		4EF0E3D3509281E6EB30B918 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4F002CAE331C61F2C2A8FB21 /* AppRoot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRoot.swift; sourceTree = "<group>"; };
 		51697B0A1DB4115D387483C5 /* BoardFilterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFilterTests.swift; sourceTree = "<group>"; };
+		528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingHoldTests.swift; sourceTree = "<group>"; };
 		529DCD91B3058908D98062C3 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		55D1C1D5173ED2758596AA8F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5874A63A0C325EAE95BA10DE /* LinkNotice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkNotice.swift; sourceTree = "<group>"; };
@@ -387,6 +389,7 @@
 				DF8889CE92604290450CD690 /* NowWiringTests.swift */,
 				CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */,
 				8EB4E696B701E6C25E4AEFD2 /* RecorderTests.swift */,
+				528BE8894EDA75D94D9DDF64 /* RecordingHoldTests.swift */,
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */,
 				ABC4B50441EEC49F86259F19 /* ReplicaWiringTests.swift */,
@@ -892,6 +895,7 @@
 				EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */,
 				F68A1D786C431F915FD26888 /* RecorderFakes.swift in Sources */,
 				7C2E2C569B70FD5872BD3473 /* RecorderTests.swift in Sources */,
+				598F0F750CFB3F8CF52F078F /* RecordingHoldTests.swift in Sources */,
 				2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */,
 				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
 				3940830A98EF03CA72819D0F /* ReplicaWiringTests.swift in Sources */,

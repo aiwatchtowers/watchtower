@@ -345,6 +345,44 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertNotNil(hold.audioURL(of: held))
     }
 
+    /// Verify round: killed after the hold and before the replica went (or
+    /// a replica that could not be removed): the next boot finds the row
+    /// still in the replica, brings the audio back next to it, and sends it.
+    func testKilledAfterHoldingBeforeTheReplicaWentRestoresTheAudio() async throws {
+        let root = try makeRoot(linked: device, hubID: "hub-acme")
+        try await poll { root.env.isBootstrapped }
+        let id = try await saveVoiceNote(root)
+        let row = try XCTUnwrap(try root.env.store.phoneRecording(id: id))
+        let file = row.fileURL(in: recordingsDirectory)
+        try hold.hold([HeldRecording(row, marks: [], hubID: "hub-acme", macName: nil)])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the audio is in the hold")
+        root.env.stop()
+
+        // The relaunch: the same replica, the same hub.
+        let transport = InMemoryCloudTransport()
+        let relaunched = try AppEnvironment(
+            transport: transport,
+            replicaPath: replicaPath,
+            transportKind: .cloudKit,
+            hubID: "hub-acme",
+            linkedDevice: device,
+            defaults: try makeDefaults(),
+            recordingsDirectory: recordingsDirectory
+        ) { [engine, clock] uploader in
+            PhoneRecorderController(
+                uploader: uploader, engine: engine, notificationCenter: NotificationCenter(), now: { clock.now }, tickInterval: nil
+            )
+        }
+        addTeardownBlock { @MainActor in relaunched.stop() }
+        try await poll { relaunched.isBootstrapped }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "back next to its row, past the sweep")
+        XCTAssertTrue(try hold.load().isEmpty)
+        XCTAssertEqual(try relaunched.store.phoneRecordings().map(\.id), [id])
+        let uploads = try await relayUploads(in: transport)
+        XCTAssertEqual(uploads.map(\.id), [id])
+    }
+
     /// Review F1: a capture cut short by an earlier kill, still `recording`
     /// because no launch recovery reached it, keeps its audio: the
     /// hand-over finalizes it from its file and holds it.
