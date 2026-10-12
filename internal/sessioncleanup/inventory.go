@@ -291,6 +291,35 @@ func (r *repoState) operationIn(root string) (string, error) {
 	return "", nil
 }
 
+// recordedHead is the commit the worktree's HEAD names. A prunable
+// worktree's directory is gone, so its HEAD is read from its admin dir
+// (falling back to the listed HEAD when there is no admin dir).
+func (r *repoState) recordedHead(w worktree) (string, error) {
+	admin, ok := r.adminDirs[w.Root]
+	if !w.Prunable || !ok {
+		if w.Head == "" {
+			return "", fmt.Errorf("no HEAD listed for %s", w.Root)
+		}
+		return w.Head, nil
+	}
+	b, err := os.ReadFile(filepath.Join(admin, "HEAD"))
+	if err != nil {
+		return "", fmt.Errorf("reading the HEAD of %s: %w", w.Root, err)
+	}
+	head := strings.TrimSpace(string(b))
+	if ref, isRef := strings.CutPrefix(head, "ref: "); isRef {
+		sha, found := r.branchTip(strings.TrimPrefix(ref, "refs/heads/"))
+		if !found {
+			return "", fmt.Errorf("the HEAD of %s names %s, which does not exist", w.Root, ref)
+		}
+		return sha, nil
+	}
+	if head == "" {
+		return "", fmt.Errorf("the HEAD of %s is empty", w.Root)
+	}
+	return head, nil
+}
+
 // worktreeBirth is the birth time of the worktree's admin dir, set by
 // `git worktree add` (spec §2).
 func (r *repoState) worktreeBirth(root string) (time.Time, bool) {

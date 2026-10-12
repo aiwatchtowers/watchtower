@@ -1,6 +1,8 @@
 package sessioncleanup
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,4 +86,50 @@ func TestProj16_OriginHeadReadFailureKeepsEveryBranch(t *testing.T) {
 	if !strings.Contains(it.Detail, "injected failure") {
 		t.Fatalf("detail = %q, want the git error", it.Detail)
 	}
+}
+
+// detachedGone adds a detached worktree with one commit of its own (pushed
+// or not), records it and deletes its directory: git lists it as prunable.
+func (f *fixture) detachedGone(name string, push bool) string {
+	f.t.Helper()
+	root := filepath.Join(f.base, name)
+	gitIn(f.t, f.repo, "worktree", "add", "-q", "--detach", root, "main")
+	f.commit(root, name+".txt", "work\n")
+	if push {
+		gitIn(f.t, root, "push", "-q", "origin", "HEAD:refs/heads/"+name)
+	}
+	f.record(root, "")
+	if err := os.RemoveAll(root); err != nil {
+		f.t.Fatal(err)
+	}
+	return root
+}
+
+// Pruning a detached worktree whose directory is gone drops the only ref
+// to its unpushed commit, so the worktree is kept.
+func TestProj16_PrunableDetachedWorktreeWithUnpushedCommitIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	unpushed := f.detachedGone("wt-unpushed", false)
+	pushed := f.detachedGone("wt-pushed", true)
+
+	p := f.plan(Request{})
+	wantItem(t, p, "worktree:"+unpushed, ActionKeep, ReasonUnpushedCommits)
+	if it := wantItem(t, p, "worktree:"+pushed, ActionRemove, ""); it.Detail != detailGone {
+		t.Fatalf("pushed prunable item = %+v", it)
+	}
+}
+
+func TestProj16_PrunableWorktreeWithUnreadableHeadIsKept(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	root := f.detachedGone("wt", true)
+	admin := filepath.Join(f.repo, ".git", "worktrees", "wt")
+	writeFile(t, filepath.Join(admin, "HEAD"), "ref: refs/heads/feat/never-created\n")
+
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCheckFailed)
+
+	f.git = failGitOn("for-each-ref", "--count=1")
+	writeFile(t, filepath.Join(admin, "HEAD"), gitIn(t, f.repo, "rev-parse", "refs/remotes/origin/wt")+"\n")
+	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonCheckFailed)
 }

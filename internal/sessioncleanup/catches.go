@@ -43,15 +43,16 @@ const (
 type worktreeCatch func(ctx context.Context, b *builder, w worktree) (reason, detail string, err error)
 
 // worktreeCatches is W1–W8 in order (spec §5); the sweep swaps W2 for the
-// recent-owner rule, and a prunable worktree (its directory is gone) only
-// meets the folder and ownership catches.
+// recent-owner rule, and a prunable worktree (its directory is gone) meets
+// the folder, ownership and unpushed catches: pruning drops its HEAD, which
+// may be the only ref to its commits.
 func (b *builder) worktreeCatches(w worktree) []worktreeCatch {
 	own := catchOwnWorktree
 	if b.req.Sweep {
 		own = catchRecentOwner
 	}
 	if w.Prunable {
-		return []worktreeCatch{catchFolders, own}
+		return []worktreeCatch{catchFolders, own, catchUnpushed}
 	}
 	return []worktreeCatch{catchFolders, own, catchLocked, catchUncommitted, catchProcesses,
 		catchSessionInIt, catchUnpushed, catchOperation}
@@ -154,10 +155,11 @@ func catchSessionInIt(_ context.Context, b *builder, w worktree) (string, string
 
 // catchUnpushed is W7: HEAD in neither the default branch nor a remote ref.
 func catchUnpushed(ctx context.Context, b *builder, w worktree) (string, string, error) {
-	if w.Head == "" {
-		return "", "", fmt.Errorf("no HEAD listed for %s", w.Root)
+	head, err := b.repo.recordedHead(w)
+	if err != nil {
+		return "", "", err
 	}
-	in, err := b.repo.isContained(ctx, w.Head)
+	in, err := b.repo.isContained(ctx, head)
 	if err != nil || in {
 		return "", "", err
 	}
