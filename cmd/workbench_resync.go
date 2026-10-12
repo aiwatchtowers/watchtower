@@ -205,6 +205,8 @@ func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON)
 	if !devpack.CodexFound(cfg, codexFindBinary) && !devpack.CodexSkillInstalled(p.FolderPath) {
 		return nil
 	}
+	ctx, cancel := codexShutdownContext(ctx)
+	defer cancel()
 	st, err := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))
 	res.codex, res.codexErr = st, err
 	res.Codex = &resyncCodexJSON{OK: err == nil, Found: st.Found, Skill: string(st.SkillState),

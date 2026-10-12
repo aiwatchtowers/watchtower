@@ -79,6 +79,14 @@ func isExistingDir(p string) bool {
 	return err == nil && info.IsDir()
 }
 
+// codexShutdownContext is ctx cancelled by SIGINT/SIGTERM too, for every
+// path that may start codex's app-server: a cancelled run (the Desktop
+// dropping a status call) then still closes the server and kills its
+// process group, so nothing it spawned is orphaned.
+func codexShutdownContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return notifyShutdownContext(ctx, silentShutdownLogf)
+}
+
 // codexAppServerStart starts codex's app-server for the hook trust step. A
 // seam: cmd's TestMain stubs it out so no test runs a real codex.
 var codexAppServerStart devpack.StartCodexAppServer = codex.StartAppServer
@@ -103,6 +111,8 @@ func runCodexInstall(ctx context.Context, w io.Writer, p *db.Workbench) error {
 	if err != nil {
 		return err
 	}
+	ctx, cancel := codexShutdownContext(ctx)
+	defer cancel()
 	st, err := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, nil, o))
 	fmt.Fprintf(w, "Workbench %d (%s), codex:\n", p.ID, p.FolderPath)
 	printCodexInstallBody(w, st, err)
@@ -421,7 +431,9 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 	if err != nil {
 		return err
 	}
-	cs, err := devpack.StatusCodex(ctx, o, codexAppServerFor(ctx, nil, o))
+	codexCtx, cancel := codexShutdownContext(ctx)
+	defer cancel()
+	cs, err := devpack.StatusCodex(codexCtx, o, codexAppServerFor(codexCtx, nil, o))
 	if err != nil {
 		return err
 	}

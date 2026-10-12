@@ -19,7 +19,7 @@ import (
 // The fake app-server is this test binary re-run with fakeModeEnv set:
 // TestMain then serves stdin instead of running tests.
 const (
-	fakeModeEnv  = "WT_FAKE_APPSERVER_MODE"  // ok | hang | unknown-method
+	fakeModeEnv  = "WT_FAKE_APPSERVER_MODE"  // ok | ok-child | hang | unknown-method
 	fakeLogEnv   = "WT_FAKE_APPSERVER_LOG"   // every request received, one JSON line each
 	fakeHooksEnv = "WT_FAKE_APPSERVER_HOOKS" // hooks/list's hooks, a JSON array
 	fakePIDsEnv  = "WT_FAKE_APPSERVER_PIDS"  // hang: "<server pid> <child pid>"
@@ -33,7 +33,7 @@ func TestMain(m *testing.M) {
 }
 
 func runFakeAppServer(mode string) int {
-	if mode == "hang" {
+	if mode == "hang" || mode == "ok-child" {
 		child := exec.Command("sleep", "30")
 		if err := child.Start(); err != nil {
 			return 2
@@ -62,7 +62,7 @@ func runFakeAppServer(mode string) int {
 		}
 		// A notification first, as the real server sends them unasked.
 		_ = out.Encode(map[string]any{"method": "remoteControl/status/changed", "params": map[string]any{}})
-		_ = out.Encode(fakeAnswer(mode, *req.ID, req.Method))
+		_ = out.Encode(fakeAnswer(strings.TrimSuffix(mode, "-child"), *req.ID, req.Method))
 	}
 	return 0
 }
@@ -264,14 +264,7 @@ func TestAppServer_TimeoutKillsAndReturnsUnavailable(t *testing.T) {
 	if d := time.Since(start); d > 5*time.Second {
 		t.Fatalf("took %s, want about the budget", d)
 	}
-	b, rerr := os.ReadFile(f.pids)
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	for _, field := range strings.Fields(string(b)) {
-		pid, _ := strconv.Atoi(field)
-		waitGone(t, pid)
-	}
+	waitPIDsGone(t, f)
 }
 
 // waitGone fails unless pid exits (and is reaped by whoever owns it) soon.
@@ -293,6 +286,52 @@ func waitGone(t *testing.T, pid int) {
 func zombie(pid int) bool {
 	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
 	return err == nil && strings.HasPrefix(strings.TrimSpace(string(out)), "Z")
+}
+
+// A cancelled caller (a SIGTERM routed into ctx) kills the server's process
+// group at once, the budget notwithstanding: nothing it spawned survives.
+func TestAppServer_CallerCancelKillsTheGroup(t *testing.T) {
+	t.Run("while starting", func(t *testing.T) {
+		f := newFakeServer(t, "hang", nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(300*time.Millisecond, cancel)
+		start := time.Now()
+		_, err := StartAppServer(ctx, os.Args[0], nil, f.env)
+		if !errors.Is(err, ErrCodexTrustUnavailable) {
+			t.Fatalf("err = %v", err)
+		}
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("took %s: the cancel did not end the wait", d)
+		}
+		waitPIDsGone(t, f)
+	})
+	t.Run("while idle", func(t *testing.T) {
+		f := newFakeServer(t, "ok-child", nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		srv, err := StartAppServer(ctx, os.Args[0], nil, f.env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		waitPIDsGone(t, f) // before any Close
+		_, err = srv.ListHooks(context.Background(), "/Users/example/proj")
+		if !errors.Is(err, ErrCodexTrustUnavailable) {
+			t.Fatalf("ListHooks after cancel: %v", err)
+		}
+		_ = srv.Close()
+	})
+}
+
+func waitPIDsGone(t *testing.T, f fakeServer) {
+	t.Helper()
+	b, err := os.ReadFile(f.pids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range strings.Fields(string(b)) {
+		pid, _ := strconv.Atoi(field)
+		waitGone(t, pid)
+	}
 }
 
 func TestAppServer_UnknownMethodErrorIsUnavailable(t *testing.T) {

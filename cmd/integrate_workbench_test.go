@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -294,7 +295,8 @@ func TestExecCommandRunnerClassifiesFailures(t *testing.T) {
 // launch-flag hooks of the watchtower binary's codex hook set and keeps the
 // trust they get.
 type fakeCmdCodex struct {
-	bin     string // the codex binary codexFindBinary resolves
+	ctx     context.Context // the last start's context
+	bin     string          // the codex binary codexFindBinary resolves
 	trusted map[string]bool
 	writes  int
 }
@@ -307,7 +309,8 @@ func useFakeCmdCodex(t *testing.T) *fakeCmdCodex {
 	}
 	prevFind, prevStart := codexFindBinary, codexAppServerStart
 	codexFindBinary = func() (string, error) { return f.bin, nil }
-	codexAppServerStart = func(_ context.Context, bin string, _, _ []string) (codex.AppServer, error) {
+	codexAppServerStart = func(ctx context.Context, bin string, _, _ []string) (codex.AppServer, error) {
+		f.ctx = ctx
 		if bin != f.bin {
 			return nil, fmt.Errorf("unexpected codex %q", bin)
 		}
@@ -468,6 +471,39 @@ func TestIntegrateCodex_RemoveKeepsTrust(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "left in place") {
 		t.Fatalf("report:\n%s", out.String())
+	}
+}
+
+// The app-server starts under the caller's context (plus SIGINT/SIGTERM), so
+// a cancelled run closes it and kills its process group.
+func TestIntegrateCodex_AppServerContextFollowsTheCaller(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	f := useFakeCmdCodex(t)
+	p := testWorkbench(t)
+	for name, run := range map[string]workbenchIntegrateFunc{
+		"install": runCodexInstall,
+		"status": func(ctx context.Context, w io.Writer, p *db.Workbench) error {
+			return runWorkbenchStatus(ctx, w, p, true)
+		},
+	} {
+		f.ctx = nil
+		ctx, cancel := context.WithCancel(context.Background())
+		var out bytes.Buffer
+		_ = run(ctx, &out, p)
+		if f.ctx == nil {
+			t.Fatalf("%s: no app-server started", name)
+		}
+		if f.ctx.Err() == nil {
+			t.Fatalf("%s: the app-server context outlived the run", name)
+		}
+		cancel()
+		f.ctx = nil
+		ctx, cancel = context.WithCancel(context.Background())
+		cancel()
+		_ = run(ctx, &out, p)
+		if f.ctx == nil || !errors.Is(f.ctx.Err(), context.Canceled) {
+			t.Fatalf("%s: a cancelled caller must cancel the app-server context", name)
+		}
 	}
 }
 
