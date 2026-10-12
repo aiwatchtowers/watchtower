@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -98,6 +99,25 @@ type sessionStateInput struct {
 	// testdata/stopfailure_rate_limit.json). Raw, so a non-string value
 	// never fails the whole input.
 	Error json.RawMessage `json:"error"`
+	// Cwd is the session's working directory, a common hook input field
+	// (board #566); hookCwd decides whether it is recorded.
+	Cwd string `json:"cwd"`
+}
+
+// hookCwdMaxBytes caps a working directory the hooks record.
+const hookCwdMaxBytes = 4096
+
+// hookCwd is the working directory a hook event records on the row (board
+// #566), or "" for none: only the main agent's events record one — never an
+// event with agentID (a subagent's or teammate's) nor a SubagentStart or
+// SubagentStop — and only an absolute path of at most 4096 bytes with no NUL
+// or newline, cleaned.
+func hookCwd(event, agentID, cwd string) string {
+	if agentID != "" || event == "SubagentStart" || event == "SubagentStop" ||
+		!filepath.IsAbs(cwd) || len(cwd) > hookCwdMaxBytes || strings.ContainsAny(cwd, "\x00\n\r") {
+		return ""
+	}
+	return filepath.Clean(cwd)
 }
 
 // agentFailure is the failure a StopFailure records: its error type on one
@@ -194,6 +214,7 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		return nil
 	}
 	turn, subagentToolRun := in.toolRunTurn()
+	turn.cwd = hookCwd(in.HookEventName, in.AgentID, in.Cwd)
 	if subagentToolRun {
 		// A background subagent works on after the main turn stopped to
 		// wait for the owner: its tool results clear only a granted
@@ -291,6 +312,10 @@ type hookTurn struct {
 	// background is the Stop's count of background agents at work; invalid
 	// for none or unknown, never zero.
 	background sql.NullInt64
+	// cwd is the main agent's working directory the event reports (hookCwd,
+	// board #566); "" = none. It rides in the state write, or is written
+	// alone when the state write is a repeat or held back.
+	cwd string
 }
 
 // terminalSessionRowID is the terminal_sessions row the Desktop launched
@@ -359,13 +384,14 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 	rowID := row.ID
 	switch {
 	case repeatsAgentState(row, state, failure, prompt, turn.background):
+		var reportErr error
 		if turn.stop && turn.background.Valid {
-			return writeBackgroundReport(database, rowID, workbenchID, sessionID, at, nil)
+			reportErr = writeBackgroundReport(database, rowID, workbenchID, sessionID, at, nil)
 		}
-		return nil
+		return errors.Join(reportErr, recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at))
 	case onlyFrom != "" && row.AgentState.String != onlyFrom,
 		!row.AgentStateAt.IsZero() && !at.After(row.AgentStateAt) && !stopEndsToolRun(row, turn):
-		return nil
+		return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at)
 	}
 	return writeAgentState(database, row, workbenchID, sessionID, state, onlyFrom, failure, prompt, at, turn)
 }
@@ -375,22 +401,52 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 // clear when a main-thread tool result ended a `waiting`.
 func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
-	order := db.AgentOrder{Stop: turn.stop, Background: turn.background}
+	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Cwd: turn.cwd}
 	if turn.toolRun {
 		order.ToolRun, order.SeenTurnEnd = true, row.TurnEnd
 		if row.TurnEnd.Valid && toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64) == toolCallBeforeStop {
-			return nil // the ended turn's tool result
+			// The ended turn's tool result: no state, but its cwd is the
+			// agent's.
+			return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at)
 		}
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
 	written, err := database.SetTerminalAgentState(row.ID, workbenchID, sessionID, state, at, onlyFrom, failure, prompt, order)
-	if err != nil || !written || !turn.toolRun || row.AgentState.String != agentStateWaiting {
+	if err == nil && !written {
+		// A guard held the write back after the read (a racing hook): the
+		// cwd still goes, under its own guards.
+		return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at)
+	}
+	if err != nil || !turn.toolRun || row.AgentState.String != agentStateWaiting {
 		return err
 	}
 	return clearChatQuestion(database, row, workbenchID, sessionID, at)
 }
+
+// recordCwdAlone records cwd on row rowID when no state write carries it
+// (board #566): only when it differs from the row's, is reported after the
+// row's and not before the run mark (AgentCwd.WouldRecord; read first, so
+// the common case — the same folder — never waits for the write lock);
+// SetTerminalAgentCwd repeats the guards. "" writes nothing.
+func recordCwdAlone(database *db.DB, rowID, workbenchID int64, sessionID, cwd string, at time.Time) error {
+	if cwd == "" {
+		return nil
+	}
+	stored, err := database.TerminalAgentCwd(rowID)
+	if err != nil || !stored.WouldRecord(cwd, at) {
+		return err
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
+	}
+	_, err = setTerminalAgentCwd(database, rowID, workbenchID, sessionID, cwd, at)
+	return err
+}
+
+// setTerminalAgentCwd is the cwd's write alone; a seam for tests.
+var setTerminalAgentCwd = (*db.DB).SetTerminalAgentCwd
 
 // clearChatQuestion drops row's chat question when one is stored: the read
 // row says so first, so the common case (no question) never waits for the

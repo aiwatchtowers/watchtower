@@ -181,6 +181,8 @@ type stopHookInput struct {
 	// BackgroundTasks lists what the session runs in the background as the
 	// turn ends (board #411).
 	BackgroundTasks backgroundTasks `json:"background_tasks"`
+	// Cwd is the main agent's working directory (board #566).
+	Cwd string `json:"cwd"`
 }
 
 // backgroundTask is one entry of a hook input's background_tasks; every
@@ -475,7 +477,7 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, onlyFrom, _ := agentStateFor("Stop", "")
-	turn := hookTurn{stop: true, tasks: in.BackgroundTasks}
+	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, cwd: hookCwd("Stop", "", in.Cwd)}
 	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
 }
 
