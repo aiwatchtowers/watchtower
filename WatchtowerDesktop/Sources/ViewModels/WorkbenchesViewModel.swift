@@ -277,6 +277,7 @@ final class WorkbenchesViewModel {
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
+            terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
         }
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
         terminalCenter?.onPathLink = { [weak self] workbenchID, location in

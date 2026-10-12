@@ -32,6 +32,17 @@ package enum TerminalSessionPolicy {
             && !TerminalSessionNaming.isSetupTitle(s.title) && attempts < maxTitleAttempts
     }
 
+    /// The button over a session that is not running: "Resume" when it has
+    /// an agent session to resume (Claude Code always has an id; Codex only
+    /// once its first SessionStart stored one), else "Start".
+    package static func reopenLabel(_ s: TerminalSession) -> String {
+        switch s.kind {
+        case .claude: "Resume"
+        case .codex: s.claudeSessionID == nil ? "Start" : "Resume"
+        case .shell: "Start"
+        }
+    }
+
     /// `lastActiveAt` is fixed-format ISO, so a string compare orders it; ties go to the higher id.
     private static func isLessRecent(_ a: TerminalSession, _ b: TerminalSession) -> Bool {
         (a.lastActiveAt, a.id) < (b.lastActiveAt, b.id)

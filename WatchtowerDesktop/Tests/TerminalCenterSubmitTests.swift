@@ -7,8 +7,7 @@ import WatchtowerTestSupport
 
 /// Spec 2026-10-12 §8 (board #399): answers, comments and hand-offs typed
 /// into a Codex session by its `AgentInputProfile`; PROJ-12's gates hold for
-/// it unchanged. A `codex` row launches nothing until its launch builder,
-/// so a running shell row stands in, named Codex by `agentOverride`.
+/// it unchanged. The Codex rows run on stubbed launch args (no real `codex`).
 @MainActor
 final class TerminalCenterSubmitTests: XCTestCase {
     private var pool: DatabasePool!
@@ -56,18 +55,17 @@ final class TerminalCenterSubmitTests: XCTestCase {
 
     // MARK: - Helpers
 
-    /// A workbench with one running session the center takes for Codex,
-    /// and an open question ask filed from it.
+    /// A workbench with one running Codex session, and an open question ask
+    /// filed from it.
     private func runningCodexSession() async throws -> (project: Int64, session: TerminalSession, ask: Int64) {
         let acme = folder.path
         let seeded = try await pool.write { d in
             let p = try TestDatabase.insertWorkbench(d, folder: acme)
-            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "codex", folderPath: acme))
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .codex, title: "codex", folderPath: acme))
             let ask = try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s.id, payload: Self.questions)
             return (p, s, ask)
         }
-        center.agentOverride = { id in id == seeded.1.id ? .codex : nil }
-        center.start(seeded.1, fresh: true)
+        center.start(seeded.1, fresh: true, codex: CodexLaunchArgs(binary: "/Users/example/bin/codex", pathPrepend: "", args: []))
         return seeded
     }
 

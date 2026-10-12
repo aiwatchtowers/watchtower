@@ -55,7 +55,7 @@ struct WorkbenchSessionView: View {
                 if let session {
                     Text("\(session.title) is not running.")
                         .foregroundStyle(.secondary)
-                    Button(session.kind == .claude ? "Resume" : "Start") {
+                    Button(TerminalSessionPolicy.reopenLabel(session)) {
                         Task { await vm?.open(session, placement: .inPlace) }
                     }
                 } else if vm?.sessionErrors[projectID] == nil {
@@ -175,7 +175,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                 host(center)
                 Divider()
                 HStack {
-                    Text(TerminalLaunch.exitMessage(code: code))
+                    Text(TerminalLaunch.exitMessage(code: code, agent: session?.kind.agent ?? .claude))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     // A failed resume fails again on Restart: only a new id gets out.

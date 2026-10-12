@@ -152,7 +152,7 @@ final class SessionStartStopHandlers {
         }
         // A session already running was not launched now: nothing to watch.
         if !liveBefore.contains(session.id), await exitedNotFound(session.id) {
-            return .failed(Self.notFoundReason(session.kind), message: TerminalLaunch.exitMessage(code: 127))
+            return .failed(Self.notFoundReason(session.kind), message: TerminalLaunch.exitMessage(code: 127, agent: session.kind.agent ?? .claude))
         }
         return .applied(["session_id": .integer(session.id), "stage": .string("starting")])
     }
@@ -181,6 +181,9 @@ final class SessionStartStopHandlers {
         switch error {
         case .notOnBoard: .failed(.notOnBoard, message: "That target is not on a workbench board")
         case .inProgress: .failed(.conflict, message: "A session for this target is being started on the Mac")
+        // A Codex launch that found no `codex` starts no process (`.unavailable`).
+        case let .failed(message) where message == TerminalLaunch.exitMessage(code: 127, agent: .codex):
+            .failed(.codexNotFound, message: message)
         case let .failed(message): .failed(.writeFailed, message: message)
         }
     }

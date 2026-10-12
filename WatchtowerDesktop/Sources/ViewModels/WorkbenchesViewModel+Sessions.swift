@@ -202,14 +202,19 @@ extension WorkbenchesViewModel {
         if let row { showStandalone(row.id) }
     }
 
-    /// Creates a `claude` session row with a new Claude session id and starts
-    /// it fresh (`--session-id`).
+    /// Creates an agent session row and starts it fresh: Claude Code with a
+    /// new session id (`--session-id`), Codex with none (it mints its own).
     func startNewSession(
-        project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show, ticket: Int? = nil
+        project: Workbench,
+        title: String,
+        prompt: String? = nil,
+        placement: Placement = .show,
+        ticket: Int? = nil,
+        agent: AgentKind = .claude
     ) async {
         await createAndStart(
-            .init(projectID: project.id, kind: .claude, title: title, folderPath: project.folderPath,
-                  claudeSessionID: Self.newClaudeSessionID()),
+            .init(projectID: project.id, kind: agent == .codex ? .codex : .claude, title: title,
+                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
             prompt: prompt,
             placement: placement,
             ticket: ticket ?? beginSwitch(projectID: project.id)
@@ -424,11 +429,13 @@ extension WorkbenchesViewModel {
         return row
     }
 
-    /// "Start fresh" after a failed resume: a new Claude session id under the
-    /// same row and title. A shell has no Claude session: it just opens.
+    /// "Start fresh" after a failed resume: a new agent session under the
+    /// same row and title — a new Claude session id, or for Codex no id at
+    /// all (Codex mints one; `resetAgentSession`). A shell has no agent
+    /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
         let ticket = beginSwitch(projectID: session.projectID)
-        guard session.kind == .claude else {
+        guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)
             return
         }
@@ -442,7 +449,10 @@ extension WorkbenchesViewModel {
                 guard let current = try TerminalSessionQueries.fetch(db, id: session.id) else {
                     throw TerminalSessionQueryError.notFound(session.id)
                 }
-                try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
+                switch agent {
+                case .claude: try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
+                case .codex: try TerminalSessionQueries.resetAgentSession(db, id: session.id)
+                }
                 try TerminalSessionQueries.touch(db, id: session.id)
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
@@ -536,7 +546,7 @@ extension WorkbenchesViewModel {
         }
         guard let row, TerminalSessionPolicy.needsTitle(row, attempts: titleAttempts[sessionID, default: 0]),
               notYetTitledStreak[sessionID, default: 0] < Self.maxNotYetTitledPolls,
-              let uuid = row.claudeSessionID, terminalCenter?.transcriptExists(uuid) ?? true else { return }
+              row.claudeSessionID != nil, terminalCenter?.hasTranscript(row) ?? true else { return }
         do {
             if try await titleService(sessionID).written {
                 notYetTitledStreak[sessionID] = nil
@@ -657,11 +667,12 @@ extension WorkbenchesViewModel {
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
         if let center = terminalCenter {
-            let mode = center.start(row, fresh: fresh, prompt: prompt)
+            let mode = await center.launch(row, fresh: fresh, prompt: prompt)
+            // Keyed by the mode, whatever the agent (spec 2026-10-12 §7).
             switch mode {
-            case .resumeClaude?:
+            case .resumeAgent?:
                 resumeStarts[row.id] = now()
-            case .newClaude? where !fresh:
+            case .newAgent(_, sessionID: _?, _)? where !fresh:
                 // A relaunch of the stored id: a missed transcript makes it a
                 // `--session-id` of an id Claude Code already used, which it
                 // refuses at once — only Start fresh (a new id) gets out.
@@ -671,6 +682,7 @@ extension WorkbenchesViewModel {
             default:
                 resumeStarts[row.id] = nil
             }
+            if case .newAgent(.codex, _, _)? = mode { await dropCodexSessionID(row) }
             if isLatest { center.focus(row.id) }
         }
         if isLatest, let projectID = row.projectID {
@@ -678,6 +690,20 @@ extension WorkbenchesViewModel {
         }
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+    }
+
+    /// A Codex row that started a new session (no rollout to resume) forgets
+    /// its stored id and rollout path, so the new session's SessionStart
+    /// stores its own id (spec 2026-10-12 §5, §7). A row without either is
+    /// left alone.
+    private func dropCodexSessionID(_ row: TerminalSession) async {
+        guard row.claudeSessionID != nil || row.transcriptPath != nil else { return }
+        do {
+            try await dbPool.write { try TerminalSessionQueries.resetAgentSession($0, id: row.id) }
+        } catch {
+            NSLog("WorkbenchesViewModel: could not drop the Codex session id of session %lld: %@",
+                  row.id, error.localizedDescription)
+        }
     }
 
     /// `layout` with session `id` placed the way `placement` says.

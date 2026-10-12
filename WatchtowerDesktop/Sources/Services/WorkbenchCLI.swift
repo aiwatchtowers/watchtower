@@ -402,6 +402,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     }
 }
 
+/// A `WorkbenchCLI` call's own refusals, beyond the runner's errors.
+enum WorkbenchCLIError: LocalizedError, Equatable {
+    /// `launch-args` found no binary for the agent (exit 3).
+    case agentNotFound(AgentKind)
+
+    var errorDescription: String? {
+        switch self {
+        case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
+        }
+    }
+}
+
 /// The Workbench tab's CLI calls. Everything the Desktop does to the folder or
 /// to workbench rows it does not own goes through here — never a direct write.
 /// Folder paths travel as a single argv element (`Process` does no shell
@@ -519,6 +531,20 @@ struct WorkbenchCLI {
             // A DecodingError's localizedDescription drops the key path.
             return .failure(error is DecodingError ? String(describing: error) : error.localizedDescription)
         }
+    }
+
+    /// How to launch `agent` in workbench `workbenchID` (spec 2026-10-12
+    /// §4.2): its binary, `PATH` prefix and argv. Exit 3 is "no binary for
+    /// the agent", thrown as `WorkbenchCLIError.agentNotFound`.
+    func launchArgs(agent: AgentKind, workbenchID: Int64) async throws -> CodexLaunchArgs {
+        let data: Data
+        do {
+            data = try await runner.run(args: ["workbench", "launch-args", "--agent", agent.rawValue,
+                                               "--workbench", String(workbenchID), "--json"])
+        } catch CLIRunnerError.nonZeroExit(code: 3, _) {
+            throw WorkbenchCLIError.agentNotFound(agent)
+        }
+        return try JSONDecoder().decode(CodexLaunchArgs.self, from: data)
     }
 
     /// Removes what was installed in the folder, then the workbench and every
