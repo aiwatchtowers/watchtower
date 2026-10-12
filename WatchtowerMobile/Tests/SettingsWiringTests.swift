@@ -99,6 +99,8 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertEqual(LastSyncText.string(now.addingTimeInterval(-8), now: now, locale: english), "Just now")
         XCTAssertEqual(LastSyncText.string(now.addingTimeInterval(-59), now: now, locale: english), "Just now")
         XCTAssertEqual(LastSyncText.string(now.addingTimeInterval(-60), now: now, locale: english), "1 min. ago")
+        let past = Date(timeIntervalSince1970: 1_000_000_000)
+        XCTAssertEqual(LastSyncText.string(past.addingTimeInterval(-159), now: past, locale: english), "3 min. ago")
     }
 
     /// Design pass SET3: "ok" a green dot and OK, "error" a red mark and a
