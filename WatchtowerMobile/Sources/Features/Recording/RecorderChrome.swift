@@ -43,3 +43,20 @@ extension RecorderChrome {
         }
     }
 }
+
+/// The recorder's level bars (design pass C7). A level under `silence`
+/// draws a quaternary bar, so silence reads as a grey line instead of a
+/// red dashed one; the others draw red at 0.85. The engine already maps dB
+/// to 0…1 (`AVAudioCaptureEngine`), so no display curve goes on top.
+enum WaveformStyle {
+    static let silence: Float = 0.05
+    static let minHeight: CGFloat = 4
+
+    static func isSilent(_ level: Float) -> Bool {
+        level < silence
+    }
+
+    static func height(_ level: Float, in maxHeight: CGFloat) -> CGFloat {
+        max(minHeight, maxHeight * CGFloat(min(1, max(0, level))))
+    }
+}

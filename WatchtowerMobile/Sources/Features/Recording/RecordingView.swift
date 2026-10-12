@@ -21,8 +21,8 @@ struct RecordingView: View {
                 RecordingCaptureView()
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, Spacing.page)
+        .padding(.vertical, Spacing.medium)
     }
 }
 
@@ -94,18 +94,18 @@ private struct RecordingCaptureView: View {
         case .recording:
             Label(chrome.markText, systemImage: "circle.fill")
                 .labelStyle(.titleAndIcon)
-                .font(.footnote.weight(.bold))
+                .font(TypeScale.kind)
                 .foregroundStyle(chrome.markTone.color)
         case .starting:
             HStack(spacing: Spacing.compact) {
                 ProgressView().controlSize(.small)
                 Text(chrome.markText)
             }
-            .font(.footnote.weight(.bold))
+            .font(TypeScale.kind)
             .foregroundStyle(chrome.markTone.color)
         case .paused, .saving:
             Text(chrome.markText)
-                .font(.footnote.weight(.bold))
+                .font(TypeScale.kind)
                 .foregroundStyle(chrome.markTone.color)
         }
     }
@@ -125,7 +125,7 @@ private struct RecordingCaptureView: View {
                 Task { await recorder.stop() }
             } label: {
                 ZStack {
-                    Circle().fill(.red)
+                    Circle().fill(PhoneTone.red.color)
                     RoundedRectangle(cornerRadius: Radius.chip).fill(.white).frame(width: 30, height: 30)
                 }
                 .frame(width: 88, height: 88)
@@ -167,7 +167,7 @@ private struct RoundButton: View {
     }
 }
 
-/// The waveform: recent input levels as red bars, newest on the right.
+/// The waveform: recent input levels, newest on the right; silence is a grey line (`WaveformStyle`).
 private struct WaveformBars: View {
     let levels: [Float]
 
@@ -180,8 +180,12 @@ private struct WaveformBars: View {
             HStack(alignment: .center, spacing: spacing) {
                 ForEach(padded.indices, id: \.self) { index in
                     Capsule()
-                        .fill(.red.opacity(0.85))
-                        .frame(width: width, height: max(3, proxy.size.height * CGFloat(padded[index])))
+                        .fill(
+                            WaveformStyle.isSilent(padded[index])
+                                ? AnyShapeStyle(HierarchicalShapeStyle.quaternary)
+                                : AnyShapeStyle(PhoneTone.red.color.opacity(0.85))
+                        )
+                        .frame(width: width, height: WaveformStyle.height(padded[index], in: proxy.size.height))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -202,7 +206,7 @@ private struct RecordingSavedView: View {
             let recording = snapshot.recording(saved.id)
             VStack(alignment: .leading, spacing: 18) {
                 Text("Saved · \(PhoneRecorderController.clockText(saved.durationSec))")
-                    .font(.title2.weight(.semibold))
+                    .font(TypeScale.pageTitle)
                     .padding(.top, 24)
 
                 if let notice = env.recorder.endNotice {

@@ -507,4 +507,17 @@ final class RecorderTests: XCTestCase {
             XCTAssertNil(RecorderChrome(phase: phase), "\(phase) is not a capture phase")
         }
     }
+
+    /// Design pass C7: a level under 0.05 is silence and draws a grey bar,
+    /// so silence reads as a line, not a red dashed one; every bar is at
+    /// least 4 pt and never taller than the waveform.
+    func testSilenceDrawsAGreyLineAndLevelsDrawRedBars() {
+        XCTAssertTrue(WaveformStyle.isSilent(0))
+        XCTAssertTrue(WaveformStyle.isSilent(0.049))
+        XCTAssertFalse(WaveformStyle.isSilent(0.05))
+        XCTAssertEqual(WaveformStyle.height(0, in: 64), 4, "silence keeps a 4 pt line")
+        XCTAssertEqual(WaveformStyle.height(0.5, in: 64), 32)
+        XCTAssertEqual(WaveformStyle.height(1.5, in: 64), 64, "a level over 1 never overflows")
+        XCTAssertEqual(WaveformStyle.height(-1, in: 64), 4)
+    }
 }
