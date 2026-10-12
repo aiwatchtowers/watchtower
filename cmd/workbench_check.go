@@ -366,6 +366,7 @@ func runCodexStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 	if !ok {
 		return
 	}
+	noteForeignCodexSession(stderr, row, in.SessionID, "Stop state")
 	_, database, err := openJiraCmdDB()
 	if err != nil {
 		fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", stopStateLost(in.SessionID), err)

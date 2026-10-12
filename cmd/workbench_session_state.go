@@ -237,6 +237,9 @@ func runCodexSessionStateHook(stdin io.Reader, stderr io.Writer) {
 	if !ok {
 		return
 	}
+	if codexStateEvents[in.Event] {
+		noteForeignCodexSession(stderr, row, in.SessionID, in.Event)
+	}
 	if err := recordCodexHookState(row, in, at); err != nil {
 		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
 	}

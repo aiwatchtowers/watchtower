@@ -131,7 +131,7 @@ func runCodexBrief(stdin io.Reader, stdout, stderr io.Writer) {
 	if !ok {
 		return
 	}
-	if err := recordCodexSessionStart(stdin, database, row); err != nil {
+	if err := recordCodexSessionStart(stdin, stderr, database, row); err != nil {
 		// Best effort, as the Claude Code hook: the brief is printed.
 		fmt.Fprintf(stderr, "watchtower: workbench %d brief: terminal session not recorded: %v\n", row.WorkbenchID.Int64, err)
 	}

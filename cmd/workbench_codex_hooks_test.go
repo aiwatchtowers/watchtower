@@ -116,9 +116,13 @@ func TestCodexSessionStart_StartupWithOtherStoredIDWritesNothing(t *testing.T) {
 	storeCodexState(t, database, pid, row, briefClearedID, agentStateWorking)
 	before := rowSnapshot(t, database, row)
 
-	runCodexBriefHook(t, string(codexHookFixture(t, "session_start_startup")))
+	out, errOut := runCodexHook(t, string(codexHookFixture(t, "session_start_startup")), "brief", "--agent", "codex")
 
+	assert.Contains(t, out, "Watchtower workbench #", "the brief is printed")
 	assert.Equal(t, before, rowSnapshot(t, database, row), "a stale or foreign start")
+	assert.Equal(t, "watchtower: codex SessionStart (startup) ignored: terminal session "+strconv.FormatInt(row, 10)+
+		" stores session "+briefClearedID+", the hook came from session "+codexTUISession+"\n", errOut,
+		"one line names the dropped start (#399 m5)")
 }
 
 func TestCodexSessionStart_ResumeMarksRun(t *testing.T) {
@@ -196,8 +200,10 @@ func TestCodexSessionStart_UnknownSourceActsAsStartup(t *testing.T) {
 
 		other := codexRowIn(t, database, pid, briefClearedID)
 		before := rowSnapshot(t, database, other)
-		runCodexBriefHook(t, codexPayload(t, "session_start_startup", map[string]any{"source": source}))
+		_, errOut := runCodexHook(t, codexPayload(t, "session_start_startup", map[string]any{"source": source}),
+			"brief", "--agent", "codex")
 		assert.Equal(t, before, rowSnapshot(t, database, other), "%v never moves an id", source)
+		assert.Contains(t, errOut, "codex SessionStart (startup) ignored", "%v reads as a startup", source)
 	}
 }
 
@@ -367,17 +373,34 @@ func TestProj11_CodexSubagentWithoutAgentIDWritesNothing(t *testing.T) {
 
 // A payload of another session, or any payload on a row with no id yet
 // (spec I6), writes nothing.
+// A dropped event of another session says so in one stderr line; a row
+// with no id yet stays silent (#399 m5).
 func TestProj11_CodexForeignSessionIDIgnored(t *testing.T) {
 	for _, stored := range []string{"", briefClearedID} {
 		database, _, row := codexRowFixture(t, stored)
 		before := rowSnapshot(t, database, row)
 		for _, name := range []string{"user_prompt_submit", "permission_request", "post_tool_use", "subagent_start", "subagent_stop"} {
-			runCodexState(t, string(codexHookFixture(t, name)))
+			out, errOut := runCodexHook(t, string(codexHookFixture(t, name)), "session-state", "--agent", "codex")
+			assert.Empty(t, out)
+			assertForeignNote(t, errOut, stored, row, name)
 		}
-		out, _ := runCodexStop(t, string(codexHookFixture(t, "stop")))
+		out, errOut := runCodexStop(t, string(codexHookFixture(t, "stop")))
 		assert.Empty(t, out)
+		assertForeignNote(t, errOut, stored, row, "stop")
 		assert.Equal(t, before, rowSnapshot(t, database, row), "stored %q", stored)
 	}
+}
+
+// assertForeignNote: no line for a row with no id yet, else one line naming
+// the row and both ids.
+func assertForeignNote(t *testing.T, errOut, stored string, row int64, name string) {
+	t.Helper()
+	if stored == "" {
+		assert.Empty(t, errOut, name)
+		return
+	}
+	assert.Equal(t, 1, strings.Count(errOut, "\n"), "%s: %q", name, errOut)
+	assert.Contains(t, errOut, "ignored: terminal session "+strconv.FormatInt(row, 10)+" stores session "+stored, name)
 }
 
 // Codex has no StopFailure or Notification: a payload naming one records

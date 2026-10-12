@@ -77,6 +77,20 @@ func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession,
 	return *row, true, nil
 }
 
+// noteForeignCodexSession writes one stderr line when a Codex hook on row
+// is dropped because the row stores another session id (spec I6: a stale or
+// foreign start, a nested codex): which row, both ids, and what was dropped.
+// Silent when the row has no id yet, the payload carries none, or the ids
+// match.
+func noteForeignCodexSession(w io.Writer, row db.TerminalSession, incoming, what string) {
+	stored := row.ClaudeSessionID.String
+	if !row.ClaudeSessionID.Valid || stored == "" || incoming == "" || incoming == stored {
+		return
+	}
+	fmt.Fprintf(w, "watchtower: codex %s ignored: terminal session %d stores session %s, the hook came from session %s\n",
+		what, row.ID, stored, briefClip(incoming, 40))
+}
+
 // codexHookRow opens the database with open and resolves the Codex row the
 // hook runs in. Without the terminal env var nothing is opened. ok is false
 // when there is no row to act on, the database stays closed then; a failure

@@ -224,9 +224,10 @@ func planCodexSessionStart(stored sql.NullString, ev hookEvent) sessionStartPlan
 
 // recordCodexSessionStart is the Codex SessionStart's write on row (spec
 // §5), read from stdin; database is open. nil when there is nothing to
-// record: no input, a missing or non-UUID session id, a stale start. Never
+// record: no input, a missing or non-UUID session id, a stale start (one
+// stderr line names a start dropped for another stored id). Never
 // panics: the brief is printed after it whatever it returns.
-func recordCodexSessionStart(stdin io.Reader, database *db.DB, row db.TerminalSession) (err error) {
+func recordCodexSessionStart(stdin io.Reader, stderr io.Writer, database *db.DB, row db.TerminalSession) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
@@ -240,6 +241,9 @@ func recordCodexSessionStart(stdin io.Reader, database *db.DB, row db.TerminalSe
 	}
 	if err != nil {
 		return fmt.Errorf("reading the hook input: %w", err)
+	}
+	if planCodexSessionStart(row.ClaudeSessionID, ev) == sessionStartNone {
+		noteForeignCodexSession(stderr, row, ev.SessionID, "SessionStart ("+codexSessionSource(ev)+")")
 	}
 	return applyCodexSessionStart(database, row, ev)
 }
