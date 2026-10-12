@@ -134,6 +134,22 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         XCTAssertEqual(result.map(\.badge), ["#233", nil])
     }
 
+    /// Board #565: a row carries the place line the caller gave it; a row
+    /// it placed nowhere (a standalone terminal, a shell) has none.
+    func testRowCarriesThePlace() {
+        let label = SessionPlacePresentation.placeLabel(.main, mainStatus: WorkbenchGitStatus(branch: "main"))
+        let sessions = [session(1), session(2), session(3, workbench: nil)]
+        let result = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, places: [1: label]
+        )
+        XCTAssertEqual(result.map(\.place?.text), ["main folder · main", nil, nil])
+        let ordered = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, shortcutOrder: [2, 1], places: [2: label]
+        )
+        XCTAssertEqual(ordered.map(\.place), [nil, label, nil])
+        XCTAssertEqual(rows(sessions).map(\.place), [nil, nil, nil], "no places given, none shown")
+    }
+
     func testMatchingByTargetIDWithOrWithoutHash() {
         let result = rows([session(1, "Board work", target: 233), session(2, "Other", target: 2330), session(3, "None")])
         XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#233").map(\.id), [1, 2],

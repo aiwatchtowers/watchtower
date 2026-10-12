@@ -102,6 +102,9 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Where each session's agent works (board #565): the rows' place line
+    /// and the header's worktree crumb.
+    let sessionPlaces: SessionPlaceCenter
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
@@ -290,6 +293,7 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
+        sessionPlaces = Self.makeSessionPlaces(dbPool: dbPool, cli: cli, terminalCenter: terminalCenter)
         let lineDelivery = lineDelivery ?? SessionLineDelivery(terminalCenter: terminalCenter)
         self.lineDelivery = lineDelivery
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
@@ -339,8 +343,10 @@ final class WorkbenchesViewModel {
             Task { await lineDelivery?.deliverHeld() }
         }
         // Also on an unchanged read: a line held because a read failed.
-        agentStates?.onRead = { [weak lineDelivery] in
+        agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces] in
             Task { await lineDelivery?.deliverHeld() }
+            // A hook event may have stored a new cwd (board #565).
+            sessionPlaces?.cwdsMayHaveChanged()
         }
     }
 

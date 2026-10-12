@@ -673,9 +673,15 @@ struct WorkbenchCLI {
 
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
-    /// Desktop never does.
-    func gitStatus(projectID: Int64) async throws -> WorkbenchGitStatus {
-        let data = try await runner.run(args: ["workbench", "git", "status", "--workbench", String(projectID), "--json"])
+    /// Desktop never does. `folder` (absolute) asks about that folder instead
+    /// of the workbench folder (board #565): Go places it — `folder_scope`,
+    /// `folder_root`, `worktree_name` — and reports that worktree's status.
+    /// nil (the main folder) sends no flag, so the main argv is unchanged.
+    func gitStatus(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitStatus {
+        var args = ["workbench", "git", "status", "--workbench", String(projectID)]
+        if let folder { args += ["--folder", folder] }
+        args.append("--json")
+        let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitStatus.self, from: data)
     }
 

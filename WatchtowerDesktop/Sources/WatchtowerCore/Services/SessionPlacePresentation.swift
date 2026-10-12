@@ -20,7 +20,16 @@ package enum SessionPlacePresentation {
     /// Unknown shows as the main folder (D10). A branch that cannot be read
     /// is left out; detached HEAD and unborn branches read as the header's
     /// button does (`WorkbenchBranchPresentation.label`).
-    package static func placeLabel(_ place: SessionPlace, mainStatus: WorkbenchGitStatus?) -> PlaceLabel {
+    /// `stale` (the place's last read failed) adds a note to the help.
+    package static func placeLabel(_ place: SessionPlace, mainStatus: WorkbenchGitStatus?, stale: Bool = false) -> PlaceLabel {
+        let label = freshLabel(place, mainStatus: mainStatus)
+        guard stale else { return label }
+        return PlaceLabel(text: label.text, systemImage: label.systemImage, help: label.help + "\n" + staleNote)
+    }
+
+    package static let staleNote = "Could not read it again — it may be out of date."
+
+    private static func freshLabel(_ place: SessionPlace, mainStatus: WorkbenchGitStatus?) -> PlaceLabel {
         switch place {
         case .unknown:
             return PlaceLabel(text: withBranch("main folder", mainStatus), systemImage: mainSymbol,

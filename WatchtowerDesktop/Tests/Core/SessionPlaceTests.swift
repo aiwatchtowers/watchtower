@@ -176,4 +176,17 @@ final class SessionPlaceTests: XCTestCase {
                                           status: worktreeUnreadable)
         XCTAssertEqual(Pres.placeLabel(place, mainStatus: nil).text, "⑂ mobile-a")
     }
+
+    /// A place whose last read failed keeps its text and says so in its help.
+    func testAStaleLabelNotesItInTheHelp() {
+        typealias Pres = SessionPlacePresentation
+        let main = WorkbenchGitStatus(branch: "main")
+        let fresh = Pres.placeLabel(.main, mainStatus: main)
+        let stale = Pres.placeLabel(.main, mainStatus: main, stale: true)
+        XCTAssertEqual(stale.text, fresh.text)
+        XCTAssertEqual(stale.systemImage, fresh.systemImage)
+        XCTAssertFalse(fresh.help.contains(Pres.staleNote))
+        XCTAssertTrue(stale.help.hasPrefix(fresh.help))
+        XCTAssertTrue(stale.help.hasSuffix(Pres.staleNote))
+    }
 }

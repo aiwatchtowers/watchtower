@@ -137,8 +137,12 @@ package enum TerminalSessionQueries {
     /// keeps them out of `GetTerminalSession`: a database without migration
     /// 00110 yields no cwds rather than failing anything else. The column
     /// probe costs one `PRAGMA table_xinfo` per connection, not per reload:
-    /// GRDB caches it per connection until the schema version changes, so a
-    /// database migrated while the app runs gets its cwds on the next read.
+    /// GRDB caches it per connection. Call it only inside `DatabasePool.read`:
+    /// a pool reader drops that cache when the schema version moved, so a
+    /// database the daemon migrates while the app runs gets its cwds on the
+    /// next read. The writer connection (`write`) or a `DatabaseQueue` does
+    /// not notice another process's migration and would keep answering
+    /// `[:]` until the app restarts.
     package static func fetchAgentCwds(_ db: Database, projectID: Int64) throws -> [Int64: SessionAgentCwd] {
         guard try db.columns(in: "terminal_sessions").contains(where: { $0.name == "agent_cwd_at" }) else { return [:] }
         let rows = try SessionAgentCwd.fetchAll(
