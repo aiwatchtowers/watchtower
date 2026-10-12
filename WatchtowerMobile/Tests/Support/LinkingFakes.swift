@@ -74,6 +74,7 @@ final class FakeLinkContainer: LinkContainer {
     var status: CloudAvailability = .available
     var userRecordNameValue = "_owner-acme"
     var acceptError: (any Error)?
+    var leaveError: (any Error)?
     private(set) var accepted: [[URL]] = []
     private(set) var left: [String] = []
     /// The hub of each `leaveShares`, in call order.
@@ -99,6 +100,7 @@ final class FakeLinkContainer: LinkContainer {
 
     func leaveShares(ownerName: String, hubID: String) async throws {
         log.append("leave \(ownerName)")
+        if let leaveError { throw leaveError }
         left.append(ownerName)
         leftHubIDs.append(hubID)
         await onLeave?()
@@ -145,7 +147,7 @@ final class FakeLinkHost: LinkHost {
     private(set) var flushes = 0
     private(set) var permissionRequests = 0
     private(set) var openedNow = 0
-    /// What the wipe reports as not sent.
+    /// What the next wipe reports as not sent (once).
     var notSentCount = 0
     /// The Mac: answers from every device record written so far, both
     /// databases, in write order. nil = no grant in the replica.
@@ -158,6 +160,8 @@ final class FakeLinkHost: LinkHost {
     /// When true, `prepare` waits until its task is cancelled (the app
     /// killed while the sync stack restarts).
     var parksPrepare = false
+    /// Thrown by `prepare` (the sync stack could not restart).
+    var prepareError: (any Error)?
 
     func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
         log.append("prepare \(Self.describe(scope))")
@@ -166,6 +170,7 @@ final class FakeLinkHost: LinkHost {
         while parksPrepare {
             try await Task.sleep(for: .milliseconds(5))
         }
+        if let prepareError { throw prepareError }
         return transport(for: scope)
     }
 
@@ -197,14 +202,37 @@ final class FakeLinkHost: LinkHost {
         flushes += 1
     }
 
+    private(set) var retirements = 0
+
+    func retireEnvironment() {
+        log.append("retire")
+        retirements += 1
+    }
+
     /// The hub of each wipe's restart, in call order.
     private(set) var wipedHubIDs: [String] = []
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int {
+    /// The next wipe reports a capture it stopped and kept (once; as the
+    /// real host, never when the recordings are not kept).
+    var stopsRecording = false
+    /// The next wipe reports a recording problem (once).
+    var recordingProblem: String?
+
+    /// `keepRecordings` of each wipe, in call order.
+    private(set) var wipesKeptRecordings: [Bool] = []
+
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String, keepRecordings: Bool) async -> LocalWipe {
         wipedHubIDs.append(hubID)
+        wipesKeptRecordings.append(keepRecordings)
         log.append("wipe \(Self.describe(scope))")
         wipes += 1
-        return notSentCount
+        // A second wipe finds nothing left: what the first lost was counted.
+        defer {
+            stopsRecording = false
+            recordingProblem = nil
+            notSentCount = 0
+        }
+        return LocalWipe(notSent: notSentCount, stoppedRecording: stopsRecording && keepRecordings, problem: recordingProblem)
     }
 
     func requestNotificationPermission() async {
