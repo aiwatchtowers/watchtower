@@ -725,7 +725,7 @@ extension WorkbenchesViewModel {
     /// (the id stays) or the reset did not go in.
     private func rowToLaunch(
         _ row: TerminalSession, fresh: Bool, center: TerminalCenter, ticket: Int?
-    ) async -> (row: TerminalSession, codexResume: Bool?)? {
+    ) async -> (row: TerminalSession, codexResume: Bool?)? { // swiftlint:disable:this discouraged_optional_boolean
         guard row.kind == .codex else { return (row, nil) }
         guard !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return (row, false) }
         do {

@@ -692,7 +692,10 @@ final class TerminalCenter {
     /// meanwhile, launches nothing. Returns the mode it launched.
     @discardableResult
     func launch(
-        _ session: TerminalSession, fresh: Bool, prompt: String? = nil, codexResume: Bool? = nil
+        _ session: TerminalSession,
+        fresh: Bool,
+        prompt: String? = nil,
+        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
     ) async -> TerminalLaunch.Mode? {
         guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt) }
         let id = session.id
@@ -745,8 +748,11 @@ final class TerminalCenter {
     /// nothing.
     @discardableResult
     func start(
-        _ session: TerminalSession, fresh: Bool, prompt: String? = nil, codex: CodexLaunchArgs? = nil,
-        codexResume: Bool? = nil
+        _ session: TerminalSession,
+        fresh: Bool,
+        prompt: String? = nil,
+        codex: CodexLaunchArgs? = nil,
+        codexResume: Bool? = nil // swiftlint:disable:this discouraged_optional_boolean
     ) -> TerminalLaunch.Mode? {
         let id = session.id
         if states[id] == .running { return nil }
@@ -773,7 +779,7 @@ final class TerminalCenter {
     /// `codexResume` says when the caller decided it (`codexResumes`, one
     /// walk of the rollout tree); else it looks for the rollout here.
     private func mode(
-        for session: TerminalSession, fresh: Bool, prompt: String?, codexResume: Bool?
+        for session: TerminalSession, fresh: Bool, prompt: String?, codexResume: Bool? // swiftlint:disable:this discouraged_optional_boolean
     ) -> TerminalLaunch.Mode? {
         switch session.kind {
         case .shell:
