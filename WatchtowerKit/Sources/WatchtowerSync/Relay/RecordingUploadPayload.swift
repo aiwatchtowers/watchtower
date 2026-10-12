@@ -55,6 +55,9 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
     /// the hub fails an upload without a linked device as
     /// `device_not_linked`.
     public let deviceID: String?
+    /// The hub the phone addressed (multi-hub spec §3.5); nil encodes to an
+    /// absent key and is not checked.
+    public let hubID: String?
 
     public var recordName: String { "recupload-\(id)" }
 
@@ -74,6 +77,7 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
         // so these stringValues use that form to round-trip.
         case eventID = "eventId"
         case deviceID = "deviceId"
+        case hubID = "hubId"
     }
 
     public init(
@@ -86,7 +90,8 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
         status: RecordingUploadStatus = .pending,
         errorMessage: String? = nil,
         eventID: String? = nil,
-        deviceID: String? = nil
+        deviceID: String? = nil,
+        hubID: String? = nil
     ) {
         self.id = id
         self.startedAt = startedAt
@@ -98,5 +103,6 @@ public struct RecordingUploadPayload: Codable, Equatable, Sendable {
         self.errorMessage = errorMessage
         self.eventID = eventID
         self.deviceID = deviceID
+        self.hubID = hubID
     }
 }

@@ -82,6 +82,9 @@ public struct ActionRequestPayload: Codable, Equatable {
     /// The linked phone that created the request (spec §5.2 rule 4). nil
     /// encodes to an absent key, like every optional below.
     public let deviceID: String?
+    /// The hub the phone addressed (multi-hub spec §3.5); nil encodes to an
+    /// absent key and is not checked.
+    public let hubID: String?
     /// Closed code the Mac writes on a failure, hold or expiry. A code this
     /// build does not know decodes as nil (the echo still decodes).
     public var reason: ActionReason?
@@ -105,6 +108,7 @@ public struct ActionRequestPayload: Codable, Equatable {
         case status
         case errorMessage
         case deviceID = "deviceId"
+        case hubID = "hubId"
         case reason
         case result
     }
@@ -115,7 +119,8 @@ public struct ActionRequestPayload: Codable, Equatable {
         entityID: String?,
         params: [String: JSONValue] = [:],
         createdAt: Date,
-        deviceID: String? = nil
+        deviceID: String? = nil,
+        hubID: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -125,6 +130,7 @@ public struct ActionRequestPayload: Codable, Equatable {
         self.status = .pending
         self.errorMessage = nil
         self.deviceID = deviceID
+        self.hubID = hubID
         self.reason = nil
         self.result = nil
     }
@@ -139,6 +145,7 @@ public struct ActionRequestPayload: Codable, Equatable {
         status = try container.decode(ActionStatus.self, forKey: .status)
         errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
         deviceID = try container.decodeIfPresent(String.self, forKey: .deviceID)
+        hubID = try container.decodeIfPresent(String.self, forKey: .hubID)
         reason = try container.decodeIfPresent(String.self, forKey: .reason).flatMap(ActionReason.init(rawValue:))
         result = try container.decodeIfPresent([String: JSONValue].self, forKey: .result)
     }

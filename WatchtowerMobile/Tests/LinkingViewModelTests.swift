@@ -1,3 +1,4 @@
+import CloudKit
 import Foundation
 import WatchtowerSync
 import XCTest
@@ -113,6 +114,7 @@ final class LinkingViewModelTests: XCTestCase {
 
         XCTAssertTrue(container.accepted.isEmpty, "an owner's phone never accepts its own share")
         XCTAssertEqual(host.prepared, [.private])
+        XCTAssertEqual(host.preparedHubIDs, ["hub-acme"], "the scan syncs the code's hub")
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.count, 1)
         XCTAssertEqual(writes.first?.linkNonce, payload.nonce)
@@ -362,6 +364,7 @@ final class LinkingViewModelTests: XCTestCase {
         await relaunched.resumePendingLink()
 
         XCTAssertEqual(host.prepared.last, .shared(ownerName: owner), "the wait reads the scan's database")
+        XCTAssertEqual(host.preparedHubIDs.last, "hub-acme", "and the scan's hub")
         XCTAssertEqual(relaunched.phase, .failed(.noAnswer))
         XCTAssertGreaterThanOrEqual(clock.slept, 40)
         XCTAssertLessThan(clock.slept, 42, "only the remaining part of the 60 s")
@@ -386,6 +389,7 @@ final class LinkingViewModelTests: XCTestCase {
         let pending = try XCTUnwrap(LinkStore(defaults: defaults).pending, "the accept is followed by a resumable wait")
         XCTAssertEqual(pending.link.databaseScope, .shared(ownerName: owner))
         XCTAssertEqual(LinkStore(defaults: defaults).bootScope, .shared(ownerName: owner), "the relaunch boots the scan's database")
+        XCTAssertEqual(LinkStore(defaults: defaults).bootHubID, "hub-acme", "and the scan's hub")
 
         host.parksPrepare = false
         let relaunched = makeModel()
@@ -483,11 +487,15 @@ final class LinkingViewModelTests: XCTestCase {
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
-            Array(log.events.suffix(2)), ["wipe private", "prepare private"],
-            "the queue is wiped first, so the flush sends only the unlinked record"
+            Array(log.events.suffix(3)), ["wipe private", "prepare private", "wipe private"],
+            "the queue is wiped first, so the flush sends only the unlinked record; then the phone restarts unlinked"
         )
         XCTAssertEqual(host.flushes, 1)
-        XCTAssertEqual(host.wipes, 1)
+        XCTAssertEqual(host.wipes, 2)
+        XCTAssertEqual(
+            host.wipedHubIDs, ["hub-acme", AppEnvironment.unlinkedHubID],
+            "final review m3: a private unlink ends on the unlinked hub id too"
+        )
         XCTAssertNil(model.link)
         XCTAssertNil(LinkStore(defaults: defaults).link)
         XCTAssertNil(host.links.last?.device)
@@ -505,6 +513,12 @@ final class LinkingViewModelTests: XCTestCase {
         await model.unlink()
 
         XCTAssertEqual(container.left, [owner])
+        XCTAssertEqual(container.leftHubIDs, ["hub-acme"], "the linked hub's shares are left")
+        XCTAssertEqual(host.preparedHubIDs.last, "hub-acme", "unlinked is written to the linked hub's zones")
+        XCTAssertEqual(
+            Array(host.wipedHubIDs.suffix(2)), ["hub-acme", AppEnvironment.unlinkedHubID],
+            "the queue is wiped on the linked hub, then the phone restarts unlinked"
+        )
         let writes = try await host.deviceWrites(in: .shared(ownerName: owner))
         XCTAssertEqual(writes.last?.unlinked, true)
         XCTAssertEqual(
@@ -650,7 +664,7 @@ final class LinkingViewModelTests: XCTestCase {
         let writes = try await host.deviceWrites(in: .private)
         XCTAssertEqual(writes.map(\.unlinked), [nil, true, nil], "link, unlink the old Mac, link the new one")
         XCTAssertEqual(writes.last?.linkNonce, other.nonce)
-        XCTAssertEqual(host.wipes, 1)
+        XCTAssertEqual(host.wipes, 2, "the unlink wipes the old Mac's queue, then restarts unlinked")
         XCTAssertEqual(model.phase, .linked(macName: "Acme Studio"))
         XCTAssertEqual(model.link?.hubID, "hub-studio")
     }
@@ -660,10 +674,21 @@ final class LinkingViewModelTests: XCTestCase {
     func testANewerCodeVersionAsksToUpdateTheApp() async throws {
         let model = makeModel()
 
-        await model.open(code(version: 2).url())
+        await model.open(code(version: LinkPayload.currentVersion + 1).url())
 
         XCTAssertEqual(model.phase, .failed(.updateApp))
         XCTAssertEqual(LinkFailure.updateApp.message, "Update Watchtower on this iPhone")
+        XCTAssertTrue(host.prepared.isEmpty)
+    }
+
+    /// Multi-hub spec §6.7: a v1 code comes from a single-hub Mac.
+    func testAnOlderCodeVersionAsksToUpdateTheMac() async throws {
+        let model = makeModel()
+
+        await model.open(code(version: 1).url())
+
+        XCTAssertEqual(model.phase, .failed(.updateMac))
+        XCTAssertEqual(LinkFailure.updateMac.message, "Update Watchtower on this Mac")
         XCTAssertTrue(host.prepared.isEmpty)
     }
 
@@ -715,8 +740,9 @@ final class LinkingViewModelTests: XCTestCase {
     }
 
     /// Design pass O3: every failure is a title over a hint; `message` stays
-    /// "title — hint" for every other reader, and signIn and updateApp keep
-    /// today's exact text. An iCloud failure without a reason has no hint.
+    /// "title — hint" for every other reader, and signIn, updateApp and
+    /// updateMac keep today's exact text. An iCloud failure without a
+    /// reason has no hint.
     func testEveryFailureIsATitleOverAHint() {
         let expected: [(LinkFailure, String, String?)] = [
             (.expired, "This code expired", "Show a new code on the Mac"),
@@ -725,6 +751,7 @@ final class LinkingViewModelTests: XCTestCase {
             (.noAnswer, "Your Mac didn't answer", "Keep Settings → Mobile open on the Mac and scan again"),
             (.refused, "This code can't be used", "Show a new code on the Mac"),
             (.updateApp, "Update Watchtower on this iPhone", nil),
+            (.updateMac, "Update Watchtower on this Mac", nil),
             (.iCloud("The network is offline"), "Couldn't reach iCloud", "The network is offline")
         ]
         for (failure, title, hint) in expected {
@@ -733,7 +760,7 @@ final class LinkingViewModelTests: XCTestCase {
         }
         XCTAssertEqual(LinkFailure.signIn.message, "Sign in to iCloud on this iPhone to use Watchtower", "today's exact text")
         XCTAssertEqual(LinkFailure.updateApp.message, "Update Watchtower on this iPhone")
-        for (failure, title, hint) in expected where failure != .signIn && failure != .updateApp {
+        for (failure, title, hint) in expected where ![.signIn, .updateApp, .updateMac].contains(failure) {
             XCTAssertEqual(failure.message, "\(title) — \(hint ?? "")", "\(failure)")
         }
         XCTAssertNil(LinkFailure.iCloud("").hint, "an empty reason is no hint")
@@ -780,5 +807,18 @@ final class LinkingViewModelTests: XCTestCase {
         XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: start.addingTimeInterval(30), now: start).hint, "a future start")
         XCTAssertNil(LinkStepsModel(waitingFor: "Acme Mac", startedAt: nil, now: start).hint)
         XCTAssertEqual(LinkStepsModel(waitingFor: "", startedAt: nil, now: start).steps[1].text, "Waiting for your Mac to confirm")
+    }
+
+    // MARK: - Live container
+
+    /// The live container leaves the linked hub's own zones' shares
+    /// (`DataZone-<hub_id>`, `RelayZone-<hub_id>`), never the single-hub
+    /// build's fixed-name zones.
+    func testLeavingSharesTargetsTheLinkedHubsZones() {
+        let ids = CloudKitLinkContainer.shareRecordIDs(ownerName: owner, hubID: "hub-acme")
+
+        XCTAssertEqual(ids.map(\.zoneID.zoneName).sorted(), ["DataZone-hub-acme", "RelayZone-hub-acme"])
+        XCTAssertEqual(Set(ids.map(\.zoneID.ownerName)), [owner])
+        XCTAssertEqual(Set(ids.map(\.recordName)), [CKRecordNameZoneWideShare])
     }
 }

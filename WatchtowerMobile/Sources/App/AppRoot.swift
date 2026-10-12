@@ -23,7 +23,7 @@ final class AppRoot {
         /// The CloudKit transport's store a wipe empties; nil for a
         /// transport that keeps none.
         let transportStorePath: String?
-        let make: @MainActor (_ scope: CloudDatabaseScope, _ device: LinkedDevice?) throws -> AppEnvironment
+        let make: @MainActor (_ scope: CloudDatabaseScope, _ hubID: String, _ device: LinkedDevice?) throws -> AppEnvironment
     }
 
     private(set) var env: AppEnvironment
@@ -32,15 +32,18 @@ final class AppRoot {
     private(set) var failure: String?
 
     @ObservationIgnored private var scope: CloudDatabaseScope
+    /// The hub whose zones the running environment syncs.
+    @ObservationIgnored private var hubID: String
     @ObservationIgnored private let restarter: Restarter?
     /// The restart running or queued last: restarts run one at a time.
     @ObservationIgnored private var restartTask: Task<Void, Error>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     /// `restarter` nil keeps `env` for good (the demo, tests).
-    init(env: AppEnvironment, scope: CloudDatabaseScope, linking: LinkingViewModel, restarter: Restarter?) {
+    init(env: AppEnvironment, scope: CloudDatabaseScope, hubID: String, linking: LinkingViewModel, restarter: Restarter?) {
         self.env = env
         self.scope = scope
+        self.hubID = hubID
         self.linking = linking
         self.restarter = restarter
         linking.host = self
@@ -61,14 +64,16 @@ final class AppRoot {
         }
         let store = LinkStore(defaults: defaults)
         let identity = DeviceIdentity.current(defaults: defaults)
-        let make: @MainActor (CloudDatabaseScope, LinkedDevice?) throws -> AppEnvironment = { scope, device in
-            try AppEnvironment(scope: scope, linkedDevice: device)
+        let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { scope, hubID, device in
+            try AppEnvironment(scope: scope, hubID: hubID, linkedDevice: device)
         }
         let scope = store.bootScope
+        let hubID = store.bootHubID
         let directory = try AppEnvironment.appGroupDirectory()
         let root = AppRoot(
-            env: try make(scope, store.link.map(identity.linkedDevice(for:))),
+            env: try make(scope, hubID, store.link.map(identity.linkedDevice(for:))),
             scope: scope,
+            hubID: hubID,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: store, identity: identity),
             restarter: Restarter(
                 replicaPath: AppEnvironment.liveReplicaPath(in: directory),
@@ -88,6 +93,7 @@ final class AppRoot {
         return AppRoot(
             env: env,
             scope: .private,
+            hubID: AppEnvironment.unlinkedHubID,
             linking: LinkingViewModel(container: CloudKitLinkContainer(), store: LinkStore(defaults: defaults), identity: identity),
             restarter: nil
         )
@@ -145,24 +151,30 @@ final class AppRoot {
     }
 
     /// Shuts the current environment down and builds the next one on
-    /// `scope`'s database; `wipe` first removes the replica and empties the
+    /// `hubID`'s zones in `scope`'s database; `wipe` first removes the replica and empties the
     /// transport's store (buffered events, send queue, engine state: a
     /// transport reopened on the same scope would otherwise resume from its
     /// saved change token past the compacted prefix and still send the old
     /// queue). Restarts queue behind each other, so two teardowns never
     /// share an environment. No-op for a root without a restarter.
-    private func restart(scope: CloudDatabaseScope, device: LinkedDevice?, wipe: Bool) async throws {
+    private func restart(scope: CloudDatabaseScope, hubID: String, device: LinkedDevice?, wipe: Bool) async throws {
         guard let restarter else { return }
         let previous = restartTask
         let task = Task {
             _ = await previous?.result
-            try await self.performRestart(scope: scope, device: device, wipe: wipe, restarter: restarter)
+            try await self.performRestart(scope: scope, hubID: hubID, device: device, wipe: wipe, restarter: restarter)
         }
         restartTask = task
         try await task.value
     }
 
-    private func performRestart(scope: CloudDatabaseScope, device: LinkedDevice?, wipe: Bool, restarter: Restarter) async throws {
+    private func performRestart(
+        scope: CloudDatabaseScope,
+        hubID: String,
+        device: LinkedDevice?,
+        wipe: Bool,
+        restarter: Restarter
+    ) async throws {
         let old = env
         old.onLinkSignal = nil
         old.onFetched = nil
@@ -174,10 +186,11 @@ final class AppRoot {
                     try TransportStore(path: path).wipe()
                 }
             }
-            let next = try restarter.make(scope, device)
+            let next = try restarter.make(scope, hubID, device)
             wire(next)
             env = next
             self.scope = scope
+            self.hubID = hubID
         } catch {
             Self.logger.critical("environment restart failed: \(error.localizedDescription, privacy: .public)")
             failure = error.localizedDescription
@@ -214,11 +227,11 @@ final class AppRoot {
 // MARK: - LinkHost
 
 extension AppRoot: LinkHost {
-    func prepare(scope: CloudDatabaseScope) async throws -> any CloudSyncTransport {
-        // A queued restart decides the running scope.
+    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
+        // A queued restart decides the running scope and hub.
         _ = await restartTask?.result
-        if scope != self.scope {
-            try await restart(scope: scope, device: nil, wipe: true)
+        if scope != self.scope || hubID != self.hubID {
+            try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
         }
         return env.linkTransport
     }
@@ -253,10 +266,10 @@ extension AppRoot: LinkHost {
         await env.sendNow()
     }
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope) async -> Int {
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int {
         let notSent = notSentCount()
         do {
-            try await restart(scope: scope, device: nil, wipe: true)
+            try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
         } catch {
             // `failure` is set: the app shows BootFailureView.
         }

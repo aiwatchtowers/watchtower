@@ -34,6 +34,46 @@ protocol WhisperWindowEngine: Sendable {
     /// carried context across a failed window on the strength of this (see
     /// `decodeWithPromptFallback`, which WhisperKitEngine routes through).
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment]
+    /// The same, with L3 (spec D3: drop the segments the model itself doubts)
+    /// on or off. The transcribers pass `config.speechGate`, so the kill switch
+    /// and the dictation lane keep today's decode. Engines without L3 keep the
+    /// default, which ignores the flag.
+    func transcribeWindow(
+        _ samples: [Float],
+        language: String,
+        prompt: String?,
+        dropDoubtful: Bool
+    ) async throws -> [TranscribedSegment]
+    /// Segments the engine dropped itself (L3 confidence, phrase filter)
+    /// since the last call — read once per recording for the gate's summary
+    /// log. Engines that drop nothing keep the default.
+    func takeDropCounts() -> WindowDropCounts
+}
+
+extension WhisperWindowEngine {
+    func transcribeWindow(
+        _ samples: [Float],
+        language: String,
+        prompt: String?,
+        dropDoubtful: Bool
+    ) async throws -> [TranscribedSegment] {
+        try await transcribeWindow(samples, language: language, prompt: prompt)
+    }
+
+    func takeDropCounts() -> WindowDropCounts { WindowDropCounts() }
+}
+
+/// What an engine dropped from its own decodes: counts only, never text.
+struct WindowDropCounts: Equatable, Sendable {
+    var confidence = 0
+    var phrase = 0
+    var droppedChars = 0
+
+    mutating func add(_ other: Self) {
+        confidence += other.confidence
+        phrase += other.phrase
+        droppedChars += other.droppedChars
+    }
 }
 
 /// Windowed-transcription parameters. Ported from snoop (1 s overlap, langset
@@ -81,6 +121,11 @@ struct TranscriptionConfig: Equatable {
     /// always the meeting path) = the factory resolves the model from its own
     /// Settings keys; `fromDefaults` never sets this.
     var model: String?
+    /// Skip windows with no detected speech and drop decoded segments that
+    /// lie outside it (spec D1/D2, board #554) — the defence against text
+    /// invented over silence. A hidden kill switch (`transcription.speechGate`,
+    /// absent = on) with no Settings UI; the dictation lane stamps it off.
+    var speechGate: Bool = true
     static let sampleRate = 16_000
 }
 
@@ -136,7 +181,8 @@ extension TranscriptionConfig {
             ("transcription.liveTranscription", \.liveTranscription),
             ("transcription.diarization", \.diarization),
             ("transcription.voiceRecognition", \.voiceRecognition),
-            ("transcription.voiceNotifications", \.voiceNotifications)
+            ("transcription.voiceNotifications", \.voiceNotifications),
+            ("transcription.speechGate", \.speechGate)
         ]
         for toggle in toggles where defaults.object(forKey: toggle.key) != nil {
             config[keyPath: toggle.field] = defaults.bool(forKey: toggle.key)
@@ -217,14 +263,24 @@ func contextPromptTail(
 /// live cannot drift on WHEN context is dropped (`contextPromptTail` decides
 /// whether it is USED for a given window).
 struct ContextPromptState {
-    /// Consecutive silent windows that expire the context. Bounds the
-    /// prompt+retry tax over a long pause and stops minutes-old context from
-    /// conditioning speech it has nothing to do with; language stickiness is
-    /// separate and deliberately unbounded.
-    static let silenceLimit = 3
+    /// Consecutive silent windows that expire the context with the speech
+    /// gate on: one (spec D4, board #554). A silent window is then the pause
+    /// itself, a detector verdict rather than an empty decode, and context
+    /// carried across a pause conditions speech it has nothing to do with —
+    /// and can resurface as text the speaker never said. Language stickiness
+    /// is separate and deliberately unbounded.
+    static let silenceLimit = 1
+    /// The limit with the gate off (kill switch, dictation): today's three,
+    /// bounding the prompt+retry tax over a long pause.
+    static let ungatedSilenceLimit = 3
 
     private(set) var text: String?
     private var silentStreak = 0
+    private let limit: Int
+
+    init(speechGate: Bool) {
+        limit = speechGate ? Self.silenceLimit : Self.ungatedSilenceLimit
+    }
 
     /// A speech window refreshes the context and ends the streak.
     mutating func recordSpeech(_ windowText: String) {
@@ -232,7 +288,8 @@ struct ContextPromptState {
         silentStreak = 0
     }
 
-    /// A silent window keeps the context until the streak reaches the limit.
+    /// A silent window expires the context once the streak reaches the limit
+    /// (with the limit at one, the first silent window does).
     /// A FAILED window records neither: an error surfacing from the engine
     /// means the window yielded no usable speech even without the prompt (see
     /// `decodeWithPromptFallback`), so the carried context is not implicated
@@ -240,7 +297,7 @@ struct ContextPromptState {
     /// asymmetry with silence.
     mutating func recordSilence() {
         silentStreak += 1
-        if silentStreak >= Self.silenceLimit { text = nil }
+        if silentStreak >= limit { text = nil }
     }
 }
 
@@ -283,8 +340,9 @@ func whisperPromptTokens(
 /// upstream `TextDecoder` limitation, flagged as unfinished in its own source)
 /// and every prompt token costs a decoder pass. The retry doubles the decode
 /// on any prompted window that comes back empty — a collapse OR genuine
-/// silence, indistinguishable here, so each pause after speech pays it up to
-/// `ContextPromptState.silenceLimit` times before expiry kicks in. Once the
+/// silence, indistinguishable here, so each pause after speech pays it until
+/// the context expires — with the speech gate a silent window is not decoded
+/// at all, without it up to `ContextPromptState.ungatedSilenceLimit` times. Once the
 /// task is cancelled nothing is retried — the engine-slot residency bound is
 /// one window.
 ///

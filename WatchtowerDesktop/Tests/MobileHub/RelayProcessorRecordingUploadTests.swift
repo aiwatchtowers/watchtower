@@ -90,11 +90,13 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
         id: String = "R1",
         title: String? = "Acme standup",
         eventID: String? = nil,
-        deviceID: String? = "device-a"
+        deviceID: String? = "device-a",
+        hubID: String? = nil
     ) -> RecordingUploadPayload {
         RecordingUploadPayload(
             id: id, startedAt: now.addingTimeInterval(-600), endedAt: now.addingTimeInterval(-300),
-            durationSec: 300, titleHint: title, sampleFormat: "aac-64k-mono", eventID: eventID, deviceID: deviceID
+            durationSec: 300, titleHint: title, sampleFormat: "aac-64k-mono", eventID: eventID, deviceID: deviceID,
+            hubID: hubID
         )
     }
 
@@ -469,6 +471,18 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
 
         XCTAssertEqual(pass.handled, 0)
         XCTAssertTrue(enqueued.isEmpty)
+    }
+
+    // MARK: - Hub addressing
+
+    func testAnUploadForAnotherHubFailsWrongHubAndWritesNothing() async throws {
+        let record = try await send(uploadPayload(hubID: "hub-other"), asset: try makeAsset())
+
+        _ = try await makeProcessor().processOnce()
+
+        XCTAssertEqual(try sidecar.relayOutcome(record.recordName), "failed:wrong_hub")
+        XCTAssertTrue(enqueued.isEmpty)
+        XCTAssertTrue(recordingFiles().isEmpty)
     }
 }
 

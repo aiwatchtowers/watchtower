@@ -73,6 +73,13 @@ final class LinkStore {
         link?.databaseScope ?? pending?.link.databaseScope ?? .private
     }
 
+    /// The hub whose zones the app syncs at boot: the link's, else a pending
+    /// link's, else `AppEnvironment.unlinkedHubID` (F1's single-link bridge
+    /// until F2's `HubRegistry`).
+    var bootHubID: String {
+        link?.hubID ?? pending?.link.hubID ?? AppEnvironment.unlinkedHubID
+    }
+
     /// Plain JSON (local state, not wire format: RelayCoder's snake-case
     /// keys would not round-trip `hubID`). An unreadable value reads as
     /// absent and is logged: the phone then shows Welcome rather than run a

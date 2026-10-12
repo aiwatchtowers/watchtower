@@ -311,7 +311,7 @@ final class CloudKitTransportErrorTests: XCTestCase {
         let rejectedNames = await rejected(transport)
         try await transport.save(records(10))
         let failed = records(10).map {
-            (CloudKitTransport.ckRecord(from: $0, in: CloudDatabaseScope.private.zoneID(for: .data), systemFields: nil),
+            (CloudKitTransport.ckRecord(from: $0, in: HubZones.test().zoneID(for: .data), systemFields: nil),
              CKError(.limitExceeded))
         }
 

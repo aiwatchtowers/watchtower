@@ -93,12 +93,11 @@ final class MobileSettingsViewModel {
         return Self.statusLine(hub.status)
     }
 
-    /// Take over is offered while another Mac holds the hub.
-    var offersTakeOver: Bool {
-        switch hub?.status {
-        case .otherHub, .tookOver: return isOn
-        default: return false
-        }
+    /// Why turning the hub off did not fully go through (the zones kept or
+    /// partly deleted); shown while the toggle is off.
+    var hubOffLine: String? {
+        guard !isOn else { return nil }
+        return hub?.hubOffProblem
     }
 
     var showsSlowingLine: Bool {
@@ -118,8 +117,6 @@ final class MobileSettingsViewModel {
         case .starting: return "Starting…"
         case .running: return "On"
         case .unavailable(let reason): return "Unavailable: \(reason)"
-        case .otherHub(let macName): return "\(macName) is your hub. Turn it off there, or Take over"
-        case .tookOver: return "Another Mac took over"
         }
     }
 
@@ -174,7 +171,7 @@ final class MobileSettingsViewModel {
         checkedAt = now()
     }
 
-    // MARK: - The toggle and Take over
+    // MARK: - The toggle
 
     /// The opt-in toggle; turning on needs a signed build. Turning off
     /// closes an open QR sheet and its link first.
@@ -183,12 +180,6 @@ final class MobileSettingsViewModel {
         if !enabled { await linkSheetDismissed() }
         host.setMobileSyncEnabled(enabled)
         isOn = enabled
-        await refresh()
-    }
-
-    func takeOver() async {
-        guard let hub else { return }
-        await hub.takeOver()
         await refresh()
     }
 

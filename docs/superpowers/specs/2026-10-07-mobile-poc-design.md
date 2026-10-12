@@ -49,7 +49,7 @@ iPhone app (WatchtowerMobile) ── ReplicaStore (GRDB, app group) ── CKSyn
 Five rules hold everywhere:
 
 - **The hub lives in the Desktop process.** The Go daemon never touches CloudKit, because the CloudKit frameworks are Apple-only. Every phone action needs the Desktop app running, because the PTY (`TerminalCenter`), the asks view model and the recorder all live there.
-- **DataZone has one writer, the hub.** Single-hub rule: §8, I-1.
+- **DataZone has one writer, the hub.** Single-hub rule: §8, I-1. *Superseded 2026-10-11 by `docs/superpowers/specs/2026-10-11-mobile-multi-hub-design.md` §2: a hub publishes only into its own zones `DataZone-<hub_id>`/`RelayZone-<hub_id>`; a phone links to at most 4 hubs; take over is removed.*
 - **Each RelayZone record except the hub's own has one creator, the phone.** The Mac only rewrites a record's status (the echo). This is the branch's ack pattern.
 - **Every phone write goes through the Mac's existing code paths** (§6). There is no third mutation path.
 - **The phone never re-derives Mac logic.** That covers session state, colours, captions, the quick-answer eligibility and the alert decision. The Mac publishes the resolved values.
@@ -178,7 +178,7 @@ The payload stays under 700 bytes, which fits a QR at error-correction level M. 
 
 **Single hub when the hub owns shares.**
 
-- I-1 (§8) still holds. Take over (same Apple ID, another Mac) issues a new `hub_id`. The new hub deletes both zone shares (which removes all participants), clears `devices` in its own sidecar, and creates new shares at its first QR.
+- I-1 (§8) still holds. *Superseded 2026-10-11 by `docs/superpowers/specs/2026-10-11-mobile-multi-hub-design.md` §2: a hub publishes only into its own zones `DataZone-<hub_id>`/`RelayZone-<hub_id>`; a phone links to at most 4 hubs; take over is removed.* Take over (same Apple ID, another Mac) issues a new `hub_id`. The new hub deletes both zone shares (which removes all participants), clears `devices` in its own sidecar, and creates new shares at its first QR.
 - Every phone whose linked `hub_id` differs from the heartbeat's shows "Watchtower moved to <mac_name> — scan the code on that Mac". A `shared` phone instead loses the zones and shows "This Mac removed this phone — scan a new code".
 - A Mac on a *different* Apple ID cannot see the first hub. It is simply another hub, and a phone links to exactly one hub at a time.
 
@@ -650,7 +650,7 @@ Verified at main `b21f2c44`. The analysis's numbers were taken at `c78edea4`; th
 
 ## 8. Invariants
 
-1. **I-1 Single hub.** One Mac per iCloud account publishes, and a phone is linked to exactly one hub (§2.3).
+1. **I-1 Single hub.** *Superseded 2026-10-11 by `docs/superpowers/specs/2026-10-11-mobile-multi-hub-design.md` §2: a hub publishes only into its own zones `DataZone-<hub_id>`/`RelayZone-<hub_id>`; a phone links to at most 4 hubs; take over is removed.* One Mac per iCloud account publishes, and a phone is linked to exactly one hub (§2.3).
    - When enabled, a hub reads `heartbeat`. If its `hub_id` differs and `updated_at` is less than 720 s old, enabling is refused: "<mac_name> is your hub. Turn it off there, or Take over".
    - Take over writes a new heartbeat with this hub's id. A hub that sees a foreign `hub_id` in `heartbeat` stops publishing and shows "Another Mac took over".
    - A pull that failed or timed out is not a claim: without an explicit Take over the hub goes unavailable and re-probes. An explicit Take over on a failed pull proceeds; its heartbeat is stamped after the newest heartbeat it knows (`max(now, newest + 1 s)`; a newest heartbeat more than 720 s ahead of this Mac's clock is a broken clock and is not followed — the stamp is `now` and the skew is logged — so it cannot poison later hubs; against a hub still running with that clock the take over is lost as described next). Known POC limit *(amended 2026-10-10, final review)*: when the pull failed, a newer live heartbeat the hub has not read can still be newer than that stamp (clock skew between the Macs); the other hub then keeps its claim, and this hub stops with "Another Mac took over" on its next read, so the take over is lost, never split. Usually iCloud is down then and the heartbeat save fails too.

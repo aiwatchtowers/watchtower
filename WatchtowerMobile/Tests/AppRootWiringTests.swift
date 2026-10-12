@@ -18,8 +18,8 @@ final class AppRootWiringTests: XCTestCase {
         userRecordName: "_owner-acme"
     )
 
-    /// Every environment the root built, and the database each runs.
-    private var built: [(env: AppEnvironment, scope: CloudDatabaseScope)] = []
+    /// Every environment the root built, and the database and hub each runs.
+    private var built: [(env: AppEnvironment, scope: CloudDatabaseScope, hubID: String)] = []
     private var transports: [InMemoryCloudTransport] = []
     private var replicaPath = ""
 
@@ -33,10 +33,12 @@ final class AppRootWiringTests: XCTestCase {
         replicaPath = path
         let defaults = try makeDefaults()
         let recordings = try makeRecordingsDirectory()
-        let make: @MainActor (CloudDatabaseScope, LinkedDevice?) throws -> AppEnvironment = { [weak self] scope, device in
+        let make: @MainActor (CloudDatabaseScope, String, LinkedDevice?) throws -> AppEnvironment = { [weak self] scope, hubID, device in
             let transport: any CloudSyncTransport
             if let transportStorePath {
-                transport = CloudKitTransport(store: try TransportStore(path: transportStorePath), scope: scope)
+                transport = CloudKitTransport(
+                    store: try TransportStore(path: transportStorePath), scope: scope, hubID: hubID, role: .phone
+                )
             } else {
                 let memory = InMemoryCloudTransport()
                 self?.transports.append(memory)
@@ -51,13 +53,14 @@ final class AppRootWiringTests: XCTestCase {
                 recordingsDirectory: recordings
             )
             self?.addTeardownBlock { @MainActor in env.stop() }
-            self?.built.append((env, scope))
+            self?.built.append((env, scope, hubID))
             return env
         }
         let identity = DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion)
         return AppRoot(
-            env: try make(.private, linked),
+            env: try make(.private, AppEnvironment.unlinkedHubID, linked),
             scope: .private,
+            hubID: AppEnvironment.unlinkedHubID,
             linking: LinkingViewModel(container: FakeLinkContainer(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity),
             restarter: AppRoot.Restarter(replicaPath: path, transportStorePath: transportStorePath, make: make)
         )
@@ -80,7 +83,7 @@ final class AppRootWiringTests: XCTestCase {
         }
         XCTAssertEqual(try first.store.pendingActions().count, 3)
 
-        let notSent = await root.wipeLocalData(restartingOn: .private)
+        let notSent = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
 
         XCTAssertEqual(notSent, 3, "the three pending items are reported Not sent")
         XCTAssertFalse(root.env === first, "a new environment on the same files")
@@ -118,7 +121,7 @@ final class AppRootWiringTests: XCTestCase {
         let before = try await transportCounts(raw)
         XCTAssertEqual(before.pending, 3, "the outbox's sends wait in the transport queue")
 
-        let notSent = await root.wipeLocalData(restartingOn: .private)
+        let notSent = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
 
         XCTAssertEqual(notSent, 3)
         let after = try await transportCounts(raw)
@@ -145,8 +148,8 @@ final class AppRootWiringTests: XCTestCase {
     func testConcurrentWipesRestartOneAfterTheOther() async throws {
         let root = try makeRoot(linked: device)
 
-        async let first = root.wipeLocalData(restartingOn: .private)
-        async let second = root.wipeLocalData(restartingOn: .private)
+        async let first = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+        async let second = root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         _ = await (first, second)
 
         XCTAssertEqual(built.count, 3, "the initial environment and one per wipe")
@@ -198,17 +201,34 @@ final class AppRootWiringTests: XCTestCase {
         try await transports[0].save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
         try await poll { (try? self.sliceCountSync(first)) == 1 }
 
-        let samePrivate = try await root.prepare(scope: .private)
+        let samePrivate = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID)
         XCTAssertTrue(root.env === first, "the running scope needs no restart")
         XCTAssertTrue((samePrivate as? InMemoryCloudTransport) === transports[0])
 
-        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"))
+        let shared = try await root.prepare(scope: .shared(ownerName: "_owner-acme"), hubID: AppEnvironment.unlinkedHubID)
 
         XCTAssertFalse(root.env === first)
         XCTAssertEqual(built.last?.scope, .shared(ownerName: "_owner-acme"))
         XCTAssertTrue((shared as? InMemoryCloudTransport) === transports.last)
         let rows = try await sliceCount(root.env)
         XCTAssertEqual(rows, 0, "another database's data is not kept")
+    }
+
+    func testPreparingAnotherHubOnTheSameScopeRestartsOnAnEmptyReplica() async throws {
+        let root = try makeRoot(linked: nil)
+        let first = root.env
+        let now = Date()
+        try await transports[0].save([try CloudRecordFactory.record(for: heartbeat(updatedAt: now), modifiedAt: now)])
+        try await poll { (try? self.sliceCountSync(first)) == 1 }
+
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+
+        XCTAssertFalse(root.env === first, "another hub is another pair of zones")
+        XCTAssertEqual(built.last?.hubID, "hub-acme")
+        let rows = try await sliceCount(root.env)
+        XCTAssertEqual(rows, 0, "another hub's data is not kept")
+        _ = try await root.prepare(scope: .private, hubID: "hub-acme")
+        XCTAssertEqual(built.count, 2, "the running hub needs no restart")
     }
 
     func testFetchGrantReadsThisPhonesHydratedGrant() async throws {

@@ -50,6 +50,10 @@ final class AppEnvironment {
     /// The phone's app group (spec §2.1). The replica lives in its container
     /// so the notification extensions can read it.
     nonisolated static let appGroupID = "group.com.aiwatchtowers.watchtower.mobile"
+    /// The hub a live phone syncs while it has no link (F1 bridge, replaced
+    /// by F2's `HubRegistry`): no Mac has zones of this name, so it syncs
+    /// nothing.
+    nonisolated static let unlinkedHubID = "unlinked"
 
     let store: ReplicaStore
     let transportKind: TransportKind
@@ -125,18 +129,21 @@ final class AppEnvironment {
     /// container; anything else (unsigned simulator and CI builds) runs the
     /// in-memory demo transport with DemoSeed. `recordingsDirectory` is for
     /// tests: nil keeps the phone's own recordings folder. A live build
-    /// runs `scope`'s database, linked as `linkedDevice` (`AppRoot` reads
-    /// both from the `LinkStore`).
+    /// runs `hubID`'s zones in `scope`'s database, linked as `linkedDevice`
+    /// (`AppRoot` reads all three from the `LinkStore`).
     convenience init(
         recordingsDirectory: URL? = nil,
         scope: CloudDatabaseScope = .private,
+        hubID: String = AppEnvironment.unlinkedHubID,
         linkedDevice: LinkedDevice? = nil
     ) throws {
         if CloudKitTransport.entitlementPresent() {
             let directory = try Self.appGroupDirectory()
             let transportStore = try TransportStore(path: Self.liveTransportStorePath(in: directory))
             try self.init(
-                transport: CloudKitTransport(store: transportStore, scope: scope),
+                transport: CloudKitTransport(
+                    store: transportStore, scope: scope, hubID: hubID, role: .phone
+                ),
                 replicaPath: Self.liveReplicaPath(in: directory),
                 transportKind: .cloudKit,
                 linkedDevice: linkedDevice,
