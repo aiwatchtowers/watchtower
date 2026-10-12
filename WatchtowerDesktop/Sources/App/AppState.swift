@@ -1787,9 +1787,9 @@ final class AppState {
         codeHandoffCenter.terminalCenter = terminalCenter
         codeHandoffCenter.dbPool = dbPool
         codeQuestionCenter.handoff = codeHandoffCenter
-        openQuicklyCenter.onHandToClaude = { [weak self] query, project in
+        openQuicklyCenter.onHandToClaude = { [weak self] query, project, root in
             guard let self else { return }
-            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(project))
+            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(root))
         }
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)

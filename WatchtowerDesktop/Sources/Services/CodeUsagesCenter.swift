@@ -127,20 +127,20 @@ final class CodeUsagesCenter {
 
     /// ⇧⌘U: the page posts `usages` for the word at its cursor; a beep when
     /// there is no editor or no word.
-    func showUsagesAtCursor(project: Workbench) async {
-        guard let page = pages[project.id]?.page, await page.requestUsagesAtCursor() else {
+    func showUsagesAtCursor(root: CodeRoot) async {
+        guard let page = pages[root.workbenchID]?.page, await page.requestUsagesAtCursor() else {
             beep()
             return
         }
     }
 
-    /// The usages of `word` in the workbench, in the inspector's Usages tab.
-    func showUsages(of word: String, project: Workbench) {
+    /// The usages of `word` in the root's folder, in the inspector's Usages tab.
+    func showUsages(of word: String, root: CodeRoot) {
         guard !word.isEmpty else {
             beep()
             return
         }
-        let workbenchID = project.id
+        let workbenchID = root.workbenchID
         runs.removeValue(forKey: workbenchID)?.cancel()
         nextGeneration += 1
         let generation = nextGeneration
@@ -149,7 +149,7 @@ final class CodeUsagesCenter {
         setInspectorShown(true, workbenchID: workbenchID)
         selectInspectorTab(.usages, workbenchID: workbenchID)
         let options = CodeSearchOptions(query: word, word: true, caseSensitive: true, context: 0)
-        runs[workbenchID] = startSearch(project.folderURL, options, { [weak self] match in
+        runs[workbenchID] = startSearch(root.folder, options, { [weak self] match in
             guard let self, generations[workbenchID] == generation else { return }
             results[workbenchID]?.append(match)
         }, { [weak self] outcome in
@@ -170,9 +170,9 @@ final class CodeUsagesCenter {
     /// A row's click: the file in the Files pane (a preview tab, like Open
     /// Quickly's ↩), the cursor on the name; where the cursor was goes on
     /// Back (⌃⌘←), as for a definition jump (ruling R33).
-    func openUsage(_ row: UsageRow, project: Workbench) async {
-        navigation?.recordJumpFromCurrentLocation(project: project)
-        await workbenches?.openFile(at: row.target, project: project, beside: false)
+    func openUsage(_ row: UsageRow, root: CodeRoot) async {
+        navigation?.recordJumpFromCurrentLocation(root: root)
+        await workbenches?.openFile(at: row.target, root: root, beside: false)
     }
 
     // MARK: Inspector

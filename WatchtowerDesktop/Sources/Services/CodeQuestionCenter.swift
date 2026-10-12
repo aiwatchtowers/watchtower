@@ -18,6 +18,8 @@ final class CodeQuestionCenter {
     /// The question the popover shows.
     struct Session {
         let project: Workbench
+        /// The folder the question's buffer belongs to.
+        let root: CodeRoot
         let bufferID: String
         /// Moves onto the applied text after Apply.
         var anchor: CodeQuestionAnchor
@@ -185,7 +187,7 @@ final class CodeQuestionCenter {
     /// button, the menu): a popover for the selection, or for the cursor
     /// line when nothing is selected. One question at a time per
     /// workbench: while a popover is open this does nothing.
-    func askAI(bufferID: String, project: Workbench) async {
+    func askAI(bufferID: String, project: Workbench, root: CodeRoot) async {
         let workbenchID = project.id
         guard sessions[workbenchID] == nil else { return }
         guard let files = workbenches?.codeFiles, let buffer = files.buffer(id: bufferID), buffer.state == .loaded,
@@ -194,15 +196,15 @@ final class CodeQuestionCenter {
             return
         }
         let selection = selections[workbenchID].flatMap { $0.bufferID == bufferID ? $0 : nil }
-        let cursor = files.cursors[workbenchID].flatMap { $0.path == buffer.relPath ? $0.line : nil }
+        let cursor = files.cursors[root].flatMap { $0.path == buffer.relPath ? $0.line : nil }
         let anchor = CodeQuestionAnchor.make(path: buffer.relPath, selection: selection,
                                              cursorLine: cursor ?? selection?.range.startLine ?? 1, fileText: buffer.text)
-        let index = codeIndex?.index(for: workbenchID)
+        let index = codeIndex?.index(for: root)
         let context = CodeQuestionContext.build(
-            folderName: project.folderURL.lastPathComponent, origin: anchor.origin,
+            folderName: root.folder.lastPathComponent, origin: anchor.origin,
             language: (buffer.relPath as NSString).pathExtension.lowercased(), fileText: buffer.text
         ) { index?.symbols(named: $0) ?? [] }
-        sessions[workbenchID] = Session(project: project, bufferID: bufferID, anchor: anchor, context: context,
+        sessions[workbenchID] = Session(project: project, root: root, bufferID: bufferID, anchor: anchor, context: context,
                                         choice: defaultChoice())
         schedules[workbenchID, default: AskAIButtonSchedule()].suppress()
         buttonRects[workbenchID] = nil
@@ -244,7 +246,7 @@ final class CodeQuestionCenter {
             session.draft = ""
             session.notice = nil
             sessions[workbenchID] = session
-            questionRefs[conversationID] = CodeQuestionRef(project: session.project, conversationID: conversationID,
+            questionRefs[conversationID] = CodeQuestionRef(project: session.project, root: session.root, conversationID: conversationID,
                                                            origin: session.anchor.origin)
             questionContexts[conversationID] = session.context
             modelChoices[conversationID] = session.choice
@@ -275,7 +277,7 @@ final class CodeQuestionCenter {
         guard let session = sessions[workbenchID], !session.isSearchingUsages else { return }
         let prompt = CodeQuestionQuickAction.whereUsed.prompt
         let buffer = workbenches?.codeFiles.buffer(id: session.bufferID)
-        let cursor = workbenches?.codeFiles.cursors[workbenchID].flatMap { $0.path == session.anchor.path ? $0 : nil }
+        let cursor = workbenches?.codeFiles.cursors[session.root].flatMap { $0.path == session.anchor.path ? $0 : nil }
         let anchorLine = session.anchor.isSelection ? session.anchor.range.endLine : session.anchor.range.startLine
         guard let buffer, let name = session.anchor.usageName(
             cursorCol: cursor.flatMap { $0.line == anchorLine ? $0.col : nil }, fileText: buffer.text) else {
@@ -283,7 +285,7 @@ final class CodeQuestionCenter {
             return
         }
         sessions[workbenchID]?.isSearchingUsages = true
-        usageSearches.start(name: name, folder: session.project.folderURL, workbenchID: workbenchID) { [weak self] usages in
+        usageSearches.start(name: name, folder: session.root.folder, workbenchID: workbenchID) { [weak self] usages in
             guard let self else { return }
             sessions[workbenchID]?.isSearchingUsages = false
             let before = attachedUsages(workbenchID: workbenchID)
@@ -510,28 +512,28 @@ final class CodeQuestionCenter {
     /// A `path:line` link in the popover's answer: the popover closes and
     /// the file opens.
     func openLink(_ url: URL, workbenchID: Int64) async {
-        guard let project = sessions[workbenchID]?.project else {
+        guard let session = sessions[workbenchID] else {
             beep()
             return
         }
-        await openLink(url, project: project) { closeQuestion(workbenchID: workbenchID) }
+        await openLink(url, project: session.project, root: session.root) { closeQuestion(workbenchID: workbenchID) }
     }
 
     /// A `path:line` link in an answer: the file in the Files pane, if it is
-    /// a file of the workbench (after `beforeOpening`, which closes the
+    /// a file of the root's folder (after `beforeOpening`, which closes the
     /// surface it was clicked in); where the cursor was goes on Back. Else
     /// a beep and false. A symlink leaving the folder is refused before its
     /// target is looked at (`WorkbenchFolderPath`, board #361).
     @discardableResult
-    func openLink(_ url: URL, project: Workbench, beforeOpening: () -> Void = {}) async -> Bool {
+    func openLink(_ url: URL, project: Workbench, root: CodeRoot, beforeOpening: () -> Void = {}) async -> Bool {
         guard let target = CodeLineLinks.target(from: url),
-              WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) != nil else {
+              WorkbenchFolderPath.resolve(target.path, folder: root.folder.path) != nil else {
             beep()
             return false
         }
         beforeOpening()
-        navigation?.recordJumpFromCurrentLocation(project: project)
-        await workbenches?.openFile(at: target, project: project, beside: false)
+        navigation?.recordJumpFromCurrentLocation(root: root)
+        await workbenches?.openFile(at: target, root: root, beside: false)
         return true
     }
 
@@ -542,11 +544,11 @@ final class CodeQuestionCenter {
     /// lines) is its context, `<wb>:<path>:<cursor line>` its `context_id`;
     /// with no file open the context is the folder only and the id
     /// `<wb>::0`. The answer shows in the panel.
-    func askFromOpenQuickly(_ query: String, project: Workbench) -> CodeQuestionStart {
+    func askFromOpenQuickly(_ query: String, project: Workbench, root: CodeRoot) -> CodeQuestionStart {
         let question = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return .failed("Type a question first.") }
         guard let dbPool else { return .failed("Couldn't start the question: the database is not open.") }
-        let (origin, context) = openFileContext(project)
+        let (origin, context) = openFileContext(root)
         let choice = defaultChoice()
         let conversationID: Int64
         do {
@@ -558,7 +560,7 @@ final class CodeQuestionCenter {
         }
         questionContexts[conversationID] = context
         modelChoices[conversationID] = choice
-        let conversation = CodeQuestionRef(project: project, conversationID: conversationID, origin: origin)
+        let conversation = CodeQuestionRef(project: project, root: root, conversationID: conversationID, origin: origin)
         guard let engine = engine(for: conversation), engine.send(question) else {
             // Nothing was sent: no empty conversation stays behind.
             discardConversation(conversation)
@@ -569,26 +571,26 @@ final class CodeQuestionCenter {
 
     /// Where Open Quickly's question is about: the Files pane's active file
     /// at the cursor line, or no file (⌥⌘↩'s hand-off, spec §9.5).
-    func openFileOrigin(_ project: Workbench) -> CodeQuestionOrigin {
-        openFileContext(project).0
+    func openFileOrigin(_ root: CodeRoot) -> CodeQuestionOrigin {
+        openFileContext(root).0
     }
 
     /// The Files pane's active file at the cursor line (line 1 when the
     /// cursor is elsewhere); its context once the file is loaded.
-    private func openFileContext(_ project: Workbench) -> (CodeQuestionOrigin, CodeQuestionContext?) {
-        guard let files = workbenches?.codeFiles, let path = files.tabs(for: project).active else {
+    private func openFileContext(_ root: CodeRoot) -> (CodeQuestionOrigin, CodeQuestionContext?) {
+        guard let files = workbenches?.codeFiles, let path = files.tabs(for: root).active else {
             return (CodeQuestionOrigin(path: "", line: 0, selection: nil), nil)
         }
-        let line = files.cursors[project.id].flatMap { $0.path == path ? $0.line : nil } ?? 1
+        let line = files.cursors[root].flatMap { $0.path == path ? $0.line : nil } ?? 1
         let origin = CodeQuestionOrigin(path: path, line: line, selection: nil)
-        guard let buffer = files.existingBuffer(project, path), buffer.state == .loaded else { return (origin, nil) }
-        return (origin, context(origin: origin, project: project, fileText: buffer.text))
+        guard let buffer = files.existingBuffer(root, path), buffer.state == .loaded else { return (origin, nil) }
+        return (origin, context(origin: origin, root: root, fileText: buffer.text))
     }
 
-    private func context(origin: CodeQuestionOrigin, project: Workbench, fileText: String) -> CodeQuestionContext {
-        let index = codeIndex?.index(for: project.id)
+    private func context(origin: CodeQuestionOrigin, root: CodeRoot, fileText: String) -> CodeQuestionContext {
+        let index = codeIndex?.index(for: root)
         return CodeQuestionContext.build(
-            folderName: project.folderURL.lastPathComponent, origin: origin,
+            folderName: root.folder.lastPathComponent, origin: origin,
             language: (origin.path as NSString).pathExtension.lowercased(), fileText: fileText
         ) { index?.symbols(named: $0) ?? [] }
     }
@@ -634,8 +636,8 @@ final class CodeQuestionCenter {
     /// A row's click: the conversation in the inspector. A question reopened
     /// with no context in memory (after a restart) gets it back from its
     /// file around its line (ruling R41; the selection itself is not stored).
-    func openQuestion(_ item: CodeQuestionListItem, project: Workbench) {
-        let question = CodeQuestionRef(project: project, conversationID: item.conversationID, origin: item.origin)
+    func openQuestion(_ item: CodeQuestionListItem, project: Workbench, root: CodeRoot) {
+        let question = CodeQuestionRef(project: project, root: root, conversationID: item.conversationID, origin: item.origin)
         questionRefs[item.conversationID] = question
         inspectorQuestions[project.id] = item.conversationID
         loadModelChoice(conversationID: item.conversationID)
@@ -757,18 +759,18 @@ final class CodeQuestionCenter {
     private func rebuildContextIfNeeded(_ question: CodeQuestionRef) {
         let conversationID = question.conversationID
         guard questionContexts[conversationID] == nil, !question.origin.path.isEmpty else { return }
-        if let buffer = workbenches?.codeFiles.existingBuffer(question.project, question.origin.path), buffer.state == .loaded {
-            questionContexts[conversationID] = context(origin: question.origin, project: question.project, fileText: buffer.text)
+        if let buffer = workbenches?.codeFiles.existingBuffer(question.root, question.origin.path), buffer.state == .loaded {
+            questionContexts[conversationID] = context(origin: question.origin, root: question.root, fileText: buffer.text)
             return
         }
-        let folder = question.project.folderPath
+        let folder = question.root.folder.path
         let path = question.origin.path
         Task { [weak self] in
             let text = await Task.detached(priority: .userInitiated) {
                 Self.readFolderFile(path, folder: folder)
             }.value
             guard let self, let text, questionRefs[conversationID] != nil, questionContexts[conversationID] == nil else { return }
-            questionContexts[conversationID] = context(origin: question.origin, project: question.project, fileText: text)
+            questionContexts[conversationID] = context(origin: question.origin, root: question.root, fileText: text)
         }
     }
 

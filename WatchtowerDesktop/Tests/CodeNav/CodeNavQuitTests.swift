@@ -13,6 +13,7 @@ final class CodeNavQuitTests: XCTestCase {
     private var stub: CodeCLIStub!
     private var folder: URL!
     private var project: Workbench!
+    private var root: CodeRoot { project.mainCodeRoot }
 
     override func setUpWithError() throws {
         stub = try CodeCLIStub()
@@ -57,11 +58,11 @@ final class CodeNavQuitTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let usages = CodeUsagesCenter(defaults: defaults, startSearch: stubStarter()) {}
 
-        usages.showUsages(of: "save", project: project)
+        usages.showUsages(of: "save", root: root)
         // A file the index has not seen: the heuristic's text search runs.
         let request = CodeDefinitionRequest(req: 1, word: "save", origin: CodeNavLocation(path: "a.pl", line: 1, col: 1))
-        let definition = Task { await navigation.goToDefinition(request, project: project, anchor: nil) }
-        openQuickly.pageAppeared(project, window: nil)
+        let definition = Task { await navigation.goToDefinition(request, root: root, anchor: nil) }
+        openQuickly.pageAppeared(project, root: root, window: nil)
         openQuickly.present(scope: .text)
         openQuickly.session?.updateQuery("save")
         let started = await searchesStarted(3)
