@@ -191,7 +191,9 @@ extension AppEnvironment {
                     throw error
                 }
             } catch {
-                Self.handoverLogger.error("held recording \(recording.id, privacy: .public) not adopted: \(error.localizedDescription, privacy: .public)")
+                Self.handoverLogger.error(
+                    "held recording \(recording.id, privacy: .public) not adopted: \(error.localizedDescription, privacy: .public)"
+                )
                 failures.append(error.localizedDescription)
             }
         }
