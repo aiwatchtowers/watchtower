@@ -954,6 +954,23 @@ final class MobileLinkCenterTests: XCTestCase {
         XCTAssertEqual(revoked, ["phone-a", "phone-a"])
     }
 
+    /// A rewrite for another toggle (start sessions) with typing off keeps
+    /// a grant the owner gave: only the request going from on to off
+    /// revokes it.
+    func testAnUnrelatedRewriteKeepsTheTypingGrant() async throws {
+        var revoked: [String] = []
+        center.onTypingRevoked = { revoked.append($0) }
+        let code = try await center.issueCode()
+        try await handle(try deviceRecord("phone-a", nonce: code.nonce))
+        try center.setTypingAllowed(true, deviceID: "phone-a")
+
+        try await handle(try deviceRecord("phone-a", nonce: nil, typingRequested: false, startSessions: false))
+
+        XCTAssertEqual(center.devices.first?.typingAllowed, true)
+        XCTAssertEqual(center.devices.first?.startSessionsAllowed, false)
+        XCTAssertTrue(revoked.isEmpty)
+    }
+
     /// #3: an unchanged choice stamps nothing new.
     func testAnUnchangedStartSessionsChoiceLeavesTheGrantAlone() async throws {
         let code = try await center.issueCode()

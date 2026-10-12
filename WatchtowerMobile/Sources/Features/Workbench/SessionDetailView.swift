@@ -489,8 +489,7 @@ private struct TellSessionBar: View {
                                 .frame(width: 44, height: 44)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(isSending || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || text.count > SessionInputModel.maxLength)
+                        .disabled(isSending || !SessionInputText.isSendable(text))
                         .accessibilityLabel("Send")
                     }
                 }

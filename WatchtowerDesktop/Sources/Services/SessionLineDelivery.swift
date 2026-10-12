@@ -58,8 +58,18 @@ final class SessionLineDelivery {
     /// A line's own condition on top of PROJ-12's — the phone's (PROJ-16:
     /// the agent idle, no draft in the prompt, the device still allowed):
     /// asked right before the paste, after the fresh state read and the
-    /// permission-prompt hold; true holds the line (`.held`), nothing typed.
-    typealias Gate = @MainActor (_ sessionID: Int64) -> Bool
+    /// permission-prompt hold.
+    typealias Gate = @MainActor (_ sessionID: Int64) -> GateAnswer
+
+    enum GateAnswer {
+        /// Paste it.
+        case go
+        /// Hold it (`.held`), nothing typed.
+        case hold
+        /// It is over (cancelled, its owner gone): nothing typed, it leaves
+        /// the queue (`.noSession`).
+        case drop
+    }
 
     /// Whether a session's agent waits on a permission prompt (its
     /// `SessionAgentStatus` is `needsApproval`): a line is held, never
@@ -75,6 +85,8 @@ final class SessionLineDelivery {
     /// after the paste's pause (the poll may be up to 1 s stale); returns
     /// whether the read succeeded — a Return needs both reads.
     var refreshStates: () async -> Bool = { false }
+    /// The clock of `submittedAt`.
+    var now: () -> Date = Date.init
 
     private let terminalCenter: TerminalCenter?
     /// Each session's held and queued lines, oldest first.
@@ -82,6 +94,12 @@ final class SessionLineDelivery {
     /// Sessions a line is going to right now (paste, pause, Return).
     private var delivering: Set<Int64> = []
     private var heldCount = 0
+    /// State reads a delivery is making right now: a read a line's own try
+    /// made is not a read that tries the held lines again (PROJ-16: retried
+    /// on each successful state read — not on its own).
+    private var ownReads = 0
+    /// When a line was last submitted into each session.
+    private var lastSubmit: [Int64: Date] = [:]
 
     init(terminalCenter: TerminalCenter?) {
         self.terminalCenter = terminalCenter
@@ -122,6 +140,33 @@ final class SessionLineDelivery {
         for line in held {
             await retryHeldLine(line)
         }
+    }
+
+    /// Follows `agentStates`: the permission-prompt hold, the Return's hook
+    /// check, the fresh reads, and the held lines tried again on each of its
+    /// reads and changes that no delivery made itself (the app's wiring).
+    func follow(_ agentStates: SessionAgentStateCenter?) {
+        needsApproval = { [weak agentStates] id in agentStates?.statuses[id]?.state.kind == .needsApproval }
+        hasHookState = { [weak agentStates] id in agentStates?.statuses[id]?.hooksReported == true }
+        // A failed read (or no states at all) vouches for nothing: no Return.
+        refreshStates = { [weak agentStates] in await agentStates?.poll() ?? false }
+        agentStates?.onChange = { [weak self] in self?.statesRead() }
+        // Also on an unchanged read: a line held because a read failed.
+        agentStates?.onRead = { [weak self] in self?.statesRead() }
+    }
+
+    /// The session states were read or changed: the held lines are tried
+    /// again — unless a delivery's own read did it (each try would set off
+    /// the next one without end).
+    func statesRead() {
+        guard ownReads == 0 else { return }
+        Task { [weak self] in await self?.deliverHeld() }
+    }
+
+    /// When a line was last submitted into the session (its Return sent);
+    /// nil when none was this launch.
+    func submittedAt(_ sessionID: Int64) -> Date? {
+        lastSubmit[sessionID]
     }
 
     /// The keys of a session's held and queued lines.
@@ -188,7 +233,7 @@ final class SessionLineDelivery {
         // A failed read leaves the last good state, which may miss a
         // permission prompt shown since: hold, and try again on the next
         // read that succeeds (`SessionAgentStateCenter.onRead`).
-        let fresh = await refreshStates()
+        let fresh = await ownRead()
         // A relaunch during the read is a new run: the line was meant for
         // the one before, whose brief has it (board #387).
         guard center.liveIDs.contains(sessionID), center.runs[sessionID] == run else { return .noSession }
@@ -197,21 +242,38 @@ final class SessionLineDelivery {
                   fresh ? "permission prompt (needsApproval)" : "state read failed")
             return .held
         }
-        if let gate, gate(sessionID) {
+        switch gate?(sessionID) ?? .go {
+        case .go:
+            break
+        case .hold:
             NSLog("%@: session %lld: %@ held — its own condition", key.logSource, sessionID, key.logNoun)
             return .held
+        case .drop:
+            NSLog("%@: session %lld: %@ dropped — it is over", key.logSource, sessionID, key.logNoun)
+            return .noSession
         }
+        let reread: () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
         let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
+                                               keepingFormatCharacters: key.askID == nil,
                                                delay: TerminalCenter.answerSubmitDelay,
-                                               refresh: refreshStates) { [weak self] in
+                                               refresh: reread) { [weak self] in
             self?.mayReturn(key: key, sessionID: sessionID) ?? false
         }
         switch result {
-        case .submitted: return .submitted
+        case .submitted:
+            lastSubmit[sessionID] = now()
+            return .submitted
         case .pasted: return .typed
         case .copied: return .copied
         case .noSession: return .noSession
         }
+    }
+
+    /// A delivery's own fresh read of the states.
+    private func ownRead() async -> Bool {
+        ownReads += 1
+        defer { ownReads -= 1 }
+        return await refreshStates()
     }
 
     /// Whether the line's Return may follow after the pause; the condition

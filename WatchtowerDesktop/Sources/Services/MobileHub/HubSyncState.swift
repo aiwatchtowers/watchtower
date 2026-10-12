@@ -480,14 +480,14 @@ final class HubSyncState: Sendable {
         }
     }
 
-    /// Marks a held line as being pasted (true) or held again (false); false
-    /// when there is no such row.
-    @discardableResult
-    func setHeldLineTyping(_ recordName: String, _ typing: Bool) throws -> Bool {
+    /// Claims a held line for its paste: marks it being typed only when it
+    /// is still held and not claimed already. False: the line is gone
+    /// (cancelled, finished) or another try of it is typing it.
+    func claimHeldLineForTyping(_ recordName: String) throws -> Bool {
         try queue.write { db in
             try db.execute(
-                sql: "UPDATE held_session_lines SET typing = ? WHERE record_name = ?",
-                arguments: [typing, recordName]
+                sql: "UPDATE held_session_lines SET typing = 1 WHERE record_name = ? AND typing = 0",
+                arguments: [recordName]
             )
             return db.changesCount > 0
         }

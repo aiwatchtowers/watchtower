@@ -342,7 +342,8 @@ final class MobileLinkCenter {
     }
 
     /// Stores the phone's typing request; asks the owner when it newly
-    /// asks, revokes the grant when it turned typing off.
+    /// asks, revokes the grant only when the stored request goes from on to
+    /// off (a rewrite for another toggle keeps it).
     private func applyTypingRequest(_ requested: Bool, of device: HubSyncState.LinkedDevice) throws {
         if try sidecar.setTypingRequested(requested, deviceID: device.deviceID) {
             reloadDevices()
@@ -352,7 +353,7 @@ final class MobileLinkCenter {
             var asking = device
             asking.typingRequested = true
             onTypingRequested?(asking)
-        } else if !requested, device.typingAllowed {
+        } else if !requested, device.typingRequested, device.typingAllowed {
             logger.info("phone \(device.deviceID, privacy: .public) turned typing off: grant revoked")
             try setTypingAllowed(false, deviceID: device.deviceID)
         }

@@ -39,8 +39,10 @@ final class SessionInputHandlers: HubCompanion {
 
     /// The fixed line of `session_finish_request` (spec §6.5).
     static let finishLine = "Please wrap up: update the board, then call finish_session with a short summary."
-    /// The longest line a phone may send, in characters.
-    static let maxTextLength = 4000
+    /// After the app submits a line to a session, the session counts as
+    /// busy until a state read shows a hook stamp newer than the submit (its
+    /// UserPromptSubmit hook lands asynchronously), or this long passed.
+    static let submitSettle: TimeInterval = 30
     /// A held line expires this long after the phone created it.
     static let heldLifetime: TimeInterval = RelayProcessor.sessionRequestMaxAge
     /// This app launch: `TerminalCenter.runs` numbers restart at every launch,
@@ -68,6 +70,9 @@ final class SessionInputHandlers: HubCompanion {
     private var verdicts: [String: Verdict] = [:]
     /// The lines this handler holds in `lineDelivery`: record name → session.
     private var owned: [String: Int64] = [:]
+    /// Lines on their first try, inside `send` (no sidecar row yet; the
+    /// relay's `begun` covers them).
+    private var firstTries: Set<String> = []
     private var running = true
     /// The later echoes, one after another.
     private var echoes: Task<Void, Never>?
@@ -153,11 +158,15 @@ final class SessionInputHandlers: HubCompanion {
     private enum Verdict {
         case hold(ActionReason)
         case fail(ActionReason)
+        /// The line is over elsewhere (cancelled, finished, its hub
+        /// stopped): nothing more to say about it.
+        case gone
     }
 
     private enum Resolution {
         case final(ActionOutcome)
         case held(ActionReason)
+        case gone
     }
 
     private func send(_ action: ActionRequestPayload) async throws -> ActionOutcome {
@@ -171,10 +180,10 @@ final class SessionInputHandlers: HubCompanion {
             guard case let .string(text)? = action.params["text"] else {
                 return .failed(.invalidParams, message: "session_input needs a text")
             }
-            line = Self.sanitize(text)
+            line = SessionInputText.normalize(text)
             guard !line.isEmpty else { return .failed(.invalidParams, message: "The message is empty") }
-            guard line.count <= Self.maxTextLength else {
-                return .failed(.invalidParams, message: "The message is longer than \(Self.maxTextLength) characters")
+            guard line.count <= SessionInputText.maxLength else {
+                return .failed(.invalidParams, message: "The message is longer than \(SessionInputText.maxLength) characters")
             }
         }
         guard deviceGrant(action.deviceID).typingAllowed else {
@@ -187,14 +196,19 @@ final class SessionInputHandlers: HubCompanion {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
         let phone = PhoneLine(action: action, sessionID: sessionID, line: line)
-        return settleFirstTry(await deliverLine(phone), of: phone)
+        firstTries.insert(phone.recordName)
+        let delivery = await deliverLine(phone)
+        firstTries.remove(phone.recordName)
+        return settleFirstTry(delivery, of: phone)
     }
 
     /// The line's first try (or its first try after a hub start).
     private func deliverLine(_ line: PhoneLine) async -> SessionLineDelivery.Delivery {
         await lineDelivery.deliverLine(
             line.line, key: line.key, sessionID: line.sessionID,
-            gate: { [weak self] _ in self?.gate(line) ?? true },
+            // A handler gone (its hub rebuilt) drops its lines: the new
+            // hub's start queues them again from the sidecar.
+            gate: { [weak self] _ in self?.gate(line) ?? .drop },
             onHeldEvent: { [weak self] in self?.heldEvent($0, of: line) }
         )
     }
@@ -206,6 +220,9 @@ final class SessionInputHandlers: HubCompanion {
         case let .final(outcome):
             lineDelivery.dropHeld(sessionID: line.sessionID) { $0 == line.key }
             return outcome
+        case .gone:
+            lineDelivery.dropHeld(sessionID: line.sessionID) { $0 == line.key }
+            return .failed(.outcomeUnknown, message: Self.timeoutMessage)
         case let .held(reason):
             do {
                 try sidecar.saveHeldLine(HubSyncState.HeldSessionLine(
@@ -225,24 +242,38 @@ final class SessionInputHandlers: HubCompanion {
         }
     }
 
-    /// PROJ-16's conditions right before a paste; true holds the line. The
-    /// verdict is kept for the try's outcome. A line let through is marked
-    /// as being typed in the sidecar first (a row only once it was held).
-    private func gate(_ line: PhoneLine) -> Bool {
-        guard let verdict = verdict(line) else {
-            do {
-                try sidecar.setHeldLineTyping(line.recordName, true)
-            } catch {
-                // Not marked, a restart could type it twice: hold it.
-                Self.logger.error("held line not marked typing: \(error.localizedDescription, privacy: .public)")
-                verdicts[line.recordName] = .hold(.stateUnknown)
-                return true
-            }
-            verdicts[line.recordName] = nil
-            return false
+    /// PROJ-16's conditions right before a paste. The verdict is kept for
+    /// the try's outcome. A held line's retry goes only while this handler
+    /// runs and only by claiming its sidecar row for typing first: a row
+    /// gone (cancelled, finished) or already claimed (another try of it)
+    /// means the line is over here — dropped, never typed.
+    private func gate(_ line: PhoneLine) -> SessionLineDelivery.GateAnswer {
+        let retry = !firstTries.contains(line.recordName)
+        if retry, !running {
+            verdicts[line.recordName] = .gone
+            return .drop
         }
-        verdicts[line.recordName] = verdict
-        return true
+        if let verdict = verdict(line) {
+            verdicts[line.recordName] = verdict
+            return .hold
+        }
+        guard retry else {
+            verdicts[line.recordName] = nil
+            return .go
+        }
+        do {
+            guard try sidecar.claimHeldLineForTyping(line.recordName) else {
+                verdicts[line.recordName] = .gone
+                return .drop
+            }
+        } catch {
+            // Not marked, a restart could type it twice: hold it.
+            Self.logger.error("held line not marked typing: \(error.localizedDescription, privacy: .public)")
+            verdicts[line.recordName] = .hold(.stateUnknown)
+            return .hold
+        }
+        verdicts[line.recordName] = nil
+        return .go
     }
 
     private func verdict(_ line: PhoneLine) -> Verdict? {
@@ -251,9 +282,19 @@ final class SessionInputHandlers: HubCompanion {
         // session it does not list was deleted.
         guard let current = status(line.sessionID) else { return .fail(.sessionNotRunning) }
         if current.state.kind == .needsApproval { return .hold(.needsApproval) }
-        guard Self.isIdle(current) else { return .hold(.agentBusy) }
+        guard Self.isIdle(current), !justSubmitted(line.sessionID, status: current) else { return .hold(.agentBusy) }
         if terminalCenter.promptHoldsText(line.sessionID) { return .hold(.promptHasText) }
         return nil
+    }
+
+    /// A line went into the session within `submitSettle` and no hook has
+    /// reported since: the agent is turning to it (its Working may not be
+    /// written yet).
+    private func justSubmitted(_ sessionID: Int64, status: SessionAgentStatus) -> Bool {
+        guard let submitted = lineDelivery.submittedAt(sessionID),
+              now().timeIntervalSince(submitted) < Self.submitSettle else { return false }
+        guard let stamp = status.at.flatMap(SessionAgentStatus.parseStamp) else { return true }
+        return stamp <= submitted
     }
 
     /// What ends a line whatever the session does: its age, its device's
@@ -282,9 +323,12 @@ final class SessionInputHandlers: HubCompanion {
         case .submitted: return .final(.applied(["delivery": .string("submitted")]))
         case .typed: return .final(.applied(["delivery": .string("typed")]))
         case .copied: return .final(.failed(.cannotType, message: Self.cannotTypeMessage))
-        case .noSession: return .final(.failed(.sessionNotRunning, message: Self.notRunningMessage))
+        case .noSession:
+            if case .gone? = verdict { return .gone }
+            return .final(.failed(.sessionNotRunning, message: Self.notRunningMessage))
         case .held, .queued:
             switch verdict {
+            case .gone?: return .gone
             case let .fail(reason)?: return .final(Self.failure(reason))
             case let .hold(reason)?: return .held(reason)
             case nil:
@@ -310,6 +354,7 @@ final class SessionInputHandlers: HubCompanion {
             switch resolve(delivery, of: line) {
             case let .final(outcome): finish(line, outcome)
             case let .held(reason): stillHeld(line, reason)
+            case .gone: break
             }
         }
     }
@@ -368,7 +413,8 @@ final class SessionInputHandlers: HubCompanion {
     // MARK: - Cancel
 
     /// Drops the original's held line and echoes it `cancelled`; a line
-    /// already gone (delivered, failed, being typed) is left as it is.
+    /// already gone (delivered, failed, being typed) is left as it is. Only
+    /// the phone that sent the line may cancel it.
     private func cancel(_ action: ActionRequestPayload) throws -> ActionOutcome {
         guard let originalID = action.entityID, !originalID.isEmpty else {
             return .failed(.invalidParams, message: "session_input_cancel needs the original action id")
@@ -376,6 +422,9 @@ final class SessionInputHandlers: HubCompanion {
         let recordName = ActionRequestPayload.recordName(id: originalID)
         guard let row = try sidecar.heldLine(recordName), !row.typing,
               let phone = Self.phoneLine(row) else { return .applied() }
+        guard phone.action.deviceID == action.deviceID else {
+            return .failed(.deviceNotAllowed, message: "Only the phone that sent this message can cancel it")
+        }
         finish(phone, ActionOutcome(status: .cancelled, reason: .cancelled, result: nil, errorMessage: "Cancelled on the phone"))
         return .applied()
     }
@@ -409,6 +458,7 @@ final class SessionInputHandlers: HubCompanion {
         switch resolve(delivery, of: line) {
         case let .final(outcome): finish(line, outcome)
         case let .held(reason): stillHeld(line, reason)
+        case .gone: break
         }
     }
 
@@ -440,12 +490,6 @@ final class SessionInputHandlers: HubCompanion {
     static let notAllowedMessage = "This phone is not allowed to type into sessions — Allow it in Settings → Mobile on the Mac"
     static let notRunningMessage = "The session is not running on the Mac"
     static let cannotTypeMessage = "The session can't take typed text — it is on the Mac's clipboard"
-
-    /// Trimmed, every control character and line break a space (the
-    /// `OwnerAskPrompt` rule).
-    static func sanitize(_ text: String) -> String {
-        WorkbenchCommentPrompt.oneLine(text).trimmingCharacters(in: .whitespaces)
-    }
 
     private static func failure(_ reason: ActionReason) -> ActionOutcome {
         switch reason {

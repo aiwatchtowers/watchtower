@@ -23,6 +23,16 @@ private final class InputProbeSession: TerminalSessionProcess {
     func sendInput(_ bytes: [UInt8]) { inputs.append(bytes) }
 }
 
+/// Counts the state reads.
+private final class ReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reads = 0
+
+    var count: Int { lock.withLock { reads } }
+
+    func add() { lock.withLock { reads += 1 } }
+}
+
 /// The later echoes the handlers wrote.
 @MainActor
 private final class EchoLog {
@@ -53,6 +63,8 @@ final class SessionInputHandlersTests: XCTestCase {
     private var sidecar: HubSyncState!
     private var statuses: [Int64: SessionAgentStatus] = [:]
     private var readsSucceed = true
+    /// Runs inside the next state read a delivery makes (once).
+    private var duringRead: (() async -> Void)?
     private var clock: LinkTestClock!
     private var echoes: EchoLog!
     private var workbenchID: Int64 = 0
@@ -79,7 +91,15 @@ final class SessionInputHandlersTests: XCTestCase {
         center.copyToClipboard = { _ in }
         center.transcriptExists = { _ in true }
         delivery = SessionLineDelivery(terminalCenter: center)
-        delivery.refreshStates = { [weak self] in self?.readsSucceed ?? false }
+        delivery.refreshStates = { [weak self] in
+            if let during = self?.duringRead {
+                self?.duringRead = nil
+                await during()
+            }
+            return self?.readsSucceed ?? false
+        }
+        let deliveryClock = try XCTUnwrap(clock)
+        delivery.now = { deliveryClock.now }
         delivery.needsApproval = { [weak self] in self?.statuses[$0]?.state.kind == .needsApproval }
         delivery.hasHookState = { [weak self] in self?.statuses[$0]?.hooksReported == true }
         sidecar = try HubSyncState.inMemory()
@@ -130,10 +150,12 @@ final class SessionInputHandlersTests: XCTestCase {
 
     /// The session's resolved state, as the state center would publish it:
     /// a hook state of this run.
-    private func setState(_ sessionID: Int64, _ kind: SessionSwitcherPresentation.State.Kind) {
+    private func setState(
+        _ sessionID: Int64, _ kind: SessionSwitcherPresentation.State.Kind, at: String = "2026-10-12T10:00:00.000Z"
+    ) {
         statuses[sessionID] = SessionAgentStatus(
             sessionID: sessionID, workbenchID: workbenchID, workbenchName: "acme", title: "Ship it",
-            state: .init(kind: kind, live: true), at: "2026-10-12T10:00:00.000Z"
+            state: .init(kind: kind, live: true), at: at
         )
     }
 
@@ -401,12 +423,13 @@ final class SessionInputHandlersTests: XCTestCase {
         let session = try await liveSession()
         setState(session, .stopped)
 
-        let outcome = try await makeHandlers().handle(input(session, "  first\nsecond\r\nthird\u{1B}[2Jfourth  "))
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+        let outcome = try await makeHandlers().handle(input(session, "  first\nsecond\r\nthird\u{1B}[2Jfourth \(family) "))
 
         XCTAssertEqual(outcome, .applied(["delivery": .string("submitted")]))
-        XCTAssertEqual(pastes, ["first second  third [2Jfourth"])
+        XCTAssertEqual(pastes, ["first second third [2Jfourth \(family)"], "a CRLF is one space; a joiner stays")
         let line = try XCTUnwrap(pastes.first)
-        XCTAssertFalse(line.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) })
+        XCTAssertFalse(line.unicodeScalars.contains { $0.properties.generalCategory == .control })
     }
 
     func testTextOver4000CharactersIsInvalidParams() async throws {
@@ -554,7 +577,7 @@ final class SessionInputHandlersTests: XCTestCase {
         let action = input(session, "Half way")
         _ = try await before.handle(action)
         before.stop()
-        try sidecar.setHeldLineTyping(action.recordName, true)
+        XCTAssertTrue(try sidecar.claimHeldLineForTyping(action.recordName))
 
         let after = try makeHandlers()
         after.start()
@@ -586,27 +609,174 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertTrue(try sidecar.heldLines().isEmpty)
     }
 
-    /// Two lines held by their gate are tried again on a state read only —
-    /// the end of one try never sets off another (it used to spin).
+    /// Two lines held by their gate, wired to the states the app's way
+    /// (`SessionLineDelivery.follow`): each successful read tries them once
+    /// — the reads their own tries make set off nothing (it used to spin).
     func testLinesHeldByTheirGateAreNotRetriedInALoop() async throws {
         let session = try await liveSession()
-        setState(session, .stopped)
+        let reads = ReadCounter()
+        let row = SessionAgentStateRow(
+            id: session, projectID: workbenchID, title: "Ship it", agentState: "working",
+            agentStateAt: SessionAgentStatus.formatStamp(Date().addingTimeInterval(60)), workbenchName: "acme"
+        )
+        let agentStates = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
+            defaults: defaults, notificationCenter: NotificationCenter()
+        ) { _ in
+            reads.add()
+            return [row]
+        }
+        let lines = SessionLineDelivery(terminalCenter: center)
+        lines.follow(agentStates)
         var asked = 0
         let gate: SessionLineDelivery.Gate = { _ in
             asked += 1
-            return true
+            return .hold
         }
 
-        _ = await delivery.deliverLine("One", key: .input("action-1"), sessionID: session, gate: gate) { _ in }
-        _ = await delivery.deliverLine("Two", key: .input("action-2"), sessionID: session, gate: gate) { _ in }
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(asked, 2)
+        _ = await lines.deliverLine("One", key: .input("action-1"), sessionID: session, gate: gate) { _ in }
+        _ = await lines.deliverLine("Two", key: .input("action-2"), sessionID: session, gate: gate) { _ in }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(asked, 2, "its own read never tries a line again")
 
-        await delivery.deliverHeld()
-        try await Task.sleep(for: .milliseconds(200))
+        await agentStates.poll()
+        try await Task.sleep(for: .milliseconds(300))
 
         XCTAssertEqual(asked, 4, "one try each per read")
+        XCTAssertEqual(reads.count, 5, "two first tries, one read, two retries")
         XCTAssertTrue(typed.isEmpty)
+    }
+
+    // MARK: - Races and back-to-back lines
+
+    func testOnlyThePhoneThatSentALineCanCancelIt() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        try sidecar.linkTestDevice("device-b")
+        let handlers = try makeHandlers()
+        let action = input(session, "Mine")
+        _ = try await handlers.handle(action)
+        let foreign = ActionRequestPayload(
+            id: UUID().uuidString, kind: .sessionInputCancel, entityID: action.id, params: [:],
+            createdAt: clock.now, deviceID: "device-b"
+        )
+
+        let refused = try await handlers.handle(foreign)
+
+        XCTAssertEqual(refused.reason, .deviceNotAllowed)
+        XCTAssertNotNil(try sidecar.heldLine(action.recordName), "the line is still held")
+        await handlers.echoesSettled()
+        XCTAssertTrue(echoes.outcomes(of: action).isEmpty)
+    }
+
+    /// A cancel that lands while a held line's retry reads the states: the
+    /// line is not typed, and nothing follows the `cancelled` echo.
+    func testACancelDuringAnInFlightRetryTypesNothing() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let handlers = try makeHandlers()
+        let action = input(session, "Never mind")
+        _ = try await handlers.handle(action)
+        setState(session, .stopped)
+        duringRead = { [weak self] in
+            guard let self else { return }
+            _ = try? await handlers.handle(cancel(action))
+        }
+
+        await delivery.deliverHeld()
+
+        XCTAssertTrue(typed.isEmpty)
+        await handlers.echoesSettled()
+        XCTAssertEqual(echoes.outcomes(of: action).map(\.status), [.cancelled])
+        XCTAssertTrue(delivery.heldKeys(sessionID: session).isEmpty)
+    }
+
+    /// The hub stops while a held line's retry reads the states: the
+    /// stopped hub types nothing, and the next start types it once.
+    func testAStopDuringAnInFlightRetryTypesNothingAndTheNextStartTypesItOnce() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let before = try makeHandlers()
+        let action = input(session, "Later")
+        _ = try await before.handle(action)
+        setState(session, .stopped)
+        duringRead = { before.stop() }
+
+        await delivery.deliverHeld()
+
+        XCTAssertTrue(typed.isEmpty)
+        XCTAssertEqual(try sidecar.heldLine(action.recordName)?.typing, false, "left held, not half-typed")
+        let after = try makeHandlers()
+        after.start()
+        await waitUntil { self.pastes.count == 1 }
+        await delivery.deliverHeld()
+        XCTAssertEqual(pastes, ["Later"])
+        await after.echoesSettled()
+        XCTAssertEqual(echoes.outcomes(of: action), [.applied(["delivery": .string("submitted")])])
+    }
+
+    /// A quick stop and start while a retry is in flight types the line
+    /// once.
+    func testAQuickStopAndStartTypesTheLineOnce() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let before = try makeHandlers()
+        let after = try makeHandlers()
+        let action = input(session, "Once")
+        _ = try await before.handle(action)
+        setState(session, .stopped)
+        duringRead = {
+            before.stop()
+            after.start()
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        await delivery.deliverHeld()
+        await waitUntil { self.pastes.count == 1 }
+        await delivery.deliverHeld()
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(pastes, ["Once"])
+        await after.echoesSettled()
+        XCTAssertEqual(echoes.outcomes(of: action), [.applied(["delivery": .string("submitted")])])
+    }
+
+    /// Back to back: right after a line was submitted, the session counts
+    /// as busy until a hook reports after the submit.
+    func testASecondLineWaitsForAHookAfterTheFirstWasSubmitted() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let handlers = try makeHandlers()
+        let first = try await handlers.handle(input(session, "First"))
+        let action = input(session, "Second")
+
+        let second = try await handlers.handle(action)
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(first.status, .applied)
+        XCTAssertEqual(second, .held(.agentBusy))
+        XCTAssertEqual(pastes, ["First"])
+        setState(session, .stopped, at: SessionAgentStatus.formatStamp(clock.now.addingTimeInterval(1)))
+        await delivery.deliverHeld()
+        XCTAssertEqual(pastes, ["First", "Second"])
+    }
+
+    /// No hook after the submit: the session counts as busy for
+    /// `submitSettle` only.
+    func testWithoutAHookTheSecondLineGoesAfterTheSettleCap() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let handlers = try makeHandlers()
+        _ = try await handlers.handle(input(session, "First"))
+        _ = try await handlers.handle(input(session, "Second"))
+
+        clock.advance(SessionInputHandlers.submitSettle - 1)
+        await delivery.deliverHeld()
+        XCTAssertEqual(pastes, ["First"])
+        clock.advance(2)
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(pastes, ["First", "Second"])
     }
 
     // MARK: - Through the relay

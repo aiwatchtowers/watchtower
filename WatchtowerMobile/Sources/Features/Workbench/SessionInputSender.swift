@@ -56,13 +56,13 @@ final class SessionInputSender {
         BoardWriter.key(.sessionInput, SessionStarter.sessionRecordName(sessionID))
     }
 
-    /// Sends `text` to the session; false for blank text, text over the
-    /// Mac's limit, or while another line to it is on its way.
+    /// Sends `text` to the session, normalized as the Mac does
+    /// (`SessionInputText`); false for blank text, text over the Mac's
+    /// limit, or while another line to it is on its way.
     @discardableResult
     func send(sessionID: Int64, text: String) async throws -> Bool {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.count <= SessionInputModel.maxLength else { return false }
-        let params = try SessionInputParams(text: trimmed).wireParams()
+        guard SessionInputText.isSendable(text) else { return false }
+        let params = try SessionInputParams(text: SessionInputText.normalize(text)).wireParams()
         return try await run(.sessionInput, sessionID: sessionID, params: params)
     }
 
@@ -113,8 +113,6 @@ final class SessionInputSender {
 /// Mac", no send. Each line on its way shows how far the Mac got, a held
 /// one why (with Cancel), a refused one the Mac's message (with Dismiss).
 struct SessionInputModel: Equatable {
-    /// The Mac's limit (spec §5.2).
-    static let maxLength = 4000
     static let needsApproval = "Needs approval on the Mac"
     static let footnote = "Delivered when the agent is idle"
 

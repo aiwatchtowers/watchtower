@@ -305,11 +305,14 @@ final class TerminalCenter {
     /// permission prompt the owner has not seen. Never starts a session.
     /// `keepingLineBreaks` keeps a multi-line text (a code question's
     /// hand-off) as several lines inside the one paste.
-    func sendPrompt(_ line: String, sessionID: Int64, keepingLineBreaks: Bool = false) -> PromptDelivery {
+    func sendPrompt(
+        _ line: String, sessionID: Int64, keepingLineBreaks: Bool = false, keepingFormatCharacters: Bool = false
+    ) -> PromptDelivery {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return .noSession }
         answerHints[sessionID] = nil
         switch WorkbenchCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode,
-                                                      keepingLineBreaks: keepingLineBreaks) {
+                                                      keepingLineBreaks: keepingLineBreaks,
+                                                      keepingFormatCharacters: keepingFormatCharacters) {
         case let .paste(bytes):
             clipboardHints.remove(sessionID)
             pasteHints.remove(sessionID)
@@ -371,6 +374,7 @@ final class TerminalCenter {
         _ text: String,
         sessionID: Int64,
         keepingLineBreaks: Bool = true,
+        keepingFormatCharacters: Bool = false,
         delay: Duration = submitDelay,
         refresh: () async -> Bool = { true },
         submitIf canSubmit: () -> Bool
@@ -382,7 +386,8 @@ final class TerminalCenter {
         let promptWasEmpty = !promptDrafts.contains(sessionID) && !pendingReturns.contains(run)
         // Read before the paste, which clears the bars it names.
         let heldBack = promptWasEmpty ? nil : heldBackBeforePause(sessionID, run: run)
-        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks) {
+        switch sendPrompt(text, sessionID: sessionID, keepingLineBreaks: keepingLineBreaks,
+                          keepingFormatCharacters: keepingFormatCharacters) {
         case .noSession: return .noSession
         case .copied: return .copied
         case .sent: break
