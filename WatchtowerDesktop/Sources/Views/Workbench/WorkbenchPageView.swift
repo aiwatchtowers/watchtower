@@ -46,6 +46,8 @@ struct WorkbenchPageView: View {
         // the editor's unsent edits go to the old root's files first.
         .onChange(of: activeRoot) { old, new in
             Task { await vm.codeFiles.switchRoot(to: new, from: old) }
+            // The branch menu works on the root on screen (board #565).
+            Task { await vm.followGitRoot(new) }
         }
         // Hand to Session (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in

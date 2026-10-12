@@ -299,6 +299,14 @@ extension WorkbenchesViewModel {
         await openFile(at: target, root: codeRoot(sessionID: sessionID, project: project), beside: true)
     }
 
+    /// The folder a session's ⌘-clicked `path:line` resolves in: the root
+    /// `openTerminalLink` opens it in, so a file only the session's worktree
+    /// has is a link (board #565). nil for a workbench no longer listed.
+    func terminalLinkFolder(workbenchID: Int64, sessionID: Int64) -> String? {
+        guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return nil }
+        return codeRoot(sessionID: sessionID, project: project).folder.path
+    }
+
     /// A workbench path clicked in an ask's text (#394): the file in Files
     /// at the line, beside the terminal (a terminal link's placement); an
     /// expanded drawer goes back beside it so the file shows. The file

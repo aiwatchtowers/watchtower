@@ -5,19 +5,28 @@ import WatchtowerCore
 /// it, start a new branch from the current one, copy the name. Git runs in
 /// the CLI; a dirty tree or a live Claude Code session comes back as a
 /// confirmation, shown here — never a discard or a force. Errors stay as
-/// text in the popover.
+/// text in the popover. It works on `root`, the folder the page shows: the
+/// session's worktree or the main folder (board #565).
 struct WorkbenchBranchPopover: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
+    let root: CodeRoot
     @State private var query = ""
     @State private var isNaming = false
     @State private var newName = ""
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
 
+    /// `root` nil: the main folder.
+    init(vm: WorkbenchesViewModel, project: Workbench, root: CodeRoot? = nil) {
+        self.vm = vm
+        self.project = project
+        self.root = root ?? project.mainCodeRoot
+    }
+
     var body: some View {
-        let id = project.id
-        let pending = vm.pendingBranchConfirmation[id]
+        let key = GitRootKey(root)
+        let pending = vm.pendingBranchConfirmation[key]
         VStack(alignment: .leading, spacing: 6) {
             TextField("Find branch", text: $query)
                 .textFieldStyle(.roundedBorder)
@@ -29,7 +38,7 @@ struct WorkbenchBranchPopover: View {
             Divider()
             newBranchRow
             Button {
-                vm.copyBranchName(projectID: id)
+                vm.copyBranchName(key: key)
             } label: {
                 Label("Copy branch name", systemImage: "doc.on.doc")
             }
@@ -38,15 +47,15 @@ struct WorkbenchBranchPopover: View {
         }
         .padding(10)
         .frame(width: 320)
-        .task(id: id) {
+        .task(id: key) {
             searchFocused = true
-            await vm.loadBranches(project: project)
+            await vm.loadBranches(project: project, root: root)
         }
         .confirmationDialog(
             pending?.title ?? "",
             isPresented: Binding(
-                get: { vm.pendingBranchConfirmation[id] != nil },
-                set: { if !$0 { vm.cancelPendingSwitch(projectID: id) } }
+                get: { vm.pendingBranchConfirmation[key] != nil },
+                set: { if !$0 { vm.cancelPendingSwitch(key: key) } }
             ),
             titleVisibility: .visible
         ) {
@@ -54,10 +63,10 @@ struct WorkbenchBranchPopover: View {
                 Button(pending.primaryLabel) {
                     // The dialog's dismissal clears the pending switch: pass
                     // the one it showed.
-                    Task { await vm.confirmPendingSwitch(project: project, confirming: pending) }
+                    Task { await vm.confirmPendingSwitch(project: project, confirming: pending, root: root) }
                 }
             }
-            Button("Cancel", role: .cancel) { vm.cancelPendingSwitch(projectID: id) }
+            Button("Cancel", role: .cancel) { vm.cancelPendingSwitch(key: key) }
         } message: {
             Text(pending?.message ?? "")
         }
@@ -68,11 +77,11 @@ struct WorkbenchBranchPopover: View {
     /// disabled: switching from stale rows would guess.
     @ViewBuilder
     private var branchList: some View {
-        let id = project.id
-        let state = vm.branchListStates[id] ?? .loading
+        let key = GitRootKey(root)
+        let state = vm.branchListStates[key] ?? .loading
         let failed: String? = if case .failed(let message) = state { message } else { nil }
         if let failed { caption(failed, color: .red) }
-        if let list = vm.gitBranches[id] {
+        if let list = vm.gitBranches[key] {
             let rows = WorkbenchBranchPresentation.matchingBranches(list.branches, query: query)
             if rows.isEmpty {
                 if failed == nil {
@@ -91,10 +100,10 @@ struct WorkbenchBranchPopover: View {
                         ForEach(rows) { branch in
                             WorkbenchBranchRow(
                                 branch: branch,
-                                badge: WorkbenchBranchPresentation.badge(for: branch.name, in: vm.branchTargets[id] ?? [:]),
-                                switching: vm.switchingBranch[id]
+                                badge: WorkbenchBranchPresentation.badge(for: branch.name, in: vm.branchTargets[key] ?? [:]),
+                                switching: vm.switchingBranch[key]
                             ) {
-                                Task { await vm.switchBranch(branch.name, project: project) }
+                                Task { await vm.switchBranch(branch.name, project: project, root: root) }
                             }
                         }
                     }
@@ -117,7 +126,7 @@ struct WorkbenchBranchPopover: View {
                     .focused($nameFocused)
                     .onSubmit(create)
                 Button("Create", action: create)
-                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty || vm.switchingBranch[project.id] != nil)
+                    .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty || vm.switchingBranch[root] != nil)
                 Button("Cancel") {
                     isNaming = false
                     newName = ""
@@ -132,24 +141,24 @@ struct WorkbenchBranchPopover: View {
                 Label("New branch from current…", systemImage: "plus")
             }
             .buttonStyle(.borderless)
-            .disabled(vm.switchingBranch[project.id] != nil)
+            .disabled(vm.switchingBranch[root] != nil)
         }
     }
 
     @ViewBuilder
     private var messages: some View {
-        let id = project.id
-        if let error = vm.gitErrors[id] { caption(error, color: .red) }
-        if let status = vm.gitStatusErrors[id] { caption(status, color: .red) }
-        if let notice = vm.gitNotices[id] { caption(notice, color: .secondary) }
+        let key = GitRootKey(root)
+        if let error = vm.gitErrors[key] { caption(error, color: .red) }
+        if let status = vm.gitStatusErrors[key] { caption(status, color: .red) }
+        if let notice = vm.gitNotices[key] { caption(notice, color: .secondary) }
         // Selectable: it names the stash entry and how to apply it. Stays
         // until dismissed — reopening the popover does not clear it.
-        if let stash = vm.gitStashNotes[id] {
+        if let stash = vm.gitStashNotes[key] {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 caption(stash.text, color: stash.isError ? .red : .secondary)
                 Spacer(minLength: 0)
                 Button {
-                    vm.dismissStashNote(projectID: id)
+                    vm.dismissStashNote(key: key)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption2)
@@ -173,7 +182,7 @@ struct WorkbenchBranchPopover: View {
     private func create() {
         let name = newName
         Task {
-            if await vm.createBranch(name, project: project) {
+            if await vm.createBranch(name, project: project, root: root) {
                 isNaming = false
                 newName = ""
             }

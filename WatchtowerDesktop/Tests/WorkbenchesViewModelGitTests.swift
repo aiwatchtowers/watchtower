@@ -1019,3 +1019,307 @@ private final class DiskPeekingRunner: CLIRunnerProtocol, @unchecked Sendable {
         return try await scripted.run(args: args)
     }
 }
+
+// MARK: - The branch menu on the session's worktree (board #565)
+
+extension WorkbenchesViewModelGitTests {
+    /// A worktree of the workbench's repository, inside its folder as
+    /// Claude Code makes them.
+    private func makeWorktree(_ name: String) throws -> URL {
+        let url = folder.appendingPathComponent(".claude/worktrees/\(name)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// A `claude` row of the workbench whose agent reported `cwd` (nil: no
+    /// cwd, an unknown place) after its run started, so a live row trusts it.
+    private func agentRow(cwd: String?) async throws -> TerminalSession {
+        let projectID = project.id
+        let folderPath = folder.path
+        return try await pool.write { db in
+            let row = try TerminalSessionQueries.create(db, .init(
+                projectID: projectID, kind: .claude, title: "s", folderPath: folderPath,
+                claudeSessionID: UUID().uuidString.lowercased()
+            ))
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = ?,
+                           agent_turns = '{"since":"2026-10-12T09:00:00.000Z"}' WHERE id = ?
+                    """,
+                arguments: [cwd, cwd == nil ? nil : "2026-10-12T10:00:00.000Z", row.id]
+            )
+            return row
+        }
+    }
+
+    private func worktreeVM(_ runner: WorktreeRunner, terminals: TerminalCenter? = nil) -> WorkbenchesViewModel {
+        let vm = makeVM(runner, terminals: terminals)
+        vm.makeGitWatcher = { gitDir, commonDir, onChange in
+            FakeWatcher(gitDir: gitDir, commonDir: commonDir, onChange: onChange)
+        }
+        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.gitNotificationCenter = NotificationCenter()
+        return vm
+    }
+
+    private func pageShowing(_ sessionID: Int64, in vm: WorkbenchesViewModel) {
+        var layout = WorkspaceLayout.default
+        layout.primary = .session(sessionID)
+        vm.setLayout(layout, projectID: project.id)
+    }
+
+    /// The page watches the workbench and shows `sessionID`, placed in its
+    /// worktree; the branch menu follows that root (the page's onChange).
+    private func showWorktreeSession(_ sessionID: Int64, in vm: WorkbenchesViewModel) async -> CodeRoot {
+        await vm.startGitWatching(project: project)
+        pageShowing(sessionID, in: vm)
+        await waitUntil { !vm.activeCodeRoot(project: self.project).isMain }
+        let root = vm.activeCodeRoot(project: project)
+        await vm.followGitRoot(root)
+        return root
+    }
+
+    func testProj10_TheBranchMenuFollowsTheSessionsWorktree() async throws {
+        let worktree = try makeWorktree("mobile-a")
+        let inWorktree = try await agentRow(cwd: worktree.path)
+        let inMain = try await agentRow(cwd: folder.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let vm = worktreeVM(runner)
+
+        let root = await showWorktreeSession(inWorktree.id, in: vm)
+        XCTAssertEqual(root, CodeRoot(workbenchID: project.id, worktree: worktree))
+        await vm.loadBranches(project: project)
+        await vm.switchBranch("feature/x", project: project)
+        await vm.createBranch("topic", project: project)
+        for command in ["status", "branches", "switch", "create"] {
+            XCTAssertEqual(runner.folders(command).last, worktree.path, "\(command) runs in the session's worktree")
+        }
+        XCTAssertEqual(vm.gitStatus[root]?.branch, "feature/wt", "the header shows the worktree's branch")
+        XCTAssertEqual(vm.gitStatus[project.id]?.branch, "main", "the main folder's entry is its own")
+
+        for pane in [WorkspacePane.board, .session(inMain.id)] {
+            runner.clearRecorded()
+            var layout = WorkspaceLayout.default
+            layout.primary = pane
+            vm.setLayout(layout, projectID: project.id)
+            XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot)
+            await vm.followGitRoot(project.mainCodeRoot)
+            await vm.loadBranches(project: project)
+            await vm.switchBranch("feature/x", project: project)
+            for command in ["branches", "switch"] {
+                let folders = runner.folders(command)
+                XCTAssertFalse(folders.isEmpty, "\(pane): \(command) ran")
+                XCTAssertTrue(folders.allSatisfy { $0 == nil }, "\(pane): no --folder for the main folder's \(command)")
+            }
+        }
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// A live session proven in worktree B does not count for a switch in
+    /// worktree A; one whose place is unknown (no cwd yet) does, and so does
+    /// one in A itself.
+    func testProj10_ASessionInAnotherWorktreeIsNotReportedAnUnknownOneIs() async throws {
+        let worktreeA = try makeWorktree("mobile-a")
+        let worktreeB = try makeWorktree("mobile-b")
+        let shown = try await agentRow(cwd: worktreeA.path)
+        let elsewhere = try await agentRow(cwd: worktreeB.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let center = terminalCenter()
+        center.start(elsewhere, fresh: true)
+        let vm = worktreeVM(runner, terminals: center)
+        _ = await showWorktreeSession(shown.id, in: vm)
+        await waitUntil {
+            if case .worktree = vm.sessionPlaces.currentPlace(sessionID: elsewhere.id) { return true }
+            return false
+        }
+
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(runner.switches.last?.contains("--agent-running"), false,
+                       "a session working in worktree B is not in A")
+
+        let unknown = try await agentRow(cwd: nil)
+        center.start(unknown, fresh: true)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(runner.switches.last?.contains("--agent-running"), true, "an unknown place may be A")
+        XCTAssertEqual(runner.switches.count, 2)
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// A switch in worktree A saves A's edits and never the main folder's;
+    /// an edit in A that cannot be saved holds it.
+    func testProj10_ASwitchInAWorktreeSavesThatWorktreesEdits() async throws {
+        let worktree = try makeWorktree("mobile-a")
+        try writeFile("a.go", "package a\n", in: worktree)
+        try writeFile("m.go", "package m\n")
+        let shown = try await agentRow(cwd: worktree.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let vm = worktreeVM(runner)
+        let root = await showWorktreeSession(shown.id, in: vm)
+        let inMain = vm.codeFiles.buffer(for: project.mainCodeRoot, relPath: "m.go")
+        inMain.loadIfNeeded()
+        vm.codeFiles.edited(inMain, text: "package m // main's\n", base: 0)
+        let inA = vm.codeFiles.buffer(for: root, relPath: "a.go")
+        inA.loadIfNeeded()
+        vm.codeFiles.edited(inA, text: "package a // A's\n", base: 0)
+
+        await vm.switchBranch("feature/x", project: project)
+
+        XCTAssertEqual(runner.switches.count, 1)
+        XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("a.go"), encoding: .utf8),
+                       "package a // A's\n", "A's edit is on disk before Go's dirty check")
+        XCTAssertEqual(try readFile("m.go"), "package m\n", "the main folder's edit is not this switch's")
+        XCTAssertTrue(inMain.isDirty)
+
+        vm.codeFiles.edited(inA, text: "package a // mine\n", base: 0)
+        try writeFile("a.go", "package a // theirs\n", in: worktree)
+        inA.diskChanged()
+        XCTAssertTrue(inA.conflict)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(runner.switches.count, 1, "no CLI call")
+        XCTAssertEqual(vm.gitErrors[root], "Save or discard the edits in a.go first — they are not on disk yet.")
+        XCTAssertNil(vm.gitErrors[project.id], "the main folder's menu is not touched")
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// A place whose re-read failed is stale: maybe in the worktree being
+    /// switched, so the agent question is asked again.
+    func testAStalePlaceCountsAsMaybeHere() async throws {
+        let worktreeA = try makeWorktree("mobile-a")
+        let worktreeB = try makeWorktree("mobile-b")
+        let shown = try await agentRow(cwd: worktreeA.path)
+        let elsewhere = try await agentRow(cwd: worktreeB.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let center = terminalCenter()
+        center.start(elsewhere, fresh: true)
+        let vm = worktreeVM(runner, terminals: center)
+        _ = await showWorktreeSession(shown.id, in: vm)
+        await waitUntil {
+            if case .worktree = vm.agentPlace(sessionID: elsewhere.id) { return true }
+            return false
+        }
+
+        runner.failFolderReads()
+        vm.sessionPlaces.refreshPlaces(workbenchID: project.id)
+        await waitUntil { vm.sessionPlaces.isPlaceStale(sessionID: elsewhere.id) }
+        XCTAssertEqual(vm.agentPlace(sessionID: elsewhere.id), .unknown)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(runner.switches.last?.contains("--agent-running"), true)
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// Go's refusals of a session's folder reach the popover in words.
+    func testAFolderRefusalOfTheBranchListIsShown() async throws {
+        let worktree = try makeWorktree("mobile-a")
+        let shown = try await agentRow(cwd: worktree.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let vm = worktreeVM(runner)
+        let root = await showWorktreeSession(shown.id, in: vm)
+        let cases: [(String, String, String)] = [
+            ("folder_not_a_worktree", "missing", WorkbenchBranchPresentation.folderNotAWorktreeText),
+            ("folder_not_a_worktree", "outside", WorkbenchBranchPresentation.folderOutsideTheRepositoryText),
+            ("folder_unreadable", "reading the folder: permission denied",
+             "That session's folder could not be read — the branch menu cannot work there "
+                + "(reading the folder: permission denied)."),
+            ("git_failed", "listing the worktrees: boom", "git could not read the folder: listing the worktrees: boom")
+        ]
+        for (refused, detail, text) in cases {
+            runner.refuseBranches(refused, detail: detail)
+            await vm.loadBranches(project: project)
+            XCTAssertEqual(vm.branchListStates[root], .failed(text), refused + " " + detail)
+        }
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// A worktree root's refs watcher is its own and goes when the page
+    /// shows the main folder again; the main folder's stays.
+    func testTheWorktreeRootIsWatchedOnlyWhileShown() async throws {
+        let worktree = try makeWorktree("mobile-a")
+        let shown = try await agentRow(cwd: worktree.path)
+        let runner = WorktreeRunner(workbenchID: project.id, mainFolder: folder.path)
+        let vm = worktreeVM(runner)
+        let root = await showWorktreeSession(shown.id, in: vm)
+        XCTAssertNotNil(vm.gitWatchers[root], "the worktree's refs are watched")
+        XCTAssertNotNil(vm.gitWatchers[project.id])
+
+        await vm.followGitRoot(project.mainCodeRoot)
+        XCTAssertNil(vm.gitWatchers[root])
+        XCTAssertNotNil(vm.gitWatchers[project.id])
+        vm.stopGitWatching(projectID: project.id)
+        XCTAssertTrue(vm.gitWatchers.isEmpty)
+    }
+}
+
+/// Answers `workbench git` by subcommand: a `--folder` status is that
+/// worktree's (branch `feature/wt`), any other the main folder's; branches,
+/// switch and create succeed unless told to refuse. Records every argv.
+private final class WorktreeRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [[String]] = []
+    private var branchRefusal: (String, String)?
+    private var folderReadsFail = false
+    let workbenchID: Int64
+    let mainFolder: String
+
+    init(workbenchID: Int64, mainFolder: String) {
+        self.workbenchID = workbenchID
+        self.mainFolder = mainFolder
+    }
+
+    /// The `--folder` of each `command` call, in order (nil: none).
+    func folders(_ command: String) -> [String?] {
+        lock.withLock {
+            recorded.filter { $0.count > 2 && $0[2] == command }.map(Self.folder)
+        }
+    }
+
+    var switches: [[String]] { lock.withLock { recorded.filter { $0.count > 2 && $0[2] == "switch" } } }
+
+    func clearRecorded() { lock.withLock { recorded = [] } }
+
+    func refuseBranches(_ refused: String, detail: String) { lock.withLock { branchRefusal = (refused, detail) } }
+
+    /// From now on every `--folder` status read fails (exit non-zero).
+    func failFolderReads() { lock.withLock { folderReadsFail = true } }
+
+    private static func folder(_ args: [String]) -> String? {
+        args.firstIndex(of: "--folder").map { args[$0 + 1] }
+    }
+
+    func run(args: [String]) async throws -> Data {
+        let (refusal, readsFail): ((String, String)?, Bool) = lock.withLock {
+            recorded.append(args)
+            return (branchRefusal, folderReadsFail)
+        }
+        let command = args.count > 2 ? args[2] : ""
+        if readsFail, command == "status", Self.folder(args) != nil {
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "simulated failure")
+        }
+        switch command {
+        case "status": return status(folder: Self.folder(args))
+        case "branches":
+            if let (refused, detail) = refusal {
+                return Data(#"{"git":false,"branches":[],"branches_ok":false,"refused":"\#(refused)","refused_detail":"\#(detail)"}"#.utf8)
+            }
+            return Data(#"{"git":true,"current":"main","branches":[{"name":"main","current":true}],"branches_ok":true}"#.utf8)
+        case "switch": return Data(#"{"workbench_id":\#(workbenchID),"branch":"feature/x","switched":true,"status":{}}"#.utf8)
+        case "create": return Data(#"{"workbench_id":\#(workbenchID),"branch":"topic","created":true,"status":{}}"#.utf8)
+        default: return Data("{}".utf8)
+        }
+    }
+
+    private func status(folder: String?) -> Data {
+        guard let folder else {
+            return Data(#"""
+                {"workbench_id":\#(workbenchID),"git":true,"branch":"main","top_level":"\#(mainFolder)",
+                 "git_dir":"\#(mainFolder)/.git","common_dir":"\#(mainFolder)/.git","status_ok":true,
+                 "folder_scope":"main","folder_root":"\#(mainFolder)"}
+                """#.utf8)
+        }
+        let name = (folder as NSString).lastPathComponent
+        return Data(#"""
+            {"workbench_id":\#(workbenchID),"git":true,"branch":"feature/wt","top_level":"\#(folder)",
+             "git_dir":"\#(mainFolder)/.git/worktrees/\#(name)","common_dir":"\#(mainFolder)/.git","status_ok":true,
+             "folder_requested":"\#(folder)","folder_scope":"worktree","folder_root":"\#(folder)","worktree_name":"\#(name)"}
+            """#.utf8)
+    }
+}

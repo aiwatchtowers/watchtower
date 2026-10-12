@@ -757,12 +757,14 @@ final class CodeFilesCenter {
     /// Internal for tests.
     @ObservationIgnored var pendingTimeout: Duration = .seconds(2)
 
-    /// A branch switch is about to rewrite `workTree` (the repository's work
-    /// tree): the unsent edits of `root` and of any root inside the
-    /// work tree are pulled and every buffer there saved, so the switch's
-    /// dirty check sees them on disk. Unlike a close or a rename, a page
-    /// that does not answer stops the switch: the files would be swapped
-    /// under edits nobody has.
+    /// A branch switch is about to rewrite `workTree` (the work tree of
+    /// `root`): the unsent edits of `root` and of any workbench's main root
+    /// inside the work tree are pulled and every buffer there saved, so the
+    /// switch's dirty check sees them on disk. Another worktree's root is
+    /// not this switch's (board #565) — not even one nested in the main
+    /// folder (`.claude/worktrees/<name>`), which git keeps apart. Unlike a
+    /// close or a rename, a page that does not answer stops the switch: the
+    /// files would be swapped under edits nobody has.
     func saveEdits(root: CodeRoot, workTree: String) async -> WorkTreeSave {
         let tree = TerminalCenter.resolvedPath(workTree)
         let prefix = tree.hasSuffix("/") ? tree : tree + "/"
@@ -771,7 +773,10 @@ final class CodeFilesCenter {
             return resolved == tree || resolved.hasPrefix(prefix)
         }
         var silent = false
-        for entry in bridges.values where entry.root == root || inside(entry.root.folder.path) {
+        func affects(_ other: CodeRoot, path: String) -> Bool {
+            other == root || (other.isMain && inside(path))
+        }
+        for entry in bridges.values where affects(entry.root, path: entry.root.folder.path) {
             guard let bridge = entry.bridge else { continue }
             guard let edits = await takePending(bridge) else {
                 NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its edits before a branch switch", entry.root.workbenchID)
@@ -782,7 +787,7 @@ final class CodeFilesCenter {
         }
         if silent { return .editorSilent }
         let affected = buffers
-            .filter { key, buffer in key.root == root || inside(buffer.url.path) }
+            .filter { key, buffer in affects(key.root, path: buffer.url.path) }
             .sorted { $0.key.path < $1.key.path }
         var unsaved: String?
         for (_, buffer) in affected where buffer.isDirty && !buffer.saveNow() {

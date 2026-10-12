@@ -288,4 +288,39 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertEqual(Pres.outcome(outside).error,
                        "That session is outside this repository — the branch menu shows the main folder.")
     }
+
+    /// A session folder that could not be read names the OS error; a switch
+    /// and the branch list say it in the same words.
+    func testFolderUnreadableRefusalText() {
+        let detail = "reading the folder: lstat /tmp/x: permission denied"
+        let result = WorkbenchGitSwitchResult(refused: "folder_unreadable", refusedDetail: detail)
+        let text = "That session's folder could not be read — the branch menu cannot work there (\(detail))."
+        XCTAssertEqual(Pres.outcome(result).error, text)
+        XCTAssertEqual(Pres.refusalText(refused: "folder_unreadable", detail: detail), text)
+        XCTAssertEqual(Pres.refusalText(refused: "folder_unreadable", detail: ""),
+                       "That session's folder could not be read — the branch menu cannot work there.")
+    }
+
+    /// A worktree root Go no longer places in a worktree gets the main
+    /// folder's status, with a note saying so.
+    func testWorktreeScopeNote() {
+        func status(_ scope: String) -> WorkbenchGitStatus {
+            // swiftlint:disable:next force_try
+            try! JSONDecoder().decode(WorkbenchGitStatus.self, from: Data(#"{"git":true,"folder_scope":"\#(scope)"}"#.utf8))
+        }
+        XCTAssertEqual(Pres.worktreeScopeNote(status("missing")), Pres.folderNotAWorktreeText)
+        XCTAssertEqual(Pres.worktreeScopeNote(status("outside")), Pres.folderOutsideTheRepositoryText)
+        XCTAssertNil(Pres.worktreeScopeNote(status("worktree")))
+        XCTAssertNil(Pres.worktreeScopeNote(status("main")))
+    }
+
+    /// A branch list refused for its folder decodes the refusal.
+    func testABranchListRefusalDecodes() throws {
+        let data = Data(#"{"git":false,"branches":[],"branches_ok":false,"refused":"git_failed","refused_detail":"x"}"#.utf8)
+        let list = try JSONDecoder().decode(WorkbenchGitBranches.self, from: data)
+        XCTAssertEqual(list.refused, "git_failed")
+        XCTAssertEqual(list.refusedDetail, "x")
+        let old = try JSONDecoder().decode(WorkbenchGitBranches.self, from: Data(#"{"git":true}"#.utf8))
+        XCTAssertEqual(old.refused, "", "an older CLI sends none")
+    }
 }

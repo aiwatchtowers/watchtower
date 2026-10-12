@@ -212,7 +212,7 @@ package enum WorkbenchBranchPresentation {
         if !result.error.isEmpty {
             errors.append("git failed: \(result.error)")
         } else if !result.refused.isEmpty {
-            errors.append(refusedText(result))
+            errors.append(refusalText(refused: result.refused, detail: result.refusedDetail, error: result.error))
         } else if !result.unknownConfirmations.isEmpty {
             errors.append("Not switched: the CLI asks for a confirmation this app does not know "
                 + "(\(result.unknownConfirmations.joined(separator: ", "))) — update Watchtower.")
@@ -244,14 +244,16 @@ package enum WorkbenchBranchPresentation {
         return StashNote(text: text, isError: false, entry: entry)
     }
 
-    /// Go's detail wins over the generic text, except for a failed status
-    /// read, whose detail is git's own error, and a folder that is no
-    /// worktree, whose detail is only the scope (`outside`, `missing`).
-    private static func refusedText(_ result: WorkbenchGitSwitchResult) -> String {
-        let detail = result.refusedDetail
-        switch result.refused {
-        case "git_failed": return "git could not read the folder: \(detail.isEmpty ? result.error : detail)"
+    /// The owner's line for a refused switch, create or branch list. Go's
+    /// detail wins over the generic text, except for a failed status read,
+    /// whose detail is git's own error, a folder that is no worktree, whose
+    /// detail is only the scope (`outside`, `missing`), and a session folder
+    /// that could not be read, whose detail is the OS error (board #565).
+    package static func refusalText(refused: String, detail: String, error: String = "") -> String {
+        switch refused {
+        case "git_failed": return "git could not read the folder: \(detail.isEmpty ? error : detail)"
         case "folder_not_a_worktree": return detail == "outside" ? folderOutsideTheRepositoryText : folderNotAWorktreeText
+        case "folder_unreadable": return folderUnreadableText(detail)
         case _ where !detail.isEmpty: return detail
         case "unknown_branch": return "There is no local branch with that name."
         case "checked_out_elsewhere": return "That branch is checked out in another worktree."
@@ -260,7 +262,25 @@ package enum WorkbenchBranchPresentation {
         case "git_unavailable": return "git is not available (install the Command Line Tools)."
         case "invalid_name": return "That is not a valid branch name."
         case "exists": return "A branch with that name already exists."
-        default: return "Refused: \(result.refused)"
+        default: return "Refused: \(refused)"
+        }
+    }
+
+    /// `folder_unreadable` (board #565): the session's folder failed to
+    /// resolve for a reason other than not existing; no git ran there.
+    package static func folderUnreadableText(_ detail: String) -> String {
+        let base = "That session's folder could not be read — the branch menu cannot work there"
+        return detail.isEmpty ? base + "." : base + " (\(detail))."
+    }
+
+    /// The note beside a worktree root's status that Go no longer places in
+    /// a worktree (`outside`/`missing`: the envelope is the main folder's
+    /// status, board #565); nil while it is one.
+    package static func worktreeScopeNote(_ status: WorkbenchGitStatus) -> String? {
+        switch status.folderScope {
+        case .outside: folderOutsideTheRepositoryText
+        case .missing: folderNotAWorktreeText
+        case .main, .worktree, .unresolved: nil
         }
     }
 
