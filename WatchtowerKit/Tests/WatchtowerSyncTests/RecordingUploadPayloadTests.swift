@@ -163,11 +163,12 @@ final class RecordingUploadPayloadTests: XCTestCase {
             sampleFormat: "aac-64k-mono", deviceID: "device-a", hubID: "hub-acme"
         )
         let data = try RelayCoder.makeEncoder().encode(upload)
-        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"hub_id\":\"hub-acme\""))
+        XCTAssertTrue(try XCTUnwrap(String(bytes: data, encoding: .utf8)).contains("\"hub_id\":\"hub-acme\""))
         XCTAssertEqual(try RelayCoder.makeDecoder().decode(RecordingUploadPayload.self, from: data).hubID, "hub-acme")
         let plain = RecordingUploadPayload(
             id: "R2", startedAt: start, endedAt: start + 60, durationSec: 60, sampleFormat: "aac-64k-mono"
         )
-        XCTAssertFalse(String(decoding: try RelayCoder.makeEncoder().encode(plain), as: UTF8.self).contains("hub_id"))
+        let plainData = try RelayCoder.makeEncoder().encode(plain)
+        XCTAssertFalse(try XCTUnwrap(String(bytes: plainData, encoding: .utf8)).contains("hub_id"))
     }
 }
