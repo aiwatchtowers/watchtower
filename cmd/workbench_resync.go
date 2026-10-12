@@ -188,7 +188,9 @@ func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyn
 }
 
 // resyncCodex refreshes the codex part when codex is found or the folder
-// already has it (D5); nil res.Codex when neither.
+// already has it (D5). With neither, res.Codex stays nil, unless the config
+// did not load: codex may then be reachable only through the ignored
+// codex_path, so res.Codex carries the config error.
 func resyncCodex(ctx context.Context, p *db.Workbench, res *workbenchResyncJSON) error {
 	// A missing binary path or folder: the Claude step already reported it.
 	if !isExistingDir(p.FolderPath) {
