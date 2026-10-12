@@ -513,10 +513,12 @@ final class MobileLinkCenter {
 
     /// The Mac's iCloud account signed out or switched (the transport's
     /// account reset): the cached user is the old one, so it is looked up
-    /// again, and a QR on screen, which names the old user, closes.
+    /// again, the new account has no shares yet (`sharing` none), and a QR
+    /// on screen, which names the old user, closes.
     func accountChanged() {
         knownOwnerUser = nil
         ownerEpoch += 1
+        report(.none)
         guard openCode != nil else { return }
         accountChangeClose = Task { await self.closeLink(reason: .accountChanged) }
     }

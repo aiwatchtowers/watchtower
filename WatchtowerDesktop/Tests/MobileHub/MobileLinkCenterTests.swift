@@ -1058,6 +1058,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         await awaitHubCondition("the link closes") { !shares.isLinkOpen }
         XCTAssertNil(center.openCode)
+        XCTAssertEqual(sharing.last, HubSharing.none, "the new account has no shares yet")
     }
 
     /// #66.3: a Remove that fails while a close is suspended keeps the sweep
