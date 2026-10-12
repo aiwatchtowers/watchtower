@@ -125,7 +125,7 @@ struct SessionTimelineSlice: SliceSource {
         case .running: "Started"
         case .working: "Working"
         case .background: "Agents working"
-        case .waitingOnAsk: "Waiting for you"
+        case .waitingOnAsk, .readyToCheck: "Waiting for you"
         case .needsApproval: "Needs approval"
         case .finished: "Finished"
         case .stopped: "Stopped"

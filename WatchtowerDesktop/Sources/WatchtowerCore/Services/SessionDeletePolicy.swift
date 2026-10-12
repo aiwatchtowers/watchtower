@@ -8,7 +8,7 @@ package enum SessionDeletePolicy {
     /// (there is no process to kill). A live one → quick only once its agent
     /// is done: finished, stopped, failed. A live session working, at a
     /// permission prompt, running with no reported state, with background
-    /// agents or waiting on an ask asks first. A standalone terminal has no
+    /// agents, waiting on an ask or ready to check asks first. A standalone terminal has no
     /// state and keeps its dialog.
     package static func isQuick(_ state: SessionSwitcherPresentation.State, isWorkbenchSession: Bool) -> Bool {
         guard isWorkbenchSession else { return false }
@@ -16,7 +16,7 @@ package enum SessionDeletePolicy {
         switch state.kind {
         case .finished, .stopped, .failed:
             return true
-        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .background:
+        case .notStarted, .running, .working, .needsApproval, .waitingOnAsk, .readyToCheck, .background:
             return false
         }
     }

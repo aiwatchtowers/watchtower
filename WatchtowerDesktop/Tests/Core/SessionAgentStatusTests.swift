@@ -20,11 +20,18 @@ final class SessionAgentStatusTests: XCTestCase {
         failedAt: String? = nil,
         error: String = "",
         openAsks: Int = 0,
+        questions: Int? = nil,
+        reviews: Int = 0,
         background: Int? = nil,
         backgroundAt: String? = nil
     ) -> SessionAgentStateRow {
+        // `questions` defaults to `openAsks`: a fixture that names no ask
+        // kinds holds questions only, the one kind every ask was read as
+        // before #534 — so the rows written before Ready to check keep their
+        // expectation. Checks are `openAsks - questions - reviews`.
         SessionAgentStateRow(id: 1, projectID: 7, title: "s", agentState: stored, agentStateAt: at, workbenchName: "acme",
                              finishedAt: finishedAt, agentFailedAt: failedAt, agentError: error, openAsks: openAsks,
+                             openQuestionAsks: questions ?? openAsks, openReviewAsks: reviews,
                              agentBackground: background, agentBackgroundAt: backgroundAt)
     }
 
@@ -61,10 +68,13 @@ final class SessionAgentStatusTests: XCTestCase {
                        .notStarted)
     }
 
-    /// PROJ-11 (amended 2026-10-03, #411): §4b's order, the first match
-    /// winning — approval > error > working > background > finished > open
-    /// ask > stopped > running > not started. Finished and open asks are not
-    /// run-scoped; the hook states, background among them, are.
+    /// PROJ-11 (amended 2026-10-03, #411, #534): §4b's order, the first
+    /// match winning — approval > error > working > background > ready to
+    /// check > finished > open ask > stopped > running > not started.
+    /// Finished, ready to check and open asks are not run-scoped; the hook
+    /// states, background among them, are. The rows before #534 name no
+    /// ask kinds, so their asks are questions (the `row` helper's default)
+    /// and their expectations stand.
     func testProj11_StateOrder() {
         let now = stamp(5)
         let old = stamp(-5)
@@ -109,14 +119,35 @@ final class SessionAgentStatusTests: XCTestCase {
              row("waiting", at: now, background: 2, backgroundAt: now), false, .notStarted),
             ("not live + background agents + finished: a ring",
              row("waiting", at: now, finishedAt: done, background: 2, backgroundAt: now), false,
-             State(kind: .finished, live: false))
+             State(kind: .finished, live: false)),
+            ("ready to check beats finished",
+             row("waiting", at: now, finishedAt: done, openAsks: 1, questions: 0), true,
+             .live(.readyToCheck, openAsks: 1, openQuestionAsks: 0)),
+            ("working beats ready to check",
+             row("working", at: now, openAsks: 1, questions: 0), true,
+             .live(.working, openAsks: 1, openQuestionAsks: 0)),
+            ("agents working beat ready to check",
+             row("waiting", at: now, openAsks: 2, questions: 0, reviews: 1, background: 1, backgroundAt: now), true,
+             .live(.background, openAsks: 2, backgroundAgents: 1, openQuestionAsks: 0, openReviewAsks: 1)),
+            ("ready to check beats a turn end",
+             row("waiting", at: now, openAsks: 1, questions: 0, reviews: 1), true,
+             .live(.readyToCheck, openAsks: 1, openQuestionAsks: 0, openReviewAsks: 1)),
+            ("finished + a question stays finished",
+             row("waiting", at: now, finishedAt: done, openAsks: 2, questions: 1), true,
+             .live(.finished, openAsks: 2, openQuestionAsks: 1)),
+            ("a check with a question waits on the ask",
+             row("waiting", at: now, openAsks: 2, questions: 1), true,
+             .live(.waitingOnAsk, openAsks: 2, openQuestionAsks: 1)),
+            ("not live + checks only: a ring",
+             row("waiting", at: old, openAsks: 2, questions: 0), false,
+             State(kind: .readyToCheck, live: false, openAsks: 2, openQuestionAsks: 0))
         ]
         for (name, input, live, expected) in cases {
             XCTAssertEqual(SessionAgentStatus.effective(row: input, live: live, startedAt: started, now: readAt),
                            expected, name)
         }
         let kinds = Set(cases.map(\.3.kind))
-        XCTAssertEqual(kinds.count, 9, "every §4b kind is covered")
+        XCTAssertEqual(kinds.count, 10, "every §4b kind is covered")
     }
 
     /// PROJ-11 (#411, ruling F3): error outranks background on the row shape
@@ -257,13 +288,76 @@ final class SessionAgentStatusTests: XCTestCase {
         func status(_ state: SessionSwitcherPresentation.State, at: String?) -> SessionAgentStatus {
             SessionAgentStatus(sessionID: 1, workbenchID: 7, workbenchName: "acme", title: "s", state: state, at: at)
         }
-        for kind: SessionSwitcherPresentation.State.Kind in [.stopped, .failed, .finished, .waitingOnAsk, .background] {
+        for kind: SessionSwitcherPresentation.State.Kind in [
+            .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background
+        ] {
             XCTAssertTrue(status(.live(kind), at: "t").isAtPrompt, "\(kind) over a turn end")
             XCTAssertFalse(status(.live(kind), at: nil).isAtPrompt, "\(kind) without a turn end of this run")
         }
         for kind: SessionSwitcherPresentation.State.Kind in [.running, .working, .needsApproval] {
             XCTAssertFalse(status(.live(kind), at: "t").isAtPrompt, "\(kind)")
         }
+    }
+
+    // MARK: - Ready to check (#534)
+
+    private func kindOf(_ input: SessionAgentStateRow, live: Bool = true) -> SessionSwitcherPresentation.State.Kind {
+        SessionAgentStatus.effective(row: input, live: live, startedAt: started, now: readAt).kind
+    }
+
+    /// PROJ-11 (#534): open asks none of which is a question — checks,
+    /// reviews or both — are Ready to check; no open ask is not.
+    func testProj11_ReadyToCheckNeedsOnlyCheckOrReviewAsks() {
+        let turnEnd = stamp(5)
+        XCTAssertEqual(kindOf(row("waiting", at: turnEnd, openAsks: 2, questions: 0)), .readyToCheck, "checks only")
+        XCTAssertEqual(kindOf(row("waiting", at: turnEnd, openAsks: 2, questions: 0, reviews: 2)), .readyToCheck,
+                       "reviews only")
+        XCTAssertEqual(kindOf(row("waiting", at: turnEnd, openAsks: 3, questions: 0, reviews: 1)), .readyToCheck,
+                       "checks and reviews")
+        XCTAssertEqual(kindOf(row(nil, at: nil, openAsks: 1, questions: 0)), .readyToCheck,
+                       "no hook state of the run: still ready")
+        XCTAssertEqual(kindOf(row("waiting", at: turnEnd, openAsks: 0, questions: 0)), .stopped, "no open ask")
+        XCTAssertEqual(kindOf(row("waiting", at: turnEnd, finishedAt: turnEnd, openAsks: 0, questions: 0)), .finished,
+                       "finished with no open ask")
+        let reviews = SessionAgentStatus.effective(
+            row: row("waiting", at: turnEnd, openAsks: 2, questions: 0, reviews: 2), live: true, startedAt: started,
+            now: readAt)
+        XCTAssertTrue(reviews.asksAreOnlyChecks)
+        XCTAssertTrue(reviews.asksAreOnlyReviews)
+        let mixed = SessionAgentStatus.effective(
+            row: row("waiting", at: turnEnd, openAsks: 2, questions: 0, reviews: 1), live: true, startedAt: started,
+            now: readAt)
+        XCTAssertTrue(mixed.asksAreOnlyChecks)
+        XCTAssertFalse(mixed.asksAreOnlyReviews, "a check among reviews")
+    }
+
+    /// PROJ-11 (#534): one open question among checks keeps the session the
+    /// owner's move — Waiting for you, the counts carried.
+    func testProj11_OneQuestionKeepsWaitingForYou() {
+        var input = row("waiting", at: stamp(5), openAsks: 3, questions: 1)
+        input.oldestOpenAskID = 12
+        let state = SessionAgentStatus.effective(row: input, live: true, startedAt: started, now: readAt)
+        XCTAssertEqual(state.kind, .waitingOnAsk)
+        XCTAssertEqual(state.openQuestionAsks, 1)
+        XCTAssertEqual(state.openAsks, 3)
+        XCTAssertFalse(state.asksAreOnlyChecks)
+        XCTAssertEqual(state.oldestAskID, 12)
+    }
+
+    /// PROJ-11 (#534): Ready to check over this run's turn end sits at the
+    /// prompt like Waiting for you; a session that is not live never does.
+    func testProj11_ReadyToCheckIsAtPrompt() throws {
+        let input = row("waiting", at: stamp(1), openAsks: 1, questions: 0)
+        let live = try XCTUnwrap(
+            SessionAgentStatus.resolve([input], liveIDs: [1], startedAt: [1: started], now: readAt)[1]
+        )
+        XCTAssertEqual(live.state.kind, .readyToCheck)
+        XCTAssertTrue(live.isAtPrompt)
+        let ring = try XCTUnwrap(SessionAgentStatus.resolve([input], liveIDs: [], startedAt: [:], now: readAt)[1])
+        XCTAssertEqual(ring.state, SessionSwitcherPresentation.State(
+            kind: .readyToCheck, live: false, openAsks: 1, openQuestionAsks: 0
+        ))
+        XCTAssertFalse(ring.isAtPrompt)
     }
 
     /// The waiting caption names the oldest open ask; a resolved status
@@ -397,6 +491,7 @@ final class SessionAgentStatusTests: XCTestCase {
                                                     displayOver: true), .live(.stopped))
         var asking = input
         asking.openAsks = 1
+        asking.openQuestionAsks = 1  // a question, as every ask read before #534
         XCTAssertEqual(SessionAgentStatus.effective(row: asking, live: true, startedAt: started, now: late,
                                                     displayOver: true), .live(.waitingOnAsk, openAsks: 1))
         var other = input

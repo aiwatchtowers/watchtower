@@ -147,7 +147,7 @@ struct TerminalSessionSlice: SliceSource {
             var entry = counts[item.workbenchID] ?? .init()
             switch item.state.kind {
             case .working, .running, .background: entry.working += 1
-            case .waitingOnAsk: entry.waiting += 1
+            case .waitingOnAsk, .readyToCheck: entry.waiting += 1
             case .needsApproval: entry.needsApproval += 1
             case .finished: entry.finished += 1
             case .failed: entry.failed += 1
@@ -276,7 +276,7 @@ struct TerminalSessionSlice: SliceSource {
         switch kind {
         case .working, .background: "working"
         case .running: "running"
-        case .waitingOnAsk: "waiting_on_ask"
+        case .waitingOnAsk, .readyToCheck: "waiting_on_ask"
         case .needsApproval: "needs_approval"
         case .finished: "finished"
         case .stopped: "stopped"

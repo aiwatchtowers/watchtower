@@ -15,7 +15,7 @@ package enum SessionStatePresentation {
     package static func color(for state: State) -> Tone {
         switch state.kind {
         case .working, .running, .background: .green
-        case .waitingOnAsk, .needsApproval: .orange
+        case .waitingOnAsk, .readyToCheck, .needsApproval: .orange
         case .finished: state.openAsks > 0 ? .orange : .blue
         case .failed: .red
         case .stopped, .notStarted: .secondary
@@ -28,7 +28,7 @@ package enum SessionStatePresentation {
         switch state.kind {
         case .working: state.openAsks > 0 ? "questionmark" : nil
         case .background: state.openAsks > 0 ? "questionmark" : "person.2.fill"
-        case .waitingOnAsk: "questionmark"
+        case .waitingOnAsk, .readyToCheck: "questionmark"
         case .needsApproval: "hand.raised.fill"
         case .finished: "checkmark"
         case .stopped: "pause.fill"
@@ -54,7 +54,7 @@ package enum SessionStatePresentation {
         switch state.kind {
         case .working:
             state.openAsks > 0 ? "Working · \(asksOpen(state.openAsks))" : "Working"
-        case .waitingOnAsk:
+        case .waitingOnAsk, .readyToCheck:
             "Waiting for you"
                 + (oldestAskID.map { " · ask #\($0)" } ?? "")
                 + (state.openAsks > 1 ? " · \(state.openAsks) asks" : "")
