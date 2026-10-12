@@ -19,7 +19,7 @@ final class MobileHubServiceTests: XCTestCase {
 
     override func setUp() async throws {
         (dbPool, dbPath) = try TestDatabase.createPool()
-        sidecar = try HubSyncState.inMemory()
+        sidecar = try HubSyncState.inMemoryPerHub()
         try sidecar.linkTestDevice("device-a")
         UserDefaults.standard.removePersistentDomain(forName: suiteName)
         defaults = UserDefaults(suiteName: suiteName)
@@ -63,6 +63,14 @@ final class MobileHubServiceTests: XCTestCase {
             .filter { $0.record.zone == .relay }
             .map { try decodeAction($0.record) }
             .filter { $0.status == .applied }
+    }
+
+    private func heartbeatPayload(hubID: String) throws -> Data {
+        try CloudRecordFactory.record(for: HeartbeatPayload(
+            updatedAt: Date(), appVersion: "0.0.0-test", hubID: hubID, macName: "Mac acme", flavor: .default,
+            lastPublishAt: nil, lastRelayAt: nil, relayBacklog: 0, accounts: [], enabledAt: Date(),
+            ownerUser: "_owner-acme", sharing: .none
+        ), modifiedAt: Date()).payload
     }
 
     // MARK: - Service
@@ -352,6 +360,111 @@ final class MobileHubServiceTests: XCTestCase {
         transport.fireRecordRejected("workbench-1", zone: .data)
 
         XCTAssertEqual(Set(try sidecar.hashes(forKind: .workbench).keys), ["workbench-2"])
+    }
+
+    // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
+
+    /// Review focus 3.
+    func testFirstStartOnPerHubZonesForgetsPublishStateAndTheRelayCursorButKeepsTheLedger() async throws {
+        sidecar = try HubSyncState.inMemory()
+        try sidecar.setMetaValue("42", forKey: RelayProcessor.relayTokenKey)
+        try sidecar.markRelayDone("action-x", outcome: "applied", at: Date())
+        let service = makeService(transport: StubHubTransport())
+
+        await service.start()
+
+        XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "the wiped store's seqs restart")
+        XCTAssertEqual(try sidecar.relayPhase("action-x"), .done, "exactly-once survives")
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.perHubZonesKey), "1")
+
+        try sidecar.setMetaValue("43", forKey: RelayProcessor.relayTokenKey)
+        service.stop()
+        await service.waitUntilStopped()
+        await service.start()
+        XCTAssertNotNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "only the first start adopts")
+        service.stop()
+    }
+
+    /// Review focus 4.
+    func testLegacyZonesAreDeletedOnlyForOwnOrNoHeartbeatAndCheckedOnce() async throws {
+        let hubID = try sidecar.ensureHubID()
+        let cases: [(Data?, Bool, String)] = [
+            (nil, true, "deleted"),
+            (try heartbeatPayload(hubID: hubID), true, "deleted"),
+            (try heartbeatPayload(hubID: "hub-other"), false, "kept"),
+            (Data("not json".utf8), false, "kept")
+        ]
+        for (heartbeat, deletes, marker) in cases {
+            sidecar = try HubSyncState.inMemoryPerHub()
+            try sidecar.setMetaValue(hubID, forKey: HubSyncState.hubIDKey)
+            let transport = StubHubTransport()
+            transport.setLegacyZones(.present(heartbeat: heartbeat))
+            let service = makeService(transport: transport)
+
+            await service.start()
+            service.stop()
+            await service.waitUntilStopped()
+            await service.start()
+
+            XCTAssertEqual(transport.legacyZonesPresent, !deletes)
+            XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.legacyZonesCheckedKey), marker)
+            XCTAssertEqual(transport.legacyCheckCount, 1, "checked once, at the first start")
+            service.stop()
+        }
+    }
+
+    func testAFailedLegacyCheckIsRetriedAtTheNextStartAndDoesNotBlockTheHub() async throws {
+        let transport = StubHubTransport()
+        transport.setLegacyCheckFails(true)
+        let service = makeService(transport: transport)
+
+        await service.start()
+        XCTAssertEqual(service.status, .running)
+        XCTAssertNil(try sidecar.metaValue(forKey: HubIdentity.legacyZonesCheckedKey))
+        service.stop()
+        await service.waitUntilStopped()
+        transport.setLegacyCheckFails(false)
+        await service.start()
+
+        XCTAssertEqual(try sidecar.metaValue(forKey: HubIdentity.legacyZonesCheckedKey), "none_found")
+        service.stop()
+    }
+
+    func testDisableDeletesTheHubsZonesWipesSyncStateAndForgetsPhones() async throws {
+        let transport = StubHubTransport()
+        let service = makeService(transport: transport)
+        var forgotten = 0
+        service.onZonesDeleted = { forgotten += 1 }
+        await service.start()
+        try sidecar.setMetaValue("42", forKey: RelayProcessor.relayTokenKey)
+
+        service.disable()
+        await service.waitUntilStopped()
+
+        XCTAssertEqual(transport.zoneDeletes, 1)
+        XCTAssertEqual(Array(transport.lifecycle.suffix(2)), ["stop", "deleteZones"], "the engine stops first")
+        XCTAssertNil(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey))
+        XCTAssertEqual(forgotten, 1)
+    }
+
+    /// Review focus 5.
+    func testDisableWhileTheZoneDeleteFailsKeepsSyncStateAndLinkedPhones() async throws {
+        let transport = StubHubTransport()
+        transport.setZoneDeletesFail(true)
+        let service = makeService(transport: transport)
+        var forgotten = 0
+        service.onZonesDeleted = { forgotten += 1 }
+        await service.start()
+        try sidecar.setMetaValue("42", forKey: RelayProcessor.relayTokenKey)
+
+        service.disable()
+        await service.waitUntilStopped()
+        await service.start()
+
+        XCTAssertEqual(try sidecar.metaValue(forKey: RelayProcessor.relayTokenKey), "42", "zones still there: state still true")
+        XCTAssertEqual(forgotten, 0, "the phones still share the zones")
+        XCTAssertEqual(service.status, .running, "the hub comes back on its existing zones")
+        service.stop()
     }
 
     // MARK: - AppState wiring

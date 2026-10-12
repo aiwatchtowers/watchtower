@@ -30,6 +30,14 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     private var resetHandlerGate: SaveGate?
     private var throttleStart: Date?
 
+    /// The single-hub build's fixed-name zones, as `removeLegacyZones` sees them.
+    enum LegacyZones { case none, present(heartbeat: Data?) }
+    private var legacy: LegacyZones = .none
+    private var legacyChecks = 0
+    private var legacyFails = false
+    private var zoneDeletesFail = false
+    private var zoneDeleteCount = 0
+
     init(
         availability: CloudAvailability = .available,
         cloud: InMemoryCloudTransport = InMemoryCloudTransport()
@@ -42,7 +50,7 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     var stops: Int { lock.withLock { stopCount } }
     private var pullCount = 0
     var pulls: Int { lock.withLock { pullCount } }
-    /// "start" / "stop", in call order.
+    /// "start" / "stop" / "deleteZones", in call order.
     var lifecycle: [String] { lock.withLock { lifecycleLog } }
     /// Ids of every `applied` action echo saved, in order — counted here, on
     /// save, so a test polls an O(1) value instead of re-decoding the log.
@@ -79,6 +87,39 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
     }
 
     var throttledSince: Date? { lock.withLock { throttleStart } }
+
+    func setLegacyZones(_ value: LegacyZones) { lock.withLock { legacy = value } }
+    func setLegacyCheckFails(_ value: Bool) { lock.withLock { legacyFails = value } }
+    func setZoneDeletesFail(_ value: Bool) { lock.withLock { zoneDeletesFail = value } }
+    var legacyCheckCount: Int { lock.withLock { legacyChecks } }
+    var zoneDeletes: Int { lock.withLock { zoneDeleteCount } }
+    var legacyZonesPresent: Bool {
+        lock.withLock {
+            if case .present = legacy { return true }
+            return false
+        }
+    }
+
+    func deleteHubZones() async throws {
+        let fails = lock.withLock { () -> Bool in
+            lifecycleLog.append("deleteZones")
+            return zoneDeletesFail
+        }
+        if fails { throw URLError(.notConnectedToInternet) }
+        lock.withLock { zoneDeleteCount += 1 }
+    }
+
+    func removeLegacyZones(deleteIf: @Sendable (Data?) -> Bool) async throws -> LegacyZoneCleanup {
+        let (state, fails) = lock.withLock { () -> (LegacyZones, Bool) in
+            legacyChecks += 1
+            return (legacy, legacyFails)
+        }
+        if fails { throw URLError(.notConnectedToInternet) }
+        guard case .present(let heartbeat) = state else { return .noneFound }
+        guard deleteIf(heartbeat) else { return .kept }
+        lock.withLock { legacy = .none }
+        return .deleted
+    }
 
     func fireAccountReset() {
         let handler = lock.withLock { resetHandler }
@@ -166,6 +207,16 @@ final class StubHubTransport: HubTransport, @unchecked Sendable {
 
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         try await inner.changes(in: zone, since: token)
+    }
+}
+
+extension HubSyncState {
+    /// A sidecar the per-hub zone adoption already ran on (most tests seed
+    /// sync state before `start()` and must keep it).
+    static func inMemoryPerHub() throws -> HubSyncState {
+        let state = try inMemory()
+        try state.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+        return state
     }
 }
 

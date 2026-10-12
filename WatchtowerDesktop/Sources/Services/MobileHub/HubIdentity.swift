@@ -10,6 +10,12 @@ import WatchtowerSync
 /// its own zones; no other hub's heartbeat is read.
 struct HubIdentity: Sendable {
     static let enabledAtKey = "enabled_at"
+    /// Set once the sidecar forgot the single-hub zones' publish state
+    /// (multi-hub spec §3.6, first start on the per-hub build).
+    static let perHubZonesKey = "per_hub_zones"
+    /// The legacy zone check's outcome (`LegacyZoneCleanup.rawValue`); set
+    /// once the check completed, so it runs at one start only.
+    static let legacyZonesCheckedKey = "legacy_zones_checked"
 
     let sidecar: HubSyncState
 
@@ -24,6 +30,18 @@ struct HubIdentity: Sendable {
         let raw = try sidecar.ensureMetaValue(forKey: Self.enabledAtKey) { String(now.timeIntervalSince1970) }
         guard let seconds = TimeInterval(raw) else { throw HubIdentityError.corruptValue(Self.enabledAtKey) }
         return Date(timeIntervalSince1970: seconds)
+    }
+
+    /// The single-hub build's zones go only when they hold this hub's
+    /// heartbeat or none (multi-hub spec §3.6). Another Mac's — or one this
+    /// build cannot read, so possibly a newer Mac's — is left alone.
+    static func legacyZonesAreOurs(heartbeat payload: Data?, hubID: String) -> Bool {
+        guard let payload else { return true }
+        do {
+            return try RelayCoder.makeDecoder().decode(HeartbeatPayload.self, from: payload).hubID == hubID
+        } catch {
+            return false
+        }
     }
 
     /// At most 60 characters, cut at a grapheme-cluster boundary (a

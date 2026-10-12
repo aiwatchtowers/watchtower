@@ -27,6 +27,11 @@ protocol HubTransport: CloudSyncTransport, Sendable {
     /// `.zoneBusy`); nil once a send goes through. Settings → Mobile shows
     /// "iCloud is slowing sync down" after 60 s of it (spec §9).
     var throttledSince: Date? { get async }
+    /// Hub zones deleted when Settings turns the hub off (multi-hub spec
+    /// §3.3); call after `stop()`.
+    func deleteHubZones() async throws
+    /// The single-hub build's fixed-name zones (multi-hub spec §3.6).
+    func removeLegacyZones(deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool) async throws -> LegacyZoneCleanup
 }
 
 extension CloudKitTransport: HubTransport {}
@@ -243,6 +248,14 @@ final class MobileHubService {
         // stop() may have run during the install: never start the
         // transport it already stopped.
         guard status == .starting, epoch == startEpoch else { return }
+        do {
+            try adoptPerHubZones()
+        } catch {
+            logger.error("per-hub zone adoption failed: \(error.localizedDescription, privacy: .public)")
+            status = .unavailable("Couldn't prepare this Mac's iCloud zones: \(error.localizedDescription)")
+            startReprobeLoop()
+            return
+        }
         await transport.start()
         let availability = await transport.availability()
         // stop() may have run while we awaited above.
@@ -254,6 +267,8 @@ final class MobileHubService {
         }
         reprobeTask?.cancel()
         reprobeTask = nil
+        await removeLegacyZonesIfDue()
+        guard status == .starting, epoch == startEpoch else { return }
         // Each Mac publishes into its own zones (multi-hub spec §2, §3.2):
         // no other hub's heartbeat is read, so there is nothing to refuse.
         await resolveOwnerUser()
@@ -335,11 +350,43 @@ final class MobileHubService {
         status = .off
     }
 
-    /// The Settings toggle turned off: stops, and removes the staged slice
-    /// assets (restaged and republished at the next start).
+    /// The Settings toggle turned off (multi-hub spec §3.3): stops, removes
+    /// the staged slice assets, then deletes this hub's two zones (bounded).
+    /// Once they are gone the sync state is wiped (nothing is published, the
+    /// relay seqs restart; the ledger stays) and the link center forgets
+    /// every phone. A delete that fails or times out changes nothing: the
+    /// zones, the state and the phones stay consistent (Review focus 5).
     func disable() {
         stop()
         publisher.closeStagedAssets()
+        let previous = teardown
+        let transport = self.transport
+        let sidecar = self.sidecar
+        let now = self.now
+        let logger = self.logger
+        let timeout = cloudTimeout
+        teardown = Task { [weak self] in
+            await previous?.value
+            let deleted = await Self.bounded(timeout) { () -> Bool in
+                do {
+                    try await transport.deleteHubZones()
+                    return true
+                } catch {
+                    logger.error("hub off: zones not deleted: \(error.localizedDescription, privacy: .public)")
+                    return false
+                }
+            }
+            guard deleted == true else {
+                if deleted == nil { logger.error("hub off: zone delete timed out") }
+                return
+            }
+            do {
+                try sidecar.wipeSyncState(now: now())
+            } catch {
+                logger.error("hub off: wipeSyncState failed: \(error.localizedDescription, privacy: .public)")
+            }
+            self?.onZonesDeleted?()
+        }
     }
 
     /// Terminal stop for a hub being replaced (an `initWorkbenches` re-run).
@@ -352,6 +399,51 @@ final class MobileHubService {
     /// transport stopped).
     func waitUntilStopped() async {
         await teardown?.value
+    }
+
+    // MARK: - Zone lifecycle (multi-hub spec §3.3, §3.6)
+
+    /// First start on the per-hub build: the transport store, bound to no
+    /// hub, wipes itself at `start()`, so what the sidecar believes published
+    /// and its relay cursor describe the old fixed-name zones. Forgets them
+    /// once (Review focus 3); the exactly-once ledger stays.
+    private func adoptPerHubZones() throws {
+        guard try sidecar.metaValue(forKey: HubIdentity.perHubZonesKey) == nil else { return }
+        try sidecar.wipeSyncState(now: now())
+        publisher.removeStagedAssets()
+        try sidecar.setMetaValue("1", forKey: HubIdentity.perHubZonesKey)
+    }
+
+    /// Deletes the single-hub build's zones when they are this hub's (or
+    /// nobody's), bounded by `cloudTimeout`. Best-effort: a failure or a
+    /// timeout leaves the marker unset, so the next start checks again; it
+    /// never blocks the hub.
+    private func removeLegacyZonesIfDue() async {
+        do {
+            guard try sidecar.metaValue(forKey: HubIdentity.legacyZonesCheckedKey) == nil else { return }
+            let hubID = try identity.hubID()
+            let transport = self.transport
+            let outcome = await Self.bounded(cloudTimeout) { () -> Result<LegacyZoneCleanup, any Error> in
+                do {
+                    return .success(try await transport.removeLegacyZones {
+                        HubIdentity.legacyZonesAreOurs(heartbeat: $0, hubID: hubID)
+                    })
+                } catch {
+                    return .failure(error)
+                }
+            }
+            switch outcome {
+            case .success(let cleanup)?:
+                try sidecar.setMetaValue(cleanup.rawValue, forKey: HubIdentity.legacyZonesCheckedKey)
+                logger.notice("legacy zones: \(cleanup.rawValue, privacy: .public)")
+            case .failure(let error)?:
+                logger.warning("legacy zone check failed: \(error.localizedDescription, privacy: .public)")
+            case nil:
+                logger.warning("legacy zone check timed out")
+            }
+        } catch {
+            logger.error("legacy zone check: sidecar unreadable: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Loops
