@@ -59,6 +59,9 @@ extension WorkbenchesViewModel {
         case inProgress
         /// A read or write failed; the message says which.
         case failed(String)
+        /// The launch found no binary for the session's agent (`launch-args`
+        /// exit 3): nothing started.
+        case agentNotFound(AgentKind)
     }
 
     /// The selected project's sessions, most recently active first (the
@@ -631,6 +634,7 @@ extension WorkbenchesViewModel {
     private func launchCheck(_ row: TerminalSession) throws {
         guard let failure = launchFailure(row) else { return }
         NSLog("WorkbenchesViewModel: session %lld did not launch: %@", row.id, failure)
+        if let agent = terminalCenter?.missingAgent[row.id] { throw TargetStartError.agentNotFound(agent) }
         throw TargetStartError.failed(failure)
     }
 

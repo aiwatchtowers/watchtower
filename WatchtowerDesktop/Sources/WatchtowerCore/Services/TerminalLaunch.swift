@@ -66,8 +66,8 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// Does not validate a session id: callers check `isValidSessionID`
     /// first. `rowID` reaches an agent launch's environment as
     /// `sessionRowEnv`. A Codex mode runs `codex` as `launch-args` resolved
-    /// it (`codex`); without one there is no binary to run, and the launch
-    /// exits 127 ("Codex was not found").
+    /// it (`codex`), its script in `codexCommandEnv`; without one there is
+    /// no binary to run, and the launch exits 127 ("Codex was not found").
     package static func make(
         shell: String?, folder: String, mode: Mode, rowID: Int64? = nil, codex: CodexLaunchArgs? = nil
     ) -> Self {
@@ -86,7 +86,7 @@ package struct TerminalLaunch: Equatable, Sendable {
         case let .resumeAgent(.claude, uuid):
             args = ["-l", "-c", "exec claude --resume \(uuid)"]
         case .newAgent(.codex, _, _), .resumeAgent(.codex, _):
-            args = ["-l", "-c", codex.map { codexCommand($0, mode: mode) } ?? "exit 127"]
+            args = ["-l", "-c", codex == nil ? "exit 127" : codexLoginCommand]
         case .shell:
             args = ["-l"]
         }
@@ -94,29 +94,42 @@ package struct TerminalLaunch: Equatable, Sendable {
         if let rowID, mode != .shell {
             launch.environment = ["\(sessionRowEnv)=\(rowID)"]
         }
+        if mode.agent == .codex, let codex {
+            launch.environment.append("\(codexCommandEnv)=\(codexScript(codex, mode: mode))")
+        }
         if let prompt = mode.prompt {
             launch.environment.append("\(firstPromptEnv)=\(mode.agent == .codex ? prompt : positionalPrompt(prompt))")
         }
         return launch
     }
 
-    /// The login shell's command for Codex (spec 2026-10-12 §7): `/bin/sh`
-    /// runs `<binary> <launch-args…> [resume '<id>'] [-- "$PROMPT"]`, every
-    /// value single-quoted, with `path_prepend` ahead of `PATH` so an nvm
-    /// `codex` finds its `node`. Nothing follows `resume <id>` but `--` and
-    /// the prompt: a `-c` after the subcommand would replace every root `-c`
-    /// (the hooks and the MCP server). The prompt is read from the
-    /// environment, after `--`, so one starting with "-" is no flag.
-    private static func codexCommand(_ codex: CodexLaunchArgs, mode: Mode) -> String {
-        var words = ["exec", "env", "-u", firstPromptEnv, shellQuote(codex.binary)] + codex.args.map(shellQuote)
+    /// The `/bin/sh` script a Codex launch runs, carried in the environment.
+    package static let codexCommandEnv = "WATCHTOWER_CODEX_COMMAND"
+
+    /// The login shell's command for Codex: a fixed literal with no quote or
+    /// backslash inside, so every login shell (fish and nushell too) passes
+    /// it to `/bin/sh` as is; `/bin/sh` reads the script from
+    /// `codexCommandEnv` and runs it, so only `/bin/sh` ever parses values.
+    package static let codexLoginCommand = "exec /bin/sh -c 'eval \"$\(codexCommandEnv)\"'"
+
+    /// The Codex script (spec 2026-10-12 §7): `<binary> <launch-args…>
+    /// [resume '<id>'] [-- "$PROMPT"]`, every value single-quoted, with
+    /// `path_prepend` ahead of `PATH` so an nvm `codex` finds its `node`.
+    /// Nothing follows `resume <id>` but `--` and the prompt: a `-c` after
+    /// the subcommand would replace every root `-c` (the hooks and the MCP
+    /// server). The prompt is read from the environment, after `--`, so one
+    /// starting with "-" is no flag. `env -u` drops both variables before
+    /// `codex` runs.
+    static func codexScript(_ codex: CodexLaunchArgs, mode: Mode) -> String {
+        var words = ["exec", "env", "-u", firstPromptEnv, "-u", codexCommandEnv, shellQuote(codex.binary)]
+            + codex.args.map(shellQuote)
         if case let .resumeAgent(_, id) = mode { words += ["resume", shellQuote(id)] }
         if mode.prompt != nil { words += ["--", "\"$\(firstPromptEnv)\""] }
         let path = codex.pathPrepend.isEmpty ? "" : "PATH=\(shellQuote(codex.pathPrepend)):\"$PATH\" "
-        return "exec /bin/sh -c \(shellQuote(path + words.joined(separator: " ")))"
+        return path + words.joined(separator: " ")
     }
 
-    /// Single quotes, with a `'` inside written `'\''`: the same in `sh`,
-    /// `zsh`, `bash`, `fish` and `csh`.
+    /// POSIX single quotes, with a `'` inside written `'\''` (for `/bin/sh`).
     package static func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }

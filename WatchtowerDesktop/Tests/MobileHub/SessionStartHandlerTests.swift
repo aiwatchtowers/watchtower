@@ -232,6 +232,39 @@ final class SessionStartHandlerTests: XCTestCase {
         XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127))
     }
 
+    /// A Codex session whose `launch-args` finds no `codex` (exit 3) starts
+    /// no process: the phone gets `codexNotFound` from the typed error.
+    func testCodexLaunchArgsNotFoundFailsCodexNotFound() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let codex = try await insertSession(p, targetID: t, kind: .codex)
+        let vm = makeVM()
+        center.codexLaunchArgs = { _ in throw WorkbenchCLIError.agentNotFound(.codex) }
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p, mode: "open_existing")))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .codexNotFound)
+        XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127, agent: .codex))
+        XCTAssertTrue(processes.isEmpty, "no process starts")
+        XCTAssertEqual(center.missingAgent[codex.id], .codex)
+    }
+
+    /// Any other launch-args failure is no not-found: a plain write failure.
+    func testCodexLaunchArgsOtherFailureIsNoNotFound() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        _ = try await insertSession(p, targetID: t, kind: .codex)
+        let vm = makeVM()
+        center.codexLaunchArgs = { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "broken config") }
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p, mode: "open_existing")))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .writeFailed)
+        XCTAssertTrue(processes.isEmpty)
+    }
+
     /// Any other early exit is the session's own end: the start itself ran.
     func testAnotherEarlyExitIsStillAStart() async throws {
         let p = try await workbench()

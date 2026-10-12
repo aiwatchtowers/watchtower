@@ -181,10 +181,10 @@ final class SessionStartStopHandlers {
         switch error {
         case .notOnBoard: .failed(.notOnBoard, message: "That target is not on a workbench board")
         case .inProgress: .failed(.conflict, message: "A session for this target is being started on the Mac")
-        // A Codex launch that found no `codex` starts no process (`.unavailable`).
-        case let .failed(message) where message == TerminalLaunch.exitMessage(code: 127, agent: .codex):
-            .failed(.codexNotFound, message: message)
         case let .failed(message): .failed(.writeFailed, message: message)
+        // A launch that found no agent binary (Codex's `launch-args`) started no process.
+        case let .agentNotFound(agent):
+            .failed(agent == .codex ? .codexNotFound : .claudeNotFound, message: TerminalLaunch.exitMessage(code: 127, agent: agent))
         }
     }
 

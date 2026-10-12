@@ -42,16 +42,33 @@ final class TerminalLaunchCodexTests: XCTestCase {
 
     // MARK: - Codex argv
 
+    /// The login shell gets a fixed literal; the script travels in the
+    /// environment, every value single-quoted for `/bin/sh`.
     func testCodexNewArgvQuotesEveryArg() throws {
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newAgent(.codex, sessionID: nil, prompt: nil),
                                     rowID: 9, codex: args())
         let quoted = rawArgs.map { "'" + $0.replacingOccurrences(of: "'", with: #"'\''"#) + "'" }.joined(separator: " ")
-        let script = #"PATH='/Users/example/.nvm/bin':"$PATH" exec env -u WATCHTOWER_FIRST_PROMPT '/Users/example/.nvm/bin/codex' "#
-            + quoted
-        XCTAssertEqual(l.args, ["-l", "-c", "exec /bin/sh -c " + TerminalLaunch.shellQuote(script)])
-        XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=9"])
+        let script = #"PATH='/Users/example/.nvm/bin':"$PATH" exec env -u WATCHTOWER_FIRST_PROMPT -u WATCHTOWER_CODEX_COMMAND "#
+            + #"'/Users/example/.nvm/bin/codex' "# + quoted
+        XCTAssertEqual(l.args, ["-l", "-c", #"exec /bin/sh -c 'eval "$WATCHTOWER_CODEX_COMMAND"'"#])
+        XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=9", "WATCHTOWER_CODEX_COMMAND=\(script)"])
         XCTAssertEqual(try run(.newAgent(.codex, sessionID: nil, prompt: nil)).argv, rawArgs,
                        "every element arrives whole, nothing appended")
+    }
+
+    /// Fish reads `\'` inside single quotes as a quote, nushell has no
+    /// escapes in them: the login shell's command holds no backslash and no
+    /// quote but the outer pair, whatever the values.
+    func testCodexLoginCommandIsAFixedLiteral() {
+        for mode in [TerminalLaunch.Mode.newAgent(.codex, sessionID: nil, prompt: "It's `x` $y\n-z"),
+                     .resumeAgent(.codex, sessionID: codexID)] {
+            let l = TerminalLaunch.make(shell: "/opt/homebrew/bin/fish", folder: "/tmp", mode: mode,
+                                        codex: args(binary: "/Users/example/it's/codex", pathPrepend: "/Users/example/it's"))
+            let command = l.args[2]
+            XCTAssertEqual(command, TerminalLaunch.codexLoginCommand)
+            XCTAssertFalse(command.contains("\\"))
+            XCTAssertEqual(command.filter { $0 == "'" }.count, 2)
+        }
     }
 
     /// `resume '<id>'` follows the launch args, and nothing follows it: a
@@ -59,22 +76,27 @@ final class TerminalLaunchCodexTests: XCTestCase {
     func testCodexResumeArgv() throws {
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .resumeAgent(.codex, sessionID: codexID),
                                     rowID: 9, codex: args())
-        XCTAssertTrue(l.args[2].hasSuffix(#" resume '\''"# + codexID + #"'\'''"#), l.args[2])
+        XCTAssertTrue(script(l).hasSuffix(" resume '\(codexID)'"), script(l))
         XCTAssertEqual(try run(.resumeAgent(.codex, sessionID: codexID)).argv, rawArgs + ["resume", codexID],
                        "nothing follows resume <id>")
-        XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=9"], "a resume carries no prompt")
+        XCTAssertFalse(l.environment.contains { $0.hasPrefix("WATCHTOWER_FIRST_PROMPT=") }, "a resume carries no prompt")
     }
 
+    /// Owner text with quotes, `$`, backticks, newlines and a leading "-"
+    /// reaches codex whole after `--`, under every login shell at hand.
     func testCodexPromptViaEnvNotArgv() throws {
-        let prompt = "Work on target #4.\nIt's $(rm -rf ~) `x` \"y\""
+        let prompt = "-Work on target #4.\nIt's $(rm -rf ~) `x` \"y\" \\ $HOME '\\''"
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newAgent(.codex, sessionID: nil, prompt: prompt),
                                     rowID: 9, codex: args())
         XCTAssertFalse(l.args.joined().contains("rm -rf"), "no prompt text in the command")
-        XCTAssertTrue(l.args[2].contains(#"-- "$WATCHTOWER_FIRST_PROMPT""#))
-        XCTAssertEqual(l.environment, ["WATCHTOWER_TERMINAL_SESSION_ID=9", "WATCHTOWER_FIRST_PROMPT=\(prompt)"])
-        let result = try run(.newAgent(.codex, sessionID: nil, prompt: prompt))
-        XCTAssertEqual(result.argv, rawArgs + ["--", prompt])
-        XCTAssertFalse(result.promptVisible, "env -u drops the variable before codex runs")
+        XCTAssertFalse(script(l).contains("rm -rf"), "nor in the script")
+        XCTAssertTrue(script(l).hasSuffix(#" -- "$WATCHTOWER_FIRST_PROMPT""#))
+        XCTAssertEqual(l.environment.last, "WATCHTOWER_FIRST_PROMPT=\(prompt)")
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash", "/bin/csh"] where FileManager.default.isExecutableFile(atPath: shell) {
+            let result = try run(.newAgent(.codex, sessionID: nil, prompt: prompt), shell: shell)
+            XCTAssertEqual(result.argv, rawArgs + ["--", prompt], shell)
+            XCTAssertFalse(result.variablesVisible, "\(shell): env -u drops both variables before codex runs")
+        }
     }
 
     /// `--` goes before the prompt, so one starting with "-" is no flag;
@@ -83,7 +105,7 @@ final class TerminalLaunchCodexTests: XCTestCase {
         let prompt = "--dangerously-bypass-approvals-and-sandbox"
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newAgent(.codex, sessionID: nil, prompt: prompt),
                                     codex: args())
-        XCTAssertEqual(l.environment, ["WATCHTOWER_FIRST_PROMPT=\(prompt)"])
+        XCTAssertEqual(l.environment.last, "WATCHTOWER_FIRST_PROMPT=\(prompt)")
         XCTAssertEqual(try run(.newAgent(.codex, sessionID: nil, prompt: prompt)).argv, rawArgs + ["--", prompt])
     }
 
@@ -92,20 +114,29 @@ final class TerminalLaunchCodexTests: XCTestCase {
         XCTAssertEqual(launched.path, "/Users/example/it's node/bin:/usr/bin:/bin")
         let bare = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newAgent(.codex, sessionID: nil, prompt: nil),
                                        codex: args(pathPrepend: ""))
-        XCTAssertFalse(bare.args[2].contains("PATH="), "no prefix, PATH untouched")
+        XCTAssertFalse(script(bare).contains("PATH="), "no prefix, PATH untouched")
         XCTAssertEqual(try run(.newAgent(.codex, sessionID: nil, prompt: nil), pathPrepend: "").path, "/usr/bin:/bin")
     }
 
-    /// The same command under csh, whose quoting differs from sh's.
-    func testCodexLaunchUnderCsh() throws {
-        XCTAssertEqual(try run(.newAgent(.codex, sessionID: nil, prompt: "-p x"), shell: "/bin/csh").argv,
-                       rawArgs + ["--", "-p x"])
+    /// Every login shell at hand runs the same launch, a binary path with a
+    /// space and a quote included.
+    func testCodexLaunchUnderEveryShell() throws {
+        for shell in ["/bin/sh", "/bin/zsh", "/bin/bash", "/bin/csh"] where FileManager.default.isExecutableFile(atPath: shell) {
+            XCTAssertEqual(try run(.resumeAgent(.codex, sessionID: codexID), shell: shell, stubName: "it's codex").argv,
+                           rawArgs + ["resume", codexID], shell)
+        }
     }
 
     /// No launch args, no binary: the launch exits 127, the "not found" line.
     func testCodexWithoutLaunchArgsExits127() {
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp", mode: .newAgent(.codex, sessionID: nil, prompt: nil))
         XCTAssertEqual(l.args, ["-l", "-c", "exit 127"])
+        XCTAssertFalse(l.environment.contains { $0.hasPrefix("WATCHTOWER_CODEX_COMMAND=") })
+    }
+
+    private func script(_ launch: TerminalLaunch) -> String {
+        let prefix = "\(TerminalLaunch.codexCommandEnv)="
+        return launch.environment.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) } ?? ""
     }
 
     // MARK: - Ids and messages
@@ -145,20 +176,24 @@ final class TerminalLaunchCodexTests: XCTestCase {
     private struct Run {
         let argv: [String]
         let path: String
-        let promptVisible: Bool
+        let variablesVisible: Bool
     }
 
     /// Runs `mode`'s shell command (without `-l`, so no profile) with a stub
-    /// `codex` as the binary that prints its PATH, whether the prompt
+    /// `codex` as the binary that prints its PATH, whether either launch
     /// variable reached it, then its arguments NUL-separated. Bounded.
     private func run(
-        _ mode: TerminalLaunch.Mode, shell: String = "/bin/sh", pathPrepend: String = "/Users/example/.nvm/bin"
+        _ mode: TerminalLaunch.Mode,
+        shell: String = "/bin/sh",
+        pathPrepend: String = "/Users/example/.nvm/bin",
+        stubName: String = "codex"
     ) throws -> Run {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt codex launch \(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        let stub = dir.appendingPathComponent("codex")
-        let script = "#!/bin/sh\nprintf '%s\\n' \"$PATH\"\nenv | grep -c WATCHTOWER_FIRST_PROMPT\nprintf '%s\\0' \"$@\"\n"
+        let stub = dir.appendingPathComponent(stubName)
+        let script = "#!/bin/sh\nprintf '%s\\n' \"$PATH\"\n"
+            + "env | grep -c -e WATCHTOWER_FIRST_PROMPT -e WATCHTOWER_CODEX_COMMAND\nprintf '%s\\0' \"$@\"\n"
         try script.write(to: stub, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stub.path)
         let launch = TerminalLaunch.make(shell: shell, folder: dir.path, mode: mode,
@@ -192,9 +227,9 @@ final class TerminalLaunchCodexTests: XCTestCase {
         let lines = text.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
         guard lines.count == 3 else {
             XCTFail("unexpected output: \(text)")
-            return Run(argv: [], path: "", promptVisible: true)
+            return Run(argv: [], path: "", variablesVisible: true)
         }
         let argv = lines[2].split(separator: "\0", omittingEmptySubsequences: false).dropLast().map(String.init)
-        return Run(argv: argv, path: lines[0], promptVisible: lines[1] != "0")
+        return Run(argv: argv, path: lines[0], variablesVisible: lines[1] != "0")
     }
 }

@@ -98,6 +98,12 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
 
     private var launches: [TerminalLaunch] { processes.flatMap(\.launches) }
 
+    /// The `/bin/sh` script of the last Codex launch (`TerminalLaunch.codexCommandEnv`).
+    private var lastScript: String {
+        let prefix = "\(TerminalLaunch.codexCommandEnv)="
+        return launches.last?.environment.first { $0.hasPrefix(prefix) }.map { String($0.dropFirst(prefix.count)) } ?? ""
+    }
+
     // MARK: - The decision
 
     func testCodexNullIDAlwaysNew() async throws {
@@ -118,7 +124,7 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         let mode = await center.launch(row, fresh: false)
 
         XCTAssertEqual(mode, .resumeAgent(.codex, sessionID: storedID))
-        XCTAssertTrue(try XCTUnwrap(launches.last?.args.last).contains("resume"))
+        XCTAssertTrue(lastScript.hasSuffix(" resume '\(storedID)'"), lastScript)
     }
 
     /// A fresh start never resumes, and carries its prompt.
@@ -150,7 +156,8 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         await vm.open(row)
 
         XCTAssertEqual(center.states[row.id], .running)
-        XCTAssertFalse(try XCTUnwrap(launches.last?.args.last).contains("resume"))
+        XCTAssertFalse(lastScript.contains(" resume "), lastScript)
+        XCTAssertTrue(lastScript.hasSuffix("'check_for_update_on_startup=false'"), lastScript)
         let after = try await stored(row.id)
         XCTAssertNil(after?.claudeSessionID)
         XCTAssertNil(after?.transcriptPath)
@@ -266,7 +273,8 @@ final class TerminalCenterStartDecisionTests: XCTestCase {
         XCTAssertTrue(vm.resumeFailed.isEmpty)
         let after = try await stored(row.id)
         XCTAssertNil(after?.claudeSessionID, "Start fresh drops the Codex id; Codex mints the next")
-        XCTAssertFalse(try XCTUnwrap(launches.last?.args.last).contains("resume"))
+        XCTAssertFalse(lastScript.contains(" resume "), lastScript)
+        XCTAssertTrue(lastScript.hasSuffix("'check_for_update_on_startup=false'"), lastScript)
         XCTAssertEqual(center.states[row.id], .running)
     }
 

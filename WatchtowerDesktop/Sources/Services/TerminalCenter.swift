@@ -168,6 +168,10 @@ final class TerminalCenter {
     /// Codex launches waiting for their `launch-args`, by row; a close
     /// meanwhile drops the entry, and the launch then starts nothing.
     @ObservationIgnored private var pendingLaunches: [Int64: Int] = [:]
+    /// Sessions whose last launch found no binary for their agent
+    /// (`launch-args` exit 3): the typed cause behind their `.unavailable`
+    /// text. Gone with the next launch attempt or the session.
+    @ObservationIgnored private(set) var missingAgent: [Int64: AgentKind] = [:]
     /// Every process exit, after `states` records it (the VM's resume-failure
     /// check). One subscriber.
     @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
@@ -679,6 +683,7 @@ final class TerminalCenter {
         let id = session.id
         guard states[id] != .running, pendingLaunches[id] == nil else { return nil }
         rows[id] = session
+        missingAgent[id] = nil
         guard let workbenchID = session.projectID else {
             states[id] = .unavailable("Codex sessions run in a workbench.")
             return nil
@@ -696,6 +701,7 @@ final class TerminalCenter {
         } catch {
             guard pendingLaunches[id] == token else { return nil }
             pendingLaunches[id] = nil
+            if case let .agentNotFound(agent)? = error as? WorkbenchCLIError { missingAgent[id] = agent }
             states[id] = .unavailable(error is WorkbenchCLIError ? error.localizedDescription
                 : "Could not prepare the Codex launch: \(error.localizedDescription)")
             return nil
@@ -837,6 +843,7 @@ final class TerminalCenter {
 
     private func forget(_ sessionID: Int64) {
         pendingLaunches[sessionID] = nil
+        missingAgent[sessionID] = nil
         states[sessionID] = nil
         rows[sessionID] = nil
         startedAt[sessionID] = nil
