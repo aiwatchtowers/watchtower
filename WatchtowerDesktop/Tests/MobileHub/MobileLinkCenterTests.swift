@@ -474,6 +474,7 @@ final class MobileLinkCenterTests: XCTestCase {
         clock.advance(1)
         await center.closeLinkIfExpired()
         XCTAssertFalse(shares.isLinkOpen)
+        XCTAssertEqual(center.lastCloseReason, .expired)
         XCTAssertNil(center.openCode)
         XCTAssertTrue(shares.participantNames(in: .relay).isEmpty)
     }
@@ -490,6 +491,7 @@ final class MobileLinkCenterTests: XCTestCase {
 
         await awaitHubCondition("the timer closes the link") { !self.shares.isLinkOpen }
         XCTAssertEqual(slept.value, .seconds(600))
+        XCTAssertEqual(center.lastCloseReason, .expired)
         XCTAssertNil(center.openCode)
     }
 

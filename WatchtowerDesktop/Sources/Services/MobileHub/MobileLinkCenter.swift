@@ -98,6 +98,8 @@ final class MobileLinkCenter {
     @ObservationIgnored private let shareTimeout: Duration
     /// The close that follows a link, run outside the relay pass.
     @ObservationIgnored private(set) var closeAfterLink: Task<Void, Never>?
+    /// Why the last `closeLink` ran (a test seam; the log says it too).
+    @ObservationIgnored private(set) var lastCloseReason: CloseReason?
     @ObservationIgnored private var knownOwnerUser: String?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
     /// Bumped each time the public link opens, so a close that was
@@ -230,6 +232,7 @@ final class MobileLinkCenter {
     /// Closes the public link and removes every participant not bound to a
     /// used nonce (spec §2.3). No share call when no link was opened.
     func closeLink(reason: CloseReason) async {
+        lastCloseReason = reason
         expiryTask?.cancel()
         expiryTask = nil
         openCode = nil

@@ -114,8 +114,11 @@ final class MobileSettingsViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Shared"))
         XCTAssertNoThrow(try view.inspect().find(text: "Typing off"))
         XCTAssertNoThrow(try view.inspect().find(text: "Typing allowed"))
-        let removes = try view.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Remove" }
+        let removes = try view.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Remove…" }
         XCTAssertEqual(removes.count, 2)
+        try removes[0].tap()
+        XCTAssertEqual(model.pendingRemove?.deviceID, "phone-a", "Remove… asks first")
+        XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-a"))
 
         try view.inspect().find(button: "Allow…").tap()
         XCTAssertEqual(model.pendingAllow?.deviceID, "phone-a")

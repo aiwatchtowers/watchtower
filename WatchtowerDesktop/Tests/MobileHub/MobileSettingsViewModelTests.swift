@@ -249,6 +249,66 @@ final class MobileSettingsViewModelTests: XCTestCase {
         )
     }
 
+    /// Board #67: Remove asks first (a shared phone's removal is at once and
+    /// cannot be undone); Cancel keeps the phone, the confirmation removes it.
+    func testRemoveAsksFirstAndCancelKeepsThePhone() async throws {
+        try await useSharedPhoneFixture()
+        let model = fixture.makeModel()
+        let phone = try XCTUnwrap(model.devices.first)
+
+        model.requestRemove(phone)
+        XCTAssertEqual(model.pendingRemove?.deviceID, "phone-b")
+        XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-b"), "Remove… asks first")
+        XCTAssertEqual(MobileSettingsViewModel.removeQuestion(name: "iPhone"), "Remove \"iPhone\"?")
+        XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.shared).contains("at once"))
+        XCTAssertTrue(MobileSettingsViewModel.removeConsequence(.private).contains("sign it out of iCloud"))
+
+        model.pendingRemove = nil
+        await model.confirmRemove()
+        XCTAssertNotNil(try fixture.sidecar.linkedDevice("phone-b"), "a cancelled dialog removes nothing")
+
+        model.requestRemove(phone)
+        await model.confirmRemove()
+        XCTAssertNil(model.pendingRemove)
+        XCTAssertNil(try fixture.sidecar.linkedDevice("phone-b"))
+        XCTAssertEqual(model.notice, "Removed iPhone.")
+    }
+
+    // MARK: - Polling
+
+    /// Board #67: the polled parts refresh every 30 s, and only while the
+    /// polling task runs; its cancellation (the view's `.task` ending with
+    /// the tab or the window) stops it.
+    func testPollingRefreshesEvery30SecondsUntilItsTaskIsCancelled() async throws {
+        XCTAssertEqual(MobileSettingsViewModel.refreshInterval, .seconds(30))
+        await fixture.startHub()
+        let sleeps = SleepLog()
+        let model = MobileSettingsViewModel(
+            host: fixture.host, entitlementPresent: true, flavor: .default, now: { Date() },
+            sleep: { duration in
+                sleeps.record(duration)
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        )
+        let poll = Task { await model.pollWhileVisible() }
+        await awaitHubCondition("the poll refreshed and slept a few times") { sleeps.count >= 3 }
+        XCTAssertEqual(model.account, .available, "a refresh ran")
+        poll.cancel()
+        await poll.value
+        let atCancel = sleeps.count
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(sleeps.count, atCancel, "a cancelled poll stops")
+        XCTAssertTrue(sleeps.all.allSatisfy { $0 == .seconds(30) })
+    }
+
+    private final class SleepLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [Duration] = []
+        var all: [Duration] { lock.withLock { values } }
+        var count: Int { all.count }
+        func record(_ value: Duration) { lock.withLock { values.append(value) } }
+    }
+
     func testRemovingASameAppleIDPhoneSaysItCanStillRead() async throws {
         await fixture.tearDown()
         fixture = try MobileSettingsFixture(phones: [("phone-a", .private, "_owner-acme")])
