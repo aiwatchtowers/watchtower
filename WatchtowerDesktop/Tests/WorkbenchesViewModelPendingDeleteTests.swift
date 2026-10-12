@@ -27,6 +27,38 @@ private final class DeleteWindowGate {
     }
 }
 
+/// A running session's close held in its kill grace: the process stays
+/// "alive" and the grace's poll parks until `release()`.
+@MainActor
+private final class CloseGate {
+    private(set) var released = false
+    private var parked: [CheckedContinuation<Void, Never>] = []
+    private var parkWatchers: [CheckedContinuation<Void, Never>] = []
+
+    func pollStep() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation in
+            parked.append(continuation)
+            let watchers = parkWatchers
+            parkWatchers = []
+            watchers.forEach { $0.resume() }
+        }
+    }
+
+    /// Returns once a close is parked in its grace.
+    func untilParked() async {
+        guard parked.isEmpty else { return }
+        await withCheckedContinuation { parkWatchers.append($0) }
+    }
+
+    func release() {
+        released = true
+        let resumed = parked
+        parked = []
+        resumed.forEach { $0.resume() }
+    }
+}
+
 private struct WriteRefused: LocalizedError {
     var errorDescription: String? { "database is locked" }
 }
@@ -65,6 +97,22 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
     // MARK: - Harness
 
     private var acme: String { folder.appendingPathComponent("acme").path }
+
+    /// A terminal center whose running sessions close only once `gate`
+    /// releases them (the kill grace of a process that does not exit).
+    private func slowClosingCenter(_ gate: CloseGate) -> TerminalCenter {
+        let slow = TerminalCenter(
+            makeProcess: { FakeTerminalSession(pid: 4242) },
+            signaller: ProcessGroupSignaller(
+                signal: { _, _ in },
+                isAlive: { [gate] _ in !gate.released },
+                sleep: { [gate] _ in await gate.pollStep() }
+            )
+        )
+        slow.shell = { "/bin/zsh" }
+        slow.transcriptExists = { _ in true }
+        return slow
+    }
 
     private func makeVM() -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
@@ -347,5 +395,176 @@ final class WorkbenchesViewModelPendingDeleteTests: XCTestCase {
         XCTAssertEqual(vm.pendingDeletes.batch.map(\.sessionID), [kept.id])
         XCTAssertEqual(vm.pendingDeleteToast, "Session deleted")
         XCTAssertNotNil(vm.deleteCommitTask, "the rest of the batch still commits")
+    }
+
+    // MARK: - Closes in their kill grace (F1, F5)
+
+    /// B is deleted while A's window runs and B's process takes its grace:
+    /// B restarts the window before its close, and the window's end commits
+    /// nothing until B's close finished.
+    func testADeleteDuringAnotherClosesGraceWaitsForThatClose() async throws {
+        let closing = CloseGate()
+        center = slowClosingCenter(closing)
+        let p = try await workbench()
+        let a = try await insertSession(p, title: "Session A")
+        let b = try await insertSession(p, title: "Session B")
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.open(b)
+        XCTAssertTrue(center.liveIDs.contains(b.id))
+
+        await vm.delete(a)
+        let deletingB = Task { await vm.delete(b) }
+        await closing.untilParked()
+        XCTAssertEqual(gate.waits, [.seconds(5), .seconds(5)], "B restarted the window before its close")
+        XCTAssertEqual(vm.pendingDeleteToast, "2 sessions deleted")
+
+        await endWindow(vm)
+        let keptA = try await stored(a.id)
+        let keptB = try await stored(b.id)
+        XCTAssertNotNil(keptA, "the batch waits for B's close")
+        XCTAssertNotNil(keptB, "never deleted while its process is alive")
+        XCTAssertEqual(vm.pendingDeleteToast, "2 sessions deleted")
+
+        closing.release()
+        await deletingB.value
+        let goneA = try await stored(a.id)
+        let goneB = try await stored(b.id)
+        XCTAssertNil(goneA)
+        XCTAssertNil(goneB, "committed once its close finished")
+        XCTAssertNil(vm.pendingDeleteToast)
+    }
+
+    func testUndoWhileTheCloseIsPendingCommitsNothing() async throws {
+        let closing = CloseGate()
+        center = slowClosingCenter(closing)
+        let p = try await workbench()
+        let b = try await insertSession(p)
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.open(b)
+
+        let deletingB = Task { await vm.delete(b) }
+        await closing.untilParked()
+        await vm.undoPendingDeletes()
+        XCTAssertTrue(vm.sessions.contains { $0.id == b.id }, "listed again at once")
+        XCTAssertNil(vm.pendingDeleteToast)
+
+        closing.release()
+        await deletingB.value
+        await endWindow(vm)
+        let kept = try await stored(b.id)
+        XCTAssertNotNil(kept, "the finished close commits nothing")
+        XCTAssertTrue(vm.sessions.contains { $0.id == b.id })
+        XCTAssertFalse(center.liveIDs.contains(b.id), "back not running")
+    }
+
+    // MARK: - Asks of a pending session (F2)
+
+    func testAskOfAPendingSessionSaysTheSessionIsGone() async throws {
+        let p = try await workbench()
+        let (session, askID) = try await linkedSession(p)
+        _ = try await insertSession(p, title: "Other")
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.loadSessions(projectID: p)
+        await vm.delete(session)
+
+        let shown = await vm.showAsk(askID, projectID: p)
+
+        XCTAssertTrue(shown, "the ask itself exists")
+        XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.")
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.board], "no other session put on screen")
+        XCTAssertNil(vm.asks.drawerAskIDs[p])
+        XCTAssertFalse(center.liveIDs.contains(session.id), "never resumed")
+    }
+
+    // MARK: - Quit (F3, F4)
+
+    func testQuitWaitsForTheWindowsCommitInFlight() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        let (started, didStart) = AsyncStream<Void>.makeStream()
+        vm.commitSessionDeletes = { [pool] ids in
+            didStart.yield()
+            try await Task.sleep(for: .milliseconds(300))
+            try await pool?.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+        }
+        await vm.reload()
+        await vm.delete(row)
+        gate.open()
+        var iterator = started.makeAsyncIterator()
+        _ = await iterator.next()
+
+        let finished = vm.commitPendingDeletesForQuit()
+
+        XCTAssertTrue(finished)
+        let gone = try await stored(row.id)
+        XCTAssertNil(gone, "the quit waited for the window's write")
+    }
+
+    func testQuitIsBoundedWhenTheWriteHangs() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        let hang = DispatchSemaphore(value: 0)
+        defer { hang.signal() }
+        vm.commitSessionDeletes = { _ in
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    hang.wait()
+                    continuation.resume()
+                }
+            }
+            throw WriteRefused()
+        }
+        vm.quitDeleteWait = 0.2
+        await vm.reload()
+        await vm.delete(row)
+
+        let start = Date()
+        let finished = vm.commitPendingDeletesForQuit()
+
+        XCTAssertFalse(finished, "timed out")
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "bounded by quitDeleteWait")
+        XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
+        let kept = try await stored(row.id)
+        XCTAssertNotNil(kept, "listed again next launch")
+    }
+
+    func testQuitWriteFailureKeepsTheRow() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        vm.commitSessionDeletes = { _ in throw WriteRefused() }
+        await vm.reload()
+        await vm.delete(row)
+
+        let finished = vm.commitPendingDeletesForQuit()
+
+        XCTAssertTrue(finished, "the failed write finished")
+        XCTAssertTrue(vm.pendingDeletes.batch.isEmpty)
+        let kept = try await stored(row.id)
+        XCTAssertNotNil(kept, "the safe side: the row survives")
+    }
+
+    // MARK: - The phone's slice (F7)
+
+    func testHiddenIDsChangesAreReportedOnDeleteAndUndo() async throws {
+        let p = try await workbench()
+        let row = try await insertSession(p)
+        let vm = makeVM()
+        var reported: [Set<Int64>] = []
+        vm.onPendingDeletesChanged = { reported.append($0) }
+        await vm.reload()
+
+        await vm.delete(row)
+        await vm.undoPendingDeletes()
+
+        XCTAssertEqual(reported, [[row.id], []])
     }
 }

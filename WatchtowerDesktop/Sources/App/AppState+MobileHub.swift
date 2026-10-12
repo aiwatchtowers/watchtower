@@ -65,9 +65,11 @@ extension AppState {
         let summaries = workbenchesViewModel?.cli.map { SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness) }
         let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
         let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
+        let hidden = HiddenSessionIDsBox()
         let sessions = TerminalSessionSlice(
             liveness: { liveness.current },
-            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) }
+            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) },
+            hiddenIDs: { hidden.current }
         )
         // Each session's own report (`--session S --json`, scoped by the CLI,
         // PROJ-14) and the timeline's state milestones; no CLI, no reports.
@@ -101,6 +103,7 @@ extension AppState {
         summaries?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.terminalSession]) }
         reports?.setOnChange { [weak publisher] in publisher?.nudge(kinds: [.sessionReport, .sessionTimeline]) }
         recordings.setOnChange { [weak publisher] in publisher?.nudge(kinds: $0) }
+        followPendingDeletes(into: hidden, publisher: publisher)
         let fastLane = FastLane(
             dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
             nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
@@ -116,6 +119,16 @@ extension AppState {
             storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
             recordingUploads: .init { [recordings] in try await recordings.ingest($0, audio: $1) }
         )
+    }
+
+    /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every
+    /// change, each change nudging the session and workbench slices.
+    private func followPendingDeletes(into hidden: HiddenSessionIDsBox, publisher: SlicePublisher) {
+        hidden.store(workbenchesViewModel?.pendingDeletes.ids ?? [])
+        workbenchesViewModel?.onPendingDeletesChanged = { [weak publisher] ids in
+            hidden.store(ids)
+            publisher?.nudge(kinds: [.terminalSession, .workbench])
+        }
     }
 
     /// The last step of `buildMobileHub`: the link center (when the storage

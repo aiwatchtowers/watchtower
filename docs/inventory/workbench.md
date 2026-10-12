@@ -1311,14 +1311,17 @@ other direction.
 **Observable:** Deleting a session in the Desktop (✕, ⌘⌫ or Delete…, all
 through `WorkbenchesViewModel.delete`) stops its process and hides its row
 from the panel, the session switchers, Go to…, ⌘1…⌘9, the target lookup of
-Work on It and the phone's start (`open_existing`), and the sessions'
-statuses — and writes nothing. Its row is deleted
-(`TerminalSessionQueries.delete`; its `terminal_session_targets` by cascade,
-its asks' `session_id` set NULL) only when the Undo window
-(`PendingSessionDeletes.window`, 5 s from the last delete of the batch) ends,
-or when the app quits (`commitPendingDeletesForQuit`, a synchronous write
-bounded at 2 s); a workbench deleted meanwhile cascades it and the batch
-forgets it. Until then **Undo** (`undoPendingDeletes`) brings back every
+Work on It and the phone's start (`open_existing`), the phone's session
+list (`TerminalSessionSlice.hiddenIDs`), and the sessions' statuses; an ask's
+"go to session" says "That session no longer exists." — and writes nothing.
+Its row is deleted (`TerminalSessionQueries.delete`; its
+`terminal_session_targets` by cascade, its asks' `session_id` set NULL) only
+when the Undo window (`PendingSessionDeletes.window`, 5 s from the last
+delete of the batch, re-armed before the row's process is closed) ends and
+no row of the batch is still closing, or when the app quits
+(`commitPendingDeletesForQuit`: the same write, waited for together with a
+commit already in flight, bounded at 2 s in all); a workbench deleted
+meanwhile cascades it and the batch forgets it. Until then **Undo** (`undoPendingDeletes`) brings back every
 session of the batch with its row, links and asks byte-identical, not
 running (a click or Restart resumes it). A failed delete brings the row back
 with an error, never keeps it hidden. A live session that is working, at a
@@ -1333,7 +1336,7 @@ asks would be worse than the dialog it replaces.
 **Test guards:**
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` — `testProj17_DeleteHidesAtOnceAndWritesNothingUntilTheWindowEnds`, `testProj17_UndoBringsBackTheRowWithItsLinksAndAsks`, `testProj17_CommitAfterTheWindowDeletesWithCascades`, `testProj17_QuitCommitsPendingDeletes`
 - `WatchtowerDesktop/Tests/Core/SessionDeletePolicyTests.swift::testProj17_QuickDeleteTable`
-- supporting: `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` (`testBatchUndoRestoresEverySessionOfTheBatch`, `testFailedCommitBringsTheRowBackWithAnError`, `testPendingRowIsInNoListGoToOrTargetLookup`, `testUndoStateSurvivesLeavingTheWorkbench`, `testAWorkbenchGoneElsewhereDropsItsPendingSessions`), `WatchtowerDesktop/Tests/WorkbenchesViewModelDeleteTests.swift::testWorkbenchDeleteDropsItsPendingSessions`, `WatchtowerDesktop/Tests/MobileHub/SessionStartHandlerTests.swift::testOpenExistingNeverPicksAPendingDelete`, `WatchtowerDesktop/Tests/Core/PendingSessionDeletesTests.swift`
+- supporting: `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` (`testBatchUndoRestoresEverySessionOfTheBatch`, `testFailedCommitBringsTheRowBackWithAnError`, `testPendingRowIsInNoListGoToOrTargetLookup`, `testUndoStateSurvivesLeavingTheWorkbench`, `testAWorkbenchGoneElsewhereDropsItsPendingSessions`, `testADeleteDuringAnotherClosesGraceWaitsForThatClose`, `testUndoWhileTheCloseIsPendingCommitsNothing`, `testAskOfAPendingSessionSaysTheSessionIsGone`, `testQuitWaitsForTheWindowsCommitInFlight`, `testQuitIsBoundedWhenTheWriteHangs`, `testQuitWriteFailureKeepsTheRow`, `testHiddenIDsChangesAreReportedOnDeleteAndUndo`), `WatchtowerDesktop/Tests/MobileHub/TerminalSessionSliceTests.swift::testASessionInTheUndoBatchIsNotPublished`, `WatchtowerDesktop/Tests/WorkbenchesViewModelDeleteTests.swift::testWorkbenchDeleteDropsItsPendingSessions`, `WatchtowerDesktop/Tests/MobileHub/SessionStartHandlerTests.swift::testOpenExistingNeverPicksAPendingDelete`, `WatchtowerDesktop/Tests/Core/PendingSessionDeletesTests.swift`
 
 **Locked since:** 2026-10-12
 

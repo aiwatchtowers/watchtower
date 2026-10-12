@@ -192,15 +192,39 @@ final class WorkbenchesViewModel {
     /// #480, PROJ-17): hidden from every read here, restored by Undo,
     /// committed when the window ends or the app quits. Here, on the
     /// AppState-owned view model, so the toast and its Undo survive
-    /// navigating away.
-    var pendingDeletes = PendingSessionDeletes()
+    /// navigating away. A change of the hidden ids is reported to
+    /// `onPendingDeletesChanged` (the phone's session slice).
+    var pendingDeletes = PendingSessionDeletes() {
+        didSet {
+            if oldValue.ids != pendingDeletes.ids { onPendingDeletesChanged?(pendingDeletes.ids) }
+        }
+    }
+    /// The hidden ids changed (MobileHub: the `terminal_session` slice
+    /// leaves them out until Undo or the commit).
+    @ObservationIgnored var onPendingDeletesChanged: ((Set<Int64>) -> Void)?
     /// Waits out the Undo window, then commits the batch; re-armed by every
     /// delete, cancelled by Undo and the quit commit.
     @ObservationIgnored var deleteCommitTask: Task<Void, Never>?
+    /// The deleted sessions whose process is still closing (up to
+    /// `TerminalCenter.killGrace`): the batch never commits while one of
+    /// its rows is here.
+    @ObservationIgnored var closingDeletes: Set<Int64> = []
+    /// The window ran out while a row of the batch was still closing: the
+    /// last close to finish commits the batch.
+    @ObservationIgnored var deleteCommitDue = false
+    /// Every deferred DELETE write in flight (the timer's and the quit's):
+    /// the quit waits on it, bounded by `quitDeleteWait`.
+    @ObservationIgnored let deleteWrites = DispatchGroup()
+    /// How long the quit commit of the Undo batch may hold the quit. A seam
+    /// for tests.
+    @ObservationIgnored var quitDeleteWait: TimeInterval = 2
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
-    /// Runs the deferred DELETEs in one write. A seam for tests (a failing write).
-    @ObservationIgnored lazy var commitSessionDeletes: ([Int64]) async throws -> Void = { [dbPool] ids in
+    /// Runs deferred DELETEs in one write — the only DELETE path of the
+    /// deferred delete, the timer's and the quit's. Off the main actor, so
+    /// the quit can wait for it while it holds the main thread. A seam for
+    /// tests (a failing or a slow write).
+    @ObservationIgnored lazy var commitSessionDeletes: @Sendable ([Int64]) async throws -> Void = { [dbPool] ids in
         try await dbPool.write { db in
             for id in ids { try TerminalSessionQueries.delete(db, id: id) }
         }
