@@ -42,7 +42,7 @@ struct WindowedTranscriber {
         var promptState = ContextPromptState()
         var lastEngineError: Error?
         var gate = WindowSpeechGate(detector: speechDetector, config: config)
-        defer { gate.logSummary() }
+        defer { gate.logSummary(engineDrops: engine.takeDropCounts()) }
 
         for (index, range) in ranges.enumerated() {
             let decoded = await decodeGatedWindow(Array(samples[range]), gate: &gate, previousLanguage: prevLang,

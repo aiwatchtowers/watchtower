@@ -65,13 +65,16 @@ struct WindowSpeechGate {
         return kept
     }
 
-    /// Counts only — enough to tell "the gate ate it" from "the model never
-    /// heard it" when a transcript looks thin.
-    func logSummary() {
-        guard detector != nil, silentWindows + fallbackWindows + droppedSegments > 0 else { return }
-        NSLog("SpeechGate: %d silent window(s) skipped, %d segment(s) / %d chars outside speech dropped, "
-              + "%d window(s) on the energy fallback",
-              silentWindows, droppedSegments, droppedChars, fallbackWindows)
+    /// One line per recording, counts only — enough to tell "a defence ate
+    /// it" from "the model never heard it" when a transcript looks thin.
+    /// `engineDrops` adds what the engine dropped itself (L3, phrase filter).
+    func logSummary(engineDrops: WindowDropCounts) {
+        let total = silentWindows + fallbackWindows + droppedSegments + engineDrops.confidence + engineDrops.phrase
+        guard total > 0 else { return }
+        NSLog("SpeechGate: dropped vad=%d window(s), outside_speech=%d, confidence=%d, phrase=%d segment(s), "
+              + "%d chars; %d window(s) on the energy fallback",
+              silentWindows, droppedSegments, engineDrops.confidence, engineDrops.phrase,
+              droppedChars + engineDrops.droppedChars, fallbackWindows)
     }
 }
 

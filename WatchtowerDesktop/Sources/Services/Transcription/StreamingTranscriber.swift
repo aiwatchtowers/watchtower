@@ -49,7 +49,7 @@ struct StreamingTranscriber {
         var lastEngineError: Error?
         var chunkIndex = 0
         var gate = WindowSpeechGate(detector: speechDetector, config: config)
-        defer { gate.logSummary() }
+        defer { gate.logSummary(engineDrops: engine.takeDropCounts()) }
 
         func process(window: [Float], windowStart: Int) async {
             let decoded = await decodeGatedWindow(window, gate: &gate, previousLanguage: prevLang,

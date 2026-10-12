@@ -34,6 +34,27 @@ protocol WhisperWindowEngine: Sendable {
     /// carried context across a failed window on the strength of this (see
     /// `decodeWithPromptFallback`, which WhisperKitEngine routes through).
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment]
+    /// Segments the engine dropped itself (L3 confidence, phrase filter)
+    /// since the last call — read once per recording for the gate's summary
+    /// log. Engines that drop nothing keep the default.
+    func takeDropCounts() -> WindowDropCounts
+}
+
+extension WhisperWindowEngine {
+    func takeDropCounts() -> WindowDropCounts { WindowDropCounts() }
+}
+
+/// What an engine dropped from its own decodes: counts only, never text.
+struct WindowDropCounts: Equatable, Sendable {
+    var confidence = 0
+    var phrase = 0
+    var droppedChars = 0
+
+    mutating func add(_ other: Self) {
+        confidence += other.confidence
+        phrase += other.phrase
+        droppedChars += other.droppedChars
+    }
 }
 
 /// Windowed-transcription parameters. Ported from snoop (1 s overlap, langset
