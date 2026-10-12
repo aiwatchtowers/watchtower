@@ -688,6 +688,8 @@ final class AppState {
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
+                    // Sessions waiting in the Undo batch are deleted now (PROJ-17).
+                    self?.workbenchesViewModel?.commitPendingDeletesForQuit()
                     self?.mobileHub?.stop()
                 }
             }

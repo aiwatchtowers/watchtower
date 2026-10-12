@@ -74,6 +74,28 @@ final class TerminalSessionSliceTests: XCTestCase {
         )
     }
 
+    // MARK: - Undo batch (board #480, PROJ-17)
+
+    /// A session deleted on the Mac and waiting for Undo is neither listed
+    /// nor counted; with the batch empty again (Undo) it is back.
+    func testASessionInTheUndoBatchIsNotPublished() throws {
+        let (project, kept, hidden) = try dbPool.write { db -> (Int64, Int64, Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            return (project, try SliceSeed.insertSession(db, projectID: project), try SliceSeed.insertSession(db, projectID: project))
+        }
+        let box = HiddenSessionIDsBox()
+        box.store([hidden])
+        let source = TerminalSessionSlice(liveness: { SessionLiveness() }, reportSummary: { _, _ in nil },
+                                          hiddenIDs: { box.current })
+
+        XCTAssertEqual(Set(try payloads(source).keys), [kept])
+        let counts = try XCTUnwrap(try dbPool.read { try source.sessionCounts($0) }[project])
+        XCTAssertEqual(counts.notRunning, 1)
+
+        box.store([])
+        XCTAssertEqual(Set(try payloads(source).keys), [kept, hidden], "Undo publishes it again")
+    }
+
     // MARK: - Wire shape
 
     func testPayloadMatchesTheKitFixtureAndHidesTheRawColumns() throws {
