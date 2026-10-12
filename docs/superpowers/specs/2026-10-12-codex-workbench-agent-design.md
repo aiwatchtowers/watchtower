@@ -402,6 +402,9 @@ What shipped differs from the text above in these points. The inline text is upd
   question and old transcript path are cleared, and `agent_state` is kept until the next prompt. A same-id `compact`
   writes no mark. A NULL stored id is filled only through `SetTerminalAgentSessionID`; moving a set id uses
   `SetTerminalClaudeSessionID`. A nested `claude` in a codex row's shell never writes into the codex row.
+- **§7, CODEX_HOME (v1 limit).** Only the Desktop-launched paths (trust step, `integrate status`, `workbench
+  resync`, the rollout lookup) honour the login shell's `CODEX_HOME`. The daemon and a standalone `watchtower` use
+  their own environment's `CODEX_HOME`.
 - **§3.1, transcript path.** Only the codex SessionStart stores `agent_transcript_path`. The Claude Code hook
   leaves it NULL, since no Claude reader uses it in v1 (Claude's resume and titles still look in `~/.claude`).
 - **§3.1, Down.** The Down migration keeps the codex rows' asks with `session_id` NULL (the FK is `ON DELETE SET
