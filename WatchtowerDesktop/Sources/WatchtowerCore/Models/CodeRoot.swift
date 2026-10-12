@@ -45,21 +45,22 @@ package struct CodeRoot: Hashable, Sendable {
         return ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// The worktree's name as the FILES header and the removed-worktree
-    /// banner show it (its folder's name); nil for the main root.
-    package var worktreeName: String? {
-        isMain ? nil : folder.lastPathComponent
+    /// The worktree's folder name, as the FILES header and the
+    /// removed-worktree banner show it. For the main root it is the
+    /// workbench folder's name, which neither shows.
+    package var worktreeFolderName: String {
+        folder.lastPathComponent
     }
 
     /// The FILES header: `FILES`, or `FILES — ⑂ mobile-a` in a worktree.
     package var filesCaption: String {
-        worktreeName.map { "FILES — ⑂ \($0)" } ?? "FILES"
+        isMain ? "FILES" : "FILES — ⑂ \(worktreeFolderName)"
     }
 
     /// The banner over the Files pane once this worktree is gone (spec §7).
     package func removedBannerText(unsavedFiles count: Int) -> String {
         let files = count == 1 ? "1 file" : "\(count) files"
-        return "The worktree \(worktreeName ?? folder.lastPathComponent) was removed — \(files) had unsaved edits"
+        return "The worktree \(worktreeFolderName) was removed — \(files) had unsaved edits"
     }
 
     /// Pure path arithmetic. `standardizedFileURL` is not used: it strips a

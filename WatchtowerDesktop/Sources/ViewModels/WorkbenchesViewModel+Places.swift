@@ -66,18 +66,45 @@ extension WorkbenchesViewModel {
     }
 
     /// The code root the page's FILES, Files pane, git marks and code
-    /// navigation work in (spec D6, §6.3): the worktree of the session the
-    /// layout holds, when its place is a worktree that was read and still
-    /// exists; the main folder for a page without a session, a main, unknown,
-    /// stale or removed place (never a worktree that cannot be proven). The
-    /// worktree root is built only from Go's `folder_root` spelling.
+    /// navigation work in (spec D6, §6.3): the root of the session the
+    /// layout holds (`codeRoot(sessionID:project:)`); the main folder for a
+    /// page without a session.
     func activeCodeRoot(project: Workbench) -> CodeRoot {
-        guard let sessionID = pageSessionID(projectID: project.id), !sessionPlaces.isPlaceStale(sessionID: sessionID),
-              case let .worktree(_, folder, _) = sessionPlaces.currentPlace(sessionID: sessionID)
-        else { return project.mainCodeRoot }
+        codeRoot(sessionID: pageSessionID(projectID: project.id), project: project)
+    }
+
+    /// The root a session's agent works in: its worktree when its place is
+    /// a worktree that was read and still exists; the main folder for no
+    /// session, a main, unknown, stale or removed place (never a worktree
+    /// that cannot be proven). The worktree root is built only from Go's
+    /// `folder_root` spelling. Worked out again only when the place, the
+    /// workbench folder or the removed worktrees change.
+    func codeRoot(sessionID: Int64?, project: Workbench) -> CodeRoot {
+        let inputs = CodeRootMemo.Inputs(
+            place: sessionID.map(sessionPlaces.currentPlace(sessionID:)) ?? .unknown,
+            stale: sessionID.map(sessionPlaces.isPlaceStale(sessionID:)) ?? false,
+            folderPath: project.folderPath,
+            removed: codeFiles.removedRoots
+        )
+        let key = CodeRootMemoKey(projectID: project.id, sessionID: sessionID)
+        if let memo = codeRootMemo[key], memo.inputs == inputs { return memo.root }
+        let root = provenCodeRoot(inputs, project: project)
+        codeRootMemo[key] = CodeRootMemo(inputs: inputs, root: root)
+        return root
+    }
+
+    private func provenCodeRoot(_ inputs: CodeRootMemo.Inputs, project: Workbench) -> CodeRoot {
+        guard !inputs.stale, case let .worktree(_, folder, _) = inputs.place else { return project.mainCodeRoot }
         let root = CodeRootPolicy.root(workbench: project, worktreeFolder: folder)
-        // Also read so a worktree removed under FSEvents moves the page
-        // before its place is read again.
+        if root.isMain {
+            // The worktree is gone (also while hidden): its buffers are
+            // locked now, not at their next save. Not while a view body
+            // reads this.
+            let files = codeFiles
+            Task { @MainActor in files.sweepRemovedWorktrees(workbenchID: project.id) }
+        }
+        // A worktree removed under FSEvents moves the page before its place
+        // is read again.
         return codeFiles.isRemoved(root) ? project.mainCodeRoot : root
     }
 
@@ -93,4 +120,22 @@ extension WorkbenchesViewModel {
             stale: sessionPlaces.isPlaceStale(sessionID: sessionID)
         )
     }
+}
+
+struct CodeRootMemoKey: Hashable {
+    let projectID: Int64
+    let sessionID: Int64?
+}
+
+/// `WorkbenchesViewModel.codeRoot(sessionID:project:)`'s last answer.
+struct CodeRootMemo {
+    struct Inputs: Equatable {
+        let place: SessionPlace
+        let stale: Bool
+        let folderPath: String
+        let removed: Set<CodeRoot>
+    }
+
+    let inputs: Inputs
+    let root: CodeRoot
 }

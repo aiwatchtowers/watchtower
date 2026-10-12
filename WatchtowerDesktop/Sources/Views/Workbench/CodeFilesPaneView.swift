@@ -405,7 +405,7 @@ struct MonacoEditorView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         // The session on screen moved the page to another root (#565): the
         // page's other registrations follow; its unsent edits are the
-        // center's `activate(root:previous:)` business.
+        // center's `switchRoot(to:from:)` business.
         if context.coordinator.root != root { context.coordinator.followRoot(root) }
         // Read here so a reload or a rename re-runs this (observation).
         let open = tabs.paths.compactMap { files.existingBuffer(root, $0) }
@@ -772,11 +772,10 @@ struct MonacoEditorView: NSViewRepresentable {
             questionPopover?.close()
             questionPopover = nil
             files.questions?.unregisterPage(self, for: project.id)
-            files.unregister(self, for: root)
+            files.unregisterBridge(self)
             files.navigation?.unregisterPage(self, for: project.id)
             files.usages?.unregisterPage(self, for: project.id)
             let files = files
-            let root = root
             let wasReady = ready
             Task { @MainActor in
                 // `webView` and `files` are held by this task, not by the

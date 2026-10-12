@@ -1075,8 +1075,8 @@ final class TerminalCenterTests: XCTestCase {
     /// with its workbench; a standalone terminal keeps SwiftTerm's handler.
     func testPathLinksAreWiredForWorkbenchSessionsOnly() throws {
         let center = makeCenter()
-        var opened: [(Int64, TerminalPathLinks.Location)] = []
-        center.onPathLink = { opened.append(($0, $1)) }
+        var opened: [(Int64, Int64, TerminalPathLinks.Location)] = []
+        center.onPathLink = { opened.append(($0, $1, $2)) }
         let workbench = try row(project: 1)
         let standalone = try row(project: nil, kind: .shell)
         center.start(workbench, fresh: true)
@@ -1086,7 +1086,8 @@ final class TerminalCenterTests: XCTestCase {
         let location = TerminalPathLinks.Location(path: "a.go", line: 3, col: nil)
         sessions[0].openPathLink?(location)
         XCTAssertEqual(opened.map(\.0), [1])
-        XCTAssertEqual(opened.map(\.1), [location])
+        XCTAssertEqual(opened.map(\.1), [workbench.id], "the session it was clicked in")
+        XCTAssertEqual(opened.map(\.2), [location])
     }
 
     /// Board #500: a workbench session's `ask #N` is looked up and opened

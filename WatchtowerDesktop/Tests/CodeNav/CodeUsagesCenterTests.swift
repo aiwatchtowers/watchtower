@@ -157,6 +157,23 @@ final class CodeUsagesCenterTests: XCTestCase {
         XCTAssertEqual(center.usages(for: worktree)?.count, 1, "a stopped search's late match lands nowhere")
     }
 
+    /// #565: a removed worktree's list goes, and its live search stops;
+    /// the main folder's list stays.
+    func testARemovedWorktreeLosesItsUsages() {
+        let (center, vm) = makeCenter()
+        let worktree = CodeRoot(workbenchID: project.id, worktree: folder.appendingPathComponent(".claude/worktrees/mobile-a"))
+        center.showUsages(of: "load", root: root)
+        center.showUsages(of: "save", root: worktree)
+
+        vm.codeFiles.rootRemoved(worktree)
+
+        XCTAssertNil(center.usages(for: worktree))
+        XCTAssertTrue(searches.started[1].handle.cancelled, "its search stopped")
+        XCTAssertEqual(center.usages(for: root)?.word, "load")
+        searches.started[1].onMatch(hit("src/store.swift", 3))
+        XCTAssertNil(center.usages(for: worktree), "a late match lands nowhere")
+    }
+
     func testAnEmptyWordBeepsAndSearchesNothing() {
         let (center, _) = makeCenter()
         center.showUsages(of: "", root: root)

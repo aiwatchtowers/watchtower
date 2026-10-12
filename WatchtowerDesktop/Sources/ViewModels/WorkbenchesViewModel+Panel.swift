@@ -290,10 +290,13 @@ extension WorkbenchesViewModel {
     /// A ⌘-clicked `path:line` in a workbench session's terminal (spec
     /// §9.5): the file in Files at the line, beside the terminal (⌥↩'s
     /// placement). A workbench no longer listed opens nothing.
-    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64) async {
+    /// It opens in the root of the session it was clicked in (its worktree
+    /// when proven, else the main folder) — the root the page shows once
+    /// that session is on screen.
+    func openTerminalLink(_ location: TerminalPathLinks.Location, workbenchID: Int64, sessionID: Int64) async {
         guard let project = summaries.first(where: { $0.id == workbenchID })?.project else { return }
         let target = OpenQuicklyTarget(path: location.path, line: location.line, col: location.col)
-        await openFile(at: target, root: project.mainCodeRoot, beside: true)
+        await openFile(at: target, root: codeRoot(sessionID: sessionID, project: project), beside: true)
     }
 
     /// A workbench path clicked in an ask's text (#394): the file in Files
@@ -301,13 +304,15 @@ extension WorkbenchesViewModel {
     /// expanded drawer goes back beside it so the file shows. The file
     /// opens by its resolved path, so `./a.go` and `a.go` are one tab.
     /// False — and nothing opened — for a path that is not a file of the
-    /// folder or a workbench no longer listed.
+    /// folder or a workbench no longer listed. The folder is the root of
+    /// the ask's session (its worktree when proven), else the page's.
     @discardableResult
-    func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64) async -> Bool {
-        guard let project = summaries.first(where: { $0.id == projectID })?.project,
-              let path = WorkbenchFolderPath.resolve(target.path, folder: project.folderPath) else { return false }
+    func openAskLink(_ target: OpenQuicklyTarget, projectID: Int64, sessionID: Int64? = nil) async -> Bool {
+        guard let project = summaries.first(where: { $0.id == projectID })?.project else { return false }
+        let root = sessionID.map { codeRoot(sessionID: $0, project: project) } ?? activeCodeRoot(project: project)
+        guard let path = WorkbenchFolderPath.resolve(target.path, folder: root.folder.path) else { return false }
         asks.drawerExpanded = false
-        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), root: project.mainCodeRoot, beside: true)
+        await openFile(at: OpenQuicklyTarget(path: path, line: target.line, col: target.col), root: root, beside: true)
         return true
     }
 

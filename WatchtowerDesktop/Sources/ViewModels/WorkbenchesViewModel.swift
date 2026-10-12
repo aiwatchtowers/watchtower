@@ -105,6 +105,10 @@ final class WorkbenchesViewModel {
     /// Where each session's agent works (board #565): the rows' place line
     /// and the header's worktree crumb.
     let sessionPlaces: SessionPlaceCenter
+    /// The code root last worked out per workbench and session, with what
+    /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
+    /// read it without touching the disk again.
+    @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
     /// A target the Board of that workbench opens once it is on screen
     /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
     var boardFocus: [Int64: Int64] = [:]
@@ -303,8 +307,8 @@ final class WorkbenchesViewModel {
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
         }
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
-        terminalCenter?.onPathLink = { [weak self] workbenchID, location in
-            Task { await self?.openTerminalLink(location, workbenchID: workbenchID) }
+        terminalCenter?.onPathLink = { [weak self] workbenchID, sessionID, location in
+            Task { await self?.openTerminalLink(location, workbenchID: workbenchID, sessionID: sessionID) }
         }
         // A hover card that cannot be read shows nothing (logged); a click
         // still reports the failure (`openTerminalAskLink`).

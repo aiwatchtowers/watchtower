@@ -224,6 +224,12 @@ final class CodeNavigationCenter {
         workbenches?.showLocation(target, root: root, keepingTab: true)
     }
 
+    /// A removed worktree's Back/Forward history goes: nothing of it can
+    /// be shown again (board #565, spec §7).
+    func codeRootRemoved(_ root: CodeRoot) {
+        histories[root] = nil
+    }
+
     private func showNotice(_ text: String, workbenchID: Int64) {
         noticeSerial += 1
         let serial = noticeSerial

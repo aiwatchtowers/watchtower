@@ -99,7 +99,7 @@ final class CodeFilesCenterRootTests: XCTestCase {
         let page = PendingPage(edits: [CodeEditorPendingEdit(id: bufferA.id, text: "all: typed in a\n", base: 0)])
         center.register(page, for: rootA)
 
-        await center.activate(root: rootB, previous: rootA)
+        await center.switchRoot(to: rootB, from: rootA)
 
         XCTAssertEqual(page.asked, 1, "the page was asked once, during the switch")
         XCTAssertEqual(try text(worktreeA, "Makefile"), "all: typed in a\n", "written to A's file")
@@ -164,11 +164,11 @@ final class CodeFilesCenterRootTests: XCTestCase {
         center.open("main.go", root: rootA, preview: false)
         center.activate("Makefile", root: rootA)
 
-        await center.activate(root: rootB, previous: rootA)
+        await center.switchRoot(to: rootB, from: rootA)
         center.open("main.go", root: rootB, preview: false)
         XCTAssertEqual(center.tabs(for: rootB).paths, ["main.go"], "B starts with its own set")
 
-        await center.activate(root: rootA, previous: rootB)
+        await center.switchRoot(to: rootA, from: rootB)
         XCTAssertEqual(center.tabs(for: rootA).paths, ["Makefile", "main.go"], "A's tabs are where they were")
         XCTAssertEqual(center.tabs(for: rootA).active, "Makefile")
         XCTAssertEqual(center.tabs(for: rootB).paths, ["main.go"], "B's set is not lost")
@@ -195,7 +195,7 @@ final class CodeFilesCenterRootTests: XCTestCase {
         let page = PendingPage(edits: [])
         center.register(page, for: rootA)
         let other = Workbench(row: Row(["id": 8, "name": "other", "folder_path": worktreeB.path])).mainCodeRoot
-        await center.activate(root: other, previous: rootA)
+        await center.switchRoot(to: other, from: rootA)
         XCTAssertEqual(page.asked, 0, "a page that changed workbench is not the old root's switch")
     }
 
@@ -208,7 +208,7 @@ final class CodeFilesCenterRootTests: XCTestCase {
         center.register(page, for: rootA)
         try FileManager.default.removeItem(at: worktreeA)
 
-        await center.activate(root: main, previous: rootA)
+        await center.switchRoot(to: main, from: rootA)
 
         XCTAssertTrue(center.isRemoved(rootA))
         XCTAssertNil(center.editorErrors[main])
@@ -217,6 +217,145 @@ final class CodeFilesCenterRootTests: XCTestCase {
         XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [buffer.id])
         XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "nothing was written")
         XCTAssertTrue(center.tabs(for: rootA).paths.isEmpty)
+    }
+
+    // MARK: Removed while hidden, late text, tree operations
+
+    /// Nothing watched the worktree when it went: the page coming back
+    /// finds it gone, locks its edits and shows them in the banner — and a
+    /// folder recreated at the same path does not make them writable.
+    func testAWorktreeRemovedWhileHiddenIsLockedWhenThePageShowsAgain() throws {
+        let center = makeCenter()
+        center.startWatching(rootA)
+        center.open("Makefile", root: rootA, preview: false)
+        let dirty = center.buffer(for: rootA, relPath: "Makefile")
+        dirty.loadIfNeeded()
+        center.edited(dirty, text: "all: hidden edit\n", base: 0)
+        center.stopShowing(rootA)
+        try FileManager.default.removeItem(at: worktreeA)
+
+        // The page shows the main folder: the session's worktree is gone.
+        center.startWatching(main)
+
+        XCTAssertTrue(center.isRemoved(rootA))
+        XCTAssertTrue(dirty.writesLocked)
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [dirty.id], "the banner lists it")
+        XCTAssertNil(center.existingBuffer(rootA, "Makefile"))
+
+        try FileManager.default.createDirectory(at: worktreeA, withIntermediateDirectories: true)
+        try "all:\n".write(to: worktreeA.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        center.startWatching(rootA)
+        XCTAssertFalse(dirty.saveNow(explicit: true))
+        dirty.keepMine()
+        center.flushAll()
+        XCTAssertEqual(try text(worktreeA, "Makefile"), "all:\n", "the recreated worktree is never written")
+        XCTAssertTrue(dirty.writesLocked, "locked whatever the disk shows")
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [dirty.id])
+    }
+
+    func testASwitchFindsAnotherWorktreeRemovedWhileHidden() async throws {
+        let center = makeCenter()
+        center.open("Makefile", root: rootA, preview: false)
+        let dirty = center.buffer(for: rootA, relPath: "Makefile")
+        dirty.loadIfNeeded()
+        center.edited(dirty, text: "all: hidden edit\n", base: 0)
+        try FileManager.default.removeItem(at: worktreeA)
+
+        await center.switchRoot(to: main, from: rootB)
+
+        XCTAssertTrue(center.isRemoved(rootA))
+        XCTAssertTrue(dirty.writesLocked)
+        XCTAssertFalse(center.isRemoved(rootB))
+    }
+
+    /// The last line of defence: a save that finds the worktree folder gone
+    /// writes nothing (no folder recreated) and the whole root is removed.
+    func testASaveIntoAWorktreeGoneWhileHiddenLocksTheRoot() throws {
+        let center = makeCenter()
+        center.open("Makefile", root: rootA, preview: false)
+        let dirty = center.buffer(for: rootA, relPath: "Makefile")
+        dirty.loadIfNeeded()
+        center.edited(dirty, text: "all: hidden edit\n", base: 0)
+        try FileManager.default.removeItem(at: worktreeA)
+
+        XCTAssertFalse(dirty.saveNow(explicit: true))
+
+        XCTAssertTrue(dirty.writesLocked)
+        XCTAssertTrue(center.isRemoved(rootA))
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [dirty.id])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "no folder was recreated")
+    }
+
+    /// Text the page hands over after the worktree went, for a file that
+    /// was clean then, is kept in the banner instead of being dropped.
+    func testLateTextForACleanBufferOfARemovedWorktreeIsKept() throws {
+        let center = makeCenter()
+        center.open("main.go", root: rootA, preview: false)
+        let clean = center.buffer(for: rootA, relPath: "main.go")
+        clean.loadIfNeeded()
+        try FileManager.default.removeItem(at: worktreeA)
+        center.rootRemoved(rootA)
+        XCTAssertTrue(center.orphanedEdits(workbenchID: project.id).isEmpty, "nothing unsaved yet")
+
+        center.apply([CodeEditorPendingEdit(id: clean.id, text: "package late\n", base: 0)], now: true)
+
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).map(\.id), [clean.id])
+        XCTAssertEqual(clean.text, "package late\n")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "nothing was written")
+        center.apply([CodeEditorPendingEdit(id: clean.id, text: "package later\n", base: 0)], now: true)
+        XCTAssertEqual(center.orphanedEdits(workbenchID: project.id).count, 1, "listed once")
+    }
+
+    func testTreeOperationsRefuseAWorktreeWhoseFolderIsGone() async throws {
+        let center = makeCenter()
+        try FileManager.default.removeItem(at: worktreeA)
+
+        XCTAssertThrowsError(try center.createFile("new.go", in: "", root: rootA))
+        XCTAssertThrowsError(try center.createFolder("pkg/sub", in: "", root: rootA))
+        await XCTAssertThrowsAsync { _ = try await center.rename("Makefile", to: "sub/GNUmakefile", root: rootA) }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.path), "no folder was recreated")
+        XCTAssertTrue(center.isRemoved(rootA))
+    }
+
+    func testTreeOperationsRefuseARemovedWorktreeWhoseFolderCameBack() async throws {
+        let center = makeCenter()
+        center.rootRemoved(rootA)
+
+        XCTAssertThrowsError(try center.createFile("new.go", in: "", root: rootA))
+        XCTAssertThrowsError(try center.createFolder("pkg", in: "", root: rootA))
+        await XCTAssertThrowsAsync { _ = try await center.rename("Makefile", to: "GNUmakefile", root: rootA) }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.appendingPathComponent("new.go").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktreeA.appendingPathComponent("pkg").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: worktreeA.appendingPathComponent("Makefile").path), "not renamed")
+    }
+
+    // MARK: The editor bridge on a switch
+
+    func testASwitchWaitsBoundedForASilentPageAndSaysSo() async {
+        let center = makeCenter()
+        center.pendingTimeout = .milliseconds(50)
+        let page = SilentPage()
+        center.register(page, for: rootA)
+
+        await center.switchRoot(to: rootB, from: rootA)
+
+        XCTAssertEqual(center.editorErrors[rootB]?.hasPrefix("The editor did not answer"), true)
+        page.release()
+    }
+
+    func testThePageGoingAwayUnregistersWhereverItsBridgeIs() async {
+        let center = makeCenter()
+        let page = PendingPage(edits: [])
+        center.register(page, for: rootA)
+        await center.switchRoot(to: rootB, from: rootA)
+
+        center.unregisterBridge(page)
+
+        await center.pullPending(rootB)
+        await center.pullPending(rootA)
+        XCTAssertEqual(page.asked, 1, "only the switch asked it")
     }
 
     // MARK: Watching a hidden worktree
@@ -363,6 +502,72 @@ final class CodeFilesActiveRootTests: XCTestCase {
         vm.codeFiles.rootRemoved(root)
         XCTAssertEqual(vm.activeCodeRoot(project: project), project.mainCodeRoot)
     }
+
+    /// A ⌘-clicked `path:line` opens in the worktree of the session it was
+    /// clicked in, and the Files pane beside it shows that root.
+    func testATerminalLinkOpensInTheSessionsWorktree() async throws {
+        let vm = makeVM()
+        await vm.reload()
+        await placed(vm)
+        vm.setLayout(layout(.session(sessionID)), projectID: project.id)
+        try "package wt\n".write(to: worktree.appendingPathComponent("wt.go"), atomically: true, encoding: .utf8)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+
+        await vm.openTerminalLink(TerminalPathLinks.Location(path: "wt.go", line: 1, col: nil),
+                                  workbenchID: project.id, sessionID: sessionID)
+
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, ["wt.go"])
+        XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty, "not the main folder's tabs")
+        XCTAssertTrue(vm.layout(projectID: project.id).isShowing(.files))
+        XCTAssertEqual(vm.activeCodeRoot(project: project), root, "the Files pane shows the tab's root")
+    }
+
+    /// A path in an ask resolves in its session's worktree: a file only the
+    /// worktree has opens there.
+    func testAnAskLinkResolvesInTheSessionsWorktree() async throws {
+        let vm = makeVM()
+        await vm.reload()
+        await placed(vm)
+        vm.setLayout(layout(.session(sessionID)), projectID: project.id)
+        try "package wt\n".write(to: worktree.appendingPathComponent("only-here.go"), atomically: true, encoding: .utf8)
+        let root = CodeRoot(workbenchID: project.id, worktree: worktree)
+
+        let opened = await vm.openAskLink(OpenQuicklyTarget(path: "only-here.go", line: 1, col: nil),
+                                          projectID: project.id, sessionID: sessionID)
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, ["only-here.go"])
+        XCTAssertTrue(vm.codeFiles.tabs(for: project.mainCodeRoot).paths.isEmpty)
+        XCTAssertEqual(vm.activeCodeRoot(project: project), root, "the Files pane shows the tab's root")
+    }
+}
+
+/// An editor page that does not answer until released.
+@MainActor
+private final class SilentPage: CodeEditorBridge {
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+
+    func takePending() async -> [CodeEditorPendingEdit]? {
+        if !released { await withCheckedContinuation { waiting.append($0) } }
+        return []
+    }
+
+    func release() {
+        released = true
+        waiting.forEach { $0.resume() }
+        waiting = []
+    }
+}
+
+@MainActor
+private func XCTAssertThrowsAsync(
+    _ body: () async throws -> Void, file: StaticString = #filePath, line: UInt = #line
+) async {
+    do {
+        try await body()
+        XCTFail("expected an error", file: file, line: line)
+    } catch {}
 }
 
 /// An editor page holding unsent edits; counts how often it was asked.

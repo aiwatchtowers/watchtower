@@ -45,7 +45,7 @@ struct WorkbenchPageView: View {
         // The session on screen moved the page to another folder (#565):
         // the editor's unsent edits go to the old root's files first.
         .onChange(of: activeRoot) { old, new in
-            Task { await vm.codeFiles.activate(root: new, previous: old) }
+            Task { await vm.codeFiles.switchRoot(to: new, from: old) }
         }
         // Hand to Session (⌥⌘↩) from the popover, the Questions tab or Open Quickly.
         .sheet(item: handoffRequest) { request in

@@ -370,6 +370,23 @@ final class CodeNavigationCenterTests: XCTestCase {
         XCTAssertTrue(center.canGoBack(root: root), "Back in the worktree took nothing from the main folder")
     }
 
+    /// #565: a removed worktree's Back/Forward history goes; the main
+    /// folder's stays.
+    func testARemovedWorktreeLosesItsHistory() async {
+        let (center, vm) = makeCenter(symbols: [saveInStore])
+        await center.goToDefinition(request("save", at: "src/run.pl", 1, 1), root: root, anchor: nil)
+        let worktree = CodeRoot(workbenchID: project.id, worktree: project.folderURL.appendingPathComponent(".claude/worktrees/mobile-a"))
+        vm.codeFiles.open("src/store.swift", root: worktree, preview: false)
+        vm.codeFiles.cursorMoved(CodeNavLocation(path: "src/store.swift", line: 2, col: 1), root: worktree)
+        center.recordJumpFromCurrentLocation(root: worktree)
+        XCTAssertTrue(center.canGoBack(root: worktree))
+
+        vm.codeFiles.rootRemoved(worktree)
+
+        XCTAssertFalse(center.canGoBack(root: worktree))
+        XCTAssertTrue(center.canGoBack(root: root))
+    }
+
     func testHistoryIsPerWorkbenchAndOutlivesThePage() async {
         let (center, _) = makeCenter(symbols: [saveInStore])
         let page = FakeDefinitionPage(answer: true)

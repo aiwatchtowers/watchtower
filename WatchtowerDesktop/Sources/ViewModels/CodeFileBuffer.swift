@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import WatchtowerCore
 
 /// One file open in a Files tab. `diskText` is the last version read or
 /// written; `text` is the editor's. Edits save themselves `autosaveDelay`
@@ -76,13 +77,21 @@ final class CodeFileBuffer {
     /// again — a write would recreate the folder. The edits stay in memory
     /// for Copy or Discard.
     private(set) var writesLocked = false
+    /// Told when a save finds the buffer's worktree folder gone (the
+    /// buffer has locked itself): the center marks the root removed.
+    @ObservationIgnored var onWorktreeMissing: (() -> Void)?
     @ObservationIgnored private var autosave: Task<Void, Never>?
     @ObservationIgnored private let autosaveDelay: Duration
+    /// The linked worktree the file lives in, nil for the workbench folder:
+    /// every write first checks it still exists, so a worktree removed
+    /// while nothing watched it is never recreated by a save.
+    @ObservationIgnored private let worktreeFolder: URL?
 
-    init(url: URL, relPath: String, autosaveDelay: Duration = .seconds(1)) {
+    init(url: URL, relPath: String, autosaveDelay: Duration = .seconds(1), worktreeFolder: URL? = nil) {
         self.url = url
         self.relPath = relPath
         self.autosaveDelay = autosaveDelay
+        self.worktreeFolder = worktreeFolder
     }
 
     var isDirty: Bool { state == .loaded && text != diskText }
@@ -196,6 +205,7 @@ final class CodeFileBuffer {
         guard !writesLocked else { return !isDirty }
         let gone = deletedOnDisk || problem == .deletedWhileEditing
         guard isDirty || (gone && explicit) else { return true }
+        guard worktreeStillThere() else { return !isDirty }
         guard problemAllowsWrite(explicit: explicit, overwrite: overwrite),
               diskAllowsWrite(explicit: explicit, overwrite: overwrite) else { return false }
         do {
@@ -209,6 +219,15 @@ final class CodeFileBuffer {
             saveError = "Could not save: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// false — and the buffer locked for good — when its worktree folder
+    /// is gone.
+    private func worktreeStillThere() -> Bool {
+        guard let worktreeFolder, !CodeRootPolicy.directoryExists(worktreeFolder) else { return true }
+        lockWrites()
+        onWorktreeMissing?()
+        return false
     }
 
     private func problemAllowsWrite(explicit: Bool, overwrite: Bool) -> Bool {

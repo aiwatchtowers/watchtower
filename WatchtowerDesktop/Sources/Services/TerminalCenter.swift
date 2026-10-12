@@ -177,8 +177,9 @@ final class TerminalCenter {
     /// check). One subscriber.
     @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
     /// A ⌘-clicked `path:line` in a workbench session's terminal, resolved
-    /// inside its folder (`TerminalPathLinks`): workbench id, location.
-    @ObservationIgnored var onPathLink: ((Int64, TerminalPathLinks.Location) -> Void)?
+    /// inside its folder (`TerminalPathLinks`): workbench id, session id,
+    /// location.
+    @ObservationIgnored var onPathLink: ((Int64, Int64, TerminalPathLinks.Location) -> Void)?
     /// The ask an `ask #N` in a workbench session's terminal names, when it
     /// is that workbench's (board #500): workbench id, ask id.
     @ObservationIgnored var askLinkLookUp: ((Int64, Int64) async -> OwnerAsk?)?
@@ -817,7 +818,7 @@ final class TerminalCenter {
         if let workbenchID = session.projectID {
             // ⌘-click on `path:line` in a workbench session opens Files.
             process.setPathLinkHandler(folder: session.folderPath) { [weak self] location in
-                self?.onPathLink?(workbenchID, location)
+                self?.onPathLink?(workbenchID, id, location)
             }
             // `ask #N` links to that ask of this workbench (board #500).
             process.setAskLinkHandler(

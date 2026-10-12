@@ -170,6 +170,18 @@ final class CodeUsagesCenter {
         })
     }
 
+    /// A removed worktree's Usages list goes, and a search still running
+    /// in it stops (board #565, spec §7).
+    func codeRootRemoved(_ root: CodeRoot) {
+        let workbenchID = root.workbenchID
+        if runRoots[workbenchID] == root {
+            runRoots[workbenchID] = nil
+            generations[workbenchID] = nil
+            runs.removeValue(forKey: workbenchID)?.cancel()
+        }
+        results[root] = nil
+    }
+
     func setCollapsed(_ isCollapsed: Bool, path: String, root: CodeRoot) {
         results[root]?.setCollapsed(isCollapsed, path: path)
     }

@@ -13,6 +13,8 @@ import WatchtowerCore
 struct OwnerAskLinks: ViewModifier {
     let vm: WorkbenchesViewModel
     let projectID: Int64
+    /// The ask's session: a path resolves in its folder (its worktree).
+    var sessionID: Int64?
 
     enum Route: Equatable {
         case file(OpenQuicklyTarget)
@@ -45,11 +47,11 @@ struct OwnerAskLinks: ViewModifier {
     func body(content: Content) -> some View {
         content
             .environment(\.markdownCodeLinks, true)
-            .environment(\.openURL, OpenURLAction { [vm, projectID] url in
+            .environment(\.openURL, OpenURLAction { [vm, projectID, sessionID] url in
                 Self.handleAskLink(url, openFile: { target in
                     // A beep when it names no file of the folder.
                     Task {
-                        if !(await vm.openAskLink(target, projectID: projectID)) { NSSound.beep() }
+                        if !(await vm.openAskLink(target, projectID: projectID, sessionID: sessionID)) { NSSound.beep() }
                     }
                 }, beep: NSSound.beep)
             })
