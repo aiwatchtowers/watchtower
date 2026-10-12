@@ -55,7 +55,7 @@ with urllib.request.urlopen(f"{base}/{config}/audio/test.tar.gz", timeout=60) as
             kept.append((name, text))
             if len(kept) >= count:
                 break
-with open(os.path.join(out_dir, "refs.tsv"), "w", encoding="utf-8") as f:
+with open(os.path.join(out_dir, "refs.tsv.part"), "w", encoding="utf-8") as f:
     for name, text in kept:
         f.write(f"{name}\t{text}\n")
 print(len(kept))
@@ -76,9 +76,12 @@ for pair in en:en_us ru:ru_ru uk:uk_ua; do
     for wav in "$dir"/*.wav; do
         info=$(afinfo "$wav")
         if ! grep -Eq "1 ch, +16000 Hz" <<<"$info"; then
-            afconvert -f WAVE -d LEI16@16000 -c 1 "$wav" "$wav.tmp" && mv "$wav.tmp" "$wav"
+            afconvert -f WAVE -d LEI16@16000 -c 1 "$wav" "$wav.tmp"
+            mv "$wav.tmp" "$wav"
         fi
     done
+    # Written last: a language counts as cached only once every clip is in place.
+    mv "$dir/refs.tsv.part" "$dir/refs.tsv"
     echo "$lang: fetched $kept clips"
 done
 

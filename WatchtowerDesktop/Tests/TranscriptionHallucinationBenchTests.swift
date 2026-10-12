@@ -87,6 +87,11 @@ final class TranscriptionHallucinationBenchTests: XCTestCase {
         print(Self.summary(results))
         print("[bench] wrote \(url.path)")
         XCTAssertFalse(results.isEmpty, "no provider ran — every one was skipped")
+        for (provider, runs) in Dictionary(grouping: results, by: \.provider).sorted(by: { $0.key < $1.key })
+        where runs.allSatisfy({ $0.error != nil }) {
+            XCTFail("every \(provider) clip run failed: \(Set(runs.compactMap(\.error)).sorted().joined(separator: "; "))")
+        }
+        XCTAssertFalse(results.allSatisfy { $0.error != nil }, "every clip run failed")
     }
 
     /// Tunes the speech detectors (spec D1) on the same clips, windowed as
