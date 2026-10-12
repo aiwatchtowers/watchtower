@@ -88,12 +88,14 @@ skips the state write (`errors.Join`).
 | key | meaning |
 |---|---|
 | `folder_requested` | F as given (`""` without `--folder`) |
-| `folder_scope` | `main` (F is the workbench folder, inside it, or inside the main worktree), `worktree` (inside a linked worktree of the repo), `outside` (not under any listed worktree, or no repository), `missing` (F does not exist), `""` (unresolved: the worktrees could not be listed — git unavailable, the listing failed or the workbench folder did not resolve; no verdict, keep the last known place) |
+| `folder_scope` | `main` (F is the workbench folder, inside it, or inside the main worktree), `worktree` (inside a linked worktree of the repo), `outside` (not under any listed worktree, or no repository), `missing` (F does not exist), `""` (unresolved: the worktrees could not be listed — git unavailable, the listing failed, the workbench folder did not resolve, or F failed to resolve for a reason other than not existing; no verdict, keep the last known place) |
 | `folder_root` | the folder git ran in: the workbench folder for `main`/`outside`/`missing`; for `worktree`, the worktree's top level joined with the workbench folder's path relative to the main top level when that exists (a workbench in a repository subfolder), else the worktree top level |
 | `worktree_name` | base name of the linked worktree's top level; `""` otherwise |
 
 For `outside`/`missing` the rest of the envelope is the **main folder's** status (the page falls back to main),
-so one call answers both "where is it" and "what to show". Without `--folder`: `folder_scope: main`,
+so one call answers both "where is it" and "what to show". For `""` (unresolved) it is the workbench folder's
+status with `status_ok: false` and `status_error` saying why (`listing the worktrees: …`, or `reading the folder: …`
+for an F that cannot be read — no git ran in F). Without `--folder`: `folder_scope: main`,
 `folder_root` = workbench folder (older Desktops decode defaults).
 
 **Swift Core:**
@@ -137,8 +139,13 @@ worktree root (the worktree crumb reveals its folder in Finder).
 
 `ResolveFolder(ctx, o Options, requested string) (ResolvedFolder, error)` — `Options.Folder` is the workbench folder.
 `gitbin.InsideRepository(workbench)` first; then `git worktree list --porcelain -z` **in the workbench folder**;
-`requested` realpath'd (missing → `missing`, no git); matched against the listed paths (realpath'd, longest prefix
-wins, `prunable` entries included only for the `missing` verdict). The result carries `Scope`, `Root`,
+`requested` realpath'd (not absolute → `outside`; missing → `missing`, no git; any other realpath failure, e.g.
+permission denied on a parent, → scope `""` with `ErrFolderUnreadable` wrapping the OS error, no git — never
+`outside`, which the Desktop maps to the main folder and would let a branch switch in that worktree skip its
+live-agent confirmation; status: `status_ok: false`, `status_error: "reading the folder: <OS error>"`;
+`branches`/`switch`/`create`: `refused: "folder_unreadable"` with that text as `refused_detail`, exit 0); matched
+against the listed paths (realpath'd, longest prefix wins, `prunable` entries included only for the `missing`
+verdict). The result carries `Scope`, `Root`,
 `WorktreeName`, `MainTopLevel`. Paths compare case-insensitively on macOS. git unavailable → scope `""` with no
 error (the command's own git call reports git as unavailable); a failed listing → scope `""` and the error (status:
 `status_ok: false`; `branches`/`switch`/`create`: `refused: "git_failed"`). git runs in `requested`'s root only
@@ -150,7 +157,8 @@ rule of the Files tree is unrelated and unchanged.
 `status`, `branches`, `switch`, `create` (and `fetch` from #563) take `--folder F` (absolute). `workbenchGitTarget`
 resolves the workbench as today, then `ResolveFolder`; `Options.Folder` becomes the root. For `branches`/`switch`/
 `create`/`fetch`, scope `outside`/`missing` is a refusal envelope `refused: "folder_not_a_worktree"` with
-`refused_detail` naming the scope, exit 0, no git run in F (the house rule: refusals are output, not exit code).
+`refused_detail` naming the scope, exit 0, no git run in F (the house rule: refusals are output, not exit code); an
+F that cannot be read is `refused: "folder_unreadable"` (§5.1), a failed listing `refused: "git_failed"`.
 Exit non-zero stays reserved for an unresolvable workbench. Every PROJ-10 guard runs unchanged against the root —
 "checked out in another worktree" now naturally includes the main folder.
 
