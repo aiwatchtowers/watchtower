@@ -54,7 +54,9 @@ final class LinkingViewModelTests: XCTestCase {
             iat: iat,
             exp: iat + LinkPayload.lifetime,
             dataShare: shares ? dataShare : nil,
-            relayShare: shares ? relayShare : nil
+            relayShare: shares ? relayShare : nil,
+            hubSigningKey: LinkPayload.makeNonce(),
+            hubAgreementKey: LinkPayload.makeNonce()
         )
     }
 
@@ -211,7 +213,8 @@ final class LinkingViewModelTests: XCTestCase {
         clock = FakeLinkClock(now: macNow.addingTimeInterval(300))
         let payload = LinkPayload(
             hubID: "hub-acme", macName: "Acme Mac", ownerUser: owner, nonce: LinkPayload.makeNonce(),
-            iat: iat, exp: iat + LinkPayload.lifetime
+            iat: iat, exp: iat + LinkPayload.lifetime,
+            hubSigningKey: LinkPayload.makeNonce(), hubAgreementKey: LinkPayload.makeNonce()
         )
         // The Mac checks expiry on its own clock: still valid there.
         host.mac = { [grant = grantMaker] writes in

@@ -26,10 +26,9 @@ public enum LinkPayloadError: Error, Equatable, Sendable {
 /// encodes and decodes: the expiry check (with the phone's clock-skew grace)
 /// and the single-use nonce check belong to the link flow and the hub.
 public struct LinkPayload: Codable, Equatable, Sendable {
-    /// 2 since the multi-hub build (spec §3.4): the shares are of the hub's
-    /// own `DataZone-<hub_id>`/`RelayZone-<hub_id>`, which a v1 phone does
-    /// not sync.
-    public static let currentVersion = 2
+    /// 3 since the E2E build (mobile E2E spec §2.3): the code carries the hub's public keys.
+    /// 2 was the multi-hub build (spec §3.4): shares of the hub's own `DataZone-<hub_id>`/`RelayZone-<hub_id>`.
+    public static let currentVersion = 3
     /// `exp = iat + lifetime`, in seconds.
     public static let lifetime: Int64 = 600
     /// Cap on `macName`, in grapheme clusters.
@@ -56,6 +55,10 @@ public struct LinkPayload: Codable, Equatable, Sendable {
     public let dataShare: String?
     /// `CKShare.url` of the RelayZone share; nil when the Mac has none.
     public let relayShare: String?
+    /// `hub_sig` public key, base64url of 32 bytes.
+    public let hubSigningKey: String
+    /// `hub_kx` public key, base64url of 32 bytes.
+    public let hubAgreementKey: String
 
     enum CodingKeys: String, CodingKey {
         case v
@@ -68,6 +71,8 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         case exp
         case dataShare = "data_share"
         case relayShare = "relay_share"
+        case hubSigningKey = "hub_sig"
+        case hubAgreementKey = "hub_kx"
     }
 
     public init(
@@ -80,7 +85,9 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         iat: Int64,
         exp: Int64,
         dataShare: String? = nil,
-        relayShare: String? = nil
+        relayShare: String? = nil,
+        hubSigningKey: String,
+        hubAgreementKey: String
     ) {
         self.v = v
         self.container = container
@@ -92,10 +99,20 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         self.exp = exp
         self.dataShare = dataShare
         self.relayShare = relayShare
+        self.hubSigningKey = hubSigningKey
+        self.hubAgreementKey = hubAgreementKey
     }
 
+    /// Throws `DecodingError.dataCorrupted` for a hub key that is not base64url of exactly 32 bytes.
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        let signingKey = try values.decode(String.self, forKey: .hubSigningKey)
+        let agreementKey = try values.decode(String.self, forKey: .hubAgreementKey)
+        for (key, value) in [(CodingKeys.hubSigningKey, signingKey), (.hubAgreementKey, agreementKey)]
+        where Self.decodeBase64URL(value)?.count != 32 {
+            throw DecodingError.dataCorruptedError(
+                forKey: key, in: values, debugDescription: "hub key is not 32 bytes of base64url")
+        }
         self.init(
             v: try values.decode(Int.self, forKey: .v),
             container: try values.decode(String.self, forKey: .container),
@@ -106,7 +123,9 @@ public struct LinkPayload: Codable, Equatable, Sendable {
             iat: try values.decode(Int64.self, forKey: .iat),
             exp: try values.decode(Int64.self, forKey: .exp),
             dataShare: try values.decodeIfPresent(String.self, forKey: .dataShare),
-            relayShare: try values.decodeIfPresent(String.self, forKey: .relayShare)
+            relayShare: try values.decodeIfPresent(String.self, forKey: .relayShare),
+            hubSigningKey: signingKey,
+            hubAgreementKey: agreementKey
         )
     }
 
@@ -117,6 +136,8 @@ public struct LinkPayload: Codable, Equatable, Sendable {
         ownerUser: String,
         dataShare: String?,
         relayShare: String?,
+        hubSigningKey: String,
+        hubAgreementKey: String,
         now: Date
     ) -> Self {
         let iat = Int64(now.timeIntervalSince1970)
@@ -128,7 +149,9 @@ public struct LinkPayload: Codable, Equatable, Sendable {
             iat: iat,
             exp: iat + lifetime,
             dataShare: dataShare,
-            relayShare: relayShare
+            relayShare: relayShare,
+            hubSigningKey: hubSigningKey,
+            hubAgreementKey: hubAgreementKey
         )
     }
 

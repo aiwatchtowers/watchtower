@@ -35,7 +35,7 @@ final class KitFixtureTests: XCTestCase {
     func testRelayRecordKindsAreFrozen() {
         XCTAssertEqual(
             RelayRecordKind.allCases.map(\.rawValue),
-            ["action", "heartbeat", "recording_upload", "device"]
+            ["action", "heartbeat", "recording_upload", "device", "hello"]
         )
     }
 
@@ -326,7 +326,7 @@ final class KitFixtureTests: XCTestCase {
     }
 
     func testLinkRefusalAndScopeAreFrozen() {
-        XCTAssertEqual(LinkRefusal.knownValues.map(\.rawValue), ["used_code", "expired_code", "unknown_code"])
+        XCTAssertEqual(LinkRefusal.knownValues.map(\.rawValue), ["used_code", "expired_code", "unknown_code", "not_confirmed"])
         XCTAssertEqual(DeviceScope.knownValues.map(\.rawValue), ["private", "shared"])
     }
 }

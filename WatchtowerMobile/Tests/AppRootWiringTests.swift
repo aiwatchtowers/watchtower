@@ -278,7 +278,8 @@ final class AppRootWiringTests: XCTestCase {
         addTeardownBlock { @MainActor in demo.env.stop() }
         let iat = Int64(Date().timeIntervalSince1970)
         let code = LinkPayload(
-            hubID: "hub-acme", macName: "Acme Mac", ownerUser: "_owner-acme", nonce: LinkPayload.makeNonce(), iat: iat, exp: iat + 600
+            hubID: "hub-acme", macName: "Acme Mac", ownerUser: "_owner-acme", nonce: LinkPayload.makeNonce(), iat: iat, exp: iat + 600,
+            hubSigningKey: LinkPayload.makeNonce(), hubAgreementKey: LinkPayload.makeNonce()
         )
 
         await demo.open(code.url())

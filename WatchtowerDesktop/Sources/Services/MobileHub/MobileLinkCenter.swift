@@ -165,7 +165,10 @@ final class MobileLinkCenter {
         let urls = await openPublicLink()
         let code = LinkPayload.issue(
             hubID: hubID, macName: macName, ownerUser: owner,
-            dataShare: urls?.data, relayShare: urls?.relay, now: now()
+            dataShare: urls?.data, relayShare: urls?.relay,
+            // Task 13 replaces these with the hub identity's public keys; a zero key opens nothing.
+            hubSigningKey: LinkPayload.encodeBase64URL(Data(count: 32)),
+            hubAgreementKey: LinkPayload.encodeBase64URL(Data(count: 32)), now: now()
         )
         try sidecar.addLinkCode(
             nonce: code.nonce, issuedAt: Date(timeIntervalSince1970: TimeInterval(code.iat)),

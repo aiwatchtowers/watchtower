@@ -169,9 +169,9 @@ public actor RelayFeed {
             // DataZone (spec §4.1); RelayZone is writable by a share
             // participant, so a relay-zone heartbeat never proves liveness.
             break
-        case .device:
-            // The phone's own link record reflecting back; the Mac is its
-            // consumer and answers through the `device_grant` slice.
+        case .device, .hello:
+            // The phone's own link record (or its sealed hello) reflecting back; the Mac is its
+            // consumer and answers through the `device_grant` slice / the keybox.
             break
         case .recordingUpload:
             guard let upload = decode(RecordingUploadPayload.self, from: record) else { break }
