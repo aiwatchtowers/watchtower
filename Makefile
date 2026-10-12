@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight cloudkit-check
+.PHONY: build test test-verbose test-cover test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -145,16 +145,17 @@ mobile-shots:
 # than the last one (App Store Connect refuses a reused or lower number); the
 # command line overrides it for the app and both extensions alike. Pin it with
 # make mobile-archive MOBILE_BUILD_NUMBER=N. The version (MARKETING_VERSION)
-# is the Mac's: the latest v<x.y.z> tag without the v, cut to x.y.z because
-# iOS takes at most three numbers (git describe's -N-g<sha> suffix would be
-# refused); override with MOBILE_VERSION=x.y.z.
+# is the Mac's VERSION without the v, cut to x.y.z because iOS takes at most
+# three numbers: git describe's v0.15.0-12-g<sha>-dirty gives 0.15.0, and a
+# release's make testflight VERSION=0.16.0 gives 0.16.0, the same number its
+# make app VERSION=0.16.0 stamps on the Mac. Override with MOBILE_VERSION=x.y.z.
 MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
 MOBILE_EXPORT := build/WatchtowerMobile-export
 ifndef MOBILE_BUILD_NUMBER
 MOBILE_BUILD_NUMBER := $(shell date -u +%s)
 endif
 ifndef MOBILE_VERSION
-MOBILE_VERSION := $(shell git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null | sed -E 's/^v//; s/^([0-9]+(\.[0-9]+){0,2}).*/\1/')
+MOBILE_VERSION := $(shell echo '$(VERSION)' | sed -E 's/^v//; s/^([0-9]+(\.[0-9]+){0,2}).*/\1/')
 endif
 mobile-archive:
 	@if [ ! -f WatchtowerMobile/Signing.xcconfig ]; then \
@@ -170,7 +171,7 @@ mobile-archive:
 		exit 1; \
 	fi
 	@if ! echo "$(MOBILE_VERSION)" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$$'; then \
-		echo "error: version '$(MOBILE_VERSION)' is not x.y.z (no v<x.y.z> tag found?); pass MOBILE_VERSION=x.y.z"; \
+		echo "error: version '$(MOBILE_VERSION)' is not x.y.z (VERSION=$(VERSION)); pass VERSION=x.y.z or MOBILE_VERSION=x.y.z"; \
 		exit 1; \
 	fi
 	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
@@ -203,6 +204,7 @@ ASC_ISSUER_ID ?=
 ASC_KEY_PATH ?= $(HOME)/.appstoreconnect/private_keys/AuthKey_$(ASC_KEY_ID).p8
 ASC_AUTH = -allowProvisioningUpdates -authenticationKeyPath "$(ASC_KEY_PATH)" \
 	-authenticationKeyID "$(ASC_KEY_ID)" -authenticationKeyIssuerID "$(ASC_ISSUER_ID)"
+testflight: mobile-testflight
 mobile-testflight:
 	@if [ -z "$(ASC_KEY_ID)" ] || [ -z "$(ASC_ISSUER_ID)" ]; then \
 		echo "error: ASC_KEY_ID and ASC_ISSUER_ID are not set."; \
