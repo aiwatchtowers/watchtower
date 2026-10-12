@@ -42,19 +42,22 @@ struct CloudKitLinkContainer: LinkContainer {
     /// A zone-wide share's record lives in its zone under
     /// `CKRecordNameZoneWideShare`; deleting it from the shared database
     /// leaves the share.
-    func leaveShares(ownerName: String) async throws {
-        let ids = CloudZoneID.allCases.map { zone in
-            CKRecord.ID(
-                recordName: CKRecordNameZoneWideShare,
-                zoneID: CKRecordZone.ID(zoneName: zone.rawValue, ownerName: ownerName)
-            )
-        }
+    func leaveShares(ownerName: String, hubID: String) async throws {
+        let ids = Self.shareRecordIDs(ownerName: ownerName, hubID: hubID)
         let results = try await container.sharedCloudDatabase.modifyRecords(saving: [], deleting: ids)
         for (_, result) in results.deleteResults {
             if case let .failure(error) = result,
                (error as? CKError)?.code != .unknownItem, (error as? CKError)?.code != .zoneNotFound {
                 throw error
             }
+        }
+    }
+
+    /// The zone-wide share records of `hubID`'s two zones (`DataZone-<hubID>`,
+    /// `RelayZone-<hubID>`) owned by `ownerName`.
+    static func shareRecordIDs(ownerName: String, hubID: String) -> [CKRecord.ID] {
+        HubZones(scope: .shared(ownerName: ownerName), hubID: hubID).allZoneIDs.map { zoneID in
+            CKRecord.ID(recordName: CKRecordNameZoneWideShare, zoneID: zoneID)
         }
     }
 

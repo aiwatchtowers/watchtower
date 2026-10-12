@@ -63,6 +63,8 @@ final class FakeLinkContainer: LinkContainer {
     var acceptError: (any Error)?
     private(set) var accepted: [[URL]] = []
     private(set) var left: [String] = []
+    /// The hub of each `leaveShares`, in call order.
+    private(set) var leftHubIDs: [String] = []
     /// Runs inside `leaveShares`, before it returns: what arrives while the
     /// Mac's zones go away.
     var onLeave: (@MainActor () async -> Void)?
@@ -82,9 +84,10 @@ final class FakeLinkContainer: LinkContainer {
         accepted.append(urls)
     }
 
-    func leaveShares(ownerName: String) async throws {
+    func leaveShares(ownerName: String, hubID: String) async throws {
         log.append("leave \(ownerName)")
         left.append(ownerName)
+        leftHubIDs.append(hubID)
         await onLeave?()
     }
 }
@@ -121,6 +124,8 @@ final class FakeLinkHost: LinkHost {
     /// Keyed by `describe(scope)`: the scope type is not Hashable.
     private(set) var transports: [String: SaveLogTransport] = [:]
     private(set) var prepared: [CloudDatabaseScope] = []
+    /// The hub of each `prepare`, in call order.
+    private(set) var preparedHubIDs: [String] = []
     /// Every `setLink` call: the device and whether writes were allowed.
     private(set) var links: [(device: LinkedDevice?, writesAllowed: Bool)] = []
     private(set) var wipes = 0
@@ -141,9 +146,10 @@ final class FakeLinkHost: LinkHost {
     /// killed while the sync stack restarts).
     var parksPrepare = false
 
-    func prepare(scope: CloudDatabaseScope) async throws -> any CloudSyncTransport {
+    func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
         log.append("prepare \(Self.describe(scope))")
         prepared.append(scope)
+        preparedHubIDs.append(hubID)
         while parksPrepare {
             try await Task.sleep(for: .milliseconds(5))
         }
@@ -178,7 +184,11 @@ final class FakeLinkHost: LinkHost {
         flushes += 1
     }
 
-    func wipeLocalData(restartingOn scope: CloudDatabaseScope) async -> Int {
+    /// The hub of each wipe's restart, in call order.
+    private(set) var wipedHubIDs: [String] = []
+
+    func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int {
+        wipedHubIDs.append(hubID)
         log.append("wipe \(Self.describe(scope))")
         wipes += 1
         return notSentCount
