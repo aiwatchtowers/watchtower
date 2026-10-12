@@ -244,8 +244,73 @@ final class StreamingTranscriberTests: XCTestCase {
         XCTAssertEqual(streamOut, batchOut)
         XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
         XCTAssertEqual(batchEngine.prompts,
-                       [nil, "alpha", "alpha", "gamma", "gamma", "gamma", nil],
-                       "error keeps the context; the third silent window expires it")
+                       [nil, "alpha", "alpha", "gamma", nil, nil, nil],
+                       "error keeps the context; the first silent window expires it")
+        XCTAssertEqual(batchOut.text, "alpha\ngamma\ndelta")
+    }
+
+    func testSilentWindowExpiresPromptLive() async throws {
+        // speech → one silent window → speech: the third window decodes blind (spec D4).
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success(""), .success("three")]
+        _ = try await StreamingTranscriber(engine: engine, config: forcedConfig())
+            .run(samples: stream(of: [Float](repeating: 0, count: 4800), pieceSize: 700)) { _ in }
+        XCTAssertEqual(engine.prompts, [nil, "one", nil])
+    }
+
+    func testGateOffKeepsTheThreeWindowExpiryLive() async throws {
+        var cfg = forcedConfig()
+        cfg.speechGate = false
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .success(""), .success(""), .success(""), .success("five")]
+        _ = try await StreamingTranscriber(engine: engine, config: cfg)
+            .run(samples: stream(of: [Float](repeating: 0, count: 8000), pieceSize: 700)) { _ in }
+        XCTAssertEqual(engine.prompts, [nil, "one", "one", "one", nil])
+    }
+
+    func testFailedWindowKeepsPromptLive() async throws {
+        // speech → failed window → speech: the context survives (the error/silence asymmetry).
+        let engine = MockEngine()
+        engine.texts = [.success("one"), .failure(MockEngine.MockError()), .success("three")]
+        _ = try await StreamingTranscriber(engine: engine, config: forcedConfig())
+            .run(samples: stream(of: [Float](repeating: 0, count: 4800), pieceSize: 700)) { _ in }
+        XCTAssertEqual(engine.prompts, [nil, "one", "one"])
+    }
+
+    func testMatchesBatchWithSpeechGate() async throws {
+        // The gate joins the equivalence: a VAD-silent window must count as a
+        // silent window on both paths (same prompt sequence), and the detector
+        // must see identical windows. 0.5 s windows: w1 speech, w2 throws,
+        // w3 speech, w4 silent by VAD (never decoded), w5 speech.
+        var samples = [Float](repeating: 0, count: 5 * 8000)
+        for window in [0, 1, 2, 4] {
+            for i in (window * 8000)..<(window * 8000 + 6000) { samples[i] = 0.2 }
+        }
+        let cfg = forcedConfig(windowSec: 0.5)
+        let script: [Result<String, Error>] = [
+            .success("alpha"), .failure(MockEngine.MockError()), .success("gamma"), .success("delta")
+        ]
+
+        let batchEngine = MockEngine()
+        batchEngine.texts = script
+        let batchDetector = FakeSpeechDetector()
+        let batchOut = try await WindowedTranscriber(engine: batchEngine, config: cfg, speechDetector: batchDetector)
+            .transcribe(samples: samples) { _, _ in }
+
+        let streamEngine = MockEngine()
+        streamEngine.texts = script
+        let streamDetector = FakeSpeechDetector()
+        let streamOut = try await StreamingTranscriber(engine: streamEngine, config: cfg, speechDetector: streamDetector)
+            .run(samples: stream(of: samples, pieceSize: 333)) { _ in }
+
+        XCTAssertEqual(streamOut, batchOut)
+        XCTAssertEqual(streamEngine.windowSizes, batchEngine.windowSizes)
+        XCTAssertEqual(streamEngine.prompts, batchEngine.prompts)
+        XCTAssertEqual(streamDetector.calls, batchDetector.calls)
+        XCTAssertEqual(batchDetector.calls, 5)
+        XCTAssertEqual(batchEngine.windowSizes.count, 4, "the VAD-silent window is never decoded")
+        XCTAssertEqual(batchEngine.prompts, [nil, "alpha", "alpha", nil],
+                       "the VAD-silent window expires the context like any silent window")
         XCTAssertEqual(batchOut.text, "alpha\ngamma\ndelta")
     }
 }

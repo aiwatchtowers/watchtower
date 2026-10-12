@@ -240,4 +240,71 @@ final class Qwen3WindowerTests: XCTestCase {
         XCTAssertEqual(out.segments[0].startSec, 0, accuracy: 1e-9)
         XCTAssertEqual(out.segments[0].endSec, Double(samples.count) / 16_000, accuracy: 1e-9)
     }
+
+    // MARK: Speech gate (spec D2, board #554): L1 only, plus the phrase filter
+
+    /// Noise, then 3 s of digital silence, then noise — the fake detector
+    /// (non-zero runs) hears speech only in the noise.
+    private func gappedSamples() -> [Float] {
+        makeSamples(seconds: 2.5) + [Float](repeating: 0, count: 3 * 16_000) + makeSamples(seconds: 2.5)
+    }
+
+    func testSilentWindowIsNeverDecodedWithTheGate() async throws {
+        let samples = gappedSamples()
+        let planned = WindowPlanner(config: config).planWindows(total: samples.count) { samples[$0] }
+        final class Box: @unchecked Sendable { var decoded: [[Float]] = [] }
+        let box = Box()
+        let progress = Sink()
+        let windower = Qwen3Windower(config: config, speechDetector: FakeSpeechDetector()) { window in
+            box.decoded.append(window)
+            return "w\(box.decoded.count)"
+        }
+        let out = try await windower.run(samples: batchStream(samples), windowTotal: planned.count,
+                                         progress: { progress.progress.append([$0, $1]) }, onChunk: { _ in })
+        let silent = planned.filter { range in range.allSatisfy { samples[$0] == 0 } }
+        XCTAssertFalse(silent.isEmpty, "test must plan a fully silent window")
+        XCTAssertEqual(box.decoded.count, planned.count - silent.count)
+        XCTAssertFalse(box.decoded.contains { $0.allSatisfy { $0 == 0 } }, "a silent window reached the model")
+        XCTAssertEqual(progress.progress.count, planned.count, "progress still fires for skipped windows")
+        XCTAssertEqual(out.segments.count, box.decoded.count)
+    }
+
+    func testBatchEqualsLiveWithTheGate() async throws {
+        let samples = gappedSamples()
+        func run(_ stream: AsyncStream<[Float]>) async throws -> TranscriptionOutput {
+            var n = 0
+            let windower = Qwen3Windower(config: config, speechDetector: FakeSpeechDetector()) { window in
+                n += 1
+                return "w\(n) len\(window.count)"
+            }
+            return try await windower.run(samples: stream, windowTotal: 0, progress: { _, _ in }, onChunk: { _ in })
+        }
+        let batch = try await run(batchStream(samples))
+        let live = try await run(pieceStream(samples, pieceSize: 800))
+        XCTAssertEqual(batch, live)
+        XCTAssertFalse(batch.segments.isEmpty)
+    }
+
+    func testPhraseFilterCleansWindowText() async throws {
+        let sink = Sink()
+        let windower = Qwen3Windower(config: config, speechDetector: FakeSpeechDetector()) { _ in
+            "Продолжение следует..."
+        }
+        let out = try await windower.run(samples: batchStream(makeSamples(seconds: 5)), windowTotal: 0,
+                                         progress: { _, _ in }, onChunk: { sink.chunks.append($0) })
+        XCTAssertEqual(out.text, "")
+        XCTAssertTrue(out.segments.isEmpty)
+        XCTAssertTrue(sink.chunks.isEmpty)
+    }
+
+    func testGateOffNeverCallsTheDetector() async throws {
+        var c = config
+        c.speechGate = false
+        let detector = FakeSpeechDetector()
+        let windower = Qwen3Windower(config: c, speechDetector: detector) { _ in "Продолжение следует..." }
+        let out = try await windower.run(samples: batchStream(gappedSamples()), windowTotal: 0,
+                                         progress: { _, _ in }, onChunk: { _ in })
+        XCTAssertEqual(detector.calls, 0)
+        XCTAssertTrue(out.text.hasPrefix("Продолжение следует..."), "kill switch: text untouched, as before")
+    }
 }

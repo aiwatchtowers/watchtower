@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 import WhisperKit
 
 /// Loads/holds one WhisperKit model instance and adapts it to `WhisperWindowEngine`.
@@ -14,9 +15,63 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
     static let languageCodes: Set<String> = Constants.languageCodes
 
     private let whisperKit: WhisperKit
+    private let dropLock = NSLock()
+    private var drops = WindowDropCounts()
+
+    /// Bench seam: sees every decoded segment with its confidence before L3
+    /// decides. nil in production.
+    var segmentScoreObserver: (@Sendable (ScoredWhisperSegment) -> Void)?
 
     private init(whisperKit: WhisperKit) {
         self.whisperKit = whisperKit
+    }
+
+    /// The decode options, every threshold L3 relies on pinned explicitly
+    /// (spec D3) so a WhisperKit upgrade cannot move them. Chunking stays
+    /// off: our windows are already at most 30 s.
+    static func decodingOptions(language: String, promptTokens: [Int]?) -> DecodingOptions {
+        DecodingOptions(
+            task: .transcribe,
+            language: language,
+            temperatureFallbackCount: 5,
+            detectLanguage: false,
+            skipSpecialTokens: true,
+            withoutTimestamps: false,
+            promptTokens: promptTokens,
+            compressionRatioThreshold: WhisperSegmentConfidence.compressionRatioThreshold,
+            logProbThreshold: WhisperSegmentConfidence.logProbThreshold,
+            noSpeechThreshold: WhisperSegmentConfidence.noSpeechThreshold,
+            chunkingStrategy: nil
+        )
+    }
+
+    /// L3's inputs for one segment, from the segment's OWN text tokens
+    /// (timestamps and other special tokens, ids ≥ `specialTokenBegin`,
+    /// excluded): the mean log-probability and the zlib compression ratio.
+    /// WhisperKit 0.18 copies one decode pass's `avgLogprob` and
+    /// `compressionRatio` onto every segment of the pass, so judging those
+    /// would let one looping or doubtful segment drop the real speech beside
+    /// it. A segment without text tokens falls back to the pass values.
+    static func segmentScore(
+        tokens: [Int],
+        tokenLogProbs: [[Int: Float]],
+        specialTokenBegin: Int,
+        passAvgLogprob: Float,
+        passCompressionRatio: Float
+    ) -> WhisperSegmentScore {
+        let textTokens = tokens.filter { $0 < specialTokenBegin }
+        let logprobs = tokenLogProbs.flatMap { $0.filter { $0.key < specialTokenBegin }.map(\.value) }
+        return WhisperSegmentScore(
+            avgLogprob: logprobs.isEmpty ? passAvgLogprob : logprobs.reduce(0, +) / Float(logprobs.count),
+            compressionRatio: textTokens.isEmpty ? passCompressionRatio : TextUtilities.compressionRatio(of: textTokens)
+        )
+    }
+
+    func takeDropCounts() -> WindowDropCounts {
+        dropLock.withLock {
+            defer { drops = WindowDropCounts() }
+            return drops
+        }
     }
 
     /// Downloads `modelName`'s files to the local WhisperKit cache without
@@ -80,45 +135,99 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
         }
     }
 
+    /// Without the flag: today's decode, no L3.
     func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+        try await transcribeWindow(samples, language: language, prompt: prompt, dropDoubtful: false)
+    }
+
+    func transcribeWindow(
+        _ samples: [Float],
+        language: String,
+        prompt: String?,
+        dropDoubtful: Bool
+    ) async throws -> [TranscribedSegment] {
         try await decodeWithPromptFallback(promptTokens: promptTokens(for: prompt)) { tokens in
-            try await decode(samples, language: language, promptTokens: tokens)
+            try await decode(samples, language: language, promptTokens: tokens, dropDoubtful: dropDoubtful)
         }
     }
 
-    private func decode(_ samples: [Float], language: String, promptTokens: [Int]?) async throws -> [TranscribedSegment] {
-        let options = DecodingOptions(
-            task: .transcribe,
-            language: language,
-            detectLanguage: false,
-            skipSpecialTokens: true,
-            withoutTimestamps: false,
-            promptTokens: promptTokens
-        )
+    private func decode(
+        _ samples: [Float],
+        language: String,
+        promptTokens: [Int]?,
+        dropDoubtful: Bool
+    ) async throws -> [TranscribedSegment] {
         let results: [TranscriptionResult] = try await whisperKit.transcribe(
             audioArray: samples,
-            decodeOptions: options
+            decodeOptions: Self.decodingOptions(language: language, promptTokens: promptTokens)
         )
         // result.text is derived from result.segments in WhisperKit, so
-        // mapping segments (not text) cannot drop speech; the filter then
-        // removes only Whisper's known subtitle-credit boilerplate.
-        let segments = results.flatMap { result in
-            result.segments.map {
-                TranscribedSegment(
-                    text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                    startSec: Double($0.start),
-                    endSec: Double($0.end)
-                )
-            }
-        }
-        let cleaned = segments.withoutHallucinations()
-        if cleaned != segments {
-            // Counts only, never text — enough to tell "the filter ate it"
-            // from "the model never heard it" when a transcript looks thin.
-            NSLog("WhisperKitEngine: hallucination filter removed %d of %d segment(s), %d chars",
-                  segments.count - cleaned.count, segments.count,
-                  segments.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +))
-        }
+        // mapping segments (not text) cannot drop speech; L3 then drops the
+        // segments the model itself doubts, and the filter removes only
+        // Whisper's known subtitle-credit boilerplate.
+        let specialTokenBegin = whisperKit.tokenizer?.specialTokens.specialTokenBegin ?? Int.max
+        let (confident, confidenceCounts) = Self.confidentSegments(results.flatMap(\.segments),
+                                                                   specialTokenBegin: specialTokenBegin,
+                                                                   dropDoubtful: dropDoubtful,
+                                                                   observer: segmentScoreObserver)
+        var counts = confidenceCounts
+        let cleaned = confident.withoutHallucinations()
+        counts.phrase += confident.count - cleaned.count
+        counts.droppedChars += confident.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +)
+        dropLock.withLock { drops.add(counts) }
         return cleaned
     }
+
+    /// L3 over one decode's segments: maps each to a `TranscribedSegment`
+    /// and, with `dropDoubtful` (the speech gate on), drops those
+    /// `WhisperSegmentConfidence` rejects on the segment's own score. Pure
+    /// apart from the bench observer.
+    static func confidentSegments(
+        _ segments: [TranscriptionSegment],
+        specialTokenBegin: Int,
+        dropDoubtful: Bool = true,
+        observer: (@Sendable (ScoredWhisperSegment) -> Void)? = nil
+    ) -> (segments: [TranscribedSegment], counts: WindowDropCounts) {
+        var counts = WindowDropCounts()
+        let kept = segments.compactMap { segment -> TranscribedSegment? in
+            let mapped = TranscribedSegment(
+                text: segment.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                startSec: Double(segment.start),
+                endSec: Double(segment.end)
+            )
+            let score = segmentScore(tokens: segment.tokens, tokenLogProbs: segment.tokenLogProbs,
+                                     specialTokenBegin: specialTokenBegin,
+                                     passAvgLogprob: segment.avgLogprob,
+                                     passCompressionRatio: segment.compressionRatio)
+            let reason = dropDoubtful ? WhisperSegmentConfidence.dropReason(
+                noSpeechProb: segment.noSpeechProb,
+                avgLogprob: score.avgLogprob,
+                compressionRatio: score.compressionRatio
+            ) : nil
+            observer?(ScoredWhisperSegment(segment: mapped, noSpeechProb: segment.noSpeechProb, score: score,
+                                           temperature: segment.temperature, dropReason: reason))
+            guard reason == nil else {
+                counts.confidence += 1
+                counts.droppedChars += mapped.text.count
+                return nil
+            }
+            return mapped
+        }
+        return (kept, counts)
+    }
+}
+
+/// What L3 judges a segment by (see `WhisperKitEngine.segmentScore`).
+struct WhisperSegmentScore: Equatable, Sendable {
+    let avgLogprob: Float
+    let compressionRatio: Float
+}
+
+/// One decoded segment with the confidence L3 judged it by (bench seam).
+struct ScoredWhisperSegment: Sendable {
+    let segment: TranscribedSegment
+    let noSpeechProb: Float
+    let score: WhisperSegmentScore
+    let temperature: Float
+    let dropReason: WhisperSegmentConfidence.Reason?
 }

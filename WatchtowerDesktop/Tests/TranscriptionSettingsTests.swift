@@ -48,6 +48,18 @@ struct TranscriptionSettingsTests {
         #expect(config.forcedLanguage == nil)
     }
 
+    @Test("Absent speech gate key keeps the gate on")
+    func speechGateDefaultsOn() throws {
+        #expect(TranscriptionConfig.fromDefaults(try makeSuite()).speechGate)
+    }
+
+    @Test("Reads the speech gate kill switch")
+    func speechGateKillSwitch() throws {
+        let defaults = try makeSuite()
+        defaults.set(false, forKey: "transcription.speechGate")
+        #expect(!TranscriptionConfig.fromDefaults(defaults).speechGate)
+    }
+
     @Test("Absent diarization threshold keeps the default")
     func diarizationThresholdDefault() throws {
         let config = TranscriptionConfig.fromDefaults(try makeSuite())

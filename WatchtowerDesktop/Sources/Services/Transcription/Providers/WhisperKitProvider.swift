@@ -31,8 +31,10 @@ struct WhisperKitProvider: TranscriptionProvider {
 
 /// Wraps a loaded WhisperKitEngine, reusing the existing batch/live orchestrators
 /// verbatim so their behavior (and the live↔batch pin test) is unchanged.
+/// The speech detector (spec D2) comes from the transcriber's `SpeechDetectorSlot`.
 final class WhisperTranscriber: Transcriber, @unchecked Sendable {
     private let engine: WhisperKitEngine
+    private let detectors = SpeechDetectorSlot()
     init(engine: WhisperKitEngine) { self.engine = engine }
 
     func transcribe(
@@ -40,12 +42,13 @@ final class WhisperTranscriber: Transcriber, @unchecked Sendable {
         config: TranscriptionConfig,
         progress: @escaping @Sendable (Int, Int) -> Void
     ) async throws -> TranscriptionOutput {
-        let transcriber = WindowedTranscriber(engine: engine, config: config)
+        let transcriber = WindowedTranscriber(engine: engine, config: config,
+                                              speechDetector: detectors.detector(for: config))
         return try await transcriber.transcribe(samples: samples, progress: progress)
     }
 
     func makeLiveSession(config: TranscriptionConfig) -> TranscriptionLiveSession? {
-        WhisperLiveSession(engine: engine, config: config)
+        WhisperLiveSession(engine: engine, config: config, speechDetector: detectors.detector(for: config))
     }
 }
 
@@ -53,8 +56,10 @@ final class WhisperTranscriber: Transcriber, @unchecked Sendable {
 struct WhisperLiveSession: TranscriptionLiveSession {
     let engine: WhisperKitEngine
     let config: TranscriptionConfig
+    let speechDetector: SpeechDetector?
     func run(samples: AsyncStream<[Float]>,
              onChunk: @escaping @Sendable (StreamChunk) -> Void) async throws -> TranscriptionOutput {
-        try await StreamingTranscriber(engine: engine, config: config).run(samples: samples, onChunk: onChunk)
+        try await StreamingTranscriber(engine: engine, config: config, speechDetector: speechDetector)
+            .run(samples: samples, onChunk: onChunk)
     }
 }

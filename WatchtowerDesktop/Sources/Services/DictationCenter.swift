@@ -248,6 +248,8 @@ final class DictationCenter {
         config.windowSec = 3
         config.boundarySnapSec = 0
         config.diarization = false
+        // The meeting silence gate (spec D2) is out of dictation's scope.
+        config.speechGate = false
         if case .whisper(let model) = runChoice { config.model = model }
 
         let recorder = recorderFactory()

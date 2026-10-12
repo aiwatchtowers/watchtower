@@ -190,12 +190,19 @@ final class AppState {
     /// Hand to Claude Code (⌥⌘↩): the hand-off sheet's request per workbench.
     let codeHandoffCenter = CodeHandoffCenter()
 
-    /// Diarizer models are prefetched only while speaker roles are on; a
-    /// failure is fine — the post-pass retries the download and degrades to a
-    /// role-less transcript.
+    /// Diarizer models are prefetched only while speaker roles are on, the
+    /// speech-gate VAD model only while the gate is on; a failure is fine —
+    /// the post-pass retries the diarizer download and degrades to a
+    /// role-less transcript, the gate retries its download per recording and
+    /// falls back to the energy detector.
     @Sendable private static func prefetchDiarizerModels() async {
-        guard TranscriptionConfig.fromDefaults().diarization else { return }
-        try? await FluidAudioDiarizer.prefetchModels()
+        let config = TranscriptionConfig.fromDefaults()
+        if config.diarization {
+            try? await FluidAudioDiarizer.prefetchModels()
+        }
+        if config.speechGate {
+            try? await SileroSpeechDetector.prefetchModel()
+        }
     }
 
     /// App-wide registry of in-flight/failed WhisperKit model-file prefetches,

@@ -16,14 +16,23 @@ import Foundation
 /// Error semantics mirror StreamingTranscriber: a window whose decode throws is
 /// skipped and remembered, the run throws only when every window failed, and a
 /// cancelled run returns its partial output promptly.
+///
+/// The speech gate (spec D2, board #554) runs here too: a window without
+/// speech is never decoded (L1, the shared `WindowSpeechGate`). Qwen3 returns
+/// no segment timestamps, so there is no L2 — the window text stays whole and
+/// only goes through the phrase filter.
 struct Qwen3Windower {
     let config: TranscriptionConfig
     /// Synchronous whole-window decode (production: `Qwen3ASRModel.transcribe`,
     /// a blocking MLX call; tests: a fake). Called serially, never concurrently.
     let decode: ([Float]) throws -> String
+    let speechDetector: SpeechDetector?
 
-    init(config: TranscriptionConfig, decode: @escaping ([Float]) throws -> String) {
+    init(config: TranscriptionConfig,
+         speechDetector: SpeechDetector? = nil,
+         decode: @escaping ([Float]) throws -> String) {
         self.config = config
+        self.speechDetector = speechDetector
         self.decode = decode
     }
 
@@ -46,10 +55,14 @@ struct Qwen3Windower {
         var lastDecodeError: Error?
         var chunkIndex = 0
         var processed = 0
+        var gate = WindowSpeechGate(detector: speechDetector, config: config)
+        var phraseDrops = WindowDropCounts()
+        defer { gate.logSummary(engineDrops: phraseDrops) }
 
-        func process(window: [Float], windowStart: Int) {
+        func process(window: [Float], windowStart: Int) async {
             processed += 1
             defer { progress(processed, windowTotal) }
+            guard await gate.check(window) != .silent else { return }
             let text: String
             do {
                 text = try decode(window)
@@ -57,7 +70,7 @@ struct Qwen3Windower {
                 lastDecodeError = error
                 return // skipped: not in text/segments, chunk indices stay contiguous
             }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = withoutHallucinatedPhrases(text, config: config, counting: &phraseDrops)
             guard !trimmed.isEmpty else { return } // silent window
             let rate = Double(TranscriptionConfig.sampleRate)
             texts.append(trimmed)
@@ -70,9 +83,9 @@ struct Qwen3Windower {
         }
 
         // Decodes the window and drops consumed samples from the buffer.
-        func emit(_ range: Range<Int>) {
+        func emit(_ range: Range<Int>) async {
             let window = Array(buffer[(range.lowerBound - consumedBase)..<(range.upperBound - consumedBase)])
-            process(window: window, windowStart: range.lowerBound)
+            await process(window: window, windowStart: range.lowerBound)
             absStart = planner.nextStart(after: range)
             let drop = absStart - consumedBase
             if drop > 0 {
@@ -91,7 +104,7 @@ struct Qwen3Windower {
                 sample: { buffer[$0 - consumedBase] }
             ) {
                 if Task.isCancelled { break }
-                emit(range)
+                await emit(range)
             }
             if Task.isCancelled { break }
         }
@@ -106,7 +119,7 @@ struct Qwen3Windower {
                   sample: { buffer[$0 - consumedBase] }
               ) {
             let isLast = planner.isLastWindow(start: range.lowerBound, total: consumedBase + buffer.count)
-            emit(range)
+            await emit(range)
             if isLast { break }
         }
 
