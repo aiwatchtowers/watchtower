@@ -47,6 +47,15 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         XCTAssertEqual(result.map(\.shortcut), [1, 2, 3, 4, 5, 6, 7, 8, 9, nil])
     }
 
+    func testShortcutsFollowAnExplicitOrder() {
+        let sessions = [1, 2, 3].map { session(Int64($0)) }
+        let result = SessionSwitcherPresentation.rows(
+            sessions, liveIDs: [], statuses: [:], now: now, shortcutOrder: [3, 1]
+        )
+        XCTAssertEqual(result.map(\.id), [1, 2, 3], "the listed order is kept")
+        XCTAssertEqual(result.map(\.shortcut), [2, nil, 1])
+    }
+
     func testLiveSessionHasNoAgeCaption() {
         let result = rows([session(1, secondsAgo: 3 * 3600)], live: [1])
         XCTAssertEqual(result[0].state, .live(.running))

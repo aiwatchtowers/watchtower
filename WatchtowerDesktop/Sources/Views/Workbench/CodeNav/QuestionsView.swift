@@ -8,6 +8,8 @@ import WatchtowerCore
 struct QuestionsView: View {
     let questions: CodeQuestionCenter
     let project: Workbench
+    /// Where a reopened question's file is read from.
+    let root: CodeRoot
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,7 +25,7 @@ struct QuestionsView: View {
                 QuestionConversationView(questions: questions, question: question)
                     .id(conversationID)
             } else {
-                QuestionListView(questions: questions, project: project)
+                QuestionListView(questions: questions, project: project, root: root)
             }
         }
         .task(id: project.id) { await questions.observeQuestionList(workbenchID: project.id) }
@@ -38,6 +40,7 @@ struct QuestionsView: View {
 private struct QuestionListView: View {
     let questions: CodeQuestionCenter
     let project: Workbench
+    let root: CodeRoot
     @State private var pendingDelete: CodeQuestionListItem?
 
     var body: some View {
@@ -50,7 +53,7 @@ private struct QuestionListView: View {
         } else {
             List(items) { item in
                 Button {
-                    questions.openQuestion(item, project: project)
+                    questions.openQuestion(item, project: project, root: root)
                 } label: {
                     QuestionRow(item: item)
                 }
@@ -66,8 +69,9 @@ private struct QuestionListView: View {
                 presenting: pendingDelete
             ) { item in
                 Button("Delete", role: .destructive) {
-                    questions.deleteQuestion(CodeQuestionRef(project: project, conversationID: item.conversationID,
-                                                             origin: item.origin))
+                    questions.deleteQuestion(
+                        CodeQuestionRef(project: project, root: root, conversationID: item.conversationID, origin: item.origin)
+                    )
                 }
             } message: { _ in
                 Text("The conversation and its answers are removed.")
@@ -122,7 +126,7 @@ private struct QuestionConversationView: View {
         }
         .environment(\.dictationCenter, questions.dictation)
         .codeAnswerLinks { [questions, question] url in
-            Task { await questions.openLink(url, project: question.project) }
+            Task { await questions.openLink(url, project: question.project, root: question.root) }
         }
         .confirmationDialog("Delete this question?", isPresented: $confirmsDelete) {
             Button("Delete", role: .destructive) { questions.deleteQuestion(question) }

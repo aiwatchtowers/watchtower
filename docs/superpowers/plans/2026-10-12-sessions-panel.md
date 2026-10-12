@@ -133,13 +133,15 @@ Lanes: Core tasks 1, 3, 5, 6 have no shared files and may run in parallel worktr
 - Test: `Tests/Core/SessionPanelSectionsTests.swift` (new), `Tests/Core/TerminalSessionOrderTests.swift`
 
 **Interfaces:** as spec §3.5, plus
-- `SessionPanelSections.section(of:) -> Section`
-- `SessionPanelSections.neighbour(of id: Int64, in visible: [Int64]) -> Int64?`
+- `SessionPanelSections.grouping(sessions:savedOrder:statuses:liveIDs:now:expanded:sticky:) -> Self` (sticky is `SessionPanelSections.Sticky(sessionID:section:)`)
+- `SessionPanelSections.panelSection(of:) -> Section`
+- `SessionPanelSections.panelNeighbour(of id: Int64, in visible: [Int64]) -> Int64?`
+- Names avoid sentrux bare-name collisions (`make`/`section`/`neighbour` would resolve to unrelated methods).
 - `var visibleOrder: [Int64]` (main, open group or pinned)
 - `TerminalSessionOrder.move(_ displayed: [TerminalSession], within full: [Int64], from: IndexSet, to: Int) -> [Int64]`
 - `SessionSwitcherPresentation.rows(_:liveIDs:statuses:now:shortcutOrder:)`
 
-**Tests (`SessionPanelSectionsTests`):** `testFinishedWithoutAsksGoesToTheGroup`; `testFinishedWithAnAskReadyAndStoppedStayInMain`; `testGroupOrderedByFinishTimeNewestFirst`; `testFoldedGroupHasACountButNoRows`; `testStickyKeepsAJustFinishedOnScreenRowInMain`; `testStickyGroupRowIsPinnedUnderAFoldedHeader`; `testShortcutsNumberMainFirstGroupOnlyWhenOpen`; `testNeighbourIsNextThenPreviousThenNil`; `testMainKeepsTheSavedDragOrder`.
+**Tests (`SessionPanelSectionsTests`):** `testFinishedWithoutAsksGoesToTheGroup`; `testFinishedWithAnAskReadyAndStoppedStayInMain`; `testGroupOrderedByFinishTimeNewestFirst`; `testFoldedGroupHasACountButNoRows`; `testStickyKeepsAJustFinishedOnScreenRowInMain`; `testStickyGroupRowIsPinnedUnderAFoldedHeader`; `testSessionResumedFromTheGroupReturnsToMain` (sticky never holds a row that is no longer finished; `finishedCount` counts finished rows only); `testShortcutsNumberMainFirstGroupOnlyWhenOpen`; `testNeighbourIsNextThenPreviousThenNil`; `testMainKeepsTheSavedDragOrder`.
 `TerminalSessionOrderTests.testMoveWithinKeepsHiddenSlots` (a hidden id between two displayed ids keeps its index after a drag; existing `move` tests unchanged).
 
 **Verify:** `make test-swift FILTER='SessionPanelSectionsTests|TerminalSessionOrderTests|SessionSwitcherPresentationTests'`, `make lint-diff`.
@@ -151,10 +153,10 @@ Lanes: Core tasks 1, 3, 5, 6 have no shared files and may run in parallel worktr
 - Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/PendingSessionDeletes.swift`
 - Test: `Tests/Core/SessionDeletePolicyTests.swift`, `Tests/Core/PendingSessionDeletesTests.swift` (new)
 
-**Interfaces:** spec §4.1 and §4.2 verbatim (`isQuick(_:isWorkbenchSession:)`; `PendingSessionDeletes` with `add`, `undo`, `expire(now:)`, `takeAll`, `drop(workbenchID:)`, `ids`, `deadline`, `toastText`, `window = 5`).
+**Interfaces:** spec §4.1 and §4.2 verbatim (`isQuick(_:isWorkbenchSession:)`; `PendingSessionDeletes` with `enqueueSessionDelete(_:now:)`, `restoreBatch()`, `expiredBatch(now:)`, `takeBatch()`, `discardBatch(workbenchID:)`, `ids`, `deadline`, `toastText`, `window = 5`). The method names avoid sentrux bare-name collisions (`add`/`undo`/`expire`/`drop` resolve to unrelated methods).
 
 **Tests:**
-- `testProj16_QuickDeleteTable` (every `Kind` × live/not live × workbench/standalone; working, background, needs approval, running, waiting on ask, ready live → false; finished/stopped/failed live → true; any not live workbench row → true; standalone → false).
+- `testQuickDeleteTable` (renamed `testProj16_QuickDeleteTable` in Task 10 once the contract is approved, ask #195; every `Kind` via `CaseIterable`, classified by an exhaustive switch × live/not live × workbench/standalone; working, background, needs approval, running, waiting on ask, ready live → false; finished/stopped/failed live → true; any not live workbench row → true; standalone → false).
 - `testAddRestartsTheDeadline`, `testToastTextCountsTheBatch` ("Session deleted", "3 sessions deleted"), `testUndoReturnsTheWholeBatchAndClears`, `testExpireOnlyAfterTheDeadline`, `testTakeAllEmptiesTheBatch`, `testDropRemovesOnlyThatWorkbench`.
 
 **Verify:** `make test-swift FILTER='SessionDeletePolicyTests|PendingSessionDeletesTests'`, `make lint-diff`.

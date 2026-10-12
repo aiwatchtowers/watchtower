@@ -1,3 +1,4 @@
+import GRDB
 import XCTest
 @testable import WatchtowerCore
 
@@ -46,5 +47,28 @@ final class CodeRootTests: XCTestCase {
         let dotted = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/nonexistent/acme-wt/b/../a/"))
         XCTAssertEqual(plain, dotted)
         XCTAssertEqual(plain.defaultsKeySuffix, dotted.defaultsKeySuffix)
+    }
+
+    func testPrivatePrefixIsKeptEvenWhenTheShortSpellingExists() {
+        // /tmp is a symlink to /private/tmp on macOS; the folder must not be
+        // rewritten to the shorter spelling.
+        let root = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/private/tmp/acme-wt"))
+        XCTAssertEqual(root.folder.path, "/private/tmp/acme-wt")
+    }
+
+    func testDuplicateAndTrailingSlashesCollapse() {
+        let root = CodeRoot(workbenchID: 7, worktree: URL(fileURLWithPath: "/nonexistent//acme-wt/./a//"))
+        XCTAssertEqual(root.folder.path, "/nonexistent/acme-wt/a")
+    }
+
+    func testMainRootFolderIsTheStoredWorkbenchFolder() throws {
+        let base = makeTempBase()
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        // A /private spelling of an existing folder, as git or the store may hold it.
+        let stored = base.resolvingSymlinksInPath().path
+        let privateSpelling = stored.hasPrefix("/private/") ? stored : "/private" + stored
+        let workbench = Workbench(row: Row(["id": 7, "name": "acme", "folder_path": privateSpelling]))
+        XCTAssertEqual(workbench.mainCodeRoot.folder.path, workbench.folderURL.path)
+        XCTAssertEqual(workbench.mainCodeRoot.folder.path, privateSpelling)
     }
 }

@@ -198,7 +198,7 @@ extension WorkbenchesViewModel {
         // takes them). One that cannot be written, or a page that does not
         // hand its edits over, would leave them under the other branch —
         // nothing is sent.
-        switch await codeFiles.saveEdits(project: project, workTree: workTree) {
+        switch await codeFiles.saveEdits(root: project.mainCodeRoot, workTree: workTree) {
         case .saved:
             break
         case let .unsaved(path):

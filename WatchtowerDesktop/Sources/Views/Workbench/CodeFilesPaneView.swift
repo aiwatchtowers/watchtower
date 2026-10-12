@@ -14,13 +14,15 @@ import WebKit
 struct CodeFilesPaneView: View {
     let files: CodeFilesCenter
     let project: Workbench
+    /// The folder the pane shows and edits in.
+    let root: CodeRoot
     @State private var refusals: [CodeFilesCenter.Refusal] = []
 
     var body: some View {
-        let tabs = files.tabs(for: project)
-        let git = files.git(for: project)
+        let tabs = files.tabs(for: root)
+        let git = files.git(for: root)
         VStack(spacing: 0) {
-            if let error = files.editorErrors[project.id] {
+            if let error = files.editorErrors[root] {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -35,19 +37,19 @@ struct CodeFilesPaneView: View {
                     .overlay(alignment: .topTrailing) { inspectorToggle.padding(.top, 6) }
             } else {
                 HStack(spacing: 0) {
-                    CodeTabStrip(files: files, project: project, tabs: tabs, git: git) { refusals = $0 }
+                    CodeTabStrip(files: files, root: root, tabs: tabs, git: git) { refusals = $0 }
                     inspectorToggle
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
                 Divider()
                 if let active = tabs.active {
-                    let buffer = files.buffer(for: project, relPath: active)
-                    JumpBar(files: files, project: project, buffer: buffer, status: git.files[active])
+                    let buffer = files.buffer(for: root, relPath: active)
+                    JumpBar(files: files, root: root, buffer: buffer, status: git.files[active])
                         .id(project.id)
                     Divider()
                     CodeFileBanners(buffer: buffer)
                 }
-                MonacoEditorView(files: files, project: project, tabs: tabs)
+                MonacoEditorView(files: files, project: project, root: root, tabs: tabs)
                     .overlay { activeOverlay(tabs) }
                     .overlay {
                         if let questions = files.questions {
@@ -58,13 +60,13 @@ struct CodeFilesPaneView: View {
         }
         .inspector(isPresented: inspectorShown) {
             if let usages = files.usages {
-                CodeInspector(usages: usages, questions: files.questions, project: project)
+                CodeInspector(usages: usages, questions: files.questions, project: project, root: root)
                     .persistedInspectorColumnWidth(key: "workbench.code.inspector.width", range: 220...560, ideal: 300)
             }
         }
-        .task(id: project.id) { await files.show(project) }
+        .task(id: root) { await files.show(root) }
         .task(id: tabs.active) {
-            if let active = tabs.active { files.buffer(for: project, relPath: active).loadIfNeeded() }
+            if let active = tabs.active { files.buffer(for: root, relPath: active).loadIfNeeded() }
         }
         .confirmationDialog(
             refusals.count == 1 ? "“\(Self.name(refusals[0].path))” has edits that could not be saved"
@@ -73,7 +75,7 @@ struct CodeFilesPaneView: View {
             titleVisibility: .visible
         ) {
             Button("Close and Discard Edits", role: .destructive) {
-                files.discardAndClose(refusals.map(\.path), project: project)
+                files.discardAndClose(refusals.map(\.path), root: root)
                 refusals = []
             }
             Button("Cancel", role: .cancel) { refusals = [] }
@@ -100,7 +102,7 @@ struct CodeFilesPaneView: View {
     @ViewBuilder
     private func activeOverlay(_ tabs: CodeTabs) -> some View {
         if let active = tabs.active {
-            switch files.buffer(for: project, relPath: active).state {
+            switch files.buffer(for: root, relPath: active).state {
             case .loaded:
                 EmptyView()
             case .loading:
@@ -122,7 +124,7 @@ struct CodeFilesPaneView: View {
 /// The tab strip: drag to reorder, double click keeps a preview tab.
 private struct CodeTabStrip: View {
     let files: CodeFilesCenter
-    let project: Workbench
+    let root: CodeRoot
     let tabs: CodeTabs
     let git: GitStatusSnapshot
     let onRefused: ([CodeFilesCenter.Refusal]) -> Void
@@ -136,14 +138,14 @@ private struct CodeTabStrip: View {
                         tab: tab,
                         subtitle: subtitles[tab.path],
                         isActive: tabs.active == tab.path,
-                        isDirty: files.existingBuffer(project, tab.path)?.isDirty ?? false,
+                        isDirty: files.existingBuffer(root, tab.path)?.isDirty ?? false,
                         status: git.files[tab.path],
                         actions: actions(for: tab.path)
                     )
                     .draggable(tab.path)
                     .dropDestination(for: String.self) { items, _ in
                         guard let dragged = items.first, tabs.contains(dragged) else { return false }
-                        files.move(dragged, before: tab.path, project: project)
+                        files.move(dragged, before: tab.path, root: root)
                         return true
                     }
                     Divider()
@@ -156,12 +158,12 @@ private struct CodeTabStrip: View {
 
     private func actions(for path: String) -> CodeTabView.Actions {
         CodeTabView.Actions(
-            activate: { files.activate(path, project: project) },
-            pin: { files.pin(path, project: project) },
+            activate: { files.activate(path, root: root) },
+            pin: { files.pin(path, root: root) },
             close: { close([path]) },
             closeOthers: { close(tabs.paths.filter { $0 != path }) },
             closeAll: { close(tabs.paths) },
-            reveal: { NSWorkspace.shared.activateFileViewerSelecting([project.folderURL.appendingPathComponent(path)]) },
+            reveal: { NSWorkspace.shared.activateFileViewerSelecting([root.folder.appendingPathComponent(path)]) },
             copyPath: {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(path, forType: .string)
@@ -171,7 +173,7 @@ private struct CodeTabStrip: View {
 
     private func close(_ paths: [String]) {
         Task {
-            let refused = await files.close(paths, project: project)
+            let refused = await files.close(paths, root: root)
             if !refused.isEmpty { onRefused(refused) }
         }
     }
@@ -319,10 +321,11 @@ private struct CodeFileBanners: View {
 struct MonacoEditorView: NSViewRepresentable {
     let files: CodeFilesCenter
     let project: Workbench
+    let root: CodeRoot
     let tabs: CodeTabs
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(files: files, project: project)
+        Coordinator(files: files, project: project, root: root)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -334,7 +337,7 @@ struct MonacoEditorView: NSViewRepresentable {
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
-        files.register(context.coordinator, for: project)
+        files.register(context.coordinator, for: root)
         files.navigation?.registerPage(context.coordinator, for: project.id)
         files.usages?.registerPage(context.coordinator, for: project.id)
         files.questions?.registerPage(context.coordinator, for: project.id)
@@ -344,13 +347,13 @@ struct MonacoEditorView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         // Read here so a reload or a rename re-runs this (observation).
-        let open = tabs.paths.compactMap { files.existingBuffer(project, $0) }
+        let open = tabs.paths.compactMap { files.existingBuffer(root, $0) }
         let state = Dictionary(uniqueKeysWithValues: open.map { buffer in
             (buffer.id, Coordinator.BufferState(path: buffer.relPath, revision: buffer.externalRevision))
         })
-        let active = tabs.active.flatMap { files.existingBuffer(project, $0) }
+        let active = tabs.active.flatMap { files.existingBuffer(root, $0) }
         let shown = active?.state == .loaded ? active?.id : nil
-        context.coordinator.sync(buffers: state, active: shown, reveal: files.reveals[project.id])
+        context.coordinator.sync(buffers: state, active: shown, reveal: files.reveals[root])
     }
 
     /// The pane goes away: what the page has not sent yet is pulled and
@@ -369,6 +372,7 @@ struct MonacoEditorView: NSViewRepresentable {
 
         let files: CodeFilesCenter
         let project: Workbench
+        let root: CodeRoot
         weak var webView: WKWebView?
         private var ready = false
         private var shown: String?
@@ -383,9 +387,10 @@ struct MonacoEditorView: NSViewRepresentable {
         /// The code question popover at the selection, while open.
         private var questionPopover: NSPopover?
 
-        init(files: CodeFilesCenter, project: Workbench) {
+        init(files: CodeFilesCenter, project: Workbench, root: CodeRoot) {
             self.files = files
             self.project = project
+            self.root = root
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -395,7 +400,7 @@ struct MonacoEditorView: NSViewRepresentable {
                 ready = true
                 shown = nil
                 told = [:]
-                files.editorErrors[project.id] = nil
+                files.editorErrors[root] = nil
                 push()
             case "text":
                 guard let id = body["id"] as? String, let text = body["text"] as? String, let base = body["base"] as? Int else { return }
@@ -404,7 +409,7 @@ struct MonacoEditorView: NSViewRepresentable {
                     return
                 }
                 files.edited(
-                    buffer, text: text, base: base, project: project,
+                    buffer, text: text, base: base, root: root,
                     now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false
                 )
             case "definition":
@@ -415,15 +420,15 @@ struct MonacoEditorView: NSViewRepresentable {
                     NSLog("CodeFilesPane: a usages message without word was dropped")
                     return
                 }
-                files.usages?.showUsages(of: word, project: project)
+                files.usages?.showUsages(of: word, root: root)
             case "cursor":
                 guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int,
                       let buffer = files.buffer(id: id) else { return }
-                files.cursorMoved(CodeNavLocation(path: buffer.relPath, line: line, col: col), workbenchID: project.id)
+                files.cursorMoved(CodeNavLocation(path: buffer.relPath, line: line, col: col), root: root)
             case "selection", "scroll", "askAI":
                 questionMessage(type, body)
             case "error":
-                files.editorErrors[project.id] = (body["message"] as? String) ?? "The editor reported an error."
+                files.editorErrors[root] = (body["message"] as? String) ?? "The editor reported an error."
             default:
                 break
             }
@@ -470,7 +475,7 @@ struct MonacoEditorView: NSViewRepresentable {
         /// cursor there and the keyboard in the editor.
         private func pushReveal() {
             guard let request = wantedReveal, request.serial != sentRevealSerial, let id = shown,
-                  files.existingBuffer(project, request.path)?.id == id else { return }
+                  files.existingBuffer(root, request.path)?.id == id else { return }
             sentRevealSerial = request.serial
             if let line = request.line {
                 call("wt.reveal", ["id": id, "line": line, "col": request.col])
@@ -480,8 +485,8 @@ struct MonacoEditorView: NSViewRepresentable {
             if let webView { webView.window?.makeFirstResponder(webView) }
             // Not during the view update that carried it.
             let files = files
-            let workbenchID = project.id
-            Task { @MainActor in files.revealSent(request, workbenchID: workbenchID) }
+            let root = root
+            Task { @MainActor in files.revealSent(request, root: root) }
         }
 
         /// ⌘-click or ⌃⌘J in the page: go to definition, then
@@ -500,9 +505,9 @@ struct MonacoEditorView: NSViewRepresentable {
             }
             let request = CodeDefinitionRequest(req: req, word: word, origin: CodeNavLocation(path: buffer.relPath, line: line, col: col))
             let anchor = menuAnchor(x: body["x"] as? Double, y: body["y"] as? Double)
-            let project = project
+            let root = root
             Task { @MainActor [weak self] in
-                await navigation.goToDefinition(request, project: project, anchor: anchor)
+                await navigation.goToDefinition(request, root: root, anchor: anchor)
                 self?.call("wt.definitionDone", req)
             }
         }
@@ -556,7 +561,8 @@ struct MonacoEditorView: NSViewRepresentable {
                 // askAI: ⌘I in the editor, its context menu, the ✦ button or the menu.
                 guard let id = body["id"] as? String else { return }
                 let project = project
-                Task { await questions.askAI(bufferID: id, project: project) }
+                let root = root
+                Task { await questions.askAI(bufferID: id, project: project, root: root) }
             }
         }
 
@@ -676,17 +682,17 @@ struct MonacoEditorView: NSViewRepresentable {
             questionPopover?.close()
             questionPopover = nil
             files.questions?.unregisterPage(self, for: project.id)
-            files.unregister(self, for: project.id)
+            files.unregister(self, for: root)
             files.navigation?.unregisterPage(self, for: project.id)
             files.usages?.unregisterPage(self, for: project.id)
             let files = files
-            let project = project
+            let root = root
             let wasReady = ready
             Task { @MainActor in
                 // `webView` and `files` are held by this task, not by the
                 // coordinator SwiftUI is releasing.
                 if wasReady, let edits = await Self.takePending(from: webView) {
-                    files.apply(edits, project: project, now: true)
+                    files.apply(edits, root: root, now: true)
                 }
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "wt")
             }
@@ -695,16 +701,16 @@ struct MonacoEditorView: NSViewRepresentable {
         // MARK: WKNavigationDelegate
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
-            files.editorErrors[project.id] = "The editor could not load: \(error.localizedDescription)"
+            files.editorErrors[root] = "The editor could not load: \(error.localizedDescription)"
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
-            files.editorErrors[project.id] = "The editor could not load: \(error.localizedDescription)"
+            files.editorErrors[root] = "The editor could not load: \(error.localizedDescription)"
         }
 
         /// The page's process died: edits it had not sent are gone; reload.
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            files.editorErrors[project.id] = "The editor stopped and was restarted. Edits typed in the last moment may be lost."
+            files.editorErrors[root] = "The editor stopped and was restarted. Edits typed in the last moment may be lost."
             ready = false
             shown = nil
             told = [:]
@@ -715,12 +721,12 @@ struct MonacoEditorView: NSViewRepresentable {
         /// needs escaping by hand.
         private func call(_ function: String, _ argument: Any) {
             guard let script = Self.script(function, argument) else {
-                files.editorErrors[project.id] = "Editor: could not encode a call to \(function)."
+                files.editorErrors[root] = "Editor: could not encode a call to \(function)."
                 return
             }
             webView?.evaluateJavaScript(script) { [weak self] _, error in
                 guard let self, let error else { return }
-                self.files.editorErrors[self.project.id] = "Editor: \(error.localizedDescription)"
+                self.files.editorErrors[self.root] = "Editor: \(error.localizedDescription)"
             }
         }
 

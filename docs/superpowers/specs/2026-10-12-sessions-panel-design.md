@@ -128,11 +128,13 @@ agent. Revisit only if the main list grows long with ready rows.
 
 ### 3.3 The session on screen never jumps (sticky section)
 
-The VM keeps `stickySection: (sessionID, Section)?` for the session on screen (`panelSelection`), captured the
-first time it is grouped while on screen. While it stays on screen its section is the sticky one, whatever its
-state says: a session finishing in front of the owner stays in its main-list slot; a session opened from the
-folded group (⌘K, a notice, the switcher) stays in the group. When another session comes on screen the sticky
-entry is replaced and the row moves to its real section on the next render.
+The VM keeps `stickySection: SessionPanelSections.Sticky?` (`sessionID`, `section`) for the session on screen
+(`panelSelection`), captured the first time it is grouped while on screen. The sticky section only holds a row
+that is **still finished**: a session finishing in front of the owner stays in its main-list slot until another
+session comes on screen. A session resumed from the group (a new prompt lifts `finished`: working, running…)
+always returns to its place in the main list, on screen or not (owner brief #480 §1), and `finishedCount`
+counts only rows that are really finished. When another session comes on screen the sticky entry is replaced
+and the row moves to its real section on the next render.
 
 A collapsed group whose on-screen session is in it shows that one row under the "▸ N finished" header
 (`pinned`), without changing the remembered fold. Decision over "auto-expand": expanding would write the
@@ -156,13 +158,19 @@ package struct SessionPanelSections: Equatable, Sendable {
     package let finishedCount: Int
     package let pinned: SessionSwitcherPresentation.Row?      // folded + on-screen row in the group
     package var shortcutOrder: [Int64]                        // main ids, then the open group's ids
-    package static func make(
+    package let expanded: Bool
+    package var visibleOrder: [Int64]                         // main, then the open group or the pinned row
+    package struct Sticky { package let sessionID: Int64; package let section: Section }
+    package static func grouping(
         sessions: [TerminalSession], savedOrder: [Int64], statuses: [Int64: SessionAgentStatus],
-        liveIDs: Set<Int64>, now: Date, expanded: Bool, sticky: (id: Int64, section: Section)?
+        liveIDs: Set<Int64>, now: Date, expanded: Bool, sticky: Sticky?
     ) -> SessionPanelSections
-    package static func section(of state: SessionSwitcherPresentation.State) -> Section
+    package static func panelSection(of state: SessionSwitcherPresentation.State) -> Section
+    package static func panelNeighbour(of id: Int64, in visible: [Int64]) -> Int64?
 }
 ```
+Names are specific (`grouping`, `panelSection`, `panelNeighbour`) rather than `make`/`section`/`neighbour`:
+sentrux resolves calls by bare name, and generic names collide with unrelated methods.
 Rows are built by `SessionSwitcherPresentation.rows` with shortcuts assigned over `shortcutOrder` (§3.6). The
 standalone list keeps `rows(orderedSessions(nil))` unchanged.
 
@@ -209,14 +217,16 @@ package struct PendingSessionDeletes: Equatable, Sendable {
     package private(set) var deadline: Date?
     package static let window: TimeInterval = 5
     package var ids: Set<Int64>
-    package mutating func add(_ entry: Entry, now: Date)      // appends, deadline = now + window (restarts)
-    package mutating func undo() -> [Entry]                    // whole batch back, cleared
-    package mutating func expire(now: Date) -> [Entry]?        // the batch to commit once past the deadline
-    package mutating func takeAll() -> [Entry]                 // quit / workbench delete: commit now
-    package mutating func drop(workbenchID: Int64)             // the workbench is gone: nothing to commit
+    package mutating func enqueueSessionDelete(_ entry: Entry, now: Date) // appends, deadline = now + window (restarts)
+    package mutating func restoreBatch() -> [Entry]            // Undo: whole batch back, cleared
+    package mutating func expiredBatch(now: Date) -> [Entry]?  // the batch to commit once past the deadline
+    package mutating func takeBatch() -> [Entry]               // quit / workbench delete: commit now
+    package mutating func discardBatch(workbenchID: Int64)     // the workbench is gone: nothing to commit
     package var toastText: String?                             // "Session deleted" / "N sessions deleted"
 }
 ```
+The method names are specific (not `add`/`undo`/`expire`/`takeAll`/`drop`) so sentrux, which resolves calls by
+bare name, does not tie them to unrelated methods of the same name.
 
 **Batch decision:** one batch, one timer. Each delete inside the window joins the batch and restarts the 5 s;
 the toast reads "Session deleted — Undo" or "N sessions deleted — Undo"; Undo (button or ⌘Z) restores the whole
@@ -233,14 +243,14 @@ under the cursor): one rule, one timer, and the count tells exactly what Undo wi
   for each entry (a row already gone is fine: DELETE of nothing), then `loadSessions` for each touched list. A
   failed write → `setSessionError("Could not delete the session: …")` and a reload: the row comes back — never
   silently kept hidden.
-- **Undo** (`undoPendingDeletes()`): cancel the task, `pendingDeletes.undo()`, reload the touched lists. The
+- **Undo** (`undoPendingDeletes()`): cancel the task, `pendingDeletes.restoreBatch()`, reload the touched lists. The
   row returns not running; a click or Restart resumes it (`--resume`, its `claude_session_id` is intact). The
   layout is not restored (the owner clicks it back on screen).
 - **Quit:** `AppState`'s `willTerminate` observer calls `workbenchesViewModel?.commitPendingDeletesForQuit()`:
-  `takeAll()` and a synchronous GRDB write bounded like `OwnerPresenceCenter.clearForQuit` (≤ 2 s; a timeout or
+  `takeBatch()` and a synchronous GRDB write bounded like `OwnerPresenceCenter.clearForQuit` (≤ 2 s; a timeout or
   error is logged — the row survives and reappears next launch, the safe side).
 - **Crash / kill -9:** nothing was deleted → the row reappears on next launch (v1 limit, safe).
-- **Workbench delete** while a batch holds its sessions: `drop(workbenchID:)` — the cascade removes them.
+- **Workbench delete** while a batch holds its sessions: `discardBatch(workbenchID:)` — the cascade removes them.
 
 ### 4.3 The hidden row must not be seen or used
 
@@ -277,7 +287,7 @@ moves to the neighbour". Design:
   (`requestKeyboardFocus`); **⌘⌫** on the cursor row: `isQuick` → delete with Undo, else the confirmation;
   **⌘Z** → `undoPendingDeletes()` when a batch is pending. Outside it, ⌘⌫ and ⌘Z belong to whoever has the
   keyboard (Claude Code's line editing, Monaco's undo).
-- **Neighbour after delete** (`SessionPanelSections.neighbour(of:in:)`, pure): the next row in visible order,
+- **Neighbour after delete** (`SessionPanelSections.panelNeighbour(of:in:)`, pure): the next row in visible order,
   else the previous, else nil. Applies to ✕, ⌘⌫ and the menu's Delete….
 - A row click keeps today's behaviour (keyboard into the terminal) — open question Q1 (§9).
 
@@ -324,12 +334,13 @@ Core (`Tests/Core`):
 - `SessionPanelSectionsTests`: finished without asks → group; finished with ask / ready / stopped → main;
   group ordered by `finishedAt` desc; folded group has no rows but a count; sticky keeps a just-finished
   on-screen row in main; sticky keeps an on-screen group row pinned under a folded header; `shortcutOrder` main
-  first, group only when open; `neighbour` next/previous/nil.
+  first, group only when open; a session resumed from the group returns to main; `panelNeighbour`
+  next/previous/nil.
 - `TerminalSessionOrderTests.testMoveWithinKeepsHiddenSlots` (a group id between two main ids keeps its slot
   after a drag; returning it to main restores its place).
 - `SessionDeletePolicyTests.testQuickDeleteTable` (every kind × live/not live × workbench/standalone).
 - `PendingSessionDeletesTests`: add restarts the deadline; batch toast text; undo returns all and clears;
-  expire before / after deadline; takeAll; drop by workbench.
+  expire before / after deadline (`expiredBatch`); `takeBatch`; `discardBatch` by workbench.
 App (`Tests/`):
 - `WorkbenchesViewModelSessionsTests`: `testProj16_DeleteHidesAtOnceAndWritesNothingUntilTheWindowEnds`,
   `testProj16_UndoBringsBackTheRowWithItsLinksAndAsks` (a session with a `terminal_session_targets` row and an

@@ -143,8 +143,8 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
 
     // MARK: owner asks (spec 2026-10-03 Part 8)
 
-    private func ask(_ title: String, session: Int64? = 5) -> Policy.OpenAsk {
-        Policy.OpenAsk(title: title, sessionID: session)
+    private func ask(_ title: String, session: Int64? = 5, kind: OwnerAskKind? = nil) -> Policy.OpenAsk {
+        Policy.OpenAsk(title: title, sessionID: session, kind: kind)
     }
 
     func testANewOpenAskAnnouncesItAndOpensItsSession() {
@@ -202,5 +202,75 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         XCTAssertTrue(saved.asksKnown)
         XCTAssertEqual(Policy.decide(previous: saved, current: snapshot(asks: [1: ask("A"), 2: ask("B"), 9: ask("New")]))
             .map(\.title), ["Agent asks: New"])
+    }
+
+    // MARK: ask kinds (#534)
+
+    func testCheckAskNoticeSaysReadyToCheck() {
+        let titles: [OwnerAskKind?: String] = [
+            .check: "Ready to check: T", .review: "Ready for review: T",
+            .question: "Agent asks: T", nil: "Agent asks: T"
+        ]
+        for (kind, title) in titles {
+            let notices = Policy.decide(previous: snapshot(), current: snapshot(asks: [4: ask("T", kind: kind)]))
+            XCTAssertEqual(notices.map(\.title), [title], "kind \(kind?.rawValue ?? "nil")")
+            XCTAssertEqual(notices.first?.kind, .askOpened)
+        }
+    }
+
+    func testCoalescedChecksSayReadyToCheck() {
+        let checks = Policy.decide(previous: snapshot(), current: snapshot(asks: [
+            1: ask("A", kind: .check), 2: ask("B", kind: .check), 3: ask("C", kind: .check)
+        ]))
+        XCTAssertEqual(checks.map(\.title), ["Ready to check (3)"])
+
+        let reviews = Policy.decide(previous: snapshot(), current: snapshot(asks: [
+            1: ask("A", kind: .review), 2: ask("B", kind: .review), 3: ask("C", kind: .review)
+        ]))
+        XCTAssertEqual(reviews.map(\.title), ["Ready for review (3)"])
+
+        let checksAndReviews = Policy.decide(previous: snapshot(), current: snapshot(asks: [
+            1: ask("A", kind: .check), 2: ask("B", kind: .review), 3: ask("C", kind: .check)
+        ]))
+        XCTAssertEqual(checksAndReviews.map(\.title), ["Ready to check (3)"])
+
+        let mixed = Policy.decide(previous: snapshot(), current: snapshot(asks: [
+            1: ask("A", kind: .check), 2: ask("B", kind: .check), 3: ask("C", kind: .question)
+        ]))
+        XCTAssertEqual(mixed.map(\.title), ["Waiting for you (3)"])
+    }
+
+    /// A snapshot persisted before the ask kind was read decodes, and the
+    /// asks it already knew are not announced again once the kind shows.
+    func testSnapshotWithoutAskKindDecodes() throws {
+        let json = """
+        {"projectID": 1, "projectName": "acme", "lastAgentCommentID": 0, "lastActionID": 0,
+         "questions": [], "targets": [], "ownerTouched": [],
+         "openAsks": [4, {"title": "T", "sessionID": 5}]}
+        """
+        let old = try JSONDecoder().decode(Policy.Snapshot.self, from: Data(json.utf8))
+        XCTAssertTrue(old.asksKnown)
+        XCTAssertEqual(old.openAsks, [4: ask("T")])
+        XCTAssertNil(old.openAsks[4]?.kind)
+
+        let current = snapshot(asks: [4: ask("T", kind: .check)])
+        XCTAssertTrue(Policy.decide(previous: old, current: current).isEmpty, "a known ask is not re-announced")
+
+        let saved = try JSONDecoder().decode(Policy.Snapshot.self, from: JSONEncoder().encode(current.persisted))
+        XCTAssertEqual(saved.openAsks[4]?.kind, .check, "the kind round-trips")
+    }
+
+    /// A kind this build does not know decodes as nil (a question's notice)
+    /// instead of failing the whole snapshot.
+    func testSnapshotWithUnknownAskKindDecodesAsNil() throws {
+        let json = """
+        {"projectID": 1, "projectName": "acme", "lastAgentCommentID": 0, "lastActionID": 0,
+         "questions": [], "targets": [], "ownerTouched": [],
+         "openAsks": [4, {"title": "T", "sessionID": 5, "kind": "approval"}]}
+        """
+        let old = try JSONDecoder().decode(Policy.Snapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(old.openAsks, [4: ask("T")])
+        XCTAssertNil(old.openAsks[4]?.kind)
+        XCTAssertEqual(old.openAsks[4]?.noticeTitle, "Agent asks: T")
     }
 }
