@@ -140,6 +140,32 @@ final class SpeechGateTranscriberTests: XCTestCase {
         XCTAssertEqual(output.text, "")
     }
 
+    func testCancelledBatchThrowsInsteadOfReturningSilence() async {
+        // The engine cancels the run on its first window, the way a stopped
+        // job does; the batch must surface CancellationError, not an empty
+        // (all-silence) transcript.
+        final class CancellingEngine: WhisperWindowEngine, @unchecked Sendable {
+            private(set) var decodes = 0
+            func detectLanguage(_ samples: [Float]) async throws -> [String: Float] { ["en": 0.9] }
+            func transcribeWindow(_ samples: [Float], language: String, prompt: String?) async throws -> [TranscribedSegment] {
+                decodes += 1
+                withUnsafeCurrentTask { $0?.cancel() }
+                return [TranscribedSegment(text: "spoken", startSec: 0, endSec: 1)]
+            }
+        }
+        let engine = CancellingEngine()
+        let detector = FakeSpeechDetector()
+        do {
+            _ = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: detector)
+                .transcribe(samples: audio([0.1...0.9, 0.1...0.9, 0.1...0.9])) { _, _ in }
+            XCTFail("a cancelled batch must throw")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "got \(error)")
+        }
+        XCTAssertEqual(engine.decodes, 1, "no window runs after the cancel")
+        XCTAssertEqual(detector.calls, 1)
+    }
+
     func testNextRecordingRetriesTheDetectorAfterAFailure() async throws {
         // The detector lives as long as the warm transcriber; a failure must
         // not pin later recordings to the fallback.

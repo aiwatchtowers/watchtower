@@ -45,6 +45,10 @@ struct WindowedTranscriber {
         defer { gate.logSummary(engineDrops: engine.takeDropCounts()) }
 
         for (index, range) in ranges.enumerated() {
+            // A cancelled batch throws rather than returning the windows it
+            // skipped as silence (the speech gate reads a cancelled detector
+            // call as a silent window).
+            try Task.checkCancellation()
             let decoded = await decodeGatedWindow(Array(samples[range]), gate: &gate, previousLanguage: prevLang,
                                                   promptText: promptState.text, config: config, engine: engine)
             switch decoded {
@@ -70,6 +74,7 @@ struct WindowedTranscriber {
         // Total engine failure must not masquerade as "no speech": if no window
         // produced speech and at least one failed with an engine error, surface
         // the error. Genuine all-silence (no errors) still returns empty output.
+        try Task.checkCancellation()
         if texts.isEmpty, let lastEngineError {
             throw lastEngineError
         }
