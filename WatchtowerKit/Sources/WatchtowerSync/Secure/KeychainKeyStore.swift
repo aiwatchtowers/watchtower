@@ -27,17 +27,9 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
             let keys: DeviceIdentityKeys
             switch (sigData, kxData) {
             case let (sig?, kx?):
-                do {
-                    keys = DeviceIdentityKeys(
-                        signing: try Curve25519.Signing.PrivateKey(rawRepresentation: sig),
-                        agreement: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: kx))
-                } catch {
-                    throw KeyStoreError.corrupt("device identity keys do not parse")
-                }
+                keys = try Self.parseIdentity(sig, kx)
             case (nil, nil):
-                keys = DeviceIdentityKeys(signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey())
-                try put(keys.signing.rawRepresentation, "identity.sig", .whenUnlocked)
-                try put(keys.agreement.rawRepresentation, "identity.kx", .whenUnlocked)
+                keys = try createIdentity()
             default:
                 // One half present: recreating would silently replace the device identity.
                 throw KeyStoreError.corrupt("device identity is half present")
@@ -50,6 +42,35 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         }
     }
 
+    /// Add-only creation. Losing the race on `identity.sig` (another creator) loads what that creator stored;
+    /// losing it on `identity.kx` means two creators interleaved and is corrupt.
+    private func createIdentity() throws -> DeviceIdentityKeys {
+        let fresh = DeviceIdentityKeys(signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey())
+        guard try backend.add(
+            fresh.signing.rawRepresentation, account: "identity.sig", access: .whenUnlocked, group: privateGroup, dataProtection: true)
+        else {
+            guard let sig = try backend.read(account: "identity.sig", group: privateGroup),
+                  let kx = try backend.read(account: "identity.kx", group: privateGroup) else {
+                throw KeyStoreError.corrupt("device identity is half present")
+            }
+            return try Self.parseIdentity(sig, kx)
+        }
+        guard try backend.add(
+            fresh.agreement.rawRepresentation, account: "identity.kx", access: .whenUnlocked, group: privateGroup, dataProtection: true)
+        else { throw KeyStoreError.corrupt("device identity was created concurrently") }
+        return fresh
+    }
+
+    private static func parseIdentity(_ sig: Data, _ kx: Data) throws -> DeviceIdentityKeys {
+        do {
+            return DeviceIdentityKeys(
+                signing: try Curve25519.Signing.PrivateKey(rawRepresentation: sig),
+                agreement: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: kx))
+        } catch {
+            throw KeyStoreError.corrupt("device identity keys do not parse")
+        }
+    }
+
     public func hubLink(_ hubID: String) throws -> HubLinkKeys? {
         guard let data = try backend.read(account: "hub.\(hubID)", group: privateGroup) else { return nil }
         do { return try JSONDecoder().decode(HubLinkKeys.self, from: data) } catch {
@@ -58,7 +79,9 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     public func saveHubLink(_ keys: HubLinkKeys) throws {
-        guard keys.hubSigningKey.count == 32 else { throw KeyStoreError.corrupt("hub signing key is not 32 bytes") }
+        let sizes = [keys.hubSigningKey, keys.hubAgreementKey] + (keys.metaKey.map { [$0] } ?? [])
+            + keys.epochs.flatMap { [$0.dataKey, $0.alertKey] }
+        guard sizes.allSatisfy({ $0.count == 32 }) else { throw KeyStoreError.corrupt("a hub link key is not 32 bytes") }
         var trimmed = keys
         trimmed.epochs = Array(keys.epochs.suffix(HubLinkKeys.maxEpochs))
         let alert = AlertMaterial(
@@ -113,40 +136,49 @@ public final class KeychainHubKeyStore: HubKeyStore, @unchecked Sendable {
 
     public func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool) {
         try lock.withLock {
-            let sig = try backend.read(account: "hubid.\(hubID).sig", group: nil)
-            let kx = try backend.read(account: "hubid.\(hubID).kx", group: nil)
-            let wrap = try backend.read(account: "hubid.\(hubID).wrap", group: nil)
-            switch (sig, kx, wrap) {
-            case let (sig?, kx?, wrap?):
-                do {
-                    let keys = HubIdentityKeys(
-                        signing: try Curve25519.Signing.PrivateKey(rawRepresentation: sig),
-                        agreement: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: kx),
-                        wrapKey: SymmetricKey(data: wrap))
-                    guard wrap.count == 32 else { throw KeyStoreError.corrupt("hub wrap key is not 32 bytes") }
-                    return (keys, false)
-                } catch let error as KeyStoreError {
-                    throw error
-                } catch {
-                    throw KeyStoreError.corrupt("hub identity keys do not parse")
+            if let existing = try load(hubID) { return (existing, false) }
+            let fresh = HubIdentityKeys(
+                signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey(),
+                wrapKey: SymmetricKey(size: .bits256))
+            let items = [
+                ("hubid.\(hubID).sig", fresh.signing.rawRepresentation),
+                ("hubid.\(hubID).kx", fresh.agreement.rawRepresentation),
+                ("hubid.\(hubID).wrap", fresh.wrapKey.withUnsafeBytes { Data($0) })
+            ]
+            for (index, item) in items.enumerated() {
+                let added = try backend.add(item.1, account: item.0, access: .afterFirstUnlock, group: nil, dataProtection: true)
+                guard added else {
+                    // Another creator got there. Losing the first item means its identity is (becoming) the stored one;
+                    // losing a later one means two creators interleaved, which is never mixed silently.
+                    if index == 0, let existing = try load(hubID) { return (existing, false) }
+                    throw KeyStoreError.corrupt("hub identity was created concurrently")
                 }
-            case (nil, nil, nil):
-                let keys = HubIdentityKeys(
-                    signing: Curve25519.Signing.PrivateKey(), agreement: Curve25519.KeyAgreement.PrivateKey(),
-                    wrapKey: SymmetricKey(size: .bits256))
-                try put(keys.signing.rawRepresentation, "hubid.\(hubID).sig")
-                try put(keys.agreement.rawRepresentation, "hubid.\(hubID).kx")
-                try put(keys.wrapKey.withUnsafeBytes { Data($0) }, "hubid.\(hubID).wrap")
-                return (keys, true)
-            default:
-                // A partial identity is never replaced silently: the wrap key guards the sealed epoch keys.
-                throw KeyStoreError.corrupt("hub identity is partially present")
             }
+            return (fresh, true)
         }
     }
 
-    private func put(_ data: Data, _ account: String) throws {
-        try backend.write(data, account: account, access: .afterFirstUnlock, group: nil, dataProtection: true)
+    /// nil when no item exists; all three must parse, otherwise `.corrupt`.
+    private func load(_ hubID: String) throws -> HubIdentityKeys? {
+        let sig = try backend.read(account: "hubid.\(hubID).sig", group: nil)
+        let kx = try backend.read(account: "hubid.\(hubID).kx", group: nil)
+        let wrap = try backend.read(account: "hubid.\(hubID).wrap", group: nil)
+        switch (sig, kx, wrap) {
+        case (nil, nil, nil): return nil
+        case let (sig?, kx?, wrap?):
+            guard wrap.count == 32 else { throw KeyStoreError.corrupt("hub wrap key is not 32 bytes") }
+            do {
+                return HubIdentityKeys(
+                    signing: try Curve25519.Signing.PrivateKey(rawRepresentation: sig),
+                    agreement: try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: kx),
+                    wrapKey: SymmetricKey(data: wrap))
+            } catch {
+                throw KeyStoreError.corrupt("hub identity keys do not parse")
+            }
+        default:
+            // A partial identity is never replaced silently: the wrap key guards the sealed epoch keys.
+            throw KeyStoreError.corrupt("hub identity is partially present")
+        }
     }
 
     public func deleteHubIdentity(hubID: String) throws {

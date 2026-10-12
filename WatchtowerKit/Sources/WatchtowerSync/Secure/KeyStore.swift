@@ -16,7 +16,10 @@ public enum KeyStoreError: Error, Equatable {
 public protocol KeychainBackend: Sendable {
     /// nil when absent; a device that is locked throws `KeyStoreError.locked`.
     func read(account: String, group: String?) throws -> Data?
+    /// Create or replace in place (never delete first: a failed write must not destroy the existing item).
     func write(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws
+    /// Add-only: returns false, changing nothing, when the item already exists. Creation uses this so two creators never clobber.
+    func add(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws -> Bool
     func delete(account: String, group: String?) throws
 }
 

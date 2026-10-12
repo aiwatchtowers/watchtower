@@ -27,18 +27,32 @@ public final class InMemoryKeychainBackend: KeychainBackend, @unchecked Sendable
     public func read(account: String, group: String?) throws -> Data? {
         try lock.withLock {
             if beforeFirstUnlock { throw KeyStoreError.locked }
-            guard let item = items[key(account, group)] else {
-                // An absent item on a locked device is indistinguishable from a hidden one: report locked.
-                if locked { throw KeyStoreError.locked }
-                return nil
-            }
+            // Like the real keychain: an absent item is nil even while locked.
+            guard let item = items[key(account, group)] else { return nil }
             if locked, item.access == .whenUnlocked { throw KeyStoreError.locked }
             return item.data
         }
     }
 
     public func write(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws {
-        lock.withLock { items[key(account, group)] = (data, access) }
+        try lock.withLock {
+            try checkWritable(access)
+            items[key(account, group)] = (data, access)
+        }
+    }
+
+    public func add(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws -> Bool {
+        try lock.withLock {
+            try checkWritable(access)
+            guard items[key(account, group)] == nil else { return false }
+            items[key(account, group)] = (data, access)
+            return true
+        }
+    }
+
+    /// Callers hold `lock`.
+    private func checkWritable(_ access: KeyAccess) throws {
+        if beforeFirstUnlock || (locked && access == .whenUnlocked) { throw KeyStoreError.locked }
     }
 
     public func delete(account: String, group: String?) throws {

@@ -14,11 +14,15 @@ public struct SecItemKeychainBackend: KeychainBackend {
     func addAttributes(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) -> [String: Any] {
         var attributes = query(account: account, group: group, dataProtection: dataProtection)
         attributes[kSecValueData as String] = data
-        switch access {
-        case .whenUnlocked: attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        case .afterFirstUnlock: attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        }
+        attributes[kSecAttrAccessible as String] = Self.accessible(access)
         return attributes
+    }
+
+    private static func accessible(_ access: KeyAccess) -> CFString {
+        switch access {
+        case .whenUnlocked: return kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        case .afterFirstUnlock: return kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        }
     }
 
     private func query(account: String, group: String?, dataProtection: Bool) -> [String: Any] {
@@ -56,12 +60,28 @@ public struct SecItemKeychainBackend: KeychainBackend {
     }
 
     public func write(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws {
-        // Delete first so the accessibility class is always the one asked for (SecItemUpdate would keep the old one).
-        let deleted = SecItemDelete(query(account: account, group: group, dataProtection: dataProtection) as CFDictionary)
-        guard deleted == errSecSuccess || deleted == errSecItemNotFound else { throw Self.error(for: deleted) }
+        // Update in place: SecItemUpdate can change kSecAttrAccessible, and a failed write leaves the old item intact.
+        let target = query(account: account, group: group, dataProtection: dataProtection)
+        let changes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: Self.accessible(access)
+        ]
+        let updated = SecItemUpdate(target as CFDictionary, changes as CFDictionary)
+        switch updated {
+        case errSecSuccess: return
+        case errSecItemNotFound: _ = try add(data, account: account, access: access, group: group, dataProtection: dataProtection)
+        default: throw Self.error(for: updated)
+        }
+    }
+
+    public func add(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws -> Bool {
         let attributes = addAttributes(data, account: account, access: access, group: group, dataProtection: dataProtection)
-        let added = SecItemAdd(attributes as CFDictionary, nil)
-        guard added == errSecSuccess else { throw Self.error(for: added) }
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        switch status {
+        case errSecSuccess: return true
+        case errSecDuplicateItem: return false
+        default: throw Self.error(for: status)
+        }
     }
 
     public func delete(account: String, group: String?) throws {

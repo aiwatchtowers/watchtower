@@ -14,29 +14,55 @@ final class FakeKeychainBackend: KeychainBackend, @unchecked Sendable {
 
     private let lock = NSLock()
     private var items: [String: Data] = [:]
+    private var duplicateOnAdd: Set<String> = []
     private var log: [Write] = []
     private var failure: KeyStoreError?
     private var failingAccounts: Set<String> = []
 
     var writes: [Write] { lock.withLock { log } }
     func failReads(_ error: KeyStoreError?) { lock.withLock { failure = error } }
-    func plant(_ account: String, _ data: Data) { lock.withLock { items[account] = data } }
+    func plant(_ account: String, _ data: Data, group: String? = nil) { lock.withLock { items["\(group ?? "")|\(account)"] = data } }
+    /// The next add of this account reports a duplicate after planting `data` (a concurrent creator).
+    func raceOnAdd(_ account: String, planting data: Data, group: String? = nil, alsoPlanting extra: [String: Data] = [:]) {
+        lock.withLock {
+            extras[account] = extra
+            duplicateOnAdd.insert("\(group ?? "")|\(account)")
+            raced["\(group ?? "")|\(account)"] = data
+        }
+    }
+    private var raced: [String: Data] = [:]
+    private var extras: [String: [String: Data]] = [:]
 
     func read(account: String, group: String?) throws -> Data? {
         try lock.withLock {
             if let failure { throw failure }
-            return items[account]
+            return items["\(group ?? "")|\(account)"]
         }
     }
 
     func write(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws {
         lock.withLock {
-            items[account] = data
+            items["\(group ?? "")|\(account)"] = data
             log.append(Write(account: account, data: data, access: access, group: group, dataProtection: dataProtection))
         }
     }
 
-    func delete(account: String, group: String?) throws { lock.withLock { items[account] = nil } }
+    func add(_ data: Data, account: String, access: KeyAccess, group: String?, dataProtection: Bool) throws -> Bool {
+        lock.withLock {
+            let key = "\(group ?? "")|\(account)"
+            if duplicateOnAdd.remove(key) != nil {
+                items[key] = raced[key]
+                for (name, value) in extras[account] ?? [:] { items["\(group ?? "")|\(name)"] = value }
+                return false
+            }
+            guard items[key] == nil else { return false }
+            items[key] = data
+            log.append(Write(account: account, data: data, access: access, group: group, dataProtection: dataProtection))
+            return true
+        }
+    }
+
+    func delete(account: String, group: String?) throws { lock.withLock { items["\(group ?? "")|\(account)"] = nil } }
 }
 
 final class KeyStoreTests: XCTestCase {
@@ -109,12 +135,12 @@ final class KeyStoreTests: XCTestCase {
     func testACorruptItemIsCorruptNotAbsent() throws {
         let backend = FakeKeychainBackend()
         let store = makeStore(backend)
-        backend.plant("hub.hub-1", Data("not json".utf8))
-        backend.plant("hubpub.hub-1", Data([1, 2, 3]))
-        backend.plant("alert.hub-1", Data("{".utf8))
-        backend.plant("deviceid", Data("nope".utf8))
-        backend.plant("identity.sig", Data([1]))
-        backend.plant("identity.kx", Data([2]))
+        backend.plant("hub.hub-1", Data("not json".utf8), group: privateGroup)
+        backend.plant("hubpub.hub-1", Data([1, 2, 3]), group: privateGroup)
+        backend.plant("alert.hub-1", Data("{".utf8), group: alertGroup)
+        backend.plant("deviceid", Data("nope".utf8), group: privateGroup)
+        backend.plant("identity.sig", Data([1]), group: privateGroup)
+        backend.plant("identity.kx", Data([2]), group: privateGroup)
         func assertCorrupt(_ body: () throws -> Any?, line: UInt = #line) {
             XCTAssertThrowsError(try body(), line: line) {
                 guard case .corrupt = $0 as? KeyStoreError else { return XCTFail("\($0)", line: line) }
@@ -129,9 +155,69 @@ final class KeyStoreTests: XCTestCase {
 
     func testAHalfPresentIdentityIsCorruptAndNotRecreated() throws {
         let backend = FakeKeychainBackend()
-        backend.plant("identity.sig", Curve25519.Signing.PrivateKey().rawRepresentation)
+        backend.plant("identity.sig", Curve25519.Signing.PrivateKey().rawRepresentation, group: privateGroup)
         XCTAssertThrowsError(try makeStore(backend).identity())
         XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testAlertMaterialIsReadFromTheAlertGroupOnly() throws {
+        let backend = FakeKeychainBackend()
+        backend.plant("alert.hub-1", Data("{}".utf8), group: privateGroup)
+        XCTAssertNil(try makeStore(backend).alertMaterial("hub-1"))
+    }
+
+    func testSaveHubLinkRejectsWrongKeyLengthsBeforeWritingAnything() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        let good = link()
+        var variants: [HubLinkKeys] = []
+        func rebuilt(signing: Data? = nil, agreement: Data? = nil) -> HubLinkKeys {
+            HubLinkKeys(
+                hubID: "hub-1", hubSigningKey: signing ?? good.hubSigningKey, hubAgreementKey: agreement ?? good.hubAgreementKey,
+                linkNonce: good.linkNonce, metaKey: good.metaKey, epochs: good.epochs)
+        }
+        var v = rebuilt(signing: Data(count: 31)); variants.append(v)
+        v = rebuilt(agreement: Data(count: 33)); variants.append(v)
+        v = good; v.metaKey = Data(count: 16); variants.append(v)
+        v = good; v.epochs = [EpochKeys(epoch: 1, dataKey: Data(count: 31), alertKey: Data(count: 32))]; variants.append(v)
+        v = good; v.epochs = [EpochKeys(epoch: 1, dataKey: Data(count: 32), alertKey: Data())]; variants.append(v)
+        for bad in variants {
+            XCTAssertThrowsError(try store.saveHubLink(bad)) {
+                guard case .corrupt = $0 as? KeyStoreError else { return XCTFail("\($0)") }
+            }
+        }
+        XCTAssertTrue(backend.writes.isEmpty)
+    }
+
+    func testLosingTheIdentityRaceReturnsTheWinnersKeys() throws {
+        let backend = FakeKeychainBackend()
+        let winner = DeviceIdentityKeys(signing: .init(), agreement: .init())
+        backend.raceOnAdd(
+            "identity.sig", planting: winner.signing.rawRepresentation, group: privateGroup,
+            alsoPlanting: ["identity.kx": winner.agreement.rawRepresentation])
+        let loaded = try makeStore(backend).identity()
+        XCTAssertEqual(loaded.deviceID, winner.deviceID)
+        XCTAssertFalse(backend.writes.contains { $0.account == "identity.kx" })
+    }
+
+    func testLosingTheHubIdentityRaceReturnsTheWinnersIdentityWithCreatedFalse() throws {
+        let backend = FakeKeychainBackend()
+        let winner = HubIdentityKeys(signing: .init(), agreement: .init(), wrapKey: SymmetricKey(size: .bits256))
+        backend.raceOnAdd(
+            "hubid.h.sig", planting: winner.signing.rawRepresentation,
+            alsoPlanting: ["hubid.h.kx": winner.agreement.rawRepresentation, "hubid.h.wrap": winner.wrapKey.withUnsafeBytes { Data($0) }])
+        let result = try KeychainHubKeyStore(backend: backend).hubIdentity(hubID: "h")
+        XCTAssertFalse(result.created)
+        XCTAssertEqual(result.keys.signing.rawRepresentation, winner.signing.rawRepresentation)
+        XCTAssertTrue(backend.writes.isEmpty, "nothing written over the winner")
+    }
+
+    func testLosingALaterHubItemIsCorruptNotMixed() throws {
+        let backend = FakeKeychainBackend()
+        backend.raceOnAdd("hubid.h.kx", planting: Data(count: 32))
+        XCTAssertThrowsError(try KeychainHubKeyStore(backend: backend).hubIdentity(hubID: "h")) {
+            guard case .corrupt = $0 as? KeyStoreError else { return XCTFail("\($0)") }
+        }
     }
 
     func testAbsentItemsAreNil() throws {
@@ -208,8 +294,8 @@ final class KeyStoreTests: XCTestCase {
     func testAnExistingIdentityWithoutADeviceIDItemGetsOneOnLoad() throws {
         let backend = FakeKeychainBackend()
         let sig = Curve25519.Signing.PrivateKey()
-        backend.plant("identity.sig", sig.rawRepresentation)
-        backend.plant("identity.kx", Curve25519.KeyAgreement.PrivateKey().rawRepresentation)
+        backend.plant("identity.sig", sig.rawRepresentation, group: privateGroup)
+        backend.plant("identity.kx", Curve25519.KeyAgreement.PrivateKey().rawRepresentation, group: privateGroup)
         let store = makeStore(backend)
         let identity = try store.identity()
         XCTAssertEqual(identity.deviceID, KeyDerivation.deviceID(signingPublicKey: sig.publicKey))
@@ -277,6 +363,20 @@ final class KeyStoreTests: XCTestCase {
         store.isLocked = false
         store.isBeforeFirstUnlock = false
         XCTAssertNotNil(try store.hubLink("hub-1"))
+    }
+
+    func testInMemoryBackendBehavesLikeTheKeychainWhileLocked() throws {
+        let backend = InMemoryKeychainBackend()
+        backend.isLocked = true
+        XCTAssertNil(try backend.read(account: "x", group: nil))
+        XCTAssertThrowsError(try backend.write(Data([1]), account: "x", access: .whenUnlocked, group: nil, dataProtection: true)) {
+            XCTAssertEqual($0 as? KeyStoreError, .locked)
+        }
+        XCTAssertTrue(try backend.add(Data([1]), account: "y", access: .afterFirstUnlock, group: nil, dataProtection: true))
+        XCTAssertFalse(try backend.add(Data([2]), account: "y", access: .afterFirstUnlock, group: nil, dataProtection: true))
+        XCTAssertEqual(try backend.read(account: "y", group: nil), Data([1]))
+        backend.isBeforeFirstUnlock = true
+        XCTAssertThrowsError(try backend.add(Data([1]), account: "z", access: .afterFirstUnlock, group: nil, dataProtection: true))
     }
 
     func testInMemoryHubStoreCreatesOnce() throws {

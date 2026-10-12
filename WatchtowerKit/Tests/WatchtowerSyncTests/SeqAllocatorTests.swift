@@ -20,6 +20,10 @@ final class SeqAllocatorTests: XCTestCase {
         SeqAllocator(blockSize: block, load: { box.load() }, store: { try box.store($0) })
     }
 
+    func testTheFirstValueIsOneAndZeroIsNeverHandedOut() throws {
+        XCTAssertEqual(try allocator(Box()).next(), 1)
+    }
+
     func testValuesAreStrictlyIncreasingAcrossARestart() throws {
         let box = Box()
         let first = allocator(box)
@@ -27,14 +31,14 @@ final class SeqAllocatorTests: XCTestCase {
         for _ in 0..<6 { last = try first.next() }
         let second = allocator(box)
         XCTAssertGreaterThan(try second.next(), last)
-        XCTAssertEqual(box.value % 4, 0)
+        XCTAssertEqual(box.value, 13)
     }
 
     func testANewAllocatorStartsAtTheStoredCeiling() throws {
         let box = Box()
         _ = try allocator(box).next()
-        XCTAssertEqual(box.value, 4)
-        XCTAssertEqual(try allocator(box).next(), 4)
+        XCTAssertEqual(box.value, 5)
+        XCTAssertEqual(try allocator(box).next(), 5)
     }
 
     func testTheCeilingIsPersistedBeforeAValueOfTheBlockIsReturned() {
@@ -43,8 +47,8 @@ final class SeqAllocatorTests: XCTestCase {
         let alloc = allocator(box)
         XCTAssertThrowsError(try alloc.next())
         box.failStore = false
-        XCTAssertEqual(try alloc.next(), 0)
-        XCTAssertEqual(box.value, 4)
+        XCTAssertEqual(try alloc.next(), 1)
+        XCTAssertEqual(box.value, 5)
     }
 
     func testConcurrentCallersNeverGetTheSameValue() async throws {
