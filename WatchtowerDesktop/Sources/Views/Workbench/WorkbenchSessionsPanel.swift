@@ -241,7 +241,7 @@ struct SessionStateLabel: View {
                 Image(systemName: glyph)
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(SessionStatePresentation.color(for: state).color)
-                // The ask count beside `questionmark`, never a 0 beside `person.2.fill`.
+                // The ask count beside `questionmark` / `checklist`, never a 0 beside `person.2.fill`.
                 if state.kind == .working || (state.kind == .background && state.openAsks > 0) {
                     Text("\(state.openAsks)")
                         .font(.caption2.weight(.semibold))
@@ -267,6 +267,7 @@ extension SessionStatePresentation.Tone {
         case .orange: .orange
         case .blue: .blue
         case .red: .red
+        case .purple: .purple
         case .secondary: .secondary
         }
     }

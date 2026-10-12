@@ -25,8 +25,12 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         public static let stopped = Self(rawValue: "stopped")
         public static let failed = Self(rawValue: "failed")
         public static let notStarted = Self(rawValue: "not_started")
+        /// Every open ask is a check or a review (#534): the agent waits
+        /// for the owner's verdict, not a decision.
+        public static let readyToCheck = Self(rawValue: "ready_to_check")
+        /// Wire order frozen: append only.
         public static let knownValues: [Self] = [
-            .working, .running, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .notStarted
+            .working, .running, .waitingOnAsk, .needsApproval, .finished, .stopped, .failed, .notStarted, .readyToCheck
         ]
     }
 
@@ -41,7 +45,10 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         public static let blue = Self(rawValue: "blue")
         public static let red = Self(rawValue: "red")
         public static let secondary = Self(rawValue: "secondary")
-        public static let knownValues: [Self] = [.green, .orange, .blue, .red, .secondary]
+        /// Ready to check (#534).
+        public static let purple = Self(rawValue: "purple")
+        /// Wire order frozen: append only.
+        public static let knownValues: [Self] = [.green, .orange, .blue, .red, .secondary, .purple]
     }
 
     /// The agent running in the session (the row's kind). An agent this

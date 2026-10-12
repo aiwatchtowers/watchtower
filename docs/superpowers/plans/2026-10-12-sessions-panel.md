@@ -67,7 +67,7 @@ Lanes: Core tasks 1, 3, 5, 6 have no shared files and may run in parallel worktr
 
 **Interfaces:**
 - `SessionAgentStateRow.openQuestionAsks: Int` (`open_question_asks`), `.openReviewAsks: Int` (`open_review_asks`)
-- `SessionSwitcherPresentation.State.init(kind:live:openAsks:error:oldestAskID:backgroundAgents:openQuestionAsks: = 0, openReviewAsks: = 0)`
+- `SessionSwitcherPresentation.State.init(kind:live:openAsks:error:oldestAskID:backgroundAgents:openQuestionAsks: Int? = nil, openReviewAsks: = 0)` — nil = every open ask is a question (stored as `openAsks`), so a state built without ask kinds keeps its pre-#534 reading and never becomes Ready to check by default
 - `effective`: after the `agents != nil` branch, `row.openAsks > 0 && row.openQuestionAsks == 0 → .readyToCheck`
 
 **Tests:**

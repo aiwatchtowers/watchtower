@@ -31,8 +31,11 @@ and the deferred delete runs the existing `TerminalSessionQueries.delete`.
 `openQuestionAsks: Int`, `openReviewAsks: Int` (CodingKeys snake_case). An ask the Chat question escalation filed
 (`origin = 'chat'`) is a `question`, so it keeps "Waiting for you" — correct: the agent is blocked on it.
 
-`SessionSwitcherPresentation.State` gains `openQuestionAsks: Int` and `openReviewAsks: Int` (defaults 0, filled
-from the row for every kind, like `openAsks`), and `Kind` gains `case readyToCheck` ("every open ask of the
+`SessionSwitcherPresentation.State` gains `openQuestionAsks: Int` and `openReviewAsks: Int` (filled from the row
+for every kind, like `openAsks`). The initializer takes `openQuestionAsks: Int? = nil` — nil means every open ask
+is a question (stored as `openAsks`) — and `openReviewAsks: Int = 0`: a state built without ask kinds (an older
+caller, a test fixture) reads as before asks had kinds, so it never turns into Ready to check by default. The same
+`Int? = nil` default is on the `SessionAgentStateRow` memberwise initializer, and `Kind` gains `case readyToCheck` ("every open ask of the
 session is a check or a review; the agent waits for the owner's verdict, not a decision").
 
 Derived (on `State`, pure): `asksAreOnlyChecks: Bool` = `openAsks > 0 && openQuestionAsks == 0`;

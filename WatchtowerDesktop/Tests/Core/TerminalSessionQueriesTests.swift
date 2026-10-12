@@ -311,6 +311,27 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    /// #534: the open asks are split by kind — questions and reviews
+    /// counted, checks the rest — and an answered ask counts in none.
+    func testAgentStatesCountQuestionAndReviewAsks() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let session = try TerminalSessionQueries.create(db, claude(project, "Session A"))
+            for kind in ["check", "review", "question"] {
+                try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: session.id, kind: kind,
+                                                docPath: kind == "review" ? "docs/review.md" : "")
+            }
+            try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: session.id, kind: "question",
+                                            status: "answered", answer: "yes")
+
+            let row = try XCTUnwrap(TerminalSessionQueries.fetchAgentStates(db, liveIDs: []).first)
+            XCTAssertEqual(row.openAsks, 3)
+            XCTAssertEqual(row.openQuestionAsks, 1)
+            XCTAssertEqual(row.openReviewAsks, 1)
+        }
+    }
+
     func testFetchAgentStatesReadsTheBackgroundColumns() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

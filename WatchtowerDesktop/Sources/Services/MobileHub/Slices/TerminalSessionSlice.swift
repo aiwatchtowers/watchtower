@@ -147,7 +147,7 @@ struct TerminalSessionSlice: SliceSource {
             var entry = counts[item.workbenchID] ?? .init()
             switch item.state.kind {
             case .working, .running, .background: entry.working += 1
-            case .waitingOnAsk: entry.waiting += 1
+            case .waitingOnAsk, .readyToCheck: entry.waiting += 1
             case .needsApproval: entry.needsApproval += 1
             case .finished: entry.finished += 1
             case .failed: entry.failed += 1
@@ -262,21 +262,25 @@ struct TerminalSessionSlice: SliceSource {
     }
 
     /// When the current state was reported: the trusted hook stamp, else a
-    /// finished session's `finished_at`; nil when unknown.
+    /// finished session's `finished_at` (also one that reads Ready to check
+    /// because its open asks are only checks or reviews, #534); nil when
+    /// unknown.
     static func stateAt(_ item: Published) -> Date? {
         if let at = item.status?.at { return SliceDate.parse(at) }
-        if item.state.kind == .finished, let finished = item.row?.finishedAt { return SliceDate.parse(finished) }
+        let finishedKinds: Set<SessionSwitcherPresentation.State.Kind> = [.finished, .readyToCheck]
+        if finishedKinds.contains(item.state.kind), let finished = item.row?.finishedAt { return SliceDate.parse(finished) }
         return nil
     }
 
     /// The Kit's `TerminalSessionState.Kind` raw values. Agents working
     /// (#411) has no wire kind of its own: it goes out as `working`, its
-    /// caption and glyph saying the rest.
+    /// caption and glyph saying the rest. Ready to check (#534) has its own.
     static func wire(_ kind: SessionSwitcherPresentation.State.Kind) -> String {
         switch kind {
         case .working, .background: "working"
         case .running: "running"
         case .waitingOnAsk: "waiting_on_ask"
+        case .readyToCheck: "ready_to_check"
         case .needsApproval: "needs_approval"
         case .finished: "finished"
         case .stopped: "stopped"
@@ -292,6 +296,7 @@ struct TerminalSessionSlice: SliceSource {
         case .orange: "orange"
         case .blue: "blue"
         case .red: "red"
+        case .purple: "purple"
         case .secondary: "secondary"
         }
     }

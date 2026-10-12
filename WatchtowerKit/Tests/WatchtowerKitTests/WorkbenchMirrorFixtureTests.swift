@@ -62,6 +62,20 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         )
     }
 
+    /// #534: Ready to check and its purple tone are known values, appended
+    /// after the earlier ones, and decode from the wire.
+    func testReadyToCheckAndPurpleAreKnown() throws {
+        let decoder = JSONDecoder()
+        let kind = try decoder.decode(TerminalSessionState.Kind.self, from: Data(#""ready_to_check""#.utf8))
+        let tone = try decoder.decode(TerminalSessionState.Tone.self, from: Data(#""purple""#.utf8))
+        XCTAssertEqual(kind, .readyToCheck)
+        XCTAssertTrue(kind.isKnown)
+        XCTAssertEqual(tone, .purple)
+        XCTAssertTrue(tone.isKnown)
+        XCTAssertEqual(TerminalSessionState.Kind.knownValues.last, .readyToCheck)
+        XCTAssertEqual(TerminalSessionState.Tone.knownValues.last, .purple)
+    }
+
     func testOpenWireValuesAreFrozen() {
         XCTAssertEqual(
             WorkbenchTargetStatus.knownValues.map(\.rawValue),
@@ -77,11 +91,14 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(WorkbenchComment.Status.knownValues.map(\.rawValue), ["open", "resolved", "outdated"])
         XCTAssertEqual(
             TerminalSessionState.Kind.knownValues.map(\.rawValue),
-            ["working", "running", "waiting_on_ask", "needs_approval", "finished", "stopped", "failed", "not_started"]
+            [
+                "working", "running", "waiting_on_ask", "needs_approval", "finished", "stopped", "failed", "not_started",
+                "ready_to_check"
+            ]
         )
         XCTAssertEqual(
             TerminalSessionState.Tone.knownValues.map(\.rawValue),
-            ["green", "orange", "blue", "red", "secondary"]
+            ["green", "orange", "blue", "red", "secondary", "purple"]
         )
         XCTAssertEqual(TerminalSessionState.Agent.knownValues.map(\.rawValue), ["claude_code", "codex_cli"])
         XCTAssertEqual(OwnerAsk.Kind.knownValues.map(\.rawValue), ["review", "check", "question"])
@@ -408,7 +425,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
     func testFutureEnumValuesStillDecode() throws {
         var session = try object("terminal_session")
         session["state_kind"] = "compacting"
-        session["state_tone"] = "purple"
+        session["state_tone"] = "magenta"
         session["agent"] = "codex"
         let decodedSession = try TerminalSessionState.decode(payload: try data(session))
         XCTAssertEqual(decodedSession.stateKind.rawValue, "compacting")

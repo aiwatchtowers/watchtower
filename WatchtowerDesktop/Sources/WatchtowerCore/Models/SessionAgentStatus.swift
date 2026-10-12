@@ -35,6 +35,13 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     package var openAsks: Int
     /// The oldest of those asks; nil when none is open.
     package var oldestOpenAskID: Int64?
+    /// Those of the open asks whose kind is `question` (#534): one keeps
+    /// the session the owner's move; none, with asks open, is Ready to
+    /// check.
+    package var openQuestionAsks: Int
+    /// Those of the open asks whose kind is `review` (#534); the rest of
+    /// the non-question asks are checks.
+    package var openReviewAsks: Int
     /// The background agents the last Stop or subagent report counted
     /// (migration 00106); nil = never reported.
     package var agentBackground: Int?
@@ -60,6 +67,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         agentError: String = "",
         openAsks: Int = 0,
         oldestOpenAskID: Int64? = nil,
+        openQuestionAsks: Int? = nil,
+        openReviewAsks: Int = 0,
         agentBackground: Int? = nil,
         agentBackgroundAt: String? = nil,
         chatQuestion: String? = nil,
@@ -77,6 +86,10 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.agentError = agentError
         self.openAsks = openAsks
         self.oldestOpenAskID = oldestOpenAskID
+        // nil = every open ask is a question: the reading before asks had
+        // kinds here (#534), so a row built without them keeps its state.
+        self.openQuestionAsks = openQuestionAsks ?? openAsks
+        self.openReviewAsks = openReviewAsks
         self.agentBackground = agentBackground
         self.agentBackgroundAt = agentBackgroundAt
         self.chatQuestion = chatQuestion
@@ -97,6 +110,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case agentError = "agent_error"
         case openAsks = "open_asks"
         case oldestOpenAskID = "oldest_open_ask_id"
+        case openQuestionAsks = "open_question_asks"
+        case openReviewAsks = "open_review_asks"
         case agentBackground = "agent_background"
         case agentBackgroundAt = "agent_background_at"
         case chatQuestion = "chat_question"
@@ -182,19 +197,27 @@ package struct SessionAgentStatus: Equatable, Sendable {
             kind = .working
         } else if agents != nil {
             kind = .background
-        } else if row.finishedAt != nil {
-            kind = .finished
-        } else if row.openAsks > 0 {
-            kind = .waitingOnAsk
-        } else if hook == .waiting {
-            kind = .stopped
         } else {
-            kind = live ? .running : .notStarted
+            kind = restingKind(row, turnEnded: hook == .waiting, live: live)
         }
         return SessionSwitcherPresentation.State(
             kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
-            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil, backgroundAgents: agents ?? 0
+            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil, backgroundAgents: agents ?? 0,
+            openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks
         )
+    }
+
+    /// The order's tail, once no hook state of the run claims the row:
+    /// ready to check (open asks, none a question — #534) > finished > open
+    /// ask > stopped > running > not started.
+    private static func restingKind(
+        _ row: SessionAgentStateRow, turnEnded: Bool, live: Bool
+    ) -> SessionSwitcherPresentation.State.Kind {
+        if row.openAsks > 0 && row.openQuestionAsks == 0 { return .readyToCheck }
+        if row.finishedAt != nil { return .finished }
+        if row.openAsks > 0 { return .waitingOnAsk }
+        if turnEnded { return .stopped }
+        return live ? .running : .notStarted
     }
 
     /// The row's background agent count while `policy` says they run; nil
@@ -224,12 +247,12 @@ package struct SessionAgentStatus: Equatable, Sendable {
 
     /// The agent's turn is over and it sits at its prompt: a trusted
     /// `waiting` of the current run (stopped, failed, background agents
-    /// running, or finished/waiting on an ask over a turn end) — where a
-    /// hand-off may press Return.
+    /// running, or finished/waiting on an ask/ready to check over a turn
+    /// end) — where a hand-off may press Return.
     package var isAtPrompt: Bool {
         guard state.live, at != nil else { return false }
         switch state.kind {
-        case .stopped, .failed, .finished, .waitingOnAsk, .background: return true
+        case .stopped, .failed, .finished, .waitingOnAsk, .readyToCheck, .background: return true
         case .notStarted, .running, .working, .needsApproval: return false
         }
     }
