@@ -233,9 +233,9 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.files)
         case .report:
             // The session on screen, else the active one, else the first
-            // listed claude session; with none there is nothing to report on.
+            // listed agent session; with none there is nothing to report on.
             let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id)
-                ?? orderedSessions(projectID: project.id).first { $0.kind == .claude }?.id
+                ?? orderedSessions(projectID: project.id).first { $0.kind.isAgent }?.id
             guard let id else { return }
             // Beside its own session's terminal (board #357): a split showing
             // that terminal swaps its other pane; otherwise the page becomes

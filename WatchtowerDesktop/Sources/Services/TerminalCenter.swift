@@ -188,11 +188,11 @@ final class TerminalCenter {
         Set(states.compactMap { $0.value == .running ? $0.key : nil })
     }
 
-    /// The live `claude` sessions — the ones whose workbench hooks report a
-    /// state.
-    var liveClaudeIDs: Set<Int64> {
+    /// The live agent sessions (`claude` or `codex`) — the ones whose
+    /// workbench hooks report a state.
+    var liveAgentIDs: Set<Int64> {
         let live = liveIDs
-        return Set(rows.values.filter { $0.kind == .claude && live.contains($0.id) }.map(\.id))
+        return Set(rows.values.filter { $0.kind.isAgent && live.contains($0.id) }.map(\.id))
     }
 
     func process(for sessionID: Int64) -> (any TerminalSessionProcess)? {
@@ -205,27 +205,27 @@ final class TerminalCenter {
     }
 
     /// The project's active session — the one the Terminal toggle shows
-    /// first: its most recently focused live `claude` session.
+    /// first: its most recently focused live agent session.
     func activeSession(projectID: Int64) -> TerminalSession? {
         TerminalSessionPolicy.activeSession(
             rows.values.filter { $0.projectID == projectID }, live: liveIDs, lastFocused: focusOrder
         )
     }
 
-    /// Whether a Claude Code session this app runs works in the files a
-    /// branch switch swaps: a live `claude` row of the workbench, or one (a
+    /// Whether an agent session (Claude Code or Codex) this app runs works in
+    /// the files a branch switch swaps: a live agent row of the workbench, or one (a
     /// standalone terminal, another workbench) whose folder is the
     /// repository's work tree or inside it — a workbench in a subfolder
     /// shares one checkout with the repository root and every sibling
     /// package. Symlinks are resolved on both sides (`/tmp` is
     /// `/private/tmp`). The branch switch's agent guard (#233); a `claude`
     /// in the owner's own terminal app is not seen (v1 limit).
-    func hasLiveClaudeSession(workbenchID: Int64, workTree: String) -> Bool {
+    func hasLiveAgentSession(workbenchID: Int64, workTree: String) -> Bool {
         let root = Self.resolvedPath(workTree)
         let prefix = root.hasSuffix("/") ? root : root + "/"
         let live = liveIDs
         return rows.values.contains { row in
-            guard row.kind == .claude, live.contains(row.id) else { return false }
+            guard row.kind.isAgent, live.contains(row.id) else { return false }
             if row.projectID == workbenchID { return true }
             let path = Self.resolvedPath(row.folderPath)
             return path == root || path.hasPrefix(prefix)
@@ -665,6 +665,10 @@ final class TerminalCenter {
             } else {
                 mode = transcriptExists(uuid) ? .resumeClaude(uuid: uuid) : .newClaude(uuid: uuid, prompt: nil)
             }
+        case .codex:
+            // Launching Codex arrives with its launch builder (#399).
+            states[id] = .unavailable("This build cannot launch Codex sessions yet.")
+            return nil
         }
         let process = processes[id] ?? makeProcess()
         process.onExit = { [weak self] code in

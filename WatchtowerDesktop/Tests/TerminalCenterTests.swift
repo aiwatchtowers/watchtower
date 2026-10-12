@@ -390,14 +390,14 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         let s = try row(project: 1)
         center.start(s, fresh: true)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 1, workTree: "/tmp/elsewhere"))
-        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 2, workTree: "/tmp/elsewhere"))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 1, workTree: "/tmp/elsewhere"))
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 2, workTree: "/tmp/elsewhere"))
     }
 
     func testAShellRowDoesNotCount() throws {
         let center = makeCenter()
         center.start(try row(project: 1, kind: .shell), fresh: true)
-        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 1, workTree: folder.path))
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 1, workTree: folder.path))
     }
 
     func testAnExitedClaudeRowDoesNotCount() throws {
@@ -405,7 +405,7 @@ final class TerminalCenterTests: XCTestCase {
         let s = try row(project: 1)
         center.start(s, fresh: true)
         sessions.first?.exit(0)
-        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 1, workTree: folder.path))
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 1, workTree: folder.path))
     }
 
     /// `folder` plays a repository; `dir` makes a folder inside it.
@@ -419,9 +419,9 @@ final class TerminalCenterTests: XCTestCase {
         let deeper = try dir("sub/deeper")
         let center = makeCenter()
         center.start(try row(project: nil, folder: deeper.path), fresh: true)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path + "/"))
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: deeper.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: folder.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: folder.path + "/"))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: deeper.path))
     }
 
     /// The workbench is `repo/app`; the switch swaps the whole checkout, so
@@ -430,7 +430,7 @@ final class TerminalCenterTests: XCTestCase {
         _ = try dir("app")
         let center = makeCenter()
         center.start(try row(project: nil, folder: folder.path), fresh: true)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: folder.path))
     }
 
     func testASessionInASiblingPackageOfTheSameRepositoryCounts() throws {
@@ -438,7 +438,7 @@ final class TerminalCenterTests: XCTestCase {
         let sibling = try dir("lib")
         let center = makeCenter()
         center.start(try row(project: nil, folder: sibling.path), fresh: true)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: folder.path))
     }
 
     func testASessionInAnotherRepositoryDoesNotCount() throws {
@@ -447,7 +447,7 @@ final class TerminalCenterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: other) }
         let center = makeCenter()
         center.start(try row(project: nil, folder: other.path), fresh: true)
-        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 9, workTree: folder.path))
     }
 
     func testSymlinkedSpellingsOfOneFolderMatch() throws {
@@ -457,8 +457,8 @@ final class TerminalCenterTests: XCTestCase {
         let viaTmp = "/tmp/" + real.lastPathComponent
         let center = makeCenter()
         center.start(try row(project: nil, folder: viaTmp + "/sub"), fresh: true)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: real.path))
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: viaTmp))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: real.path))
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: 9, workTree: viaTmp))
     }
 
     func testASiblingSharingANamePrefixDoesNotCount() throws {
@@ -466,7 +466,7 @@ final class TerminalCenterTests: XCTestCase {
         let bc = try dir("bc")
         let center = makeCenter()
         center.start(try row(project: nil, folder: bc.path), fresh: true)
-        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 9, workTree: b.path))
+        XCTAssertFalse(center.hasLiveAgentSession(workbenchID: 9, workTree: b.path))
     }
 
     func testFocusMovesAnIDToTheEndWithoutDuplicates() {

@@ -208,7 +208,7 @@ extension WorkbenchesViewModel {
             gitErrors[id] = "The editor did not hand over its latest edits — try again."
             return
         }
-        let agentRunning = terminalCenter?.hasLiveClaudeSession(workbenchID: id, workTree: workTree) ?? false
+        let agentRunning = terminalCenter?.hasLiveAgentSession(workbenchID: id, workTree: workTree) ?? false
         let result: WorkbenchGitSwitchResult
         do {
             result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash,
