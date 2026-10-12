@@ -37,6 +37,25 @@ struct PendingLink: Codable, Equatable, Sendable {
     /// record was written: an earlier answer (a refusal of another code) is
     /// not this scan's.
     let baseline: DeviceGrant?
+    /// `baseline` was read (nil then means no grant). false while the sync
+    /// stack restarts, before the device record is written; a value saved
+    /// by an older build reads false.
+    let baselineCaptured: Bool
+
+    init(link: LinkRecord, deadline: Date, baseline: DeviceGrant?, baselineCaptured: Bool) {
+        self.link = link
+        self.deadline = deadline
+        self.baseline = baseline
+        self.baselineCaptured = baselineCaptured
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        link = try container.decode(LinkRecord.self, forKey: .link)
+        deadline = try container.decode(Date.self, forKey: .deadline)
+        baseline = try container.decodeIfPresent(DeviceGrant.self, forKey: .baseline)
+        baselineCaptured = try container.decodeIfPresent(Bool.self, forKey: .baselineCaptured) ?? false
+    }
 }
 
 /// The phone's link, persisted in `UserDefaults`: the one record the link

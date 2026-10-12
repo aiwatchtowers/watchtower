@@ -35,6 +35,10 @@ final class AppRoot {
     /// The hub whose zones the running environment syncs.
     @ObservationIgnored private var hubID: String
     @ObservationIgnored private let restarter: Restarter?
+    /// The running environment served a link that has ended without a
+    /// restart (`retireEnvironment`): the next `prepare` restarts even on
+    /// the same database and hub.
+    @ObservationIgnored private var retired = false
     /// The restart running or queued last: restarts run one at a time.
     @ObservationIgnored private var restartTask: Task<Void, Error>?
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
@@ -181,7 +185,7 @@ final class AppRoot {
         await old.shutDown()
         do {
             if wipe {
-                Self.removeReplica(at: restarter.replicaPath)
+                try Self.removeReplica(at: restarter.replicaPath)
                 if let path = restarter.transportStorePath {
                     try TransportStore(path: path).wipe()
                 }
@@ -191,6 +195,7 @@ final class AppRoot {
             env = next
             self.scope = scope
             self.hubID = hubID
+            retired = false
         } catch {
             Self.logger.critical("environment restart failed: \(error.localizedDescription, privacy: .public)")
             failure = error.localizedDescription
@@ -199,13 +204,16 @@ final class AppRoot {
     }
 
     /// The replica and its WAL files. The stopped environment's pool may
-    /// still hold them open; it reads its unlinked files until it goes.
-    private static func removeReplica(at path: String) {
+    /// still hold them open; it reads its unlinked files until it goes. A
+    /// file that stays fails the restart (`failure`): a new environment on
+    /// it would show the old link's data.
+    private static func removeReplica(at path: String) throws {
         for file in [path, path + "-wal", path + "-shm"] where FileManager.default.fileExists(atPath: file) {
             do {
                 try FileManager.default.removeItem(atPath: file)
             } catch {
                 logger.error("replica wipe failed for \(file, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                throw error
             }
         }
     }
@@ -230,7 +238,7 @@ extension AppRoot: LinkHost {
     func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
         // A queued restart decides the running scope and hub.
         _ = await restartTask?.result
-        if scope != self.scope || hubID != self.hubID {
+        if retired || scope != self.scope || hubID != self.hubID {
             try await restart(scope: scope, hubID: hubID, device: nil, wipe: true)
         }
         return env.linkTransport
@@ -264,6 +272,10 @@ extension AppRoot: LinkHost {
 
     func flushSends() async {
         await env.sendNow()
+    }
+
+    func retireEnvironment() {
+        retired = true
     }
 
     func wipeLocalData(restartingOn scope: CloudDatabaseScope, hubID: String) async -> Int {

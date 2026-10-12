@@ -12,6 +12,9 @@ enum LinkFailure: Equatable {
     case updateMac
     /// iCloud failed under the flow (a reason from CloudKit).
     case iCloud(String)
+    /// This iPhone could not set its sync up (the local replica or the
+    /// transport's store): nothing reached iCloud.
+    case local(String)
 
     /// What went wrong, as the failure screen's title (design pass O3).
     var title: String {
@@ -24,6 +27,7 @@ enum LinkFailure: Equatable {
         case .updateApp: "Update Watchtower on this iPhone"
         case .updateMac: "Update Watchtower on this Mac"
         case .iCloud: "Couldn't reach iCloud"
+        case .local: "Couldn't set up sync on this iPhone"
         }
     }
 
@@ -34,7 +38,7 @@ enum LinkFailure: Equatable {
         case .signIn: "Watchtower uses iCloud to reach your Mac"
         case .noAnswer: "Keep Settings → Mobile open on the Mac and scan again"
         case .updateApp, .updateMac: nil
-        case let .iCloud(reason): reason.isEmpty ? nil : reason
+        case let .iCloud(reason), let .local(reason): reason.isEmpty ? nil : reason
         }
     }
 

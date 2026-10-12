@@ -118,6 +118,9 @@ final class AppEnvironment {
     /// The loop's wait between cycles; tests step it by hand.
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var bootstrapTask: Task<Void, Never>?
+    /// The boot's first part: the applied observer set and the CloudKit
+    /// engine started (the demo seeded), before the first fetch.
+    @ObservationIgnored private var transportStartTask: Task<Void, Never>?
     /// The boot (seed or engine start, first fetch, recovery) is done.
     @ObservationIgnored private(set) var isBootstrapped = false
     @ObservationIgnored private var stopped = false
@@ -232,12 +235,16 @@ final class AppEnvironment {
         calendarReplica.start(store: store)
         phoneRecordings.start(store: store)
 
-        bootstrapTask = Task { await bootstrap() }
+        let transportStart = Task { await startTransport() }
+        transportStartTask = transportStart
+        bootstrapTask = Task {
+            await transportStart.value
+            await bootstrap()
+        }
     }
 
-    /// Demo seed or engine start, a first fetch so the screens have content
-    /// at once, then the fetch loop.
-    private func bootstrap() async {
+    /// Demo seed or engine start: everything before the first fetch.
+    private func startTransport() async {
         // Before any fetch, so no applied echo goes unseen: an ask answer's
         // delivery, a start's session id.
         await outbox.setAppliedObserver(Self.appliedObserver(askAnswerer: askAnswerer, sessionStarts: sessionStarts))
@@ -269,6 +276,11 @@ final class AppEnvironment {
                 await cloud.start()
             }
         }
+    }
+
+    /// After `startTransport`: a first fetch so the screens have content
+    /// at once, the launch sweeps, then the fetch loop.
+    private func bootstrap() async {
         await refresh()
         // An action the Mac never answered within 24 h is failed locally, so
         // the queued count never counts it forever.
@@ -359,11 +371,13 @@ final class AppEnvironment {
     /// Settings, the action outbox and the recording uploader all take the
     /// new device id, then waiting recordings go out at once. With
     /// `writesAllowed: false` the link stands (Settings still shows it) but
-    /// the outbox and the uploader get no device id, so nothing is sent.
+    /// the outbox, the uploader and the Settings toggles get no device, so
+    /// nothing is sent: a toggle meanwhile is only kept, like one made
+    /// before linking, and reaches the Mac with the next device record.
     func setLinkedDevice(_ device: LinkedDevice?, writesAllowed: Bool = true) async {
         linkedDevice = device
         self.writesAllowed = writesAllowed
-        deviceSettings.linkedDevice = device
+        deviceSettings.linkedDevice = writesAllowed ? device : nil
         let sendingID = writesAllowed ? device?.deviceID : nil
         await outbox.setDeviceID(sendingID)
         await uploader.setDeviceID(sendingID)
@@ -375,15 +389,17 @@ final class AppEnvironment {
     var linkTransport: any CloudSyncTransport { transport }
 
     /// Asks a CloudKit transport to send its queue now (the unlinked record
-    /// before a stop), once the boot has started its engine.
+    /// before a stop), once the boot has started its engine: it does not
+    /// wait for the first fetch, which a slow network can hold for long.
     func sendNow() async {
-        await bootstrapTask?.value
+        await transportStartTask?.value
         await (transport as? CloudKitTransport)?.sendNow()
     }
 
     /// Stops the loop for good (tests' teardown; the app never stops).
     func stop() {
         stopped = true
+        transportStartTask?.cancel()
         bootstrapTask?.cancel()
         loopTask?.cancel()
         loopTask = nil

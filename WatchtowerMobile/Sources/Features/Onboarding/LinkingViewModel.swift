@@ -32,8 +32,9 @@ final class LinkingViewModel {
     static let expiryGrace: TimeInterval = 120
     /// Step 5 (spec §3).
     static let grantWait: TimeInterval = 60
-    /// How often the wait fetches the grant.
-    static let grantPollInterval: TimeInterval = 2
+    /// How often the wait fetches the grant: each poll is a CloudKit fetch,
+    /// so 4 s keeps a full wait at 15 of them.
+    static let grantPollInterval: TimeInterval = 4
     /// No heartbeat for this long reads as the Mac gone (spec §9).
     static let staleAfter: TimeInterval = 86_400
 
@@ -244,9 +245,10 @@ final class LinkingViewModel {
         )
         guard let host else { return }
         // From the accept on, a kill is resumed (the scope's database, the
-        // rest of the wait), never shown as linked.
+        // rest of the wait), never shown as linked. No baseline yet: a
+        // relaunch before it is captured has written nothing to the Mac.
         let deadline = clock.now().addingTimeInterval(Self.grantWait)
-        store.pending = PendingLink(link: record, deadline: deadline, baseline: nil)
+        store.pending = PendingLink(link: record, deadline: deadline, baseline: nil, baselineCaptured: false)
         // Step 4: the device record with the code's nonce, in the scope's
         // database.
         let transport: any CloudSyncTransport
@@ -257,17 +259,19 @@ final class LinkingViewModel {
             return
         } catch {
             store.pending = nil
-            phase = .failed(.iCloud(error.localizedDescription))
+            phase = .failed(.local(error.localizedDescription))
             return
         }
         let baseline = await host.fetchGrant(deviceID: identity.deviceID)
-        let pending = PendingLink(link: record, deadline: deadline, baseline: baseline)
+        let pending = PendingLink(link: record, deadline: deadline, baseline: baseline, baselineCaptured: true)
         store.pending = pending
         do {
+            // The transport queues the record locally; CloudKit sends it
+            // later, so a throw here is this iPhone's store.
             try await transport.save([try deviceRecord(for: identity.linkedDevice(for: record), linkNonce: payload.nonce)])
         } catch {
             store.pending = nil
-            phase = .failed(.iCloud(error.localizedDescription))
+            phase = .failed(.local(error.localizedDescription))
             return
         }
         await waitForGrant(pending)
@@ -276,10 +280,14 @@ final class LinkingViewModel {
     // MARK: - Grant wait (step 5)
 
     /// At launch: a link written before a kill and not answered yet waits
-    /// for what is left of its 60 s, then offers to scan again.
+    /// for what is left of its 60 s, then offers to scan again. A link
+    /// killed before its baseline was captured wrote nothing to the Mac
+    /// (the device record follows the baseline), and without the baseline
+    /// an earlier answer in the replica (a refusal of another code) would
+    /// read as this scan's: it offers to scan again at once.
     func resumePendingLink() async {
         guard let pending = store.pending, !isBusy else { return }
-        guard clock.now() < pending.deadline else {
+        guard clock.now() < pending.deadline, pending.baselineCaptured else {
             store.pending = nil
             phase = .failed(.noAnswer)
             return
@@ -289,7 +297,7 @@ final class LinkingViewModel {
             _ = try await host?.prepare(scope: pending.link.databaseScope, hubID: pending.link.hubID)
         } catch {
             store.pending = nil
-            phase = .failed(.iCloud(error.localizedDescription))
+            phase = .failed(.local(error.localizedDescription))
             return
         }
         await waitForGrant(pending)
@@ -424,7 +432,13 @@ final class LinkingViewModel {
     /// vanish) finds no link and is ignored, so one unlink wipes once.
     /// The wipe runs first, in the link's own database: the restarted send
     /// queue then holds only the `unlinked` record, so the flush sends
-    /// nothing of what is reported "Not sent".
+    /// nothing of what is reported "Not sent". A `private` link then
+    /// restarts on the unlinked hub, so the old hub's zones stop syncing. A
+    /// `shared` link whose shares were left needs no second restart: the
+    /// shared database holds none of the hub's zones any more, so its
+    /// environment is retired (replaced by the next launch or link) and the
+    /// `unlinked` record keeps its chance to go out until then (its
+    /// delivery guarantee is #143's).
     private func unlinkCurrent(writeUnlinked: Bool) async -> Int {
         guard let current = link, let host else { return 0 }
         let device = linkedDevice
@@ -447,12 +461,15 @@ final class LinkingViewModel {
         if case let .shared(ownerName) = scope {
             do {
                 try await container.leaveShares(ownerName: ownerName, hubID: current.hubID)
+                host.retireEnvironment()
+                return notSent
             } catch {
                 Self.logger.warning("leaving the shares failed: \(error.localizedDescription, privacy: .public)")
             }
         }
-        // Both scopes end unlinked, on the phone's own database: the linked
-        // hub's zones are no longer synced. Nothing is left to count.
+        // The linked hub's zones are still reachable (a private link, or
+        // shares not left): end on the phone's own database, unlinked.
+        // Nothing is left to count.
         _ = await host.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
         return notSent
     }

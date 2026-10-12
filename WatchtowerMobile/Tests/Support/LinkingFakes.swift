@@ -74,6 +74,7 @@ final class FakeLinkContainer: LinkContainer {
     var status: CloudAvailability = .available
     var userRecordNameValue = "_owner-acme"
     var acceptError: (any Error)?
+    var leaveError: (any Error)?
     private(set) var accepted: [[URL]] = []
     private(set) var left: [String] = []
     /// The hub of each `leaveShares`, in call order.
@@ -99,6 +100,7 @@ final class FakeLinkContainer: LinkContainer {
 
     func leaveShares(ownerName: String, hubID: String) async throws {
         log.append("leave \(ownerName)")
+        if let leaveError { throw leaveError }
         left.append(ownerName)
         leftHubIDs.append(hubID)
         await onLeave?()
@@ -158,6 +160,8 @@ final class FakeLinkHost: LinkHost {
     /// When true, `prepare` waits until its task is cancelled (the app
     /// killed while the sync stack restarts).
     var parksPrepare = false
+    /// Thrown by `prepare` (the sync stack could not restart).
+    var prepareError: (any Error)?
 
     func prepare(scope: CloudDatabaseScope, hubID: String) async throws -> any CloudSyncTransport {
         log.append("prepare \(Self.describe(scope))")
@@ -166,6 +170,7 @@ final class FakeLinkHost: LinkHost {
         while parksPrepare {
             try await Task.sleep(for: .milliseconds(5))
         }
+        if let prepareError { throw prepareError }
         return transport(for: scope)
     }
 
@@ -195,6 +200,13 @@ final class FakeLinkHost: LinkHost {
 
     func flushSends() async {
         flushes += 1
+    }
+
+    private(set) var retirements = 0
+
+    func retireEnvironment() {
+        log.append("retire")
+        retirements += 1
     }
 
     /// The hub of each wipe's restart, in call order.

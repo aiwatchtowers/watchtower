@@ -52,6 +52,10 @@ protocol LinkHost: AnyObject {
     func devicePayload(for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload
     /// Asks the transport to send what is queued now (before a stop).
     func flushSends() async
+    /// The running environment's link has ended and it syncs nothing more
+    /// (a `shared` link whose shares were left): it stays until the next
+    /// launch, and the next `prepare` restarts even on its database and hub.
+    func retireEnvironment()
     /// Stops sync, wipes the replica, the outbox and the transport's store
     /// (buffer, send queue, engine state), and restarts unlinked on
     /// `hubID`'s zones in `scope`'s database. Returns how many outbox items

@@ -179,7 +179,13 @@ final class AppRootWiringTests: XCTestCase {
         await root.setLink(device, writesAllowed: false)
 
         XCTAssertEqual(root.env.linkedDevice, device, "Settings still shows the Mac")
-        XCTAssertEqual(root.env.deviceSettings.linkedDevice, device)
+        XCTAssertNil(root.env.deviceSettings.linkedDevice, "board #70: a toggle writes no device record either")
+        await root.env.deviceSettings.setStartSessions(false)
+        XCTAssertFalse(root.env.deviceSettings.startSessions, "the choice is kept")
+        XCTAssertNil(root.env.deviceSettings.lastError)
+        let deviceWrites = try await transports[0].changes(in: .relay, since: nil).changed
+            .filter { $0.kind == RelayRecordKind.device.rawValue }
+        XCTAssertTrue(deviceWrites.isEmpty, "a moved hub's phone writes no device record")
         do {
             try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
             XCTFail("a moved hub's phone must not send")
@@ -191,7 +197,63 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertTrue(actions.isEmpty)
 
         await root.setLink(device, writesAllowed: true)
+        XCTAssertEqual(root.env.deviceSettings.linkedDevice, device)
         try await root.env.outbox.enqueue(kind: .targetDone, entityRecordName: "workbench_target-1")
+    }
+
+    /// Board #70: a replica file the wipe cannot remove fails the restart
+    /// (BootFailureView) instead of opening the old link's data again.
+    func testAReplicaTheWipeCannotRemoveFailsTheRestart() async throws {
+        let root = try makeRoot(linked: device)
+        let directory = (replicaPath as NSString).deletingLastPathComponent
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: directory)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory)
+        }
+
+        _ = await root.wipeLocalData(restartingOn: .private, hubID: AppEnvironment.unlinkedHubID)
+
+        XCTAssertNotNil(root.failure, "the restart fails visibly")
+        XCTAssertEqual(built.count, 1, "no environment opens on the old replica")
+    }
+
+    /// Board #70: an unlink's flush waits for the engine start only, never
+    /// for the first fetch, which a slow network can hold.
+    func testSendNowDoesNotWaitForTheFirstFetch() async throws {
+        let gate = GatedTransport()
+        let env = try AppEnvironment(
+            transport: gate,
+            replicaPath: try makeReplicaPath(),
+            transportKind: .cloudKit,
+            defaults: try makeDefaults(),
+            recordingsDirectory: try makeRecordingsDirectory()
+        )
+        addTeardownBlock { @MainActor in
+            env.stop()
+            await gate.open()
+        }
+        var sent = false
+        let flush = Task { @MainActor in
+            await env.sendNow()
+            sent = true
+        }
+        try await poll { sent }
+        XCTAssertFalse(env.isBootstrapped, "the first fetch is still held")
+        await flush.value
+    }
+
+    /// A retired environment (a shared unlink's) is replaced by the next
+    /// prepare even on its own database and hub.
+    func testARetiredEnvironmentRestartsOnTheNextPrepare() async throws {
+        let root = try makeRoot(linked: nil)
+        let first = root.env
+
+        root.retireEnvironment()
+        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID)
+
+        XCTAssertFalse(root.env === first)
+        _ = try await root.prepare(scope: .private, hubID: AppEnvironment.unlinkedHubID)
+        XCTAssertEqual(built.count, 2, "a fresh environment is not retired")
     }
 
     func testPreparingAnotherScopeRestartsOnAnEmptyReplica() async throws {
@@ -302,5 +364,34 @@ final class AppRootWiringTests: XCTestCase {
             ownerUser: "_owner-acme",
             sharing: .none
         )
+    }
+}
+
+/// A transport whose fetches wait until `open()`: the environment's first
+/// fetch is held for as long as the test needs.
+private actor GatedTransport: CloudSyncTransport {
+    private let inner = InMemoryCloudTransport()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters = []
+    }
+
+    func save(_ records: [CloudRecord]) async throws {
+        try await inner.save(records)
+    }
+
+    func delete(recordNames: [String], in zone: CloudZoneID) async throws {
+        try await inner.delete(recordNames: recordNames, in: zone)
+    }
+
+    func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
+        if !isOpen {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+        return try await inner.changes(in: zone, since: token)
     }
 }

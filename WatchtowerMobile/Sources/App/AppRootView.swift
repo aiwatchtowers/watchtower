@@ -54,9 +54,11 @@ struct LinkNoticeBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             switch notice {
             case .moved, .stale:
+                // A large control: the bordered shape is the hit area, and
+                // a frame outside it would not grow it to 44 pt.
                 Button("Scan") { linking.startScan() }
                     .buttonStyle(.bordered)
-                    .frame(minHeight: 44)
+                    .controlSize(.large)
             case .removed, .notSent:
                 Button {
                     linking.dismissNotice()
