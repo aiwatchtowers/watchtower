@@ -17,13 +17,16 @@ enum WindowSpeech: Equatable {
 /// (batch) and `StreamingTranscriber` (live) — and later the Qwen3 windower —
 /// so the loops cannot drift, the same rule as `liftWindowSegments`.
 ///
-/// A detector error on a window falls back to `EnergySpeechDetector` for that
-/// window — never "no gate", so a broken model cannot quietly restore the
-/// hallucinating path. The fallback is logged once per recording and the
+/// The first detector error moves the rest of the recording to
+/// `EnergySpeechDetector` — never "no gate", so a broken model cannot quietly
+/// restore the hallucinating path, and no per-window retry of a model that
+/// failed to load. The gate lives for one transcribe/run call, so the next
+/// recording tries the detector again. The switch is logged once and the
 /// gate's counts once at the end, never text.
 struct WindowSpeechGate {
     private let detector: SpeechDetector?
     private let fallback = EnergySpeechDetector()
+    private var detectorFailed = false
     private var silentWindows = 0
     private var fallbackWindows = 0
     private var droppedSegments = 0
@@ -35,22 +38,23 @@ struct WindowSpeechGate {
 
     mutating func check(_ window: [Float]) async -> WindowSpeech {
         guard let detector else { return .ungated }
-        let ranges: [Range<Int>]
-        do {
-            ranges = try await detector.speechRanges(in: window)
-        } catch {
-            if fallbackWindows == 0 {
+        var ranges: [Range<Int>]?
+        if !detectorFailed {
+            do {
+                ranges = try await detector.speechRanges(in: window)
+            } catch {
+                detectorFailed = true
                 NSLog("SpeechGate: speech detector failed (%@) — energy fallback for this recording",
                       String(describing: type(of: error)))
             }
-            fallbackWindows += 1
-            ranges = fallback.speechRanges(in: window)
         }
-        guard !SpeechGate.isSilent(ranges, sampleRate: TranscriptionConfig.sampleRate) else {
+        if ranges == nil { fallbackWindows += 1 }
+        let found = ranges ?? fallback.speechRanges(in: window)
+        guard !SpeechGate.isSilent(found, sampleRate: TranscriptionConfig.sampleRate) else {
             silentWindows += 1
             return .silent
         }
-        return .speech(ranges)
+        return .speech(found)
     }
 
     /// L2: the decoded segments of a speech window that overlap its speech.

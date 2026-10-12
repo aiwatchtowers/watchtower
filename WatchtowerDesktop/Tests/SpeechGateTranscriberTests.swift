@@ -121,9 +121,30 @@ final class SpeechGateTranscriberTests: XCTestCase {
         detector.error = SegmentEngine.EngineError()
         let output = try await WindowedTranscriber(engine: engine, config: config(), speechDetector: detector)
             .transcribe(samples: audio([0.1...0.6, nil])) { _, _ in }
-        XCTAssertEqual(detector.calls, 2)
+        XCTAssertEqual(detector.calls, 1, "after the first error the recording stays on the fallback")
         XCTAssertEqual(engine.decodedWindowSizes, [rate], "the energy fallback opened the loud window only")
         XCTAssertEqual(output.text, "spoken")
+    }
+
+    func testNextRecordingRetriesTheDetectorAfterAFailure() async throws {
+        // The detector lives as long as the warm transcriber; a failure must
+        // not pin later recordings to the fallback.
+        let detector = FakeSpeechDetector()
+        detector.error = SegmentEngine.EngineError()
+        let samples = audio([0.1...0.6, nil, 0.2...0.8])
+        _ = try await WindowedTranscriber(engine: SegmentEngine(), config: config(), speechDetector: detector)
+            .transcribe(samples: samples) { _, _ in }
+        XCTAssertEqual(detector.calls, 1, "recording 1: one failed call, then the fallback for every window")
+
+        detector.error = nil
+        _ = try await WindowedTranscriber(engine: SegmentEngine(), config: config(), speechDetector: detector)
+            .transcribe(samples: samples) { _, _ in }
+        XCTAssertEqual(detector.calls, 4, "recording 2 asks the detector again, for each of its 3 windows")
+
+        detector.error = SegmentEngine.EngineError()
+        _ = try await StreamingTranscriber(engine: SegmentEngine(), config: config(), speechDetector: detector)
+            .run(samples: stream(samples)) { _ in }
+        XCTAssertEqual(detector.calls, 5, "live follows the same per-recording switch")
     }
 
     func testAllSilentRecordingIsEmptyWithoutThrowing() async throws {

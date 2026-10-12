@@ -15,9 +15,9 @@ extension EnergySpeechDetector: SpeechDetector {}
 
 /// The production detector: FluidAudio's Silero VAD (CoreML) and its
 /// segmentation. The model loads on the first window, downloading on first
-/// use like the diarizer; a load failure is remembered, so every later window
-/// fails fast to the transcriber's energy fallback instead of retrying the
-/// download per window.
+/// use like the diarizer, and stays loaded. A load failure is not
+/// remembered: the gate moves that recording to the energy fallback, and the
+/// next recording tries the model again.
 actor SileroSpeechDetector: SpeechDetector {
     /// Model probability that opens speech. FluidAudio's 0.85 is tuned for
     /// ASR chunking and drops quiet speech.
@@ -40,7 +40,6 @@ actor SileroSpeechDetector: SpeechDetector {
     private let threshold: Float
     private let segmentation: VadSegmentationConfig
     private var manager: VadManager?
-    private var loadError: Error?
 
     /// The parameters are for the corpus tuning bench; production uses the defaults.
     init(
@@ -75,14 +74,8 @@ actor SileroSpeechDetector: SpeechDetector {
 
     private func loadedManager() async throws -> VadManager {
         if let manager { return manager }
-        if let loadError { throw loadError }
-        do {
-            let loaded = try await VadManager(config: VadConfig(defaultThreshold: threshold))
-            manager = loaded
-            return loaded
-        } catch {
-            loadError = error
-            throw error
-        }
+        let loaded = try await VadManager(config: VadConfig(defaultThreshold: threshold))
+        manager = loaded
+        return loaded
     }
 }
