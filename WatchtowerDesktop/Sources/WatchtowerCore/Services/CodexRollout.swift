@@ -6,8 +6,10 @@ import Foundation
 /// `findCodexRollout` (internal/terminal/codex_rollout.go), a dual path.
 package enum CodexRollout {
     /// `$CODEX_HOME` when it is an absolute path, else `~/.codex` (Codex's own
-    /// rule; Go `defaultTerminalCodexHome`).
-    package static func home(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+    /// rule; Go `defaultTerminalCodexHome`). The environment is the login
+    /// shell's (`Constants.resolvedEnvironment`), the one the launched Codex
+    /// reads (spec 2026-10-12 §7).
+    package static func home(environment: [String: String] = Constants.resolvedEnvironment()) -> URL {
         if let dir = environment["CODEX_HOME"], dir.hasPrefix("/") { return URL(fileURLWithPath: dir, isDirectory: true) }
         return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent(".codex", isDirectory: true)
     }

@@ -210,8 +210,32 @@ package enum Constants {
         Thread.detachNewThread { _ = resolvedEnvironment() }
     }
 
-    /// Returns a process environment with the user's full PATH resolved from their login shell.
-    /// Cached after first call. Useful for launching subprocesses from a macOS app (where PATH is minimal).
+    /// The login-shell probe `resolvedEnvironment` runs: each value on a
+    /// line of its own behind a marker, so anything the shell's startup
+    /// files print is ignored. Plain `"$VAR"` expansions, which zsh, bash and
+    /// fish all read the same way.
+    package nonisolated static let loginShellProbe =
+        #"printf '\#(probePathMarker)%s\n\#(probeCodexHomeMarker)%s\n' "$PATH" "$CODEX_HOME""#
+    private nonisolated static let probePathMarker = "WATCHTOWER_PROBE_PATH="
+    private nonisolated static let probeCodexHomeMarker = "WATCHTOWER_PROBE_CODEX_HOME="
+
+    /// The probe's output read back: PATH, and CODEX_HOME (spec 2026-10-12
+    /// §7: the Codex the login shell launches reads it, so the trust step,
+    /// the status check and the rollout lookup must too). An empty or
+    /// missing value is nil.
+    package nonisolated static func parseLoginShellProbe(_ output: String) -> (path: String?, codexHome: String?) {
+        var path: String?, codexHome: String?
+        for line in output.split(whereSeparator: \.isNewline) {
+            if let value = line.trimmedSuffix(after: probePathMarker) { path = value }
+            if let value = line.trimmedSuffix(after: probeCodexHomeMarker) { codexHome = value }
+        }
+        return (path, codexHome)
+    }
+
+    /// Returns a process environment with the user's full PATH — and their
+    /// CODEX_HOME, when the login shell sets one — resolved from their login
+    /// shell. Cached after first call. Useful for launching subprocesses from
+    /// a macOS app (where PATH is minimal).
     package nonisolated static func resolvedEnvironment() -> [String: String] {
         struct Cache {
             static let env: [String: String] = {
@@ -222,7 +246,7 @@ package enum Constants {
                 let configDir = NSString("~/.config/watchtower").expandingTildeInPath
                 try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
                 pathProc.currentDirectoryURL = URL(fileURLWithPath: configDir)
-                pathProc.arguments = ["-lc", "echo $PATH"]
+                pathProc.arguments = ["-lc", Constants.loginShellProbe]
                 let pathPipe = Pipe()
                 pathProc.standardOutput = pathPipe
                 pathProc.standardError = FileHandle.nullDevice
@@ -234,10 +258,11 @@ package enum Constants {
                 timer.resume()
                 pathProc.waitUntilExit()
                 timer.cancel()
-                if let fullPath = String(data: pathPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines), !fullPath.isEmpty {
-                    env["PATH"] = fullPath
-                }
+                let probed = Constants.parseLoginShellProbe(
+                    String(data: pathPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                )
+                if let fullPath = probed.path { env["PATH"] = fullPath }
+                if let codexHome = probed.codexHome { env["CODEX_HOME"] = codexHome }
                 env.removeValue(forKey: "CLAUDECODE")
                 // Ensure claude's nvm/fnm dir is in PATH (login-only shell may miss .zshrc).
                 // Inline search: can't call Constants methods from nested Cache struct.
@@ -302,5 +327,15 @@ package enum Constants {
         if let store = CLIBinaryStore.resolvedInstalledPath() { return store }
         if let bundled = bundledCLIPath() { return bundled }
         return findInPath("watchtower")
+    }
+}
+
+private extension Substring {
+    /// The rest of the line after `marker`, trimmed; nil when the line does
+    /// not start with it or nothing follows.
+    func trimmedSuffix(after marker: String) -> String? {
+        guard hasPrefix(marker) else { return nil }
+        let value = dropFirst(marker.count).trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? nil : value
     }
 }
