@@ -2015,6 +2015,15 @@ last_at TEXT NOT NULL,
 PRIMARY KEY (session_id, target_id)
 )
 
+table	terminal_session_worktrees
+CREATE TABLE terminal_session_worktrees (
+session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+root TEXT NOT NULL,
+branch TEXT NOT NULL DEFAULT '',
+first_at TEXT NOT NULL,
+PRIMARY KEY (session_id, root, branch)
+)
+
 table	terminal_sessions
 CREATE TABLE terminal_sessions (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2028,7 +2037,7 @@ claude_session_id TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 last_active_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 closed_at TEXT, agent_state TEXT CHECK (agent_state IN ('working','waiting','approval')), agent_state_at TEXT, finished_at TEXT, finish_summary TEXT NOT NULL DEFAULT '', agent_failed_at TEXT, agent_error TEXT NOT NULL DEFAULT '', agent_turn_end INTEGER, agent_tool_run INTEGER NOT NULL DEFAULT 0, agent_background INTEGER
-CHECK (agent_background IS NULL OR agent_background >= 0), agent_background_at TEXT, chat_question TEXT, chat_question_at TEXT, agent_turns TEXT,
+CHECK (agent_background IS NULL OR agent_background >= 0), agent_background_at TEXT, chat_question TEXT, chat_question_at TEXT, agent_turns TEXT, cleanup_result TEXT, cleanup_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
 )
@@ -4026,6 +4035,12 @@ GROUP BY up.ancestor
 2	first_at	TEXT	notnull=1	dflt=NULL	pk=0
 3	last_at	TEXT	notnull=1	dflt=NULL	pk=0
 
+## terminal_session_worktrees
+0	session_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	root	TEXT	notnull=1	dflt=NULL	pk=2
+2	branch	TEXT	notnull=1	dflt=''	pk=3
+3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
@@ -4051,6 +4066,8 @@ GROUP BY up.ancestor
 21	chat_question	TEXT	notnull=0	dflt=NULL	pk=0
 22	chat_question_at	TEXT	notnull=0	dflt=NULL	pk=0
 23	agent_turns	TEXT	notnull=0	dflt=NULL	pk=0
+24	cleanup_result	TEXT	notnull=0	dflt=NULL	pk=0
+25	cleanup_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=0	dflt=NULL	pk=1
