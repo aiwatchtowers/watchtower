@@ -233,16 +233,18 @@ watcher and activation); `SessionSwitcherPresentation.Row.place`; `TerminalsSect
 
 **Files:** create `WatchtowerCore/Models/CodeRoot.swift`, `WatchtowerCore/Services/CodeRootPolicy.swift`;
 `CodeTabs.key`, `CodeRecentFiles.key` gain the root overload (main root → today's key); `Workbench.mainCodeRoot`;
-tests `Tests/Core/CodeRootPolicyTests.swift`, `Tests/Core/CodeTabsTests.swift`.
+tests `Tests/Core/CodeRootPolicyTests.swift`, `Tests/Core/CodeTabsTests.swift`, `Tests/Core/CodeRootTests.swift`.
 
 **Interfaces:** `CodeRoot { workbenchID, folder, isMain }`; `CodeRootPolicy.activeSessionID(layout:focusOrder:) -> Int64?`;
-`CodeRootPolicy.root(workbench:place:folderExists:) -> CodeRoot`; `CodeTabs.key(root:)`, `CodeRecentFiles.key(root:)`
-(`…<id>` for main, `…<id>.wt.<16 hex SHA-256 of the realpath>` for a worktree).
+`CodeRootPolicy.root(workbench:worktreeFolder:folderExists:) -> CodeRoot` (Task 10 passes the `.worktree` place's
+root, nil for any other place); `CodeTabs.key(root:)`, `CodeRecentFiles.key(root:)` (`…<id>` for main,
+`…<id>.wt.<16 hex SHA-256 of the lexically standardized folder>` for a worktree — no realpath, so the key does not
+change when the folder is deleted or recreated; only the "is it the workbench folder" check resolves symlinks).
 
 - [ ] Tests: `testActiveSessionFromLayout` (single session, split with board, expanded Files over a session split,
   two sessions → last focused, board only → nil); `testRootTable` (worktree existing → worktree root; missing,
   outside, unknown, removed → main); `testMainKeysAreUnchanged`; `testWorktreeKeysDifferPerRoot`.
-- [ ] `make test-swift FILTER='CodeRootPolicyTests|CodeTabsTests'` PASS.
+- [ ] `make test-swift FILTER='CodeRootPolicyTests|CodeTabsTests|CodeRootTests'` PASS.
 - [ ] Commit `feat(desktop-core): code root model and active-root policy (#568)`.
 
 ### Task 9: Re-key the code-viewer centers by `CodeRoot` (WT3, #568)

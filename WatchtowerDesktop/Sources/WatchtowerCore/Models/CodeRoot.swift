@@ -9,22 +9,28 @@ import Foundation
 /// for one root never writes into another (PROJ-03).
 package struct CodeRoot: Hashable, Sendable {
     package let workbenchID: Int64
-    /// Standardized; for a worktree also symlink-resolved (realpath(3)) when
-    /// it exists, so one directory reached by two spellings is one root.
+    /// Standardized lexically only (`.`/`..` removed, always a directory
+    /// URL, so a trailing slash does not matter), never symlink-resolved. The
+    /// identity, the hash and `defaultsKeySuffix` derive from it, so they
+    /// depend only on the spelling passed in, not on whether the directory
+    /// exists when the root is built: a worktree deleted and recreated keeps
+    /// its key. Two spellings of one directory (`/tmp/x` vs `/private/tmp/x`)
+    /// are two roots; callers pass the spelling git reports. Filesystem-aware
+    /// comparisons ("is this the workbench folder") are `CodeRootPolicy`'s.
     package let folder: URL
     package let isMain: Bool
 
     /// The workbench folder.
     package init(main workbench: Workbench) {
         workbenchID = workbench.id
-        folder = workbench.folderURL.standardizedFileURL
+        folder = Self.lexicalFolder(workbench.folderURL)
         isMain = true
     }
 
     /// A linked worktree of the workbench's repository.
     package init(workbenchID: Int64, worktree folder: URL) {
         self.workbenchID = workbenchID
-        self.folder = Self.canonical(folder)
+        self.folder = Self.lexicalFolder(folder)
         isMain = false
     }
 
@@ -37,11 +43,8 @@ package struct CodeRoot: Hashable, Sendable {
         return ".wt." + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func canonical(_ url: URL) -> URL {
-        let standard = url.standardizedFileURL
-        guard let resolved = realpath(standard.path, nil) else { return standard }
-        defer { free(resolved) }
-        return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+    private static func lexicalFolder(_ url: URL) -> URL {
+        URL(fileURLWithPath: url.standardizedFileURL.path, isDirectory: true)
     }
 }
 

@@ -163,9 +163,11 @@ Whichever lands second adds `--folder` to `workbench git fetch` and the Remote-o
 
 ### 6.1 `CodeRoot` (Core)
 
-`struct CodeRoot: Hashable, Sendable { workbenchID: Int64; folder: URL (standardized); isMain: Bool }`;
+`struct CodeRoot: Hashable, Sendable { workbenchID: Int64; folder: URL (standardized lexically, never
+symlink-resolved, so the identity does not depend on whether the folder exists); isMain: Bool }`;
 `Workbench.mainCodeRoot`. `CodeRootPolicy.activeSessionID(layout:focusOrder:)` (D6) and
-`CodeRootPolicy.root(workbench:place:)`: `worktree` → that root (if the directory exists), everything else → main.
+`CodeRootPolicy.root(workbench:worktreeFolder:folderExists:)`, given the `.worktree` place's root (nil for any other
+place): that root if the directory exists and is not the workbench folder (compared symlink-resolved), else main.
 
 ### 6.2 Re-keying (no behaviour change first)
 
@@ -185,7 +187,7 @@ the header and Open Quickly. On a change of the active root for a workbench:
    unique per root) before the pane shows the new root's tabs; edits that arrive late still reach their buffer;
 2. the old root's tabs, buffers, models and autosave stay as they are (owner, ask #188: each worktree keeps its
    set); the new root's tabs are restored (main: `workbench.files.tabs.<id>`, unchanged key; worktree:
-   `workbench.files.tabs.<id>.wt.<16-hex SHA-256 of the realpath'd root>`; recents the same scheme);
+   `workbench.files.tabs.<id>.wt.<16-hex SHA-256 of the lexically standardized root>`; recents the same scheme);
 3. FSEvents, git marks and the index are started for the new root by the views' `show`, and released for the old
    one by `stopShowing`/the index idle TTL.
 

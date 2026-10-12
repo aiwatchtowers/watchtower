@@ -19,6 +19,9 @@ final class CodeRootPolicyTests: XCTestCase {
             ("two sessions, last focused", layout(.session(1), .session(2)), [2, 1], 1),
             ("two sessions, other focused last", layout(.session(1), .session(2)), [1, 2, 8], 2),
             ("two sessions, none focused", layout(.session(1), .sessionReport(2)), [8], 1),
+            ("two sessions, focus empty, primary wins", layout(.session(9), .session(3)), [], 9),
+            ("two sessions, focus holds neither, primary wins", layout(.sessionReport(9), .session(3)), [1, 2], 9),
+            ("expanded session over a board split", layout(.board, .session(6), expanded: .session(6)), [], 6),
             ("board only", layout(.board), [1], nil),
             ("board and Files", layout(.board, .files), [1], nil)
         ]
@@ -44,7 +47,21 @@ final class CodeRootPolicyTests: XCTestCase {
         XCTAssertEqual(CodeRootPolicy.root(workbench: workbench, worktreeFolder: itself, folderExists: exists), main, "the workbench folder")
     }
 
-    func testRootUsesTheRealDirectory() throws {
+    /// The "is it the workbench folder" check resolves symlinks; the root's
+    /// identity does not (CodeRoot.folder is lexical).
+    func testWorkbenchFolderThroughASymlinkIsMain() throws {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("coderoot-\(UUID().uuidString)")
+        let real = base.appendingPathComponent("acme")
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: base) }
+        let link = base.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let linked = Workbench(row: Row(["id": 7, "name": "acme", "folder_path": real.path]))
+
+        XCTAssertEqual(CodeRootPolicy.root(workbench: linked, worktreeFolder: link), linked.mainCodeRoot)
+    }
+
+    func testSymlinkSpellingsAreDistinctRoots() throws {
         let base = FileManager.default.temporaryDirectory.appendingPathComponent("coderoot-\(UUID().uuidString)")
         let real = base.appendingPathComponent("wt")
         try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
@@ -55,8 +72,9 @@ final class CodeRootPolicyTests: XCTestCase {
         let viaReal = CodeRootPolicy.root(workbench: workbench, worktreeFolder: real)
         let viaLink = CodeRootPolicy.root(workbench: workbench, worktreeFolder: link)
         XCTAssertFalse(viaReal.isMain)
-        XCTAssertEqual(viaReal, viaLink)
-        XCTAssertEqual(CodeTabs.key(root: viaReal), CodeTabs.key(root: viaLink))
+        XCTAssertFalse(viaLink.isMain)
+        XCTAssertEqual(viaLink.folder.path, link.standardizedFileURL.path, "not symlink-resolved")
+        XCTAssertNotEqual(CodeTabs.key(root: viaReal), CodeTabs.key(root: viaLink), "two spellings, two tab sets")
     }
 
     func testMainRootIsTheWorkbenchFolder() {

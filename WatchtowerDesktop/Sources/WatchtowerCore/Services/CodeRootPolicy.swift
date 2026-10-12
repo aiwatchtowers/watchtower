@@ -22,22 +22,33 @@ package enum CodeRootPolicy {
     /// The root for the active session's place. `worktreeFolder` is the
     /// place's worktree root (`SessionPlace.worktree`'s `root`), nil for any
     /// other place — main, unknown, removed, or no session. A worktree whose
-    /// directory is gone, or that names the workbench folder itself, is the
-    /// main root.
+    /// directory is gone, or that names the workbench folder itself (compared
+    /// symlink-resolved, so `/tmp/x` and `/private/tmp/x` match), is the main
+    /// root. The returned root's own identity stays lexical (`CodeRoot.folder`).
     package static func root(
         workbench: Workbench,
         worktreeFolder: URL?,
         folderExists: (URL) -> Bool = Self.directoryExists
     ) -> CodeRoot {
-        let main = workbench.mainCodeRoot
-        guard let worktreeFolder, folderExists(worktreeFolder) else { return main }
-        let root = CodeRoot(workbenchID: workbench.id, worktree: worktreeFolder)
-        return root.folder == CodeRoot(workbenchID: workbench.id, worktree: main.folder).folder ? main : root
+        let mainRoot = workbench.mainCodeRoot
+        guard let worktreeFolder, folderExists(worktreeFolder) else { return mainRoot }
+        let worktreeRoot = CodeRoot(workbenchID: workbench.id, worktree: worktreeFolder)
+        let sameFolder = symlinkResolvedPath(worktreeRoot.folder) == symlinkResolvedPath(mainRoot.folder)
+        return sameFolder ? mainRoot : worktreeRoot
     }
 
     package static func directoryExists(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    /// The path with symlinks resolved (realpath(3)) when it exists, the
+    /// standardized path otherwise. Comparison only — never a root's identity.
+    private static func symlinkResolvedPath(_ url: URL) -> String {
+        let standard = url.standardizedFileURL.path
+        guard let resolved = realpath(standard, nil) else { return standard }
+        defer { free(resolved) }
+        return String(cString: resolved)
     }
 
     private static func sessionID(of pane: WorkspacePane?) -> Int64? {
