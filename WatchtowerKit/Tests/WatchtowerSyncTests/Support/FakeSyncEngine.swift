@@ -180,6 +180,7 @@ extension CloudKitTransport {
         hubID: String = HubZones.testHubID,
         role: TransportRole? = nil,
         engine: FakeSyncEngine = FakeSyncEngine(),
+        zoneAdmin: FakeZoneAdmin = FakeZoneAdmin(),
         clock: TestClock = TestClock(),
         sleeps: Collector<TimeInterval> = Collector(),
         sleep: (@Sendable (TimeInterval) async -> Void)? = nil
@@ -190,11 +191,45 @@ extension CloudKitTransport {
             hubID: hubID,
             role: role ?? (scope == .private ? .hub : .phone),
             entitlementPresent: { true },
+            zoneAdmin: zoneAdmin,
             engineFactory: { _, _ in engine },
             now: { clock.now },
             sleep: sleep ?? { sleeps.append($0) }
         )
         await transport.start()
         return transport
+    }
+}
+
+/// Zones and records on a fake server, for the hub's zone deletions.
+final class FakeZoneAdmin: CloudZoneAdministering, @unchecked Sendable {
+    private let lock = NSLock()
+    private var zones: [CKRecordZone.ID]
+    private var records: [CKRecord.ID: CKRecord]
+    private var _deleted: [[CKRecordZone.ID]] = []
+    private var failure: Error?
+
+    init(zones: [CKRecordZone.ID] = [], records: [CKRecord] = [], failure: Error? = nil) {
+        self.zones = zones
+        self.records = Dictionary(uniqueKeysWithValues: records.map { ($0.recordID, $0) })
+        self.failure = failure
+    }
+
+    var deleted: [[CKRecordZone.ID]] { lock.withLock { _deleted } }
+
+    func zoneIDs() async throws -> [CKRecordZone.ID] {
+        try lock.withLock { if let failure { throw failure }; return zones }
+    }
+
+    func record(_ id: CKRecord.ID) async throws -> CKRecord? {
+        lock.withLock { records[id] }
+    }
+
+    func deleteZones(_ ids: [CKRecordZone.ID]) async throws {
+        try lock.withLock {
+            if let failure { throw failure }
+            _deleted.append(ids)
+            zones.removeAll(where: ids.contains)
+        }
     }
 }

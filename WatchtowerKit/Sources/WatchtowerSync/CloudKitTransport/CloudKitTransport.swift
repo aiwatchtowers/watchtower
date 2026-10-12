@@ -16,6 +16,19 @@ public enum CloudAvailability: Equatable, Sendable {
     case unavailable(String)
 }
 
+/// What `removeLegacyZones` did with the single-hub build's fixed-name zones.
+public enum LegacyZoneCleanup: String, Equatable, Sendable {
+    case noneFound = "none_found"
+    case deleted
+    case kept
+}
+
+public enum HubZoneError: Error, Equatable {
+    case notHub
+    case noEntitlement
+    case engineRunning
+}
+
 /// CloudKit adapter for the CloudSyncTransport seam, built on CKSyncEngine.
 /// Push-shaped engine events land in the TransportStore buffer; the seam's
 /// pull-shaped changes(since:) reads that buffer, so consumer tokens are
@@ -52,6 +65,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
     /// Only the hub creates, re-creates and deletes zones.
     private var managesZones: Bool { role == .hub }
     private let entitlementCheck: @Sendable () -> Bool
+    private let zoneAdmin: any CloudZoneAdministering
     private let engineFactory: EngineFactory
     private let now: @Sendable () -> Date
     private let sleep: @Sendable (TimeInterval) async -> Void
@@ -136,6 +150,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
             role: role,
             containerID: containerID,
             entitlementPresent: { CloudKitTransport.entitlementPresent(containerID: containerID) },
+            zoneAdmin: CKDatabaseZoneAdmin(containerID: containerID, scope: scope),
             engineFactory: { state, delegate in
                 CKSyncEngineDriver(containerID: containerID, zones: zones, stateSerialization: state, delegate: delegate)
             },
@@ -152,6 +167,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         role: TransportRole,
         containerID: String = WatchtowerCloud.containerID,
         entitlementPresent: @escaping @Sendable () -> Bool,
+        zoneAdmin: any CloudZoneAdministering,
         engineFactory: @escaping EngineFactory,
         now: @escaping @Sendable () -> Date,
         sleep: @escaping @Sendable (TimeInterval) async -> Void
@@ -161,6 +177,7 @@ public actor CloudKitTransport: CloudSyncTransport, CompactingTransport, Sweepin
         self.role = role
         self.containerID = containerID
         entitlementCheck = entitlementPresent
+        self.zoneAdmin = zoneAdmin
         self.engineFactory = engineFactory
         self.now = now
         self.sleep = sleep
@@ -1291,5 +1308,40 @@ extension CloudKitTransport {
         guard !isStopped, !isPaused else { return }
         if let throttledUntil, now() < throttledUntil { return }
         await resend()
+    }
+}
+
+// MARK: - Hub zones (multi-hub spec §3.3, §3.6)
+
+extension CloudKitTransport {
+    /// Hub role, after `stop()`: deletes this hub's two zones on the server
+    /// (the owner turned the hub off; their shares and every participant go
+    /// with them) and wipes the store, whose engine state and system fields
+    /// describe zones that no longer exist. A failure leaves both in place.
+    public func deleteHubZones() async throws {
+        guard role == .hub else { throw HubZoneError.notHub }
+        guard engine == nil else { throw HubZoneError.engineRunning }
+        guard entitlementCheck() else { throw HubZoneError.noEntitlement }
+        try await zoneAdmin.deleteZones(zones.allZoneIDs)
+        try store.wipe()
+    }
+
+    /// Hub role: the single-hub build's fixed-name `DataZone`/`RelayZone`.
+    /// `deleteIf` gets the legacy DataZone `heartbeat` payload (nil: none)
+    /// and decides; both legacy zones that exist go together, or neither.
+    public func removeLegacyZones(deleteIf: @Sendable (_ heartbeatPayload: Data?) -> Bool) async throws -> LegacyZoneCleanup {
+        guard role == .hub else { throw HubZoneError.notHub }
+        guard entitlementCheck() else { throw HubZoneError.noEntitlement }
+        let legacy = HubZones.legacyZoneIDs
+        let present = try await zoneAdmin.zoneIDs().filter(legacy.contains)
+        guard !present.isEmpty else { return .noneFound }
+        var payload: Data?
+        if let data = legacy.first, present.contains(data) {
+            let heartbeat = try await zoneAdmin.record(CKRecord.ID(recordName: HeartbeatPayload.recordName, zoneID: data))
+            payload = heartbeat?.encryptedValues["payload"] as? Data
+        }
+        guard deleteIf(payload) else { return .kept }
+        try await zoneAdmin.deleteZones(present)
+        return .deleted
     }
 }
