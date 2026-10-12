@@ -524,6 +524,23 @@ if [ "$SIGN_IDENTITY" != "-" ]; then
     echo "==> Code signing with: $SIGN_IDENTITY"
     BUNDLE_ENTITLEMENTS="$ENTITLEMENTS"
     if [ -n "$PROVISION_PROFILE" ]; then
+        # The profile must list the certificate that signs the bundle. amfid
+        # refuses an app whose restricted entitlements come from a profile made
+        # for another certificate ("No matching profile found") — even one with
+        # the same name — while signing and notarization still pass. Compared
+        # by SHA-1, the hash find-identity prints.
+        SIGN_CERT_SHA1=$(security find-identity -v -p codesigning \
+            | grep -F "$SIGN_IDENTITY" | awk '{print toupper($2)}' | sort -u || true)
+        PROFILE_CERT_SHA1=""
+        CERT_INDEX=0
+        while CERT_B64=$(plutil -extract "DeveloperCertificates.$CERT_INDEX" raw -o - "$PROFILE_PLIST" 2>/dev/null); do
+            PROFILE_CERT_SHA1="$PROFILE_CERT_SHA1$(printf '%s' "$CERT_B64" | base64 -d | shasum -a 1 | awk '{print toupper($1)}')"$'\n'
+            CERT_INDEX=$((CERT_INDEX + 1))
+        done
+        if [ -z "$SIGN_CERT_SHA1" ] || ! grep -qxF -f <(printf '%s' "$PROFILE_CERT_SHA1") <<< "$SIGN_CERT_SHA1"; then
+            echo "ERROR: WATCHTOWER_PROVISION_PROFILE '$PROVISION_PROFILE' does not include the signing certificate of '$SIGN_IDENTITY' (SHA-1 ${SIGN_CERT_SHA1:-<not found>}; the profile lists $CERT_INDEX certificate(s)) — the app would not launch; make the profile again with this certificate" >&2
+            exit 1
+        fi
         cp "$PROVISION_PROFILE" "$APP_BUNDLE/Contents/embedded.provisionprofile"
         BUNDLE_ENTITLEMENTS="$SIGNED_CLOUD_ENTITLEMENTS"
         echo "    Embedded provisioning profile: $PROVISION_PROFILE (iCloud/CloudKit + push entitlements)"

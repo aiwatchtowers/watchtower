@@ -23,6 +23,9 @@
 #   - WATCHTOWER_CLOUDKIT_ENV=Development with a development profile → the
 #     bundle is signed for Development (container environment and
 #     aps-environment rewritten); an unknown value is a hard error
+#   - a profile that does not list the signing identity's certificate (one
+#     made for another certificate of the same name) → hard error before
+#     anything is signed; amfid would refuse to launch the app
 #   - BUILD_FLAVOR=corp → the signing blocks have no flavor logic and sign
 #     with the same container
 #   - the cloud entitlements carry the container, CloudKit, Production and
@@ -112,8 +115,16 @@ esac
 exit 0
 EOF
 # security cms -D -i <file>: the fake profile is already a plain plist.
-cat > "$STUB_DIR/security" <<'EOF'
+# security find-identity: prints $FAKE_IDENTITIES, the fake keychain.
+FAKE_IDENTITIES="$WORK_DIR/identities.txt"
+cat > "$STUB_DIR/security" <<EOF
 #!/bin/bash
+if [ "\$1" = "find-identity" ]; then
+    cat "$FAKE_IDENTITIES"
+    exit 0
+fi
+EOF
+cat >> "$STUB_DIR/security" <<'EOF'
 [ "$1 $2 $3" = "cms -D -i" ] || { echo "unexpected security call: $*" >&2; exit 2; }
 if grep -q BROKEN "$4"; then
     echo "security: SecCMSDecoder failed" >&2
@@ -123,14 +134,25 @@ cat "$4"
 EOF
 chmod +x "$STUB_DIR/codesign" "$STUB_DIR/security"
 
+# Fake certificates: any bytes do, the check compares SHA-1 hashes. The
+# keychain holds the signing identity's certificate; OTHER_CERT is another
+# certificate of the same name (seen live: a profile made for it builds,
+# signs and notarizes, then amfid refuses to launch the app).
+SIGN_CERT_B64=$(printf 'acme signing certificate' | base64)
+OTHER_CERT_B64=$(printf 'acme other certificate' | base64)
+SIGN_CERT_SHA1=$(printf 'acme signing certificate' | shasum -a 1 | awk '{print toupper($1)}')
+
 # make_profile <path> <application-identifier> <team id> <container...>
 # PROFILE_SERVICES, PROFILE_ENVS (space-separated) and PROFILE_APS shape the
 # profile's CloudKit entitlements (defaults: a Developer ID profile —
 # CloudKit, Production, production); "none" leaves the key out.
+# PROFILE_CERTS (space-separated base64) lists the profile's certificates
+# (default: the signing identity's).
 make_profile() {
     local path="$1" app_id="$2" team="$3"
     shift 3
-    local containers="" services="" envs="" aps=""
+    local containers="" services="" envs="" aps="" certs=""
+    for c in ${PROFILE_CERTS-$SIGN_CERT_B64}; do certs="$certs<data>$c</data>"; done
     for c in "$@"; do containers="$containers<string>$c</string>"; done
     local svc_spec="${PROFILE_SERVICES:-CloudKit}" env_spec="${PROFILE_ENVS:-Production}" aps_spec="${PROFILE_APS:-production}"
     if [ "$svc_spec" = "*" ]; then
@@ -155,6 +177,7 @@ make_profile() {
 <dict>
     <key>Name</key><string>Acme hub profile</string>
     <key>TeamIdentifier</key><array><string>$team</string></array>
+    <key>DeveloperCertificates</key><array>$certs</array>
     <key>Entitlements</key>
     <dict>
         <key>com.apple.application-identifier</key><string>$app_id</string>
@@ -173,6 +196,7 @@ PROFILE="$WORK_DIR/acme.provisionprofile"
 make_profile "$PROFILE" "$TEAM.$BUNDLE_ID" "$TEAM" "iCloud.com.example.other" "$CONTAINER"
 
 IDENTITY="Developer ID Application: Acme Corp ($TEAM)"
+printf '  1) %s "%s"\n     1 valid identities found\n' "$SIGN_CERT_SHA1" "$IDENTITY" > "$FAKE_IDENTITIES"
 
 # run_case <sign_identity> <profile path or empty> <BUILD_FLAVOR or empty>
 #          [WATCHTOWER_CLOUDKIT_ENV]
@@ -317,6 +341,18 @@ PROFILE_ENVS="Development" PROFILE_APS="development" \
     make_profile "$WORK_DIR/dev-only.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
 expect_fail "default (Production) build with a Development-only profile" \
     "$WORK_DIR/dev-only.provisionprofile" "does not grant the CloudKit environment Production"
+
+PROFILE_CERTS="$OTHER_CERT_B64" make_profile "$WORK_DIR/other-cert.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "profile made for another certificate of the same name" \
+    "$WORK_DIR/other-cert.provisionprofile" "does not include the signing certificate"
+
+PROFILE_CERTS="" make_profile "$WORK_DIR/no-certs.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+expect_fail "profile with no certificates" "$WORK_DIR/no-certs.provisionprofile" "lists 0 certificate(s)"
+
+PROFILE_CERTS="$OTHER_CERT_B64 $SIGN_CERT_B64" make_profile "$WORK_DIR/two-certs.provisionprofile" "$TEAM.$BUNDLE_ID" "$TEAM" "$CONTAINER"
+run_case "$IDENTITY" "$WORK_DIR/two-certs.provisionprofile" "" > /dev/null
+check "profile listing the signing certificate among others signs with the cloud entitlements" \
+    "$(bundle_sign_line)" "Watchtower-cloud.entitlements"
 
 # --- 4b. WATCHTOWER_CLOUDKIT_ENV ---------------------------------------------
 PROFILE_SERVICES="*" PROFILE_ENVS="Development Production" PROFILE_APS="development" \
