@@ -125,7 +125,7 @@ final class ActionOutboxTests: XCTestCase {
                     created_at REAL NOT NULL, state TEXT NOT NULL CHECK(state IN ('pending','failed')),
                     error_message TEXT, reason TEXT, result BLOB, echo_status TEXT);
                 INSERT INTO pending_actions (action_id, kind, payload, created_at, state)
-                    VALUES ('A1', 'probe', '{"id":"A1"}', 1700000000, 'pending');
+                    VALUES ('A1', 'probe', '{"id":"A1","text":"plaintext-marker-7f3a"}', 1700000000, 'pending');
                 """)
         }
 
@@ -134,6 +134,12 @@ final class ActionOutboxTests: XCTestCase {
         XCTAssertTrue(try store.pendingActions().isEmpty)
         let count = try store.reader.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM pending_actions") }
         XCTAssertEqual(count, 0)
+        // Review fix 5: secure_delete + a TRUNCATE checkpoint leave no plaintext copy on disk.
+        let marker = Data("plaintext-marker-7f3a".utf8)
+        for suffix in ["", "-wal"] {
+            let bytes = (try? Data(contentsOf: URL(fileURLWithPath: path + suffix))) ?? Data()
+            XCTAssertNil(bytes.range(of: marker), "plaintext left in replica.sqlite\(suffix)")
+        }
     }
 
     // MARK: - Enqueue

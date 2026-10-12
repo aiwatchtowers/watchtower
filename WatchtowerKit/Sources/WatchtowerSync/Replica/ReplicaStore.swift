@@ -128,7 +128,7 @@ public final class ReplicaStore: Sendable {
         if wiped {
             logger.notice("replica format changed: slice records and change tokens dropped, the zone is re-read")
         }
-        try writer.write { db in
+        let droppedPlaintext = try writer.write { db -> Bool in
             try db.execute(sql: """
                 CREATE TABLE IF NOT EXISTS slice_records (
                     record_name TEXT PRIMARY KEY,
@@ -167,14 +167,23 @@ public final class ReplicaStore: Sendable {
                 \(Self.relaySeenTableSQL);
                 \(Self.dataSeenTableSQL);
                 """)
-            try upgradeSidecarColumns(db)
+            return try upgradeSidecarColumns(db)
+        }
+        if droppedPlaintext {
+            // The deleted cells were zeroed (secure_delete); a TRUNCATE
+            // checkpoint moves the zeroed pages into the database file and
+            // empties the WAL, so no plaintext copy stays in either.
+            try writer.writeWithoutTransaction { db in
+                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            }
         }
         try upgradePhoneRecordingsStates()
     }
 
     /// Columns added to the sidecar tables after they first shipped, added in
-    /// place (CREATE IF NOT EXISTS skips an existing table).
-    private func upgradeSidecarColumns(_ db: Database) throws {
+    /// place (CREATE IF NOT EXISTS skips an existing table). Returns whether
+    /// pre-E2E plaintext overlay rows were deleted (the caller checkpoints).
+    private func upgradeSidecarColumns(_ db: Database) throws -> Bool {
         // A replica created before `event_id` existed keeps its ledger:
         // the column is added in place (CREATE IF NOT EXISTS skipped it).
         let columns = try db.columns(in: "phone_recordings").map(\.name)
@@ -204,13 +213,17 @@ public final class ReplicaStore: Sendable {
         // Mobile E2E: `payload` is the sealed envelope sent under `wire_name`. A row from before holds a
         // plaintext action for a hub the hard cut removed (no echo can ever come): dropped, so no plaintext
         // action stays at rest.
-        if !pendingColumns.contains("wire_name") {
-            try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN wire_name TEXT")
-            try db.execute(sql: "DELETE FROM pending_actions")
-            if db.changesCount > 0 {
-                logger.notice("dropped \(db.changesCount) pre-E2E pending actions")
-            }
-        }
+        guard !pendingColumns.contains("wire_name") else { return false }
+        try db.execute(sql: "ALTER TABLE pending_actions ADD COLUMN wire_name TEXT")
+        // secure_delete zero-fills the freed cells, so the plaintext does not
+        // linger in free pages; this connection keeps it on from here (the
+        // replica holds ciphertext, the cost is a little extra write).
+        try db.execute(sql: "PRAGMA secure_delete = ON")
+        try db.execute(sql: "DELETE FROM pending_actions")
+        let dropped = db.changesCount
+        guard dropped > 0 else { return false }
+        logger.notice("dropped \(dropped) pre-E2E pending actions")
+        return true
     }
 
     /// The `phone_recordings` ledger. `recording` is a capture still being

@@ -363,9 +363,19 @@ public actor RecordingUploader: RecordingUploadAcking {
         try prepareLedger()
         // A sealed row owns only its sealed file: a plain leftover (a kill
         // between the seal and the plain delete) is swept like an orphan.
-        let known = Set(try store.phoneRecordings().filter { $0.state != .delivered }.map { row in
-            (row.sealedFileURL(in: directory) ?? fileURL(row)).standardizedFileURL.path
-        })
+        // An unsealed row owns its plain file AND its `<id>.enc`: a seal in
+        // progress (suspended in `transport.seal`, before `sealed_path` is
+        // stored) has already written it, and deleting it would lose the
+        // recording once the seal deletes the plain file.
+        var known: Set<String> = []
+        for row in try store.phoneRecordings() where row.state != .delivered {
+            if let sealed = row.sealedFileURL(in: directory) {
+                known.insert(sealed.standardizedFileURL.path)
+            } else {
+                known.insert(fileURL(row).standardizedFileURL.path)
+                known.insert(sealTarget(for: row).standardizedFileURL.path)
+            }
+        }
         let files = (try? FileManager.default.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: nil,
@@ -450,8 +460,10 @@ public actor RecordingUploader: RecordingUploadAcking {
         let includeInFlight = resendInFlight
         resendInFlight = false
         do {
-            _ = try await sealRows(deviceID: deviceID)
-            return try await send(includeInFlight: includeInFlight)
+            // A non-lock seal error is per row (logged in `sealRows`): rows
+            // already sealed are still sent below.
+            let justSealed = try await sealRows(deviceID: deviceID).sealedInFlight
+            return try await send(includeInFlight: includeInFlight, alsoSending: justSealed)
         } catch {
             // A pass that exits by throwing (a store read or write) has not
             // finished its re-send: keep it armed for the next pass instead
@@ -462,10 +474,13 @@ public actor RecordingUploader: RecordingUploadAcking {
         }
     }
 
-    /// Saves each sealed row's stored envelope, unchanged.
-    private func send(includeInFlight: Bool) async throws -> Int {
+    /// Saves each sealed row's stored envelope, unchanged: `waiting` rows,
+    /// `uploading` ones when `includeInFlight`, and the `uploading` rows in
+    /// `alsoSending` (sealed by this pass, never sent sealed before).
+    private func send(includeInFlight: Bool, alsoSending: Set<String>) async throws -> Int {
         let rows = try store.phoneRecordings().filter {
-            ($0.state == .waiting || (includeInFlight && $0.state == .uploading)) && $0.isSealed
+            let inFlight = $0.state == .uploading && (includeInFlight || alsoSending.contains($0.id))
+            return ($0.state == .waiting || inFlight) && $0.isSealed
         }
         var sent = 0
         for row in rows {
@@ -517,23 +532,36 @@ public actor RecordingUploader: RecordingUploadAcking {
             return 0
         }
         try prepareLedger()
-        return try await sealRows(deviceID: deviceID)
+        return try await sealRows(deviceID: deviceID).sealed
     }
 
-    private func sealRows(deviceID: String) async throws -> Int {
+    /// `sealed`: how many rows this call sealed; `sealedInFlight`: the
+    /// `uploading` rows (pre-E2E uploads) among them, which this pass sends
+    /// although it may not be the launch pass. A locked keychain
+    /// stops the loop; any other error is the row's, logged, and leaves that
+    /// row unsealed for the next pass while the others go on.
+    private func sealRows(deviceID: String) async throws -> (sealed: Int, sealedInFlight: Set<String>) {
         let rows = try store.phoneRecordings().filter {
             ($0.state == .waiting || $0.state == .uploading) && $0.envelope == nil
         }
         var sealedCount = 0
+        var sealedInFlight: Set<String> = []
         for row in rows {
             do {
-                if try await sealRow(row, deviceID: deviceID) { sealedCount += 1 }
+                guard try await sealRow(row, deviceID: deviceID) else { continue }
+                sealedCount += 1
+                if row.state == .uploading { sealedInFlight.insert(row.id) }
             } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
                 logger.notice("recording seals wait for the keychain (\(rows.count - sealedCount) left)")
                 break
+            } catch {
+                logger.error("""
+                    recording not sealed, retried next pass: \(row.id, privacy: .public): \
+                    \(String(describing: error), privacy: .public)
+                    """)
             }
         }
-        return sealedCount
+        return (sealedCount, sealedInFlight)
     }
 
     /// true when this call sealed the row; false when another call sealed
@@ -572,7 +600,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         // The opaque name needs `K_meta`: a locked keychain throws here,
         // before a large file is encrypted for nothing.
         _ = try transport.wireName(for: unsealed)
-        let sealedFile = (directory ?? plain.deletingLastPathComponent()).appendingPathComponent("\(row.id).enc")
+        let sealedFile = sealTarget(for: row)
         let descriptor: AssetDescriptor
         do {
             // A fresh asset key per call (`encryptFile`'s default).
@@ -595,8 +623,15 @@ public actor RecordingUploader: RecordingUploadAcking {
             removeSealedLeftover(sealedFile)
             throw error
         }
-        let stored = try store.setPhoneRecordingSealed(
-            id: row.id, envelope: wire.payload, wireName: wire.recordName, sealedPath: storedPath(for: sealedFile))
+        let stored: Bool
+        do {
+            stored = try store.setPhoneRecordingSealed(
+                id: row.id, envelope: wire.payload, wireName: wire.recordName, sealedPath: storedPath(for: sealedFile))
+        } catch {
+            // No row holds the envelope: the sealed file goes, the plain file stays for the retry.
+            removeSealedLeftover(sealedFile)
+            throw error
+        }
         guard stored else {
             // The row was discarded while this call encrypted it.
             removeSealedLeftover(sealedFile)
@@ -609,6 +644,12 @@ public actor RecordingUploader: RecordingUploadAcking {
             logger.warning("plain audio not removed after sealing \(row.id, privacy: .public)")
         }
         return true
+    }
+
+    /// Where `sealRow` writes a row's sealed audio: `<id>.enc` in the
+    /// recordings folder, or next to a plain file kept elsewhere.
+    private func sealTarget(for row: PhoneRecording) -> URL {
+        (directory ?? fileURL(row).deletingLastPathComponent()).appendingPathComponent("\(row.id).enc")
     }
 
     private func removeSealedLeftover(_ url: URL) {

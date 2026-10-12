@@ -256,6 +256,9 @@ public actor RelayFeed {
                 guard let self else { break }
                 do {
                     _ = try await self.pollOnce()
+                } catch SecureTransportError.keysUnavailable {
+                    // Expected while the phone is locked: the batch replays after unlock.
+                    self.logger.notice("relay poll waits for the keychain")
                 } catch {
                     self.logger.error("relay poll cycle failed: \(error.localizedDescription, privacy: .public)")
                 }

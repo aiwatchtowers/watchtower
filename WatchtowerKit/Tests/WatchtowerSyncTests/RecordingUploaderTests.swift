@@ -1,3 +1,4 @@
+import CryptoKit
 import WatchtowerE2ETesting
 import XCTest
 @testable import WatchtowerSync
@@ -1035,6 +1036,96 @@ final class RecordingUploaderTests: XCTestCase {
         }
     }
 
+    /// Review fix 1: the launch sweep can run while a seal is suspended in `transport.seal`, after `<id>.enc` is
+    /// written and before `sealed_path` is stored. It must keep both files, and the row ends sealed.
+    func testTheSweepDuringASealKeepsBothFilesAndTheRowEndsSealed() async throws {
+        let keys = GatedKeyProvider(try TestE2E.phone(store: phoneKeys))
+        let store = try makeStore()
+        let uploader = RecordingUploader(
+            transport: TestE2E.phoneTransport(keys), store: store, directory: dir, deviceID: Self.deviceID)
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 5, count: 2_048))
+        let entered = expectation(description: "the seal is inside transport.seal")
+        keys.hold { entered.fulfill() }
+
+        let sealing = Task { try await uploader.sealPending() }
+        await fulfillment(of: [entered], timeout: 5)
+        let removed = try await uploader.sweepOrphanFiles()
+        XCTAssertTrue(removed.isEmpty, "\(removed.map(\.lastPathComponent))")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+        keys.release()
+        let sealedCount = try await sealing.value
+
+        XCTAssertEqual(sealedCount, 1)
+        XCTAssertNotNil(try store.phoneRecording(id: recording.id)?.envelope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "plain deleted only after the seal is stored")
+    }
+
+    /// Review fix 2: a seal error that is not "locked" belongs to its row: rows already sealed are still sent,
+    /// and the failing row stays waiting with its plain file for the next pass.
+    func testASealErrorOnOneRowStillSendsTheRowsAlreadySealed() async throws {
+        let keys = GatedKeyProvider(try TestE2E.phone(store: phoneKeys))
+        let spy = SpyTransport()
+        let store = try makeStore()
+        let uploader = RecordingUploader(
+            transport: TestE2E.phoneTransport(keys, inner: spy), store: store, directory: dir, deviceID: Self.deviceID)
+        let (ready, _) = try await finishedCapture(uploader, bytes: Data(repeating: 1, count: 256))
+        _ = try await uploader.sealPending()
+        let (failing, file) = try await finishedCapture(uploader, bytes: Data(repeating: 2, count: 256))
+        keys.failNextSeq = true
+
+        let sent = try await uploader.uploadPending()
+
+        XCTAssertEqual(sent, 1)
+        XCTAssertEqual(try store.phoneRecording(id: ready.id)?.state, .uploading)
+        let row = try XCTUnwrap(try store.phoneRecording(id: failing.id))
+        XCTAssertEqual(row.state, .waiting)
+        XCTAssertNil(row.envelope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(failing.id).path))
+        let retried = try await uploader.uploadPending()
+        XCTAssertEqual(retried, 1, "the next pass seals and sends it")
+    }
+
+    /// Review fix 3: a pre-E2E `uploading` row the locked launch pass could not seal is sent by the pass that
+    /// seals it, not left until the next relaunch.
+    func testAPreE2EUploadingRowSealedAfterTheLaunchPassIsSentInThatPass() async throws {
+        let spy = SpyTransport()
+        let (uploader, store, _) = try makeStack(transport: spy)
+        let legacy = try await register(uploader, file: try makeAudioFile(name: "legacy.m4a"))
+        try store.setPhoneRecordingState(id: legacy.id, state: .uploading)
+        phoneKeys.isLocked = true
+        let launch = try await uploader.uploadPending()
+        XCTAssertEqual(launch, 0)
+
+        phoneKeys.isLocked = false
+        let later = try await uploader.uploadPending()
+
+        XCTAssertEqual(later, 1)
+        let saves = await spy.savedNames
+        XCTAssertEqual(saves, [try wire(legacy.id)])
+    }
+
+    /// Review fix 4: the row update failing after the seal never leaves a sealed file without its envelope;
+    /// the plain file stays for the retry.
+    func testAStoreWriteFailureWhileSealingRemovesTheSealedFileAndKeepsThePlain() async throws {
+        let (uploader, store, _) = try makeStack()
+        let (recording, file) = try await finishedCapture(uploader, bytes: Data(repeating: 6, count: 256))
+        try await store.writer.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_seal BEFORE UPDATE OF envelope ON phone_recordings
+                BEGIN SELECT RAISE(ABORT, 'store write failed'); END
+                """)
+        }
+
+        let sealedCount = try await uploader.sealPending()
+
+        XCTAssertEqual(sealedCount, 0)
+        XCTAssertNil(try store.phoneRecording(id: recording.id)?.envelope)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sealedFile(recording.id).path))
+    }
+
     func testDiscardRemovesTheSealedFile() async throws {
         let (uploader, store, _) = try makeStack()
         let (recording, _) = try await finishedCapture(uploader, bytes: Data(repeating: 4, count: 256))
@@ -1112,4 +1203,62 @@ private actor SpyTransport: CloudSyncTransport {
     func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
         CloudChangeBatch(changed: [], deletedRecordNames: [], newToken: CloudChangeToken(value: 0))
     }
+}
+
+/// The paired phone's keys with a gate in `nextSeq` (called only inside `SecureTransport.seal`): `hold` makes
+/// the next call signal `entered` and block until `release`, so a test can act while a seal is suspended;
+/// `failNextSeq` makes the next call throw a non-lock error.
+private final class GatedKeyProvider: SecureKeyProvider, @unchecked Sendable {
+    struct SeqFailure: Error {}
+
+    private let inner: PhoneKeyProvider
+    private let lock = NSLock()
+    private var onEnter: (() -> Void)?
+    private let gate = DispatchSemaphore(value: 0)
+    private var failing = false
+
+    init(_ inner: PhoneKeyProvider) { self.inner = inner }
+
+    var role: SecureRole { inner.role }
+    var failNextSeq: Bool {
+        get { lock.withLock { failing } }
+        set { lock.withLock { failing = newValue } }
+    }
+
+    func hold(onEnter: @escaping () -> Void) { lock.withLock { self.onEnter = onEnter } }
+    func release() { gate.signal() }
+
+    func nextSeq() throws -> UInt64 {
+        let (enter, fail) = lock.withLock { () -> ((() -> Void)?, Bool) in
+            defer { onEnter = nil; failing = false }
+            return (onEnter, failing)
+        }
+        if fail { throw SeqFailure() }
+        if let enter {
+            enter()
+            // Bounded: a test that never releases fails instead of hanging the run.
+            _ = gate.wait(timeout: .now() + 10)
+        }
+        return try inner.nextSeq()
+    }
+
+    func metaKey() throws -> SymmetricKey { try inner.metaKey() }
+    func currentEpoch() throws -> UInt32 { try inner.currentEpoch() }
+    func dataKey(epoch: UInt32) throws -> SymmetricKey { try inner.dataKey(epoch: epoch) }
+    func alertKey(epoch: UInt32) throws -> SymmetricKey { try inner.alertKey(epoch: epoch) }
+    func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        try inner.relayKey(direction, deviceID: deviceID, epoch: epoch)
+    }
+    func acceptsRelayEpoch(_ epoch: UInt32, deviceID: UUID) throws -> Bool {
+        try inner.acceptsRelayEpoch(epoch, deviceID: deviceID)
+    }
+    func relayDeviceIDs() throws -> [UUID] { try inner.relayDeviceIDs() }
+    func hubSigner() throws -> Curve25519.Signing.PrivateKey { try inner.hubSigner() }
+    func hubAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { try inner.hubAgreement() }
+    func keyboxRecipient(deviceID: UUID) throws -> Curve25519.KeyAgreement.PublicKey? {
+        try inner.keyboxRecipient(deviceID: deviceID)
+    }
+    func deviceSigner() throws -> Curve25519.Signing.PrivateKey { try inner.deviceSigner() }
+    func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey { try inner.hubAgreementPublicKey() }
+    func linkNonce() throws -> Data { try inner.linkNonce() }
 }

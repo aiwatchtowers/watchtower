@@ -68,7 +68,7 @@ public enum TestE2E {
     /// A transport that seals and opens as the paired phone over `inner`: the phone's own p2h envelopes and the
     /// hub's h2p echoes open, so tests drive the outbox, the uploader and the relay feed exactly as on a device.
     public static func phoneTransport(
-        _ keys: PhoneKeyProvider,
+        _ keys: any SecureKeyProvider,
         inner: any CloudSyncTransport & Sendable = InMemoryCloudTransport()
     ) -> SecureTransport {
         SecureTransport(inner: inner, keys: keys, rollback: InMemoryRollbackGuard())
