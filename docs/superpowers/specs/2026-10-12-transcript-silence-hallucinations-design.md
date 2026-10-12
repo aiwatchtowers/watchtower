@@ -90,8 +90,8 @@ behaviour is unchanged.
   digital zeros; white and pink noise at −60/−45 dBFS; 50 Hz hum + harmonics at −40 dBFS; speech followed by a
   fade to −90 dBFS dither (the "system audio went quiet" case).
 - Speech comes from open datasets with licences that allow it, fetched by `scripts/transcribe-bench-fetch.sh`
-  into `~/Library/Caches/watchtower-bench/` (never into the repo): LibriSpeech test-clean (CC BY 4.0) for en,
-  Common Voice (CC0) for ru and uk, ~10 utterances each, reference transcripts kept with them. The script prints
+  into `~/Library/Caches/watchtower-bench/` (never into the repo): Google FLEURS test split (CC BY 4.0, public on
+  Hugging Face, no sign-in) for en, ru and uk, ~10 utterances each, reference transcripts kept with them. The script prints
   the licence lines; a missing cache makes the bench skip, never fail.
 - Clips: `speech A → 60 s filler → speech B` for each filler × language, plus "speech then 3 min of filler",
   plus speech-only clips for WER.

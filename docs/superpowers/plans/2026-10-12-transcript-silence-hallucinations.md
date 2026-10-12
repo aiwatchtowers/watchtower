@@ -12,7 +12,7 @@ values only where D4 changes them, and say so in the commit.
 
 Depends on: none.
 
-- `scripts/transcribe-bench-fetch.sh`: fetches LibriSpeech test-clean (en) and Common Voice (ru, uk) samples,
+- `scripts/transcribe-bench-fetch.sh`: fetches Google FLEURS test-split samples (en, ru, uk; CC BY 4.0),
   ~10 utterances each with references, into `~/Library/Caches/watchtower-bench/`; prints licences; idempotent.
 - `Tests/Support/SyntheticAudio.swift`: generators per D6 (zeros, white/pink noise at given dBFS, hum, fade to
   dither), deterministic (seeded RNG), 16 kHz mono Float32; `compose([Piece])` returning samples + a timeline of
